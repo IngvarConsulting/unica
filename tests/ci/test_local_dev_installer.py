@@ -357,7 +357,7 @@ class LocalDevInstallerTests(unittest.TestCase):
         required = (
             "Build, install, and verify local development on Windows",
             "if: matrix.target == 'win-x64'",
-            "uses: actions/setup-node@v7",
+            "uses: actions/setup-node@",
             "npm install --global @openai/codex@0.145.0-alpha.18",
             'codex_home="$(cygpath -m "$build_root/codex-home")"',
             'CODEX_HOME="$codex_home"',

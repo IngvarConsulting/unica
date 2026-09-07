@@ -59,7 +59,7 @@ pub(crate) fn set_before_identity_bound_directory_cleanup_mutation_hook(
     });
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn run_before_identity_bound_directory_cleanup_mutation_hook() {
     if let Some(hook) =
         TEST_BEFORE_IDENTITY_BOUND_DIRECTORY_CLEANUP_MUTATION.with(|slot| slot.borrow_mut().take())
@@ -3391,7 +3391,7 @@ fn directory_query_is_end(restart: bool, error: &io::Error) -> bool {
     )
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, test))]
 fn parse_directory_information_buffer(
     buffer: &[u8],
     names: &mut Vec<std::ffi::OsString>,
@@ -4855,7 +4855,7 @@ pub(crate) fn host_path_components_equal(
                 })
                 .collect::<String>()
         };
-        Ok(simple_upper(&left) == simple_upper(&right))
+        Ok(simple_upper(left) == simple_upper(right))
     }
 }
 
@@ -5792,9 +5792,11 @@ fn path_lock_identity_text(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use super::stable_path_identity_bytes;
     use super::{
         path_lock_identity_text, path_starts_with_host_root, provider_state_path_identity,
-        stable_path_identity_bytes, windows_api_path_from_utf16,
+        windows_api_path_from_utf16,
     };
     use std::fs;
     use std::io;

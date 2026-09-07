@@ -1,4 +1,5 @@
 use crate::domain::address::QualifiedAddress;
+use crate::domain::refusal::RefusalCode;
 use serde::Serialize;
 use serde_json::{Map, Value};
 use std::collections::{BTreeSet, HashMap};
@@ -129,13 +130,13 @@ pub(crate) enum DiffError {
 }
 
 impl DiffError {
-    pub(crate) const fn code(&self) -> &'static str {
+    pub(crate) const fn code(&self) -> RefusalCode {
         match self {
-            Self::BadValue { .. } => "bad_value",
-            Self::UnsupportedFilter(_) => "unsupported_filter",
-            Self::IncomparableNodes => "incomparable_nodes",
-            Self::InvalidCursor => "invalid_cursor",
-            Self::StaleCursor => "stale_cursor",
+            Self::BadValue { .. } => RefusalCode::BadValue,
+            Self::UnsupportedFilter(_) => RefusalCode::UnsupportedFilter,
+            Self::IncomparableNodes => RefusalCode::IncomparableNodes,
+            Self::InvalidCursor => RefusalCode::InvalidCursor,
+            Self::StaleCursor => RefusalCode::StaleCursor,
         }
     }
 }
@@ -561,7 +562,7 @@ mod tests {
                 &source("main:Role.Manager", "Role", "right-1", 1),
             )
             .unwrap_err();
-        assert_eq!(error.code(), "incomparable_nodes");
+        assert_eq!(error.code().as_str(), "incomparable_nodes");
     }
 
     #[test]
@@ -600,12 +601,12 @@ mod tests {
                 &right,
             )
             .unwrap_err();
-        assert_eq!(stale.code(), "stale_cursor");
+        assert_eq!(stale.code().as_str(), "stale_cursor");
         let stale_right = source("main:Catalog.Items", "Catalog", "right-2", 2);
         let stale = handler
             .compare(&request.with_cursor(cursor), &left, &stale_right)
             .unwrap_err();
-        assert_eq!(stale.code(), "stale_cursor");
+        assert_eq!(stale.code().as_str(), "stale_cursor");
     }
 
     #[test]

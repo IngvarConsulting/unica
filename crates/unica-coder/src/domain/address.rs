@@ -654,13 +654,4 @@ mod tests {
         let error = QualifiedAddress::parse("main:Document.Заказ.Configuration").unwrap_err();
         assert_eq!(error.code(), AddressErrorCode::ConfigurationRootOnly);
     }
-
-    #[test]
-    fn qualified_logical_address_contract_is_complete() {
-        qualified_addresses_are_table_driven_canonical_and_arbitrarily_deep();
-        qualified_addresses_reject_unqualified_malformed_and_noncanonical_roots();
-        metadata_aliases_reuse_v12_evidence_while_structural_aliases_stay_separate();
-        unqualified_input_resolves_only_with_one_source_set_and_stays_qualified();
-        configuration_kind_is_rejected_everywhere_except_the_sole_root();
-    }
 }

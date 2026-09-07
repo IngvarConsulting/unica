@@ -779,15 +779,4 @@ mod tests {
                 if failure.class() == DeliveryFailureClass::Internal
         ));
     }
-
-    #[test]
-    fn exact_delivery_identity_failure_and_follower_cancellation_are_one_contract() {
-        exact_delivery_progress_is_projected_to_the_owning_waiter();
-        cancelling_one_delivery_follower_does_not_stop_the_process_owned_producer();
-        pre_cancelled_delivery_returns_before_polling_and_never_publishes_progress();
-        two_worktrees_join_one_identical_immutable_delivery();
-        different_delivery_sha256_values_never_share();
-        interrupted_archive_is_a_classified_failure_and_never_artifact_ready();
-        delivery_boundary_rejects_non_delivery_key_mismatched_identity_and_relative_root();
-    }
 }

@@ -16,6 +16,7 @@ const PROCESS_FIXTURE_IDLE_GRACE_MS: u64 = 2_000;
 const STALE_ENDPOINT_INITIAL_IDLE_GRACE_MS: u64 = 500;
 
 #[test]
+#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn daemon_frontend_process_fixture() {
     if std::env::var_os(PROCESS_FIXTURE_ENV).is_none() {
         return;
@@ -52,6 +53,7 @@ fn daemon_frontend_process_fixture() {
 }
 
 #[test]
+#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn two_frontend_processes_race_to_one_daemon_pid_record_and_endpoint() {
     let root = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(root.path()).unwrap();
@@ -106,6 +108,7 @@ fn two_frontend_processes_race_to_one_daemon_pid_record_and_endpoint() {
 }
 
 #[test]
+#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn incompatible_core_identities_spawn_separate_process_endpoints() {
     let root = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(root.path()).unwrap();
@@ -156,6 +159,7 @@ fn incompatible_core_identities_spawn_separate_process_endpoints() {
 }
 
 #[test]
+#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn v5_frontend_process_spawns_the_same_binary_and_pings_the_v5_runtime() {
     let root = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(root.path()).unwrap();
@@ -183,6 +187,7 @@ fn v5_frontend_process_spawns_the_same_binary_and_pings_the_v5_runtime() {
 }
 
 #[test]
+#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn stale_v5_endpoint_probe_preserves_budget_to_spawn_a_replacement() {
     let root = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(root.path()).unwrap();

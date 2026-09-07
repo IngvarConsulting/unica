@@ -376,13 +376,4 @@ mod tests {
             assert!(route.diagnostic_file().is_none(), "{raw}");
         }
     }
-
-    #[test]
-    fn qualified_logical_tree_core_contract_is_complete() {
-        logical_tree_routes_branches_to_existing_typed_readers();
-        logical_tree_delegates_representative_addresses_to_current_typed_reader_adapters();
-        task14_profiles_route_to_their_real_typed_readers_without_skips();
-        platform_capability_controls_logical_existence_without_filesystem_evidence();
-        deep_invalid_module_suffix_cannot_hide_below_a_valid_module_prefix();
-    }
 }

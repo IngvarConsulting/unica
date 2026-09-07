@@ -71,7 +71,6 @@ pub(crate) struct PublishReport {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CleanupWarning {
-    pub(crate) path: PathBuf,
     pub(crate) artifact: CleanupArtifact,
     pub(crate) message: String,
 }
@@ -117,7 +116,12 @@ impl CleanupArtifact {
 
 impl fmt::Display for CleanupWarning {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}: {}", self.path.display(), self.message)
+        write!(
+            formatter,
+            "{}: {}",
+            self.artifact.path().display(),
+            self.message
+        )
     }
 }
 
@@ -761,7 +765,6 @@ pub(crate) fn cleanup_publication_artifact(
     artifact: &CleanupArtifact,
 ) -> Result<(), CleanupWarning> {
     remove_bound_publication_artifact(artifact).map_err(|error| CleanupWarning {
-        path: artifact.path.clone(),
         artifact: artifact.clone(),
         message: error.to_string(),
     })
@@ -777,7 +780,6 @@ pub(crate) fn verify_publication_artifact(
         Ok(present)
     })();
     result.map_err(|error: io::Error| CleanupWarning {
-        path: artifact.path.clone(),
         artifact: artifact.clone(),
         message: error.to_string(),
     })
@@ -2141,7 +2143,10 @@ mod tests {
         assert_eq!(fs::read(&target).unwrap(), original);
         assert!(original_permissions.matches(&fs::metadata(&target).unwrap()));
         let debris = publication_debris(&root);
-        assert_eq!(debris, [error.cleanup_warnings()[0].path.clone()]);
+        assert_eq!(
+            debris,
+            [error.cleanup_warnings()[0].artifact.path().to_path_buf()]
+        );
         assert_eq!(fs::read(&debris[0]).unwrap(), b"");
         cleanup_publication_artifact(&error.cleanup_warnings()[0].artifact)
             .expect("identity-bound cleanup after failpoint scope must succeed");
@@ -2175,7 +2180,10 @@ mod tests {
         assert_eq!(fs::read(&target).unwrap(), b"committed bytes");
         assert!(expected_permissions.matches(&fs::metadata(&target).unwrap()));
         let debris = publication_debris(&root);
-        assert_eq!(debris, [report.cleanup_warnings[0].path.clone()]);
+        assert_eq!(
+            debris,
+            [report.cleanup_warnings[0].artifact.path().to_path_buf()]
+        );
         assert_eq!(fs::read(&debris[0]).unwrap(), b"committed bytes");
         assert!(expected_permissions.matches(&fs::metadata(&debris[0]).unwrap()));
         assert_eq!(
@@ -2216,7 +2224,8 @@ mod tests {
             .next()
             .expect("cleanup failpoint must report the staged artifact");
         let stage_name = warning
-            .path
+            .artifact
+            .path()
             .file_name()
             .expect("stage path must have a child name")
             .to_os_string();

@@ -17,7 +17,7 @@ description: "Проектирование тестов 1С и preview кома�
 исполнением не является. Работу, которую вызов ждать не должен, запускай через
 `unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
 `unica.build.*`.
-- Use `unica.standards.search` or `unica.standards.explain` only when test design depends on a `development-standard`. Expected platform API or mechanics require a `platform-help` source; if public MCP `unica` does not expose one, report the contract gap.
+- Use `unica.docs` with `source: "development-standard"` only when test design depends on a `development-standard`. Expected platform API or mechanics require `unica.docs` with `source: "platform-help"`.
 - Do not call internal runtime, analyzer, or package adapters directly. They are hidden behind MCP `unica`.
 
 ## Workflow

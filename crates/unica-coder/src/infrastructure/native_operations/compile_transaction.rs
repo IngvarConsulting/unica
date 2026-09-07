@@ -7789,7 +7789,7 @@ pub(crate) mod tests {
             .into_iter()
             .next()
             .expect("cleanup failpoint must retain one identity-bound warning");
-        let warned_path = warning.path.clone();
+        let warned_path = warning.artifact.path().to_path_buf();
         let displaced = root.join("displaced-stage.bin");
         fs::rename(&warned_path, &displaced).expect("warned artifact must be displaced");
         fs::write(&warned_path, b"same-name retry decoy").expect("retry decoy must be written");
@@ -7862,7 +7862,8 @@ pub(crate) mod tests {
             .next()
             .expect("cleanup failpoint must retain one identity-bound warning");
         let stage_name = warning
-            .path
+            .artifact
+            .path()
             .file_name()
             .expect("warned stage must have a child name")
             .to_os_string();
@@ -8769,18 +8770,6 @@ pub(crate) mod tests {
             b"removed-tree-before"
         );
         fs::remove_dir_all(root).unwrap();
-    }
-
-    /// Registry-facing rollback diagnostic falsifier built only from real
-    /// publication failures.  It executes restore, removal, quarantine and
-    /// post-commit cleanup races instead of formatting invented messages.
-    #[test]
-    fn fault_injected_rollback_and_cleanup_paths_keep_distinct_diagnostics() {
-        registration_rollback_preserves_same_name_recovery_decoy_after_parent_swap();
-        registration_rollback_validation_reports_preserved_quarantine();
-        removal_rollback_preserves_concurrent_file_and_recovery_artifact();
-        removal_rollback_preserves_concurrent_empty_directory_and_recovery_tree();
-        successful_registration_cleanup_warns_and_preserves_decoy_after_parent_swap();
     }
 
     #[test]

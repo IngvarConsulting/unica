@@ -392,6 +392,54 @@ mod tests {
     }
 
     #[test]
+    fn runtime_stderr_output_rejects_lexical_workspace_escape() {
+        let (root, context) = fixture("stderr-lexical-escape");
+        let args = json!({"stderrOutput": "../outside/stderr.log"})
+            .as_object()
+            .unwrap()
+            .clone();
+
+        for tool in runtime_write_tools() {
+            let error = validate_tool_context(tool, &args, false, &context)
+                .expect_err("stderrOutput must be protected by workspace write policy");
+            assert!(error.contains("outside workspace root"), "{error}");
+        }
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn runtime_stderr_output_rejects_symlink_workspace_escape() {
+        let (root, context) = fixture("stderr-symlink-escape");
+        let outside = root.join("outside.log");
+        let link = context.workspace_root.join("stderr.log");
+        std::fs::write(&outside, "outside").unwrap();
+        match create_file_link_fixture_for_test(&outside, &link).unwrap() {
+            FileLinkFixtureOutcome::Created => {}
+            FileLinkFixtureOutcome::Unsupported
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                let _ = std::fs::remove_dir_all(root);
+                return;
+            }
+        }
+        let args = json!({"stderrOutput": "stderr.log"})
+            .as_object()
+            .unwrap()
+            .clone();
+
+        for tool in runtime_write_tools() {
+            let error = validate_tool_context(tool, &args, false, &context)
+                .expect_err("stderrOutput must not traverse a symlink outside the workspace");
+            assert!(
+                error.contains("through symlink outside workspace root"),
+                "{error}"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn native_platform_xml_source_format_public_gate_is_closed_over_public_operations() {
         use crate::domain::project_sources::{SourceFormat, SourceSetKind};
 
@@ -414,7 +462,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             ungated,
-            ["unica.role.edit", "unica.code.patch", "unica.xdto.info",],
+            ["unica.role.edit", "unica.code.patch"],
             "logical target handlers have no physical path at the common context gate",
         );
 
@@ -500,53 +548,5 @@ mod tests {
                 let _ = std::fs::remove_dir_all(root);
             }
         }
-    }
-
-    #[test]
-    fn runtime_stderr_output_rejects_lexical_workspace_escape() {
-        let (root, context) = fixture("stderr-lexical-escape");
-        let args = json!({"stderrOutput": "../outside/stderr.log"})
-            .as_object()
-            .unwrap()
-            .clone();
-
-        for tool in runtime_write_tools() {
-            let error = validate_tool_context(tool, &args, false, &context)
-                .expect_err("stderrOutput must be protected by workspace write policy");
-            assert!(error.contains("outside workspace root"), "{error}");
-        }
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn runtime_stderr_output_rejects_symlink_workspace_escape() {
-        let (root, context) = fixture("stderr-symlink-escape");
-        let outside = root.join("outside.log");
-        let link = context.workspace_root.join("stderr.log");
-        std::fs::write(&outside, "outside").unwrap();
-        match create_file_link_fixture_for_test(&outside, &link).unwrap() {
-            FileLinkFixtureOutcome::Created => {}
-            FileLinkFixtureOutcome::Unsupported
-            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
-                let _ = std::fs::remove_dir_all(root);
-                return;
-            }
-        }
-        let args = json!({"stderrOutput": "stderr.log"})
-            .as_object()
-            .unwrap()
-            .clone();
-
-        for tool in runtime_write_tools() {
-            let error = validate_tool_context(tool, &args, false, &context)
-                .expect_err("stderrOutput must not traverse a symlink outside the workspace");
-            assert!(
-                error.contains("through symlink outside workspace root"),
-                "{error}"
-            );
-        }
-
-        let _ = std::fs::remove_dir_all(root);
     }
 }

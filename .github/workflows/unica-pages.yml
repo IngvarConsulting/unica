@@ -1,0 +1,180 @@
+name: Unica Pages
+
+# Сайт собирается из того, что уже произошло: страницы из дерева, каталог
+# сценариев из приёмочного корпуса, отчёт — из результатов состоявшегося
+# прогона. Своих тестов этот workflow не гоняет.
+# Публикует один воркфлоу и всегда собирает сайт целиком: Pages заменяет
+# артефакт полностью, поэтому «выложить только свою папку» невозможно.
+# Сайт собирает только `workflow_run`: прогон-источник приносит и дерево, и
+# свежие результаты Allure, и сайт складывает их в отчёт линии. Прямой
+# триггер `push` снят 07.09.2026: он давал второй деплой на каждый push, а в
+# очереди без отмены новый push заменял бы ожидающий прогон с результатами —
+# и они не доехали бы до сайта никогда.
+# Ручного запуска нет нарочно. Джоба сборки скачивает артефакт чужого прогона,
+# и для CodeQL шаг после такого скачивания «отравляем», если workflow может
+# запустить внешнее событие с правом писать кэш `main`: `workflow_dispatch` в
+# его модели такое событие, `push` — нет. Пересобрать сайт руками можно
+# перезапуском любого прошлого прогона.
+on:
+  workflow_run: # zizmor: ignore[dangerous-triggers] условие джобы build принимает только push, расписание и ручной запуск этого же репозитория
+    workflows: ["Build Unica Codex Plugin", "Unica Nightly"]
+    types: [completed]
+    # Фильтр смотрит на `head_branch` прогона-источника: у push в ветку это
+    # ветка, у тега — имя тега, у ночного прогона — всегда `main`.
+    branches: [main, "release-v*", "v*"]
+
+# Право писать на Pages нужно одной джобе — той, что публикует. Сборка только
+# читает дерево и складывает артефакт, поэтому шире её права не бывают.
+permissions:
+  contents: read
+
+concurrency:
+  group: unica-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Собрать сайт
+    # У `workflow_run` нет своей опоры на доверие: фильтр `branches` смотрит на
+    # имя ветки прогона-источника, а его выбирает автор PR — форк с веткой `main`
+    # прошёл бы через фильтр, и мы опубликовали бы его содержимое у себя. Поэтому
+    # источник обязан быть прогоном этого же репозитория по push, расписанию
+    # или ручному запуску: у форка ни расписания, ни push сюда нет.
+    # Красный прогон — тоже результат, и страница обязана его показать; не
+    # источник только отменённый.
+    if: >-
+      (github.event.workflow_run.conclusion == 'success' || github.event.workflow_run.conclusion == 'failure') &&
+      (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'schedule' || github.event.workflow_run.event == 'workflow_dispatch') &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    # Артефакты прогона-источника читаются по `actions: read`; права джобы
+    # заменяют права workflow целиком, поэтому `contents: read` повторён.
+    permissions:
+      contents: read
+      actions: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Отчёт собирает скачанный бинарь, и попадает он на публичный сайт.
+      # Тег релиза можно переставить, поэтому принимаем не «файл по адресу», а
+      # известный файл: сверенный архив 2.35.1 и ничего другого.
+      ALLURE_VERSION: "2.35.1"
+      ALLURE_SHA256: b40c6f1f82f8b945d8b1454beb1e641f196004241e8720299aee862218bdaca6
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      # Бинарь зовётся по своему пути: PATH прогона не расширяется.
+      - name: Поставить Allure CLI
+        run: |
+          set -eu
+          curl -fsSL -o allure.tgz \
+            "https://github.com/allure-framework/allure2/releases/download/$ALLURE_VERSION/allure-$ALLURE_VERSION.tgz"
+          echo "$ALLURE_SHA256  allure.tgz" | sha256sum -c -
+          tar -xzf allure.tgz
+
+      # Линии перечисляет то же правило, что и на странице: main плюс открытые
+      # релизные линии. Линия прогона-источника получает свежие результаты,
+      # остальные пересобираются из того, что хранит сайт, и сохраняют подпись
+      # своего прогона: иначе вчерашние счётчики выдавались бы за сегодняшние.
+      # Свежие результаты приходят только с прогона-источника. Артефакт кладёт
+      # тот, чей прогон его оставил, — потому джоба admits лишь push-прогон
+      # этого репозитория (см. `if:` выше). План выгружен до тестов: тест из
+      # плана без результата дописывается `skipped` с причиной «раннер не
+      # дошёл» и не исчезает из истории.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+          pattern: "{results,plan}-*"
+          path: .build/artifacts
+      - name: Сложить результаты прогона-источника
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN: ${{ github.event.workflow_run.id }}
+          SOURCE_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          SITE: https://ingvarconsulting.github.io/unica
+        run: |
+          set -eu
+          mkdir -p .build
+          # Страница целиком: матрицы дают больше тридцати джоб, а обрезанный
+          # список сделал бы исходы недошедших «unknown». Скрипт сверяет счёт.
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN/jobs?per_page=100" > .build/jobs.json
+          python scripts/ci/collect-results.py --artifacts .build/artifacts --out .build/fresh \
+            --jobs .build/jobs.json --fallback-line "$SOURCE_BRANCH" --site "$SITE" > .build/fresh-line.txt
+
+      - name: Собрать отчёты линий
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SITE: https://ingvarconsulting.github.io/unica
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          RUN_AT: ${{ github.event.workflow_run.updated_at }}
+        run: |
+          set -eu
+          mkdir -p .build
+          python scripts/ci/site-status.py --repo "$GITHUB_REPOSITORY" \
+            --print-lines --out /dev/null > .build/lines.txt
+          # Массив, а не строка: имя линии приходит из ветки репозитория и
+          # разваливаться на пробелах не должно.
+          args=()
+          while read -r line; do
+            [ -n "$line" ] || continue
+            # Линия со свежими результатами едет как `имя=каталог`, остальные
+            # пересобираются из того, что хранит сайт.
+            if [ -d ".build/fresh/$line" ]; then
+              args+=(--line "$line=.build/fresh/$line")
+            else
+              args+=(--line "$line")
+            fi
+          done < .build/lines.txt
+          python scripts/ci/site-status.py --repo "$GITHUB_REPOSITORY" --out .build/bootstrap.json
+          python scripts/ci/build-site.py --status .build/bootstrap.json --out .build/site \
+            --allure-command "$GITHUB_WORKSPACE/allure-$ALLURE_VERSION/bin/allure" \
+            --site "$SITE" --run-sha "$RUN_SHA" --run-url "$RUN_URL" --run-at "$RUN_AT" \
+            "${args[@]}"
+
+      # Счётчики на странице берутся из сводок собранных отчётов, поэтому
+      # документ статуса считается после них, а страницы перерисовываются.
+      - name: Пересобрать страницы с итоговым статусом
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          SITE: https://ingvarconsulting.github.io/unica
+        run: |
+          set -eu
+          # Критерии конвейера считаются здесь, в итоговом статусе, по прогонам
+          # за окно и трендам отчёта на сайте.
+          python scripts/ci/site-status.py \
+            --repo "$GITHUB_REPOSITORY" \
+            --branch "$RUN_BRANCH" \
+            --sha "$RUN_SHA" \
+            --run-url "$RUN_URL" \
+            --summaries .build/site/data \
+            --site "$SITE" --metrics \
+            --out .build/status.json
+          python scripts/ci/build-site.py --pages-only --status .build/status.json --out .build/site
+
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: .build/site
+
+  deploy:
+    name: Опубликовать
+    needs: build
+    permissions:
+      pages: write
+      id-token: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

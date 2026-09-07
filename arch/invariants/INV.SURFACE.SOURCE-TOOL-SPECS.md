@@ -2,13 +2,13 @@
 id: INV.SURFACE.SOURCE-TOOL-SPECS
 status: active
 governs: product
-decision: DEC.2026-08-21.SOURCE-READ-ONLY-SURFACE
+decision: DEC.2026-09-04.SKILLS-CANONICAL-SURFACE
 check: crates/unica-coder/src/application/mod.rs::source_resource_tools_are_read_only_and_have_no_cache_or_event_effects
 scope: [wire]
 ---
 
-# ToolSpec ресурсных операций объявляет read-only и пустой cache access
+# ToolSpec читателя объявляет пустую запись кеша и не публикует событие
 
-Записи `unica.source.resources` и `unica.source.read` в application-реестре
-имеют немутирующее исполнение, пустые множества чтения и записи кеша и
-соответствующие `SourceResources` handlers; `unica.source.apply` не объявлен.
+Каждая немутирующая запись application-реестра имеет пустое множество записи
+кеша и не публикует доменное событие; `unica.source.apply` в реестре не
+объявлен, потому что правку BSL выполняет `unica.code.patch`.

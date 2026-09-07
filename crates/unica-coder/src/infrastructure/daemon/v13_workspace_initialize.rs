@@ -5,6 +5,7 @@ use crate::application::invocation_store::ToolIdentity;
 use crate::application::tool_contracts::SurfaceRelease;
 use crate::application::v13::tool_catalog::{catalog_for, RunIntent};
 use crate::domain::invocation::DomainResult;
+use crate::domain::refusal::RefusalCode;
 use crate::infrastructure::native_operations::compile_transaction::CompileTransaction;
 use crate::infrastructure::project_sources::{
     discover_project_source_map_controlled, discover_project_source_map_with_provenance,
@@ -24,7 +25,7 @@ pub(super) fn execute_workspace_initialize(
     match request.arguments().get("op") {
         None if request.arguments().is_empty() => Some(run_dictionary_result()),
         None => Some(reject(
-            "bad_value",
+            RefusalCode::BadValue,
             "run without op lists the operation dictionary and accepts no other arguments",
         )),
         Some(Value::String(op)) if op == "workspace.initialize" => Some(execute(request, deadline)),
@@ -58,7 +59,7 @@ pub(super) fn reject_unavailable_run_before_admission(
         Some(_) => {
             return Some(DomainResult::canonical_rejection(
                 None,
-                "bad_value",
+                RefusalCode::BadValue,
                 "run op must be a string",
             ))
         }
@@ -126,19 +127,24 @@ fn execute(request: &InvocationRequest, deadline: &InvocationResponseDeadline) -
     let args = match arguments.get("args") {
         None => Map::new(),
         Some(Value::Object(args)) => args.clone(),
-        Some(_) => return reject("bad_value", "workspace.initialize args must be an object"),
+        Some(_) => {
+            return reject(
+                RefusalCode::BadValue,
+                "workspace.initialize args must be an object",
+            )
+        }
     };
     if let Some(argument) = args.keys().next() {
         return reject(
-            "bad_value",
+            RefusalCode::BadValue,
             format!("workspace.initialize does not accept argument `{argument}` yet; it currently initializes from autodetected source sets"),
         );
     }
     let dry_run = match arguments.get("dryRun") {
         Some(Value::Bool(value)) => *value,
-        Some(_) => return reject("bad_value", "workspace.initialize dryRun must be a boolean"),
+        Some(_) => return reject(RefusalCode::BadValue, "workspace.initialize dryRun must be a boolean"),
         None => return reject(
-            "bad_value",
+            RefusalCode::BadValue,
             "workspace.initialize requires dryRun: true to preview or dryRun: false with ifRev to apply",
         ),
     };
@@ -147,20 +153,20 @@ fn execute(request: &InvocationRequest, deadline: &InvocationResponseDeadline) -
         Some(Value::String(value)) if !value.is_empty() => Some(value.as_str()),
         Some(_) => {
             return reject(
-                "bad_value",
+                RefusalCode::BadValue,
                 "workspace.initialize ifRev must be non-empty text",
             )
         }
     };
     if dry_run && if_rev.is_some() {
         return reject(
-            "bad_value",
+            RefusalCode::BadValue,
             "workspace.initialize preview does not accept ifRev; use the returned rev when applying",
         );
     }
     if !dry_run && if_rev.is_none() {
         return reject(
-            "bad_value",
+            RefusalCode::BadValue,
             "workspace.initialize apply requires ifRev from a prior dryRun preview",
         );
     }
@@ -169,7 +175,7 @@ fn execute(request: &InvocationRequest, deadline: &InvocationResponseDeadline) -
         Ok(context) => context,
         Err(error) => {
             return reject(
-                "provider_unavailable",
+                RefusalCode::ProviderUnavailable,
                 format!("workspace discovery failed: {error}"),
             )
         }
@@ -180,20 +186,20 @@ fn execute(request: &InvocationRequest, deadline: &InvocationResponseDeadline) -
             Ok(source_map) => (source_map, None),
             Err(error) => {
                 return reject(
-                    "provider_unavailable",
+                    RefusalCode::ProviderUnavailable,
                     format!("workspace source discovery failed: {error}"),
                 )
             }
         }
     } else {
         if let Err(error) = deadline.checkpoint_handoff() {
-            return reject("deadline_exceeded", error);
+            return reject(RefusalCode::DeadlineExceeded, error);
         }
         match discover_project_source_map_with_provenance(&context.workspace_root) {
             Ok((source_map, provenance)) => (source_map, Some(provenance)),
             Err(error) => {
                 return reject(
-                    "provider_unavailable",
+                    RefusalCode::ProviderUnavailable,
                     format!("workspace source discovery failed: {error}"),
                 )
             }
@@ -201,19 +207,19 @@ fn execute(request: &InvocationRequest, deadline: &InvocationResponseDeadline) -
     };
     if source_map.config_path.is_some() {
         return reject(
-            "invalid_state",
+            RefusalCode::InvalidState,
             "workspace.initialize creates only a missing v8project.yaml and never overwrites an existing project config",
         );
     }
     if source_map.source_sets.is_empty() {
         return reject(
-            "not_found",
+            RefusalCode::NotFound,
             "workspace.initialize found no 1C source roots; declare an infobase or create/import sources first, then call unica.view {} again",
         );
     }
     let Some(recipe) = project_config_recipe(&source_map) else {
         return reject(
-            "ambiguous_source_format",
+            RefusalCode::AmbiguousSourceFormat,
             "workspace.initialize cannot choose one v8project.yaml format because the discovered source sets are mixed, unknown, or invalid",
         );
     };
@@ -250,23 +256,23 @@ fn execute(request: &InvocationRequest, deadline: &InvocationResponseDeadline) -
     }
     if if_rev != Some(revision.as_str()) {
         return reject(
-            "revision_mismatch",
+            RefusalCode::RevisionMismatch,
             "workspace.initialize discovery changed after preview; call dryRun: true again",
         );
     }
     if let Err(error) = deadline.checkpoint_handoff() {
-        return reject("deadline_exceeded", error);
+        return reject(RefusalCode::DeadlineExceeded, error);
     }
     let target = context.workspace_root.join("v8project.yaml");
     let mut transaction = CompileTransaction::new();
     if let Err(error) = transaction.create_text(&target, &recipe) {
-        return reject("provider_unavailable", error);
+        return reject(RefusalCode::ProviderUnavailable, error);
     }
     if let Err(error) = provenance
         .expect("applied source attachment captures discovery provenance")
         .bind_to(&mut transaction)
     {
-        return reject("concurrent_change", error);
+        return reject(RefusalCode::ConcurrentChange, error);
     }
     match transaction.commit() {
         Ok(report) => {
@@ -288,7 +294,7 @@ fn execute(request: &InvocationRequest, deadline: &InvocationResponseDeadline) -
             result
         }
         Err(error) => reject(
-            "concurrent_change",
+            RefusalCode::ConcurrentChange,
             format!("workspace.initialize did not publish v8project.yaml: {error}"),
         ),
     }
@@ -311,10 +317,14 @@ fn attachment_revision(
     )
 }
 
-fn reject(code: &'static str, message: impl Into<String>) -> DomainResult {
+fn reject(code: RefusalCode, message: impl Into<String>) -> DomainResult {
     DomainResult::canonical_rejection(Some("workspace.initialize".to_string()), code, message)
 }
 
 fn reject_run_operation(op: &str, message: impl Into<String>) -> DomainResult {
-    DomainResult::canonical_rejection(Some(op.to_string()), "unsupported_operation", message)
+    DomainResult::canonical_rejection(
+        Some(op.to_string()),
+        RefusalCode::UnsupportedOperation,
+        message,
+    )
 }

@@ -16,7 +16,7 @@ presentation handlers, and diagnostics `АПК:73`, `АПК:80`, `АПК:83`, `�
 `АПК:85`, `АПК:90`, `АПК:125`, `АПК:363`, `АПК:435`–`АПК:439`, `АПК:444`,
 `АПК:1245`, `BSLLS:CommonModuleInvalidType`, `BSLLS:CommonModuleNameWords`,
 `v8cs:common-module-server-call`. Confirm the current wording with
-`unica.standards.explain` before citing one.
+`unica.docs` with `source: "development-standard"` before citing one.
 
 ## Object, Manager, Or Common
 

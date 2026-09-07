@@ -12,6 +12,7 @@ use crate::domain::address::QualifiedAddress;
 use crate::domain::apply::OperationRegistry;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::invocation::{DomainResult, InvocationFailure};
+use crate::domain::refusal::RefusalCode;
 use crate::infrastructure::native_operations::apply::{
     ApplyPlanErrorKind, ApplyStagedState, PlannedApplyEffects, StagedChangeKind, StagedFileState,
 };
@@ -70,7 +71,7 @@ impl CanonicalInvocationService for CanonicalV13ReadService {
                 let Some(query) = arguments.get("query").and_then(Value::as_str) else {
                     return Ok(error_result(
                         None,
-                        "bad_value",
+                        RefusalCode::BadValue,
                         "docs requires string argument `query`",
                     ));
                 };
@@ -80,7 +81,7 @@ impl CanonicalInvocationService for CanonicalV13ReadService {
                     Some(_) => {
                         return Ok(error_result(
                             None,
-                            "bad_value",
+                            RefusalCode::BadValue,
                             "docs source must be a string",
                         ))
                     }
@@ -123,27 +124,30 @@ impl CanonicalV13ReadService {
             Err(error @ ApplyAdmissionError::StaleRevision { .. }) => {
                 return error_result(
                     Some(request.at().to_string()),
-                    "stale_revision",
+                    RefusalCode::StaleRevision,
                     error.to_string(),
                 )
             }
             Err(ApplyAdmissionError::Other(error)) => {
                 return error_result(
                     Some(request.at().to_string()),
-                    "provider_unavailable",
+                    RefusalCode::ProviderUnavailable,
                     error,
                 )
             }
         };
         for (index, operation) in request.ops().iter().enumerate() {
             let Some(descriptor) = OperationRegistry::closed().lookup(operation.name()) else {
-                return error_result(
-                    Some(format!("ops[{index}].op")),
-                    "unsupported_operation",
-                    format!(
-                        "apply operation `{}` is not in the canonical registry",
-                        operation.name()
+                return with_node_dictionary(
+                    error_result(
+                        Some(format!("ops[{index}].op")),
+                        RefusalCode::UnsupportedOperation,
+                        format!(
+                            "apply operation `{}` is not in the canonical registry",
+                            operation.name()
+                        ),
                     ),
+                    &operation.at().to_string(),
                 );
             };
             let target_kind = operation
@@ -153,14 +157,17 @@ impl CanonicalV13ReadService {
                 .expect("a parsed logical address has a terminal segment")
                 .kind();
             if !descriptor.applies_to_operation_target(operation.at()) {
-                return error_result(
-                    Some(format!("ops[{index}].at")),
-                    "bad_value",
-                    format!(
-                        "apply operation `{}` does not apply to {}",
-                        operation.name(),
-                        target_kind.as_str()
+                return with_node_dictionary(
+                    error_result(
+                        Some(format!("ops[{index}].at")),
+                        RefusalCode::BadValue,
+                        format!(
+                            "apply operation `{}` does not apply to {}",
+                            operation.name(),
+                            target_kind.as_str()
+                        ),
                     ),
+                    &operation.at().to_string(),
                 );
             }
         }
@@ -183,7 +190,7 @@ impl CanonicalV13ReadService {
             {
                 return error_result(
                     error.path().map(str::to_string),
-                    "unsupported_operation",
+                    RefusalCode::UnsupportedOperation,
                     "canonical v0.13 apply operation is not implemented",
                 )
             }
@@ -222,7 +229,7 @@ impl CanonicalV13ReadService {
             Err(error) => {
                 return error_result(
                     Some("ops".to_string()),
-                    "provider_unavailable",
+                    RefusalCode::ProviderUnavailable,
                     error.to_string(),
                 )
             }
@@ -285,19 +292,21 @@ impl CanonicalV13ReadService {
         cancellation: &CancellationToken,
     ) -> DomainResult {
         let Some(at) = arguments.get("at").and_then(Value::as_str) else {
-            return error_result(None, "bad_value", "view requires string argument `at`");
+            return error_result(
+                None,
+                RefusalCode::BadValue,
+                "view requires string argument `at`",
+            );
         };
         let mut request = match ViewRequest::new(at) {
             Ok(request) => request,
-            Err(error) => {
-                return error_result(Some(at.to_string()), error.code(), error.to_string())
-            }
+            Err(error) => return view_error_result(Some(at.to_string()), error),
         };
         if let Some(filter) = arguments.get("filter") {
             let Some(filter) = filter.as_object() else {
                 return error_result(
                     Some(at.to_string()),
-                    "bad_value",
+                    RefusalCode::BadValue,
                     "view filter must be an object",
                 );
             };
@@ -307,22 +316,20 @@ impl CanonicalV13ReadService {
             let Some(limit) = bounded_usize(limit) else {
                 return error_result(
                     Some(at.to_string()),
-                    "bad_value",
+                    RefusalCode::BadValue,
                     "view limit must be a positive integer",
                 );
             };
             request = match request.with_limit(limit) {
                 Ok(request) => request,
-                Err(error) => {
-                    return error_result(Some(at.to_string()), error.code(), error.to_string())
-                }
+                Err(error) => return view_error_result(Some(at.to_string()), error),
             };
         }
         if let Some(cursor) = arguments.get("cursor") {
             let Some(cursor) = cursor.as_str() else {
                 return error_result(
                     Some(at.to_string()),
-                    "bad_value",
+                    RefusalCode::BadValue,
                     "view cursor must be a string",
                 );
             };
@@ -331,12 +338,22 @@ impl CanonicalV13ReadService {
         let address = match QualifiedAddress::parse(at) {
             Ok(address) => address,
             Err(error) => {
-                return error_result(Some(at.to_string()), "bad_value", error.to_string())
+                return error_result(
+                    Some(at.to_string()),
+                    RefusalCode::BadValue,
+                    error.to_string(),
+                )
             }
         };
         let sources = match invocation.read_sources() {
             Ok(sources) => sources,
-            Err(error) => return error_result(Some(at.to_string()), "provider_unavailable", error),
+            Err(error) => {
+                return error_result(
+                    Some(at.to_string()),
+                    RefusalCode::ProviderUnavailable,
+                    error,
+                )
+            }
         };
         let Some(source) = sources
             .into_iter()
@@ -344,13 +361,19 @@ impl CanonicalV13ReadService {
         else {
             return error_result(
                 Some(at.to_string()),
-                "provider_unavailable",
+                RefusalCode::ProviderUnavailable,
                 "view source set was not admitted by the workspace actor",
             );
         };
         let authority = match source.logical_view_read_authority(cancellation) {
             Ok(authority) => authority,
-            Err(error) => return error_result(Some(at.to_string()), "provider_unavailable", error),
+            Err(error) => {
+                return error_result(
+                    Some(at.to_string()),
+                    RefusalCode::ProviderUnavailable,
+                    error,
+                )
+            }
         };
         let mut result =
             ViewService::with_shared_cursors(authority, Arc::clone(&self.cursors)).view(request);
@@ -378,10 +401,18 @@ impl CanonicalV13ReadService {
     ) -> DomainResult {
         let arguments = invocation.arguments();
         let Some(query) = arguments.get("query").and_then(Value::as_str) else {
-            return error_result(None, "bad_value", "search requires string argument `query`");
+            return error_result(
+                None,
+                RefusalCode::BadValue,
+                "search requires string argument `query`",
+            );
         };
         if query.trim().is_empty() {
-            return error_result(None, "bad_value", "search query must not be blank");
+            return error_result(
+                None,
+                RefusalCode::BadValue,
+                "search query must not be blank",
+            );
         }
         let (matcher, mode) = match arguments.get("regex") {
             None | Some(Value::Bool(false)) => (
@@ -403,13 +434,19 @@ impl CanonicalV13ReadService {
                     Err(error) => {
                         return error_result(
                             None,
-                            "bad_value",
+                            RefusalCode::BadValue,
                             format!("search regex is not a valid pattern: {error}"),
                         )
                     }
                 }
             }
-            Some(_) => return error_result(None, "bad_value", "search regex must be a boolean"),
+            Some(_) => {
+                return error_result(
+                    None,
+                    RefusalCode::BadValue,
+                    "search regex must be a boolean",
+                )
+            }
         };
         let limit = match arguments.get("limit") {
             Some(value) => match bounded_usize(value).filter(|limit| *limit <= 200) {
@@ -417,7 +454,7 @@ impl CanonicalV13ReadService {
                 None => {
                     return error_result(
                         None,
-                        "bad_value",
+                        RefusalCode::BadValue,
                         "search limit must be an integer from 1 through 200",
                     )
                 }
@@ -429,14 +466,20 @@ impl CanonicalV13ReadService {
             Some(Value::String(scope)) => match QualifiedAddress::parse(scope) {
                 Ok(address) => Some(address),
                 Err(error) => {
-                    return error_result(Some(scope.to_string()), "bad_value", error.to_string())
+                    return error_result(
+                        Some(scope.to_string()),
+                        RefusalCode::BadValue,
+                        error.to_string(),
+                    )
                 }
             },
-            Some(_) => return error_result(None, "bad_value", "search scope must be a string"),
+            Some(_) => {
+                return error_result(None, RefusalCode::BadValue, "search scope must be a string")
+            }
         };
         let sources = match invocation.read_sources() {
             Ok(sources) => sources,
-            Err(error) => return error_result(None, "provider_unavailable", error),
+            Err(error) => return error_result(None, RefusalCode::ProviderUnavailable, error),
         };
         let selected = sources
             .into_iter()
@@ -449,7 +492,7 @@ impl CanonicalV13ReadService {
         if selected.is_empty() {
             return error_result(
                 scope.map(|scope| scope.to_string()),
-                "not_found",
+                RefusalCode::NotFound,
                 "search scope does not name an admitted source set",
             );
         }
@@ -492,7 +535,7 @@ impl CanonicalV13ReadService {
                 cancellation,
             ) {
                 Ok(found) => matches.extend(found),
-                Err(error) => return error_result(None, "provider_unavailable", error),
+                Err(error) => return error_result(None, RefusalCode::ProviderUnavailable, error),
             }
             if matches.len() == limit {
                 break;
@@ -516,13 +559,13 @@ impl CanonicalV13ReadService {
         if arguments.contains_key("filter") {
             return error_result(
                 None,
-                "bad_value",
+                RefusalCode::BadValue,
                 "check takes only `at`; the validators of a node follow from its kind",
             );
         }
         if let Some(at) = arguments.get("at") {
             let Some(at) = at.as_str() else {
-                return error_result(None, "bad_value", "check at must be a string");
+                return error_result(None, RefusalCode::BadValue, "check at must be a string");
             };
             let view_arguments =
                 Map::from_iter([("at".to_string(), Value::String(at.to_string()))]);
@@ -549,7 +592,7 @@ impl CanonicalV13ReadService {
         }
         let sources = match invocation.read_sources() {
             Ok(sources) => sources,
-            Err(error) => return error_result(None, "provider_unavailable", error),
+            Err(error) => return error_result(None, RefusalCode::ProviderUnavailable, error),
         };
         let names = sources
             .iter()
@@ -578,15 +621,23 @@ impl CanonicalV13ReadService {
         if arguments.contains_key("cursor") {
             return error_result(
                 None,
-                "unsupported_cursor",
+                RefusalCode::UnsupportedCursor,
                 "diff pagination cursors are not implemented",
             );
         }
         let Some(left) = arguments.get("left").and_then(Value::as_str) else {
-            return error_result(None, "bad_value", "diff requires string argument `left`");
+            return error_result(
+                None,
+                RefusalCode::BadValue,
+                "diff requires string argument `left`",
+            );
         };
         let Some(right) = arguments.get("right").and_then(Value::as_str) else {
-            return error_result(None, "bad_value", "diff requires string argument `right`");
+            return error_result(
+                None,
+                RefusalCode::BadValue,
+                "diff requires string argument `right`",
+            );
         };
         let limit = match arguments.get("limit") {
             Some(value) => match bounded_usize(value).filter(|limit| *limit <= 1_000) {
@@ -594,7 +645,7 @@ impl CanonicalV13ReadService {
                 None => {
                     return error_result(
                         None,
-                        "bad_value",
+                        RefusalCode::BadValue,
                         "diff limit must be an integer from 1 through 1000",
                     )
                 }
@@ -640,7 +691,7 @@ impl CanonicalV13ReadService {
         if left_data.get("kind") != right_data.get("kind") {
             return error_result(
                 None,
-                "incomparable_nodes",
+                RefusalCode::IncomparableNodes,
                 "diff requires nodes of the same logical kind",
             );
         }
@@ -674,10 +725,10 @@ impl CanonicalV13ReadService {
             return super::v13_workspace_initialize::run_dictionary_result();
         };
         let Some(op) = op.as_str() else {
-            return error_result(None, "bad_value", "run op must be a string");
+            return error_result(None, RefusalCode::BadValue, "run op must be a string");
         };
         if arguments.get("args").is_some_and(|args| !args.is_object()) {
-            return error_result(None, "bad_value", "run args must be an object");
+            return error_result(None, RefusalCode::BadValue, "run args must be an object");
         }
         if !catalog
             .run_dictionary
@@ -686,13 +737,13 @@ impl CanonicalV13ReadService {
         {
             return error_result(
                 Some(op.to_string()),
-                "unsupported_operation",
+                RefusalCode::UnsupportedOperation,
                 format!("unknown canonical run operation `{op}`"),
             );
         }
         error_result(
             Some(op.to_string()),
-            "unsupported_operation",
+            RefusalCode::UnsupportedOperation,
             format!("canonical run operation `{op}` is not implemented yet"),
         )
     }
@@ -704,7 +755,11 @@ impl CanonicalV13ReadService {
     ) -> DomainResult {
         let arguments = invocation.arguments();
         let Some(query) = arguments.get("query").and_then(Value::as_str) else {
-            return error_result(None, "bad_value", "find requires string argument `query`");
+            return error_result(
+                None,
+                RefusalCode::BadValue,
+                "find requires string argument `query`",
+            );
         };
         let mut request = match FindRequest::new(query) {
             Ok(request) => request,
@@ -712,7 +767,7 @@ impl CanonicalV13ReadService {
         };
         if let Some(kind) = arguments.get("kind") {
             let Some(kind) = kind.as_str() else {
-                return error_result(None, "bad_value", "find kind must be a string");
+                return error_result(None, RefusalCode::BadValue, "find kind must be a string");
             };
             request = match request.with_kind(kind) {
                 Ok(request) => request,
@@ -721,7 +776,11 @@ impl CanonicalV13ReadService {
         }
         if let Some(limit) = arguments.get("limit") {
             let Some(limit) = bounded_usize(limit) else {
-                return error_result(None, "bad_value", "find limit must be a positive integer");
+                return error_result(
+                    None,
+                    RefusalCode::BadValue,
+                    "find limit must be a positive integer",
+                );
             };
             request = match request.with_limit(limit) {
                 Ok(request) => request,
@@ -730,12 +789,12 @@ impl CanonicalV13ReadService {
         }
         let sources = match invocation.layout_sources() {
             Ok(sources) => sources,
-            Err(error) => return error_result(None, "provider_unavailable", error),
+            Err(error) => return error_result(None, RefusalCode::ProviderUnavailable, error),
         };
         let Some(deadline) = sources.first().map(|source| source.deadline()) else {
             return error_result(
                 None,
-                "provider_unavailable",
+                RefusalCode::ProviderUnavailable,
                 "find has no admitted source sets",
             );
         };
@@ -845,28 +904,28 @@ fn combined_revision(revisions: &[String]) -> Option<String> {
     Some(format!("unica-read-set-sha256-v1:{:x}", hasher.finalize()))
 }
 
-fn apply_plan_error_code(kind: ApplyPlanErrorKind) -> &'static str {
+fn apply_plan_error_code(kind: ApplyPlanErrorKind) -> RefusalCode {
     match kind {
-        ApplyPlanErrorKind::BadValue => "bad_value",
-        ApplyPlanErrorKind::NotFound => "not_found",
-        ApplyPlanErrorKind::ProviderUnavailable => "provider_unavailable",
-        ApplyPlanErrorKind::InvalidState => "invalid_state",
-        ApplyPlanErrorKind::InvalidSource => "invalid_source",
-        ApplyPlanErrorKind::Staging(_) => "provider_unavailable",
-        ApplyPlanErrorKind::Postcondition => "postcondition_failed",
+        ApplyPlanErrorKind::BadValue => RefusalCode::BadValue,
+        ApplyPlanErrorKind::NotFound => RefusalCode::NotFound,
+        ApplyPlanErrorKind::ProviderUnavailable => RefusalCode::ProviderUnavailable,
+        ApplyPlanErrorKind::InvalidState => RefusalCode::InvalidState,
+        ApplyPlanErrorKind::InvalidSource => RefusalCode::InvalidSource,
+        ApplyPlanErrorKind::Staging(_) => RefusalCode::ProviderUnavailable,
+        ApplyPlanErrorKind::Postcondition => RefusalCode::PostconditionFailed,
     }
 }
 
-fn apply_publication_error_code(kind: ApplyPublicationErrorKind) -> &'static str {
+fn apply_publication_error_code(kind: ApplyPublicationErrorKind) -> RefusalCode {
     match kind {
-        ApplyPublicationErrorKind::Cancelled => "cancelled",
-        ApplyPublicationErrorKind::Deadline => "deadline_exceeded",
-        ApplyPublicationErrorKind::ConcurrentRevision => "revision_mismatch",
-        ApplyPublicationErrorKind::ContainmentIdentity => "provider_unavailable",
-        ApplyPublicationErrorKind::ProviderPostvalidation => "postcondition_failed",
-        ApplyPublicationErrorKind::SourceSelectionChanged => "source_selection_changed",
-        ApplyPublicationErrorKind::RollbackIncomplete => "rollback_incomplete",
-        ApplyPublicationErrorKind::Invariant => "provider_unavailable",
+        ApplyPublicationErrorKind::Cancelled => RefusalCode::Cancelled,
+        ApplyPublicationErrorKind::Deadline => RefusalCode::DeadlineExceeded,
+        ApplyPublicationErrorKind::ConcurrentRevision => RefusalCode::RevisionMismatch,
+        ApplyPublicationErrorKind::ContainmentIdentity => RefusalCode::ProviderUnavailable,
+        ApplyPublicationErrorKind::ProviderPostvalidation => RefusalCode::PostconditionFailed,
+        ApplyPublicationErrorKind::SourceSelectionChanged => RefusalCode::SourceSelectionChanged,
+        ApplyPublicationErrorKind::RollbackIncomplete => RefusalCode::RollbackIncomplete,
+        ApplyPublicationErrorKind::Invariant => RefusalCode::ProviderUnavailable,
     }
 }
 
@@ -893,7 +952,13 @@ fn run_node_checks(
 
     let address = match QualifiedAddress::parse(at) {
         Ok(address) => address,
-        Err(error) => return error_result(Some(at.to_string()), "bad_value", error.to_string()),
+        Err(error) => {
+            return error_result(
+                Some(at.to_string()),
+                RefusalCode::BadValue,
+                error.to_string(),
+            )
+        }
     };
     let context = invocation.workspace_context();
     let plan = plan_for_node(kind, node_facts(&address, viewed, context));
@@ -960,7 +1025,7 @@ fn run_native_validator(
 
     let at = address.to_string();
     let selector = validator_selector(validator, address, context)
-        .map_err(|error| Box::new(error_result(Some(at.clone()), "bad_value", error)))?;
+        .map_err(|error| Box::new(error_result(Some(at.clone()), RefusalCode::BadValue, error)))?;
     let native = validate(validator, &selector, context);
     match normalize_native_outcome(address, kind, validator, native) {
         Ok(checked) => Ok((
@@ -979,7 +1044,7 @@ fn run_native_validator(
         )),
         Err(CheckError::DependencyUnavailable) => Err(Box::new(error_result(
             Some(at),
-            "provider_unavailable",
+            RefusalCode::ProviderUnavailable,
             "the native validator dependency is unavailable",
         ))),
         Err(error) => Err(Box::new(error_result(
@@ -1003,7 +1068,7 @@ fn run_meta_validator(
     let Some(path) = validator_metadata_path(address) else {
         return Err(Box::new(error_result(
             Some(at.to_string()),
-            "bad_value",
+            RefusalCode::BadValue,
             "the metadata validator needs one object descriptor; this address names none",
         )));
     };
@@ -1014,7 +1079,7 @@ fn run_meta_validator(
     .map_err(|error| {
         Box::new(error_result(
             Some(at.to_string()),
-            "bad_value",
+            RefusalCode::BadValue,
             error.to_string(),
         ))
     })?;
@@ -1066,7 +1131,7 @@ fn run_meta_validator(
                 .join("; ");
             Err(Box::new(error_result(
                 Some(at.to_string()),
-                "provider_unavailable",
+                RefusalCode::ProviderUnavailable,
                 if message.is_empty() {
                     "the metadata descriptor could not be read for validation".to_string()
                 } else {
@@ -1121,17 +1186,39 @@ fn unreadable_target_format_refusal(
         .unwrap_or_default();
     Some(error_result(
         Some(at.to_string()),
-        "invalid_source",
+        RefusalCode::InvalidSource,
         format!("{warning}{actual}"),
     ))
 }
 
-fn error_result(
-    at: Option<String>,
-    code: &'static str,
-    message: impl Into<String>,
-) -> DomainResult {
+/// Отказ по операции называет маршрут к словарю узла, а не перечисляет
+/// операции в тексте: перечень уже публикуется секцией `can`, и агенту нужен
+/// путь к нему, а не копия внутри сообщения. Без этого пробелы словаря
+/// `apply` не всплывают — агент повторяет вслепую.
+fn with_node_dictionary(mut result: DomainResult, at: &str) -> DomainResult {
+    result.next.push(serde_json::json!({
+        "tool": "unica.view",
+        "args": {"at": at, "filter": {"sections": ["can"]}},
+        "reason": "какие операции применимы к этому узлу",
+    }));
+    result
+}
+
+fn error_result(at: Option<String>, code: RefusalCode, message: impl Into<String>) -> DomainResult {
     DomainResult::canonical_rejection(at, code, message)
+}
+
+/// Отказ чтения передаётся целиком, а не разбирается на код и текст: иначе
+/// уточнение теряется по дороге и один код снова обслуживает несколько
+/// исходов, не различая их.
+fn view_error_result(
+    at: Option<String>,
+    error: crate::application::v13::view::ViewError,
+) -> DomainResult {
+    match error.detail() {
+        Some(detail) => DomainResult::canonical_rejection_detailed(at, detail, error.to_string()),
+        None => DomainResult::canonical_rejection(at, error.code(), error.to_string()),
+    }
 }
 
 #[cfg(test)]

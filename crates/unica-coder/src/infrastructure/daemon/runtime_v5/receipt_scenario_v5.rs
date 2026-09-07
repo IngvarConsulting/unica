@@ -8456,7 +8456,7 @@ fn run_v3_protocol_probe(
                 let reason = fixture_failure_reason(reason);
                 let (code, message) = failure_projection(reason);
                 protocol_v3::ServerResponse::invocation(protocol_v3::InvocationResponse::Direct(
-                    DomainResult::canonical_rejection(None, code, message),
+                    DomainResult::scenario_rejection(None, code, message),
                 ))
             }
             ScenarioProtocolMessage::DirectFailureTerminal { .. } => {

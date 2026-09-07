@@ -17,7 +17,7 @@ description: "Транзакции, блокировки и ответствен
 исполнением не является. Работу, которую вызов ждать не должен, запускай через
 `unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
 `unica.build.*`.
-- Use `unica.standards.search` and `unica.standards.explain` for a development-standard about transactions and locks: 460, 490, 648, 659, 661, 783, and diagnostics АПК:66, АПК:67, АПК:325-327, АПК:329, АПК:330-332, АПК:478, АПК:521, АПК:1319, АПК:1320, АПК:1327, АПК:1328, BSLLS:PairingBrokenTransaction, v8cs:lock-out-of-try. These are standards, not evidence of runtime behavior; confirm the wording before citing one.
+- Use `unica.docs` with `source: "development-standard"` for the standards about transactions and locks: 460, 490, 648, 659, 661, 783, and diagnostics АПК:66, АПК:67, АПК:325-327, АПК:329, АПК:330-332, АПК:478, АПК:521, АПК:1319, АПК:1320, АПК:1327, АПК:1328, BSLLS:PairingBrokenTransaction, v8cs:lock-out-of-try. These are standards, not evidence of runtime behavior; confirm the wording before citing one.
 - Do not call internal analyzer, runtime, standards, or package adapters directly. They are hidden behind MCP `unica`.
 
 ## Scope boundary

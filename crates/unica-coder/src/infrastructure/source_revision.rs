@@ -3060,15 +3060,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    pub(crate) fn projected_revision_artifacts_equal_retained_postpublication_capture() {
-        crate::infrastructure::workspace_actor::tests::actor_revision_platform_resource_projection_matches_live_capture();
-        crate::infrastructure::workspace_actor::tests::actor_revision_unknown_staged_artifact_is_rejected_before_publication();
-        crate::infrastructure::workspace_actor::tests::actor_revision_late_failure_rolls_back_targeted_resource_without_receipt();
-        actor_revision_projection_uses_capture_byte_limits_and_final_batch_accounting();
-        retained_apply_revision_transient_authority_preserves_projection_capture_bounds();
-    }
-
-    #[test]
     fn actor_revision_projection_uses_capture_byte_limits_and_final_batch_accounting() {
         use crate::infrastructure::native_operations::apply::StagedChangeKind;
 
@@ -3719,47 +3710,6 @@ pub(crate) mod tests {
         let _limits =
             set_revision_scan_limits_for_test(RetainedScanLimits::new(4, u64::MAX, u64::MAX));
         crate::infrastructure::workspace_actor::tests::revision_transient_cleanup_failure_does_not_persist_authority();
-    }
-
-    #[test]
-    pub(crate) fn retained_apply_revision_transient_authority_preserves_projection_capture_bounds()
-    {
-        actor_revision_projection_rejects_entry_overflow_before_publication();
-        actor_revision_projection_preserves_final_entry_accounting();
-        actor_revision_projection_counts_new_parent_topology();
-        actor_revision_planning_requires_stable_ignored_entry_accounting();
-        actor_revision_projection_matches_capture_depth_boundary();
-        actor_revision_replacement_commit_at_entry_limit_survives_owned_backup();
-        actor_revision_new_leaf_commit_at_entry_limit_survives_owned_backup();
-        crate::infrastructure::native_operations::compile_transaction::tests::retained_apply_revision_transient_authority_is_borrowed_sealed_and_single_issuer();
-        actor_revision_multiple_recoveries_across_parents_preserve_exact_entry_limit();
-        actor_revision_remove_create_batch_at_entry_limit_preserves_final_tree_accounting();
-        crate::infrastructure::workspace_actor::tests::actor_revision_recovery_identity_swap_is_rejected_before_revision_install();
-        crate::infrastructure::workspace_actor::tests::actor_revision_recovery_hard_link_alias_is_never_discounted_or_restored();
-        actor_revision_exact_limit_late_failure_reaches_phase_and_rolls_back_without_receipt();
-        retained_apply_revision_transient_spoofs_still_consume_capacity();
-        retained_apply_revision_transient_create_only_and_restart_are_exact();
-        retained_apply_revision_transient_cleanup_failure_does_not_persist_authority();
-        crate::infrastructure::workspace_actor::tests::revision_transient_stop_causes_preserve_rollback();
-    }
-
-    #[test]
-    pub(crate) fn actor_revision_artifact_policy_contract_is_complete() {
-        crate::infrastructure::revision_artifact_policy::tests::platform_xml_revision_artifact_profile_is_closed_and_legacy_is_unchanged();
-        crate::infrastructure::revision_artifact_policy::tests::actor_revision_policy_has_no_raw_issuer_or_scoped_service_bypass();
-        crate::infrastructure::workspace_actor::tests::active_platform_actor_cannot_select_the_legacy_revision_corpus();
-        crate::infrastructure::workspace_actor::tests::actor_revision_service_construction_retains_the_validated_root_across_substitution();
-        projected_revision_artifacts_equal_retained_postpublication_capture();
-        actor_revision_projection_uses_capture_byte_limits_and_final_batch_accounting();
-        crate::infrastructure::workspace_actor::tests::actor_revision_lookalike_resource_is_rejected_before_publication();
-        crate::infrastructure::workspace_actor::tests::actor_revision_external_resource_drift_rotates_subsequent_admission();
-        crate::infrastructure::workspace_actor::tests::actor_revision_policy_migrates_old_scoped_record_once_then_is_restart_stable();
-        actor_revision_ignores_huge_unrelated_binary_while_bounding_targeted_resource();
-        actor_revision_targeted_resources_honor_cancellation_deadline_and_limits();
-        actor_revision_ambient_targeted_content_uses_retained_bounds_and_checkpoints();
-        actor_revision_incremental_targeted_content_uses_retained_bounds_and_checkpoints();
-        actor_revision_incremental_targeted_content_honors_mid_read_stop();
-        crate::infrastructure::workspace_actor::tests::actor_revision_platform_commit_preserves_legacy_and_surface_contracts();
     }
 
     struct UnsupportedFence;
@@ -5471,33 +5421,5 @@ pub(crate) mod tests {
         assert_eq!(error.to_string(), "cancelled between chunks");
         assert_eq!(checkpoints, 3);
         assert_eq!(state.total_bytes, (RETAINED_HASH_CHUNK_BYTES * 2) as u64);
-    }
-
-    #[test]
-    pub(crate) fn retained_revision_authority_contract_is_complete() {
-        retained_snapshot_rejects_a_capability_from_another_source_identity();
-        retained_snapshot_reuses_a_clean_fence_and_reconciles_once_after_change();
-        retained_manifest_uses_the_existing_source_digest_algorithm();
-        review_retained_manifest_cannot_satisfy_an_ambient_fast_path_after_root_swap();
-        unsupported_fence_stable_operation_lease_scans_at_admission_and_confirmation();
-        unsupported_fence_reconcile_is_bounded_to_six_passes_when_corpus_never_stabilizes();
-        retained_final_confirmation_stabilization_contract_is_complete();
-        retained_scan_limits_entries_files_and_aggregate_bytes();
-        retained_file_hashing_checks_cancellation_between_bounded_chunks();
-        if supports_retained_root_replacement_test() {
-            ambient_manifest_cannot_satisfy_a_retained_fast_path();
-            retained_snapshot_never_mixes_a_replaced_root_name_with_the_open_tree();
-        }
-    }
-
-    #[test]
-    pub(crate) fn retained_final_confirmation_stabilization_contract_is_complete() {
-        review_final_confirmation_rejects_root_replacement_during_retained_scan();
-        review_final_confirmation_rejects_nested_directory_replacement_after_retention();
-        review_final_confirmation_rejects_file_replacement_after_retention();
-        review_final_confirmation_rejects_membership_added_after_enumeration();
-        review_final_confirmation_rejects_in_place_change_after_hash();
-        unsupported_fence_stable_operation_lease_scans_at_admission_and_confirmation();
-        unsupported_fence_reconcile_is_bounded_to_six_passes_when_corpus_never_stabilizes();
     }
 }

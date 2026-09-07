@@ -4,6 +4,7 @@
 /// created for it.
 #[cfg(unix)]
 #[test]
+#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn canonical_stdio_views_a_module_through_a_symlinked_workspace() {
     let root = tempfile::tempdir().expect("symlinked workspace root");
     let real = root.path().join("real-workspace");

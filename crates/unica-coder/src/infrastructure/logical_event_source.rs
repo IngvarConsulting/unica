@@ -3,6 +3,7 @@ use crate::domain::platform_profile::{
     ModuleCapability, ModuleRole, ModuleSourceLayout, PlatformProfile,
 };
 use crate::domain::project_sources::SourceSetKind;
+use crate::domain::refusal::RefusalCode;
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use crate::infrastructure::metadata_kinds::metadata_kind;
 use crate::infrastructure::platform_xml_source_targets::platform_xml_module_relative;
@@ -88,8 +89,8 @@ impl EventSourceError {
         }
     }
 
-    pub(crate) const fn code(&self) -> &'static str {
-        "provider_unavailable"
+    pub(crate) const fn code(&self) -> RefusalCode {
+        RefusalCode::ProviderUnavailable
     }
 }
 

@@ -29,6 +29,7 @@ pub mod progress;
 #[allow(dead_code)]
 pub(crate) mod project_health;
 pub mod project_sources;
+pub mod refusal;
 pub mod role;
 pub mod source_location;
 pub mod source_resources;

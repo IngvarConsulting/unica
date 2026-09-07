@@ -2,8 +2,8 @@
 id: INV.SOURCE.SUBSYSTEM-DEADLINE-UNAVAILABLE
 status: active
 governs: product
-decision: DEC.2026-08-18.CARRIED-RULES
-check: crates/unica-coder/src/application/mod.rs::public_subsystem_info_deadline_returns_no_data
+decision: DEC.2026-09-04.V0-13-LEGACY-BATCH-3
+check: tests/ci/test_acceptance_scenarios.py::test_every_wire_answers_its_frozen_classes
 scope: [source]
 ---
 

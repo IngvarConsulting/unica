@@ -1,0 +1,576 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Что умеет Unica</title>
+<meta name="description" content="Каталог задач разработчика 1С, которые Unica проходит цепочкой вызовов: формы, роли, СКД, макеты, код, поддержка поставщика.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Unica">
+<meta property="og:title" content="Что умеет Unica">
+<meta property="og:description" content="Каталог задач разработчика 1С, которые Unica проходит цепочкой вызовов: формы, роли, СКД, макеты, код, поддержка поставщика.">
+<meta property="og:url" content="https://ingvarconsulting.github.io/unica/scenarios.html">
+<meta property="og:image" content="https://ingvarconsulting.github.io/unica/assets/unica-social-card.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="628">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#F8FAFC">
+<link rel="icon" href="assets/unica-mark-blue.svg">
+<link rel="stylesheet" href="assets/site.css">
+<script src="assets/site.js"></script>
+</head>
+<body>
+
+<header>
+  <div class="wrap bar">
+    <a class="brand" href="index.html" aria-label="Unica">
+      <svg class="brand-full" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192.096 53.36" aria-hidden="true">
+        <g transform="translate(0 0) scale(0.83375)">
+          <rect x="0" y="0" width="64" height="64" rx="15.304" fill="#2563EB"/>
+          <path d="M3.3 3.3v12.004278c0 3.542246 2.853476 6.395722 6.395722 6.395722h5.608556c3.542246 0 6.395722-2.853476 6.395722-6.395722V3.3" transform="translate(10.2608695652 10.2608695652) scale(1.73913043478)" fill="none" stroke="#FFFFFF" stroke-width="3.68" stroke-linecap="round" stroke-linejoin="round"/>
+          <circle cx="32" cy="29.913" r="3.826" fill="#93C5FD"/>
+        </g>
+        <g transform="translate(19.227 8.555) scale(1.45)" fill="none" stroke="currentColor" stroke-width="3.68" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3.3 21.7V9.695722c0-3.542246 2.853476-6.395722 6.395722-6.395722h5.608556c3.542246 0 6.395722 2.853476 6.395722 6.395722V21.7" transform="translate(27.048 0)"/>
+          <path d="M6.125 3.3v18.4" transform="translate(53.295 0)"/>
+          <path d="M21.7 3.3H9.695722c-3.542246 0-6.395722 2.853476-6.395722 6.395722v5.608556c0 3.542246 2.853476 6.395722 6.395722 6.395722H21.7" transform="translate(66.792 0)"/>
+          <path d="M21.7 21.7V9.695722c0-3.542246-2.853476-6.395722-6.395722-6.395722H9.695722c-3.542246 0-6.395722 2.853476-6.395722 6.395722v5.608556c0 3.542246 2.853476 6.395722 6.395722 6.395722h5.608556c3.542246 0 6.395722-2.853476 6.395722-6.395722" transform="translate(95.68 0)"/>
+        </g>
+      </svg>
+      <svg class="brand-mark" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" aria-hidden="true">
+        <rect x="0" y="0" width="64" height="64" rx="15.304" fill="#2563EB"/>
+        <path d="M3.3 3.3v12.004278c0 3.542246 2.853476 6.395722 6.395722 6.395722h5.608556c3.542246 0 6.395722-2.853476 6.395722-6.395722V3.3" transform="translate(10.2608695652 10.2608695652) scale(1.73913043478)" fill="none" stroke="#FFFFFF" stroke-width="3.68" stroke-linecap="round" stroke-linejoin="round"/>
+        <circle cx="32" cy="29.913" r="3.826" fill="#93C5FD"/>
+      </svg>
+    </a>
+    <nav>
+      <a href="index.html#install">Установка</a>
+      <a href="scenarios.html">Что умеет</a>
+      <a href="architecture.html">Архитектура</a>
+      <a href="pipeline.html">Конвейер</a>
+      <a class="chip" href="https://github.com/IngvarConsulting/unica" target="_blank" rel="noopener noreferrer" aria-label="GitHub">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
+        <span class="count" data-stars>{{github_stars}}</span></a>
+      <a class="chip" href="https://t.me/unica_ai" target="_blank" rel="noopener noreferrer" aria-label="Telegram">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg>
+        <span class="count">{{telegram_members}}</span></a>
+    </nav>
+    <button class="theme" type="button" aria-label="Переключить тему">
+      <svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="4"/>
+        <path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4"/>
+      </svg>
+      <svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a6.6 6.6 0 0 0 10.5 10.5z"/>
+      </svg>
+    </button>
+  </div>
+</header>
+
+<main>
+  <div class="wrap hero">
+    <p class="eyebrow">Каталог задач</p>
+    <h1>Что Unica уже <span>умеет</span></h1>
+    <p class="page-lede">
+      Каждая строка — задача разработчика 1С, которую Unica проходит цепочкой вызовов
+      <code>unica.*</code>. Тот же список гоняет приёмочный тест на каждом прогоне,
+      поэтому здесь нет ничего, что не работает сегодня.
+    </p>
+    <div class="cta">
+      <a class="btn btn-primary" href="index.html#install">Установить Unica</a>
+      <a class="btn btn-ghost" href="architecture.html">Как это устроено</a>
+      <p class="cta-note"><b>{{scenarios_total}}</b> сценариев</p>
+    </div>
+  </div>
+
+  <section>
+    <div class="wrap">
+      <h2>Каталог</h2>
+
+      <div class="catalog-controls">
+        <label class="search">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          <input type="search" id="search" placeholder="Например: реквизит, роль, СКД, форма" aria-label="Поиск по задачам" autocomplete="off">
+        </label>
+      </div>
+
+      <!-- На телефоне шапка таблицы скрыта, а сортировка и отбор живут в ней.
+           Эти кнопки — те же самые: класс `col-sort` подхватывается тем же
+           обработчиком, поэтому состояние у них общее с шапкой. -->
+      <div class="toolbar">
+        <button class="col-sort" type="button" data-sort="id">ID<span class="sort-mark" aria-hidden="true"></span></button>
+        <button class="col-sort col-filter area-filter" type="button">Область<svg class="filter-icon" viewBox="0 0 24 24" aria-hidden="true"><path class="off" d="M4 4h16v2.172a2 2 0 0 1-.586 1.414l-4.414 4.414v7l-6 2v-8.5l-4.48-4.928a2 2 0 0 1-.52-1.345v-2.227"/><g class="on"><path d="M11.18 20.274l-2.18.726v-8.5l-4.48-4.928a2 2 0 0 1-.52-1.345v-2.227h16v2.172a2 2 0 0 1-.586 1.414l-4.414 4.414v3"/><path d="M15 19l2 2l4-4"/></g></svg></button>
+        <button class="col-sort col-filter tool-filter" type="button">Инструменты<svg class="filter-icon" viewBox="0 0 24 24" aria-hidden="true"><path class="off" d="M4 4h16v2.172a2 2 0 0 1-.586 1.414l-4.414 4.414v7l-6 2v-8.5l-4.48-4.928a2 2 0 0 1-.52-1.345v-2.227"/><g class="on"><path d="M11.18 20.274l-2.18.726v-8.5l-4.48-4.928a2 2 0 0 1-.52-1.345v-2.227h16v2.172a2 2 0 0 1-.586 1.414l-4.414 4.414v3"/><path d="M15 19l2 2l4-4"/></g></svg></button>
+      </div>
+
+      <div class="table-wrap">
+      <table class="catalog-table">
+        <!-- Ширины заданы явно: иначе таблица пересчитывает их по строкам,
+             и колонки прыгают при каждом отборе. -->
+        <colgroup>
+          <col class="c-id"><col class="c-area"><col class="c-task"><col class="c-mode"><col class="c-tools"><col class="c-open">
+        </colgroup>
+        <thead><tr>
+          <th class="id-col"><button class="col-sort" type="button" data-sort="id">ID<span class="sort-mark" aria-hidden="true"></span></button></th>
+          <th><button class="col-sort col-filter area-filter" type="button">Область<svg class="filter-icon" viewBox="0 0 24 24" aria-hidden="true"><path class="off" d="M4 4h16v2.172a2 2 0 0 1-.586 1.414l-4.414 4.414v7l-6 2v-8.5l-4.48-4.928a2 2 0 0 1-.52-1.345v-2.227"/><g class="on"><path d="M11.18 20.274l-2.18.726v-8.5l-4.48-4.928a2 2 0 0 1-.52-1.345v-2.227h16v2.172a2 2 0 0 1-.586 1.414l-4.414 4.414v3"/><path d="M15 19l2 2l4-4"/></g></svg></button></th>
+          <th>Задача</th>
+          <th class="mode-col">Режим</th>
+          <th><button class="col-sort col-filter tool-filter" type="button">Инструменты<svg class="filter-icon" viewBox="0 0 24 24" aria-hidden="true"><path class="off" d="M4 4h16v2.172a2 2 0 0 1-.586 1.414l-4.414 4.414v7l-6 2v-8.5l-4.48-4.928a2 2 0 0 1-.52-1.345v-2.227"/><g class="on"><path d="M11.18 20.274l-2.18.726v-8.5l-4.48-4.928a2 2 0 0 1-.52-1.345v-2.227h16v2.172a2 2 0 0 1-.586 1.414l-4.414 4.414v3"/><path d="M15 19l2 2l4-4"/></g></svg></button></th>
+          <th></th>
+        </tr></thead>
+        <!-- Итог отбора стоит между шапкой и первой строкой: там его ищут,
+             когда таблица вдруг стала короче. Без отбора строки нет. -->
+        <tbody id="shown-row" hidden><tr><td class="catalog-count" id="shown" colspan="6"></td></tr></tbody>
+        <tbody id="catalog">
+          <!-- repeat: scenarios -->
+          <tr><td class="addr-cell id-col">{{id}}</td><td>{{area}}</td><td>{{task}}</td><td class="mode-col"><span class="mode mode-{{mode_key}}">{{mode}}</span></td><td class="addr-cell">{{tools}}</td><td></td></tr>
+          <!-- /repeat -->
+        </tbody>
+      </table>
+      </div>
+
+      <div class="legend">
+        <h3>Классы ответа в цепочках</h3>
+        <ul>
+          <!-- repeat: classes -->
+          <li><span class="cls"><span class="step-expect is-{{cls}}">{{cls}}</span> <small>{{cls_count}}</small></span><span>{{cls_note}}</span></li>
+          <!-- /repeat -->
+        </ul>
+      </div>
+
+      <div class="contrib">
+        <h3>Для контрибьютора</h3>
+        <p>
+          Каталог порождается из приёмочного корпуса: каждый сценарий — цепочка вызовов с
+          замороженным классом ответа на каждом шаге. Не нашли своей задачи — заведите сценарий:
+          опишите её и цепочку, которой она должна проходить.
+        </p>
+        <a class="btn btn-ghost" href="https://github.com/IngvarConsulting/unica/issues/new?template=new_operation.yml" target="_blank" rel="noopener noreferrer">Добавить сценарий</a>
+      </div>
+    </div>
+  </section>
+
+  <dialog id="area-dialog">
+    <div class="dialog-head" tabindex="-1">
+      <div>
+        <h3>Область</h3>
+        <p class="dialog-area">Показать сценарии одной области</p>
+      </div>
+      <button class="dialog-close" id="area-close" type="button" aria-label="Закрыть">✕</button>
+    </div>
+    <div class="tool-list" id="area-list"></div>
+  </dialog>
+
+  <dialog id="tool-dialog">
+    <div class="dialog-head" tabindex="-1">
+      <div>
+        <h3>Инструмент</h3>
+        <p class="dialog-area">Показать сценарии, где он встречается в цепочке</p>
+      </div>
+      <button class="dialog-close" id="tool-close" type="button" aria-label="Закрыть">✕</button>
+    </div>
+    <div class="tool-list" id="tool-list"></div>
+  </dialog>
+
+  <dialog id="details">
+    <div class="dialog-head" tabindex="-1">
+      <div>
+        <p class="dialog-id" id="details-id"></p>
+        <h3 id="details-task"></h3>
+        <p class="dialog-area" id="details-area"></p>
+      </div>
+      <button class="dialog-close" id="details-close" type="button" aria-label="Закрыть">✕</button>
+    </div>
+    <div id="details-wire"></div>
+    <dl class="dialog-legend" id="details-legend"></dl>
+  </dialog>
+</main>
+
+<footer>
+  <div class="wrap foot">
+    <div>
+      ООО «Ингвар Консалтинг» · ИНН 9715492967<br>
+      <a href="https://ingvar.pro/products/unica/privacy" target="_blank" rel="noopener noreferrer">Политика конфиденциальности</a> ·
+      <a href="https://ingvar.pro/products/unica/terms" target="_blank" rel="noopener noreferrer">Условия использования</a>
+    </div>
+    <div>
+      <a href="https://ingvar.pro/products/unica" target="_blank" rel="noopener noreferrer">ingvar.pro</a> ·
+      <a href="https://github.com/IngvarConsulting/unica" target="_blank" rel="noopener noreferrer">GitHub</a> ·
+      <a href="https://t.me/unica_ai" target="_blank" rel="noopener noreferrer">Telegram</a> ·
+      <a href="assets/unica-visual-kit.pdf" target="_blank" rel="noopener noreferrer">Unica visual kit</a><br>
+      Страница собрана {{generated_at}} из <a href="{{generated_url}}" target="_blank" rel="noopener noreferrer">{{generated_sha}}</a>
+    </div>
+  </div>
+</footer>
+
+
+<script type="application/json" id="scenario-data">{{scenarios_json}}</script>
+<script>
+  // Каталог перерисовывается на клиенте: отбор, сортировка и окно деталей.
+  // Без скрипта таблица остаётся той, что собрана на сборке, — читать можно.
+  const scenarios = JSON.parse(document.getElementById('scenario-data').textContent);
+  const body = document.getElementById('catalog');
+  const shown = document.getElementById('shown');
+  const shownRow = document.getElementById('shown-row');
+  const dialog = document.getElementById('details');
+  const toolDialog = document.getElementById('tool-dialog');
+  const areaDialog = document.getElementById('area-dialog');
+
+  // Очень короткие подписи: в окне выбора нужно узнать инструмент, а не изучить его.
+  const ABOUT = {
+    'unica.view': 'смотрит проект и объекты',
+    'unica.find': 'имя, адрес и файл — в обе стороны',
+    'unica.resolve': 'адрес в файл и файл в адрес',
+    'unica.search': 'ищет по коду',
+    'unica.diff': 'сравнивает два объекта',
+    'unica.check': 'гоняет проверки объекта',
+    'unica.apply': 'вносит правки',
+    'unica.run': 'запускает 1С',
+    'unica.docs': 'ищет в документации',
+  };
+
+  const MODE = { write: 'запись', plan: 'план', read: 'чтение' };
+  const CLASS_NOTE = {
+    ok: 'инструмент ответил результатом',
+    task: 'работа ушла в фоновую задачу, вернулась квитанция',
+    provider: 'ответ зависит от внешнего поставщика: сети или платформы',
+    refused: 'намеренный отказ по правилу, с кодом и причиной',
+    unsupported: 'в этой версии не поддержано, отказ типизирован',
+    gap: 'известный пробел, причина записана в корпусе',
+    cancelled: 'задача отменена по запросу',
+    failed: 'задача завершилась отказом',
+  };
+
+  let sortKey = 'id';
+  let sortDown = false;
+  let toolFilter = '';
+  let areaFilter = '';
+  let query = '';
+
+  // Состояние отбора живёт в адресе: ссылку «все сценарии про роли» можно
+  // переслать, а обновление страницы не сбрасывает поиск.
+  function readHash() {
+    const params = new URLSearchParams(location.hash.slice(1));
+    query = params.get('q') || '';
+    areaFilter = params.get('area') || '';
+    toolFilter = params.get('tool') || '';
+    // Сортировка осталась только по номеру: областей восемнадцать, и отбор
+    // по одной полезнее, чем порядок по всем.
+    sortDown = params.get('sort') === '-id';
+    sortKey = 'id';
+  }
+
+  function writeHash() {
+    const params = new URLSearchParams();
+    if (query) params.set('q', query);
+    if (areaFilter) params.set('area', areaFilter);
+    if (toolFilter) params.set('tool', toolFilter);
+    if (sortKey !== 'id' || sortDown) params.set('sort', (sortDown ? '-' : '') + sortKey);
+    const next = params.toString();
+    history.replaceState(null, '', next ? '#' + next : location.pathname + location.search);
+  }
+
+  const fold = (text) => text.toLowerCase().replace(/ё/g, 'е');
+
+  // Лесенка вместо стрелки: растущие столбики — по возрастанию, убывающие —
+  // по убыванию, вразнобой — «сейчас сортируем не по этой колонке».
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const LADDER = { asc: [4, 8, 12], desc: [12, 8, 4], none: [7, 4, 10] };
+
+  function ladder(state) {
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 14 14');
+    LADDER[state].forEach((height, index) => {
+      const bar = document.createElementNS(SVG_NS, 'rect');
+      bar.setAttribute('x', index * 4.75);
+      bar.setAttribute('y', 14 - height);
+      bar.setAttribute('width', '3.2');
+      bar.setAttribute('height', height);
+      bar.setAttribute('rx', '1');
+      svg.append(bar);
+    });
+    return svg;
+  }
+
+  const number = (id) => { const found = /(\d+)/.exec(id); return found ? Number(found[1]) : 0; };
+  const toolsOf = (scenario) => [...new Set(scenario.wire.map((step) => step.tool))];
+  const allTools = [...new Set(scenarios.flatMap(toolsOf))].sort();
+
+  function cell(text, className) {
+    const td = document.createElement('td');
+    if (className) td.className = className;
+    td.textContent = text;
+    return td;
+  }
+
+  function modeCell(scenario) {
+    const td = document.createElement('td');
+    td.className = 'mode-col';
+    const mark = document.createElement('span');
+    mark.className = 'mode mode-' + scenario.mode;
+    mark.textContent = MODE[scenario.mode] || scenario.mode;
+    td.append(mark);
+    return td;
+  }
+
+  function row(scenario) {
+    const tr = document.createElement('tr');
+    tr.append(
+      cell(scenario.id, 'addr-cell id-col'),
+      cell(scenario.area),
+      cell(scenario.task),
+      modeCell(scenario),
+      cell(toolsOf(scenario).join(' · '), 'addr-cell'),
+    );
+    const action = document.createElement('td');
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'row-button';
+    button.textContent = 'Цепочка';
+    button.addEventListener('click', () => openDetails(scenario));
+    action.append(button);
+    tr.append(action);
+    return tr;
+  }
+
+  const TOKEN = /"(?:\\.|[^"\\])*"(\s*:)?|\b(?:true|false|null)\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g;
+
+  function tinted(text, className) {
+    const span = document.createElement('span');
+    span.className = className;
+    span.textContent = text;
+    return span;
+  }
+
+  function paint(pre, value) {
+    const text = JSON.stringify(value, null, 2);
+    let last = 0;
+    let found;
+    TOKEN.lastIndex = 0;
+    while ((found = TOKEN.exec(text)) !== null) {
+      if (found.index > last) pre.append(text.slice(last, found.index));
+      const token = found[0];
+      if (found[1]) {
+        pre.append(tinted(token.slice(0, -found[1].length), 'k'), tinted(found[1], 'p'));
+      } else {
+        pre.append(tinted(token, 'v'));
+      }
+      last = found.index + token.length;
+    }
+    pre.append(text.slice(last));
+  }
+
+  function openDetails(scenario) {
+    document.getElementById('details-id').textContent = scenario.id;
+    document.getElementById('details-task').textContent = scenario.task;
+    document.getElementById('details-area').textContent = scenario.workspace
+      ? scenario.area + ' · ' + scenario.workspace
+      : scenario.area;
+    const wire = document.getElementById('details-wire');
+    wire.replaceChildren(...scenario.wire.map((step, index) => {
+      const block = document.createElement('div');
+      block.className = 'step';
+
+      const head = document.createElement('div');
+      head.className = 'step-head';
+      const order = document.createElement('span');
+      order.className = 'step-order';
+      order.textContent = index + 1;
+      const tool = document.createElement('span');
+      tool.className = 'step-tool';
+      tool.textContent = step.tool;
+      head.append(order, tool);
+
+      const ask = document.createElement('p');
+      ask.className = 'step-label';
+      ask.textContent = 'Запрос';
+      const args = document.createElement('pre');
+      paint(args, step.args);
+
+      const answer = document.createElement('p');
+      answer.className = 'step-label';
+      answer.textContent = 'Ответ';
+      const facts = document.createElement('div');
+      facts.className = 'step-answer';
+      for (const expected of step.expect) {
+        const mark = document.createElement('span');
+        mark.className = 'step-expect is-' + expected;
+        mark.textContent = expected;
+        if (CLASS_NOTE[expected]) mark.title = CLASS_NOTE[expected];
+        facts.append(mark);
+      }
+      // Проверяемая часть ответа показывается так же, как запрос: тем же
+      // блоком и той же раскраской — иначе она читается как подпись, а не как
+      // фрагмент ответа.
+      const seen = {};
+      for (const key of ['status', 'validators', 'diagnostic', 'refusal']) {
+        if (step[key] !== undefined) seen[key] = step[key];
+      }
+      const payload = Object.keys(seen).length ? document.createElement('pre') : null;
+      if (payload) paint(payload, seen);
+
+      block.append(head, ask, args, answer, facts);
+      if (payload) block.append(payload);
+      return block;
+    }));
+    // Легенда только для классов этой цепочки: обычно одна-две строки,
+    // а не шесть подряд.
+    const legend = document.getElementById('details-legend');
+    const seenClasses = [...new Set(scenario.wire.flatMap((step) => step.expect))];
+    legend.replaceChildren(...seenClasses.flatMap((expected) => {
+      const dt = document.createElement('dt');
+      const mark = document.createElement('span');
+      mark.className = 'step-expect is-' + expected;
+      mark.textContent = expected;
+      dt.append(mark);
+      const dd = document.createElement('dd');
+      dd.textContent = CLASS_NOTE[expected] || '';
+      return [dt, dd];
+    }));
+    dialog.showModal();
+    dialog.querySelector('.dialog-head').focus();
+  }
+
+  function toolRow(tool) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'tool-row' + (toolFilter === tool ? ' is-active' : '');
+    const name = document.createElement('span');
+    name.className = 'tool-name';
+    name.textContent = tool || 'Любой';
+    const about = document.createElement('span');
+    about.className = 'tool-about';
+    about.textContent = tool
+      ? (ABOUT[tool] || '')
+      : 'без отбора, весь каталог';
+    const count = document.createElement('span');
+    count.className = 'tool-count';
+    count.textContent = tool
+      ? scenarios.filter((scenario) => toolsOf(scenario).includes(tool)).length
+      : scenarios.length;
+    button.append(name, about, count);
+    button.addEventListener('click', () => {
+      toolFilter = tool;
+      toolDialog.close();
+      writeHash();
+      render();
+    });
+    return button;
+  }
+
+  // Области идут по убыванию числа сценариев: крупные разделы сверху, как в
+  // окне инструментов. Пустая строка — «любая», то есть без отбора.
+  const areaCounts = new Map();
+  for (const scenario of scenarios) areaCounts.set(scenario.area, (areaCounts.get(scenario.area) || 0) + 1);
+  const allAreas = [...areaCounts.keys()].sort((a, b) => areaCounts.get(b) - areaCounts.get(a) || a.localeCompare(b, 'ru'));
+
+  function areaRow(area) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'tool-row area-row' + (areaFilter === area ? ' is-active' : '');
+    const name = document.createElement('span');
+    name.className = 'area-name';
+    name.textContent = area || 'Любая';
+    const count = document.createElement('span');
+    count.className = 'tool-count';
+    count.textContent = area ? areaCounts.get(area) : scenarios.length;
+    button.append(name, count);
+    button.addEventListener('click', () => {
+      areaFilter = area;
+      areaDialog.close();
+      writeHash();
+      render();
+    });
+    return button;
+  }
+
+  function openAreas() {
+    document.getElementById('area-list').replaceChildren(areaRow(''), ...allAreas.map(areaRow));
+    areaDialog.showModal();
+    areaDialog.querySelector('.dialog-head').focus();
+  }
+
+  function openTools() {
+    document.getElementById('tool-list').replaceChildren(
+      toolRow(''), ...allTools.map(toolRow),
+    );
+    toolDialog.showModal();
+    toolDialog.querySelector('.dialog-head').focus();
+  }
+
+  function matches(scenario) {
+    if (toolFilter && !toolsOf(scenario).includes(toolFilter)) return false;
+    if (areaFilter && scenario.area !== areaFilter) return false;
+    if (!query) return true;
+    const haystack = fold(scenario.id + ' ' + scenario.area + ' ' + scenario.task + ' ' + toolsOf(scenario).join(' '));
+    return fold(query).split(/\s+/).filter(Boolean).every((word) => haystack.includes(word));
+  }
+
+  function render() {
+    const rows = scenarios.filter(matches);
+    const direction = sortDown ? -1 : 1;
+    rows.sort((a, b) => direction * (number(a.id) - number(b.id)));
+    body.replaceChildren(...rows.map(row));
+
+    for (const header of document.querySelectorAll('.col-sort[data-sort]')) {
+      const active = header.dataset.sort === sortKey;
+      header.classList.toggle('is-sorted', active);
+      header.querySelector('.sort-mark')
+        .replaceChildren(ladder(active ? (sortDown ? 'desc' : 'asc') : 'none'));
+    }
+    // Заголовок колонки с отбором подсвечивается, имя колонки не меняется:
+    // что именно выбрано, говорит строка счётчика над таблицей.
+    for (const button of document.querySelectorAll('.tool-filter')) {
+      button.classList.toggle('is-active', Boolean(toolFilter));
+    }
+    for (const button of document.querySelectorAll('.area-filter')) {
+      button.classList.toggle('is-active', Boolean(areaFilter));
+    }
+
+    // Строка нужна, только когда отбор сузил каталог: без него она
+    // повторила бы число, уже названное в шапке страницы.
+    const narrowed = Boolean(toolFilter || areaFilter || query);
+    const parts = [areaFilter, toolFilter, query && `«${query}»`].filter(Boolean);
+    shown.textContent = narrowed
+      ? (rows.length ? `${rows.length} из ${scenarios.length}` : 'Ничего не нашлось') + ' · ' + parts.join(' · ')
+      : '';
+    shownRow.hidden = !narrowed;
+  }
+
+  const searchBox = document.getElementById('search');
+  searchBox.addEventListener('input', () => {
+    query = searchBox.value.trim();
+    writeHash();
+    render();
+  });
+  for (const button of document.querySelectorAll('.area-filter')) {
+    button.addEventListener('click', openAreas);
+  }
+  document.getElementById('area-close').addEventListener('click', () => areaDialog.close());
+  areaDialog.addEventListener('click', (event) => { if (event.target === areaDialog) areaDialog.close(); });
+
+  for (const header of document.querySelectorAll('.col-sort[data-sort]')) {
+    header.addEventListener('click', () => {
+      const key = header.dataset.sort;
+      if (key === sortKey) sortDown = !sortDown;
+      else { sortKey = key; sortDown = false; }
+      writeHash();
+      render();
+    });
+  }
+
+  for (const button of document.querySelectorAll('.tool-filter')) {
+    button.addEventListener('click', openTools);
+  }
+  document.getElementById('tool-close').addEventListener('click', () => toolDialog.close());
+  toolDialog.addEventListener('click', (event) => { if (event.target === toolDialog) toolDialog.close(); });
+  document.getElementById('details-close').addEventListener('click', () => dialog.close());
+  dialog.addEventListener('click', (event) => { if (event.target === dialog) dialog.close(); });
+  readHash();
+  searchBox.value = query;
+  window.addEventListener('hashchange', () => { readHash(); searchBox.value = query; render(); });
+  render();
+</script>
+
+</body>
+</html>

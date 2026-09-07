@@ -997,6 +997,9 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
         env = os.environ.copy()
         env["UNICA_PLUGIN_ROOT"] = str(PLUGIN_ROOT)
         env["UNICA_CACHE_DIR"] = str(cache_dir)
+        # Демон переживает вызов: без назначенной паузы он остаётся на
+        # четверть часа и накапливается за прогон набора.
+        env["UNICA_DAEMON_IDLE_GRACE_MS"] = "5000"
         responses = self.run_mcp_messages([message], env)
         self.assertEqual(len(responses), 1, responses)
         response = responses[0]
@@ -1141,6 +1144,9 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
         env = os.environ.copy()
         env["UNICA_PLUGIN_ROOT"] = str(PLUGIN_ROOT)
         env["UNICA_CACHE_DIR"] = str(cache_dir)
+        # Демон переживает вызов: без назначенной паузы он остаётся на
+        # четверть часа и накапливается за прогон набора.
+        env["UNICA_DAEMON_IDLE_GRACE_MS"] = "5000"
         if extra_env is not None:
             env.update(extra_env)
         responses = []

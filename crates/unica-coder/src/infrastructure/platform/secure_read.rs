@@ -498,7 +498,7 @@ fn record_traversal_directory_close() {
 #[cfg(not(test))]
 fn record_traversal_directory_close() {}
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn with_secure_tree_directory_handle_limit<T>(limit: usize, action: impl FnOnce() -> T) -> T {
     struct Reset {
         limit: Option<usize>,

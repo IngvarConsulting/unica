@@ -14,9 +14,9 @@ allowed-tools:
 
 ## MCP routing
 
-- Используй только MCP `unica`: `unica.xdto.info` читает пакет, а
+- Используй только MCP `unica`: `unica.view` читает пакет по адресу, а
   `unica.apply` с операциями семейства XDTO строит и применяет точечную мутацию.
-- Всегда начинай с `unica.xdto.info`, затем перед каждой мутацией вызывай
+- Всегда начинай с `unica.view`, затем перед каждой мутацией вызывай
   `unica.apply` с `dryRun: true`. Повторяй ровно тот же запрос с
   `dryRun: false` лишь после явного подтверждения пользователя; любое изменение
   аргументов требует нового preview.
@@ -24,8 +24,8 @@ allowed-tools:
   изменение — тип и его свойства — веди одним вызовом: операции видят
   результаты предыдущих, публикация одна, отказ любой операции не оставляет
   частичной записи. Ошибка элемента называет `ops[<индекс>]`.
-- Читателю передавай `sourceSet` и `metadataPath: "XDTOPackage.<Имя>"`, писателю
-  — адрес `at` вида `<набор>:XDTOPackage.<Имя>` (для операций над типом —
+- И читателю, и писателю передавай один адрес `at` вида
+  `<набор>:XDTOPackage.<Имя>` (для операций над типом —
   `<набор>:XDTOPackage.<Имя>.Type.<Тип>`). Никогда не передавай путь к
   `XDTOPackages/.../Ext/Package.bin`: он остаётся внутренней раскладкой
   платформенной выгрузки.
@@ -48,17 +48,37 @@ allowed-tools:
 
 ## 1. Прочитать логическую цель
 
+Корень пакета отвечает целевым пространством имён и счётчиками, а состав лежит
+в ветвях `Namespace`, `Type` и `Property`; спускайся в нужную адресом из
+`branches`.
+
 ```json
 {
   "jsonrpc": "2.0",
   "id": 1,
   "method": "tools/call",
   "params": {
-    "name": "unica.xdto.info",
+    "name": "unica.view",
     "arguments": {
       "cwd": "<workspace>",
-      "sourceSet": "main",
-      "metadataPath": "XDTOPackage.EnterpriseData_1_17_3"
+      "at": "main:XDTOPackage.EnterpriseData_1_17_3"
+    }
+  }
+}
+```
+
+Отдельный тип и его свойства читаются тем же вызовом глубже по адресу:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "tools/call",
+  "params": {
+    "name": "unica.view",
+    "arguments": {
+      "cwd": "<workspace>",
+      "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка"
     }
   }
 }
@@ -69,7 +89,7 @@ allowed-tools:
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 2,
+  "id": 3,
   "method": "tools/call",
   "params": {
     "name": "unica.apply",
@@ -108,7 +128,7 @@ preview.
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 3,
+  "id": 4,
   "method": "tools/call",
   "params": {
     "name": "unica.apply",

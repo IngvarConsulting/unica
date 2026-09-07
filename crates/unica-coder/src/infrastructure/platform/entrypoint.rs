@@ -3,6 +3,7 @@ const WINDOWS_MAIN_STACK_SIZE: usize = 8 * 1024 * 1024;
 
 #[cfg(windows)]
 pub fn run_platform_main(run: fn()) {
+    super::process::detach_std_handles_from_inheritance();
     let main_thread = std::thread::Builder::new()
         .name("unica-main".to_string())
         .stack_size(WINDOWS_MAIN_STACK_SIZE)
@@ -15,5 +16,6 @@ pub fn run_platform_main(run: fn()) {
 
 #[cfg(not(windows))]
 pub fn run_platform_main(run: fn()) {
+    super::process::detach_std_handles_from_inheritance();
     run();
 }

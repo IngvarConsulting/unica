@@ -399,6 +399,13 @@ class JsonRpcSession:
         timeout_seconds = getattr(self, "timeout_seconds", None)
         return min(remaining, timeout_seconds) if timeout_seconds is not None else remaining
 
+    def _pipe_eof_timeout(self) -> float:
+        remaining = max(0.0, self.deadline - time.monotonic())
+        timeout_seconds = getattr(self, "timeout_seconds", None)
+        if timeout_seconds is None:
+            return remaining
+        return min(remaining, timeout_seconds)
+
     def _request_timeout_message(self) -> str:
         timeout_seconds = getattr(self, "timeout_seconds", None)
         if timeout_seconds is not None:
@@ -466,14 +473,21 @@ class JsonRpcSession:
         except BaseException:
             self._terminate_owned()
             raise
-        remaining = max(0.0, self.deadline - time.monotonic())
-        self.reader.join(timeout=remaining)
-        self.error_reader.join(timeout=remaining)
+        # EOF on the pipes arrives only when every copy of their write handles
+        # is closed. A detached descendant that inherited them keeps the
+        # readers alive long after the leader exited, so this wait is capped
+        # like a request and reported as its own failure instead of silently
+        # consuming the aggregate deadline.
+        pipe_wait = self._pipe_eof_timeout()
+        pipe_deadline = time.monotonic() + pipe_wait
+        self.reader.join(timeout=max(0.0, pipe_deadline - time.monotonic()))
+        self.error_reader.join(timeout=max(0.0, pipe_deadline - time.monotonic()))
         if self.reader.is_alive() or self.error_reader.is_alive():
             self._terminate_owned()
             raise SystemExit(
-                f"{self.error_label} reader threads did not stop before the aggregate deadline: "
-                f"{self._detail()}"
+                f"{self.error_label} exited with {result} but its reader threads did not "
+                f"stop within {pipe_wait:g}s: a detached descendant still holds the "
+                f"stdout/stderr pipe handles: {self._detail()}"
             )
         detail = self._detail()
         self._close_streams()

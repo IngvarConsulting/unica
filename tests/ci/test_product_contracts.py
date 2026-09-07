@@ -167,6 +167,38 @@ def tracked_workspace_production_rust_sources(repo_root: Path) -> dict[str, byte
     return sources
 
 
+def repository_files(repo_root: Path, *pathspecs: str) -> list[Path]:
+    """Files git tracks or would track under `pathspecs`; ignored files never enter.
+
+    `Path.rglob` also returns what the desktop drops into a checkout: `.DS_Store`,
+    editor swap files, a locally built binary. One such file breaks a text scan on
+    a developer machine while CI, whose checkout carries none of them, stays
+    green. A file git ignores is not part of the repository, so it is not part
+    of a scan; an untracked file git would accept still is, exactly as with
+    `rglob`. A tracked file deleted from the working tree is still listed, so
+    callers keep their `is_file()` guard.
+    """
+    listed = subprocess.run(
+        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", *pathspecs],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+    ).stdout.split(b"\0")
+    return sorted(repo_root / os.fsdecode(raw_path) for raw_path in listed if raw_path)
+
+
+def retired_corpus_references(repo_root: Path) -> list[str]:
+    """Active `arch/` files that still send the reader to the retired local corpus.
+
+    The frozen `docs/arch-v1/` is deliberately outside this scan.
+    """
+    return [
+        path.relative_to(repo_root).as_posix()
+        for path in repository_files(repo_root, "arch")
+        if path.is_file() and "docs-local/1ci" in path.read_text(encoding="utf-8")
+    ]
+
+
 def rmcp_reference_confinement_errors(
     sources: dict[str, bytes], owner: str
 ) -> list[str]:
@@ -1276,15 +1308,35 @@ class ProductContractTests(unittest.TestCase):
         self.assertNotIn("kb.1ci.com/bin/download", agents)
         # Действующий нормативный слой не отправляет читателя к снятому корпусу.
         # Замороженный `docs/arch-v1/` сюда намеренно не входит.
-        for arch_path in sorted((REPO_ROOT / "arch").rglob("*")):
-            if not arch_path.is_file():
-                continue
-            with self.subTest(path=arch_path.relative_to(REPO_ROOT).as_posix()):
-                self.assertNotIn(
-                    "docs-local/1ci",
-                    arch_path.read_text(encoding="utf-8"),
-                    "активный слой arch не должен ссылаться на снятый корпус",
-                )
+        self.assertEqual(
+            retired_corpus_references(REPO_ROOT),
+            [],
+            "активный слой arch не должен ссылаться на снятый корпус",
+        )
+
+    def test_retired_corpus_scan_skips_what_git_ignores(self) -> None:
+        """Finder кладёт `.DS_Store` в `arch/`; git его игнорирует, скан тоже.
+
+        Бинарный файл ронял обход `UnicodeDecodeError` локально, а CI, где
+        такого файла нет, оставался зелёным. Неотслеживаемый, но не
+        игнорируемый файл по-прежнему читается: нарушение в нём ловится
+        до `git add`.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "arch").mkdir()
+            (root / ".gitignore").write_text(".DS_Store\n", encoding="utf-8")
+            (root / "arch" / "clean.md").write_text("справка из установки\n", encoding="utf-8")
+            (root / "arch" / "stale.md").write_text("см. docs-local/1ci\n", encoding="utf-8")
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            (root / "arch" / ".DS_Store").write_bytes(b"\x00\x00\x00\x01Bud1\xa8\xff")
+            (root / "arch" / "unstaged.md").write_text("docs-local/1ci\n", encoding="utf-8")
+
+            self.assertEqual(
+                retired_corpus_references(root),
+                ["arch/stale.md", "arch/unstaged.md"],
+            )
 
     def test_local_corpus_directory_stays_ignored(self) -> None:
         """Каталог остаётся игнорируемым: снят контракт корпуса, а не каталог."""
@@ -1374,7 +1426,10 @@ class ProductContractTests(unittest.TestCase):
         # packaging fails on every later pull request once it drifts. A tag-shaped
         # literal is wrong anywhere in the file, however quoted, and this also
         # catches suffixed forms such as v1.2.3-rc1 by matching their prefix.
-        tag_literals = sorted(set(re.findall(r"v\d+\.\d+\.\d+", release)))
+        # The version comment beside a commit hash documents an action pin, not
+        # a release tag: Dependabot moves it with the hash, and nothing reads it.
+        without_pins = re.sub(r"@[0-9a-f]{40} # v\d+\.\d+\.\d+", "", release)
+        tag_literals = sorted(set(re.findall(r"v\d+\.\d+\.\d+", without_pins)))
         # An unprefixed literal is only wrong inside the step that derives the
         # tag, including in an intermediate variable it reads. The file elsewhere
         # pins other tools by bare version, so this cannot be a whole-file rule.
@@ -1524,25 +1579,27 @@ class ProductContractTests(unittest.TestCase):
         self.assertIn("CLAUDE_CLI_VERSION: 2.1.69", release)
 
     def test_release_gate_pins_the_oldest_supported_client(self) -> None:
-        from tests.ci.test_unica_workflow import parse_workflow_jobs
+        from tests.ci.test_unica_workflow import RELEASE_WORKFLOW, job, load, script, steps
 
-        release = (REPO_ROOT / ".github/workflows/unica-plugin-release.yml").read_text(
-            encoding="utf-8"
-        )
-        package = parse_workflow_jobs(release)["package-thin"].body
-        pins = re.findall(r"(?m)^          CLAUDE_CLI_VERSION: ([0-9.]+)$", package)
+        package = job(load(RELEASE_WORKFLOW), "package-thin")
+        pins = [
+            str(step["env"]["CLAUDE_CLI_VERSION"])
+            for step in steps(package)
+            if "CLAUDE_CLI_VERSION" in (step.get("env") or {})
+        ]
         self.assertEqual(pins, ["2.1.69"])
+        shell = script(package)
         ordered = (
             'npm install -g "@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION}"',
             'test "$(claude --version | cut -d\' \' -f1)" = "$CLAUDE_CLI_VERSION"',
             "claude plugin validate dist/thin/marketplace/plugins/unica",
             "claude plugin validate dist/thin/marketplace",
         )
-        positions = [package.index(command) for command in ordered]
+        positions = [shell.index(command) for command in ordered]
         self.assertEqual(positions, sorted(positions))
-        self.assertIn("python scripts/ci/package-unica-plugin.py", package)
+        self.assertIn("python scripts/ci/package-unica-plugin.py", shell)
         self.assertLess(
-            package.index("python scripts/ci/package-unica-plugin.py"),
+            shell.index("python scripts/ci/package-unica-plugin.py"),
             positions[0],
         )
 
@@ -1676,6 +1733,42 @@ class ProductContractTests(unittest.TestCase):
         self.assertFalse((decisions / "0007-script-backed-utility-skill-exceptions.md").exists())
         self.assertFalse((decisions / "0009-remove-script-backed-utility-skills.md").exists())
         self.assertNotIn("Script-backed utility", index)
+
+    def test_every_declared_refusal_detail_is_constructed_somewhere(self) -> None:
+        """Объявленное уточнение без источника — обещание, которого провод не держит.
+
+        Карта code→detail внутри типа такого не ловит: она удовлетворяется одними
+        объявлениями. Код тогда молча отвечает своим умолчанием, и различие, ради
+        которого уточнение заведено, до читателя не доходит.
+        """
+        repo_root = Path(__file__).resolve().parents[2]
+        dictionary = (
+            repo_root / "crates" / "unica-coder" / "src" / "domain" / "refusal.rs"
+        )
+        sources = [
+            path
+            for path in (repo_root / "crates" / "unica-coder" / "src").rglob("*.rs")
+            if path.name != "refusal.rs"
+        ]
+        corpus = "".join(path.read_text(encoding="utf-8") for path in sources)
+        detail_names = re.findall(
+            r"^pub enum RefusalDetail \{(.*?)^\}",
+            dictionary.read_text(encoding="utf-8"),
+            re.MULTILINE | re.DOTALL,
+        )
+        self.assertEqual(len(detail_names), 1, "не нашли объявление RefusalDetail")
+        variants = re.findall(r"^\s{4}(\w+),$", detail_names[0], re.MULTILINE)
+        self.assertGreaterEqual(len(variants), 8)
+
+        orphans = [
+            variant for variant in variants if f"RefusalDetail::{variant}" not in corpus
+        ]
+        self.assertEqual(
+            orphans,
+            [],
+            "уточнения объявлены, но нигде не ставятся: их код так и будет "
+            "отвечать умолчанием",
+        )
 
     def test_application_layer_does_not_spawn_git_directly(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]

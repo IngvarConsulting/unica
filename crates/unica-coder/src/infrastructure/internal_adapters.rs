@@ -2115,19 +2115,11 @@ impl BslMcpRunner for SystemBslMcpRunner {
 
 pub struct StandardsAdapter;
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct StandardsRequest {
-    pub method: &'static str,
-    pub params: Value,
-}
-
 pub trait HttpClient {
     fn post_json(&self, endpoint: &str, payload: &Value) -> Result<String, String>;
 }
 
 struct UreqHttpClient;
-
-static UREQ_HTTP_CLIENT: UreqHttpClient = UreqHttpClient;
 
 /// Общий продовый HTTP-клиент для потребителей за пределами модуля:
 /// поставщик `v8std` реестра документации держит его в `Arc`, а не через
@@ -2138,111 +2130,6 @@ pub(crate) fn shared_http_client() -> std::sync::Arc<dyn HttpClient + Send + Syn
 
 impl StandardsAdapter {
     const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
-
-    pub fn request_for(
-        operation: &str,
-        args: &Map<String, Value>,
-    ) -> Result<StandardsRequest, String> {
-        match operation {
-            "search" => Ok(StandardsRequest {
-                method: "v8std_search",
-                params: select_params(args, &["query", "limit", "types", "mode"]),
-            }),
-            "explain" if args.contains_key("codes") => Ok(StandardsRequest {
-                method: "v8std_explain_diagnostics",
-                params: select_params(args, &["codes"]),
-            }),
-            "explain" if args.contains_key("snippet") => Ok(StandardsRequest {
-                method: "v8std_explain_snippet",
-                params: select_params(args, &["snippet", "language", "limit"]),
-            }),
-            "explain" if args.contains_key("id") || args.contains_key("idOrAliasOrUrl") => {
-                let id = args
-                    .get("idOrAliasOrUrl")
-                    .or_else(|| args.get("id"))
-                    .cloned()
-                    .ok_or_else(|| "missing id".to_string())?;
-                let mut params = Map::new();
-                params.insert("id_or_alias_or_url".to_string(), id);
-                if let Some(limit) = args.get("bodyLimit").or_else(|| args.get("body_limit")) {
-                    params.insert("body_limit".to_string(), limit.clone());
-                }
-                Ok(StandardsRequest {
-                    method: "v8std_get_page",
-                    params: Value::Object(params),
-                })
-            }
-            "explain" if args.contains_key("query") => Ok(StandardsRequest {
-                method: "v8std_search",
-                params: select_params(args, &["query", "limit", "types", "mode"]),
-            }),
-            "explain" => Err(
-                "unica.standards.explain requires one of: codes, snippet, id, idOrAliasOrUrl, query"
-                    .to_string(),
-            ),
-            other => Err(format!("unknown standards operation: {other}")),
-        }
-    }
-
-    /// Endpoint приходит от вызывающего: цепочку разрешения — политика
-    /// `unica.toml`, окружение, встроенное умолчание — знает
-    /// `standards_documentation::resolve_standards_endpoint`, и она одна на
-    /// фасады и поставщика реестра (ADR-0032 п.4).
-    pub fn invoke(operation: &str, args: &Map<String, Value>, endpoint: &str) -> StandardsOutcome {
-        Self::invoke_with_client(operation, args, endpoint, &UREQ_HTTP_CLIENT)
-    }
-
-    pub fn invoke_with_client(
-        operation: &str,
-        args: &Map<String, Value>,
-        endpoint: &str,
-        http: &dyn HttpClient,
-    ) -> StandardsOutcome {
-        let endpoint = endpoint.to_string();
-        let request = match Self::request_for(operation, args) {
-            Ok(request) => request,
-            Err(error) => {
-                return StandardsOutcome::plain(AdapterOutcome {
-                    ok: false,
-                    summary: format!("unica.standards.{operation} rejected invalid arguments"),
-                    changes: Vec::new(),
-                    warnings: Vec::new(),
-                    errors: vec![error],
-                    artifacts: vec![endpoint],
-                    stdout: None,
-                    stderr: None,
-                    command: None,
-                })
-            }
-        };
-
-        let payload = json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": {
-                "name": request.method,
-                "arguments": request.params,
-            }
-        });
-
-        match http.post_json(&endpoint, &payload) {
-            Ok(text) => Self::outcome_from_http_body(operation, &endpoint, request.method, &text),
-            Err(err) => StandardsOutcome::plain(AdapterOutcome {
-                ok: false,
-                summary: format!(
-                    "unica.standards.{operation} failed through internal v8std MCP proxy"
-                ),
-                changes: Vec::new(),
-                warnings: Vec::new(),
-                errors: vec![err.to_string()],
-                artifacts: vec![endpoint, request.method.to_string()],
-                stdout: None,
-                stderr: None,
-                command: None,
-            }),
-        }
-    }
 
     pub fn outcome_from_http_body(
         operation: &str,
@@ -2365,16 +2252,6 @@ impl HttpClient for UreqHttpClient {
             .into_string()
             .map_err(|err| err.to_string())
     }
-}
-
-fn select_params(args: &Map<String, Value>, keys: &[&str]) -> Value {
-    let mut params = Map::new();
-    for key in keys {
-        if let Some(value) = args.get(*key) {
-            params.insert((*key).to_string(), value.clone());
-        }
-    }
-    Value::Object(params)
 }
 
 fn normalize_mcp_http_body(text: &str) -> Result<String, String> {
@@ -3162,31 +3039,6 @@ mod tests {
             analyzer_analyze_timeout_seconds(Duration::from_secs(7_200)),
             Some(DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS)
         );
-    }
-
-    #[test]
-    fn standards_search_maps_to_v8std_search_request() {
-        let mut args = Map::new();
-        args.insert("query".to_string(), json!("modal windows"));
-        args.insert("limit".to_string(), json!(3));
-
-        let request = StandardsAdapter::request_for("search", &args).unwrap();
-
-        assert_eq!(request.method, "v8std_search");
-        assert_eq!(request.params["query"], "modal windows");
-        assert_eq!(request.params["limit"], 3);
-    }
-
-    #[test]
-    fn standards_explain_prefers_diagnostics_codes() {
-        let mut args = Map::new();
-        args.insert("codes".to_string(), json!(["acc:142"]));
-        args.insert("query".to_string(), json!("ignored when codes are present"));
-
-        let request = StandardsAdapter::request_for("explain", &args).unwrap();
-
-        assert_eq!(request.method, "v8std_explain_diagnostics");
-        assert_eq!(request.params["codes"][0], "acc:142");
     }
 
     #[test]
@@ -6411,36 +6263,6 @@ analyze_timeout_seconds = 900
             .any(|error| error.contains("missing JSON-RPC")));
     }
 
-    #[test]
-    fn standards_adapter_uses_fake_http_client_for_json_rpc_mapping() {
-        let client = FakeHttpClient {
-            payloads: RefCell::new(Vec::new()),
-            response: r#"{"jsonrpc":"2.0","id":1,"result":{"content":[]}}"#.to_string(),
-        };
-        let mut args = Map::new();
-        args.insert("query".to_string(), json!("модальные окна"));
-        args.insert("limit".to_string(), json!(2));
-
-        let outcome = StandardsAdapter::invoke_with_client(
-            "search",
-            &args,
-            "https://ai.v8std.ru/mcp",
-            &client,
-        );
-
-        assert!(outcome.outcome.ok);
-        assert_eq!(outcome.data.unwrap(), json!({"content": []}));
-        let payloads = client.payloads.borrow();
-        assert_eq!(payloads.len(), 1);
-        assert_eq!(payloads[0]["method"], "tools/call");
-        assert_eq!(payloads[0]["params"]["name"], "v8std_search");
-        assert_eq!(
-            payloads[0]["params"]["arguments"]["query"],
-            "модальные окна"
-        );
-        assert_eq!(payloads[0]["params"]["arguments"]["limit"], 2);
-    }
-
     struct FakeProcessRunner {
         output: ProcessOutput,
     }
@@ -6778,18 +6600,6 @@ analyze_timeout_seconds = 900
 
     fn cleanup_context(context: &WorkspaceContext) {
         let _ = fs::remove_dir_all(&context.workspace_root);
-    }
-
-    struct FakeHttpClient {
-        payloads: RefCell<Vec<Value>>,
-        response: String,
-    }
-
-    impl HttpClient for FakeHttpClient {
-        fn post_json(&self, _endpoint: &str, payload: &Value) -> Result<String, String> {
-            self.payloads.borrow_mut().push(payload.clone());
-            Ok(self.response.clone())
-        }
     }
 }
 #[test]

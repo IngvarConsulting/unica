@@ -7,7 +7,7 @@ description: "Моделирование метаданных 1С. Исполь�
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.meta.info`, `unica.meta.add`, `unica.meta.edit`, `unica.subsystem.info`, `unica.code.search`, `unica.code.diagnostics`, and `unica.runtime.execute`.
+- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.meta.info`, `unica.meta.add`, `unica.meta.edit`, `unica.view` on the subsystem node, `unica.code.search`, `unica.code.diagnostics`, and `unica.runtime.execute`.
 - По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
 показывает запланированную команду без побочных эффектов, а с `dryRun: false`
 исполняет классифицированную операцию и отвечает её терминальным результатом в
@@ -17,8 +17,8 @@ description: "Моделирование метаданных 1С. Исполь�
 исполнением не является. Работу, которую вызов ждать не должен, запускай через
 `unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
 `unica.build.*`.
-- Use `unica.standards.search` and `unica.standards.explain` for a development-standard about modelling: 432, 468, 474, 531, 587, 603, 649, 677, 697, 704, 728, and diagnostics АПК:93, АПК:304, АПК:305, АПК:1205, АПК:1207, АПК:1210-1217, АПК:1329, АПК:1330. These are standards, not evidence of runtime behavior; confirm the wording before citing one.
-- Use `unica.role.info` when predefined items need their interactive-deletion rights checked.
+- Use `unica.docs` with `source: "development-standard"` for the standards about modelling: 432, 468, 474, 531, 587, 603, 649, 677, 697, 704, 728, and diagnostics АПК:93, АПК:304, АПК:305, АПК:1205, АПК:1207, АПК:1210-1217, АПК:1329, АПК:1330. These are standards, not evidence of runtime behavior; confirm the wording before citing one.
+- Use `unica.view` on the role node when predefined items need their interactive-deletion rights checked.
 - Do not call internal analyzer, runtime, standards, or package adapters directly. They are hidden behind MCP `unica`.
 
 ## Scope boundary
@@ -47,9 +47,9 @@ A value several objects carry identically may be a common attribute (std677) rat
 ## Workflow
 
 1. State the business question the data must answer, and who is allowed to change the set of values. That answer picks the class.
-2. Check what already exists with `unica.view` (the configuration root and the object) and `unica.meta.info` — an existing object with the same meaning is a reason to extend rather than add — and locate the owning subsystem with `unica.subsystem.info`.
+2. Check what already exists with `unica.view` (the configuration root and the object) and `unica.meta.info` — an existing object with the same meaning is a reason to extend rather than add — and locate the owning subsystem with `unica.view` on the subsystem node.
 3. Type every attribute deliberately: string length, composite type set, and whether a defined type already covers it (std432, std728, std704).
-4. Decide predefined items and their update mode before creating the object, and check the interactive-deletion rights with `unica.role.info` (std697).
+4. Decide predefined items and their update mode before creating the object, and check the interactive-deletion rights with `unica.view` on the role node (std697).
 5. Create with `unica.meta.add` and refine with `unica.meta.edit`, one verifiable step at a time.
 6. Fill names, synonyms, and presentations; leaving both object and list presentation empty is АПК:93.
 7. Verify statically with `unica.code.diagnostics`; use `unica.runtime.execute` to preview typed syntax/test arguments and, with `dryRun: false`, to run them, report runtime behavior as unverified, and search existing callers with `unica.code.search` when a type changed.

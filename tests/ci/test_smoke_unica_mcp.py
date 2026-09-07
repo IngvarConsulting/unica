@@ -239,11 +239,102 @@ class SmokeUnicaMcpTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 124, result.stderr)
         self.assertIn("aggregate deadline", result.stderr)
+        # A silent 124 tells nothing; the watchdog names the phase it
+        # interrupted and copies out what the child had said so far.
+        self.assertIn("last phase:", result.stderr)
+        self.assertIn("initialize", result.stderr)
+        self.assertEqual(result.stderr.count("---- smoke diagnostics"), 1, result.stderr)
         self.assertLess(elapsed, 4.0)
         module = load_module()
         for child_pid in child_pids:
             with self.subTest(child_pid=child_pid):
                 self.assertFalse(module._process_is_running(child_pid))
+
+    def test_close_reports_pipes_held_by_a_detached_descendant_within_the_request_cap(
+        self,
+    ) -> None:
+        """A descendant that inherited the pipes must not eat the aggregate deadline.
+
+        This is the Windows shape of the packaged smoke hang: the MCP process
+        exits, a detached daemon keeps copies of its stdout/stderr handles, and
+        EOF never arrives. `close()` reports that within the request cap.
+        """
+        module = load_module()
+        grandchild_pid: int | None = None
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                pid_path = root / "pipe-holder.pid"
+                server = root / "leave-pipe-holder.py"
+                server.write_text(
+                    textwrap.dedent(
+                        """
+                        import subprocess
+                        import sys
+                        from pathlib import Path
+
+                        # stdout is inherited on purpose: the descendant holds
+                        # the smoke's pipe the way a detached daemon does.
+                        child = subprocess.Popen(
+                            [sys.executable, "-c", "import time; time.sleep(60)"]
+                        )
+                        Path(sys.argv[1]).write_text(str(child.pid), encoding="utf-8")
+                        """
+                    ),
+                    encoding="utf-8",
+                )
+                session = module.McpSession(
+                    [sys.executable, str(server), str(pid_path)],
+                    os.environ.copy(),
+                    1.0,
+                    cwd=root,
+                    deadline=time.monotonic() + 30.0,
+                )
+                deadline = time.monotonic() + 5.0
+                while not pid_path.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                grandchild_pid = int(pid_path.read_text(encoding="utf-8"))
+                started = time.monotonic()
+                with self.assertRaisesRegex(
+                    SystemExit, "reader threads did not stop within 1s"
+                ):
+                    session.close()
+                elapsed = time.monotonic() - started
+            self.assertLess(elapsed, 5.0)
+            module._wait_for_process_pids({grandchild_pid}, 2.0)
+            self.assertFalse(module._process_is_running(grandchild_pid))
+        finally:
+            if grandchild_pid is not None and module._process_is_running(grandchild_pid):
+                if os.name == "posix":
+                    os.kill(grandchild_pid, signal.SIGKILL)
+
+    def test_diagnostics_dump_copies_child_stderr_and_workspace_service_logs(
+        self,
+    ) -> None:
+        module = load_module()
+
+        class Session:
+            diagnostics = ["first line\n", "второй: кириллица\n"]
+
+        with tempfile.TemporaryDirectory() as directory:
+            cache_root = Path(directory) / "cache"
+            service_dir = cache_root / "services" / "svc-1"
+            service_dir.mkdir(parents=True)
+            (service_dir / "service.json").write_text(
+                '{"pid": 4242, "port": 1}', encoding="utf-8"
+            )
+            (service_dir / "service.stderr.log").write_text(
+                "\n".join(f"stderr {index}" for index in range(50)),
+                encoding="utf-8",
+            )
+            module._trace("phase under test")
+            rendered = module._dump_session_diagnostics(Session(), cache_root)
+
+        self.assertIn("last phase: phase under test", rendered)
+        self.assertIn("второй: кириллица", rendered)
+        self.assertIn('{"pid": 4242, "port": 1}', rendered)
+        self.assertNotIn("stderr 9\n", rendered)
+        self.assertIn("stderr 49", rendered)
 
     def test_expired_watchdog_cannot_race_a_success_exit(self) -> None:
         runner = textwrap.dedent(
@@ -1600,6 +1691,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         code_search_ok: bool = True,
         code_search_status: str = "ok",
         code_search_root_field: str | None = None,
+        leave_pipe_holder: bool = False,
     ) -> subprocess.CompletedProcess[str]:
         expected_tools = self.expected_tools()
         module = load_module()
@@ -1621,6 +1713,11 @@ class SmokeUnicaMcpTests(unittest.TestCase):
 
             tools = json.loads(r'''__TOOLS__''')
             source_flows = json.loads(r'''__SOURCE_FLOWS__''')
+            if __LEAVE_PIPE_HOLDER__:
+                import subprocess
+                # Inherits stdout on purpose: a detached descendant keeps the
+                # smoke's pipes open after this server exits.
+                subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
             read_writes = __READ_WRITES__
             code_search_ok = __CODE_SEARCH_OK__
             code_search_status = __CODE_SEARCH_STATUS__
@@ -1808,6 +1905,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                 json.dumps(source_flows, ensure_ascii=False, indent=2),
             )
             .replace("__READ_WRITES__", repr(read_writes))
+            .replace("__LEAVE_PIPE_HOLDER__", repr(leave_pipe_holder))
             .replace("__CODE_SEARCH_OK__", repr(code_search_ok))
             .replace("__CODE_SEARCH_STATUS__", repr(code_search_status))
             .replace("__CODE_SEARCH_ROOT_FIELD__", repr(code_search_root_field))
@@ -1907,6 +2005,17 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                 set(module._source_snapshot(root)),
                 {".build/other/evidence.txt", "src/Configuration.xml"},
             )
+
+    def test_cleanup_failure_does_not_replace_the_failure_that_caused_it(self) -> None:
+        result = self.run_smoke(
+            self.tool_entries(), server_name="other", leave_pipe_holder=True
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotEqual(result.returncode, 124, result.stderr)
+        self.assertIn("serverInfo.name must be 'unica'", result.stderr)
+        self.assertIn("cleanup after that failure also failed", result.stderr)
+        self.assertIn("reader threads did not stop", result.stderr)
 
     def test_rejects_a_server_name_other_than_unica(self) -> None:
         # INV-MCP-SERVER-NAME fixes the published identity of the server. A

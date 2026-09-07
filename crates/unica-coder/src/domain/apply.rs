@@ -1,6 +1,7 @@
 use crate::domain::address::{NodeKind, QualifiedAddress};
 use crate::domain::metadata::{metadata_kind_collections, MetaCollection, MetadataKind};
 use crate::domain::node_view::OperationRef;
+use crate::domain::refusal::RefusalCode;
 use serde_json::{Map, Value};
 use std::fmt;
 
@@ -187,7 +188,7 @@ impl<T> NonEmptyVec<T> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ApplyValidationError {
-    code: &'static str,
+    code: RefusalCode,
     location: String,
     message: String,
 }
@@ -195,13 +196,13 @@ pub(crate) struct ApplyValidationError {
 impl ApplyValidationError {
     fn bad_value(location: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
-            code: "bad_value",
+            code: RefusalCode::BadValue,
             location: location.into(),
             message: message.into(),
         }
     }
 
-    pub(crate) const fn code(&self) -> &'static str {
+    pub(crate) const fn code(&self) -> RefusalCode {
         self.code
     }
 
@@ -768,7 +769,7 @@ mod tests {
     fn apply_request_rejects_empty_ops_and_reports_the_exact_nested_target_location() {
         let empty = parse(json!({"at": "main:Document.Order", "ops": []})).unwrap_err();
         assert_eq!(empty.location(), "ops");
-        assert_eq!(empty.code(), "bad_value");
+        assert_eq!(empty.code().as_str(), "bad_value");
 
         let cross_source = parse(json!({
             "at": "main:Document.Order",

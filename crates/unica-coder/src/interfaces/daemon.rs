@@ -7,8 +7,18 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::Duration;
 
-const DEFAULT_IDLE_GRACE: Duration = Duration::from_secs(30);
-const MAX_TEST_IDLE_GRACE_MS: u128 = 600_000;
+/// Сколько демон ждёт работы, прежде чем выйти. Тёплый индекс BSL стоит минут,
+/// поэтому пауза между задачами не должна стоить пользователю повторной сборки.
+const DEFAULT_IDLE_GRACE: Duration = Duration::from_secs(15 * 60);
+/// Верхняя граница принимаемого значения. Её проверяет и производственный
+/// запуск демона, и тестовый вход, поэтому она обязана быть не меньше
+/// `DEFAULT_IDLE_GRACE`.
+const MAX_IDLE_GRACE_MS: u128 = 60 * 60 * 1_000;
+/// Пауза, назначенная снаружи. Демон переживает процесс, который его поднял,
+/// поэтому вызывающему нужен способ не оставлять его после себя на четверть
+/// часа: интеграционный тест запускает демона десятками, а живут они до конца
+/// всего прогона. Значение проходит ту же проверку, что и `--idle-grace-ms`.
+const IDLE_GRACE_ENV: &str = "UNICA_DAEMON_IDLE_GRACE_MS";
 
 pub fn run_from_args(args: &[String]) -> Result<(), String> {
     let parsed = parse_daemon_args(args)?;
@@ -68,15 +78,34 @@ fn resolve_default_user_daemon_state_root(
     Ok(root)
 }
 
+/// Пауза, с которой поднимается демон: назначенная снаружи или та, что по
+/// умолчанию. Пустое значение читается как «не назначено», негодное —
+/// отказом: назначить паузу и молча получить другую хуже, чем не запуститься.
+fn configured_idle_grace(read_env: &dyn Fn(&str) -> Option<OsString>) -> Result<Duration, String> {
+    let Some(value) = read_env(IDLE_GRACE_ENV).filter(|value| !value.is_empty()) else {
+        return Ok(DEFAULT_IDLE_GRACE);
+    };
+    let milliseconds = value
+        .to_str()
+        .and_then(|value| value.parse::<u64>().ok())
+        .ok_or_else(|| format!("{IDLE_GRACE_ENV} must be an integer number of milliseconds"))?;
+    let duration = Duration::from_millis(milliseconds);
+    if duration.is_zero() || duration.as_millis() > MAX_IDLE_GRACE_MS {
+        return Err("daemon idle grace is outside the supported range".to_string());
+    }
+    Ok(duration)
+}
+
 /// Connect to the production v3 user daemon, starting it if it is absent.
 pub(crate) fn connect_default_user_daemon(state_root: &Path) -> Result<DaemonOwner, String> {
     let executable = std::env::current_exe()
         .map_err(|error| format!("failed to locate current unica executable: {error}"))?;
+    let idle_grace = configured_idle_grace(&|name| std::env::var_os(name))?;
     DaemonClient::new(DaemonClientConfig::new(
         state_root.to_path_buf(),
         CoreIdentity::production(),
         executable,
-        DEFAULT_IDLE_GRACE,
+        idle_grace,
     ))
     .connect_or_spawn()
 }
@@ -93,8 +122,8 @@ pub fn connect_owner_for_protocol_test(
 ) -> Result<DaemonOwnerLease, String> {
     let identity = CoreIdentity::from_str(core_identity)?;
     let idle_grace = Duration::from_millis(idle_grace_ms);
-    if idle_grace.is_zero() || idle_grace.as_millis() > MAX_TEST_IDLE_GRACE_MS {
-        return Err("daemon test idle grace is outside the supported range".to_string());
+    if idle_grace.is_zero() || idle_grace.as_millis() > MAX_IDLE_GRACE_MS {
+        return Err("daemon idle grace is outside the supported range".to_string());
     }
     let inner = match identity.protocol_identity() {
         DaemonProtocolIdentity::V3 => DaemonClient::new(DaemonClientConfig::new(
@@ -214,7 +243,7 @@ fn parse_daemon_args(args: &[String]) -> Result<ParsedDaemonArgs, String> {
                 .parse::<u64>()
                 .map_err(|_| "daemon idle grace must be an integer".to_string())?;
             let duration = Duration::from_millis(milliseconds);
-            if duration.is_zero() || duration.as_millis() > MAX_TEST_IDLE_GRACE_MS {
+            if duration.is_zero() || duration.as_millis() > MAX_IDLE_GRACE_MS {
                 return Err("daemon idle grace is outside the supported range".to_string());
             }
             duration
@@ -231,11 +260,13 @@ fn parse_daemon_args(args: &[String]) -> Result<ParsedDaemonArgs, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_daemon_args, resolve_default_user_daemon_state_root, runtime_selection,
-        DaemonRuntimeSelection,
+        configured_idle_grace, parse_daemon_args, resolve_default_user_daemon_state_root,
+        runtime_selection, DaemonRuntimeSelection, DEFAULT_IDLE_GRACE, IDLE_GRACE_ENV,
+        MAX_IDLE_GRACE_MS,
     };
     use crate::infrastructure::daemon::identity::CoreIdentity;
     use std::str::FromStr;
+    use std::time::Duration;
 
     fn base_args() -> Vec<String> {
         vec![
@@ -246,6 +277,60 @@ mod tests {
             "--core-identity".into(),
             "a".repeat(64),
         ]
+    }
+
+    /// Родитель всегда передаёт демону `--idle-grace-ms`, и это же значение
+    /// проверяет парсер. Дефолт выше границы означал бы, что демон не
+    /// запускается вовсе, а обнаружилось бы это только на живом хосте.
+    #[test]
+    fn default_idle_grace_is_accepted_by_the_parser_that_receives_it() {
+        assert!(DEFAULT_IDLE_GRACE.as_millis() <= MAX_IDLE_GRACE_MS);
+
+        let mut args = base_args();
+        args.push("--idle-grace-ms".into());
+        args.push(DEFAULT_IDLE_GRACE.as_millis().to_string());
+        let parsed = parse_daemon_args(&args).expect("default idle grace must parse");
+        assert_eq!(parsed.idle_grace, DEFAULT_IDLE_GRACE);
+    }
+
+    /// Демон переживает процесс, который его поднял, поэтому пауза назначается
+    /// снаружи — иначе интеграционный тест оставляет за собой демона на всю
+    /// четверть часа, и к концу прогона их набирается столько, сколько было
+    /// тестов. Негодное значение — отказ, а не тихий возврат к умолчанию.
+    #[test]
+    fn idle_grace_is_assignable_from_the_environment_and_refuses_junk() {
+        let read = |value: Option<&str>| {
+            let value = value.map(|value| value.to_string());
+            move |name: &str| {
+                if name == IDLE_GRACE_ENV {
+                    value.clone().map(Into::into)
+                } else {
+                    None
+                }
+            }
+        };
+
+        assert_eq!(
+            Ok(DEFAULT_IDLE_GRACE),
+            configured_idle_grace(&read(None)),
+            "без назначения демон живёт столько же, сколько и раньше"
+        );
+        assert_eq!(
+            Ok(DEFAULT_IDLE_GRACE),
+            configured_idle_grace(&read(Some("")))
+        );
+        assert_eq!(
+            Ok(Duration::from_millis(5_000)),
+            configured_idle_grace(&read(Some("5000")))
+        );
+        for junk in ["", "0", "-1", "5s", "  "].iter().skip(1) {
+            assert!(
+                configured_idle_grace(&read(Some(junk))).is_err(),
+                "негодное значение {junk} обязано быть отказом"
+            );
+        }
+        let above = (MAX_IDLE_GRACE_MS + 1).to_string();
+        assert!(configured_idle_grace(&read(Some(&above))).is_err());
     }
 
     #[test]

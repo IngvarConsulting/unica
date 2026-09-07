@@ -15,7 +15,7 @@ Use native CFE tools through MCP `unica`:
 
 - `unica.cfe.init`
 - `unica.check` on the extension root (`ext:Configuration`, validator `cfe`)
-- `unica.cfe.diff`
+- `unica.diff` between the extension and configuration sets
 - `unica.cfe.borrow`
 - `unica.cfe.patch_method`
 

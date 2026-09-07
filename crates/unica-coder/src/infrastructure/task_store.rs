@@ -2095,18 +2095,6 @@ pub(crate) mod tests {
         assert!(matches!(error, InvocationStoreError::Corrupt(_)));
     }
 
-    #[test]
-    fn schema_v2_recovery_never_false_resumes_and_persists_only_closed_failure_reasons() {
-        v1_nonresumable_working_record_recovers_as_interrupted_failure();
-        v1_resumable_working_without_a_registered_owner_recovers_as_unsupported();
-        v1_terminal_record_migrates_to_v2_without_changing_its_domain_result();
-        v1_failed_and_cancelled_terminal_records_migrate_deterministically();
-        v2_working_without_a_live_owner_recovers_as_interrupted();
-        v2_working_resume_descriptor_without_registered_owner_is_unsupported();
-        v2_failed_record_persists_only_a_closed_failure_reason();
-        unknown_record_schema_fails_closed_instead_of_reinterpreting_bytes();
-    }
-
     fn write_legacy_v1_record(
         root: &Path,
         record: &crate::application::invocation_store::StoredInvocationRecord,
@@ -2536,22 +2524,6 @@ pub(crate) mod tests {
             store.get(working.task_id).unwrap().status,
             InvocationStatus::Working
         );
-    }
-
-    #[test]
-    pub(crate) fn file_invocation_store_bounds_and_retention_are_enforced() {
-        preallocated_create_collision_is_typed_and_never_replaces_the_first_record();
-        uncertain_visible_create_counts_toward_capacity_before_and_after_reopen();
-        pre_rename_create_failure_does_not_consume_retention_capacity();
-        uncertain_visible_terminal_update_and_cancel_refresh_retention_state();
-        held_file_writer_is_bounded_by_the_same_deadline_without_releasing_guard();
-        active_and_nonexpired_terminal_records_are_never_evicted_at_capacity();
-        expired_terminal_records_are_reclaimed_only_when_bounded_capacity_is_needed();
-        create_does_not_rescan_a_directory_that_grew_beyond_the_recovery_bound();
-        recovery_excess_is_typed_capacity_not_unbounded_enumeration_or_corruption();
-        oversized_valid_record_is_rejected_before_unbounded_recovery_read();
-        file_store_enforces_the_canonical_result_limit_before_publication();
-        record_serialization_uses_the_original_store_deadline_without_reset();
     }
 
     fn collect_recursive_bytes(path: &Path, output: &mut Vec<u8>) {

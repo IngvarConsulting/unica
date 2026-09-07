@@ -548,8 +548,96 @@ mod tests {
         );
     }
 
-    /// Стаб для `get`: владеет локатором или нет, отвечает документом или
-    /// отказом. `search` не участвует — у `get` свой путь.
+    #[test]
+    fn all_providers_failed_is_an_error() {
+        let registry = DocumentationRegistry::new(vec![Arc::new(Stub {
+            id: "broken",
+            section: failed_section("broken"),
+        })
+            as Arc<dyn DocumentationProvider>])
+        .expect("реестр");
+        assert!(search(&registry, &request(), &context()).is_err());
+    }
+
+    #[test]
+    fn empty_status_counts_as_success_not_just_ok() {
+        // `any_usable` requires `Ok | Empty`; none of the other three tests
+        // build an Empty-only registry (they use only `ok_section`/
+        // `failed_section`), so a mutation dropping the `Empty` arm from
+        // that check would still pass all three. This is not a corner case:
+        // `PlatformSyntaxHelpProvider::search` returns exactly this status
+        // whenever the installation is found but the query has no hits
+        // (ADR-0029 point 10).
+        let registry = DocumentationRegistry::new(vec![Arc::new(Stub {
+            id: "quiet",
+            section: empty_section("quiet"),
+        })
+            as Arc<dyn DocumentationProvider>])
+        .expect("реестр");
+        let value = search(&registry, &request(), &context()).expect("результат");
+        let sections = value["sections"].as_array().expect("массив секций");
+        assert_eq!(sections[0]["status"], "empty");
+        assert!(sections[0]["hits"]
+            .as_array()
+            .expect("попадания")
+            .is_empty());
+    }
+
+    /// Предупреждения секции — неполнота, не отменяющая успеха: контейнер, не
+    /// прочитавшийся при непустой выдаче. Статус остаётся `ok`, но проекция
+    /// обязана донести предупреждения до публичного результата: молчание
+    /// выдавало бы частичный корпус за целый.
+    #[test]
+    fn warnings_reach_the_public_result_next_to_an_ok_status() {
+        let mut section = ok_section("partial");
+        section.warnings =
+            vec!["1cv8_ru.hbk: контейнер обрезан: в файле меньше данных".to_string()];
+        let registry = DocumentationRegistry::new(vec![Arc::new(Stub {
+            id: "partial",
+            section,
+        })
+            as Arc<dyn DocumentationProvider>])
+        .expect("реестр");
+        let value = search(&registry, &request(), &context()).expect("результат");
+        let sections = value["sections"].as_array().expect("массив секций");
+        assert_eq!(sections[0]["status"], "ok");
+        assert_eq!(
+            sections[0]["warnings"][0], "1cv8_ru.hbk: контейнер обрезан: в файле меньше данных",
+            "предупреждение обязано дойти до публичного результата"
+        );
+    }
+
+    #[test]
+    fn unavailable_status_carries_reason_and_detail_in_diagnostic() {
+        // This is the first response shape a user without a configured
+        // platform installation sees — `PlatformSyntaxHelpProvider::search`
+        // returns exactly this when `installation_root` is `None` — yet no
+        // other test builds an `Unavailable` section, so a swapped key or a
+        // dropped field in `status_fields` would ship unnoticed. Paired with
+        // a working provider so `search` succeeds and the shape is
+        // inspectable (an `Unavailable`-only registry would instead exercise
+        // `all_providers_failed_is_an_error`'s path).
+        let registry = DocumentationRegistry::new(vec![
+            Arc::new(Stub {
+                id: "unset",
+                section: unavailable_section("unset"),
+            }) as Arc<dyn DocumentationProvider>,
+            Arc::new(Stub {
+                id: "working",
+                section: ok_section("working"),
+            }),
+        ])
+        .expect("реестр");
+        let value = search(&registry, &request(), &context()).expect("результат");
+        let sections = value["sections"].as_array().expect("массив секций");
+        assert_eq!(sections[0]["status"], "unavailable");
+        assert_eq!(sections[0]["diagnostic"]["reason"], "not-configured");
+        assert_eq!(
+            sections[0]["diagnostic"]["detail"],
+            "установка платформы не разрешена для рабочего пространства"
+        );
+    }
+
     struct GetStub {
         id: &'static str,
         answer: Option<Result<DocumentationDocument, String>>,
@@ -689,95 +777,5 @@ mod tests {
                 "отказ обязан назвать аргумент, получено {error}"
             );
         }
-    }
-
-    #[test]
-    fn all_providers_failed_is_an_error() {
-        let registry = DocumentationRegistry::new(vec![Arc::new(Stub {
-            id: "broken",
-            section: failed_section("broken"),
-        })
-            as Arc<dyn DocumentationProvider>])
-        .expect("реестр");
-        assert!(search(&registry, &request(), &context()).is_err());
-    }
-
-    #[test]
-    fn empty_status_counts_as_success_not_just_ok() {
-        // `any_usable` requires `Ok | Empty`; none of the other three tests
-        // build an Empty-only registry (they use only `ok_section`/
-        // `failed_section`), so a mutation dropping the `Empty` arm from
-        // that check would still pass all three. This is not a corner case:
-        // `PlatformSyntaxHelpProvider::search` returns exactly this status
-        // whenever the installation is found but the query has no hits
-        // (ADR-0029 point 10).
-        let registry = DocumentationRegistry::new(vec![Arc::new(Stub {
-            id: "quiet",
-            section: empty_section("quiet"),
-        })
-            as Arc<dyn DocumentationProvider>])
-        .expect("реестр");
-        let value = search(&registry, &request(), &context()).expect("результат");
-        let sections = value["sections"].as_array().expect("массив секций");
-        assert_eq!(sections[0]["status"], "empty");
-        assert!(sections[0]["hits"]
-            .as_array()
-            .expect("попадания")
-            .is_empty());
-    }
-
-    /// Предупреждения секции — неполнота, не отменяющая успеха: контейнер, не
-    /// прочитавшийся при непустой выдаче. Статус остаётся `ok`, но проекция
-    /// обязана донести предупреждения до публичного результата: молчание
-    /// выдавало бы частичный корпус за целый.
-    #[test]
-    fn warnings_reach_the_public_result_next_to_an_ok_status() {
-        let mut section = ok_section("partial");
-        section.warnings =
-            vec!["1cv8_ru.hbk: контейнер обрезан: в файле меньше данных".to_string()];
-        let registry = DocumentationRegistry::new(vec![Arc::new(Stub {
-            id: "partial",
-            section,
-        })
-            as Arc<dyn DocumentationProvider>])
-        .expect("реестр");
-        let value = search(&registry, &request(), &context()).expect("результат");
-        let sections = value["sections"].as_array().expect("массив секций");
-        assert_eq!(sections[0]["status"], "ok");
-        assert_eq!(
-            sections[0]["warnings"][0], "1cv8_ru.hbk: контейнер обрезан: в файле меньше данных",
-            "предупреждение обязано дойти до публичного результата"
-        );
-    }
-
-    #[test]
-    fn unavailable_status_carries_reason_and_detail_in_diagnostic() {
-        // This is the first response shape a user without a configured
-        // platform installation sees — `PlatformSyntaxHelpProvider::search`
-        // returns exactly this when `installation_root` is `None` — yet no
-        // other test builds an `Unavailable` section, so a swapped key or a
-        // dropped field in `status_fields` would ship unnoticed. Paired with
-        // a working provider so `search` succeeds and the shape is
-        // inspectable (an `Unavailable`-only registry would instead exercise
-        // `all_providers_failed_is_an_error`'s path).
-        let registry = DocumentationRegistry::new(vec![
-            Arc::new(Stub {
-                id: "unset",
-                section: unavailable_section("unset"),
-            }) as Arc<dyn DocumentationProvider>,
-            Arc::new(Stub {
-                id: "working",
-                section: ok_section("working"),
-            }),
-        ])
-        .expect("реестр");
-        let value = search(&registry, &request(), &context()).expect("результат");
-        let sections = value["sections"].as_array().expect("массив секций");
-        assert_eq!(sections[0]["status"], "unavailable");
-        assert_eq!(sections[0]["diagnostic"]["reason"], "not-configured");
-        assert_eq!(
-            sections[0]["diagnostic"]["detail"],
-            "установка платформы не разрешена для рабочего пространства"
-        );
     }
 }

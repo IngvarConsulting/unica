@@ -1,10 +1,10 @@
-use std::fs;
 use std::path::Path;
 
 use crate::error::Result;
 
 #[cfg(unix)]
 pub(crate) fn set_executable(path: &Path, executable: bool) -> Result<()> {
+    use std::fs;
     use std::os::unix::fs::PermissionsExt;
 
     let mode = if executable { 0o755 } else { 0o644 };

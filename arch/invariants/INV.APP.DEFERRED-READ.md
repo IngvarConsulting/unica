@@ -2,12 +2,13 @@
 id: INV.APP.DEFERRED-READ
 status: active
 governs: product
-decision: DEC.2026-08-18.CARRIED-RULES
-check: crates/unica-coder/src/application/mod.rs::continuation_slices_byte_stably_without_rereading_the_source
+decision: DEC.2026-09-04.V0-13-LEGACY-BATCH-3
+check: crates/unica-coder/src/application/result_store.rs::opaque_view_cursor_retry_is_idempotent_and_bound_to_the_complete_question
 scope: [app]
 ---
 
 # Продолжение читает неизменяемый сохранённый снимок
 
-Повтор одной селекции по `resultRef` возвращает побайтно стабильный срез, не
-вызывая предметный читатель и обнаружение рабочего пространства повторно.
+Повтор одного курсора возвращает ту же страницу, не переспрашивая источник:
+курсор связан с полным вопросом и ревизией, а смена ревизии делает его
+устаревшим вместо тихого ответа из другого снимка.

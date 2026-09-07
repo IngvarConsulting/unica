@@ -3,7 +3,13 @@ id: INV.APP.RETAINED-APPLY-CLOSED-PARTICIPANTS
 status: active
 governs: product
 decision: DEC.2026-08-26.RETAINED-APPLY-TRANSACTION-FOUNDATION-SLICE
-check: crates/unica-coder/src/infrastructure/workspace_actor.rs::retained_apply_closed_participant_contract_is_complete
+check:
+  - crates/unica-coder/src/infrastructure/native_operations/apply.rs::retained_transaction_roles_require_explicit_roots_and_cache_authority
+  - crates/unica-coder/src/infrastructure/native_operations/apply.rs::arbitrary_second_transaction_cannot_masquerade_as_actor_cache_authority
+  - crates/unica-coder/src/infrastructure/native_operations/apply.rs::closed_transaction_rejects_physical_alias_and_second_cache_participant
+  - crates/unica-coder/src/infrastructure/workspace_actor.rs::apply_admission_rejects_source_inside_cache
+  - crates/unica-coder/src/infrastructure/workspace_actor.rs::workspace_root_source_allows_exact_generated_cache_descendant
+  - crates/unica-coder/src/infrastructure/workspace_actor.rs::workspace_root_source_and_missing_cache_publish_through_disjoint_shared_anchor
 scope: [app, cache, platform, source]
 ---
 

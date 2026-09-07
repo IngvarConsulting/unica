@@ -99,9 +99,19 @@ def parse_front_matter(text: str) -> tuple[dict, str]:
     if not match:
         raise ValueError("record does not open with a front-matter block")
     props: dict = {}
+    block_key: str | None = None
     for number, line in enumerate(match.group(1).splitlines(), start=1):
         if not line.strip() or line.lstrip().startswith("#"):
             continue
+        # Блочный список продолжает ключ над собой. Продолжить можно только
+        # список, открытый пустым значением, поэтому одиночный `- item` — это
+        # испорченная запись, а не молча усыновлённый сирота.
+        if line.lstrip().startswith("- "):
+            if block_key is None:
+                raise ValueError(f"front matter line {number} starts a list with no key")
+            props[block_key].append(line.lstrip()[2:].strip())
+            continue
+        block_key = None
         if ":" not in line:
             raise ValueError(f"front matter line {number} is not `key: value`: {line!r}")
         key, _, raw = line.partition(":")
@@ -109,11 +119,29 @@ def parse_front_matter(text: str) -> tuple[dict, str]:
         if raw.startswith("[") and raw.endswith("]"):
             inner = raw[1:-1].strip()
             props[key] = [item.strip() for item in inner.split(",") if item.strip()]
-        elif raw in ("null", "~", ""):
+        elif raw == "":
+            props[key] = []
+            block_key = key
+        elif raw in ("null", "~"):
             props[key] = None
         else:
             props[key] = raw
     return props, match.group(2)
+
+
+def evidence_names(value: object) -> list[str]:
+    """Каждый адрес `path::declaration`, названный пропом `check` или `realized`.
+
+    Одно правило часто держат несколько проверок. Принуждение к единственному
+    имени не делало правило проще: оно рождало обёртку, которая звала настоящие
+    проверки и повторяла работу, уже сделанную харнессом. Проп принимает список,
+    и запись называет ровно тот набор, который её держит.
+    """
+    if value is None or value == "":
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    return [str(value)]
 
 
 def records(root: Path = ARCH_ROOT) -> list[Record]:
@@ -155,9 +183,13 @@ def validation_errors(found: list[Record]) -> list[str]:
             if (
                 key not in record.props
                 or record.props[key] == ""
+                or record.props[key] == []
                 or (record.props[key] is None and not realized_may_be_absent)
             ):
                 errors.append(f"{record.relative}: missing prop `{key}`")
+            elif key in ("check", "realized"):
+                if any(not name.strip() for name in evidence_names(record.props[key])):
+                    errors.append(f"{record.relative}: `{key}` has a blank entry")
         if record.kind in {"invariant", "contract"}:
             list_keys = ("scope",) + (("consumers",) if record.kind == "contract" else ())
             for key in list_keys:
@@ -219,7 +251,7 @@ def render_index(found: list[Record]) -> str:
         # именно там читатель не отличает принятое от сделанного.
         built = ""
         if record.kind == "decision":
-            built = "нет" if record.props.get("realized") in (None, "") else "да"
+            built = "да" if evidence_names(record.props.get("realized")) else "нет"
         lines.append(
             f"| `{record.id}` | {kind_ru[record.kind]} · {record.props.get('governs', '')} "
             f"| {record.props.get('status', '')} "

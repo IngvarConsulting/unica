@@ -17,8 +17,8 @@ description: "Проведение документов 1С. Используй 
 исполнением не является. Работу, которую вызов ждать не должен, запускай через
 `unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
 `unica.build.*`.
-- Use `unica.standards.search` and `unica.standards.explain` for a development-standard about posting: 450, 477, 603, 661, 663, 664, and diagnostics АПК:105, АПК:123, АПК:226, АПК:227. These are standards, not evidence of runtime behavior; confirm the wording before citing one.
-- Use `unica.role.info` when posting runs in privileged mode or depends on rights or RLS on the target registers.
+- Use `unica.docs` with `source: "development-standard"` for the standards about posting: 450, 477, 603, 661, 663, 664, and diagnostics АПК:105, АПК:123, АПК:226, АПК:227. These are standards, not evidence of runtime behavior; confirm the wording before citing one.
+- Use `unica.view` on the role node when posting runs in privileged mode or depends on rights or RLS on the target registers.
 - Do not call internal analyzer, runtime, standards, or package adapters directly. They are hidden behind MCP `unica`.
 
 ## References

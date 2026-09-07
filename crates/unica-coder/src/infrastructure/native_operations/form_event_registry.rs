@@ -2625,17 +2625,4 @@ pub(crate) mod tests {
             ])
         );
     }
-
-    #[test]
-    pub(crate) fn platform_8_3_27_module_event_catalog_is_role_specific() {
-        module_event_applicability_covers_every_approved_role_family();
-        module_catalog_covers_the_task12_direct_owner_role_matrix_exactly();
-        form_event_applicability_preserves_every_logical_owner_family();
-        form_applicability_variants_have_exact_closed_event_additions_and_counts();
-        event_catalog_entries_have_exact_bilingual_shape_context_and_provenance();
-        every_catalog_has_unique_semantic_event_ids_not_generic_storage_names();
-        form_catalog_execution_contexts_distinguish_client_and_server_callbacks();
-        checked_event_catalog_is_a_closed_immutable_8_3_27_set();
-        checked_event_fixture_is_non_skipping_closed_partition_evidence();
-    }
 }

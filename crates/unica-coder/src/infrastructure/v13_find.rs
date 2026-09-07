@@ -3,6 +3,7 @@ use crate::domain::address::{NodeKind, QualifiedAddress};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::project_sources::SourceSetKind;
+use crate::domain::refusal::RefusalCode;
 use crate::infrastructure::metadata_kinds::metadata_kind_by_directory;
 use crate::infrastructure::platform::filesystem::{
     RetainedChildCapability, RetainedDirectoryCapability,
@@ -44,19 +45,19 @@ impl<'a> LayoutFindSource<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FindBuildError {
-    code: &'static str,
+    code: RefusalCode,
     message: String,
 }
 
 impl FindBuildError {
-    fn new(code: &'static str, message: impl Into<String>) -> Self {
+    fn new(code: RefusalCode, message: impl Into<String>) -> Self {
         Self {
             code,
             message: message.into(),
         }
     }
 
-    pub(crate) const fn code(&self) -> &'static str {
+    pub(crate) const fn code(&self) -> RefusalCode {
         self.code
     }
 }
@@ -108,7 +109,7 @@ impl WorkspaceFindDirectoryBuilder {
     ) -> Result<FindIndex, FindBuildError> {
         if sources.len() > MAX_SOURCE_SETS {
             return Err(FindBuildError::new(
-                "provider_limit_exceeded",
+                RefusalCode::ProviderLimitExceeded,
                 "find source-set count exceeds the bounded workspace limit",
             ));
         }
@@ -384,7 +385,7 @@ impl WorkspaceFindDirectoryBuilder {
         let document = FindDocument::new(at, kind, title, facts).with_path(path);
         if build.documents.len() == self.max_documents {
             return Err(FindBuildError::new(
-                "provider_limit_exceeded",
+                RefusalCode::ProviderLimitExceeded,
                 "find directory exceeds the bounded workspace entry limit",
             ));
         }
@@ -393,7 +394,7 @@ impl WorkspaceFindDirectoryBuilder {
             .saturating_add(document.estimated_identity_bytes());
         if next_total > self.max_total_fact_bytes {
             return Err(FindBuildError::new(
-                "provider_limit_exceeded",
+                RefusalCode::ProviderLimitExceeded,
                 "find directory exceeds the bounded workspace byte budget",
             ));
         }
@@ -415,12 +416,15 @@ fn immediate_names(
         })
         .map_err(|error| {
             if cancellation.is_cancelled() {
-                FindBuildError::new("cancelled", "find directory build was cancelled")
+                FindBuildError::new(RefusalCode::Cancelled, "find directory build was cancelled")
             } else if deadline.remaining().is_zero() {
-                FindBuildError::new("provider_deadline", "find directory build deadline elapsed")
+                FindBuildError::new(
+                    RefusalCode::ProviderDeadline,
+                    "find directory build deadline elapsed",
+                )
             } else {
                 FindBuildError::new(
-                    "provider_unavailable",
+                    RefusalCode::ProviderUnavailable,
                     format!("find could not read the source layout: {error}"),
                 )
             }
@@ -487,13 +491,13 @@ fn find_checkpoint(
 ) -> Result<(), FindBuildError> {
     if cancellation.is_cancelled() {
         return Err(FindBuildError::new(
-            "cancelled",
+            RefusalCode::Cancelled,
             "find directory build was cancelled",
         ));
     }
     if deadline.remaining().is_zero() {
         return Err(FindBuildError::new(
-            "provider_deadline",
+            RefusalCode::ProviderDeadline,
             "find directory build deadline elapsed",
         ));
     }
@@ -697,7 +701,7 @@ mod tests {
                 &CancellationToken::new(),
             )
             .unwrap_err();
-        assert_eq!(error.code(), "provider_limit_exceeded");
+        assert_eq!(error.code().as_str(), "provider_limit_exceeded");
     }
 
     #[test]
@@ -717,7 +721,7 @@ mod tests {
                 &cancellation,
             )
             .unwrap_err();
-        assert_eq!(error.code(), "cancelled");
+        assert_eq!(error.code().as_str(), "cancelled");
     }
 
     #[test]
@@ -799,7 +803,7 @@ mod tests {
                 &CancellationToken::new(),
             )
             .unwrap_err();
-        assert_eq!(error.code(), "provider_deadline");
+        assert_eq!(error.code().as_str(), "provider_deadline");
     }
 
     #[test]
@@ -876,19 +880,5 @@ mod tests {
                 "Catalogs/Склады.xml".to_string()
             )
         );
-    }
-
-    #[test]
-    fn find_address_path_directory_contract_is_complete() {
-        a_name_resolves_to_the_address_and_the_file_that_carries_it();
-        a_file_path_resolves_back_to_its_object_address();
-        a_synonym_resolves_to_its_object();
-        the_directory_holds_objects_and_never_code_symbols_or_inner_nodes();
-        the_directory_refuses_to_grow_past_its_entry_bound();
-        the_directory_observes_cancellation();
-        the_directory_observes_its_operation_deadline();
-        an_external_root_publishes_its_owner_and_never_the_dump_sidecar();
-        a_file_that_is_not_an_owner_descriptor_never_becomes_an_object();
-        a_descriptor_whose_attributes_start_on_a_new_line_is_still_an_object();
     }
 }

@@ -188,8 +188,8 @@ impl<'a> RlmNavigationAdapter<'a> {
             // publishes it instead of rendering it into a line grammar.
             CodeIntelligenceReadRequest::Definition { name, .. } => {
                 let (result, warnings) = definition_result(&value, name)?;
-                // The transport phrase stays: the issue-89 service test proves
-                // reuse of the persistent RLM process through this summary.
+                // The summary keeps naming the transport so a caller can tell
+                // the persistent index path from the fallback refusal below.
                 outcome.summary = format!(
                     "{operation_name} found {} definition(s) for {} through the persistent RLM MCP API",
                     result.definitions.len(),

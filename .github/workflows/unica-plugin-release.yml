@@ -1,18 +1,45 @@
 name: Build Unica Codex Plugin
 
 on:
+  # Ручной запуск — полный контур: сборка инструментов, пакет, проба, сухой
+  # RC, оценка. Ночь запускает его на сдвинувшейся линии с `profile: large`:
+  # тесты идут ярусом `large` (на Windows — весь набор), а сайт пишет память
+  # о проверенной вершине.
   workflow_dispatch:
+    inputs:
+      profile:
+        description: "Профиль ворот: main — как push в ветку, large — ночной ярус"
+        type: choice
+        options: [main, large]
+        default: main
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
+  # Очередь слияния: прогон на будущем состоянии main пачкой pull request.
+  # Здесь ловится то, что отбор по размеру на pull request пропускает.
+  merge_group:
+    types: [checks_requested]
+  # Push в main и релизную линию — ворота линии: полный набор тестов без
+  # отбора по файлам и без упаковки. Отсюда сайт собирает опубликованный
+  # отчёт (`workflow_run` в unica-pages.yml). Упаковка, холодный старт и
+  # оценка остаются у тега и ручного запуска.
   push:
+    branches: [main, "release-v*"]
     tags:
       - "v*"
 
 permissions:
   contents: read
 
+# Ворота → профиль исполнителя: pull request — `pr`, очередь слияния —
+# `queue`, ручной запуск — что попросили (`main` или `large`), push в ветку
+# — `main`, тег — `release`.
+env:
+  GATE_PROFILE: ${{ github.event_name == 'pull_request' && 'pr' || github.event_name == 'merge_group' && 'queue' || github.event_name == 'workflow_dispatch' && inputs.profile || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) && 'release' || 'main' }}
+
+# Ручной и ночной запуск идут своей группой: в общей с push они ждали бы за
+# сборкой ветки, а второй push вытеснял бы ожидающий прогон.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}${{ github.event_name == 'workflow_dispatch' && format('-dispatch-{0}', inputs.profile) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -29,10 +56,44 @@ jobs:
       ci_changed: ${{ steps.scope.outputs.ci_changed }}
       release_required: ${{ steps.scope.outputs.release_required }}
       assessment_required: ${{ steps.scope.outputs.assessment_required }}
+      line: ${{ steps.line.outputs.line }}
+      runners: ${{ steps.runners.outputs.runners }}
+      python_matrix: ${{ steps.python-matrix.outputs.python_matrix }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
+      # Раннеры матрицы Rust — две полосы. Pull request идёт только на ubuntu:
+      # быстрый сигнал. Полная матрица идёт в очереди слияния, на push в ветку
+      # и по кнопке: очередь проверяет ровно то дерево, что ляжет в `main`, и
+      # класс дефектов `#[cfg]` ловит она, ценой одной выкидки, а не красного
+      # `main`. Метка `ci:full` возвращает полную матрицу на pull request.
+      # Windows — только в ночном ярусе `large`: с остальных матриц он снят за
+      # нестабильность раннера, а ночью сбой виден и никого не блокирует.
+      - id: runners
+        env:
+          PROFILE: ${{ github.event_name == 'workflow_dispatch' && inputs.profile || '' }}
+          FULL_MATRIX: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
+        run: |
+          if [ "$PROFILE" = "large" ]; then
+            echo 'runners=["ubuntu-latest", "macos-14", "windows-latest"]' >> "$GITHUB_OUTPUT"
+          elif [ "$FULL_MATRIX" = "true" ]; then
+            echo 'runners=["ubuntu-latest", "macos-14"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'runners=["ubuntu-latest"]' >> "$GITHUB_OUTPUT"
+          fi
+      # Матрица джоб Python: набор на джобу, `tests/ci` — по полосам размера.
+      # Список считает шов: наборы и допуски ворот живут в нём, а не здесь.
+      - id: python-matrix
+        run: echo "python_matrix=$(python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --python-matrix)" >> "$GITHUB_OUTPUT"
+      # Линия прогона едет в подписи результатов: для ветки — она сама, для
+      # тега — релизная линия с его коммитом; тег вне релизной линии — отказ.
+      - id: line
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: echo "line=$(python scripts/ci/resolve-line.py --ref-type "$REF_TYPE" --ref-name "$REF_NAME" --sha "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
       - id: scope
         shell: bash
         env:
@@ -52,23 +113,28 @@ jobs:
           git diff --name-only FETCH_HEAD...HEAD |
             python scripts/ci/classify-workflow-changes.py >> "$GITHUB_OUTPUT"
 
-  verify-source:
-    name: Verify source guardrails
+  # Дешёвое раньше дорогого: линтеры и проверки реестра отвечают за минуту,
+  # тесты ждут их. Результат линтера — находка, а не исход теста: она едет в
+  # Code Scanning (SARIF), а не в Allure.
+  guards:
+    name: Guards
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 15
+    # Загрузка SARIF пишет в Code Scanning; права джобы заменяют права
+    # workflow целиком, поэтому `contents: read` повторён.
+    permissions:
+      contents: read
+      security-events: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           # The architecture-sync guard diffs against the merge base, which a
           # shallow clone cannot compute.
           fetch-depth: 0
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - run: python -m pip install -r tests/ci/requirements.txt
-      - run: python -m unittest discover -s tests/ci --durations 20
-      - run: python -m unittest discover -s tests/arch
-      - run: python -m unittest discover -s tests/dev --durations 20
       - run: python -m py_compile scripts/ci/*.py tests/ci/*.py
       - run: python -m py_compile scripts/arch/*.py tests/arch/*.py
       - run: python -m py_compile scripts/dev/*.py tests/dev/*.py
@@ -83,35 +149,104 @@ jobs:
           python scripts/arch/registry.py --check
           python scripts/arch/fate.py
           python scripts/arch/immutability.py --base FETCH_HEAD
-
-  test-rust-primary:
-    name: Rust tests (macos-14 primary)
-    runs-on: macos-14
-    timeout-minutes: 60
-    needs: classify-changes
-    if: >-
-      ${{
-        needs.classify-changes.outputs.rust_changed == 'true' &&
-        needs.classify-changes.outputs.platform_changed == 'false' &&
-        needs.classify-changes.outputs.toolchain_changed == 'false' &&
-        needs.classify-changes.outputs.ci_changed == 'false'
-      }}
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      # Форматирование от цели сборки не зависит — одного раннера хватает.
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
-          components: rustfmt, clippy
+          toolchain: stable
+          components: rustfmt
       - run: cargo fmt --all -- --check
-      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      - run: cargo test --workspace -- --test-threads=1
+      # Линтер workflow. Версия закреплена; находки гейт не красят — они
+      # уходят в Code Scanning, где видны по правилу и строке, и разбираются
+      # отдельно. Токен нужен сетевым проверкам: подменённые коммиты, известные
+      # уязвимости действий.
+      - uses: taiki-e/install-action@84f5ac3124727fb3d284d4d22ee9ab3654fd09a6 # v2.87.7
+        with:
+          tool: zizmor@1.30.0
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: zizmor --config .github/zizmor.yml --format sarif --no-exit-codes .github/workflows > zizmor.sarif
+      # Токен pull request из форка писать в Code Scanning не вправе; своим
+      # веткам и push загрузка доступна.
+      - if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        with:
+          sarif_file: zizmor.sarif
+          category: zizmor
+
+  test-python:
+    name: Python tests (${{ matrix.slug }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    needs: [classify-changes, guards]
+    # Наборы идут параллельными джобами, по одной на набор, а `tests/ci` —
+    # по полосам размера: одним процессом он шёл в очереди шесть с половиной
+    # минут, из них четыре — несколько `medium`-тестов. Матрицу считает шов
+    # по воротам; каждая джоба зовёт тот же шов с `--suite` и `--only-size`,
+    # гейт видит одну джобу.
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.classify-changes.outputs.python_matrix) }}
+    env:
+      RUN_LINE: ${{ needs.classify-changes.outputs.line }}
+      SUITE: ${{ matrix.suite }}
+      LANE: ${{ matrix.lane }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # Страж неизменности продукта сравнивает с базой — нужна история.
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r tests/ci/requirements.txt
+      # План выгружается до тестов, как у Rust: джоба, умершая на середине
+      # набора, оставляет состав, и недошедшие тесты попадут в отчёт `skipped`.
+      - run: python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --suite "$SUITE" --only-size "$LANE" --plan-only --results .build/results --runner ubuntu-latest --line "$RUN_LINE"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: plan-python-${{ matrix.slug }}
+          path: .build/results
+          retention-days: 7
+          overwrite: true
+      # Наборы гоняет одна точка входа: профиль ворот меняется в ней, а не
+      # здесь; `--suite` сужает вызов до набора этой джобы.
+      - run: python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --suite "$SUITE" --only-size "$LANE" --results .build/results --runner ubuntu-latest --line "$RUN_LINE"
+      # Результаты едут артефактом и при красном прогоне: ради них он и шёл.
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: results-python-${{ matrix.slug }}
+          path: .build/results
+          retention-days: 7
+          overwrite: true
 
   test-rust-platforms:
     name: Rust tests (${{ matrix.runner }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
-    needs: classify-changes
+    permissions:
+      contents: read
+      security-events: write
+    needs: [classify-changes, guards]
+    env:
+      RUN_LINE: ${{ needs.classify-changes.outputs.line }}
+      # Консоль Windows — cp1252: без этого Python не выведет кириллицу
+      # скриптов площадки и упадёт на первом же `print`.
+      PYTHONUTF8: "1"
+      # Имя раннера идёт в команды через env, а не подстановкой в текст скрипта.
+      MATRIX_RUNNER: ${{ matrix.runner }}
+    # Windows идёт только в ночном ярусе, и его сбой обязан быть виден, но
+    # не должен блокировать упаковку и пробу того же прогона.
+    continue-on-error: ${{ matrix.runner == 'windows-latest' }}
+    # Любая правка Rust гоняет эту джобу; состав раннеров решает
+    # `classify-changes`: pull request — ubuntu, очередь, push и кнопка — обе
+    # платформы. Класс дефектов `#[cfg]` один раннер не видит, его ловит
+    # очередь над тем же деревом, что ляжет в `main`.
     if: >-
       ${{
+        needs.classify-changes.outputs.rust_changed == 'true' ||
         needs.classify-changes.outputs.platform_changed == 'true' ||
         needs.classify-changes.outputs.toolchain_changed == 'true' ||
         needs.classify-changes.outputs.ci_changed == 'true'
@@ -119,48 +254,88 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-latest, windows-latest, macos-14]
+        # Список считает `classify-changes`: ubuntu и macOS всегда, Windows —
+        # только в ночном ярусе `large`.
+        runner: ${{ fromJSON(needs.classify-changes.outputs.runners) }}
+    # Шаги написаны на bash: на Windows умолчание — pwsh, и `$RUN_LINE` там
+    # значил бы другое.
+    defaults:
+      run:
+        shell: bash
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - if: matrix.runner == 'macos-14'
-        run: cargo fmt --all -- --check
-      - if: matrix.runner == 'macos-14'
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      - run: cargo test --workspace -- --test-threads=1
-
-  test-search-integration:
-    name: Search integration (macos-14)
-    runs-on: macos-14
-    timeout-minutes: 30
-    needs: classify-changes
-    if: >-
-      ${{
-        needs.classify-changes.outputs.search_integration_changed == 'true' ||
-        needs.classify-changes.outputs.ci_changed == 'true'
-      }}
-    steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test -p unica-coder --test v13_search_integration -- --ignored --test-threads=1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+          components: clippy
+      # В PR-джобе тесты идут полминуты, а компиляция — от пяти до восьми
+      # минут; кэшируются только зависимости, крейты workspace собираются
+      # каждый раз. Пишут кэш push в ветку и ручной запуск: их область
+      # читают все прогоны. Pull request и очередь только читают — их
+      # области никто другой не увидит, а десять гигабайт кэша общие.
+      # Джоба тестов артефактов релиза не собирает, а область кэша pull
+      # request читают только его же прогоны — отравить релиз через неё нельзя.
+      - name: Кэш зависимостей Rust # zizmor: ignore[cache-poisoning] джоба тестов артефактов релиза не собирает, область кэша pull request читают только его прогоны
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref_type == 'branch' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+          cache-on-failure: true
+      # `python3` есть не на каждом раннере: на Windows его даёт setup-python.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      # Форматирование от цели не зависит — оно в `guards`. Линт зависит:
+      # `#[cfg]` решает, какие элементы существуют, поэтому clippy идёт на
+      # каждом раннере матрицы, своим шагом до тестов. Находки едут в Code
+      # Scanning, а `-D warnings` по-прежнему красит джобу. Версии закреплены:
+      # исполнители — часть контракта прогона.
+      - uses: taiki-e/install-action@84f5ac3124727fb3d284d4d22ee9ab3654fd09a6 # v2.87.7
+        with:
+          tool: cargo-nextest@0.9.143,clippy-sarif@0.8.0,sarif-fmt@0.8.0
+      # Подпись и план выгружаются раньше линта и тестов: раннер, упавший на
+      # clippy или сборке, оставляет подпись, и недошедшие тесты попадут в
+      # отчёт как `skipped`, а не исчезнут из него.
+      - run: python3 scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust --plan-only --results .build/results --runner "$MATRIX_RUNNER" --line "$RUN_LINE"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: plan-rust-${{ matrix.runner }}
+          # План с подписью: сайт сопоставляет его с результатами по линии и раннеру.
+          path: .build/results
+          retention-days: 7
+          overwrite: true
+      - run: |
+          set -o pipefail
+          cargo clippy --workspace --all-targets --all-features --message-format=json -- -D warnings \
+            | clippy-sarif | tee clippy.sarif | sarif-fmt
+      - if: always() && hashFiles('clippy.sarif') != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        with:
+          sarif_file: clippy.sarif
+          category: clippy-${{ matrix.runner }}
+      - run: python3 scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust --results .build/results --runner "$MATRIX_RUNNER" --line "$RUN_LINE"
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: results-rust-${{ matrix.runner }}
+          path: .build/results
+          retention-days: 7
+          overwrite: true
 
   build-tools:
     name: Build tools (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
-    needs: [classify-changes, verify-source, test-rust-primary, test-rust-platforms, test-search-integration]
+    needs: [classify-changes, guards, test-python, test-rust-platforms]
     if: >-
       ${{
         always() &&
         needs.classify-changes.result == 'success' &&
-        needs.verify-source.result == 'success' &&
-        (needs.test-rust-primary.result == 'success' || needs.test-rust-primary.result == 'skipped') &&
+        needs.guards.result == 'success' &&
+        needs.test-python.result == 'success' &&
         (needs.test-rust-platforms.result == 'success' || needs.test-rust-platforms.result == 'skipped') &&
-        (needs.test-search-integration.result == 'success' || needs.test-search-integration.result == 'skipped') &&
+        (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')) &&
         (needs.classify-changes.outputs.release_required == 'true' ||
          needs.classify-changes.outputs.ci_changed == 'true')
       }}
@@ -175,15 +350,20 @@ jobs:
           - target: darwin-arm64
             runner: macos-14
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
       - if: matrix.target == 'win-x64'
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"
-      - name: Install pinned Codex CLI on Windows
+          # package.json здесь нет: кэшу пакетов нечего хранить, а в релизном
+          # контуре его и не должно быть.
+          package-manager-cache: false
+      - name: Install pinned Codex CLI on Windows # zizmor: ignore[adhoc-packages] версия закреплена точно и сверяется после установки
         if: matrix.target == 'win-x64'
         shell: bash
         run: |
@@ -191,11 +371,15 @@ jobs:
           npm install --global @openai/codex@0.145.0-alpha.18
           test "$(codex --version)" = "codex-cli 0.145.0-alpha.18"
       - id: rust-toolchain
-        uses: dtolnay/rust-toolchain@stable
-      - id: cargo-cache
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+      # Сборка тега читает только кэш, записанный прогонами main; pull request
+      # пишет лишь в свою область и до релизной сборки не дотягивается.
+      - id: cargo-cache # zizmor: ignore[cache-poisoning] кэш пишут только прогоны main, pull request в их область не пишет
         name: Restore Cargo target cache
         continue-on-error: true
-        uses: actions/cache@v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .build/tool-work/${{ matrix.target }}/cargo-target
           key: cargo-${{ runner.os }}-${{ matrix.target }}-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}
@@ -405,7 +589,7 @@ jobs:
           mkdir -p "$destination"
           cp ".build/tool-bundles/${{ matrix.target }}/bootstrap/bin/${{ matrix.target }}/${bootstrap_name}" "$destination/"
       - name: Upload runtime metadata
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: unica-runtime-metadata-${{ matrix.target }}
           # Разрез поставки: по архиву на артефакт, и у каждого свои
@@ -414,21 +598,21 @@ jobs:
           if-no-files-found: error
           retention-days: 1
       - name: Upload runtime verification evidence
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: unica-runtime-verification-${{ matrix.target }}
           path: .build/runtime-assets/${{ matrix.target }}/asset-verification-${{ matrix.target }}.json
           if-no-files-found: error
           retention-days: 1
       - name: Upload bootstrap payload
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: unica-bootstrap-${{ matrix.target }}
           path: .build/bootstrap-artifacts/${{ matrix.target }}
           if-no-files-found: error
           retention-days: 1
       - name: Upload P0 wire evidence
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: unica-wire-${{ matrix.target }}
           path: .build/p0-wire
@@ -436,7 +620,7 @@ jobs:
           retention-days: 1
       - name: Upload required runtime archive
         if: ${{ matrix.target == 'linux-x64' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: unica-runtime-${{ matrix.target }}
           path: .build/runtime-assets/${{ matrix.target }}/*-runtime-${{ matrix.target }}.tar.gz
@@ -453,7 +637,7 @@ jobs:
           --artifact rlm-tools-bsl
       - name: Upload BSP assessment engine
         if: matrix.target == 'linux-x64'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: unica-assessment-engine-linux-x64
           # Zipped workflow artifacts normalize files to 0644. The inner tar
@@ -472,8 +656,10 @@ jobs:
     env:
       RELEASE_TAG: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
       # Packaging requires release.tag == v{pluginVersion}, so a non-tag build
@@ -486,12 +672,12 @@ jobs:
           set -euo pipefail
           version="$(python -c 'import json; print(json.load(open("plugins/unica/.codex-plugin/plugin.json"))["version"])')"
           echo "RELEASE_TAG=v${version}" >> "$GITHUB_ENV"
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: unica-runtime-metadata-*
           path: .build/runtime-metadata
           merge-multiple: true
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: unica-bootstrap-*
           path: .build/bootstrap-root
@@ -514,7 +700,7 @@ jobs:
       # tests the compatibility floor the README promises instead of a moving
       # target. 2.1.67 and 2.1.68 reject the catalog's git-subdir source; 2.1.69
       # is the first release that accepts it.
-      - name: Validate the Claude plugin and catalog
+      - name: Validate the Claude plugin and catalog # zizmor: ignore[adhoc-packages] версия закреплена точно и сверяется после установки
         env:
           CLAUDE_CLI_VERSION: 2.1.69
         run: |
@@ -522,7 +708,7 @@ jobs:
           test "$(claude --version | cut -d' ' -f1)" = "$CLAUDE_CLI_VERSION"
           claude plugin validate dist/thin/marketplace/plugins/unica
           claude plugin validate dist/thin/marketplace
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: unica-thin-marketplace
           path: dist/thin/marketplace
@@ -530,7 +716,7 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: unica-p0-package-evidence
           path: dist/thin/p0-package-evidence.json
@@ -548,34 +734,36 @@ jobs:
         needs.build-tools.result == 'success' &&
         needs.package-thin.result == 'success' &&
         needs.release-assessment.result == 'success' &&
-        (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch')
+        github.event_name == 'workflow_dispatch'
       }}
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: unica-wire-*
           path: .build/p0-wire
           merge-multiple: true
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: unica-runtime-verification-*
           path: .build/p0-assets
           merge-multiple: true
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: unica-thin-marketplace
           path: .build/p0-marketplace
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: unica-p0-package-evidence
           path: .build/p0-package
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: unica-release-assessment
           path: .build/release-assessment
@@ -597,7 +785,7 @@ jobs:
             --release-tag "v$version" \
             --mode dry \
             --out-dir dist/p0-proof
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: unica-p0-proof
           path: dist/p0-proof
@@ -613,7 +801,7 @@ jobs:
       ${{
         always() &&
         needs.package-thin.result == 'success' &&
-        (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch')
+        github.event_name == 'workflow_dispatch'
       }}
     strategy:
       fail-fast: false
@@ -626,11 +814,13 @@ jobs:
           - target: darwin-arm64
             runner: macos-14
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: unica-thin-marketplace
           path: .build/thin
@@ -653,11 +843,14 @@ jobs:
         always() &&
         needs.classify-changes.result == 'success' &&
         needs.build-tools.result == 'success' &&
+        (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')) &&
         needs.classify-changes.outputs.assessment_required == 'true'
       }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
       - name: Resolve the release tag for non-tag builds
@@ -666,11 +859,11 @@ jobs:
           set -euo pipefail
           version="$(python -c 'import json; print(json.load(open("plugins/unica/.codex-plugin/plugin.json"))["version"])')"
           echo "RELEASE_TAG=v${version}" >> "$GITHUB_ENV"
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: unica-runtime-linux-x64
           path: dist/runtime
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: unica-assessment-engine-linux-x64
           path: .build/assessment-engine
@@ -684,7 +877,7 @@ jobs:
           --bsp-ref 3.2.1.446
           --release-tag "$RELEASE_TAG"
           --github-run-id "${{ github.run_id }}"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: unica-release-assessment
@@ -707,13 +900,18 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v8
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: unica-runtime-*
           path: dist/runtime
           merge-multiple: true
-      - uses: softprops/action-gh-release@v3
+      # Джоба идёт только на теге и при перезапуске дописывает ассеты к уже
+      # созданному релизу; переход на `gh release` — вместе с репетицией релиза.
+      - name: Publish the release assets # zizmor: ignore[superfluous-actions] замена на gh release требует репетиции на теге
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           generate_release_notes: true
           # Предвыпуск не должен выглядеть последним релизом: его ищут те, кто
@@ -753,11 +951,13 @@ jobs:
           - target: darwin-arm64
             runner: macos-14
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: unica-thin-marketplace
           path: .build/thin
@@ -799,8 +999,10 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
       - name: Download release assets from GitHub
@@ -808,13 +1010,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release download "$GITHUB_REF_NAME" --pattern 'unica-runtime-*' --dir published
       - run: python scripts/ci/verify-release-assets.py --asset-dir published --source re-downloaded --report published/asset-verification-re-downloaded.json
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: unica-published-asset-verification
           path: published/asset-verification-re-downloaded.json
           if-no-files-found: error
           retention-days: 14
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: unica-thin-marketplace
           path: .build/thin
@@ -833,10 +1035,9 @@ jobs:
     if: always()
     needs:
       - classify-changes
-      - verify-source
-      - test-rust-primary
+      - guards
+      - test-python
       - test-rust-platforms
-      - test-search-integration
       - build-tools
       - package-thin
       - probe-thin-bootstrap
@@ -846,7 +1047,9 @@ jobs:
       - verify-published-assets
       - p0-release-proof
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Evaluate required CI results
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}

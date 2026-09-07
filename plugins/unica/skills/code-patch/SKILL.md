@@ -20,8 +20,8 @@ allowed-tools:
 If the requested BSL change cannot be expressed as one safe insertion and needs
 a full existing-module replacement, stop this route and use the
 `source-access` skill to inspect the target through the read-only
-`unica.source.resources` and `unica.source.read`, then come back with a
-narrower `insert` or `replace`.
+`unica.view` on the module node and its `Method` and `Body` branches, then
+come back with a narrower `insert` or `replace`.
 
 ## Parameters
 

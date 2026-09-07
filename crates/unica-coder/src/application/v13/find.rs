@@ -1,4 +1,5 @@
 use crate::domain::address::NodeKind;
+use crate::domain::refusal::RefusalCode;
 use serde::Serialize;
 use std::cmp::Ordering;
 
@@ -17,11 +18,14 @@ impl FindRequest {
     pub(crate) fn new(query: &str) -> Result<Self, FindError> {
         let query = query.trim();
         if query.is_empty() {
-            return Err(FindError::new("bad_value", "find query must not be empty"));
+            return Err(FindError::new(
+                RefusalCode::BadValue,
+                "find query must not be empty",
+            ));
         }
         if query.chars().count() > MAX_QUERY_CHARS {
             return Err(FindError::new(
-                "bad_value",
+                RefusalCode::BadValue,
                 format!("find query must not exceed {MAX_QUERY_CHARS} characters"),
             ));
         }
@@ -38,15 +42,19 @@ impl FindRequest {
     }
 
     pub(crate) fn with_kind(mut self, kind: &str) -> Result<Self, FindError> {
-        let kind = NodeKind::parse(kind)
-            .map_err(|_| FindError::new("bad_value", format!("unknown node kind `{kind}`")))?;
+        let kind = NodeKind::parse(kind).map_err(|_| {
+            FindError::new(RefusalCode::BadValue, format!("unknown node kind `{kind}`"))
+        })?;
         self.kind = Some(kind.as_str().to_string());
         Ok(self)
     }
 
     pub(crate) fn with_limit(mut self, limit: usize) -> Result<Self, FindError> {
         if limit == 0 {
-            return Err(FindError::new("bad_value", "find limit must be positive"));
+            return Err(FindError::new(
+                RefusalCode::BadValue,
+                "find limit must be positive",
+            ));
         }
         self.limit = limit.min(MAX_LIMIT);
         Ok(self)
@@ -219,19 +227,19 @@ impl FindResult {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FindError {
-    code: &'static str,
+    code: RefusalCode,
     message: String,
 }
 
 impl FindError {
-    fn new(code: &'static str, message: impl Into<String>) -> Self {
+    fn new(code: RefusalCode, message: impl Into<String>) -> Self {
         Self {
             code,
             message: message.into(),
         }
     }
 
-    pub(crate) const fn code(&self) -> &'static str {
+    pub(crate) const fn code(&self) -> RefusalCode {
         self.code
     }
 }
@@ -510,6 +518,6 @@ mod tests {
     fn find_rejects_queries_above_the_identity_work_bound() {
         let error = FindRequest::new(&"Я".repeat(1_025)).unwrap_err();
 
-        assert_eq!(error.code(), "bad_value");
+        assert_eq!(error.code().as_str(), "bad_value");
     }
 }

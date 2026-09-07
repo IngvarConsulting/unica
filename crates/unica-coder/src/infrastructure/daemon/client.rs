@@ -235,7 +235,7 @@ impl DaemonClient {
         let deadline =
             DaemonDeadline::new(self.config.connect_timeout, Arc::clone(&self.config.clock))?;
         if let ExistingDaemon::Connected(owner) = self.connect_existing_before(&deadline)? {
-            return Ok(owner);
+            return Ok(*owner);
         }
         let state =
             DaemonStateDirectory::open(&self.config.state_root, &self.config.core_identity)?;
@@ -246,7 +246,7 @@ impl DaemonClient {
         let _spawn_lock = state.acquire_spawn_lock(lock_budget)?;
         deadline.checkpoint("spawn lock")?;
         if let ExistingDaemon::Connected(owner) = self.connect_existing_from(&state, &deadline)? {
-            return Ok(owner);
+            return Ok(*owner);
         }
         let executable = self
             .config
@@ -314,7 +314,7 @@ impl DaemonClient {
             self.config.connect_timeout,
             Arc::clone(&self.config.clock),
         ) {
-            Ok(owner) => Ok(ExistingDaemon::Connected(owner)),
+            Ok(owner) => Ok(ExistingDaemon::Connected(Box::new(owner))),
             Err(ConnectFailure::Absent) => Ok(ExistingDaemon::Absent),
             Err(ConnectFailure::RetryLater(code)) => Err(retry_later_diagnostic(code)),
             Err(ConnectFailure::Rejected(error)) => Err(error),
@@ -383,7 +383,11 @@ fn cleanup_failed_startup(
 }
 
 pub(crate) enum ExistingDaemon {
-    Connected(DaemonOwner),
+    // The owner is the only payload here, and it is large enough that on
+    // Windows the enum's unit variant pays 208 bytes for it. The connect path
+    // unwraps this value immediately, so the indirection costs one allocation
+    // per established connection.
+    Connected(Box<DaemonOwner>),
     Absent,
 }
 

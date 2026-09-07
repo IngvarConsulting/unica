@@ -27,6 +27,10 @@ TOOLCHAIN_PATHS = {
     "Cargo.lock",
     "rust-toolchain",
     "rust-toolchain.toml",
+    # Настройка исполнителя тестов меняет, как гоняется каждая цель на каждом
+    # раннере: это тот же класс, что смена toolchain.
+    ".config/nextest.toml",
+    ".config/python-sizes.toml",
 }
 PACKAGE_PATHS = {
     ".agents/plugins/marketplace.json",
@@ -59,6 +63,24 @@ CI_CONTRACT_PATHS = {
     "scripts/dev/install-local-unica.sh",
     "scripts/ci/classify-workflow-changes.py",
     "scripts/ci/evaluate-ci-gate.py",
+    # Шов прогона решает, что именно гоняет каждая джоба; его правка — правка
+    # конвейера, а не исходников, и обязана ехать полным контуром.
+    "scripts/ci/run-tests.py",
+    "scripts/ci/run-unittest.py",
+    "scripts/ci/allure_results.py",
+    "scripts/ci/collect-results.py",
+    "tests/ci/test_run_tests.py",
+    "tests/ci/test_gate_profiles.py",
+    "scripts/ci/nightly-lines.py",
+    "scripts/ci/resolve-line.py",
+    "tests/ci/test_nightly_lines.py",
+    "tests/ci/test_resolve_line.py",
+    "scripts/ci/size-filters.py",
+    "tests/ci/test_size_guard.py",
+    "tests/ci/test_python_sizes.py",
+    "tests/ci/test_research_policy.py",
+    "tests/ci/test_allure_results.py",
+    "tests/ci/test_collect_results.py",
     "tests/ci/test_classify_workflow_changes.py",
     "tests/ci/test_evaluate_ci_gate.py",
     "tests/ci/test_unica_workflow.py",
@@ -102,8 +124,6 @@ SEARCH_INTEGRATION_PATHS = {
     "crates/unica-coder/src/infrastructure/workspace_index.rs",
     "crates/unica-coder/src/infrastructure/workspace_services.rs",
     "crates/unica-coder/src/interfaces/mcp.rs",
-    "crates/unica-coder/tests/issue_89_workspace_service.rs",
-    "crates/unica-coder/tests/platform/issue_89_workspace_service.rs",
 }
 SEARCH_INTEGRATION_PREFIXES = (
     "crates/unica-coder/src/infrastructure/platform/source_revision_fence",

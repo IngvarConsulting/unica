@@ -11,7 +11,7 @@ behavior below — what each lock prevents, when it is released, how the two
 interact with transactions — is platform behavior, taken from the 8.3.27
 Developer Guide, chapter 9.2.2 `Object locking`. The single normative rule about
 when to take an object lock from code is a development standard, `#std490`.
-Verify a standard's wording with `unica.standards.explain`; verify behavior
+Verify a standard's wording with `unica.docs` with `source: "development-standard"`; verify behavior
 against the platform documentation for the target version, because the release
 notes for object locking have changed between versions.
 

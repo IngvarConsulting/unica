@@ -7,7 +7,7 @@ description: "Объектные блокировки 1С — пессимист
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.code.search`, `unica.code.definition`, `unica.code.graph`, `unica.code.patch`, `unica.form.info`, `unica.code.diagnostics`, and `unica.runtime.execute`.
+- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.code.search`, `unica.code.definition`, `unica.code.graph`, `unica.code.patch`, `unica.view` on the form node, `unica.code.diagnostics`, and `unica.runtime.execute`.
 - По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
 показывает запланированную команду без побочных эффектов, а с `dryRun: false`
 исполняет классифицированную операцию и отвечает её терминальным результатом в
@@ -17,7 +17,7 @@ description: "Объектные блокировки 1С — пессимист
 исполнением не является. Работу, которую вызов ждать не должен, запускай через
 `unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
 `unica.build.*`.
-- Use `unica.standards.search` and `unica.standards.explain` for the one development-standard here, 490, and for related ones 648 and 783. These are standards, not evidence of runtime behavior; confirm the wording before citing one.
+- Use `unica.docs` with `source: "development-standard"` for the one development-standard here, 490, and for related ones 648 and 783. These are standards, not evidence of runtime behavior; confirm the wording before citing one.
 - Use `unica.runtime.execute` only to preview typed arguments; reproducing a conflict requires separate runtime evidence and cannot be inferred from preview.
 - Do not call internal analyzer, runtime, standards, or package adapters directly. They are hidden behind MCP `unica`.
 
@@ -49,7 +49,7 @@ Two facts decide most reviews:
 2. Find every path that modifies the object with `unica.code.search` and `unica.code.graph`. A cooperative lock is only as good as the path that skips it.
 3. Choose the shape before writing code: fail loudly so the user learns who holds the object, or skip and retry on the next run for background work (std490).
 4. Decide the form id question. With a form id the lock follows the form's lifetime; without one it follows the session, the server call, or the transaction. Do not mix both for the same object — that combination raises.
-5. Inspect a non-standard editing form with `unica.form.info` and reproduce the standard behaviour with the form lock and unlock methods.
+5. Inspect a non-standard editing form with `unica.view` on the form node and reproduce the standard behaviour with the form lock and unlock methods.
 6. Decide what the version conflict says to the user before it happens; the platform's own message names nothing useful.
 7. Apply with `unica.code.patch`, verify statically with `unica.code.diagnostics`, and preview the intended runtime request with `unica.runtime.execute`; require separate two-session evidence before calling the conflict reproduced.
 

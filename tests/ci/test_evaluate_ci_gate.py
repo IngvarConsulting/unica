@@ -28,7 +28,7 @@ OUTPUT_NAMES = (
     "release_required",
     "assessment_required",
 )
-ALWAYS_SUCCESS = {"classify-changes": "success", "verify-source": "success"}
+ALWAYS_SUCCESS = {"classify-changes": "success", "guards": "success", "test-python": "success"}
 PACKAGE_SUCCESS = {
     "build-tools": "success",
     "package-thin": "success",
@@ -49,9 +49,7 @@ def classification(**enabled: bool) -> dict[str, str]:
 def source_results() -> dict[str, str]:
     return {
         **ALWAYS_SUCCESS,
-        "test-rust-primary": "skipped",
         "test-rust-platforms": "skipped",
-        "test-search-integration": "skipped",
         "build-tools": "skipped",
         "package-thin": "skipped",
         "p0-release-proof": "skipped",
@@ -62,28 +60,29 @@ def source_results() -> dict[str, str]:
 
 
 class EvaluateCiGateTests(unittest.TestCase):
-    def test_p0_release_proof_runs_for_assessed_pr_without_publication(self) -> None:
+    def test_pull_request_skips_package_pipeline_even_when_classified(self) -> None:
+        """Тяжёлые контуры сняты с pull request, а не выключены везде.
+
+        Классификация продолжает честно говорить, что правка задела упаковку и
+        оценку; гейт при этом ждёт от них пропуска, потому что на pull request
+        они больше не запускаются.
+        """
         module = load_gate_module()
         outputs = classification(
             package_changed=True,
             release_required=True,
             assessment_required=True,
         )
-        results = {
-            **source_results(),
-            "build-tools": "success",
-            "package-thin": "success",
-            "p0-release-proof": "success",
-            "release-assessment": "success",
-            "probe-thin-bootstrap": "success",
-        }
 
         evaluation = module.evaluate_gate(
-            "pull_request", "refs/pull/581/merge", outputs, results
+            "pull_request", "refs/pull/581/merge", outputs, source_results()
         )
 
         self.assertTrue(evaluation.ok)
-        self.assertEqual("success", evaluation.expected["p0-release-proof"])
+        for job in ("build-tools", "package-thin", "probe-thin-bootstrap"):
+            self.assertEqual("skipped", evaluation.expected[job], job)
+        self.assertEqual("skipped", evaluation.expected["release-assessment"])
+        self.assertEqual("skipped", evaluation.expected["p0-release-proof"])
 
     def test_source_only_pr_accepts_only_classified_skips(self) -> None:
         module = load_gate_module()
@@ -96,103 +95,92 @@ class EvaluateCiGateTests(unittest.TestCase):
         self.assertEqual("source", evaluation.contour)
         self.assertEqual(set(results) - set(ALWAYS_SUCCESS), set(evaluation.skipped_jobs))
 
-    def test_platform_independent_rust_uses_primary_macos_and_package_pipeline(self) -> None:
+    def test_rust_only_change_runs_the_full_matrix_without_package_pipeline(self) -> None:
+        """Любая правка Rust — обе платформы: одного раннера класс `#[cfg]` не видит."""
         module = load_gate_module()
         outputs = classification(rust_changed=True, release_required=True)
         results = {
             **source_results(),
-            "test-rust-primary": "success",
-            **PACKAGE_SUCCESS,
-            "probe-thin-bootstrap": "success",
+            "test-rust-platforms": "success",
         }
 
         evaluation = module.evaluate_gate("pull_request", "refs/pull/155/merge", outputs, results)
 
         self.assertTrue(evaluation.ok)
         self.assertEqual("rust", evaluation.contour)
-        self.assertEqual("skipped", evaluation.expected["test-rust-platforms"])
+        self.assertEqual("success", evaluation.expected["test-rust-platforms"])
 
-    def test_platform_rust_uses_full_matrix_instead_of_primary_job(self) -> None:
+    def test_platform_change_runs_the_full_matrix(self) -> None:
         module = load_gate_module()
         outputs = classification(rust_changed=True, platform_changed=True, release_required=True)
         results = {
             **source_results(),
             "test-rust-platforms": "success",
-            **PACKAGE_SUCCESS,
-            "probe-thin-bootstrap": "success",
         }
 
         evaluation = module.evaluate_gate("pull_request", "refs/pull/155/merge", outputs, results)
 
         self.assertTrue(evaluation.ok)
         self.assertEqual("platform", evaluation.contour)
-        self.assertEqual("skipped", evaluation.expected["test-rust-primary"])
 
-    def test_long_assessment_requires_affected_mechanism_or_full_contour(self) -> None:
-        module = load_gate_module()
-        ordinary_outputs = classification(rust_changed=True, release_required=True)
-        ordinary_results = {
-            **source_results(),
-            "test-rust-primary": "success",
-            **PACKAGE_SUCCESS,
-            "probe-thin-bootstrap": "success",
-        }
-        affected_outputs = classification(
-            rust_changed=True,
-            release_required=True,
-            assessment_required=True,
-        )
-        affected_results = {**ordinary_results, **ASSESSMENT_SUCCESS, **P0_SUCCESS}
+    def test_long_assessment_runs_outside_pull_request_only(self) -> None:
+        """Оценка на BSP осталась у ручного запуска и тега.
 
-        ordinary = module.evaluate_gate(
-            "pull_request", "refs/pull/155/merge", ordinary_outputs, ordinary_results
-        )
-        affected = module.evaluate_gate(
-            "pull_request", "refs/pull/155/merge", affected_outputs, affected_results
-        )
-
-        self.assertTrue(ordinary.ok)
-        self.assertEqual("skipped", ordinary.expected["release-assessment"])
-        self.assertTrue(affected.ok)
-        self.assertEqual("success", affected.expected["release-assessment"])
-
-    def test_ci_full_pr_runs_all_validation_and_package_jobs_without_publication(self) -> None:
+        На pull request её нет ни при какой классификации: это и есть снятие
+        тяжёлого контура, а не отключение оценки вообще.
+        """
         module = load_gate_module()
         outputs = classification(**{name: True for name in OUTPUT_NAMES})
-        results = {
+        manual_results = {
             **source_results(),
             "test-rust-platforms": "success",
-            "test-search-integration": "success",
             **PACKAGE_SUCCESS,
             **ASSESSMENT_SUCCESS,
             **P0_SUCCESS,
             "probe-thin-bootstrap": "success",
         }
 
+        manual = module.evaluate_gate(
+            "workflow_dispatch", "refs/heads/main", outputs, manual_results
+        )
+        request = module.evaluate_gate(
+            "pull_request",
+            "refs/pull/155/merge",
+            outputs,
+            {
+                **source_results(),
+                "test-rust-platforms": "success",
+            },
+        )
+
+        self.assertTrue(manual.ok)
+        self.assertEqual("success", manual.expected["release-assessment"])
+        self.assertTrue(request.ok)
+        self.assertEqual("skipped", request.expected["release-assessment"])
+
+    def test_ci_full_pr_runs_validation_but_no_package_jobs(self) -> None:
+        module = load_gate_module()
+        outputs = classification(**{name: True for name in OUTPUT_NAMES})
+        results = {
+            **source_results(),
+            "test-rust-platforms": "success",
+        }
+
         evaluation = module.evaluate_gate("pull_request", "refs/pull/155/merge", outputs, results)
 
         self.assertTrue(evaluation.ok)
         self.assertEqual("full", evaluation.contour)
-        self.assertEqual({"test-rust-primary", *PUBLISH_SKIPPED}, set(evaluation.skipped_jobs))
-
-    def test_ci_change_requires_the_search_integration_job(self) -> None:
-        module = load_gate_module()
-        outputs = classification(ci_changed=True)
-        results = {
-            **source_results(),
-            "test-rust-platforms": "success",
-            "test-search-integration": "success",
-            **PACKAGE_SUCCESS,
-            "probe-thin-bootstrap": "success",
-        }
-
-        evaluation = module.evaluate_gate(
-            "pull_request", "refs/pull/155/merge", outputs, results
+        self.assertEqual(
+            {
+                "build-tools",
+                "package-thin",
+                "probe-thin-bootstrap",
+                "release-assessment",
+                "p0-release-proof",
+                *PUBLISH_SKIPPED,
+            },
+            set(evaluation.skipped_jobs),
         )
-
-        self.assertTrue(evaluation.ok)
-        self.assertEqual("full", evaluation.contour)
-        self.assertEqual("success", evaluation.expected["test-search-integration"])
 
     def test_manual_full_contour_runs_probe_but_tag_publishes_instead(self) -> None:
         module = load_gate_module()
@@ -200,7 +188,6 @@ class EvaluateCiGateTests(unittest.TestCase):
         manual = {
             **source_results(),
             "test-rust-platforms": "success",
-            "test-search-integration": "success",
             **PACKAGE_SUCCESS,
             **ASSESSMENT_SUCCESS,
             **P0_SUCCESS,
@@ -229,7 +216,6 @@ class EvaluateCiGateTests(unittest.TestCase):
         results = {
             **source_results(),
             "test-rust-platforms": "success",
-            "test-search-integration": "success",
             **PACKAGE_SUCCESS,
             **ASSESSMENT_SUCCESS,
             **P0_SUCCESS,
@@ -269,13 +255,11 @@ class EvaluateCiGateTests(unittest.TestCase):
         outputs = classification(**{name: True for name in OUTPUT_NAMES})
         results = {
             **source_results(),
-            "verify-source": "cancelled",
+            "test-python": "cancelled",
             "test-rust-platforms": "failure",
-            "test-search-integration": "success",
-            **PACKAGE_SUCCESS,
-            **ASSESSMENT_SUCCESS,
-            "package-thin": "skipped",
-            "probe-thin-bootstrap": "success",
+            # Снятый с pull request контур, который всё-таки отработал, — тоже
+            # расхождение: гейт обязан заметить и лишнюю работу.
+            "build-tools": "success",
         }
 
         evaluation = module.evaluate_gate("pull_request", "refs/pull/155/merge", outputs, results)
@@ -283,20 +267,31 @@ class EvaluateCiGateTests(unittest.TestCase):
         self.assertFalse(evaluation.ok)
         self.assertEqual(
             {
-                "verify-source": ("cancelled", "success"),
+                "test-python": ("cancelled", "success"),
                 "test-rust-platforms": ("failure", "success"),
-                "package-thin": ("skipped", "success"),
-                "p0-release-proof": ("skipped", "success"),
+                "build-tools": ("success", "skipped"),
             },
             {key: value for key, value in evaluation.unexpected.items() if key != "classification"},
         )
+
+    def test_a_job_outside_the_gate_table_fails_the_gate_even_when_green(self) -> None:
+        """Новая джоба в `needs` гейта без строки в таблице — отказ, а не молчание."""
+        gate = load_gate_module()
+        results = {**source_results(), "brand-new-job": "failure"}
+
+        evaluation = gate.evaluate_gate("pull_request", "refs/pull/1/merge", classification(), results)
+
+        self.assertFalse(evaluation.ok)
+        self.assertEqual(evaluation.unexpected["brand-new-job"], ("failure", "джоба не в таблице ворот"))
+        green = gate.evaluate_gate("pull_request", "refs/pull/1/merge", classification(), {**source_results(), "brand-new-job": "success"})
+        self.assertFalse(green.ok)
 
     def test_summary_reports_classification_results_and_skipped_jobs(self) -> None:
         module = load_gate_module()
         outputs = classification(rust_changed=True, release_required=True)
         results = {
             **source_results(),
-            "test-rust-primary": "success",
+            "test-rust-platforms": "success",
             **PACKAGE_SUCCESS,
             "probe-thin-bootstrap": "success",
         }
@@ -307,8 +302,52 @@ class EvaluateCiGateTests(unittest.TestCase):
         self.assertIn("Contour: `rust`", summary)
         self.assertIn("Rust changed: `true`", summary)
         self.assertIn("Platform changed: `false`", summary)
-        self.assertIn("| `test-rust-platforms` | `skipped` | `skipped` |", summary)
+        self.assertIn("| `test-rust-platforms` | `success` | `success` |", summary)
         self.assertIn("Skipped jobs", summary)
+
+
+class BranchPushGateTests(unittest.TestCase):
+    """Push в main — ворота линии: все тесты, без упаковки; отсюда отчёт сайта."""
+
+    def test_branch_push_runs_every_test_and_no_package_pipeline(self) -> None:
+        module = load_gate_module()
+        outputs = classification(**{name: True for name in OUTPUT_NAMES})
+        results = {
+            **source_results(),
+            "test-rust-platforms": "success",
+        }
+
+        evaluation = module.evaluate_gate("push", "refs/heads/main", outputs, results)
+
+        self.assertTrue(evaluation.ok)
+        self.assertEqual("branch", evaluation.contour)
+        for job in (*PACKAGE_SUCCESS, *ASSESSMENT_SUCCESS, *P0_SUCCESS, "probe-thin-bootstrap"):
+            self.assertEqual("skipped", evaluation.expected[job], job)
+
+    def test_merge_group_is_the_queue_gate_full_tests_no_package_pipeline(self) -> None:
+        """Очередь слияния гоняет всё, как push в ветку; упаковка остаётся тегу."""
+        module = load_gate_module()
+        outputs = classification(**{name: True for name in OUTPUT_NAMES})
+        results = {
+            **source_results(),
+            "test-rust-platforms": "success",
+        }
+
+        evaluation = module.evaluate_gate("merge_group", "refs/heads/gh-readonly-queue/main/pr-738-abc", outputs, results)
+
+        self.assertTrue(evaluation.ok)
+        self.assertEqual("queue", evaluation.contour)
+        for job in (*PACKAGE_SUCCESS, *ASSESSMENT_SUCCESS, *P0_SUCCESS, "probe-thin-bootstrap"):
+            self.assertEqual("skipped", evaluation.expected[job], job)
+
+    def test_branch_push_with_partial_classification_is_invalid(self) -> None:
+        """На ветке отбора по файлам нет: неполная классификация — ошибка гейта."""
+        module = load_gate_module()
+        outputs = classification(rust_changed=True)
+
+        evaluation = module.evaluate_gate("push", "refs/heads/release-v0.12", outputs, source_results())
+
+        self.assertFalse(evaluation.ok)
 
 
 if __name__ == "__main__":

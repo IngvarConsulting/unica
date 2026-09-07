@@ -5,6 +5,7 @@
 //! source. Entries never outlive the server process; TTL, LRU eviction and a
 //! total-bytes quota keep it bounded.
 
+use crate::domain::refusal::RefusalCode;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -110,10 +111,10 @@ pub(crate) enum ViewCursorError {
 }
 
 impl ViewCursorError {
-    pub(crate) const fn code(self) -> &'static str {
+    pub(crate) const fn code(self) -> RefusalCode {
         match self {
-            Self::Invalid => "invalid_cursor",
-            Self::Stale => "stale_cursor",
+            Self::Invalid => RefusalCode::InvalidCursor,
+            Self::Stale => RefusalCode::StaleCursor,
         }
     }
 }
@@ -610,12 +611,5 @@ mod tests {
             expiring.read(&token, &binding, "rev-1").unwrap_err(),
             ViewCursorError::Invalid
         );
-    }
-
-    #[test]
-    fn revision_bound_view_cursor_contract_is_complete() {
-        opaque_view_cursor_retry_is_idempotent_and_bound_to_the_complete_question();
-        exact_revision_change_is_stale_but_tampering_and_expiry_are_invalid();
-        cursor_chain_is_refused_before_it_can_exceed_the_entry_bound();
     }
 }

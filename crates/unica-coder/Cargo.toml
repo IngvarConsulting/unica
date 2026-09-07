@@ -16,11 +16,24 @@ path = "src/lib.rs"
 [features]
 default = []
 receipt-ledger-test-support = []
+# Исследования — не тесты: их цели собираются только с этой фичей, и в плане
+# конвейера их нет. Запуск — scripts/research/.
+research = []
 
 [[test]]
 name = "daemon_receipt_ledger"
 path = "tests/daemon_receipt_ledger.rs"
 required-features = ["receipt-ledger-test-support"]
+
+[[test]]
+name = "research_xml_corpus"
+path = "tests/research/xml_corpus.rs"
+required-features = ["research"]
+
+[[test]]
+name = "research_cf_init_checkpoint"
+path = "tests/research/cf_init_checkpoint.rs"
+required-features = ["research"]
 
 [dependencies]
 bsl-parser.workspace = true

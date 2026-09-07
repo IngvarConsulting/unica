@@ -20,6 +20,10 @@ impl McpProcess {
         let mut child = Command::new(env!("CARGO_BIN_EXE_unica"))
             .current_dir(&workspace)
             .env("UNICA_PROVIDER_STATE_DIR", &state)
+            // Демон переживает MCP: без назначенной паузы он остаётся на
+            // четверть часа, и к концу прогона их набирается столько же,
+            // сколько было тестов.
+            .env("UNICA_DAEMON_IDLE_GRACE_MS", "5000")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -103,8 +107,9 @@ fn domain_result(response: &Value) -> Value {
     serde_json::from_str(text).expect("decode canonical DomainResult")
 }
 
+// Интеграционная цель — `medium` по `kind(test)`: идёт в очереди и на main,
+// на pull request не идёт. Отдельной джобы и выключателя больше нет.
 #[test]
-#[ignore = "canonical search integration; routed by search_integration_changed or ci:full"]
 fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
     let root = tempfile::tempdir().expect("search integration root");
     let workspace = root.path();

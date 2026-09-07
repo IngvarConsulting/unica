@@ -15,7 +15,7 @@ transaction rules, and diagnostics `АПК:66`, `АПК:67`, `АПК:325`–`А�
 `BSLLS:CommitTransactionOutsideTryCatch`,
 `BSLLS:WrongUseOfRollbackTransactionMethod`, `v8cs:lock-out-of-try`,
 `v8cs:ql-using-for-update`. Confirm the current wording with
-`unica.standards.explain` before citing one.
+`unica.docs` with `source: "development-standard"` before citing one.
 
 ## What Makes A Read Responsible
 

@@ -297,13 +297,4 @@ mod tests {
         assert!(impact.invalidated.is_empty());
         assert!(impact.eager_refresh.is_empty());
     }
-
-    #[test]
-    fn typed_event_cache_impact_catalog_is_closed() {
-        the_kind_list_covers_the_whole_enum();
-        every_event_invalidates_at_least_one_cache();
-        no_event_refreshes_a_cache_it_did_not_invalidate();
-        from_events_unions_the_impact_of_every_event();
-        no_events_leave_the_impact_empty();
-    }
 }

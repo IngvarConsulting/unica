@@ -1271,25 +1271,4 @@ mod tests {
             "{error}"
         );
     }
-
-    /// Registry-facing falsifier for the secure registered-topology builder.
-    /// The focused cases remain below so failures still identify the violated
-    /// boundary rather than only this aggregate.
-    #[test]
-    fn registered_topology_contract_is_complete() {
-        registration_order_drives_roles_and_interface_membership();
-        registered_dependency_paths_follow_registration_order_exactly();
-        content_references_are_typed_and_match_both_descriptor_identities();
-        arbitrary_nonempty_content_reference_rejects_the_topology();
-        unregistered_files_do_not_define_or_break_the_topology();
-        unregistered_oversized_xml_does_not_spend_the_topology_byte_budget();
-        unregistered_file_symlink_does_not_affect_the_topology();
-        unregistered_directory_symlink_branch_does_not_affect_the_topology();
-        registered_oversized_descriptor_fails_closed();
-        missing_malformed_and_duplicate_registered_nodes_are_rejected();
-        empty_registration_proves_an_empty_topology_without_a_subsystems_directory();
-        ninth_registered_level_exceeds_the_shared_address_budget();
-        complete_result_requires_a_checkpoint_after_secure_capture_and_parsing();
-        registered_descriptor_symlink_is_not_followed();
-    }
 }

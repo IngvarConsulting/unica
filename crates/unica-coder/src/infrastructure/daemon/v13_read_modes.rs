@@ -1,45 +1,46 @@
 use crate::domain::address::{NodeKind, QualifiedAddress};
 use crate::domain::apply::{OperationRegistry, IMPLEMENTED_APPLY_OPERATIONS};
+use crate::domain::refusal::RefusalCode;
 use crate::infrastructure::metadata_kinds::metadata_kind;
 use serde_json::{json, Map, Value};
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ReadModeError {
-    code: &'static str,
+    code: RefusalCode,
     message: String,
 }
 
 impl ReadModeError {
     fn bad_value(message: impl Into<String>) -> Self {
         Self {
-            code: "bad_value",
+            code: RefusalCode::BadValue,
             message: message.into(),
         }
     }
 
     fn unsupported_filter(message: impl Into<String>) -> Self {
         Self {
-            code: "unsupported_filter",
+            code: RefusalCode::UnsupportedFilter,
             message: message.into(),
         }
     }
 
     fn unsupported_section(message: impl Into<String>) -> Self {
         Self {
-            code: "unsupported_section",
+            code: RefusalCode::UnsupportedSection,
             message: message.into(),
         }
     }
 
     fn unsupported_scope(message: impl Into<String>) -> Self {
         Self {
-            code: "unsupported_scope",
+            code: RefusalCode::UnsupportedScope,
             message: message.into(),
         }
     }
 
-    pub(super) const fn code(&self) -> &'static str {
+    pub(super) const fn code(&self) -> RefusalCode {
         self.code
     }
 }
@@ -397,12 +398,12 @@ mod tests {
 
         let unknown = json!({"at": "main:Mystery.X", "kind": "Mystery", "title": "X"});
         let refusal = project_view_sections(&unknown, &json!(["can"])).unwrap_err();
-        assert_eq!(refusal.code(), "unsupported_section");
+        assert_eq!(refusal.code().as_str(), "unsupported_section");
         assert!(refusal.to_string().contains("`can`"), "{refusal}");
 
         let limits =
             project_view_sections(&json!({"kind": "Catalog"}), &json!(["limits"])).unwrap_err();
-        assert_eq!(limits.code(), "unsupported_section");
+        assert_eq!(limits.code().as_str(), "unsupported_section");
 
         let configuration =
             project_view_sections(&json!({"kind": "Configuration"}), &json!(["can"])).unwrap();
@@ -442,7 +443,7 @@ mod tests {
             &json!({"sections": ["can"]}),
         )
         .unwrap_err();
-        assert_eq!(computed.code(), "unsupported_filter");
+        assert_eq!(computed.code().as_str(), "unsupported_filter");
         assert!(
             computed.to_string().contains("belongs to view"),
             "{computed}"

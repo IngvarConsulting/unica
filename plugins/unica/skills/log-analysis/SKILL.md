@@ -7,7 +7,7 @@ description: "Анализ журнала регистрации и технол
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.code.search`, `unica.meta.info`, `unica.view {}`, `unica.code.diagnostics`, `unica.standards.search`, and `unica.standards.explain`.
+- Preferred path: use MCP `unica` tools `unica.code.search`, `unica.meta.info`, `unica.view {}`, `unica.code.diagnostics`, `unica.docs`.
 - По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
 показывает запланированную команду без побочных эффектов, а с `dryRun: false`
 исполняет классифицированную операцию и отвечает её терминальным результатом в
@@ -35,7 +35,7 @@ Accept explicit journal registration exports, technological log files, copied lo
 2. Build a timeline. Keep clock source and timezone explicit when several files are involved.
 3. Extract module, procedure, metadata object, HTTP path, query text, user/session, and transaction identifiers.
 4. Map log entries back to source with `unica.code.search` and metadata with `unica.meta.info`.
-5. Use `unica.standards.search` or `unica.standards.explain` for diagnostic ids and `development-standard` recommendations. The exact meaning of a platform message requires a `platform-help` source; if public MCP `unica` does not expose one, report the contract gap.
+5. Use `unica.docs` with `source: "development-standard"` for diagnostic ids and `development-standard` recommendations. The exact meaning of a platform message requires `unica.docs` with `source: "platform-help"`.
 6. Separate root cause from consequences: the first exception/lock/timeout usually matters more than later rollback noise.
 7. For DBMS evidence, preserve lock holder/waiter, SQL text, transaction boundary, process id, session id, wait event, table/index name, and elapsed time together.
 

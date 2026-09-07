@@ -70,8 +70,8 @@ atomically replaces the transliterated `skd` domain with the official
 | --- | --- |
 | `unica.skd.compile` | `unica.dcs.compile` |
 | `unica.skd.edit` | `unica.dcs.edit` |
-| `unica.skd.info` | `unica.dcs.info` |
-| `skd-compile/edit/info` | `dcs-compile/edit/info` |
+| `unica.skd.info` | `unica.dcs.info`, itself later retired for `unica.view` |
+| `skd-compile/edit/info` | `dcs-compile/edit` |
 
 The operation arguments and `DataCompositionSchema` XML format are unchanged.
 
@@ -104,31 +104,25 @@ Platform XML Configuration and Extension targets; Unica resolves the physical
 `*Module.bsl` or descriptor location privately. `unica.meta.info` also stops
 accepting `Detailed`, which it never read.
 
-`unica.source.resolve` finds an address by name, and `unica.source.locate`
-converts a path discovered by other means into one.
+`unica.find` converts a name, a synonym, or a path discovered by other means
+into a logical address.
 
 ### Readers that accept either selector
 
-Seven readers remain in the transitional state ADR-0049 defines: they accept
-the logical selector **and** still accept their existing path. The six
-`*.validate` tools that used to share this table are retired in favour of
-`unica.check` (see below); removing each remaining path is its own later merge
-request.
+Only the two spreadsheet-template readers remain in the transitional state
+ADR-0049 defines: they accept the logical selector **and** still accept their
+existing path. Every other reader that shared this table — the configuration,
+subsystem, role, form and schema readers, and the six `*.validate` tools — is
+retired in favour of `unica.view` and `unica.check`; removing the remaining
+paths is its own later merge request.
 
 | Tool | Logical selector | Path kept for now |
 | --- | --- | --- |
-| `unica.cf.info` | `sourceSet` | `ConfigPath` |
-| `unica.subsystem.info` | `sourceSet`, optional `metadataPath` | `SubsystemPath` |
-| `unica.role.info` | `sourceSet` + `metadataPath` | `RightsPath` |
-| `unica.form.info` | `sourceSet` + `metadataPath` | `FormPath` |
-| `unica.dcs.info` | `sourceSet` + `metadataPath` | `TemplatePath` |
 | `unica.mxl.info`, `unica.mxl.decompile` | `sourceSet` + `metadataPath` | `TemplatePath` |
 
 Exactly one selector per call. Passing both fails with `selector_conflict`,
 because resolving a conflict silently would hide which selector produced the
-answer. A configuration root has no address, so `unica.cf.*` takes `sourceSet`
-alone and no longer publishes `metadataPath`; `unica.subsystem.info` reads the
-whole registered tree when the address is omitted.
+answer.
 
 An addressed object whose requested body is missing — a template whose
 `TemplateType` writes `Template.bin` rather than `Template.xml` — fails with

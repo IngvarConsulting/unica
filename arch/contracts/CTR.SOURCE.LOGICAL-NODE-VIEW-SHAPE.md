@@ -3,7 +3,9 @@ id: CTR.SOURCE.LOGICAL-NODE-VIEW-SHAPE
 status: active
 governs: product
 decision: DEC.2026-08-25.LOGICAL-READ-CORE-SLICE
-check: crates/unica-coder/src/domain/node_view.rs::node_view_contract_is_complete
+check:
+  - crates/unica-coder/src/domain/node_view.rs::node_view_has_exactly_seven_common_slots_and_omits_empty_optional_slots
+  - crates/unica-coder/src/domain/node_view.rs::only_a_collection_adds_items_and_data_rows_do_not_gain_addresses
 scope: [product, source]
 version: 1
 producer: crates/unica-coder/src/domain/node_view.rs

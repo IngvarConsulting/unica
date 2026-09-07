@@ -427,13 +427,4 @@ mod tests {
             SupportPolicyMode::Deny
         );
     }
-
-    #[test]
-    fn public_support_guard_resolver_matrix_runs_real_handlers() {
-        crate::application::tests::mutating_native_support_guard_coverage_is_explicit();
-        crate::application::tests::code_patch_locked_support_blocks_preview_and_apply_before_handler();
-        crate::application::tests::subsystem_compile_guards_locked_parent_before_both_planners();
-        crate::application::tests::cf_init_support_exemption_reaches_preview_and_apply_handlers();
-        project_editing_policy_is_the_closed_support_guard_downgrade_source();
-    }
 }
