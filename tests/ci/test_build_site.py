@@ -99,9 +99,9 @@ class MergeResultsTests(unittest.TestCase):
 
 
 class LargeMemoryTests(unittest.TestCase):
-    """Память ночного прогона живёт на сайте и пишется прогоном large или тегом."""
+    """Память ночного прогона живёт на сайте и пишется только прогоном large."""
 
-    def test_large_or_release_run_writes_memory_and_others_keep_the_site_copy(self) -> None:
+    def test_only_a_large_run_writes_memory_and_others_keep_the_site_copy(self) -> None:
         module = load_module()
         root = Path(tempfile.mkdtemp(prefix="memory-"))
         results = root / "results"
@@ -116,10 +116,13 @@ class LargeMemoryTests(unittest.TestCase):
         self.assertEqual((memory["sha"], memory["profile"]), ("abc1234567", "large"))
         self.assertIn("записана", note)
 
-        (results / "run.json").write_text(json.dumps({"sha": "def", "profile": "main"}), encoding="utf-8")
-        note = module.record_large_memory(root / "data2", "main", results, fresh=True, site=None)
-        self.assertFalse((root / "data2" / "profiles" / "large.json").exists())
-        self.assertIn("нет", note)
+        # Тег идёт профилем `release` без Windows: памятью он быть не может,
+        # иначе ночь после тега пропустила бы вершину, которую Windows не видел.
+        for profile in ("main", "release"):
+            (results / "run.json").write_text(json.dumps({"sha": "def", "profile": profile}), encoding="utf-8")
+            note = module.record_large_memory(root / f"data-{profile}", "main", results, fresh=True, site=None)
+            self.assertFalse((root / f"data-{profile}" / "profiles" / "large.json").exists())
+            self.assertIn("нет", note)
 
 
 if __name__ == "__main__":

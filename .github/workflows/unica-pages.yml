@@ -5,18 +5,17 @@ name: Unica Pages
 # прогона. Своих тестов этот workflow не гоняет.
 # Публикует один воркфлоу и всегда собирает сайт целиком: Pages заменяет
 # артефакт полностью, поэтому «выложить только свою папку» невозможно.
-# Push в main пересобирает сайт сам: страницы и каталог сценариев берутся из
-# дерева, а не из чужого прогона, поэтому ждать конвейера незачем. Прогон
-# нужен ради свежих результатов Allure: `workflow_run` приносит артефакты
-# прогона-источника, и сайт складывает их в отчёт линии.
+# Сайт собирает только `workflow_run`: прогон-источник приносит и дерево, и
+# свежие результаты Allure, и сайт складывает их в отчёт линии. Прямой
+# триггер `push` снят 07.09.2026: он давал второй деплой на каждый push, а в
+# очереди без отмены новый push заменял бы ожидающий прогон с результатами —
+# и они не доехали бы до сайта никогда.
 # Ручного запуска нет нарочно. Джоба сборки скачивает артефакт чужого прогона,
 # и для CodeQL шаг после такого скачивания «отравляем», если workflow может
 # запустить внешнее событие с правом писать кэш `main`: `workflow_dispatch` в
 # его модели такое событие, `push` — нет. Пересобрать сайт руками можно
 # перезапуском любого прошлого прогона.
 on:
-  push:
-    branches: [main, "release-v*"]
   workflow_run: # zizmor: ignore[dangerous-triggers] условие джобы build принимает только push, расписание и ручной запуск этого же репозитория
     workflows: ["Build Unica Codex Plugin", "Unica Nightly"]
     types: [completed]
@@ -36,19 +35,17 @@ concurrency:
 jobs:
   build:
     name: Собрать сайт
-    # Push доверен: содержимое пришло в ветку этого репозитория. У `workflow_run`
-    # такой опоры нет: фильтр `branches` смотрит на имя ветки прогона-источника,
-    # а его выбирает автор PR — форк с веткой `main` прошёл бы через фильтр, и мы
-    # опубликовали бы его содержимое у себя. Поэтому источник обязан быть
-    # успешным push-прогоном этого же репозитория.
+    # У `workflow_run` нет своей опоры на доверие: фильтр `branches` смотрит на
+    # имя ветки прогона-источника, а его выбирает автор PR — форк с веткой `main`
+    # прошёл бы через фильтр, и мы опубликовали бы его содержимое у себя. Поэтому
+    # источник обязан быть прогоном этого же репозитория по push, расписанию
+    # или ручному запуску: у форка ни расписания, ни push сюда нет.
     # Красный прогон — тоже результат, и страница обязана его показать; не
-    # источник только отменённый. Источник — push, расписание или ручной
-    # запуск в этом репозитории: у форка ни расписания, ни push сюда нет.
+    # источник только отменённый.
     if: >-
-      github.event_name == 'push' ||
-      ((github.event.workflow_run.conclusion == 'success' || github.event.workflow_run.conclusion == 'failure') &&
-       (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'schedule' || github.event.workflow_run.event == 'workflow_dispatch') &&
-       github.event.workflow_run.head_repository.full_name == github.repository)
+      (github.event.workflow_run.conclusion == 'success' || github.event.workflow_run.conclusion == 'failure') &&
+      (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'schedule' || github.event.workflow_run.event == 'workflow_dispatch') &&
+      github.event.workflow_run.head_repository.full_name == github.repository
     # Артефакты прогона-источника читаются по `actions: read`; права джобы
     # заменяют права workflow целиком, поэтому `contents: read` повторён.
     permissions:
@@ -88,15 +85,13 @@ jobs:
       # этого репозитория (см. `if:` выше). План выгружен до тестов: тест из
       # плана без результата дописывается `skipped` с причиной «раннер не
       # дошёл» и не исчезает из истории.
-      - if: github.event_name == 'workflow_run'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ github.token }}
           pattern: "{results,plan}-*"
           path: .build/artifacts
-      - if: github.event_name == 'workflow_run'
-        name: Сложить результаты прогона-источника
+      - name: Сложить результаты прогона-источника
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_RUN: ${{ github.event.workflow_run.id }}
@@ -105,7 +100,9 @@ jobs:
         run: |
           set -eu
           mkdir -p .build
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN/jobs" > .build/jobs.json
+          # Страница целиком: матрицы дают больше тридцати джоб, а обрезанный
+          # список сделал бы исходы недошедших «unknown». Скрипт сверяет счёт.
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN/jobs?per_page=100" > .build/jobs.json
           python scripts/ci/collect-results.py --artifacts .build/artifacts --out .build/fresh \
             --jobs .build/jobs.json --fallback-line "$SOURCE_BRANCH" --site "$SITE" > .build/fresh-line.txt
 
@@ -113,9 +110,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SITE: https://ingvarconsulting.github.io/unica
-          RUN_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
-          RUN_URL: ${{ github.event.workflow_run.html_url ||
-            format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
           RUN_AT: ${{ github.event.workflow_run.updated_at }}
         run: |
           set -eu
@@ -146,10 +142,9 @@ jobs:
       - name: Пересобрать страницы с итоговым статусом
         env:
           GH_TOKEN: ${{ github.token }}
-          RUN_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
-          RUN_URL: ${{ github.event.workflow_run.html_url ||
-            format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
-          RUN_BRANCH: ${{ github.event.workflow_run.head_branch || github.ref_name }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
           set -eu
           python scripts/ci/site-status.py \

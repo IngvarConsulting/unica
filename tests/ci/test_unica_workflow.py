@@ -546,6 +546,11 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("github.event.workflow_run.conclusion == 'failure'", text)
         self.assertIn("github.event.workflow_run.event == 'schedule'", text)
         self.assertIn("github.event.workflow_run.head_repository.full_name == github.repository", text)
+        # Прямой триггер push снят: в очереди без отмены он заменял бы ожидающий
+        # прогон с результатами, и они не доехали бы до сайта.
+        self.assertNotIn("\n  push:\n", text)
+        self.assertNotIn("github.event_name == 'push'", text)
+        self.assertIn("jobs?per_page=100", text)
 
     def test_guards_ship_findings_to_code_scanning_not_the_gate(self) -> None:
         """Находка линтера — не исход теста: SARIF в Code Scanning, гейт не краснеет."""

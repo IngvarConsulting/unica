@@ -10,6 +10,11 @@ Rust-джобы ещё и `plan-*` — план, выгруженный до т�
 Линия берётся из подписи каждого артефакта, а не из события: у прогона по
 расписанию `head_branch` всегда `main`, даже когда он проверяет релизную
 линию, а ночной прогон несёт несколько линий сразу.
+
+Раннер, упавший раньше плана, — сборка не прошла — оставляет подпись без
+плана. Состав тогда берётся у сайта: записи последнего хранимого прогона того
+же профиля и раннера, и каждый такой тест пишется `skipped` с причиной. Иначе
+в объединении профилей его место заняли бы старые записи под свежей подписью.
 """
 
 from __future__ import annotations
@@ -18,10 +23,13 @@ import argparse
 import json
 import shutil
 import sys
+import tarfile
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import allure_results  # noqa: E402
+from site_fetch import fetch  # noqa: E402
 
 CATEGORIES = [
     {"name": "Инфраструктура: раннер не дошёл", "matchedStatuses": ["skipped"], "messageRegex": "раннер не дошёл.*"},
@@ -72,6 +80,10 @@ def job_conclusions(jobs: Path | None) -> dict[str, str]:
     if jobs is None or not jobs.is_file():
         return {}
     listed = load_json(jobs)
+    total = listed.get("total_count")
+    if isinstance(total, int) and total > len(listed.get("jobs", [])):
+        # Обрезанный список — исходы недошедших джоб стали бы «unknown» молча.
+        raise SystemExit(f"список джоб обрезан: {len(listed['jobs'])} из {total}; читайте страницу целиком")
     return {job["name"]: (job.get("conclusion") or job.get("status") or "unknown") for job in listed.get("jobs", [])}
 
 
@@ -112,6 +124,53 @@ def fill_gaps(plan_dir: Path, run: dict, seen: set[str], out: Path, conclusions:
                 labels=allure_results.rust_labels(case["binary"], case["name"], profile),
                 tags=(profile, "infrastructure"),
                 message=message,
+            ),
+        )
+        filled += 1
+    return filled
+
+
+def stored_rust_records(site: str, line: str, profile: str, runner: str, work: Path) -> tuple[list[dict], str] | None:
+    """Записи Rust этого раннера из последнего хранимого прогона профиля на сайте."""
+    archive = work / f"{line}-{profile}.tar.gz"
+    if not fetch(f"{site}/data/{line}/results/{profile}.tar.gz", archive):
+        return None
+    unpacked = work / line / profile
+    with tarfile.open(archive) as bundle:
+        bundle.extractall(unpacked, filter="data")
+    signature = unpacked / "run.json"
+    sha = load_json(signature).get("sha", "") if signature.is_file() else ""
+    records: dict[str, dict] = {}
+    for path in sorted(unpacked.glob("*-result.json")):
+        entry = load_json(path)
+        if label(entry, "language") == "rust" and label(entry, "host") == runner:
+            records.setdefault(entry["fullName"], entry)
+    return list(records.values()), sha
+
+
+def fill_from_site(site: str, line: str, run: dict, seen: set[str], out: Path, conclusions: dict[str, str], work: Path) -> int:
+    """Подпись без плана — сборка не прошла. Состав берётся у сайта, тесты — `skipped`."""
+    runner = run.get("runner", "")
+    profile = run.get("profile", "all")
+    job = f"Rust tests ({runner})"
+    conclusion = conclusions.get(job) or "unknown"
+    stored = stored_rust_records(site, line, profile, runner, work)
+    if stored is None:
+        return 0
+    records, sha = stored
+    filled = 0
+    for entry in records:
+        if entry["fullName"] in seen:
+            continue
+        labels = {item["name"]: item["value"] for item in entry.get("labels", []) if item["name"] not in ("host", "tag")}
+        message = f"раннер не дошёл до плана: {job} · {conclusion} · состав взят из прогона {sha[:7] or '?'}"
+        if run.get("run_url"):
+            message += f" · {run['run_url']}"
+        allure_results.write(
+            out,
+            allure_results.record(
+                name=entry["name"], full_name=entry["fullName"], status="skipped", runner=runner,
+                labels=labels, tags=(profile, "infrastructure"), message=message,
             ),
         )
         filled += 1
@@ -180,12 +239,21 @@ def collect(artifacts: Path, out_root: Path, jobs: Path | None, fallback_line: s
         if run.get("runner"):
             by_line[line]["runners"].add(run["runner"])
         seen.setdefault((line, run.get("runner", "")), set()).update(names)
+    planned: set[tuple[str, str]] = set()
     for plan_dir, run in signed_dirs(artifacts, "plan-"):
         line = line_of(run, fallback_line)
         if line not in by_line:
             continue
-        have = seen.get((line, run.get("runner", "")), set())
-        by_line[line]["filled"] += fill_gaps(plan_dir, run, have, out_root / line, conclusions)
+        key = (line, run.get("runner", ""))
+        planned.add(key)
+        by_line[line]["filled"] += fill_gaps(plan_dir, run, seen.get(key, set()), out_root / line, conclusions)
+    # Rust-раннер с подписью, но без плана: сборка упала раньше `nextest list`.
+    with tempfile.TemporaryDirectory(prefix="stored-") as work:
+        for path, run in results:
+            key = (line_of(run, fallback_line), run.get("runner", ""))
+            if run.get("ecosystem") != "rust" or key in planned or not site:
+                continue
+            by_line[key[0]]["filled"] += fill_from_site(site, key[0], run, seen.get(key, set()), out_root / key[0], conclusions, Path(work))
     for line, stats in by_line.items():
         stats["runners"] = sorted(stats["runners"])
         write_metadata(out_root / line, stats.pop("run"), line, stats["runners"], site)

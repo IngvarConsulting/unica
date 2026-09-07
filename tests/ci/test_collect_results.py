@@ -136,6 +136,63 @@ class CollectResultsTests(unittest.TestCase):
             self.assertEqual(gap["fullName"], f"unica-coder::{line}::missing")
             self.assertEqual(gap["status"], "skipped")
 
+    def test_a_truncated_job_list_is_a_refusal_not_an_unknown_outcome(self) -> None:
+        """Обрезанная страница джоб сделала бы исходы недошедших «unknown» молча."""
+        jobs = self.root / "jobs.json"
+        jobs.write_text(json.dumps({"total_count": 31, "jobs": [{"name": "Guards", "conclusion": "success"}] * 30}), encoding="utf-8")
+
+        with self.assertRaises(SystemExit):
+            self.collect.job_conclusions(jobs)
+
+    def test_signature_without_a_plan_takes_the_composition_from_the_site(self) -> None:
+        """Сборка упала раньше `nextest list`: состав — из хранимого прогона, тесты — skipped."""
+        stored = self.root / "stored"
+        stored.mkdir()
+        for name in ("address::resolves", "daemon::never_built"):
+            self.allure.write(stored, self.rust(name, "ubuntu-latest"))
+        # Повтор той же записи — попытки в хранимом прогоне не удваивают состав.
+        self.allure.write(stored, self.rust("daemon::never_built", "ubuntu-latest", status="failed"))
+        self.allure.write(stored, self.rust("other_runner::test", "macos-14"))
+        self.allure.write(stored, self.python("ubuntu-latest"))
+        (stored / "run.json").write_text(json.dumps({"sha": "0123456789abcdef", "profile": "all"}), encoding="utf-8")
+        archive = self.root / "all.tar.gz"
+        import tarfile
+        with tarfile.open(archive, "w:gz") as bundle:
+            for item in sorted(stored.iterdir()):
+                bundle.add(item, arcname=item.name)
+        fetched: list[str] = []
+
+        def fake_fetch(url: str, target: Path) -> bool:
+            fetched.append(url)
+            if url.endswith("/data/release-v0.12/results/all.tar.gz"):
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(archive.read_bytes())
+                return True
+            return False
+
+        self.collect.fetch = fake_fetch
+        self.signed("results-rust-ubuntu-latest", "ubuntu-latest", "rust", [self.rust("address::resolves", "ubuntu-latest")])
+        self.signed("results-python", "ubuntu-latest", "python", [self.python("ubuntu-latest")])
+        jobs = self.root / "jobs.json"
+        jobs.write_text(json.dumps({"jobs": [{"name": "Rust tests (ubuntu-latest)", "conclusion": "failure"}]}), encoding="utf-8")
+        out = self.root / "fresh"
+
+        lines = self.collect.collect(self.artifacts, out, jobs, "", "https://example.invalid")
+
+        self.assertEqual(fetched, ["https://example.invalid/data/release-v0.12/results/all.tar.gz"])
+        self.assertEqual((lines["release-v0.12"]["copied"], lines["release-v0.12"]["filled"]), (2, 1))
+        gaps = [json.loads(r.read_text(encoding="utf-8")) for r in (out / "release-v0.12").glob("*-result.json")]
+        gap = next(g for g in gaps if g["fullName"] == "unica-coder::daemon::never_built")
+        self.assertEqual(gap["status"], "skipped")
+        self.assertIn("раннер не дошёл до плана: Rust tests (ubuntu-latest) · failure", gap["statusDetails"]["message"])
+        self.assertIn("состав взят из прогона 0123456", gap["statusDetails"]["message"])
+        labels = {l["name"]: l["value"] for l in gap["labels"]}
+        self.assertEqual((labels["language"], labels["host"]), ("rust", "ubuntu-latest"))
+        self.assertIn("infrastructure", [l["value"] for l in gap["labels"] if l["name"] == "tag"])
+        self.assertEqual(gap["historyId"], self.allure.history_id("unica-coder::daemon::never_built", "ubuntu-latest"))
+        # Чужой раннер и Python из хранимого прогона в состав не попадают.
+        self.assertFalse(any(g["fullName"] == "unica-coder::other_runner::test" for g in gaps))
+
     def test_nested_artifacts_of_a_relayed_run_are_found_at_any_depth(self) -> None:
         """Ночь выкладывает артефакты запущенного large одним своим — вложенным."""
         nested = self.artifacts / "results-nightly" / "main"

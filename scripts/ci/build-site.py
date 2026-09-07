@@ -15,9 +15,10 @@ import shutil
 import subprocess
 import sys
 import tarfile
-import urllib.error
-import urllib.request
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from site_fetch import fetch  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RENDER = Path(__file__).with_name("render-pages.py")
@@ -57,17 +58,6 @@ def render_pages(status: Path, out: Path) -> list[str]:
         json.dumps(status_document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     return written
-
-
-def fetch(url: str, target: Path) -> bool:
-    """Скачать файл с опубликованного сайта, если он там есть."""
-    try:
-        with urllib.request.urlopen(url, timeout=60) as response:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(response.read())
-        return True
-    except Exception:
-        return False
 
 
 def carry_history(results: Path, site: str | None, line: str) -> int:
@@ -197,16 +187,17 @@ def merge_results(sources: list[Path], out: Path) -> int:
     return len(winners)
 
 
-LARGE_PROFILES = ("large", "release")
+LARGE_PROFILES = ("large",)
 
 
 def record_large_memory(data: Path, line: str, results: Path, fresh: bool, site: str | None) -> str:
     """Память ночного прогона: какую вершину линии `large` проверил последним.
 
     Ночной workflow читает её с сайта и пропускает линию, чья вершина на месте.
-    Прогон по тегу пишет ту же память: после тега на вершине ночью — пропуск.
-    Линия без такого прогона переносит память с сайта, иначе каждая
-    пересборка страниц стирала бы её.
+    Пишет её только прогон `large`: у прогона по тегу профиль `release` без
+    Windows, и будь тег памятью, ночь после него пропустила бы вершину, которую
+    Windows не видел. Линия без такого прогона переносит память с сайта, иначе
+    каждая пересборка страниц стирала бы её.
     """
     target = data / "profiles" / "large.json"
     signature = results / "run.json"
