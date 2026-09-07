@@ -13,7 +13,13 @@ pub(crate) mod test_support;
 
 pub use infrastructure::platform::run_platform_main;
 
-// Репетиция двух полос: ошибка только под macOS должна пройти PR-гейт на
-// ubuntu и покраснеть в очереди слияния, где идёт полная матрица.
-#[cfg(all(test, target_os = "macos"))]
-compile_error!("репетиция двух полос: macOS краснеет в очереди");
+// Репетиция двух полос: тест падает только на macOS и без `cfg` по ОС —
+// страж границы платформ не терпит таких условий вне фасада `platform/`.
+// Ожидание: PR-гейт на ubuntu зелёный, очередь с полной матрицей красная.
+#[cfg(test)]
+mod two_lane_rehearsal {
+    #[test]
+    fn fails_only_on_macos() {
+        assert_ne!(std::env::consts::OS, "macos", "репетиция двух полос: macOS краснеет в очереди");
+    }
+}
