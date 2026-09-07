@@ -87,22 +87,31 @@ def rust_commands(profile: str) -> list[list[str]]:
     return [command]
 
 
+def python_suite_names() -> tuple[str, ...]:
+    return tuple(suite for suite, _, _ in PYTHON_SUITES)
+
+
 def python_commands(
     profile: str,
     interpreter: str = sys.executable,
     results: Path | None = None,
     runner: str = "local",
+    suite: str | None = None,
 ) -> list[list[str]]:
     """Команды Python для профиля: наборы тех размеров, что ворота принимают.
 
     Идут через `run-unittest.py`: это тот же `discover` и тот же текстовый
     вывод, но с классом результата, который пишет `allure-results`, когда
     указан каталог. Без каталога набор идёт как раньше и ничего не пишет.
+    `suite` сужает прогон до одного набора: в CI наборы идут параллельными
+    джобами, по одной на набор, и каждая зовёт этот же шов.
     """
     try:
         admitted = ADMITTED[profile]
     except KeyError:
         raise ValueError(f"профиль {profile!r} для Python не описан") from None
+    if suite is not None and suite not in python_suite_names():
+        raise ValueError(f"набор {suite!r} не описан; известны: {', '.join(python_suite_names())}")
     # Размер набора — умолчание; манифест поднимает отдельные классы и тесты
     # до `medium`. Ворота, допускающие не все размеры, получают `--admit`;
     # `all` без записи результатов повторяет прежнюю команду один в один.
@@ -115,9 +124,9 @@ def python_commands(
         return ["--results", str(results), "--runner", runner, "--profile", profile, "--size", size, "--sizes", str(PYTHON_SIZES), *sizing]
 
     return [
-        [interpreter, str(RUN_UNITTEST), "-s", suite, *extra, *tail(size)]
-        for suite, size, extra in PYTHON_SUITES
-        if size in admitted
+        [interpreter, str(RUN_UNITTEST), "-s", name, *extra, *tail(size)]
+        for name, size, extra in PYTHON_SUITES
+        if size in admitted and (suite is None or name == suite)
     ]
 
 
@@ -127,6 +136,7 @@ def commands(
     interpreter: str = sys.executable,
     results: Path | None = None,
     runner: str = "local",
+    suite: str | None = None,
 ) -> list[list[str]]:
     if profile not in PROFILES:
         raise ValueError(f"неизвестный профиль {profile!r}; известны: {', '.join(PROFILES)}")
@@ -136,7 +146,7 @@ def commands(
     if ecosystem in ("rust", "all"):
         planned.extend(rust_commands(profile))
     if ecosystem in ("python", "all"):
-        planned.extend(python_commands(profile, interpreter, results, runner))
+        planned.extend(python_commands(profile, interpreter, results, runner, suite))
     return planned
 
 
@@ -184,9 +194,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--plan-only", action="store_true", help="записать план и выйти")
     parser.add_argument("--line", default=None, help="линия прогона для подписи; по умолчанию — из окружения")
     parser.add_argument("--sha", default=None, help="вершина линии для подписи; по умолчанию — из окружения")
+    parser.add_argument("--suite", default=None, choices=python_suite_names(),
+                        help="один набор Python вместо всех: в CI наборы идут джобами, по одной на набор")
     args = parser.parse_args(argv)
 
-    planned = commands(args.profile, args.ecosystem, results=args.results, runner=args.runner)
+    planned = commands(args.profile, args.ecosystem, results=args.results, runner=args.runner, suite=args.suite)
     if args.dry_run:
         for command in planned:
             print(" ".join(command))
@@ -204,7 +216,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"план Rust: {write_rust_plan(args.results, args.profile)} тестов")
         return 0
 
-    return execute(args.profile, args.ecosystem, args.results, args.runner, line=args.line, sha=args.sha)
+    return execute(args.profile, args.ecosystem, args.results, args.runner, line=args.line, sha=args.sha, suite=args.suite)
 
 
 def execute(
@@ -216,6 +228,7 @@ def execute(
     junit: Path | None = None,
     line: str | None = None,
     sha: str | None = None,
+    suite: str | None = None,
 ) -> int:
     """Прогнать экосистемы и оставить результаты.
 
@@ -239,7 +252,7 @@ def execute(
         if code != 0:
             return code
     if ecosystem in ("python", "all"):
-        code = run_commands(python_commands(profile, results=results, runner=runner))
+        code = run_commands(python_commands(profile, results=results, runner=runner, suite=suite))
     return code
 
 

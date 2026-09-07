@@ -207,6 +207,21 @@ class GateProfileTests(unittest.TestCase):
         # Ночной ярус принимает только `large`, а таких наборов пока нет.
         self.assertEqual(module.python_commands("large", "python3"), [])
 
+    def test_one_suite_per_job_narrows_the_seam_without_changing_the_command(self) -> None:
+        """В CI наборы идут параллельными джобами: `--suite` даёт ровно одну команду, ту же самую."""
+        module = load_module()
+
+        every = module.python_commands("main", "python3")
+        for suite, _, _ in module.PYTHON_SUITES:
+            with self.subTest(suite=suite):
+                only = module.python_commands("main", "python3", suite=suite)
+                self.assertEqual(only, [command for command in every if command[3] == suite])
+        self.assertEqual(module.commands("main", "python", "python3", suite="tests/arch"), module.python_commands("main", "python3", suite="tests/arch"))
+        with self.assertRaises(ValueError):
+            module.python_commands("main", "python3", suite="tests/nowhere")
+        # Rust от набора не зависит: `--suite` сужает только Python.
+        self.assertEqual(module.commands("main", "all", "python3", suite="tests/ci")[0], module.rust_commands("main")[0])
+
 
 if __name__ == "__main__":
     unittest.main()
