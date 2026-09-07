@@ -4737,7 +4737,7 @@ fn recover_from_live_daemon(
     identity: &CoreIdentity,
     key: ReceiptKey,
 ) -> Result<V5ServerResponse, String> {
-    let mut owner = V5DaemonProcessOwner::connect_or_spawn_for_protocol_test(
+    let mut owner = V5DaemonProcessOwner::connect_or_spawn(
         state_root,
         identity.clone(),
         std::path::PathBuf::from("unused-existing-v5-scenario-endpoint"),
@@ -4752,7 +4752,7 @@ fn read_task_from_live_daemon(
     task_id: TaskId,
     api: ScenarioTaskApi,
 ) -> Result<V5ServerResponse, String> {
-    let mut owner = V5DaemonProcessOwner::connect_or_spawn_for_protocol_test(
+    let mut owner = V5DaemonProcessOwner::connect_or_spawn(
         state_root,
         identity.clone(),
         std::path::PathBuf::from("unused-existing-v5-scenario-endpoint"),
@@ -5679,7 +5679,7 @@ fn run_direct_load(
     });
     let operation = (|| {
         wait_for_endpoint(state_root, identity)?;
-        let _anchor = V5DaemonProcessOwner::connect_or_spawn_for_protocol_test(
+        let _anchor = V5DaemonProcessOwner::connect_or_spawn(
             state_root,
             identity.clone(),
             std::path::PathBuf::from("unused-existing-v5-load-anchor"),
@@ -7175,7 +7175,7 @@ fn exchange_once(
     });
     let response = (|| {
         wait_for_endpoint(state_root, identity)?;
-        let mut owner = V5DaemonProcessOwner::connect_or_spawn_for_protocol_test(
+        let mut owner = V5DaemonProcessOwner::connect_or_spawn(
             state_root,
             identity.clone(),
             std::path::PathBuf::from("unused-existing-v5-scenario-endpoint"),
@@ -7229,7 +7229,7 @@ fn exchange_once_retaining_actor(
         let actor = actor_receiver
             .recv_timeout(SCENARIO_ENDPOINT_STARTUP_TIMEOUT)
             .map_err(|_| "protocol-v5 retained receipt actor was not published".to_owned())?;
-        let mut owner = V5DaemonProcessOwner::connect_or_spawn_for_protocol_test(
+        let mut owner = V5DaemonProcessOwner::connect_or_spawn(
             state_root,
             identity.clone(),
             std::path::PathBuf::from("unused-existing-v5-scenario-endpoint"),
@@ -9167,7 +9167,7 @@ fn exchange_ack_and_expect_disconnect(
     });
     let result = (|| {
         wait_for_endpoint(state_root, identity)?;
-        let mut owner = V5DaemonProcessOwner::connect_or_spawn_for_protocol_test(
+        let mut owner = V5DaemonProcessOwner::connect_or_spawn(
             state_root,
             identity.clone(),
             std::path::PathBuf::from("unused-existing-v5-scenario-endpoint"),
@@ -9203,7 +9203,7 @@ fn exchange_submit_and_expect_disconnect(
     });
     let result = (|| {
         wait_for_endpoint(state_root, identity)?;
-        let mut owner = V5DaemonProcessOwner::connect_or_spawn_for_protocol_test(
+        let mut owner = V5DaemonProcessOwner::connect_or_spawn(
             state_root,
             identity.clone(),
             std::path::PathBuf::from("unused-existing-v5-scenario-endpoint"),
@@ -9461,7 +9461,7 @@ impl PendingSubmit {
         identity: &CoreIdentity,
         invocation: V5InvocationRequest,
     ) -> Result<V5ServerResponse, String> {
-        let mut owner = V5DaemonProcessOwner::connect_or_spawn_for_protocol_test(
+        let mut owner = V5DaemonProcessOwner::connect_or_spawn(
             state_root,
             identity.clone(),
             std::path::PathBuf::from("unused-existing-v5-scenario-endpoint"),
@@ -9530,7 +9530,7 @@ fn spawn_additional_submit_client(
     let client_state_root = state_root.to_path_buf();
     let client_identity = identity.clone();
     let client = thread::spawn(move || {
-        let mut owner = V5DaemonProcessOwner::connect_or_spawn_for_protocol_test(
+        let mut owner = V5DaemonProcessOwner::connect_or_spawn(
             &client_state_root,
             client_identity,
             std::path::PathBuf::from("unused-existing-v5-scenario-endpoint"),
@@ -9551,7 +9551,7 @@ fn cancel_on_live_daemon(
     identity: &CoreIdentity,
     key: ReceiptKey,
 ) -> Result<V5ServerResponse, String> {
-    let mut owner = V5DaemonProcessOwner::connect_or_spawn_for_protocol_test(
+    let mut owner = V5DaemonProcessOwner::connect_or_spawn(
         state_root,
         identity.clone(),
         std::path::PathBuf::from("unused-existing-v5-scenario-endpoint"),
@@ -9608,7 +9608,7 @@ fn start_blocked_submit(
     let client_state_root = state_root.to_path_buf();
     let client_identity = identity.clone();
     let client = thread::spawn(move || {
-        let mut owner = V5DaemonProcessOwner::connect_or_spawn_for_protocol_test(
+        let mut owner = V5DaemonProcessOwner::connect_or_spawn(
             &client_state_root,
             client_identity.clone(),
             std::path::PathBuf::from("unused-existing-v5-scenario-endpoint"),

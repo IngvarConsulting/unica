@@ -134,7 +134,7 @@ pub fn connect_owner_for_protocol_test(
         ))
         .connect_or_spawn()
         .map(DaemonOwnerLeaseInner::V3),
-        DaemonProtocolIdentity::V5 => V5DaemonProcessOwner::connect_or_spawn_for_protocol_test(
+        DaemonProtocolIdentity::V5 => V5DaemonProcessOwner::connect_or_spawn(
             state_root,
             identity,
             executable.to_path_buf(),

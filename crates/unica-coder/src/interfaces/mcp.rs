@@ -6,9 +6,8 @@
 //! application layer (ADR-0002) and keeps the tool contract data-driven from
 //! operation descriptors (ADR-0001) instead of SDK macros.
 
-use crate::application::invocation::{
-    handoff_budget, INVOCATION_HANDOFF_WINDOW, RESPONSE_SERIALIZATION_MARGIN,
-};
+use super::daemon_router::FrontendInvocationDeadline;
+use crate::application::invocation::RESPONSE_SERIALIZATION_MARGIN;
 use crate::application::invocation_store::ToolIdentity;
 use crate::application::tool_contracts::{SurfaceRelease, V13TaskProfile};
 use crate::application::{
@@ -100,46 +99,6 @@ enum SurfaceToolOutcome {
     Legacy(Box<OperationResult>),
     Canonical(crate::domain::invocation::DomainResult),
     Task(crate::infrastructure::daemon::protocol::DaemonTaskSnapshot),
-}
-
-#[derive(Debug, Clone, Copy)]
-struct FrontendInvocationDeadline {
-    received_at: Instant,
-    host_remaining_at_receipt: Option<Duration>,
-}
-
-impl FrontendInvocationDeadline {
-    fn new(received_at: Instant, host_remaining_at_receipt: Option<Duration>) -> Self {
-        Self {
-            received_at,
-            host_remaining_at_receipt,
-        }
-    }
-
-    fn remaining_at(self, now: Instant) -> Duration {
-        remaining_invocation_budget(self.received_at, now, self.host_remaining_at_receipt)
-    }
-
-    fn remaining_transport_at(self, now: Instant) -> Duration {
-        let elapsed = now.saturating_duration_since(self.received_at);
-        let own_remaining = INVOCATION_HANDOFF_WINDOW
-            .saturating_add(RESPONSE_SERIALIZATION_MARGIN)
-            .saturating_sub(elapsed);
-        let host_remaining = self
-            .host_remaining_at_receipt
-            .map(|remaining| remaining.saturating_sub(elapsed));
-        host_remaining.map_or(own_remaining, |remaining| own_remaining.min(remaining))
-    }
-
-    fn transport_cutoff(self) -> Instant {
-        let own_cutoff = self
-            .received_at
-            .checked_add(INVOCATION_HANDOFF_WINDOW.saturating_add(RESPONSE_SERIALIZATION_MARGIN))
-            .expect("bounded frontend transport cutoff");
-        self.host_remaining_at_receipt
-            .and_then(|remaining| self.received_at.checked_add(remaining))
-            .map_or(own_cutoff, |host_cutoff| own_cutoff.min(host_cutoff))
-    }
 }
 
 pub fn run_stdio() {
@@ -346,18 +305,6 @@ impl UnicaServer {
     fn in_flight(&self) -> Arc<InFlightRegistry> {
         Arc::clone(&self.in_flight)
     }
-}
-
-fn remaining_invocation_budget(
-    received_at: Instant,
-    now: Instant,
-    host_remaining_at_receipt: Option<Duration>,
-) -> Duration {
-    let elapsed = now.saturating_duration_since(received_at);
-    let own_remaining = INVOCATION_HANDOFF_WINDOW.saturating_sub(elapsed);
-    let host_remaining =
-        host_remaining_at_receipt.map(|remaining| remaining.saturating_sub(elapsed));
-    own_remaining.min(handoff_budget(host_remaining))
 }
 
 fn execute_surface_tool(
@@ -1385,8 +1332,10 @@ impl Drop for InFlightGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::invocation::INVOCATION_HANDOFF_WINDOW;
     use crate::application::{ResultContract, ToolExecution};
     use crate::domain::cache::CacheReport;
+    use crate::interfaces::daemon_router::remaining_invocation_budget;
     use serde_json::json;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::mpsc;
