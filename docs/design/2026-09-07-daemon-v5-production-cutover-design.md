@@ -271,6 +271,31 @@ ROUTING-SLICE и NATIVE-TASK-PROJECTION-SLICE, контракт протокол
 `CTR.APP.DAEMON-LONG-WORK-CAPABILITIES` — на тестах v5. Находка: страж
 неизменности разбирает Rust через tree-sitter, и `&raw` он читает как
 raw-borrow — переменную с таким именем брать по ссылке нельзя.
+Джоба `guards` не ставила зависимости наборов, и страж на CI отказывал
+текстом «tree-sitter Rust parser unavailable» — починено отдельным PR
+(#778); ночной `large` на Windows не уложился в час — срок джобы Rust для
+`profile: large` поднят до трёх часов (#777).
+
+**Шаг E, план по инвентаризации после C.** Снаружи ядра v3 ссылки остались
+в четырёх файлах: пробы «v5 отвергает v3/v4» в `receipt_scenario_v5.rs`
+(кадры `protocol_v3`), ветка V3 тестового входа в `interfaces/daemon.rs`,
+`production_v3` в `identity.rs`, один тест `runtime_v5.rs`. Внутри:
+`client.rs` целиком; в `protocol.rs` общим остаётся только
+`InvocationRequest` (его принимает общий предметный сервис); в `server.rs`
+цикл v3 (`run_daemon`, `handle_connection`, `DaemonInvocationRuntime`,
+реестр lease v3) и пятнадцать тестов на этом цикле, среди них свидетельства
+реестра — `hidden_v13_logical_lease_survives…`, `canonical_refusals_answer…`,
+`daemon_shared_delivery…`, `v13_daemon_rejects_unproved_edt…`,
+`production_v3_daemon_configuration_executes_useful_modes…` и другие; их
+переписывать на рантайм v5 под теми же именами, чтобы правила реестра не
+трогать; в `daemon/mod.rs` 52 теста клиента v3 — снимаются, свидетельство
+`DEC.2026-08-25.LOGICAL-READ-CORE-SLICE` переадресуется (поле `realized`
+записываемое); хранилища v3 — `FileInvocationStore`, `invocation_store_actor`,
+исполнитель в `application/invocation.rs` — снимаются, общие константы и
+`normalized_arguments_hash` остаются. Снятие идёт своим решением: проверка
+`INV.APP.V13-USEFUL-PARTIAL-MODES` меняет имя, а единственной допустимой
+identity становится production v5 — process-тест двух несовместимых
+identity теряет предмет.
 
 ## Открытые вопросы
 
