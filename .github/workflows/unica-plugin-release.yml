@@ -63,17 +63,24 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      # Раннеры матрицы Rust. Windows — только в ночном ярусе `large`: с
-      # матрицы pull request и main он снят за нестабильность раннера, а
-      # ночью сбой виден и никого не блокирует.
+      # Раннеры матрицы Rust — две полосы. Pull request идёт только на ubuntu:
+      # быстрый сигнал. Полная матрица идёт в очереди слияния, на push в ветку
+      # и по кнопке: очередь проверяет ровно то дерево, что ляжет в `main`, и
+      # класс дефектов `#[cfg]` ловит она, ценой одной выкидки, а не красного
+      # `main`. Метка `ci:full` возвращает полную матрицу на pull request.
+      # Windows — только в ночном ярусе `large`: с остальных матриц он снят за
+      # нестабильность раннера, а ночью сбой виден и никого не блокирует.
       - id: runners
         env:
           PROFILE: ${{ github.event_name == 'workflow_dispatch' && inputs.profile || '' }}
+          FULL_MATRIX: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
         run: |
           if [ "$PROFILE" = "large" ]; then
             echo 'runners=["ubuntu-latest", "macos-14", "windows-latest"]' >> "$GITHUB_OUTPUT"
-          else
+          elif [ "$FULL_MATRIX" = "true" ]; then
             echo 'runners=["ubuntu-latest", "macos-14"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'runners=["ubuntu-latest"]' >> "$GITHUB_OUTPUT"
           fi
       # Линия прогона едет в подписи результатов: для ветки — она сама, для
       # тега — релизная линия с его коммитом; тег вне релизной линии — отказ.
@@ -222,10 +229,10 @@ jobs:
     # Windows идёт только в ночном ярусе, и его сбой обязан быть виден, но
     # не должен блокировать упаковку и пробу того же прогона.
     continue-on-error: ${{ matrix.runner == 'windows-latest' }}
-    # Любая правка Rust идёт на обеих платформах: `#[cfg]` решает, какие
-    # элементы существуют, и один раннер этого класса не видит. Прежняя
-    # экономия — один раннер для rust-only pull request — снята: под
-    # профилем `pr` тесты идут полминуты, а сборку платишь всё равно.
+    # Любая правка Rust гоняет эту джобу; состав раннеров решает
+    # `classify-changes`: pull request — ubuntu, очередь, push и кнопка — обе
+    # платформы. Класс дефектов `#[cfg]` один раннер не видит, его ловит
+    # очередь над тем же деревом, что ляжет в `main`.
     if: >-
       ${{
         needs.classify-changes.outputs.rust_changed == 'true' ||
