@@ -1368,6 +1368,69 @@ mod tests {
     }
 
     #[test]
+    fn live_daemon_hands_inline_work_over_the_cutoff_to_a_task_the_same_attempt_completes() {
+        let service = Arc::new(ScriptedService {
+            delay: Duration::from_millis(9_000),
+            known_long: false,
+            outcome: Mutex::new(None),
+            executions: AtomicUsize::new(0),
+        });
+        let daemon = LiveDaemon::start(service.clone());
+        let router = canonical_daemon_router(daemon.owner(), daemon.workspace_hint.clone());
+
+        let started = Instant::now();
+        let outcome = call(&router, None);
+        let answered_after = started.elapsed();
+
+        let Ok(CanonicalCallOutcome::Task(snapshot)) = outcome else {
+            panic!("inline work past the cutoff must become a Task: {outcome:?}");
+        };
+        assert!(
+            snapshot.completed_result().is_none(),
+            "the handoff answers before the attempt finishes: {snapshot:?}"
+        );
+        // The daemon hands off at its own seventh second and the frontend
+        // still gets the answer inside its transport window plus recovery.
+        assert!(
+            answered_after
+                < INVOCATION_HANDOFF_WINDOW + RESPONSE_SERIALIZATION_MARGIN + RECOVERY_BUDGET,
+            "the Task answered at {answered_after:?}"
+        );
+        assert!(
+            answered_after >= INVOCATION_HANDOFF_WINDOW - Duration::from_millis(500),
+            "a direct attempt is not shortened before the cutoff: {answered_after:?}"
+        );
+
+        let task_id = snapshot.task_id();
+        let settle_by = Instant::now() + Duration::from_secs(20);
+        let terminal = loop {
+            let observed =
+                (router.wait)(task_id, 2_000, deadline(None)).expect("wait on the handed-off Task");
+            if observed.completed_result().is_some() {
+                break observed;
+            }
+            assert!(
+                Instant::now() < settle_by,
+                "the Task never completed: {observed:?}"
+            );
+        };
+        assert_eq!(
+            terminal
+                .completed_result()
+                .map(|result| result.summary.as_str()),
+            Some("executed"),
+            "the worker's own outcome becomes the Task terminal: {terminal:?}"
+        );
+        assert_eq!(
+            service.executions.load(Ordering::SeqCst),
+            1,
+            "the handoff keeps the only attempt; nothing is re-executed"
+        );
+        drop(router);
+        daemon.finish();
+    }
+
+    #[test]
     fn live_daemon_executes_once_and_compacts_the_acknowledged_receipt_to_a_tombstone() {
         let service = Arc::new(ScriptedService {
             delay: Duration::ZERO,

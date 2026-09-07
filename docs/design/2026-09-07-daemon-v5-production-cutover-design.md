@@ -314,23 +314,56 @@ Windows — под новым трёхчасовым сроком, итог ни
 `daemon/mod.rs` — тесты v3, красные там и до перехода (прогон 34052206875
 от 06.09), уходят вместе с v3 на шаге E.
 
-**Выкидка #780 из очереди (run 34155030958).** Приёмочный корпус
-(`ci-medium`): пятнадцать из двадцати одного сценария `unica.docs` получили
-отказ «daemon invocation receipt is still pending at the frontend cutoff»
-вместо `ok | provider | task`. Причина глубже окна восстановления: роутер
-считал бюджет daemon до подключения, а daemon отсчитывает handoff от приёма
-кадра — при медленном connect (или запуске daemon) его передача в Task
-приходила уже после cutoff фронтенда, ответ терялся, recover находил
-квитанцию pending, срок которой лежит за окном, и отвечал отказом, которого
-корпус не знает. На `main` тот же случай выглядел как «protocol-v5 deadline
-expired during connect» и проходил корпус только благодаря подстроке
-«deadline expired» — класс `provider`. Правка в том же PR: бюджет daemon —
-остаток бюджета фронтенда после установленного соединения (тест
+**Выкидка #780 из очереди (run 34155030958) и настоящая причина.**
+Приёмочный корпус (`ci-medium`): пятнадцать из двадцати одного сценария
+`unica.docs` получили отказ «daemon invocation receipt is still pending at
+the frontend cutoff» вместо `ok | provider | task`; на `main` тот же случай
+выглядел как «protocol-v5 deadline expired during connect» и проходил корпус
+только благодаря подстроке «deadline expired» — класс `provider`. Первая
+правка в #780 — бюджет daemon считать после установленного соединения (тест
 `daemon_budget_is_what_remains_of_the_frontend_budget_once_the_connection_stands`),
-так что handoff daemon укладывается до cutoff, а окно 750 мс покрывает
-только задержку самой durable-промоции; квитанция, чей срок лежит за окном,
-получает тот же закрытый отказ, что потерянная отправка, — как и записано
-выше, а не отдельный `receipt_pending`.
+а квитанции, чей срок лежит за окном восстановления, отвечать тем же
+закрытым отказом, что потерянной отправке; она верна, но корпус ей не
+починить. Опыт на живом рантайме v5 в потоке (`ScriptedService` с задержкой
+9 с, класс не known-long): ответ приходит на 7,13 с и это отказ, Task нет.
+Причина в самом daemon: рантайм v5 не владеет cutoff. Замысел ledger
+(«Cutoff и связь с TaskStore») требует, чтобы deadline owner к седьмой
+секунде durable переводил `Reserved` в `TaskPromisedUnbound` либо
+`TaskHandoffActorBound` и отвечал Task в прежние 125 мс, но в production
+`promise_task_unbound`/`begin_bound_task_handoff` вызывались только
+сценарным бегунком контракта: `receipt_scenario_v5.rs` на `AdvanceMonotonic`
+сам продвигал квитанцию и сам сочинял ответ на submit, а
+`capture_missing_submit_writer_after_reserve` записывал «writer path
+unavailable» как улику. Inline-исполнение шло синхронно в потоке сессии,
+daemon отвечал только по завершении работы: чтение дольше семи секунд
+(docs через медленного провайдера, первый захват большой конфигурации на
+BSP) для хоста было отказом, а поздняя Direct-публикация под истёкшим
+сроком операции — вероятная причина `store_failed` на S219 в push-прогоне
+`main` 34159657259 (просроченный ticket актора — латч fail-stop, следующий
+submit получает `store_failed`, daemon перезапускается). Правка
+(`runtime_v5.rs`): `drive_inline_invocation` — prepare и execute идут в
+рабочем потоке, поток сессии владеет cutoff по `remaining_handoff_budget`
+той же `InvocationResponseDeadline`; исход до cutoff — Direct как прежде
+(команде ledger оставлен запас сериализации, а не истёкший срок операции);
+на самом cutoff — `commit_cutoff_handoff`: тот же write-ahead intent,
+exact TaskStore record, `TaskBound` и `start_bound_task`, что у known-long,
+регистрация уже идущего cancellation token, ответ — снимок Working;
+единственная попытка продолжается и публикует терминал в Task сама.
+Гонка «исход пришёл, пока handoff коммитится» решена общим слотом с
+условной переменной: исход после коммита публикуется в Task сразу, ответ —
+терминальный снимок. Под сценарным бегунком (`scenario_control`) владельцем
+cutoff остаётся бегунок — контракт из 65 тестов не меняется; доказательство
+production-владельца — тест на живом рантайме
+`live_daemon_hands_inline_work_over_the_cutoff_to_a_task_the_same_attempt_completes`
+(Task на седьмой секунде, терминал Task — исход той же попытки,
+`executions == 1`), корпус на CI и оценка BSP. Владение cutoff закреплено
+решением `DEC.2026-09-08.DAEMON-V5-CUTOFF-OWNER`: оно берёт
+`INV.APP.DAEMON-INVOCATION-HANDOFF` и добавляет к его проверкам тест на
+живом рантайме — до него инвариант седьмой секунды держался только на
+сценарном бегунке. Не покрыт cutoff до
+`Begun` (валидация или admission дольше семи секунд — `TaskPromisedUnbound`
+с двухсекундным grace по замыслу): в production это редкий путь, он
+остаётся за сценарным бегунком и записан в открытые вопросы.
 
 **Шаг E, план по инвентаризации после C.** Снаружи ядра v3 ссылки остались
 в четырёх файлах: пробы «v5 отвергает v3/v4» в `receipt_scenario_v5.rs`
@@ -355,8 +388,10 @@ identity теряет предмет.
 
 ## Открытые вопросы
 
-- Держит ли wall-clock ворота на раннерах ubuntu/macOS 32 квитанции в
-  секунду в одиночном прогоне (`threads-required = "num-cpus"`)? Локально
-  под параллельной нагрузкой — нет. Ответ даст первая ночь после шага A.
+- Cutoff до `Begun`: production deadline owner покрывает prepare и execute;
+  валидацию и admission дольше семи секунд (`TaskPromisedUnbound`,
+  двухсекундный grace unbound-пайплайна по замыслу ledger) по-прежнему
+  продвигает только сценарный бегунок. Когда бегунок перестанет подменять
+  владельца и контракт станет доказывать production-путь — отдельный шаг.
 - Сколько стоит вторая компиляция с признаком в очереди: если больше
   трёх минут, контракт ledger переезжает в отдельную джобу матрицы.

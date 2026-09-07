@@ -606,6 +606,16 @@ impl V5CanonicalInvocationRuntime {
 }
 
 impl V5ActorBoundCanonicalInvocation {
+    /// The monotonic cutoff capability captured at bind: the daemon-side
+    /// handoff moment of a workspace invocation. Infobase exports carry none;
+    /// they are known-long by construction.
+    pub(super) fn response_deadline(&self) -> Option<InvocationResponseDeadline> {
+        match self {
+            Self::Workspace { invocation, .. } => Some(invocation.response_deadline().clone()),
+            Self::InfobaseExport { .. } => None,
+        }
+    }
+
     pub(super) fn workspace_identity_hash(&self) -> &crate::domain::invocation::SafeIdentityHash {
         match self {
             Self::Workspace { invocation, .. } => invocation.workspace_identity_hash(),
