@@ -225,7 +225,10 @@ jobs:
   test-rust-platforms:
     name: Rust tests (${{ matrix.runner }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    # Ночной ярус `large` на Windows гоняет весь набор вместе с контрактом
+    # ReceiptLedger и в час не укладывается (прогон 34141437672 отменён на
+    # 60-й минуте); остальным воротам часа хватает с запасом.
+    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.profile == 'large' && 180 || 60 }}
     permissions:
       contents: read
       security-events: write
