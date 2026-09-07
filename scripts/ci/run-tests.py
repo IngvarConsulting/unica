@@ -75,17 +75,52 @@ def nextest_junit(profile: str) -> Path:
     return REPO_ROOT / "target" / "nextest" / nextest_profile(profile) / "junit.xml"
 
 
-def rust_commands(profile: str) -> list[list[str]]:
-    """Команды Rust для профиля. Сегодня — весь набор, одним потоком."""
+# Контракт ReceiptLedger (`tests/daemon_receipt_ledger.rs`) собирается только с
+# признаком тестовой поддержки: у цели стоит `required-features`. Признак не
+# включается на весь workspace — под ним рантайм ведёт себя иначе на пути
+# fail-stop, а тестировать надо поставляемый код, — поэтому контракт идёт
+# вторым вызовом nextest ровно на одну цель. Он целиком `medium` и `large`:
+# ворота, принимающие только `small`, второго вызова не получают, потому что
+# пустой отбор у nextest — отказ, а не зелёный ноль.
+LEDGER_CONTRACT = (
+    "-p", "unica-coder", "--features", "receipt-ledger-test-support", "--test", "daemon_receipt_ledger",
+)
+
+
+def rust_selections(profile: str) -> list[tuple[str, ...]]:
+    """Что отбирает каждый вызов nextest: весь workspace и, если ворота
+    принимают `medium` или `large`, контракт ReceiptLedger."""
+    selections = [("--workspace",)]
+    if set(ADMITTED[profile]) & {"medium", "large"}:
+        selections.append(LEDGER_CONTRACT)
+    return selections
+
+
+def rust_command(profile: str, selection: tuple[str, ...]) -> list[str]:
     # nextest: процесс на тест и JUnit из коробки. Число потоков, повторы
     # и отчёт описаны в `.config/nextest.toml`, а не здесь: конвейер и
     # локальный прогон обязаны идти одной настройкой.
-    command = ["cargo", "nextest", "run", "--workspace", "--profile", nextest_profile(profile)]
+    command = ["cargo", "nextest", "run", *selection, "--profile", nextest_profile(profile)]
     if profile == "large":
-        # Ярус пуст до расстановки размеров: ноль тестов — честный результат,
-        # а не ошибка выбора. У остальных ворот пустой набор — ошибка.
+        # Ночной ярус на ubuntu и macOS — только large-подмножество контракта:
+        # для workspace-вызова ноль тестов — честный результат, а не ошибка
+        # выбора. У остальных ворот пустой набор — ошибка.
         command.append("--no-tests=pass")
-    return [command]
+    return command
+
+
+def rust_commands(profile: str) -> list[list[str]]:
+    """Команды Rust для профиля, по одной на отбор."""
+    return [rust_command(profile, selection) for selection in rust_selections(profile)]
+
+
+def rust_list_commands(profile: str) -> list[list[str]]:
+    """Состав тех же отборов: план обязан перечислять то, что прогон гоняет."""
+    return [
+        ["cargo", "nextest", "list", *selection, "--profile", nextest_profile(profile),
+         "--run-ignored", "all", "--message-format", "json"]
+        for selection in rust_selections(profile)
+    ]
 
 
 # Наборы, которые в CI делятся на полосы по размеру: одна джоба на размер.
@@ -199,7 +234,9 @@ def commands(
 
 def write_rust_plan(results: Path, profile: str) -> int:
     """План прогона — до тестов, чтобы упавший раннер не унёс его с собой."""
-    entries = allure_results.nextest_list(REPO_ROOT, nextest_profile(profile))
+    entries = []
+    for command in rust_list_commands(profile):
+        entries.extend(allure_results.nextest_list(REPO_ROOT, command))
     allure_results.write_plan(results, entries)
     return len(entries)
 
@@ -310,13 +347,19 @@ def execute(
         allure_results.write_run(results, profile=profile, runner=runner, ecosystem=ecosystem, line=line, sha=sha)
     code = 0
     if ecosystem in ("rust", "all"):
-        # Старый JUnit от прошлого прогона — не результат этого. Если nextest
-        # упадёт до отчёта, файл на месте выдал бы чужие записи за свежие.
-        if junit.is_file():
-            junit.unlink()
-        code = run_commands(rust_commands(profile))
-        if results is not None and junit.is_file():
-            print(f"результаты Rust: {emit_rust(results, profile, runner, junit)} записей")
+        # Оба вызова nextest пишут JUnit в один каталог профиля, поэтому
+        # результаты снимаются после каждого. Старый JUnit от прошлого
+        # прогона — не результат этого: если nextest упадёт до отчёта, файл на
+        # месте выдал бы чужие записи за свежие. Красный первый вызов второго
+        # не отменяет — упавший тест не прячет остальных, — но Python после
+        # красного Rust не идёт, как не шёл следующий шаг workflow.
+        for command in rust_commands(profile):
+            if junit.is_file():
+                junit.unlink()
+            rust_code = run_commands([command])
+            if results is not None and junit.is_file():
+                print(f"результаты Rust: {emit_rust(results, profile, runner, junit)} записей")
+            code = code or rust_code
         if code != 0:
             return code
     if ecosystem in ("python", "all"):

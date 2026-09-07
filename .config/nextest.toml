@@ -110,19 +110,69 @@ kind(test)
 )'''
 # <<< размер medium (ворота pr)
 
+# Очередь и `main` — `small` и `medium`: всё, кроме `large`. Выражение `large`
+# ниже — одно на четыре места (очередь, `main`, ночь и срок); страж состава
+# держит их равными.
 [profile.queue]
-default-filter = 'all()'
+# >>> размер large (ворота queue)
+default-filter = '''not (
+binary(daemon_receipt_ledger) & (
+    test(/^deterministic_horizon_load_does_not_saturate$/)
+    | test(/^link_capacity_before_begun_terminalizes_receipt_backed_without_callback$/)
+    | test(/^link_capacity_preserves_staged_terminal_winner$/)
+    | test(/^receipt_pools_and_task_store_limits_are_independent_after_restart$/)
+    | test(/^retained_receipt_backed_terminals_do_not_starve_target_direct_load$/)
+    | test(/^task_store_4097_boundary_preserves_existing_tasks_and_listener_availability$/)
+    | test(/^task_store_capacity_after_reservation_is_invariant_violation_and_fail_stops$/)
+    | test(/^thirty_two_lazy_cancel_actor_batch_finishes_within_125ms$/)
+    | test(/^wall_clock_writer_sustains_32_receipts_per_second_on_posix$/)
+)
+)'''
+# <<< размер large (ворота queue)
 
 [profile.main]
-default-filter = 'all()'
+# >>> размер large (ворота main)
+default-filter = '''not (
+binary(daemon_receipt_ledger) & (
+    test(/^deterministic_horizon_load_does_not_saturate$/)
+    | test(/^link_capacity_before_begun_terminalizes_receipt_backed_without_callback$/)
+    | test(/^link_capacity_preserves_staged_terminal_winner$/)
+    | test(/^receipt_pools_and_task_store_limits_are_independent_after_restart$/)
+    | test(/^retained_receipt_backed_terminals_do_not_starve_target_direct_load$/)
+    | test(/^task_store_4097_boundary_preserves_existing_tasks_and_listener_availability$/)
+    | test(/^task_store_capacity_after_reservation_is_invariant_violation_and_fail_stops$/)
+    | test(/^thirty_two_lazy_cancel_actor_batch_finishes_within_125ms$/)
+    | test(/^wall_clock_writer_sustains_32_receipts_per_second_on_posix$/)
+)
+)'''
+# <<< размер large (ворота main)
 
+# Релиз гоняет всё, включая `large`: тег — те же ворота, что ночь, плюс всё
+# остальное.
 [profile.release]
 default-filter = 'all()'
 
-# Ночной ярус. Пуст до расстановки размеров: выражение придёт вместе с ней,
-# а до тех пор ночь честно гоняет ноль и пишет память о проверенной вершине.
+# Ночной ярус: тесты ёмкости и нагрузки контракта ReceiptLedger
+# (`tests/daemon_receipt_ledger.rs`). Ярус объявлен именами, а не структурой:
+# двоичный файл контракта целиком `medium` по `kind(test)`, а эти тесты внутри
+# него идут по 200–520 с каждый и меряют настенное время, поэтому ночью и по
+# одному на машину (`threads-required` ниже). Замер 07.09.2026, локально.
 [profile.large]
-default-filter = 'none()'
+# >>> размер large (ворота large)
+default-filter = '''
+binary(daemon_receipt_ledger) & (
+    test(/^deterministic_horizon_load_does_not_saturate$/)
+    | test(/^link_capacity_before_begun_terminalizes_receipt_backed_without_callback$/)
+    | test(/^link_capacity_preserves_staged_terminal_winner$/)
+    | test(/^receipt_pools_and_task_store_limits_are_independent_after_restart$/)
+    | test(/^retained_receipt_backed_terminals_do_not_starve_target_direct_load$/)
+    | test(/^task_store_4097_boundary_preserves_existing_tasks_and_listener_availability$/)
+    | test(/^task_store_capacity_after_reservation_is_invariant_violation_and_fail_stops$/)
+    | test(/^thirty_two_lazy_cancel_actor_batch_finishes_within_125ms$/)
+    | test(/^wall_clock_writer_sustains_32_receipts_per_second_on_posix$/)
+)
+'''
+# <<< размер large (ворота large)
 
 # Ночью Windows гоняет весь набор: с матрицы pull request и main он снят за
 # нестабильность раннера, а в ночном ярусе сбой виден и никого не блокирует.
@@ -196,3 +246,25 @@ kind(test)
 '''
 slow-timeout = { period = "300s", terminate-after = 2 }
 # <<< размер medium (срок)
+
+# Срок `large` — 900 с, остановка после второго периода, и вся машина одному
+# тесту: нагрузочные ворота меряют p99 задержки записи, и соседний тест на
+# том же ядре красит их без вины кода.
+# >>> размер large (срок)
+[[profile.default.overrides]]
+filter = '''
+binary(daemon_receipt_ledger) & (
+    test(/^deterministic_horizon_load_does_not_saturate$/)
+    | test(/^link_capacity_before_begun_terminalizes_receipt_backed_without_callback$/)
+    | test(/^link_capacity_preserves_staged_terminal_winner$/)
+    | test(/^receipt_pools_and_task_store_limits_are_independent_after_restart$/)
+    | test(/^retained_receipt_backed_terminals_do_not_starve_target_direct_load$/)
+    | test(/^task_store_4097_boundary_preserves_existing_tasks_and_listener_availability$/)
+    | test(/^task_store_capacity_after_reservation_is_invariant_violation_and_fail_stops$/)
+    | test(/^thirty_two_lazy_cancel_actor_batch_finishes_within_125ms$/)
+    | test(/^wall_clock_writer_sustains_32_receipts_per_second_on_posix$/)
+)
+'''
+slow-timeout = { period = "900s", terminate-after = 2 }
+threads-required = "num-cpus"
+# <<< размер large (срок)
