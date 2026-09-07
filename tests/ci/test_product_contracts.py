@@ -1732,6 +1732,42 @@ class ProductContractTests(unittest.TestCase):
         self.assertFalse((decisions / "0009-remove-script-backed-utility-skills.md").exists())
         self.assertNotIn("Script-backed utility", index)
 
+    def test_every_declared_refusal_detail_is_constructed_somewhere(self) -> None:
+        """Объявленное уточнение без источника — обещание, которого провод не держит.
+
+        Карта code→detail внутри типа такого не ловит: она удовлетворяется одними
+        объявлениями. Код тогда молча отвечает своим умолчанием, и различие, ради
+        которого уточнение заведено, до читателя не доходит.
+        """
+        repo_root = Path(__file__).resolve().parents[2]
+        dictionary = (
+            repo_root / "crates" / "unica-coder" / "src" / "domain" / "refusal.rs"
+        )
+        sources = [
+            path
+            for path in (repo_root / "crates" / "unica-coder" / "src").rglob("*.rs")
+            if path.name != "refusal.rs"
+        ]
+        corpus = "".join(path.read_text(encoding="utf-8") for path in sources)
+        detail_names = re.findall(
+            r"^pub enum RefusalDetail \{(.*?)^\}",
+            dictionary.read_text(encoding="utf-8"),
+            re.MULTILINE | re.DOTALL,
+        )
+        self.assertEqual(len(detail_names), 1, "не нашли объявление RefusalDetail")
+        variants = re.findall(r"^\s{4}(\w+),$", detail_names[0], re.MULTILINE)
+        self.assertGreaterEqual(len(variants), 8)
+
+        orphans = [
+            variant for variant in variants if f"RefusalDetail::{variant}" not in corpus
+        ]
+        self.assertEqual(
+            orphans,
+            [],
+            "уточнения объявлены, но нигде не ставятся: их код так и будет "
+            "отвечать умолчанием",
+        )
+
     def test_application_layer_does_not_spawn_git_directly(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         application_root = (

@@ -524,47 +524,4 @@ mod tests {
             );
         }
     }
-
-    /// Объявленный словарь без источника — это обещание, которого провод не
-    /// держит. Карта `code`→`detail` в типе такого не ловит: она
-    /// удовлетворяется одними объявлениями. Поэтому проверка идёт по дереву.
-    #[test]
-    fn every_detail_is_constructed_somewhere_outside_the_dictionary() {
-        let source_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut sources = Vec::new();
-        collect_rust_sources(&source_root, &mut sources);
-        assert!(
-            sources.len() > 100,
-            "обход дерева исходников ничего не нашёл: проверка стала бы пустой"
-        );
-        let corpus: String = sources
-            .iter()
-            .filter(|path| path.file_name().is_some_and(|name| name != "refusal.rs"))
-            .filter_map(|path| std::fs::read_to_string(path).ok())
-            .collect();
-        for detail in RefusalDetail::ALL {
-            let needle = format!("RefusalDetail::{detail:?}");
-            assert!(
-                corpus.contains(&needle),
-                "{detail} объявлено, но нигде не ставится — код {} так и будет \
-                 отвечать умолчанием, а различие, ради которого уточнение \
-                 заведено, до провода не дойдёт",
-                detail.code()
-            );
-        }
-    }
-
-    fn collect_rust_sources(directory: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-        let Ok(entries) = std::fs::read_dir(directory) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                collect_rust_sources(&path, out);
-            } else if path.extension().is_some_and(|extension| extension == "rs") {
-                out.push(path);
-            }
-        }
-    }
 }
