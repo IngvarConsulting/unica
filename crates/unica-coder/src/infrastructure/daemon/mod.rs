@@ -100,7 +100,7 @@ mod tests {
         let command = super::daemon_process_command(
             PathBuf::from("unica").as_path(),
             &state_root,
-            &CoreIdentity::production(),
+            &CoreIdentity::production_v3(),
             Duration::from_secs(30),
         );
 
@@ -324,7 +324,7 @@ mod tests {
         let executions = PathBuf::from(std::env::var_os("UNICA_FAIL_STOP_EXECUTIONS").unwrap());
         let (store, _) =
             FileInvocationStore::open(&store_root, Arc::new(SystemEpochMillisClock)).unwrap();
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
         match mode.to_string_lossy().as_ref() {
             "fault" => {
                 let config = DaemonServerConfig::new(state_root, identity, Duration::from_secs(30))
@@ -763,7 +763,7 @@ mod tests {
     fn core_identity_is_closed_compile_time_abi_protocol_digest() {
         use sha2::{Digest, Sha256};
 
-        let production = CoreIdentity::production();
+        let production = CoreIdentity::production_v3();
         let identity_for = |protocol: &[u8]| {
             let mut digest = Sha256::new();
             digest.update(b"unica-v0.13-core-abi-1");
@@ -801,7 +801,7 @@ mod tests {
     fn world_readable_identity_directory_is_rejected() {
         let root = tempfile::tempdir().unwrap();
         let physical = physical_root(root.path());
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
         let path = DaemonStateDirectory::path_for(&physical, &identity);
         std::fs::create_dir_all(&path).unwrap();
         if !set_unix_mode_for_test(&path, 0o755).unwrap() {
@@ -825,7 +825,7 @@ mod tests {
             | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => return,
         }
         let routed = routed_parent.join("provider-state-created-through-link");
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
 
         assert!(DaemonStateDirectory::open(&routed, &identity).is_err());
         assert!(
@@ -839,7 +839,7 @@ mod tests {
         let fixture = tempfile::tempdir().unwrap();
         let physical_fixture = std::fs::canonicalize(fixture.path()).unwrap();
         let state_root = physical_fixture.join("cold").join("provider-state");
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
 
         let state = DaemonStateDirectory::open(&state_root, &identity).unwrap();
 
@@ -905,7 +905,7 @@ mod tests {
     fn round_trip_sized_result(summary_bytes: usize) {
         let root = tempfile::tempdir().unwrap();
         let physical = physical_root(root.path());
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
         let config = server_config(root.path().to_path_buf(), identity.clone())
             .with_invocation_service(Arc::new(SizedResultService {
                 summary_bytes,
@@ -946,7 +946,7 @@ mod tests {
 
         let task_root = tempfile::tempdir().unwrap();
         let task_physical = physical_root(task_root.path());
-        let task_identity = CoreIdentity::production();
+        let task_identity = CoreIdentity::production_v3();
         let task_config = server_config(task_root.path().to_path_buf(), task_identity.clone())
             .with_invocation_service(Arc::new(SizedResultService {
                 summary_bytes,
@@ -996,7 +996,7 @@ mod tests {
     fn result_over_canonical_cap_fails_closed_for_direct_and_task() {
         let root = tempfile::tempdir().unwrap();
         let physical = physical_root(root.path());
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
         let config = server_config(root.path().to_path_buf(), identity.clone())
             .with_invocation_service(Arc::new(SizedResultService {
                 summary_bytes: MAX_CANONICAL_RESULT_BYTES + 1,
@@ -1034,7 +1034,7 @@ mod tests {
 
         let task_root = tempfile::tempdir().unwrap();
         let task_physical = physical_root(task_root.path());
-        let task_identity = CoreIdentity::production();
+        let task_identity = CoreIdentity::production_v3();
         let task_config = server_config(task_root.path().to_path_buf(), task_identity.clone())
             .with_invocation_service(Arc::new(SizedResultService {
                 summary_bytes: MAX_CANONICAL_RESULT_BYTES + 1,
@@ -1080,7 +1080,7 @@ mod tests {
     fn assert_hostile_response_closes_owner_session(payload: Vec<u8>, expected_error: &str) {
         let root = tempfile::tempdir().unwrap();
         let physical = physical_root(root.path());
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let record = EndpointRecord::new(identity.clone(), listener.local_addr().unwrap().port());
         let directory = DaemonStateDirectory::open(&physical, &identity).unwrap();
@@ -1190,7 +1190,7 @@ mod tests {
         ] {
             let root = tempfile::tempdir().unwrap();
             let physical = physical_root(root.path());
-            let identity = CoreIdentity::production();
+            let identity = CoreIdentity::production_v3();
             let store = Arc::new(DaemonMemoryStore::default());
             let clock = Arc::new(ManualInvocationClock::new(Instant::now()));
             let executions = Arc::new(AtomicUsize::new(0));
@@ -1366,7 +1366,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let physical = physical_root(root.path());
         let workspace_hint = physical.to_string_lossy().into_owned();
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
         let executions = Arc::new(AtomicUsize::new(0));
         let (entered, entered_wait) = mpsc::channel();
         let service = Arc::new(BlockingCanonicalService {
@@ -1473,7 +1473,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let physical = physical_root(root.path());
         let workspace_hint = physical.to_string_lossy().into_owned();
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
         let executions = Arc::new(AtomicUsize::new(0));
         let (entered, entered_wait) = mpsc::channel();
         let service = Arc::new(BlockingCanonicalService {
@@ -1540,7 +1540,7 @@ mod tests {
         let workspace = tempfile::tempdir().unwrap();
         ensure_platform_xml_workspace(workspace.path());
         let physical = physical_root(root.path());
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
         let store = Arc::new(DaemonMemoryStore::default());
         store.fail_updates.store(1, Ordering::SeqCst);
         let config =
@@ -1600,7 +1600,7 @@ mod tests {
         std::fs::create_dir(&store_root).unwrap();
         std::fs::create_dir(&workspace).unwrap();
         ensure_platform_xml_workspace(&workspace);
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
 
         let mut faulting =
             spawn_fail_stop_fixture("fault", &state_root, &store_root, &workspace, &executions);
@@ -1704,7 +1704,7 @@ mod tests {
         )
         .unwrap();
 
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
         let config = server_config(daemon_root.path().to_path_buf(), identity.clone())
             .with_invocation_service(Arc::new(CanonicalV13ReadService::default()));
         let server = thread::spawn(move || run_daemon(config));
@@ -1857,7 +1857,7 @@ mod tests {
         )
         .unwrap();
 
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
         let config = server_config(daemon_root.path().to_path_buf(), identity.clone())
             .with_invocation_service(Arc::new(CanonicalV13ReadService::default()));
         let server = thread::spawn(move || run_daemon(config));
@@ -2018,7 +2018,7 @@ mod tests {
             let secondary_before = tree_snapshot(&secondary);
             let cache_before = cache_root.exists().then(|| tree_snapshot(&cache_root));
 
-            let identity = CoreIdentity::production();
+            let identity = CoreIdentity::production_v3();
             let config = server_config(daemon_root.path().to_path_buf(), identity.clone())
                 .with_invocation_service(Arc::new(CanonicalV13ReadService::default()));
             let server = thread::spawn(move || run_daemon(config));
@@ -2091,7 +2091,7 @@ mod tests {
             r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
         )
         .unwrap();
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
         let config = server_config(daemon_root.path().to_path_buf(), identity.clone());
         let server = thread::spawn(move || run_daemon(config));
         let (_directory, _record) = wait_for_record(daemon_root.path(), &identity);
@@ -2135,7 +2135,7 @@ mod tests {
         ensure_platform_xml_workspace(workspace_b.path());
         std::fs::write(workspace_a.path().join("Module.bsl"), b"workspace A").unwrap();
         std::fs::write(workspace_b.path().join("Module.bsl"), b"workspace B").unwrap();
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
         let (observed, observed_wait) = mpsc::channel();
         let store = Arc::new(DaemonMemoryStore::default());
         let config = server_config(daemon_root.path().to_path_buf(), identity.clone())
@@ -2192,7 +2192,7 @@ mod tests {
         std::fs::create_dir(&workspace).unwrap();
         ensure_platform_xml_workspace(&workspace);
         std::fs::write(workspace.join("Module.bsl"), b"initial").unwrap();
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
         let (entered, entered_wait) = mpsc::channel();
         let (release, release_wait) = mpsc::channel();
         let staged = "STAGED_BYTES_MUST_NOT_ESCAPE_AFTER_SWAP";
@@ -2508,7 +2508,7 @@ mod tests {
     fn canonical_frontend_opens_an_independent_owner_session_per_invocation() {
         let root = tempfile::tempdir().unwrap();
         let physical = physical_root(root.path());
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
         let config = server_config(root.path().to_path_buf(), identity.clone());
         let server = thread::spawn(move || run_daemon(config));
         let (_directory, _record) = wait_for_record(root.path(), &identity);
@@ -2532,7 +2532,7 @@ mod tests {
     fn invalid_canonical_arguments_are_direct_before_workspace_or_domain_execution() {
         let root = tempfile::tempdir().unwrap();
         let physical = physical_root(root.path());
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
         let config = server_config(root.path().to_path_buf(), identity.clone());
         let server = thread::spawn(move || run_daemon(config));
         let (_directory, _record) = wait_for_record(root.path(), &identity);
@@ -2569,7 +2569,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let physical = physical_root(root.path());
         let workspace_hint = physical.to_string_lossy().into_owned();
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
         let executions = Arc::new(AtomicUsize::new(0));
         let (entered, entered_wait) = mpsc::channel();
         let service = Arc::new(BlockingCanonicalService {
@@ -2646,7 +2646,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let physical = physical_root(root.path());
         let workspace_hint = physical.to_string_lossy().into_owned();
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let record = EndpointRecord::new(identity.clone(), listener.local_addr().unwrap().port());
         let directory = DaemonStateDirectory::open(&physical, &identity).unwrap();
@@ -2686,7 +2686,7 @@ mod tests {
     #[test]
     fn wrong_token_and_protocol_version_are_rejected_without_echoing_token() {
         let root = tempfile::tempdir().unwrap();
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
         let config = server_config(root.path().to_path_buf(), identity.clone());
         let server = thread::spawn(move || run_daemon(config));
         let (_directory, record) = wait_for_record(root.path(), &identity);
@@ -2727,7 +2727,7 @@ mod tests {
 
     #[test]
     fn secret_bearing_daemon_protocol_debug_is_redacted() {
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
         let record = EndpointRecord::new(identity.clone(), 4321);
         let endpoint_token = record.token().to_string();
         let endpoint_instance = record.instance_id().to_string();
@@ -2774,7 +2774,7 @@ mod tests {
     #[test]
     fn complete_malformed_handshake_is_invalid_request() {
         let root = tempfile::tempdir().unwrap();
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
         let config = server_config(root.path().to_path_buf(), identity.clone());
         let server = thread::spawn(move || run_daemon(config));
         let (_directory, record) = wait_for_record(root.path(), &identity);
@@ -2793,7 +2793,7 @@ mod tests {
     #[test]
     fn truncated_handshake_transport_closes_without_a_protocol_response() {
         let root = tempfile::tempdir().unwrap();
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
         let config = server_config(root.path().to_path_buf(), identity.clone());
         let server = thread::spawn(move || run_daemon(config));
         let (_directory, record) = wait_for_record(root.path(), &identity);
@@ -2814,7 +2814,7 @@ mod tests {
     fn established_handshake_transport_failure_reopens_the_endpoint() {
         let root = tempfile::tempdir().unwrap();
         let physical = physical_root(root.path());
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let record = EndpointRecord::new(identity.clone(), listener.local_addr().unwrap().port());
         let directory = DaemonStateDirectory::open(&physical, &identity).unwrap();
@@ -2858,7 +2858,7 @@ mod tests {
     fn peer_handshake_transport_failure_reopens_under_the_original_deadline() {
         let root = tempfile::tempdir().unwrap();
         let physical = physical_root(root.path());
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let record = EndpointRecord::new(identity.clone(), listener.local_addr().unwrap().port());
         let directory = DaemonStateDirectory::open(&physical, &identity).unwrap();
@@ -2905,7 +2905,7 @@ mod tests {
     fn invalid_request_handshake_rejection_is_never_retried() {
         let root = tempfile::tempdir().unwrap();
         let physical = physical_root(root.path());
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         listener.set_nonblocking(true).unwrap();
         let record = EndpointRecord::new(identity.clone(), listener.local_addr().unwrap().port());
@@ -2959,7 +2959,7 @@ mod tests {
     fn fake_peer_error_code_is_closed_and_never_reaches_client_diagnostic() {
         let root = tempfile::tempdir().unwrap();
         let physical = physical_root(root.path());
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let record = EndpointRecord::new(identity.clone(), listener.local_addr().unwrap().port());
         let directory = DaemonStateDirectory::open(&physical, &identity).unwrap();
@@ -2990,7 +2990,7 @@ mod tests {
     fn task_exchange_propagates_closed_codes_and_poison_without_parsing_text() {
         let root = tempfile::tempdir().unwrap();
         let physical = physical_root(root.path());
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let record = EndpointRecord::new(identity.clone(), listener.local_addr().unwrap().port());
         let directory = DaemonStateDirectory::open(&physical, &identity).unwrap();
@@ -3046,7 +3046,7 @@ mod tests {
     fn fake_peer_ready_at_deadline_cannot_restart_handshake_budget() {
         let root = tempfile::tempdir().unwrap();
         let physical = physical_root(root.path());
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let record = EndpointRecord::new(identity.clone(), listener.local_addr().unwrap().port());
         let directory = DaemonStateDirectory::open(&physical, &identity).unwrap();
@@ -3074,7 +3074,7 @@ mod tests {
     fn late_malformed_peer_response_cannot_override_deadline() {
         let root = tempfile::tempdir().unwrap();
         let physical = physical_root(root.path());
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let record = EndpointRecord::new(identity.clone(), listener.local_addr().unwrap().port());
         let directory = DaemonStateDirectory::open(&physical, &identity).unwrap();
@@ -3104,7 +3104,7 @@ mod tests {
     fn late_peer_disconnect_cannot_override_deadline() {
         let root = tempfile::tempdir().unwrap();
         let physical = physical_root(root.path());
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let record = EndpointRecord::new(identity.clone(), listener.local_addr().unwrap().port());
         let directory = DaemonStateDirectory::open(&physical, &identity).unwrap();
@@ -3130,7 +3130,7 @@ mod tests {
     fn ping_uses_one_aggregate_deadline_for_write_and_response() {
         let root = tempfile::tempdir().unwrap();
         let physical = physical_root(root.path());
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let record = EndpointRecord::new(identity.clone(), listener.local_addr().unwrap().port());
         let directory = DaemonStateDirectory::open(&physical, &identity).unwrap();
@@ -3169,7 +3169,7 @@ mod tests {
     fn owner_drop_closes_connection_without_waiting_for_release_ack() {
         let root = tempfile::tempdir().unwrap();
         let physical = physical_root(root.path());
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let record = EndpointRecord::new(identity.clone(), listener.local_addr().unwrap().port());
         let directory = DaemonStateDirectory::open(&physical, &identity).unwrap();
@@ -3203,7 +3203,7 @@ mod tests {
     fn exited_startup_child_is_reported_before_readiness_deadline() {
         let root = tempfile::tempdir().unwrap();
         let physical = physical_root(root.path());
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
         let config = DaemonClientConfig::new(
             physical,
             identity,
@@ -3225,7 +3225,7 @@ mod tests {
     fn owner_lease_keeps_daemon_alive_then_idle_removes_only_its_record() {
         let root = tempfile::tempdir().unwrap();
         let physical = physical_root(root.path());
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
         let config = server_config(root.path().to_path_buf(), identity.clone());
         let server = thread::spawn(move || run_daemon(config));
         let (directory, record) = wait_for_record(root.path(), &identity);
@@ -3253,7 +3253,7 @@ mod tests {
     #[test]
     fn authenticated_owners_release_handshake_capacity() {
         let root = tempfile::tempdir().unwrap();
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
         let config = server_config(root.path().to_path_buf(), identity.clone());
         let server = thread::spawn(move || run_daemon(config));
         let (_directory, record) = wait_for_record(root.path(), &identity);
@@ -3279,7 +3279,7 @@ mod tests {
 
         let root = tempfile::tempdir().unwrap();
         let physical = physical_root(root.path());
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
         let config = server_config(root.path().to_path_buf(), identity.clone());
         let server = thread::spawn(move || run_daemon(config));
         let (_directory, record) = wait_for_record(root.path(), &identity);
@@ -3336,7 +3336,7 @@ mod tests {
     fn stale_record_is_never_signalled_and_foreign_identity_fails_closed() {
         let root = tempfile::tempdir().unwrap();
         let physical = physical_root(root.path());
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
         let directory = DaemonStateDirectory::open(&physical, &identity).unwrap();
         let stale = EndpointRecord::test_stale(identity.clone(), 4_294_967_000);
         directory.write_endpoint_record_for_test(&stale).unwrap();
@@ -3362,7 +3362,7 @@ mod tests {
     fn incompatible_core_identities_use_separate_endpoint_directories() {
         let root = tempfile::tempdir().unwrap();
         let physical = physical_root(root.path());
-        let production = CoreIdentity::production();
+        let production = CoreIdentity::production_v3();
         let alternate = alternate_identity();
         assert_ne!(
             DaemonStateDirectory::path_for(&physical, &production),
@@ -3378,7 +3378,7 @@ mod tests {
         let startup_pause = install_startup_pause();
         let handshake_pause = install_handshake_pause();
         let root = tempfile::tempdir().unwrap();
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
         let config = DaemonServerConfig::new(
             physical_root(root.path()),
             identity.clone(),
@@ -3423,7 +3423,7 @@ mod tests {
     fn preauth_deadline_starts_before_the_handler_thread_runs() {
         let pause = install_handshake_pause();
         let root = tempfile::tempdir().unwrap();
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
         let config =
             server_config(root.path().to_path_buf(), identity.clone()).with_handshake_pause(&pause);
         let server = thread::spawn(move || run_daemon(config));
@@ -3450,7 +3450,7 @@ mod tests {
     #[test]
     fn partial_handshake_bytes_cannot_replenish_the_preauth_deadline() {
         let root = tempfile::tempdir().unwrap();
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
         let config = server_config(root.path().to_path_buf(), identity.clone());
         let server = thread::spawn(move || run_daemon(config));
         let (_directory, record) = wait_for_record(root.path(), &identity);
@@ -3486,7 +3486,7 @@ mod tests {
     fn unauthenticated_connection_admission_is_bounded() {
         let pause = install_handshake_pause();
         let root = tempfile::tempdir().unwrap();
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
         let config = DaemonServerConfig::new(
             physical_root(root.path()),
             identity.clone(),
@@ -3519,7 +3519,7 @@ mod tests {
     #[test]
     fn duplicate_owner_lease_and_oversized_wire_request_fail_closed() {
         let root = tempfile::tempdir().unwrap();
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
         let config = server_config(root.path().to_path_buf(), identity.clone());
         let server = thread::spawn(move || run_daemon(config));
         let (_directory, record) = wait_for_record(root.path(), &identity);
@@ -3587,7 +3587,7 @@ mod tests {
     #[test]
     fn daemon_is_the_sole_invocation_store_writer_for_its_lifetime() {
         let root = tempfile::tempdir().unwrap();
-        let identity = CoreIdentity::production();
+        let identity = CoreIdentity::production_v3();
         let config = server_config(root.path().to_path_buf(), identity.clone());
         let server = thread::spawn(move || run_daemon(config));
         let (directory, record) = wait_for_record(root.path(), &identity);

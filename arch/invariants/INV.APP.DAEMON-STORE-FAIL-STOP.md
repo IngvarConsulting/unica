@@ -2,25 +2,18 @@
 id: INV.APP.DAEMON-STORE-FAIL-STOP
 status: active
 governs: product
-decision: DEC.2026-08-24.DAEMON-INVOCATION-ROUTING-SLICE
+decision: DEC.2026-09-07.DAEMON-V5-PRODUCTION-CUTOVER
 check:
-  - crates/unica-coder/src/application/invocation_store_actor.rs::blocked_store_call_is_bounded_without_releasing_worker_barrier
-  - crates/unica-coder/src/application/invocation_store_actor.rs::queued_call_expires_behind_a_stuck_store_worker_without_late_execution
-  - crates/unica-coder/src/application/invocation_store_actor.rs::failed_store_worker_returns_a_closed_unavailable_error
-  - crates/unica-coder/src/infrastructure/task_store.rs::preallocated_create_collision_is_typed_and_never_replaces_the_first_record
-  - crates/unica-coder/src/infrastructure/task_store.rs::uncertain_visible_create_counts_toward_capacity_before_and_after_reopen
-  - crates/unica-coder/src/infrastructure/task_store.rs::pre_rename_create_failure_does_not_consume_retention_capacity
-  - crates/unica-coder/src/infrastructure/task_store.rs::uncertain_visible_terminal_update_and_cancel_refresh_retention_state
-  - crates/unica-coder/src/infrastructure/task_store.rs::held_file_writer_is_bounded_by_the_same_deadline_without_releasing_guard
-  - crates/unica-coder/src/infrastructure/task_store.rs::active_and_nonexpired_terminal_records_are_never_evicted_at_capacity
-  - crates/unica-coder/src/infrastructure/task_store.rs::expired_terminal_records_are_reclaimed_only_when_bounded_capacity_is_needed
-  - crates/unica-coder/src/infrastructure/task_store.rs::create_does_not_rescan_a_directory_that_grew_beyond_the_recovery_bound
-  - crates/unica-coder/src/infrastructure/task_store.rs::recovery_excess_is_typed_capacity_not_unbounded_enumeration_or_corruption
-  - crates/unica-coder/src/infrastructure/task_store.rs::oversized_valid_record_is_rejected_before_unbounded_recovery_read
-  - crates/unica-coder/src/infrastructure/task_store.rs::file_store_enforces_the_canonical_result_limit_before_publication
-  - crates/unica-coder/src/infrastructure/task_store.rs::record_serialization_uses_the_original_store_deadline_without_reset
-  - crates/unica-coder/src/infrastructure/daemon/server.rs::restart_request_does_not_claim_noncooperative_actor_released_in_process
-  - crates/unica-coder/src/infrastructure/daemon/mod.rs::process_death_owns_fail_stop_handoff_and_recovery
+  - crates/unica-coder/src/application/receipt_ledger_actor.rs::reserve_panic_is_commit_uncertain_and_fail_stops_actor
+  - crates/unica-coder/src/application/receipt_ledger_actor.rs::running_reserve_deadline_is_commit_uncertain_and_fail_stops_actor
+  - crates/unica-coder/src/application/receipt_ledger_actor.rs::expired_command_queued_behind_running_reserve_never_reaches_the_port
+  - crates/unica-coder/src/infrastructure/daemon/runtime_v5.rs::commit_uncertain_is_returned_before_process_owned_fail_stop_retains_endpoint
+  - crates/unica-coder/src/infrastructure/daemon/runtime_v5.rs::every_fail_stop_store_error_is_written_without_reentering_the_actor
+  - crates/unica-coder/src/infrastructure/daemon/runtime_v5.rs::displaced_receipt_authority_fail_stops_until_process_death
+  - crates/unica-coder/src/infrastructure/task_store_v5.rs::capacity_never_lazily_expires_terminal_records_and_not_found_is_typed
+  - crates/unica-coder/src/infrastructure/task_lifecycle_link_store_v5.rs::count_and_byte_entitlement_reject_second_reservation_before_task_store_create
+  - crates/unica-coder/tests/daemon_receipt_ledger.rs::noncooperative_prepare_forces_fail_stop_after_two_second_grace
+  - crates/unica-coder/tests/daemon_receipt_ledger.rs::task_store_capacity_after_reservation_is_invariant_violation_and_fail_stops
 scope: [app, cache]
 ---
 

@@ -96,18 +96,19 @@ fn configured_idle_grace(read_env: &dyn Fn(&str) -> Option<OsString>) -> Result<
     Ok(duration)
 }
 
-/// Connect to the production v3 user daemon, starting it if it is absent.
-pub(crate) fn connect_default_user_daemon(state_root: &Path) -> Result<DaemonOwner, String> {
+/// Connect to the production protocol-v5 user daemon, starting it if it is absent.
+pub(crate) fn connect_default_user_daemon(
+    state_root: &Path,
+) -> Result<V5DaemonProcessOwner, String> {
     let executable = std::env::current_exe()
         .map_err(|error| format!("failed to locate current unica executable: {error}"))?;
     let idle_grace = configured_idle_grace(&|name| std::env::var_os(name))?;
-    DaemonClient::new(DaemonClientConfig::new(
-        state_root.to_path_buf(),
+    V5DaemonProcessOwner::connect_or_spawn(
+        state_root,
         CoreIdentity::production(),
         executable,
         idle_grace,
-    ))
-    .connect_or_spawn()
+    )
 }
 
 /// Process-level protocol fixture used by the daemon race regression. This is not an MCP tool,
@@ -355,6 +356,11 @@ mod tests {
         );
         assert_eq!(
             runtime_selection(&CoreIdentity::production()),
+            DaemonRuntimeSelection::V5,
+            "the production identity selects the v5 runtime"
+        );
+        assert_eq!(
+            runtime_selection(&CoreIdentity::production_v3()),
             DaemonRuntimeSelection::V3
         );
         for encoded in [
@@ -417,9 +423,15 @@ mod tests {
                 .join("endpoint.json")
         );
         assert_eq!(
-            super::endpoint_path_for_protocol_test(state_root, CoreIdentity::production().as_str()),
+            super::endpoint_path_for_protocol_test(
+                state_root,
+                CoreIdentity::production_v3().as_str()
+            ),
             state_root
-                .join(format!("daemon-p3-{}", CoreIdentity::production().as_str()))
+                .join(format!(
+                    "daemon-p3-{}",
+                    CoreIdentity::production_v3().as_str()
+                ))
                 .join("endpoint.json")
         );
         assert_eq!(

@@ -54,6 +54,7 @@ pub(crate) struct ManualDaemonClientClock {
 }
 
 #[cfg(test)]
+#[allow(dead_code)] // protocol v3 client clock: retired by the v5 cutover, removed with step E
 impl ManualDaemonClientClock {
     pub(crate) fn new() -> Self {
         Self::new_at(Instant::now())
@@ -422,10 +423,12 @@ pub(crate) enum DaemonTaskExchangeError {
 /// One task-adapter transport budget captured before connection admission.
 /// The same clock/deadline is consumed by connect, handshake, request, and
 /// response so a short compatibility wait cannot reopen the frontend window.
+#[allow(dead_code)] // protocol v3 client: retired by the v5 cutover, removed with step E
 pub(crate) struct DaemonTaskDeadline {
     deadline: DaemonDeadline,
 }
 
+#[allow(dead_code)] // protocol v3 client: retired by the v5 cutover, removed with step E
 impl DaemonTaskDeadline {
     fn matches_clock(&self, clock: &Arc<dyn DaemonClientClock>) -> bool {
         Arc::ptr_eq(&self.deadline.clock, clock)
@@ -444,6 +447,7 @@ impl DaemonTaskDeadline {
     }
 }
 
+#[allow(dead_code)] // protocol v3 client: retired by the v5 cutover, removed with step E
 impl DaemonOwner {
     fn connect(
         record: &EndpointRecord,

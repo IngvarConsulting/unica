@@ -10326,7 +10326,7 @@ mod tests {
         use std::str::FromStr;
 
         for identity in [
-            CoreIdentity::production(),
+            CoreIdentity::production_v3(),
             CoreIdentity::from_str(
                 "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
             )

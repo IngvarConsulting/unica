@@ -106,6 +106,7 @@ kind(test)
     | test(/^infrastructure::workspace_actor::(tests)::/)
     | test(/^infrastructure::workspace_index::(tests)::/)
     | test(/^infrastructure::workspace_services::(tests)::/)
+    | test(/^interfaces::daemon_router::(tests)::/)
     | test(/^interfaces::mcp::(tests)::/)
 )'''
 # <<< размер medium (ворота pr)
@@ -242,6 +243,7 @@ kind(test)
     | test(/^infrastructure::workspace_actor::(tests)::/)
     | test(/^infrastructure::workspace_index::(tests)::/)
     | test(/^infrastructure::workspace_services::(tests)::/)
+    | test(/^interfaces::daemon_router::(tests)::/)
     | test(/^interfaces::mcp::(tests)::/)
 '''
 slow-timeout = { period = "300s", terminate-after = 2 }

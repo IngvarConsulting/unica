@@ -8434,7 +8434,7 @@ fn run_v3_protocol_probe(
         tempfile::tempdir().map_err(|error| format!("create protocol-v3 probe state: {error}"))?;
     let state_root = std::fs::canonicalize(root.path())
         .map_err(|error| format!("canonicalize protocol-v3 probe state: {error}"))?;
-    let identity = presented_core_identity(client, &message, &CoreIdentity::production())?;
+    let identity = presented_core_identity(client, &message, &CoreIdentity::production_v3())?;
     let record = protocol_v3::EndpointRecord::new(identity.clone(), 9);
     let client_hello_frame = jsonl_frame(&protocol_v3::ClientRequest::hello(
         protocol_version_number(client),

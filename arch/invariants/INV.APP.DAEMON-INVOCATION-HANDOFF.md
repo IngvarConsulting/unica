@@ -2,8 +2,11 @@
 id: INV.APP.DAEMON-INVOCATION-HANDOFF
 status: active
 governs: product
-decision: DEC.2026-08-24.DAEMON-INVOCATION-ROUTING-SLICE
-check: crates/unica-coder/src/infrastructure/daemon/mod.rs::daemon_invocation_receipt_deadline_is_single_and_never_replenished
+decision: DEC.2026-09-07.DAEMON-V5-PRODUCTION-CUTOVER
+check:
+  - crates/unica-coder/src/infrastructure/daemon/runtime_v5.rs::complete_v5_frame_near_cutoff_cannot_receive_a_fresh_response_budget
+  - crates/unica-coder/tests/daemon_receipt_ledger.rs::cutoff_during_admission_projects_exact_unbound_task
+  - crates/unica-coder/tests/daemon_receipt_ledger.rs::response_budget_is_not_receipt_identity
 scope: [app]
 ---
 

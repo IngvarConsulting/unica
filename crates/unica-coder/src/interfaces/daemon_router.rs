@@ -5,8 +5,6 @@
 //! terminal is acknowledged only after its host-facing value exists; a lost
 //! submit response is recovered by the exact receipt key the frontend derives
 //! itself, never by a second submission.
-#![cfg_attr(not(test), allow(dead_code))] // wired into the stdio frontend by the v5 cutover
-
 use super::task_projection::{self, DirectProjection};
 use crate::application::invocation::{
     handoff_budget, normalized_arguments_hash, INVOCATION_HANDOFF_WINDOW,
@@ -54,10 +52,15 @@ impl FrontendInvocationDeadline {
         }
     }
 
+    pub(super) fn received_at(self) -> Instant {
+        self.received_at
+    }
+
     pub(super) fn remaining_at(self, now: Instant) -> Duration {
         remaining_invocation_budget(self.received_at, now, self.host_remaining_at_receipt)
     }
 
+    #[cfg(test)]
     pub(super) fn remaining_transport_at(self, now: Instant) -> Duration {
         let elapsed = now.saturating_duration_since(self.received_at);
         let own_remaining = INVOCATION_HANDOFF_WINDOW
@@ -172,8 +175,7 @@ fn build_router(
     });
     let wait_anchor = Arc::clone(&anchor);
     let wait: Arc<CanonicalTaskWaitHandler> = Arc::new(move |task_id, wait_ms, deadline| {
-        let now = Instant::now();
-        let cutoff = wait_transport_cutoff(wait_ms, deadline, now);
+        let cutoff = wait_transport_cutoff(wait_ms, deadline);
         let mut peer = task_peer(&wait_anchor, cutoff)?;
         // The daemon wait shrinks by what connect and handshake already spent
         // and by the response margin; the cutoff itself never moves.
@@ -205,14 +207,16 @@ fn task_peer(
         .map_err(V5TaskExchangeError::from)
 }
 
-/// `unica.task.result` gets its own cutoff: the requested wait plus one
-/// response margin, never beyond the frontend transport cutoff.
-fn wait_transport_cutoff(
+/// `unica.task.result` gets its own cutoff, derived once from the moment the
+/// frontend received the request: the requested wait plus one response
+/// margin, never beyond the frontend transport cutoff. Time spent before the
+/// router runs is never replenished.
+pub(super) fn wait_transport_cutoff(
     requested_wait_ms: u64,
     deadline: FrontendInvocationDeadline,
-    now: Instant,
 ) -> Instant {
-    let requested_cutoff = now
+    let requested_cutoff = deadline
+        .received_at()
         .checked_add(
             Duration::from_millis(requested_wait_ms).saturating_add(RESPONSE_SERIALIZATION_MARGIN),
         )
@@ -428,7 +432,10 @@ fn receipt_pending_refusal() -> ErrorData {
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::interfaces) mod test_support {
+    //! Two daemons for the frontend tests: a scripted fake that answers frame
+    //! by frame, and the real protocol-v5 runtime in a thread with an injected
+    //! canonical service.
     use super::*;
     use crate::application::receipt_ledger::{canonical_v5_terminal, ReceiptTerminalOutcome};
     use crate::domain::invocation::DomainResult;
@@ -438,7 +445,6 @@ mod tests {
         V5HandshakeServerResponse, V5PendingDirectReceipt,
     };
     use crate::infrastructure::daemon::server::DaemonServerConfig;
-    use serde_json::json;
     use std::io::{BufReader, Write};
     use std::net::{Ipv4Addr, TcpListener, TcpStream};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -448,36 +454,50 @@ mod tests {
     const WORKSPACE_MANIFEST: &str =
         "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\n";
 
-    fn arguments() -> Map<String, Value> {
-        json!({"at": "main:Catalog.Товары"})
-            .as_object()
-            .expect("argument object")
-            .clone()
-    }
-
-    fn deadline(host_remaining: Option<Duration>) -> FrontendInvocationDeadline {
-        FrontendInvocationDeadline::new(Instant::now(), host_remaining)
-    }
-
     // --- scripted fake daemon -------------------------------------------------
 
     /// One accepted session of the fake: what it saw and what it answered.
-    enum Step {
+    pub(in crate::interfaces) enum Step {
         Reply(V5ServerResponse),
         Close,
     }
 
-    type Script = Box<dyn FnMut(&[u8], &V5ClientRequest) -> Step + Send>;
+    pub(in crate::interfaces) type Script = Box<dyn FnMut(&[u8], &V5ClientRequest) -> Step + Send>;
+    /// A script that writes the reply bytes itself; `false` closes the session.
+    pub(in crate::interfaces) type RawScript =
+        Box<dyn FnMut(&[u8], &V5ClientRequest, &mut TcpStream) -> bool + Send>;
 
-    struct FakeDaemon {
-        record: V5EndpointRecord,
+    enum SessionScript {
+        Framed(Script),
+        Raw(RawScript),
+    }
+
+    pub(in crate::interfaces) struct FakeDaemon {
+        pub(in crate::interfaces) record: V5EndpointRecord,
         seen: Arc<Mutex<Vec<V5ClientRequest>>>,
-        sessions: Arc<AtomicUsize>,
+        pub(in crate::interfaces) sessions: Arc<AtomicUsize>,
         thread: Option<thread::JoinHandle<()>>,
     }
 
     impl FakeDaemon {
-        fn start(script: Script) -> Self {
+        pub(in crate::interfaces) fn start(script: Script) -> Self {
+            Self::start_with_handshake_delay(script, Duration::ZERO)
+        }
+
+        /// Same fake, but every session answers `Hello` only after `delay`:
+        /// the frontend cutoff tests spend budget on the handshake on purpose.
+        pub(in crate::interfaces) fn start_with_handshake_delay(
+            script: Script,
+            handshake_delay: Duration,
+        ) -> Self {
+            Self::start_session_script(SessionScript::Framed(script), handshake_delay)
+        }
+
+        pub(in crate::interfaces) fn start_with_raw_script(script: RawScript) -> Self {
+            Self::start_session_script(SessionScript::Raw(script), Duration::ZERO)
+        }
+
+        fn start_session_script(script: SessionScript, handshake_delay: Duration) -> Self {
             let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
             listener
                 .set_nonblocking(true)
@@ -510,7 +530,9 @@ mod tests {
                     let record = thread_record.clone();
                     let seen = Arc::clone(&thread_seen);
                     let script = Arc::clone(&script);
-                    thread::spawn(move || serve_session(stream, record, seen, script));
+                    thread::spawn(move || {
+                        serve_session(stream, record, seen, script, handshake_delay)
+                    });
                 }
             });
             Self {
@@ -521,7 +543,7 @@ mod tests {
             }
         }
 
-        fn owner(&self) -> V5DaemonProcessOwner {
+        pub(in crate::interfaces) fn owner(&self) -> V5DaemonProcessOwner {
             V5DaemonProcessOwner::connect_before(
                 self.record.clone(),
                 Instant::now() + Duration::from_secs(5),
@@ -529,11 +551,11 @@ mod tests {
             .expect("connect fake daemon anchor")
         }
 
-        fn seen(&self) -> Vec<V5ClientRequest> {
+        pub(in crate::interfaces) fn seen(&self) -> Vec<V5ClientRequest> {
             self.seen.lock().unwrap().clone()
         }
 
-        fn submissions(&self) -> usize {
+        pub(in crate::interfaces) fn submissions(&self) -> usize {
             self.seen()
                 .iter()
                 .filter(|request| matches!(request, V5ClientRequest::SubmitInvocation { .. }))
@@ -554,7 +576,8 @@ mod tests {
         stream: TcpStream,
         record: V5EndpointRecord,
         seen: Arc<Mutex<Vec<V5ClientRequest>>>,
-        script: Arc<Mutex<Script>>,
+        script: Arc<Mutex<SessionScript>>,
+        handshake_delay: Duration,
     ) {
         stream.set_nonblocking(false).unwrap();
         stream
@@ -565,20 +588,40 @@ mod tests {
         let hello = read_bounded_v5_request_frame(&mut reader).expect("hello frame");
         let hello = decode_v5_request_frame(hello).expect("strict hello");
         assert!(matches!(hello.request(), V5ClientRequest::Hello { .. }));
+        if !handshake_delay.is_zero() {
+            thread::sleep(handshake_delay);
+        }
         write_frame(&mut writer, &V5HandshakeServerResponse::ready(&record));
-        while let Ok(raw) = read_bounded_v5_request_frame(&mut reader) {
-            let decoded = decode_v5_request_frame(raw.clone()).expect("strict client frame");
+        while let Ok(frame) = read_bounded_v5_request_frame(&mut reader) {
+            let decoded = decode_v5_request_frame(frame.clone()).expect("strict client frame");
             let request = decoded.into_request();
             seen.lock().unwrap().push(request.clone());
-            let step = (script.lock().unwrap())(&raw, &request);
-            match step {
-                Step::Reply(response) => write_frame(&mut writer, &response),
-                Step::Close => break,
+            let mut script = script.lock().unwrap();
+            // Bound first: the registry's Rust parser rejects a call on a boxed
+            // closure as a `match` scrutinee.
+            let keep_serving = match &mut *script {
+                SessionScript::Framed(framed) => {
+                    let step = framed(&frame, &request);
+                    match step {
+                        Step::Reply(response) => {
+                            write_frame(&mut writer, &response);
+                            true
+                        }
+                        Step::Close => false,
+                    }
+                }
+                SessionScript::Raw(raw_script) => raw_script(&frame, &request, &mut writer),
+            };
+            if !keep_serving {
+                break;
             }
         }
     }
 
-    fn write_frame<T: serde::Serialize>(stream: &mut TcpStream, value: &T) {
+    pub(in crate::interfaces) fn write_frame<T: serde::Serialize>(
+        stream: &mut TcpStream,
+        value: &T,
+    ) {
         let mut bytes = serde_json::to_vec(value).expect("serialize fake frame");
         bytes.push(b'\n');
         stream.write_all(&bytes).expect("write fake frame");
@@ -586,7 +629,7 @@ mod tests {
     }
 
     /// The receipt key the daemon itself would derive from a strict submit frame.
-    fn daemon_side_key(raw: &[u8]) -> ReceiptKey {
+    pub(in crate::interfaces) fn daemon_side_key(raw: &[u8]) -> ReceiptKey {
         decode_v5_request_frame(raw.to_vec())
             .expect("strict submit frame")
             .into_strict_submit(&CoreIdentity::production_v5())
@@ -595,7 +638,10 @@ mod tests {
             .clone()
     }
 
-    fn direct_receipt(key: ReceiptKey, terminal: ReceiptTerminalOutcome) -> V5ServerResponse {
+    pub(in crate::interfaces) fn direct_receipt(
+        key: ReceiptKey,
+        terminal: ReceiptTerminalOutcome,
+    ) -> V5ServerResponse {
         let canonical = canonical_v5_terminal(&terminal).expect("canonical terminal");
         V5ServerResponse::Invocation {
             outcome: V5InvocationResponse::Direct {
@@ -609,10 +655,156 @@ mod tests {
         }
     }
 
-    fn completed(summary: &str) -> ReceiptTerminalOutcome {
+    pub(in crate::interfaces) fn completed(summary: &str) -> ReceiptTerminalOutcome {
         ReceiptTerminalOutcome::Completed {
             result: Box::new(DomainResult::success(summary)),
         }
+    }
+
+    // --- the real protocol-v5 runtime in a thread -----------------------------
+
+    pub(in crate::interfaces) struct ScriptedService {
+        pub(in crate::interfaces) delay: Duration,
+        pub(in crate::interfaces) known_long: bool,
+        pub(in crate::interfaces) outcome:
+            Mutex<Option<Result<DomainResult, crate::domain::invocation::InvocationFailure>>>,
+        pub(in crate::interfaces) executions: AtomicUsize,
+    }
+
+    impl crate::infrastructure::daemon::server::CanonicalInvocationService for ScriptedService {
+        fn prepare(
+            &self,
+            _invocation: &crate::infrastructure::daemon::server::ActorBoundInvocation,
+        ) -> Result<crate::application::operation_descriptors::ExecutionClass, Box<DomainResult>>
+        {
+            use crate::application::operation_descriptors::{ExecutionClass, KnownLongReason};
+            Ok(if self.known_long {
+                ExecutionClass::KnownLong(KnownLongReason::ExternalProcess)
+            } else {
+                ExecutionClass::InlineCandidate
+            })
+        }
+
+        fn execute(
+            &self,
+            _invocation: &crate::infrastructure::daemon::server::ActorBoundExecution,
+            _cancellation: CancellationToken,
+        ) -> Result<DomainResult, crate::domain::invocation::InvocationFailure> {
+            self.executions.fetch_add(1, Ordering::SeqCst);
+            thread::sleep(self.delay);
+            self.outcome
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or_else(|| Ok(DomainResult::success("executed")))
+        }
+    }
+
+    pub(in crate::interfaces) struct LiveDaemon {
+        _state: Option<tempfile::TempDir>,
+        _workspace: Option<tempfile::TempDir>,
+        pub(in crate::interfaces) workspace_hint: String,
+        pub(in crate::interfaces) state_root: std::path::PathBuf,
+        thread: Option<thread::JoinHandle<Result<(), String>>>,
+    }
+
+    impl LiveDaemon {
+        pub(in crate::interfaces) fn start(
+            service: Arc<dyn crate::infrastructure::daemon::server::CanonicalInvocationService>,
+        ) -> Self {
+            let state = tempfile::tempdir().unwrap();
+            let workspace = tempfile::tempdir().unwrap();
+            std::fs::write(workspace.path().join("v8project.yaml"), WORKSPACE_MANIFEST).unwrap();
+            let state_root = std::fs::canonicalize(state.path()).unwrap();
+            let workspace_hint = std::fs::canonicalize(workspace.path())
+                .unwrap()
+                .to_string_lossy()
+                .into_owned();
+            let mut daemon = Self {
+                _state: Some(state),
+                _workspace: Some(workspace),
+                workspace_hint,
+                state_root,
+                thread: None,
+            };
+            daemon.restart(service, Duration::from_millis(400));
+            daemon
+        }
+
+        /// Start (again) the daemon over the same state root: the second life
+        /// of a restart scenario reads what the first one left durable.
+        pub(in crate::interfaces) fn restart(
+            &mut self,
+            service: Arc<dyn crate::infrastructure::daemon::server::CanonicalInvocationService>,
+            idle_grace: Duration,
+        ) {
+            assert!(
+                self.thread.is_none(),
+                "the previous daemon life must be finished first"
+            );
+            let config = DaemonServerConfig::new(
+                self.state_root.clone(),
+                CoreIdentity::production_v5(),
+                idle_grace,
+            )
+            .with_invocation_service(service);
+            self.thread = Some(thread::spawn(move || {
+                crate::infrastructure::daemon::runtime_v5::run_daemon(config)
+            }));
+        }
+
+        pub(in crate::interfaces) fn owner(&self) -> V5DaemonProcessOwner {
+            let identity = CoreIdentity::production_v5();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                let state = DaemonStateDirectory::open(&self.state_root, &identity).unwrap();
+                if let Some(record) = state.read_v5_endpoint_record().unwrap() {
+                    return V5DaemonProcessOwner::connect_before(record, deadline)
+                        .expect("connect live v5 daemon");
+                }
+                assert!(Instant::now() < deadline, "v5 endpoint was not published");
+                thread::sleep(Duration::from_millis(5));
+            }
+        }
+
+        /// Wait for the daemon to exit on its idle grace; the state root stays.
+        pub(in crate::interfaces) fn stop(&mut self) {
+            self.thread
+                .take()
+                .expect("a running daemon life")
+                .join()
+                .expect("join v5 daemon thread")
+                .expect("v5 daemon exits cleanly after its idle grace");
+        }
+
+        pub(in crate::interfaces) fn finish(mut self) {
+            self.stop();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::{
+        completed, daemon_side_key, direct_receipt, FakeDaemon, LiveDaemon, ScriptedService, Step,
+    };
+    use super::*;
+    use crate::application::receipt_ledger::{canonical_v5_terminal, ReceiptTerminalOutcome};
+    use crate::infrastructure::daemon::protocol_v5::{V5ClientRequest, V5PendingDirectReceipt};
+    use serde_json::json;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
+    use std::thread;
+
+    fn arguments() -> Map<String, Value> {
+        json!({"at": "main:Catalog.Товары"})
+            .as_object()
+            .expect("argument object")
+            .clone()
+    }
+
+    fn deadline(host_remaining: Option<Duration>) -> FrontendInvocationDeadline {
+        FrontendInvocationDeadline::new(Instant::now(), host_remaining)
     }
 
     fn call(
@@ -1045,104 +1237,6 @@ mod tests {
         assert_eq!(past, Err(V5TaskExchangeError::Transport));
     }
 
-    // --- the real protocol-v5 runtime in a thread -----------------------------
-
-    struct ScriptedService {
-        delay: Duration,
-        known_long: bool,
-        outcome: Mutex<Option<Result<DomainResult, crate::domain::invocation::InvocationFailure>>>,
-        executions: AtomicUsize,
-    }
-
-    impl crate::infrastructure::daemon::server::CanonicalInvocationService for ScriptedService {
-        fn prepare(
-            &self,
-            _invocation: &crate::infrastructure::daemon::server::ActorBoundInvocation,
-        ) -> Result<crate::application::operation_descriptors::ExecutionClass, Box<DomainResult>>
-        {
-            use crate::application::operation_descriptors::{ExecutionClass, KnownLongReason};
-            Ok(if self.known_long {
-                ExecutionClass::KnownLong(KnownLongReason::ExternalProcess)
-            } else {
-                ExecutionClass::InlineCandidate
-            })
-        }
-
-        fn execute(
-            &self,
-            _invocation: &crate::infrastructure::daemon::server::ActorBoundExecution,
-            _cancellation: CancellationToken,
-        ) -> Result<DomainResult, crate::domain::invocation::InvocationFailure> {
-            self.executions.fetch_add(1, Ordering::SeqCst);
-            thread::sleep(self.delay);
-            self.outcome
-                .lock()
-                .unwrap()
-                .clone()
-                .unwrap_or_else(|| Ok(DomainResult::success("executed")))
-        }
-    }
-
-    struct LiveDaemon {
-        _state: tempfile::TempDir,
-        _workspace: tempfile::TempDir,
-        workspace_hint: String,
-        state_root: std::path::PathBuf,
-        thread: Option<thread::JoinHandle<Result<(), String>>>,
-    }
-
-    impl LiveDaemon {
-        fn start(service: Arc<ScriptedService>) -> Self {
-            let state = tempfile::tempdir().unwrap();
-            let workspace = tempfile::tempdir().unwrap();
-            std::fs::write(workspace.path().join("v8project.yaml"), WORKSPACE_MANIFEST).unwrap();
-            let state_root = std::fs::canonicalize(state.path()).unwrap();
-            let workspace_hint = std::fs::canonicalize(workspace.path())
-                .unwrap()
-                .to_string_lossy()
-                .into_owned();
-            let config = DaemonServerConfig::new(
-                state_root.clone(),
-                CoreIdentity::production_v5(),
-                Duration::from_millis(400),
-            )
-            .with_invocation_service(service);
-            let thread = thread::spawn(move || {
-                crate::infrastructure::daemon::runtime_v5::run_daemon(config)
-            });
-            Self {
-                _state: state,
-                _workspace: workspace,
-                workspace_hint,
-                state_root,
-                thread: Some(thread),
-            }
-        }
-
-        fn owner(&self) -> V5DaemonProcessOwner {
-            let identity = CoreIdentity::production_v5();
-            let deadline = Instant::now() + Duration::from_secs(10);
-            loop {
-                let state = DaemonStateDirectory::open(&self.state_root, &identity).unwrap();
-                if let Some(record) = state.read_v5_endpoint_record().unwrap() {
-                    return V5DaemonProcessOwner::connect_before(record, deadline)
-                        .expect("connect live v5 daemon");
-                }
-                assert!(Instant::now() < deadline, "v5 endpoint was not published");
-                thread::sleep(Duration::from_millis(5));
-            }
-        }
-
-        fn finish(mut self) {
-            self.thread
-                .take()
-                .unwrap()
-                .join()
-                .expect("join v5 daemon thread")
-                .expect("v5 daemon exits cleanly after its idle grace");
-        }
-    }
-
     #[test]
     fn live_daemon_executes_once_and_compacts_the_acknowledged_receipt_to_a_tombstone() {
         let service = Arc::new(ScriptedService {
@@ -1151,7 +1245,7 @@ mod tests {
             outcome: Mutex::new(None),
             executions: AtomicUsize::new(0),
         });
-        let daemon = LiveDaemon::start(Arc::clone(&service));
+        let daemon = LiveDaemon::start(service.clone());
         let observed = Arc::new(Mutex::new(None));
         let sink = Arc::clone(&observed);
         let owner = daemon.owner();
@@ -1207,7 +1301,7 @@ mod tests {
             ))),
             executions: AtomicUsize::new(0),
         });
-        let daemon = LiveDaemon::start(service);
+        let daemon = LiveDaemon::start(service.clone());
         let router = canonical_daemon_router(daemon.owner(), daemon.workspace_hint.clone());
 
         let refusal = call(&router, None)
@@ -1232,7 +1326,7 @@ mod tests {
             outcome: Mutex::new(None),
             executions: AtomicUsize::new(0),
         });
-        let daemon = LiveDaemon::start(Arc::clone(&service));
+        let daemon = LiveDaemon::start(service.clone());
         let router = canonical_daemon_router(daemon.owner(), daemon.workspace_hint.clone());
 
         let handoff = match call(&router, None) {

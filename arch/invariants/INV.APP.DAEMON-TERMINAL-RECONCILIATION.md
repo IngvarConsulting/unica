@@ -2,8 +2,12 @@
 id: INV.APP.DAEMON-TERMINAL-RECONCILIATION
 status: active
 governs: product
-decision: DEC.2026-08-24.DAEMON-INVOCATION-ROUTING-SLICE
-check: crates/unica-coder/src/application/invocation.rs::terminal_publication_faults_reconcile_without_reexecution_or_false_idle
+decision: DEC.2026-09-07.DAEMON-V5-PRODUCTION-CUTOVER
+check:
+  - crates/unica-coder/src/infrastructure/task_store_v5.rs::completed_terminal_cas_reconciles_commit_uncertain_by_exact_readback
+  - crates/unica-coder/src/infrastructure/task_store_v5.rs::post_publish_sync_failure_is_commit_uncertain_with_exact_visible_readback
+  - crates/unica-coder/tests/daemon_receipt_ledger.rs::task_terminal_receipt_crash_reconciles_without_replay
+  - crates/unica-coder/tests/daemon_receipt_ledger.rs::every_cross_store_crash_point_reconciles_without_split_brain
 scope: [app, cache]
 ---
 

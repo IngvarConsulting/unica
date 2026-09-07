@@ -1,10 +1,10 @@
 ---
 id: DEC.2026-08-24.DAEMON-INVOCATION-ROUTING-SLICE
-status: active
+status: superseded
 governs: product
 realized: crates/unica-coder/src/infrastructure/daemon/mod.rs::daemon_executes_one_canonical_invocation_and_poll_cancel_never_relaunches_it
 supersedes: []
-superseded-by: null
+superseded-by: DEC.2026-09-07.DAEMON-V5-PRODUCTION-CUTOVER
 establishes: [INV.APP.DAEMON-INVOCATION-OWNERSHIP, INV.APP.DAEMON-INVOCATION-HANDOFF, INV.APP.DAEMON-TASK-PERSISTENCE, INV.APP.DAEMON-TASK-RECOVERY, INV.APP.DAEMON-ACTOR-AUTHORITY, INV.APP.DAEMON-TERMINAL-RECONCILIATION, INV.APP.DAEMON-ACTOR-CAPACITY, INV.APP.DAEMON-STORE-FAIL-STOP, INV.WIRE.SURFACE-RELEASE-ROUTING]
 design: docs/design/2026-08-23-v0-13-execution-surface-design.md
 ---

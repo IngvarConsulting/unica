@@ -2,11 +2,11 @@
 id: CTR.APP.DAEMON-LONG-WORK-CAPABILITIES
 status: active
 governs: product
-decision: DEC.2026-08-24.LONG-WORK-OWNERSHIP-SLICE
-check: crates/unica-coder/src/infrastructure/daemon/server.rs::daemon_exact_long_work_ownership_contract
+decision: DEC.2026-09-07.DAEMON-V5-PRODUCTION-CUTOVER
+check: crates/unica-coder/tests/daemon_receipt_ledger.rs::production_known_long_task_executes_after_the_initial_working_projection
 scope: [app]
 version: 1
-producer: crates/unica-coder/src/infrastructure/daemon/server.rs
+producer: crates/unica-coder/src/infrastructure/daemon/runtime_v5.rs
 consumers: [review]
 ---
 

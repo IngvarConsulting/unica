@@ -635,13 +635,21 @@ impl V5DaemonProcessOwner {
                 return Err(V5TransportError::ResponseLost(error));
             }
         };
-        match decode_v5_server_response(&frame) {
-            Ok(response) => Ok(response),
+        let response = match decode_v5_server_response(&frame) {
+            Ok(response) => response,
             Err(error) => {
                 self.poison();
-                Err(V5TransportError::ResponseLost(error))
+                return Err(V5TransportError::ResponseLost(error));
             }
+        };
+        // The checkpoint after parse wins over a payload that crossed the
+        // cutoff while it was being read or decoded: it is not published and
+        // the session does not survive it.
+        if let Err(error) = remaining(deadline, stage) {
+            self.poison();
+            return Err(V5TransportError::ResponseLost(error));
         }
+        Ok(response)
     }
 
     #[cfg(feature = "receipt-ledger-test-support")]

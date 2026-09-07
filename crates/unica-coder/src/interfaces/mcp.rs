@@ -6,9 +6,13 @@
 //! application layer (ADR-0002) and keeps the tool contract data-driven from
 //! operation descriptors (ADR-0001) instead of SDK macros.
 
-use super::daemon_router::FrontendInvocationDeadline;
-use crate::application::invocation::RESPONSE_SERIALIZATION_MARGIN;
-use crate::application::invocation_store::ToolIdentity;
+use super::daemon_router::{
+    canonical_daemon_router, CanonicalCallOutcome, CanonicalDaemonRouter,
+    FrontendInvocationDeadline, TOOL_EXECUTION_ERROR,
+};
+#[cfg(test)]
+use super::daemon_router::{CanonicalCallHandler, CanonicalTaskHandler, CanonicalTaskWaitHandler};
+use crate::application::receipt_ledger::V5ToolIdentity;
 use crate::application::tool_contracts::{SurfaceRelease, V13TaskProfile};
 use crate::application::{
     code_search_output_schema, input_schema_for_tool, metadata_argument_failure_result,
@@ -34,12 +38,12 @@ use std::collections::HashSet;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::infrastructure::daemon::protocol::{InvocationRequest, InvocationResponse};
+use crate::infrastructure::daemon::client_v5::{V5DaemonProcessOwner, V5TaskExchangeError};
+use crate::infrastructure::daemon::protocol_v5::{V5DaemonErrorCode, V5DaemonTaskSnapshot};
 
 pub const MCP_MAX_TOOL_WORKERS: usize = 32;
 const EOF_CANCELLATION_GRACE: Duration = Duration::from_secs(2);
 const RUNTIME_SHUTDOWN_GRACE: Duration = Duration::from_millis(250);
-const TOOL_EXECUTION_ERROR: i32 = -32000;
 
 /// Executes one tool call synchronously without leaking SDK types into the application.
 /// Injectable so transport tests can substitute slow or failing tools.
@@ -52,53 +56,20 @@ type ToolCallHandler = dyn Fn(
     + Send
     + Sync;
 
-type CanonicalToolCallHandler = dyn Fn(
-        ToolIdentity,
-        &Map<String, Value>,
-        FrontendInvocationDeadline,
-        CancellationToken,
-    ) -> Result<InvocationResponse, (i32, String)>
-    + Send
-    + Sync;
-
-type CanonicalTaskHandler = dyn Fn(
-        crate::domain::invocation::TaskId,
-        FrontendInvocationDeadline,
-    ) -> Result<
-        crate::infrastructure::daemon::protocol::DaemonTaskSnapshot,
-        crate::infrastructure::daemon::client::DaemonTaskExchangeError,
-    > + Send
-    + Sync;
-
-type CanonicalTaskWaitHandler = dyn Fn(
-        crate::domain::invocation::TaskId,
-        u64,
-        FrontendInvocationDeadline,
-    ) -> Result<
-        crate::infrastructure::daemon::protocol::DaemonTaskSnapshot,
-        crate::infrastructure::daemon::client::DaemonTaskExchangeError,
-    > + Send
-    + Sync;
-
-#[derive(Clone)]
-struct CanonicalV13Router {
-    call: Arc<CanonicalToolCallHandler>,
-    get: Arc<CanonicalTaskHandler>,
-    wait: Arc<CanonicalTaskWaitHandler>,
-    cancel: Arc<CanonicalTaskHandler>,
-}
-
 #[derive(Clone)]
 enum SurfaceToolRouter {
     #[allow(dead_code)] // constructed only by the explicit legacy test seam
     LegacyV12(Arc<ToolCallHandler>),
-    CanonicalV13(CanonicalV13Router),
+    CanonicalV13(CanonicalDaemonRouter),
 }
 
 enum SurfaceToolOutcome {
     Legacy(Box<OperationResult>),
+    /// A compatibility Task tool answered with a canonical result to project.
     Canonical(crate::domain::invocation::DomainResult),
-    Task(crate::infrastructure::daemon::protocol::DaemonTaskSnapshot),
+    /// An acknowledged Direct terminal, already the final `CallToolResult`.
+    Direct(CallToolResult),
+    Task(V5DaemonTaskSnapshot),
 }
 
 pub fn run_stdio() {
@@ -241,16 +212,15 @@ impl UnicaServer {
     }
 
     #[cfg(test)]
-    fn with_canonical_v13(handler: Arc<CanonicalToolCallHandler>) -> Self {
-        let unavailable: Arc<CanonicalTaskHandler> = Arc::new(|_, _| {
-            Err(crate::infrastructure::daemon::client::DaemonTaskExchangeError::Transport)
-        });
+    fn with_canonical_v13(handler: Arc<CanonicalCallHandler>) -> Self {
+        let unavailable: Arc<CanonicalTaskHandler> =
+            Arc::new(|_, _| Err(V5TaskExchangeError::Transport));
         Self::with_canonical_v13_tasks(handler, Arc::clone(&unavailable), unavailable)
     }
 
     #[cfg(test)]
     fn with_canonical_v13_tasks(
-        call: Arc<CanonicalToolCallHandler>,
+        call: Arc<CanonicalCallHandler>,
         get: Arc<CanonicalTaskHandler>,
         cancel: Arc<CanonicalTaskHandler>,
     ) -> Self {
@@ -262,13 +232,13 @@ impl UnicaServer {
 
     #[cfg(test)]
     fn with_canonical_v13_task_handlers(
-        call: Arc<CanonicalToolCallHandler>,
+        call: Arc<CanonicalCallHandler>,
         get: Arc<CanonicalTaskHandler>,
         wait: Arc<CanonicalTaskWaitHandler>,
         cancel: Arc<CanonicalTaskHandler>,
     ) -> Self {
         Self {
-            router: SurfaceToolRouter::CanonicalV13(CanonicalV13Router {
+            router: SurfaceToolRouter::CanonicalV13(CanonicalDaemonRouter {
                 call,
                 get,
                 wait,
@@ -281,7 +251,7 @@ impl UnicaServer {
     }
 
     fn canonical_v13_daemon(
-        owner: crate::infrastructure::daemon::client::DaemonOwner,
+        owner: V5DaemonProcessOwner,
         workspace_hint: String,
         startup_notice: Option<String>,
     ) -> Self {
@@ -295,10 +265,7 @@ impl UnicaServer {
     }
 
     #[cfg(test)]
-    fn with_canonical_daemon(
-        owner: crate::infrastructure::daemon::client::DaemonOwner,
-        workspace_hint: String,
-    ) -> Self {
+    fn with_canonical_daemon(owner: V5DaemonProcessOwner, workspace_hint: String) -> Self {
         Self::canonical_v13_daemon(owner, workspace_hint, None)
     }
 
@@ -315,38 +282,35 @@ fn execute_surface_tool(
     progress: Arc<dyn ProgressSink>,
     deadline: FrontendInvocationDeadline,
     client_supports_tasks: bool,
-) -> Result<SurfaceToolOutcome, (i32, String)> {
+) -> Result<SurfaceToolOutcome, ErrorData> {
     match router {
         SurfaceToolRouter::LegacyV12(handler) => handler(name, arguments, cancellation, progress)
             .map(Box::new)
-            .map(SurfaceToolOutcome::Legacy),
+            .map(SurfaceToolOutcome::Legacy)
+            .map_err(|(code, message)| ErrorData::new(ErrorCode(code), message, None)),
         SurfaceToolRouter::CanonicalV13(router) => {
             if let Some(request) =
                 crate::application::v13::task_tools::parse_task_tool_call(name, arguments)
             {
                 if client_supports_tasks {
-                    return Err((
-                        ErrorCode::INVALID_PARAMS.0,
-                        "compatibility task tools are unavailable when native Tasks is active"
-                            .to_string(),
+                    return Err(ErrorData::invalid_params(
+                        "compatibility task tools are unavailable when native Tasks is active",
+                        None,
                     ));
                 }
                 return Ok(SurfaceToolOutcome::Canonical(
                     execute_compatibility_task_tool(router, request, deadline),
                 ));
             }
-            let tool = ToolIdentity::from_wire_name(name).ok_or_else(|| {
-                (
-                    ErrorCode::INVALID_PARAMS.0,
-                    "tool is not in the canonical v0.13 profile".to_string(),
-                )
+            let tool = V5ToolIdentity::from_wire_name(name).ok_or_else(|| {
+                ErrorData::invalid_params("tool is not in the canonical v0.13 profile", None)
             })?;
             match (router.call)(tool, arguments, deadline, cancellation)? {
-                InvocationResponse::Direct(result) => Ok(SurfaceToolOutcome::Canonical(result)),
-                InvocationResponse::Task(snapshot) if client_supports_tasks => {
+                CanonicalCallOutcome::Direct(result) => Ok(SurfaceToolOutcome::Direct(result)),
+                CanonicalCallOutcome::Task(snapshot) if client_supports_tasks => {
                     Ok(SurfaceToolOutcome::Task(snapshot))
                 }
-                InvocationResponse::Task(snapshot) => Ok(SurfaceToolOutcome::Canonical(
+                CanonicalCallOutcome::Task(snapshot) => Ok(SurfaceToolOutcome::Canonical(
                     project_compatibility_snapshot(&snapshot, CompatibilityProjection::State),
                 )),
             }
@@ -359,7 +323,7 @@ use crate::application::v13::task_tools::{
 };
 
 fn execute_compatibility_task_tool(
-    router: &CanonicalV13Router,
+    router: &CanonicalDaemonRouter,
     request: Result<crate::application::v13::task_tools::TaskToolRequest, TaskToolError>,
     deadline: FrontendInvocationDeadline,
 ) -> crate::domain::invocation::DomainResult {
@@ -376,7 +340,7 @@ fn execute_compatibility_task_tool(
         TaskToolAction::Cancel => (router.cancel)(request.task_id, deadline),
     };
     let snapshot = match exchange {
-        Ok(snapshot) if snapshot.task_id == request.task_id => snapshot,
+        Ok(snapshot) if snapshot.task_id() == request.task_id => snapshot,
         Ok(_) => {
             return crate::application::v13::task_tools::task_tool_error_result(
                 TaskToolError::TaskProtocolFailed,
@@ -407,52 +371,35 @@ fn bounded_compatibility_wait_ms(
     requested_wait_ms.min(remaining_ms)
 }
 
-fn compatibility_wait_transport_cutoff(
-    requested_wait_ms: u64,
-    deadline: FrontendInvocationDeadline,
-    now: Instant,
-) -> Instant {
-    let requested_cutoff = now
-        .checked_add(
-            Duration::from_millis(requested_wait_ms).saturating_add(RESPONSE_SERIALIZATION_MARGIN),
-        )
-        .expect("bounded compatibility wait cutoff");
-    requested_cutoff.min(deadline.transport_cutoff())
-}
-
-fn compatibility_task_exchange_error(
-    error: crate::infrastructure::daemon::client::DaemonTaskExchangeError,
-) -> TaskToolError {
-    use crate::infrastructure::daemon::client::DaemonTaskExchangeError;
-    use crate::infrastructure::daemon::protocol::DaemonErrorCode;
-
+fn compatibility_task_exchange_error(error: V5TaskExchangeError) -> TaskToolError {
     match error {
-        DaemonTaskExchangeError::Protocol(DaemonErrorCode::TaskNotFound) => {
+        V5TaskExchangeError::Protocol(V5DaemonErrorCode::TaskNotFound) => {
             TaskToolError::TaskNotFound
         }
-        DaemonTaskExchangeError::Protocol(DaemonErrorCode::TaskExpired) => {
-            TaskToolError::TaskExpired
-        }
-        DaemonTaskExchangeError::Protocol(_) => TaskToolError::TaskBackendFailed,
-        DaemonTaskExchangeError::Transport => TaskToolError::TaskTransportFailed,
-        DaemonTaskExchangeError::SessionPoisoned => TaskToolError::TaskSessionClosed,
-        DaemonTaskExchangeError::UnexpectedResponse => TaskToolError::TaskProtocolFailed,
+        V5TaskExchangeError::Protocol(V5DaemonErrorCode::TaskExpired) => TaskToolError::TaskExpired,
+        V5TaskExchangeError::Protocol(_) => TaskToolError::TaskBackendFailed,
+        V5TaskExchangeError::Transport => TaskToolError::TaskTransportFailed,
+        V5TaskExchangeError::SessionPoisoned => TaskToolError::TaskSessionClosed,
+        V5TaskExchangeError::UnexpectedResponse => TaskToolError::TaskProtocolFailed,
     }
 }
 
+/// The compatibility receipt carries the durable state only: the closed v5
+/// snapshot cannot violate the status/result/failure matrix, and a failure
+/// reaches the host as presence, never as text.
 fn project_compatibility_snapshot(
-    snapshot: &crate::infrastructure::daemon::protocol::DaemonTaskSnapshot,
+    snapshot: &V5DaemonTaskSnapshot,
     projection: CompatibilityProjection,
 ) -> crate::domain::invocation::DomainResult {
     let state = CompatibilityTaskSnapshot::new(
-        snapshot.task_id,
-        snapshot.status,
-        snapshot.result.clone(),
-        snapshot.failure.is_some(),
-        snapshot.created_at_epoch_ms,
-        snapshot.updated_at_epoch_ms,
-        snapshot.ttl_ms,
-        snapshot.poll_interval_ms,
+        snapshot.task_id(),
+        snapshot.status(),
+        snapshot.completed_result().cloned(),
+        snapshot.failure_reason().is_some(),
+        snapshot.created_at_epoch_ms(),
+        snapshot.updated_at_epoch_ms(),
+        snapshot.ttl_ms(),
+        snapshot.poll_interval_ms(),
     );
     crate::application::v13::task_tools::project_task_snapshot(&state, projection).unwrap_or_else(
         |_| {
@@ -461,65 +408,6 @@ fn project_compatibility_snapshot(
             )
         },
     )
-}
-
-/// Build the canonical router backed by a persistent v3 user daemon. The
-/// production stdio entrypoint owns one daemon lease for its session and uses
-/// this router for every canonical tool and compatibility Task operation.
-fn canonical_daemon_router(
-    owner: crate::infrastructure::daemon::client::DaemonOwner,
-    workspace_hint: String,
-) -> CanonicalV13Router {
-    // Retain one owner lease for the frontend lifetime, but give each Invocation its own protocol
-    // session. A slow direct response therefore cannot serialize another call ahead of its
-    // seven-second handoff boundary.
-    let anchor = Arc::new(owner);
-    let call_anchor = Arc::clone(&anchor);
-    let call: Arc<CanonicalToolCallHandler> =
-        Arc::new(move |tool, arguments, deadline, _cancellation| {
-            let mut owner = call_anchor
-                .connect_peer(deadline.remaining_transport_at(Instant::now()))
-                .map_err(|message| (TOOL_EXECUTION_ERROR, message))?;
-            let response_budget = deadline.remaining_at(Instant::now());
-            let request = InvocationRequest::new(
-                tool,
-                Value::Object(arguments.clone()),
-                workspace_hint.clone(),
-                response_budget.as_millis().min(7_000) as u64,
-            )
-            .map_err(|message| (ErrorCode::INVALID_PARAMS.0, message))?;
-            owner
-                .submit_invocation_with_transport_budget(
-                    request,
-                    deadline.remaining_transport_at(Instant::now()),
-                )
-                .map_err(|message| (TOOL_EXECUTION_ERROR, message))
-        });
-    let get_anchor = Arc::clone(&anchor);
-    let get: Arc<CanonicalTaskHandler> = Arc::new(move |task_id, deadline| {
-        let task_deadline = get_anchor.begin_task_deadline_at(deadline.transport_cutoff())?;
-        let mut owner = get_anchor.connect_peer_before(&task_deadline)?;
-        owner.get_task_before(task_id, &task_deadline)
-    });
-    let wait_anchor = Arc::clone(&anchor);
-    let wait: Arc<CanonicalTaskWaitHandler> = Arc::new(move |task_id, wait_ms, deadline| {
-        let operation_cutoff =
-            compatibility_wait_transport_cutoff(wait_ms, deadline, Instant::now());
-        let task_deadline = wait_anchor.begin_task_deadline_at(operation_cutoff)?;
-        let mut owner = wait_anchor.connect_peer_before(&task_deadline)?;
-        owner.wait_task_before(task_id, wait_ms, &task_deadline)
-    });
-    let cancel: Arc<CanonicalTaskHandler> = Arc::new(move |task_id, deadline| {
-        let task_deadline = anchor.begin_task_deadline_at(deadline.transport_cutoff())?;
-        let mut owner = anchor.connect_peer_before(&task_deadline)?;
-        owner.cancel_task_before(task_id, &task_deadline)
-    });
-    CanonicalV13Router {
-        call,
-        get,
-        wait,
-        cancel,
-    }
 }
 
 fn structured_output_schema(spec: &ToolSpec) -> Option<Value> {
@@ -894,12 +782,13 @@ impl ServerHandler for UnicaServer {
                     .map(CallToolResponse::from)
                     .map_err(crate::interfaces::task_projection::projection_error)
             }
+            Ok(Ok(SurfaceToolOutcome::Direct(result))) => Ok(CallToolResponse::from(result)),
             Ok(Ok(SurfaceToolOutcome::Task(snapshot))) => {
-                crate::interfaces::task_projection::create_task_result(&snapshot)
+                crate::interfaces::task_projection::create_task_result_v5(&snapshot)
                     .map(CallToolResponse::from)
                     .map_err(crate::interfaces::task_projection::projection_error)
             }
-            Ok(Err((code, message))) => Err(ErrorData::new(ErrorCode(code), message, None)),
+            Ok(Err(error)) => Err(error),
             Err(join_error) => Err(ErrorData::new(
                 ErrorCode::INTERNAL_ERROR,
                 format!("tool worker failed: {join_error}"),
@@ -924,7 +813,7 @@ impl ServerHandler for UnicaServer {
             .map_err(|_| task_internal_error("task_worker_failed"))?
             .map_err(project_task_exchange_error)?;
         ensure_task_identity(task_id, &snapshot)?;
-        crate::interfaces::task_projection::detailed_task(&snapshot)
+        crate::interfaces::task_projection::detailed_task_v5(&snapshot)
             .map(GetTaskResult::new)
             .map_err(crate::interfaces::task_projection::projection_error)
     }
@@ -994,7 +883,7 @@ fn ensure_native_task_protocol(context: &RequestContext<RoleServer>) -> Result<(
     }
 }
 
-fn canonical_task_router(router: &SurfaceToolRouter) -> Result<CanonicalV13Router, ErrorData> {
+fn canonical_task_router(router: &SurfaceToolRouter) -> Result<CanonicalDaemonRouter, ErrorData> {
     match router {
         SurfaceToolRouter::CanonicalV13(router) => Ok(router.clone()),
         SurfaceToolRouter::LegacyV12(_) => Err(task_internal_error("task_profile_unavailable")),
@@ -1012,9 +901,9 @@ fn parse_task_id(encoded: &str) -> Result<crate::domain::invocation::TaskId, Err
 
 fn ensure_task_identity(
     expected: crate::domain::invocation::TaskId,
-    snapshot: &crate::infrastructure::daemon::protocol::DaemonTaskSnapshot,
+    snapshot: &V5DaemonTaskSnapshot,
 ) -> Result<(), ErrorData> {
-    if snapshot.task_id == expected {
+    if snapshot.task_id() == expected {
         Ok(())
     } else {
         Err(task_internal_error("task_protocol_failed"))
@@ -1025,54 +914,45 @@ fn ensure_task_identity(
 /// проходят с повтора, несовместимость требует человека, а сломанное
 /// хранилище не лечится ни тем, ни другим. Широкая ветка `_` здесь и теряла
 /// различие.
-fn backend_detail(code: crate::infrastructure::daemon::protocol::DaemonErrorCode) -> RefusalDetail {
-    use crate::infrastructure::daemon::protocol::DaemonErrorCode;
+fn backend_detail(code: V5DaemonErrorCode) -> RefusalDetail {
     match code {
-        DaemonErrorCode::Overloaded
-        | DaemonErrorCode::TaskCapacity
-        | DaemonErrorCode::OwnerCapacity
-        | DaemonErrorCode::WorkspaceCapacity => RefusalDetail::BackendBusy,
-        DaemonErrorCode::ProtocolMismatch
-        | DaemonErrorCode::CoreMismatch
-        | DaemonErrorCode::Unauthorized
-        | DaemonErrorCode::HandshakeRequired => RefusalDetail::BackendIncompatible,
-        DaemonErrorCode::InvalidRequest
-        | DaemonErrorCode::DuplicateLease
-        | DaemonErrorCode::WorkspaceRegistryFailed
-        | DaemonErrorCode::InvocationFailed
-        | DaemonErrorCode::ResultTooLarge
-        | DaemonErrorCode::StoreFailed
-        | DaemonErrorCode::DurabilityUncertain
-        | DaemonErrorCode::TaskNotFound
-        | DaemonErrorCode::TaskExpired => RefusalDetail::BackendBroken,
+        V5DaemonErrorCode::Overloaded
+        | V5DaemonErrorCode::OwnerCapacity
+        | V5DaemonErrorCode::ReceiptCapacity
+        | V5DaemonErrorCode::TombstoneCapacity => RefusalDetail::BackendBusy,
+        V5DaemonErrorCode::ProtocolMismatch
+        | V5DaemonErrorCode::CoreMismatch
+        | V5DaemonErrorCode::Unauthorized
+        | V5DaemonErrorCode::HandshakeRequired => RefusalDetail::BackendIncompatible,
+        V5DaemonErrorCode::InvalidRequest
+        | V5DaemonErrorCode::DuplicateLease
+        | V5DaemonErrorCode::ReceiptNotFound
+        | V5DaemonErrorCode::ReceiptExpired
+        | V5DaemonErrorCode::InvocationIdentityMismatch
+        | V5DaemonErrorCode::TaskNotFound
+        | V5DaemonErrorCode::TaskExpired
+        | V5DaemonErrorCode::StoreFailed
+        | V5DaemonErrorCode::DurabilityUncertain
+        | V5DaemonErrorCode::StoreCommitUncertain => RefusalDetail::BackendBroken,
     }
 }
 
-fn project_task_exchange_error(
-    error: crate::infrastructure::daemon::client::DaemonTaskExchangeError,
-) -> ErrorData {
-    use crate::infrastructure::daemon::client::DaemonTaskExchangeError;
-    use crate::infrastructure::daemon::protocol::DaemonErrorCode;
-
+fn project_task_exchange_error(error: V5TaskExchangeError) -> ErrorData {
     match error {
-        DaemonTaskExchangeError::Protocol(DaemonErrorCode::TaskNotFound) => {
+        V5TaskExchangeError::Protocol(V5DaemonErrorCode::TaskNotFound) => {
             ErrorData::invalid_params(
                 "task_not_found",
                 Some(serde_json::json!({"code": "task_not_found"})),
             )
         }
-        DaemonTaskExchangeError::Protocol(DaemonErrorCode::TaskExpired) => {
-            ErrorData::invalid_params(
-                "task_expired",
-                Some(serde_json::json!({"code": "task_expired"})),
-            )
-        }
-        DaemonTaskExchangeError::Protocol(code) => {
-            task_internal_error_detailed(backend_detail(code))
-        }
-        DaemonTaskExchangeError::Transport => task_internal_error("task_transport_failed"),
-        DaemonTaskExchangeError::SessionPoisoned => task_internal_error("task_session_closed"),
-        DaemonTaskExchangeError::UnexpectedResponse => task_internal_error("task_protocol_failed"),
+        V5TaskExchangeError::Protocol(V5DaemonErrorCode::TaskExpired) => ErrorData::invalid_params(
+            "task_expired",
+            Some(serde_json::json!({"code": "task_expired"})),
+        ),
+        V5TaskExchangeError::Protocol(code) => task_internal_error_detailed(backend_detail(code)),
+        V5TaskExchangeError::Transport => task_internal_error("task_transport_failed"),
+        V5TaskExchangeError::SessionPoisoned => task_internal_error("task_session_closed"),
+        V5TaskExchangeError::UnexpectedResponse => task_internal_error("task_protocol_failed"),
     }
 }
 
@@ -1332,10 +1212,16 @@ impl Drop for InFlightGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::application::invocation::INVOCATION_HANDOFF_WINDOW;
+    use crate::application::invocation::{
+        INVOCATION_HANDOFF_WINDOW, RESPONSE_SERIALIZATION_MARGIN,
+    };
     use crate::application::{ResultContract, ToolExecution};
     use crate::domain::cache::CacheReport;
-    use crate::interfaces::daemon_router::remaining_invocation_budget;
+    use crate::infrastructure::daemon::protocol_v5::V5ClientRequest;
+    use crate::interfaces::daemon_router::test_support::{
+        FakeDaemon, LiveDaemon, ScriptedService, Step,
+    };
+    use crate::interfaces::daemon_router::{remaining_invocation_budget, wait_transport_cutoff};
     use serde_json::json;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::mpsc;
@@ -1351,9 +1237,9 @@ mod tests {
 
     #[test]
     fn production_mcp_surface_exposes_only_canonical_v13_tools_and_task_compatibility() {
-        let canonical: Arc<CanonicalToolCallHandler> = Arc::new(|_, _, _, _| {
-            Ok(InvocationResponse::Direct(
-                crate::domain::invocation::DomainResult::success("canonical"),
+        let canonical: Arc<CanonicalCallHandler> = Arc::new(|_, _, _, _| {
+            direct_outcome(crate::domain::invocation::DomainResult::success(
+                "canonical",
             ))
         });
         let server = UnicaServer::with_canonical_v13(canonical);
@@ -1465,12 +1351,12 @@ mod tests {
 
         let daemon_count = Arc::new(AtomicUsize::new(0));
         let daemon_observed = Arc::clone(&daemon_count);
-        let canonical: Arc<CanonicalToolCallHandler> = Arc::new(move |tool, _, deadline, _| {
-            assert_eq!(tool, ToolIdentity::Check);
+        let canonical: Arc<CanonicalCallHandler> = Arc::new(move |tool, _, deadline, _| {
+            assert_eq!(tool, V5ToolIdentity::Check);
             assert_eq!(deadline.remaining_at(received), Duration::from_secs(7));
             daemon_observed.fetch_add(1, Ordering::SeqCst);
-            Ok(InvocationResponse::Direct(
-                crate::domain::invocation::DomainResult::success("canonical"),
+            direct_outcome(crate::domain::invocation::DomainResult::success(
+                "canonical",
             ))
         });
         let v13 = UnicaServer::with_canonical_v13(canonical);
@@ -1484,10 +1370,16 @@ mod tests {
             true,
         )
         .unwrap();
-        let SurfaceToolOutcome::Canonical(result) = result else {
-            panic!("v0.13 direct calls must retain the canonical result envelope");
+        let SurfaceToolOutcome::Direct(result) = result else {
+            panic!("v0.13 direct calls must arrive as the acknowledged final result");
         };
-        assert_eq!(result.summary, "canonical");
+        assert_eq!(
+            result
+                .structured_content
+                .as_ref()
+                .and_then(|value| value["summary"].as_str()),
+            Some("canonical")
+        );
         assert_eq!(daemon_count.load(Ordering::SeqCst), 1);
         assert_eq!(legacy_count.load(Ordering::SeqCst), 1);
     }
@@ -2183,28 +2075,119 @@ mod tests {
         }
     }
 
+    /// A durable v5 snapshot for the handler fakes: the same identity and
+    /// timing every test expects on the wire, one closed variant per status.
     fn canonical_snapshot(
         task_id: crate::domain::invocation::TaskId,
         status: crate::domain::invocation::InvocationStatus,
         result: Option<crate::domain::invocation::DomainResult>,
-    ) -> crate::infrastructure::daemon::protocol::DaemonTaskSnapshot {
-        crate::infrastructure::daemon::protocol::DaemonTaskSnapshot {
+    ) -> V5DaemonTaskSnapshot {
+        canonical_snapshot_at(
             task_id,
-            invocation_id: crate::domain::invocation::InvocationId::new(),
             status,
             result,
-            failure: None,
-            poll_interval_ms: 250,
-            created_at_epoch_ms: 1_777_012_345_678,
-            updated_at_epoch_ms: 1_777_012_346_789,
-            ttl_ms: 3_600_000,
+            1_777_012_345_678,
+            1_777_012_346_789,
+        )
+    }
+
+    fn canonical_snapshot_at(
+        task_id: crate::domain::invocation::TaskId,
+        status: crate::domain::invocation::InvocationStatus,
+        result: Option<crate::domain::invocation::DomainResult>,
+        created_at_epoch_ms: u64,
+        updated_at_epoch_ms: u64,
+    ) -> V5DaemonTaskSnapshot {
+        use crate::domain::invocation::InvocationStatus;
+
+        let invocation_id = crate::domain::invocation::InvocationId::new();
+        let receipt_key_digest: crate::application::receipt_ledger::ReceiptKeyDigest =
+            "07".repeat(32).parse().unwrap();
+        let terminal_digest: crate::application::receipt_ledger::TerminalDigest =
+            "09".repeat(32).parse().unwrap();
+        let (ttl_ms, poll_interval_ms, version, cancel_requested) = (3_600_000, 250, 2, false);
+        match status {
+            InvocationStatus::Queued => V5DaemonTaskSnapshot::Queued {
+                task_id,
+                invocation_id,
+                receipt_key_digest,
+                created_at_epoch_ms,
+                updated_at_epoch_ms,
+                ttl_ms,
+                poll_interval_ms,
+                version,
+                cancel_requested,
+            },
+            InvocationStatus::Working => V5DaemonTaskSnapshot::Working {
+                task_id,
+                invocation_id,
+                receipt_key_digest,
+                created_at_epoch_ms,
+                updated_at_epoch_ms,
+                ttl_ms,
+                poll_interval_ms,
+                version,
+                cancel_requested,
+            },
+            InvocationStatus::Completed => V5DaemonTaskSnapshot::Completed {
+                task_id,
+                invocation_id,
+                receipt_key_digest,
+                created_at_epoch_ms,
+                updated_at_epoch_ms,
+                ttl_ms,
+                poll_interval_ms,
+                version,
+                cancel_requested,
+                terminal_epoch_ms: updated_at_epoch_ms,
+                terminal_digest,
+                result: Box::new(result.expect("a completed snapshot carries its result")),
+            },
+            InvocationStatus::Failed => V5DaemonTaskSnapshot::Failed {
+                task_id,
+                invocation_id,
+                receipt_key_digest,
+                created_at_epoch_ms,
+                updated_at_epoch_ms,
+                ttl_ms,
+                poll_interval_ms,
+                version,
+                cancel_requested,
+                terminal_epoch_ms: updated_at_epoch_ms,
+                terminal_digest,
+                reason:
+                    crate::application::invocation_store_v5::V5SafeFailureReason::InvocationFailed,
+            },
+            InvocationStatus::Cancelled => V5DaemonTaskSnapshot::Cancelled {
+                task_id,
+                invocation_id,
+                receipt_key_digest,
+                created_at_epoch_ms,
+                updated_at_epoch_ms,
+                ttl_ms,
+                poll_interval_ms,
+                version,
+                cancel_requested: true,
+                terminal_epoch_ms: updated_at_epoch_ms,
+                terminal_digest,
+            },
         }
+    }
+
+    /// The handler fakes answer a Direct terminal the way the router does: as
+    /// the final projected `CallToolResult`, or the projection's refusal.
+    fn direct_outcome(
+        result: crate::domain::invocation::DomainResult,
+    ) -> Result<CanonicalCallOutcome, ErrorData> {
+        crate::interfaces::task_projection::call_tool_result(&result)
+            .map(CanonicalCallOutcome::Direct)
+            .map_err(crate::interfaces::task_projection::projection_error)
     }
 
     fn canonical_profile_server() -> UnicaServer {
         let task_id = crate::domain::invocation::TaskId::new();
-        let call: Arc<CanonicalToolCallHandler> = Arc::new(move |_, _, _, _| {
-            Ok(InvocationResponse::Task(canonical_snapshot(
+        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _| {
+            Ok(CanonicalCallOutcome::Task(canonical_snapshot(
                 task_id,
                 crate::domain::invocation::InvocationStatus::Working,
                 None,
@@ -2356,9 +2339,9 @@ mod tests {
         let task_id = TaskId::new();
         let executions = Arc::new(AtomicUsize::new(0));
         let execution_observed = Arc::clone(&executions);
-        let call: Arc<CanonicalToolCallHandler> = Arc::new(move |_, _, _, _| {
+        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _| {
             execution_observed.fetch_add(1, Ordering::SeqCst);
-            Ok(InvocationResponse::Task(canonical_snapshot(
+            Ok(CanonicalCallOutcome::Task(canonical_snapshot(
                 task_id,
                 InvocationStatus::Working,
                 None,
@@ -2468,31 +2451,26 @@ mod tests {
             0
         );
         assert_eq!(
-            compatibility_wait_transport_cutoff(0, deadline, received),
+            wait_transport_cutoff(0, deadline),
             received + Duration::from_millis(125)
         );
         assert_eq!(
-            compatibility_wait_transport_cutoff(1, deadline, received),
+            wait_transport_cutoff(1, deadline),
             received + Duration::from_millis(126)
         );
         assert_eq!(
-            compatibility_wait_transport_cutoff(7_000, deadline, received),
+            wait_transport_cutoff(7_000, deadline),
             received + Duration::from_millis(7_125)
         );
         assert_eq!(
-            compatibility_wait_transport_cutoff(
-                7_000,
-                deadline,
-                received + Duration::from_millis(6_999),
-            ),
+            wait_transport_cutoff(7_000, deadline),
             received + Duration::from_millis(7_125),
             "elapsed frontend time is not replenished by the compatibility wait"
         );
         assert_eq!(
-            compatibility_wait_transport_cutoff(
+            wait_transport_cutoff(
                 7_000,
-                FrontendInvocationDeadline::new(received, Some(Duration::from_millis(80))),
-                received,
+                FrontendInvocationDeadline::new(received, Some(Duration::from_millis(80)))
             ),
             received + Duration::from_millis(80),
             "an earlier host deadline is stronger than waitMs plus response margin"
@@ -2508,12 +2486,12 @@ mod tests {
         let executions = Arc::new(AtomicUsize::new(0));
         let execution_observed = Arc::clone(&executions);
         let direct_subject = subject.clone();
-        let call: Arc<CanonicalToolCallHandler> = Arc::new(move |_, arguments, _, _| {
+        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, arguments, _, _| {
             execution_observed.fetch_add(1, Ordering::SeqCst);
             if arguments.get("direct").and_then(Value::as_bool) == Some(true) {
-                Ok(InvocationResponse::Direct(direct_subject.clone()))
+                direct_outcome(direct_subject.clone())
             } else {
-                Ok(InvocationResponse::Task(canonical_snapshot(
+                Ok(CanonicalCallOutcome::Task(canonical_snapshot(
                     task_id,
                     InvocationStatus::Working,
                     None,
@@ -2609,8 +2587,6 @@ mod tests {
 
     async fn compatibility_closed_errors_case() {
         use crate::domain::invocation::{InvocationStatus, TaskId};
-        use crate::infrastructure::daemon::client::DaemonTaskExchangeError;
-        use crate::infrastructure::daemon::protocol::DaemonErrorCode;
         use std::sync::atomic::AtomicUsize;
 
         let known = TaskId::new();
@@ -2618,9 +2594,9 @@ mod tests {
         let expired = TaskId::new();
         let subject_executions = Arc::new(AtomicUsize::new(0));
         let subject_observed = Arc::clone(&subject_executions);
-        let call: Arc<CanonicalToolCallHandler> = Arc::new(move |_, _, _, _| {
+        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _| {
             subject_observed.fetch_add(1, Ordering::SeqCst);
-            Ok(InvocationResponse::Task(canonical_snapshot(
+            Ok(CanonicalCallOutcome::Task(canonical_snapshot(
                 known,
                 InvocationStatus::Working,
                 None,
@@ -2631,8 +2607,8 @@ mod tests {
         let get: Arc<CanonicalTaskHandler> = Arc::new(move |task_id, _| {
             get_observed.fetch_add(1, Ordering::SeqCst);
             if task_id == unknown {
-                Err(DaemonTaskExchangeError::Protocol(
-                    DaemonErrorCode::TaskNotFound,
+                Err(V5TaskExchangeError::Protocol(
+                    V5DaemonErrorCode::TaskNotFound,
                 ))
             } else {
                 Ok(canonical_snapshot(known, InvocationStatus::Working, None))
@@ -2643,8 +2619,8 @@ mod tests {
         let wait: Arc<CanonicalTaskWaitHandler> = Arc::new(move |task_id, _, _| {
             wait_observed.fetch_add(1, Ordering::SeqCst);
             if task_id == expired {
-                Err(DaemonTaskExchangeError::Protocol(
-                    DaemonErrorCode::TaskExpired,
+                Err(V5TaskExchangeError::Protocol(
+                    V5DaemonErrorCode::TaskExpired,
                 ))
             } else {
                 Ok(canonical_snapshot(known, InvocationStatus::Working, None))
@@ -2721,188 +2697,28 @@ mod tests {
         native.shutdown().await;
     }
 
-    struct CompatibilityRestartService {
-        executions: Arc<AtomicUsize>,
-    }
-
-    impl crate::infrastructure::daemon::server::CanonicalInvocationService
-        for CompatibilityRestartService
-    {
-        fn prepare(
-            &self,
-            _invocation: &crate::infrastructure::daemon::server::ActorBoundInvocation,
-        ) -> Result<
-            crate::application::operation_descriptors::ExecutionClass,
-            Box<crate::domain::invocation::DomainResult>,
-        > {
-            Ok(
-                crate::application::operation_descriptors::ExecutionClass::KnownLong(
-                    crate::application::operation_descriptors::KnownLongReason::ExternalProcess,
-                ),
-            )
-        }
-
-        fn execute(
-            &self,
-            _invocation: &crate::infrastructure::daemon::server::ActorBoundExecution,
-            _cancellation: crate::domain::cancellation::CancellationToken,
-        ) -> Result<
-            crate::domain::invocation::DomainResult,
-            crate::domain::invocation::InvocationFailure,
-        > {
-            self.executions.fetch_add(1, Ordering::SeqCst);
-            Ok(crate::domain::invocation::DomainResult::success(
+    /// A known-long service: every call hands off to a durable Task before
+    /// execution, which is what the compatibility receipts observe.
+    fn known_long_service() -> Arc<ScriptedService> {
+        Arc::new(ScriptedService {
+            delay: Duration::from_millis(50),
+            known_long: true,
+            outcome: Mutex::new(Some(Ok(crate::domain::invocation::DomainResult::success(
                 "durable compatibility result",
-            ))
-        }
-    }
-
-    fn wait_for_compatibility_daemon(
-        state_root: &std::path::Path,
-        identity: &crate::infrastructure::daemon::identity::CoreIdentity,
-        daemon_done: &std::sync::mpsc::Receiver<Result<(), String>>,
-        phase: &str,
-    ) -> crate::infrastructure::daemon::protocol::EndpointRecord {
-        let deadline = Instant::now() + TEST_STEP;
-        loop {
-            let state = crate::infrastructure::daemon::identity::DaemonStateDirectory::open(
-                state_root, identity,
-            )
-            .unwrap();
-            if let Some(record) = state.read_endpoint_record().unwrap() {
-                return record;
-            }
-            match daemon_done.try_recv() {
-                Ok(Ok(())) => {
-                    panic!("{phase} compatibility daemon exited before its endpoint was observed")
-                }
-                Ok(Err(error)) => panic!(
-                    "{phase} compatibility daemon failed before publishing its endpoint: {error}"
-                ),
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => panic!(
-                    "{phase} compatibility daemon outcome channel disconnected before publication"
-                ),
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            }
-            assert!(
-                Instant::now() < deadline,
-                "{phase} compatibility daemon endpoint was not published"
-            );
-            std::thread::sleep(Duration::from_millis(10));
-        }
-    }
-
-    fn start_compatibility_daemon_with_anchor(
-        config: crate::infrastructure::daemon::server::DaemonServerConfig,
-        state_root: &std::path::Path,
-        identity: &crate::infrastructure::daemon::identity::CoreIdentity,
-        observation_delay: Duration,
-        phase: &str,
-    ) -> (
-        std::thread::JoinHandle<Result<(), String>>,
-        std::net::TcpStream,
-    ) {
-        use crate::infrastructure::daemon::protocol::{
-            read_bounded_json_line, ClientRequest, ServerResponse, DAEMON_PROTOCOL_VERSION,
-        };
-        use crate::infrastructure::daemon::server::{install_startup_pause, run_daemon};
-        use std::io::{BufReader as StdBufReader, Write};
-
-        let startup_pause = install_startup_pause();
-        let config = config.with_startup_pause(&startup_pause);
-        let (daemon_done, daemon_done_wait) = std::sync::mpsc::channel();
-        let daemon = std::thread::spawn(move || {
-            let outcome = run_daemon(config);
-            let _ = daemon_done.send(outcome.clone());
-            outcome
-        });
-
-        // Deliberately model a runner scheduling gap longer than the short test idle grace.
-        // The post-publication gate must retain the endpoint until an authenticated owner is
-        // already queued; merely polling the endpoint leaves a publication-to-connect race.
-        std::thread::sleep(observation_delay);
-        let record = wait_for_compatibility_daemon(state_root, identity, &daemon_done_wait, phase);
-
-        let mut anchor = std::net::TcpStream::connect(record.loopback_addr().unwrap()).unwrap();
-        anchor.set_read_timeout(Some(TEST_STEP)).unwrap();
-        let mut hello = serde_json::to_vec(&ClientRequest::hello(
-            DAEMON_PROTOCOL_VERSION,
-            record.token().to_string(),
-            identity.clone(),
-        ))
-        .unwrap();
-        hello.push(b'\n');
-        anchor.write_all(&hello).unwrap();
-        anchor.flush().unwrap();
-        startup_pause.release();
-
-        let ready: ServerResponse = serde_json::from_slice(
-            &read_bounded_json_line(&mut StdBufReader::new(anchor.try_clone().unwrap())).unwrap(),
-        )
-        .unwrap();
-        assert!(
-            ready.matches_record(&record),
-            "{phase} compatibility daemon rejected its queued startup anchor: {ready:?}"
-        );
-        (daemon, anchor)
-    }
-
-    fn connect_compatibility_daemon(
-        state_root: std::path::PathBuf,
-        identity: crate::infrastructure::daemon::identity::CoreIdentity,
-    ) -> crate::infrastructure::daemon::client::DaemonOwner {
-        let client = crate::infrastructure::daemon::client::DaemonClient::new(
-            crate::infrastructure::daemon::client::DaemonClientConfig::existing_only(
-                state_root, identity,
-            ),
-        );
-        match client.connect_existing().unwrap() {
-            crate::infrastructure::daemon::client::ExistingDaemon::Connected(owner) => *owner,
-            crate::infrastructure::daemon::client::ExistingDaemon::Absent => {
-                panic!("published compatibility daemon must connect")
-            }
-        }
+            )))),
+            executions: AtomicUsize::new(0),
+        })
     }
 
     async fn compatibility_daemon_restart_case() {
         use crate::domain::invocation::TaskId;
-        use crate::infrastructure::daemon::identity::CoreIdentity;
-        use crate::infrastructure::daemon::server::DaemonServerConfig;
         use std::str::FromStr;
 
-        let state = tempfile::tempdir().unwrap();
-        let workspace = tempfile::tempdir().unwrap();
-        std::fs::write(
-            workspace.path().join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\n",
-        )
-        .unwrap();
-        let state_root = std::fs::canonicalize(state.path()).unwrap();
-        let workspace_hint = std::fs::canonicalize(workspace.path())
-            .unwrap()
-            .to_string_lossy()
-            .into_owned();
-        let identity = CoreIdentity::production();
-        let executions = Arc::new(AtomicUsize::new(0));
-        let service = Arc::new(CompatibilityRestartService {
-            executions: Arc::clone(&executions),
-        });
-        let idle_grace = Duration::from_millis(350);
-        let first_config =
-            DaemonServerConfig::new(state_root.clone(), identity.clone(), idle_grace)
-                .with_invocation_service(service);
-        let (first_daemon, first_startup_anchor) = start_compatibility_daemon_with_anchor(
-            first_config,
-            &state_root,
-            &identity,
-            idle_grace * 2,
-            "first",
-        );
-
-        let first_owner = connect_compatibility_daemon(state_root.clone(), identity.clone());
-        drop(first_startup_anchor);
+        let first_service = known_long_service();
+        let mut daemon = LiveDaemon::start(first_service.clone());
+        let workspace_hint = daemon.workspace_hint.clone();
         let (mut first, _) = spawn_unica_server(UnicaServer::with_canonical_daemon(
-            first_owner,
+            daemon.owner(),
             workspace_hint.clone(),
         ));
         first
@@ -2949,24 +2765,15 @@ mod tests {
         let before_restart = first.receive().await;
         let before_task = before_restart["result"]["structuredContent"]["data"]["task"].clone();
         assert_eq!(before_task["status"], "completed", "{before_restart}");
-        assert_eq!(executions.load(Ordering::SeqCst), 1);
+        assert_eq!(first_service.executions.load(Ordering::SeqCst), 1);
 
         first.shutdown().await;
-        first_daemon.join().unwrap().unwrap();
+        daemon.stop();
 
-        let second_config =
-            DaemonServerConfig::new(state_root.clone(), identity.clone(), idle_grace);
-        let (second_daemon, second_startup_anchor) = start_compatibility_daemon_with_anchor(
-            second_config,
-            &state_root,
-            &identity,
-            Duration::ZERO,
-            "second",
-        );
-        let second_owner = connect_compatibility_daemon(state_root, identity);
-        drop(second_startup_anchor);
+        let second_service = known_long_service();
+        daemon.restart(second_service.clone(), Duration::from_millis(400));
         let (mut second, _) = spawn_unica_server(UnicaServer::with_canonical_daemon(
-            second_owner,
+            daemon.owner(),
             workspace_hint,
         ));
         second
@@ -2998,9 +2805,13 @@ mod tests {
             serde_json::to_vec(&first_result["result"]).unwrap(),
             "the restarted adapter must project the same durable terminal result"
         );
-        assert_eq!(executions.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            second_service.executions.load(Ordering::SeqCst),
+            0,
+            "a restart never re-executes a completed task"
+        );
         second.shutdown().await;
-        second_daemon.join().unwrap().unwrap();
+        daemon.finish();
     }
 
     #[tokio::test]
@@ -3013,73 +2824,49 @@ mod tests {
         compatibility_wait_budget_case();
     }
 
-    async fn compatibility_wait_single_deadline_case() {
-        use crate::infrastructure::daemon::client::{
-            DaemonClient, DaemonClientConfig, ExistingDaemon, ManualDaemonClientClock,
-        };
-        use crate::infrastructure::daemon::identity::{CoreIdentity, DaemonStateDirectory};
-        use crate::infrastructure::daemon::protocol::{
-            read_bounded_json_line, ClientRequest, DaemonTaskSnapshot, EndpointRecord,
-            ServerResponse,
-        };
-        use std::io::{BufReader as StdBufReader, Write};
-        use std::net::{Ipv4Addr, TcpListener};
-        use std::thread;
-
-        fn write_line(stream: &mut std::net::TcpStream, response: &ServerResponse) {
-            serde_json::to_writer(&mut *stream, response).unwrap();
-            stream.write_all(b"\n").unwrap();
-            stream.flush().unwrap();
-        }
-
-        for requested_wait_ms in [0_u64, 1] {
-            let state = tempfile::tempdir().unwrap();
-            let state_root = std::fs::canonicalize(state.path()).unwrap();
-            let identity = CoreIdentity::production();
-            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-            let record =
-                EndpointRecord::new(identity.clone(), listener.local_addr().unwrap().port());
-            let directory = DaemonStateDirectory::open(&state_root, &identity).unwrap();
-            directory.write_endpoint_record_for_test(&record).unwrap();
-            let clock = ManualDaemonClientClock::new();
-            let peer_clock = clock.clone();
-            let peer_record = record.clone();
-            let task_id = crate::domain::invocation::TaskId::new();
-            let fake_peer = thread::spawn(move || {
-                let (mut anchor, _) = listener.accept().unwrap();
-                let _hello = read_bounded_json_line(&mut StdBufReader::new(&anchor)).unwrap();
-                write_line(&mut anchor, &ServerResponse::ready(&peer_record));
-
-                let (mut operation, _) = listener.accept().unwrap();
-                let mut operation_reader = StdBufReader::new(operation.try_clone().unwrap());
-                let _hello = read_bounded_json_line(&mut operation_reader).unwrap();
-                peer_clock.advance(Duration::from_millis(60));
-                write_line(&mut operation, &ServerResponse::ready(&peer_record));
-
-                let request = crate::infrastructure::daemon::protocol::parse_request(
-                    &read_bounded_json_line(&mut operation_reader).unwrap(),
+    /// The fake answers every Task frame with a working snapshot, optionally
+    /// only after `response_delay`; the tests below spend the frontend budget
+    /// on connect, handshake and response on purpose.
+    fn working_task_fake(
+        task_id: crate::domain::invocation::TaskId,
+        handshake_delay: Duration,
+        response_delay: Duration,
+        observed: mpsc::Sender<V5ClientRequest>,
+    ) -> FakeDaemon {
+        FakeDaemon::start_with_handshake_delay(
+            Box::new(move |_, request| {
+                let _ = observed.send(request.clone());
+                if !response_delay.is_zero() {
+                    std::thread::sleep(response_delay);
+                }
+                Step::Reply(
+                    crate::infrastructure::daemon::protocol_v5::V5ServerResponse::Task {
+                        snapshot: canonical_snapshot(
+                            task_id,
+                            crate::domain::invocation::InvocationStatus::Working,
+                            None,
+                        ),
+                    },
                 )
-                .unwrap();
-                assert_eq!(
-                    request,
-                    ClientRequest::wait_task(task_id, 0),
-                    "connect time consumes the wait slice before the 125ms response margin"
-                );
-                peer_clock.advance(Duration::from_millis(1_065 + requested_wait_ms));
-                write_line(
-                    &mut operation,
-                    &ServerResponse::task(DaemonTaskSnapshot::working_for_test(task_id)),
-                );
-            });
-            let client = DaemonClient::new(
-                DaemonClientConfig::existing_only(state_root, identity).with_clock_for_test(clock),
+            }),
+            handshake_delay,
+        )
+    }
+
+    async fn compatibility_wait_single_deadline_case() {
+        for requested_wait_ms in [0_u64, 1] {
+            let task_id = crate::domain::invocation::TaskId::new();
+            let (observed, observations) = mpsc::channel();
+            // Connect and handshake take longer than the requested wait, and the
+            // daemon answers only after the 125 ms response margin has passed.
+            let fake = working_task_fake(
+                task_id,
+                Duration::from_millis(60),
+                Duration::from_millis(400),
+                observed,
             );
-            let owner = match client.connect_existing().unwrap() {
-                ExistingDaemon::Connected(owner) => *owner,
-                ExistingDaemon::Absent => panic!("fake compatibility daemon must connect"),
-            };
             let (mut mcp, _) = spawn_unica_server(UnicaServer::with_canonical_daemon(
-                owner,
+                fake.owner(),
                 "/workspace".to_string(),
             ));
             mcp.send(json!({
@@ -3093,12 +2880,22 @@ mod tests {
             .await;
             let response = mcp.receive().await;
             assert_eq!(
-            response["result"]["structuredContent"]["diagnostics"][0]["code"],
-            "task_transport_failed",
-            "connect plus wait response exceeded the single {requested_wait_ms}ms + 125ms operation budget: {response}"
-        );
+                response["result"]["structuredContent"]["diagnostics"][0]["code"],
+                "task_transport_failed",
+                "connect plus wait response exceeded the single {requested_wait_ms}ms + 125ms operation budget: {response}"
+            );
+            let request = observations
+                .recv_timeout(Duration::from_secs(2))
+                .expect("the daemon saw the wait request");
+            assert_eq!(
+                request,
+                V5ClientRequest::WaitTask {
+                    task_id,
+                    wait_ms: 0
+                },
+                "connect time consumes the wait slice before the 125ms response margin"
+            );
             mcp.shutdown().await;
-            fake_peer.join().unwrap();
         }
     }
 
@@ -3107,108 +2904,31 @@ mod tests {
         compatibility_wait_single_deadline_case().await;
     }
 
-    async fn compatibility_wait_frontend_cutoff_is_not_rebased_case() {
-        use crate::infrastructure::daemon::client::{
-            DaemonClient, DaemonClientConfig, ExistingDaemon, ManualDaemonClientClock,
-        };
-        use crate::infrastructure::daemon::identity::{CoreIdentity, DaemonStateDirectory};
-        use crate::infrastructure::daemon::protocol::{
-            read_bounded_json_line, DaemonTaskSnapshot, EndpointRecord, ServerResponse,
-        };
-        use std::io::{BufReader as StdBufReader, ErrorKind, Write};
-        use std::net::{Ipv4Addr, TcpListener};
-        use std::sync::atomic::AtomicUsize;
-        use std::thread;
-
-        fn write_line(stream: &mut std::net::TcpStream, response: &ServerResponse) {
-            serde_json::to_writer(&mut *stream, response).unwrap();
-            stream.write_all(b"\n").unwrap();
-            stream.flush().unwrap();
-        }
-
-        let state = tempfile::tempdir().unwrap();
-        let state_root = std::fs::canonicalize(state.path()).unwrap();
-        let identity = CoreIdentity::production();
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let record = EndpointRecord::new(identity.clone(), listener.local_addr().unwrap().port());
-        let directory = DaemonStateDirectory::open(&state_root, &identity).unwrap();
-        directory.write_endpoint_record_for_test(&record).unwrap();
+    fn compatibility_wait_frontend_cutoff_is_not_rebased_case() {
         let task_id = crate::domain::invocation::TaskId::new();
-        let peer_record = record.clone();
-        let operation_requests = Arc::new(AtomicUsize::new(0));
-        let peer_requests = Arc::clone(&operation_requests);
-        let (stop, stop_wait) = mpsc::channel();
-        let fake_peer = thread::spawn(move || {
-            let (mut anchor, _) = listener.accept().unwrap();
-            let _hello = read_bounded_json_line(&mut StdBufReader::new(&anchor)).unwrap();
-            write_line(&mut anchor, &ServerResponse::ready(&peer_record));
+        let (observed, observations) = mpsc::channel();
+        let fake = working_task_fake(task_id, Duration::ZERO, Duration::ZERO, observed);
+        let router = canonical_daemon_router(fake.owner(), "/workspace".to_string());
+        // The request was received a second ago and only now reaches the
+        // router: a Duration rebase would open a fresh window here, the
+        // absolute cutoff is already expired.
+        let received = Instant::now() - Duration::from_secs(1);
 
-            listener.set_nonblocking(true).unwrap();
-            loop {
-                match listener.accept() {
-                    Ok((mut operation, _)) => {
-                        operation.set_nonblocking(false).unwrap();
-                        let mut reader = StdBufReader::new(operation.try_clone().unwrap());
-                        let _hello = read_bounded_json_line(&mut reader).unwrap();
-                        write_line(&mut operation, &ServerResponse::ready(&peer_record));
-                        let _request = read_bounded_json_line(&mut reader).unwrap();
-                        peer_requests.fetch_add(1, Ordering::SeqCst);
-                        write_line(
-                            &mut operation,
-                            &ServerResponse::task(DaemonTaskSnapshot::working_for_test(task_id)),
-                        );
-                        break;
-                    }
-                    Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                        if stop_wait.try_recv().is_ok() {
-                            break;
-                        }
-                        thread::sleep(Duration::from_millis(1));
-                    }
-                    Err(error) => panic!("accept compatibility operation: {error}"),
-                }
-            }
-        });
-        let clock = ManualDaemonClientClock::new();
-        let client = DaemonClient::new(
-            DaemonClientConfig::existing_only(state_root, identity)
-                .with_clock_for_test(clock.clone()),
-        );
-        let owner = match client.connect_existing().unwrap() {
-            ExistingDaemon::Connected(owner) => *owner,
-            ExistingDaemon::Absent => panic!("fake compatibility daemon must connect"),
-        };
-        // The next daemon-clock sample is deliberately delayed until after the
-        // frontend calculated waitMs + margin. A Duration rebase starts a fresh
-        // window here; an absolute cutoff is already expired.
-        clock.advance_before_next_sample(Duration::from_secs(1));
-        let (mut mcp, _) = spawn_unica_server(UnicaServer::with_canonical_daemon(
-            owner,
-            "/workspace".to_string(),
-        ));
-        mcp.send(json!({
-            "jsonrpc":"2.0", "id":1, "method":"tools/call",
-            "params":{
-                "name":"unica.task.result",
-                "arguments":{"taskId":task_id.to_string(), "waitMs":0},
-                "_meta":modern_meta()
-            }
-        }))
-        .await;
-        let response = mcp.receive().await;
-        let _ = stop.send(());
-        mcp.shutdown().await;
-        fake_peer.join().unwrap();
+        let outcome = (router.wait)(task_id, 0, FrontendInvocationDeadline::new(received, None));
 
         assert_eq!(
-            response["result"]["structuredContent"]["diagnostics"][0]["code"],
-            "task_transport_failed",
-            "the operation must not rebase its cutoff after the injected pause: {response}"
+            outcome,
+            Err(V5TaskExchangeError::Transport),
+            "the operation must not rebase its cutoff after the injected pause"
         );
-        assert_eq!(
-            operation_requests.load(Ordering::SeqCst),
-            0,
+        assert!(
+            observations.try_recv().is_err(),
             "an expired absolute cutoff must stop before operation admission"
+        );
+        assert_eq!(
+            fake.sessions.load(Ordering::SeqCst),
+            1,
+            "only the anchor session was opened"
         );
     }
 
@@ -3218,72 +2938,12 @@ mod tests {
         handshake_elapsed: Duration,
         response_elapsed: Duration,
     ) -> crate::domain::invocation::DomainResult {
-        use crate::infrastructure::daemon::client::{
-            DaemonClient, DaemonClientConfig, ExistingDaemon, ManualDaemonClientClock,
-        };
-        use crate::infrastructure::daemon::identity::{CoreIdentity, DaemonStateDirectory};
-        use crate::infrastructure::daemon::protocol::{
-            read_bounded_json_line, ClientRequest, DaemonTaskSnapshot, EndpointRecord,
-            ServerResponse,
-        };
-        use std::io::{BufReader as StdBufReader, Write};
-        use std::net::{Ipv4Addr, TcpListener};
-        use std::thread;
-
-        fn write_line(stream: &mut std::net::TcpStream, response: &ServerResponse) {
-            serde_json::to_writer(&mut *stream, response).unwrap();
-            stream.write_all(b"\n").unwrap();
-            stream.flush().unwrap();
-        }
-
-        let state = tempfile::tempdir().unwrap();
-        let state_root = std::fs::canonicalize(state.path()).unwrap();
-        let identity = CoreIdentity::production();
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let record = EndpointRecord::new(identity.clone(), listener.local_addr().unwrap().port());
-        let directory = DaemonStateDirectory::open(&state_root, &identity).unwrap();
-        directory.write_endpoint_record_for_test(&record).unwrap();
         let task_id = crate::domain::invocation::TaskId::new();
+        let (observed, observations) = mpsc::channel();
+        let fake = working_task_fake(task_id, handshake_elapsed, response_elapsed, observed);
         let received = Instant::now();
-        let clock = ManualDaemonClientClock::new_at(received);
-        let peer_clock = clock.clone();
-        let peer_record = record.clone();
-        let fake_peer = thread::spawn(move || {
-            let (mut anchor, _) = listener.accept().unwrap();
-            let _hello = read_bounded_json_line(&mut StdBufReader::new(&anchor)).unwrap();
-            write_line(&mut anchor, &ServerResponse::ready(&peer_record));
-
-            let (mut operation, _) = listener.accept().unwrap();
-            let mut operation_reader = StdBufReader::new(operation.try_clone().unwrap());
-            let _hello = read_bounded_json_line(&mut operation_reader).unwrap();
-            peer_clock.advance(handshake_elapsed);
-            write_line(&mut operation, &ServerResponse::ready(&peer_record));
-
-            let Ok(bytes) = read_bounded_json_line(&mut operation_reader) else {
-                return;
-            };
-            let request = crate::infrastructure::daemon::protocol::parse_request(&bytes).unwrap();
-            let expected = match tool_name {
-                "unica.task.get" => ClientRequest::get_task(task_id),
-                "unica.task.cancel" => ClientRequest::cancel_task(task_id),
-                other => panic!("unexpected immediate compatibility tool {other}"),
-            };
-            assert_eq!(request, expected);
-            peer_clock.advance(response_elapsed);
-            write_line(
-                &mut operation,
-                &ServerResponse::task(DaemonTaskSnapshot::working_for_test(task_id)),
-            );
-        });
-        let client = DaemonClient::new(
-            DaemonClientConfig::existing_only(state_root, identity).with_clock_for_test(clock),
-        );
-        let owner = match client.connect_existing().unwrap() {
-            ExistingDaemon::Connected(owner) => *owner,
-            ExistingDaemon::Absent => panic!("fake compatibility daemon must connect"),
-        };
         let router = SurfaceToolRouter::CanonicalV13(canonical_daemon_router(
-            owner,
+            fake.owner(),
             "/workspace".to_string(),
         ));
         let arguments = json!({"taskId": task_id.to_string()})
@@ -3303,7 +2963,14 @@ mod tests {
         let SurfaceToolOutcome::Canonical(result) = outcome else {
             panic!("compatibility task tools must return canonical results");
         };
-        fake_peer.join().unwrap();
+        if let Ok(request) = observations.recv_timeout(Duration::from_millis(500)) {
+            let expected = match tool_name {
+                "unica.task.get" => V5ClientRequest::GetTask { task_id },
+                "unica.task.cancel" => V5ClientRequest::CancelTask { task_id },
+                other => panic!("unexpected immediate compatibility tool {other}"),
+            };
+            assert_eq!(request, expected);
+        }
         result
     }
 
@@ -3312,8 +2979,8 @@ mod tests {
         for tool_name in ["unica.task.get", "unica.task.cancel"] {
             let result = compatibility_immediate_task_deadline_case(
                 tool_name,
-                Duration::from_millis(500),
-                Duration::from_millis(130),
+                Duration::from_millis(1_500),
+                Duration::from_millis(200),
                 Duration::ZERO,
             );
             assert!(
@@ -3328,9 +2995,9 @@ mod tests {
         for tool_name in ["unica.task.get", "unica.task.cancel"] {
             let result = compatibility_immediate_task_deadline_case(
                 tool_name,
+                Duration::from_millis(300),
                 Duration::from_millis(200),
-                Duration::from_millis(110),
-                Duration::from_millis(110),
+                Duration::from_millis(200),
             );
             assert_eq!(
                 result
@@ -3343,209 +3010,131 @@ mod tests {
         }
     }
 
-    fn compatibility_wait_post_parse_cutoff_case(valid_near_limit: bool) {
+    /// A payload that arrives after the operation cutoff is never published,
+    /// valid or not, and the operation session is closed for reuse.
+    fn compatibility_wait_late_payload_case(valid_near_limit: bool) {
         use crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES;
-        use crate::domain::invocation::{DomainResult, InvocationStatus};
-        use crate::infrastructure::daemon::client::{
-            DaemonClient, DaemonClientConfig, DaemonTaskExchangeError, ExistingDaemon,
-            ManualDaemonClientClock,
+        use crate::infrastructure::daemon::protocol_v5::{
+            V5ServerResponse, MAX_V5_RESPONSE_LINE_BYTES,
         };
-        use crate::infrastructure::daemon::identity::{CoreIdentity, DaemonStateDirectory};
-        use crate::infrastructure::daemon::protocol::{
-            read_bounded_json_line, EndpointRecord, ServerResponse, MAX_DAEMON_RESPONSE_LINE_BYTES,
-        };
-        use std::io::{BufReader as StdBufReader, Write};
-        use std::net::{Ipv4Addr, TcpListener};
-        use std::thread;
 
-        fn write_line(stream: &mut std::net::TcpStream, response: &ServerResponse) {
-            serde_json::to_writer(&mut *stream, response).unwrap();
-            stream.write_all(b"\n").unwrap();
-            stream.flush().unwrap();
-        }
-
-        let state = tempfile::tempdir().unwrap();
-        let state_root = std::fs::canonicalize(state.path()).unwrap();
-        let identity = CoreIdentity::production();
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let record = EndpointRecord::new(identity.clone(), listener.local_addr().unwrap().port());
-        let directory = DaemonStateDirectory::open(&state_root, &identity).unwrap();
-        directory.write_endpoint_record_for_test(&record).unwrap();
         let task_id = crate::domain::invocation::TaskId::new();
-        let peer_record = record.clone();
         let response_payload = if valid_near_limit {
             let snapshot = canonical_snapshot(
                 task_id,
-                InvocationStatus::Completed,
-                Some(DomainResult::success(
+                crate::domain::invocation::InvocationStatus::Completed,
+                Some(crate::domain::invocation::DomainResult::success(
                     "x".repeat(MAX_CANONICAL_RESULT_BYTES - 4_096),
                 )),
             );
-            let mut bytes = serde_json::to_vec(&ServerResponse::task(snapshot)).unwrap();
+            let mut bytes = serde_json::to_vec(&V5ServerResponse::Task { snapshot }).unwrap();
             bytes.push(b'\n');
             bytes
         } else {
             let mut hostile = br#"{"kind":"task","snapshot":{"unknown":""#.to_vec();
             hostile.extend(std::iter::repeat_n(
                 b'x',
-                MAX_DAEMON_RESPONSE_LINE_BYTES - hostile.len() - 4_096,
+                MAX_V5_RESPONSE_LINE_BYTES - hostile.len() - 4_096,
             ));
             hostile.extend_from_slice(b"\"}}\n");
             hostile
         };
-        let clock = ManualDaemonClientClock::new();
-        let peer_clock = clock.clone();
         let (second_request_seen, second_request_seen_wait) = mpsc::channel();
-        let fake_peer = thread::spawn(move || {
-            let (mut anchor, _) = listener.accept().unwrap();
-            let _hello = read_bounded_json_line(&mut StdBufReader::new(&anchor)).unwrap();
-            write_line(&mut anchor, &ServerResponse::ready(&peer_record));
-
-            let (mut operation, _) = listener.accept().unwrap();
-            operation
-                .set_read_timeout(Some(Duration::from_secs(2)))
-                .unwrap();
-            let mut reader = StdBufReader::new(operation.try_clone().unwrap());
-            let _hello = read_bounded_json_line(&mut reader).unwrap();
-            write_line(&mut operation, &ServerResponse::ready(&peer_record));
-            let _request = read_bounded_json_line(&mut reader).unwrap();
-            peer_clock.advance_during_next_response_parse(Duration::from_millis(2_001));
-            operation.write_all(&response_payload).unwrap();
-            operation.flush().unwrap();
-            let second = read_bounded_json_line(&mut reader).is_ok();
-            if second {
-                write_line(
-                    &mut operation,
-                    &ServerResponse::task(
-                        crate::infrastructure::daemon::protocol::DaemonTaskSnapshot::working_for_test(
-                            task_id,
-                        ),
-                    ),
-                );
+        let fake = FakeDaemon::start_with_raw_script(Box::new(move |_, request, writer| {
+            use std::io::Write as _;
+            match request {
+                V5ClientRequest::WaitTask { .. } => {
+                    std::thread::sleep(Duration::from_millis(400));
+                    let _ = writer.write_all(&response_payload);
+                    let _ = writer.flush();
+                    true
+                }
+                _ => {
+                    let _ = second_request_seen.send(());
+                    false
+                }
             }
-            second_request_seen.send(second).unwrap();
-        });
-        let client = DaemonClient::new(
-            DaemonClientConfig::existing_only(state_root, identity).with_clock_for_test(clock),
-        );
-        let anchor = match client.connect_existing().unwrap() {
-            ExistingDaemon::Connected(owner) => *owner,
-            ExistingDaemon::Absent => panic!("fake compatibility daemon must connect"),
-        };
-        let deadline = anchor.begin_task_deadline(Duration::from_secs(2)).unwrap();
-        let mut operation = anchor.connect_peer_before(&deadline).unwrap();
-        let first = operation.wait_task_before(task_id, 0, &deadline);
-        let second = operation.get_task(task_id);
-        let saw_second = second_request_seen_wait.recv().unwrap();
-        fake_peer.join().unwrap();
+        }));
+        let anchor = fake.owner();
+        let deadline = Instant::now() + Duration::from_millis(150);
+        let mut operation = anchor.connect_peer_before(deadline).unwrap();
+        let first = operation.wait_task_before(task_id, 0, deadline);
+        let second = operation.get_task_before(task_id, Instant::now() + Duration::from_secs(1));
+        let saw_second = second_request_seen_wait
+            .recv_timeout(Duration::from_millis(800))
+            .is_ok();
 
-        assert!(
-            matches!(first, Err(DaemonTaskExchangeError::Transport)),
-            "a parsed response that crossed cutoff must not publish its snapshot"
+        assert_eq!(
+            first,
+            Err(V5TaskExchangeError::Transport),
+            "a payload that crossed the cutoff must not publish its snapshot"
         );
-        assert!(
-            matches!(second, Err(DaemonTaskExchangeError::SessionPoisoned)),
-            "post-parse expiry must poison the operation session"
+        assert_eq!(
+            second,
+            Err(V5TaskExchangeError::SessionPoisoned),
+            "a missed cutoff must poison the operation session"
         );
         assert!(
             !saw_second,
-            "post-parse expiry must close the operation session before reuse"
+            "a missed cutoff must close the operation session before reuse"
         );
     }
 
-    #[tokio::test]
-    async fn compatibility_wait_preserves_frontend_cutoff_across_client_admission_pause() {
-        compatibility_wait_frontend_cutoff_is_not_rebased_case().await;
+    #[test]
+    fn compatibility_wait_preserves_frontend_cutoff_across_client_admission_pause() {
+        compatibility_wait_frontend_cutoff_is_not_rebased_case();
     }
 
     #[test]
     fn compatibility_wait_post_parse_expiry_wins_for_valid_and_malformed_near_limit_frames() {
-        compatibility_wait_post_parse_cutoff_case(true);
-        compatibility_wait_post_parse_cutoff_case(false);
+        compatibility_wait_late_payload_case(true);
+        compatibility_wait_late_payload_case(false);
     }
 
     fn compatibility_wait_authenticated_long_and_host_cutoff_case(
         requested_wait_ms: u64,
         host_remaining: Option<Duration>,
-        expected_daemon_wait_ms: u64,
+        expected_daemon_wait_ms: std::ops::RangeInclusive<u64>,
     ) {
-        use crate::infrastructure::daemon::client::{
-            DaemonClient, DaemonClientConfig, ExistingDaemon, ManualDaemonClientClock,
-        };
-        use crate::infrastructure::daemon::identity::{CoreIdentity, DaemonStateDirectory};
-        use crate::infrastructure::daemon::protocol::{
-            parse_request, read_bounded_json_line, ClientRequest, DaemonTaskSnapshot,
-            EndpointRecord, ServerResponse,
-        };
-        use std::io::{BufReader as StdBufReader, Write};
-        use std::net::{Ipv4Addr, TcpListener};
-        use std::thread;
-
-        fn write_line(stream: &mut std::net::TcpStream, response: &ServerResponse) {
-            serde_json::to_writer(&mut *stream, response).unwrap();
-            stream.write_all(b"\n").unwrap();
-            stream.flush().unwrap();
-        }
-
         let received = Instant::now();
-        let state = tempfile::tempdir().unwrap();
-        let state_root = std::fs::canonicalize(state.path()).unwrap();
-        let identity = CoreIdentity::production();
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let record = EndpointRecord::new(identity.clone(), listener.local_addr().unwrap().port());
-        let directory = DaemonStateDirectory::open(&state_root, &identity).unwrap();
-        directory.write_endpoint_record_for_test(&record).unwrap();
         let task_id = crate::domain::invocation::TaskId::new();
-        let peer_record = record.clone();
-        let clock = ManualDaemonClientClock::new_at(received);
-        let peer_clock = clock.clone();
-        let (observed_request, observed_request_wait) = mpsc::channel();
-        let fake_peer = thread::spawn(move || {
-            let (mut anchor, _) = listener.accept().unwrap();
-            let _hello = read_bounded_json_line(&mut StdBufReader::new(&anchor)).unwrap();
-            write_line(&mut anchor, &ServerResponse::ready(&peer_record));
+        let (observed, observations) = mpsc::channel();
+        let fake = working_task_fake(task_id, Duration::from_millis(60), Duration::ZERO, observed);
+        let router = canonical_daemon_router(fake.owner(), "/workspace".to_string());
 
-            let (mut operation, _) = listener.accept().unwrap();
-            let mut reader = StdBufReader::new(operation.try_clone().unwrap());
-            let _hello = read_bounded_json_line(&mut reader).unwrap();
-            peer_clock.advance(Duration::from_millis(60));
-            write_line(&mut operation, &ServerResponse::ready(&peer_record));
-            let request = parse_request(&read_bounded_json_line(&mut reader).unwrap()).unwrap();
-            observed_request.send(request).unwrap();
-            write_line(
-                &mut operation,
-                &ServerResponse::task(DaemonTaskSnapshot::working_for_test(task_id)),
-            );
-        });
-        let client = DaemonClient::new(
-            DaemonClientConfig::existing_only(state_root, identity).with_clock_for_test(clock),
-        );
-        let owner = match client.connect_existing().unwrap() {
-            ExistingDaemon::Connected(owner) => *owner,
-            ExistingDaemon::Absent => panic!("fake compatibility daemon must connect"),
-        };
-        let router = canonical_daemon_router(owner, "/workspace".to_string());
         let snapshot = (router.wait)(
             task_id,
             requested_wait_ms,
             FrontendInvocationDeadline::new(received, host_remaining),
         )
         .unwrap();
-        assert_eq!(snapshot.task_id, task_id);
-        assert_eq!(
-            observed_request_wait.recv().unwrap(),
-            ClientRequest::wait_task(task_id, expected_daemon_wait_ms)
+
+        assert_eq!(snapshot.task_id(), task_id);
+        let request = observations
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the daemon saw the wait request");
+        let V5ClientRequest::WaitTask {
+            task_id: asked,
+            wait_ms,
+        } = request
+        else {
+            panic!("unexpected frame {request:?}");
+        };
+        assert_eq!(asked, task_id);
+        assert!(
+            expected_daemon_wait_ms.contains(&wait_ms),
+            "daemon wait {wait_ms} outside {expected_daemon_wait_ms:?}"
         );
-        fake_peer.join().unwrap();
     }
 
     #[test]
     fn compatibility_wait_authenticated_transport_bounds_7000_and_earlier_host_cutoff() {
-        compatibility_wait_authenticated_long_and_host_cutoff_case(7_000, None, 6_940);
+        // 7000 + 125 ms cutoff, minus the 60 ms handshake and the 125 ms margin.
+        compatibility_wait_authenticated_long_and_host_cutoff_case(7_000, None, 6_700..=6_940);
         compatibility_wait_authenticated_long_and_host_cutoff_case(
             7_000,
-            Some(Duration::from_millis(80)),
-            0,
+            Some(Duration::from_millis(180)),
+            0..=0,
         );
     }
 
@@ -3560,10 +3149,11 @@ mod tests {
     }
 
     async fn compatibility_hostile_status_payload_case() {
-        use crate::domain::invocation::{
-            DomainResult, InvocationFailure, InvocationStatus, TaskId,
-        };
+        use crate::domain::invocation::{DomainResult, InvocationStatus, TaskId};
 
+        // The v5 snapshot is a closed union: a status cannot arrive with the
+        // wrong payload, and a failure arrives as a closed reason without
+        // text. Every status therefore projects, and none of them can leak.
         let statuses = [
             InvocationStatus::Queued,
             InvocationStatus::Working,
@@ -3572,128 +3162,69 @@ mod tests {
             InvocationStatus::Cancelled,
         ];
         for status in statuses {
-            for has_result in [false, true] {
-                for has_failure in [false, true] {
-                    let valid = matches!(
-                        (status, has_result, has_failure),
-                        (InvocationStatus::Queued, false, false)
-                            | (InvocationStatus::Working, false, false)
-                            | (InvocationStatus::Completed, true, false)
-                            | (InvocationStatus::Failed, false, true)
-                            | (InvocationStatus::Cancelled, false, false)
-                    );
-                    if valid {
-                        continue;
-                    }
+            let task_id = TaskId::new();
+            let snapshot = canonical_snapshot(
+                task_id,
+                status,
+                (status == InvocationStatus::Completed).then(|| {
+                    DomainResult::success("hostile result /private/result-secret bearer-result")
+                }),
+            );
+            let get_snapshot = snapshot.clone();
+            let get: Arc<CanonicalTaskHandler> = Arc::new(move |_, _| Ok(get_snapshot.clone()));
+            let wait_snapshot = snapshot.clone();
+            let wait: Arc<CanonicalTaskWaitHandler> =
+                Arc::new(move |_, _, _| Ok(wait_snapshot.clone()));
+            let cancel = Arc::clone(&get);
+            let call: Arc<CanonicalCallHandler> =
+                Arc::new(move |_, _, _, _| direct_outcome(DomainResult::success("unused")));
+            let (mut client, _) = spawn_unica_server(
+                UnicaServer::with_canonical_v13_task_handlers(call, get, wait, cancel),
+            );
 
-                    let task_id = TaskId::new();
-                    let mut hostile = canonical_snapshot(
-                        task_id,
-                        status,
-                        has_result.then(|| {
-                            DomainResult::success(
-                                "hostile result /private/result-secret bearer-result",
-                            )
-                        }),
-                    );
-                    hostile.failure = has_failure.then(|| {
-                        InvocationFailure::new(
-                            "hostile_failure_code",
-                            "/private/failure-secret bearer-failure",
-                        )
-                    });
-                    let get_snapshot = hostile.clone();
-                    let get: Arc<CanonicalTaskHandler> =
-                        Arc::new(move |_, _| Ok(get_snapshot.clone()));
-                    let wait_snapshot = hostile.clone();
-                    let wait: Arc<CanonicalTaskWaitHandler> =
-                        Arc::new(move |_, _, _| Ok(wait_snapshot.clone()));
-                    let cancel = Arc::clone(&get);
-                    let call: Arc<CanonicalToolCallHandler> = Arc::new(move |_, _, _, _| {
-                        Ok(InvocationResponse::Direct(DomainResult::success("unused")))
-                    });
-                    let (mut client, _) = spawn_unica_server(
-                        UnicaServer::with_canonical_v13_task_handlers(call, get, wait, cancel),
-                    );
-
-                    for (id, name, arguments) in [
-                        (1, "unica.task.get", json!({"taskId": task_id.to_string()})),
-                        (
-                            2,
-                            "unica.task.result",
-                            json!({"taskId": task_id.to_string(), "waitMs": 0}),
-                        ),
-                    ] {
-                        client
-                            .send(json!({
-                                "jsonrpc":"2.0", "id":id, "method":"tools/call",
-                                "params":{
-                                    "name":name, "arguments":arguments, "_meta":modern_meta()
-                                }
-                            }))
-                            .await;
-                        let response = client.receive().await;
-                        assert_eq!(
-                            response["result"]["structuredContent"]["diagnostics"][0]["code"],
-                            "task_projection_failed",
-                            "status={status:?} result={has_result} failure={has_failure}: {response}"
-                        );
-                        let serialized = serde_json::to_string(&response).unwrap();
-                        for forbidden in [
-                            "/private/result-secret",
-                            "bearer-result",
-                            "/private/failure-secret",
-                            "bearer-failure",
-                            "hostile_failure_code",
-                        ] {
-                            assert!(!serialized.contains(forbidden), "leaked {forbidden}");
+            for (id, name, arguments) in [
+                (1, "unica.task.get", json!({"taskId": task_id.to_string()})),
+                (
+                    2,
+                    "unica.task.result",
+                    json!({"taskId": task_id.to_string(), "waitMs": 0}),
+                ),
+            ] {
+                client
+                    .send(json!({
+                        "jsonrpc":"2.0", "id":id, "method":"tools/call",
+                        "params":{
+                            "name":name, "arguments":arguments, "_meta":modern_meta()
                         }
+                    }))
+                    .await;
+                let response = client.receive().await;
+                let code = response["result"]["structuredContent"]["diagnostics"][0]["code"]
+                    .as_str()
+                    .unwrap_or("");
+                match status {
+                    InvocationStatus::Failed => assert_eq!(code, "task_failed", "{response}"),
+                    InvocationStatus::Cancelled => {
+                        assert_eq!(code, "task_cancelled", "{response}")
                     }
-                    client.shutdown().await;
+                    _ => assert_ne!(
+                        code, "task_projection_failed",
+                        "status={status:?} {name}: {response}"
+                    ),
                 }
+                let serialized = serde_json::to_string(&response).unwrap();
+                if status != InvocationStatus::Completed {
+                    for forbidden in ["/private/result-secret", "bearer-result"] {
+                        assert!(!serialized.contains(forbidden), "leaked {forbidden}");
+                    }
+                }
+                assert!(
+                    !serialized.contains("invocation_failed"),
+                    "the closed failure reason stays on the daemon side: {serialized}"
+                );
             }
+            client.shutdown().await;
         }
-
-        let task_id = TaskId::new();
-        let mut failed = canonical_snapshot(task_id, InvocationStatus::Failed, None);
-        failed.failure = Some(InvocationFailure::new(
-            "hostile_failure_code",
-            "/private/failure-secret bearer-failure",
-        ));
-        let get_failed = failed.clone();
-        let get: Arc<CanonicalTaskHandler> = Arc::new(move |_, _| Ok(get_failed.clone()));
-        let wait_failed = failed.clone();
-        let wait: Arc<CanonicalTaskWaitHandler> = Arc::new(move |_, _, _| Ok(wait_failed.clone()));
-        let cancel = Arc::clone(&get);
-        let call: Arc<CanonicalToolCallHandler> = Arc::new(move |_, _, _, _| {
-            Ok(InvocationResponse::Direct(DomainResult::success("unused")))
-        });
-        let (mut client, _) = spawn_unica_server(UnicaServer::with_canonical_v13_task_handlers(
-            call, get, wait, cancel,
-        ));
-        client
-            .send(json!({
-                "jsonrpc":"2.0", "id":1, "method":"tools/call",
-                "params":{
-                    "name":"unica.task.get", "arguments":{"taskId":task_id.to_string()},
-                    "_meta":modern_meta()
-                }
-            }))
-            .await;
-        let response = client.receive().await;
-        assert_eq!(
-            response["result"]["structuredContent"]["diagnostics"][0]["code"], "task_failed",
-            "{response}"
-        );
-        let serialized = serde_json::to_string(&response).unwrap();
-        for forbidden in [
-            "/private/failure-secret",
-            "bearer-failure",
-            "hostile_failure_code",
-        ] {
-            assert!(!serialized.contains(forbidden), "leaked {forbidden}");
-        }
-        client.shutdown().await;
     }
 
     #[tokio::test]
@@ -3713,14 +3244,14 @@ mod tests {
         compatibility_receipts_case().await;
         compatibility_wait_budget_case();
         compatibility_wait_single_deadline_case().await;
-        compatibility_wait_frontend_cutoff_is_not_rebased_case().await;
-        compatibility_wait_post_parse_cutoff_case(true);
-        compatibility_wait_post_parse_cutoff_case(false);
-        compatibility_wait_authenticated_long_and_host_cutoff_case(7_000, None, 6_940);
+        compatibility_wait_frontend_cutoff_is_not_rebased_case();
+        compatibility_wait_late_payload_case(true);
+        compatibility_wait_late_payload_case(false);
+        compatibility_wait_authenticated_long_and_host_cutoff_case(7_000, None, 6_700..=6_940);
         compatibility_wait_authenticated_long_and_host_cutoff_case(
             7_000,
-            Some(Duration::from_millis(80)),
-            0,
+            Some(Duration::from_millis(180)),
+            0..=0,
         );
         compatibility_terminal_result_case().await;
         compatibility_closed_errors_case().await;
@@ -3735,9 +3266,9 @@ mod tests {
         let task_id = TaskId::new();
         let executions = Arc::new(AtomicUsize::new(0));
         let observed = Arc::clone(&executions);
-        let call: Arc<CanonicalToolCallHandler> = Arc::new(move |_, _, _, _| {
+        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _| {
             observed.fetch_add(1, Ordering::SeqCst);
-            Ok(InvocationResponse::Task(canonical_snapshot(
+            Ok(CanonicalCallOutcome::Task(canonical_snapshot(
                 task_id,
                 InvocationStatus::Working,
                 None,
@@ -3773,9 +3304,9 @@ mod tests {
 
         let executions_without = Arc::new(AtomicUsize::new(0));
         let observed = Arc::clone(&executions_without);
-        let call: Arc<CanonicalToolCallHandler> = Arc::new(move |_, _, _, _| {
+        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _| {
             observed.fetch_add(1, Ordering::SeqCst);
-            Ok(InvocationResponse::Task(canonical_snapshot(
+            Ok(CanonicalCallOutcome::Task(canonical_snapshot(
                 task_id,
                 InvocationStatus::Working,
                 None,
@@ -3804,9 +3335,9 @@ mod tests {
 
         let legacy_session_executions = Arc::new(AtomicUsize::new(0));
         let observed = Arc::clone(&legacy_session_executions);
-        let call: Arc<CanonicalToolCallHandler> = Arc::new(move |_, _, _, _| {
+        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _| {
             observed.fetch_add(1, Ordering::SeqCst);
-            Ok(InvocationResponse::Task(canonical_snapshot(
+            Ok(CanonicalCallOutcome::Task(canonical_snapshot(
                 task_id,
                 InvocationStatus::Working,
                 None,
@@ -3859,9 +3390,9 @@ mod tests {
         let task_id = TaskId::new();
         let executions = Arc::new(AtomicUsize::new(0));
         let observed = Arc::clone(&executions);
-        let call: Arc<CanonicalToolCallHandler> = Arc::new(move |_, _, _, _| {
+        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _| {
             observed.fetch_add(1, Ordering::SeqCst);
-            Ok(InvocationResponse::Task(canonical_snapshot(
+            Ok(CanonicalCallOutcome::Task(canonical_snapshot(
                 task_id,
                 InvocationStatus::Working,
                 None,
@@ -3930,8 +3461,8 @@ mod tests {
         use crate::domain::invocation::{InvocationStatus, TaskId};
 
         let task_id = TaskId::new();
-        let call: Arc<CanonicalToolCallHandler> = Arc::new(move |_, _, _, _| {
-            Ok(InvocationResponse::Task(canonical_snapshot(
+        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _| {
+            Ok(CanonicalCallOutcome::Task(canonical_snapshot(
                 task_id,
                 InvocationStatus::Working,
                 None,
@@ -3968,8 +3499,8 @@ mod tests {
         use crate::domain::invocation::{InvocationStatus, TaskId};
 
         let task_id = TaskId::new();
-        let call: Arc<CanonicalToolCallHandler> = Arc::new(move |_, _, _, _| {
-            Ok(InvocationResponse::Task(canonical_snapshot(
+        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _| {
+            Ok(CanonicalCallOutcome::Task(canonical_snapshot(
                 task_id,
                 InvocationStatus::Working,
                 None,
@@ -4041,15 +3572,15 @@ mod tests {
         let task_id = TaskId::new();
         let expected = canonical_result("same canonical result");
         let direct_expected = expected.clone();
-        let call: Arc<CanonicalToolCallHandler> = Arc::new(move |_, arguments, _, _| {
+        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, arguments, _, _| {
             if arguments.get("async").and_then(Value::as_bool) == Some(true) {
-                Ok(InvocationResponse::Task(canonical_snapshot(
+                Ok(CanonicalCallOutcome::Task(canonical_snapshot(
                     task_id,
                     InvocationStatus::Working,
                     None,
                 )))
             } else {
-                Ok(InvocationResponse::Direct(direct_expected.clone()))
+                direct_outcome(direct_expected.clone())
             }
         });
         let get_expected = expected.clone();
@@ -4099,11 +3630,16 @@ mod tests {
         use crate::domain::invocation::{InvocationStatus, TaskId};
 
         let task_id = TaskId::new();
-        let mut reversed = canonical_snapshot(task_id, InvocationStatus::Working, None);
-        reversed.updated_at_epoch_ms = reversed.created_at_epoch_ms - 1;
+        let reversed = canonical_snapshot_at(
+            task_id,
+            InvocationStatus::Working,
+            None,
+            1_777_012_345_678,
+            1_777_012_345_677,
+        );
         let call_snapshot = reversed.clone();
-        let call: Arc<CanonicalToolCallHandler> =
-            Arc::new(move |_, _, _, _| Ok(InvocationResponse::Task(call_snapshot.clone())));
+        let call: Arc<CanonicalCallHandler> =
+            Arc::new(move |_, _, _, _| Ok(CanonicalCallOutcome::Task(call_snapshot.clone())));
         let get: Arc<CanonicalTaskHandler> = Arc::new(move |_, _| Ok(reversed.clone()));
         let server = UnicaServer::with_canonical_v13_tasks(call, Arc::clone(&get), get);
         let (mut client, _) = spawn_unica_server(server);
@@ -4155,21 +3691,21 @@ mod tests {
         let observed = Arc::clone(&executions);
         let call_near = near.clone();
         let call_over = over.clone();
-        let call: Arc<CanonicalToolCallHandler> = Arc::new(move |_, arguments, _, _| {
+        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, arguments, _, _| {
             observed.fetch_add(1, Ordering::SeqCst);
             match arguments.get("mode").and_then(Value::as_str) {
-                Some("near-task") => Ok(InvocationResponse::Task(canonical_snapshot(
+                Some("near-task") => Ok(CanonicalCallOutcome::Task(canonical_snapshot(
                     near_task,
                     InvocationStatus::Working,
                     None,
                 ))),
-                Some("over-direct") => Ok(InvocationResponse::Direct(call_over.clone())),
-                Some("over-task") => Ok(InvocationResponse::Task(canonical_snapshot(
+                Some("over-direct") => direct_outcome(call_over.clone()),
+                Some("over-task") => Ok(CanonicalCallOutcome::Task(canonical_snapshot(
                     over_task,
                     InvocationStatus::Working,
                     None,
                 ))),
-                _ => Ok(InvocationResponse::Direct(call_near.clone())),
+                _ => direct_outcome(call_near.clone()),
             }
         });
         let get_near = near.clone();
@@ -4269,8 +3805,6 @@ mod tests {
 
     async fn tasks_hooks_closed_errors_case() {
         use crate::domain::invocation::{InvocationStatus, TaskId};
-        use crate::infrastructure::daemon::client::DaemonTaskExchangeError;
-        use crate::infrastructure::daemon::protocol::DaemonErrorCode;
         use std::str::FromStr;
         use std::sync::atomic::AtomicUsize;
 
@@ -4283,12 +3817,12 @@ mod tests {
         let get: Arc<CanonicalTaskHandler> = Arc::new(move |task_id, _| {
             lookup_observed.fetch_add(1, Ordering::SeqCst);
             if task_id == unknown {
-                Err(DaemonTaskExchangeError::Protocol(
-                    DaemonErrorCode::TaskNotFound,
+                Err(V5TaskExchangeError::Protocol(
+                    V5DaemonErrorCode::TaskNotFound,
                 ))
             } else if task_id == expired {
-                Err(DaemonTaskExchangeError::Protocol(
-                    DaemonErrorCode::TaskExpired,
+                Err(V5TaskExchangeError::Protocol(
+                    V5DaemonErrorCode::TaskExpired,
                 ))
             } else {
                 Ok(canonical_snapshot(known, InvocationStatus::Working, None))
@@ -4300,8 +3834,8 @@ mod tests {
             cancellation_observed.fetch_add(1, Ordering::SeqCst);
             Ok(canonical_snapshot(known, InvocationStatus::Cancelled, None))
         });
-        let call: Arc<CanonicalToolCallHandler> = Arc::new(move |_, _, _, _| {
-            Ok(InvocationResponse::Task(canonical_snapshot(
+        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _| {
+            Ok(CanonicalCallOutcome::Task(canonical_snapshot(
                 known,
                 InvocationStatus::Working,
                 None,

@@ -1,6 +1,6 @@
 - Date: `2026-09-07`
 - Status: `draft`
-- Decision: `none` — записка ведёт к решению о переключении production daemon на протокол v5; само решение заводится вместе с переключением (шаг C ниже), до него реестр остаётся на v3
+- Decision: `DEC.2026-09-07.DAEMON-V5-PRODUCTION-CUTOVER`
 
 # Перевод production daemon с протокола v3 на v5 и снятие v3
 
@@ -248,6 +248,29 @@ cutoff. Тесты: сценарный fake-daemon по кадрам (ACK с т�
 Находка: ответ с поддельным digest строгий декодер клиента отвергает, и
 клиент идёт в recover — «oversized Direct» до проекции не доходит, его
 отсекает сам daemon (`canonical_v5_terminal`).
+
+**Шаг C.** `CoreIdentity::production()` — digest v5, `production_v3()` —
+явный seam для тестов рантайма v3 (под `cfg(test | feature)`);
+`connect_default_user_daemon` поднимает `V5DaemonProcessOwner`. Роутер MCP
+переведён на `CanonicalDaemonRouter`: прямой результат приходит уже
+проекцией (`SurfaceToolOutcome::Direct`), снимки — `V5DaemonTaskSnapshot`,
+коды — `V5DaemonErrorCode`; проекции v3 и роутер v3 удалены из `interfaces`.
+Cutoff `unica.task.result` выводится от момента приёма запроса
+(`received_at + waitMs + 125 мс`), а не от входа в роутер: так контракт
+compatibility-инструментов держится и при вызове роутера напрямую. Клиент v5
+получил checkpoint после разбора ответа: поздний payload не публикуется и
+травит сессию. Тесты MCP переписаны на fake-daemon v5 (сессия на поток,
+задержка handshake и ответа вместо ручных часов) и на живой рантайм v5 в
+потоке (перезапуск с сохранением Task); «враждебные формы снимка» ушли —
+закрытый union v5 их не представляет, остались утечки текста причины.
+Process-тест гонки двух фронтендов переведён на identity v5: второй daemon
+на том же корне получает `timed out waiting for stable receipt authority`.
+Реестр: решение `DEC.2026-09-07.DAEMON-V5-PRODUCTION-CUTOVER` заменяет
+ROUTING-SLICE и NATIVE-TASK-PROJECTION-SLICE, контракт протокола — версия 5,
+проверки `INV.APP.DAEMON-*`, `INV.APP.EXACT-LONG-WORK-OWNERSHIP` и
+`CTR.APP.DAEMON-LONG-WORK-CAPABILITIES` — на тестах v5. Находка: страж
+неизменности разбирает Rust через tree-sitter, и `&raw` он читает как
+raw-borrow — переменную с таким именем брать по ссылке нельзя.
 
 ## Открытые вопросы
 

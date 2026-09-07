@@ -58,10 +58,17 @@ fn two_frontend_processes_race_to_one_daemon_pid_record_and_endpoint() {
     let go = state_root.join("go");
     let release = state_root.join("release");
     let executable = PathBuf::from(env!("CARGO_BIN_EXE_unica"));
-    let mut first = spawn_frontend(&state_root, IDENTITY_A, &executable, "first", &go, &release);
+    let mut first = spawn_frontend(
+        &state_root,
+        PRODUCTION_V5_IDENTITY,
+        &executable,
+        "first",
+        &go,
+        &release,
+    );
     let mut second = spawn_frontend(
         &state_root,
-        IDENTITY_A,
+        PRODUCTION_V5_IDENTITY,
         &executable,
         "second",
         &go,
@@ -74,7 +81,7 @@ fn two_frontend_processes_race_to_one_daemon_pid_record_and_endpoint() {
     let first_pid = read_pid(state_root.join("first.result"));
     let second_pid = read_pid(state_root.join("second.result"));
     assert_eq!(first_pid, second_pid);
-    let endpoint = read_endpoint(&state_root, IDENTITY_A);
+    let endpoint = read_endpoint(&state_root, PRODUCTION_V5_IDENTITY);
     assert_eq!(endpoint["pid"], first_pid);
     assert_eq!(endpoint["host"], "127.0.0.1");
     assert!(endpoint["port"].as_u64().is_some_and(|port| port > 0));
@@ -84,23 +91,27 @@ fn two_frontend_processes_race_to_one_daemon_pid_record_and_endpoint() {
             "--state-root",
             state_root.to_str().unwrap(),
             "--core-identity",
-            IDENTITY_A,
+            PRODUCTION_V5_IDENTITY,
             "--idle-grace-ms",
             "350",
         ])
         .output()
         .unwrap();
     assert!(!competing.status.success());
-    assert!(String::from_utf8_lossy(&competing.stderr)
-        .contains("task store already has an active owner"));
-    assert_eq!(read_endpoint(&state_root, IDENTITY_A), endpoint);
+    assert!(
+        String::from_utf8_lossy(&competing.stderr)
+            .contains("timed out waiting for stable receipt authority"),
+        "{}",
+        String::from_utf8_lossy(&competing.stderr)
+    );
+    assert_eq!(read_endpoint(&state_root, PRODUCTION_V5_IDENTITY), endpoint);
 
     std::fs::write(&release, b"release").unwrap();
     assert_child_success(&mut first);
     assert_child_success(&mut second);
     wait_until(
         Duration::from_secs(5),
-        || !endpoint_path(&state_root, IDENTITY_A).exists(),
+        || !endpoint_path(&state_root, PRODUCTION_V5_IDENTITY).exists(),
         "owned endpoint removal",
     );
 }

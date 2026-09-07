@@ -324,6 +324,7 @@ impl std::fmt::Debug for ClientRequest {
     }
 }
 
+#[allow(dead_code)] // protocol v3 client: retired by the v5 cutover, removed with step E
 impl ClientRequest {
     pub(crate) fn hello(protocol_version: u32, token: String, core_identity: CoreIdentity) -> Self {
         let request = Self::Hello {
