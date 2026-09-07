@@ -223,6 +223,29 @@ class GateProfileTests(unittest.TestCase):
         self.assertTrue(all(entry["suite"] == "tests/arch" for entry in planned))
         self.assertTrue(all(entry["id"].count(".") >= 2 and entry["subSuite"] and entry["size"] for entry in planned))
 
+    def test_size_lanes_split_a_suite_by_the_sizes_the_gate_admits(self) -> None:
+        """Полоса гоняет один размер внутри набора; недопущенный воротами размер — пустой список."""
+        module = load_module()
+
+        medium = module.python_commands("queue", "python3", suite="tests/ci", only_size="medium")
+        small = module.python_commands("queue", "python3", suite="tests/ci", only_size="small")
+        self.assertEqual(len(medium), 1)
+        self.assertEqual(medium[0][medium[0].index("--admit") + 1], "medium")
+        self.assertEqual(medium[0][medium[0].index("--lane") + 1], "medium")
+        self.assertEqual(small[0][small[0].index("--admit") + 1], "small")
+        # Ворота pr не принимают medium: полоса пуста, а не «все».
+        self.assertEqual(module.python_commands("pr", "python3", suite="tests/ci", only_size="medium"), [])
+        with self.assertRaises(ValueError):
+            module.python_commands("queue", "python3", suite="tests/ci", only_size="huge")
+        # Матрица ворот: полосатый набор — по размерам, остальные — одной джобой.
+        self.assertEqual(
+            [entry["slug"] for entry in module.python_matrix("queue")],
+            ["ci-small", "ci-medium", "arch", "dev"],
+        )
+        self.assertEqual([entry["slug"] for entry in module.python_matrix("pr")], ["ci-small", "arch", "dev"])
+        for entry in module.python_matrix("main"):
+            self.assertEqual(entry["slug"], module.python_slug(entry["suite"], entry["lane"]))
+
     def test_one_suite_per_job_narrows_the_seam_without_changing_the_command(self) -> None:
         """В CI наборы идут параллельными джобами: `--suite` даёт ровно одну команду, ту же самую."""
         module = load_module()

@@ -88,8 +88,40 @@ def rust_commands(profile: str) -> list[list[str]]:
     return [command]
 
 
+# Наборы, которые в CI делятся на полосы по размеру: одна джоба на размер.
+# `tests/ci` одним процессом шёл в очереди шесть с половиной минут, из них
+# четыре — несколько `medium`-тестов; полоса `medium` идёт своей джобой.
+LANED_SUITES = ("tests/ci",)
+
+
 def python_suite_names() -> tuple[str, ...]:
     return tuple(suite for suite, _, _ in PYTHON_SUITES)
+
+
+def python_slug(suite: str, lane: str) -> str:
+    """Имя джобы и артефакта: основание набора и полоса, если она есть."""
+    base = suite.rstrip("/").split("/")[-1]
+    return f"{base}-{lane}" if lane else base
+
+
+def python_matrix(profile: str) -> list[dict]:
+    """Матрица джоб Python для ворот: набор на джобу, полосатый набор — по размеру.
+
+    Считается швом, а не пишется в workflow: список наборов и допуски ворот
+    живут здесь, и workflow берёт матрицу готовой.
+    """
+    try:
+        admitted = ADMITTED[profile]
+    except KeyError:
+        raise ValueError(f"профиль {profile!r} для Python не описан") from None
+    entries: list[dict] = []
+    for suite, size, _ in PYTHON_SUITES:
+        if size not in admitted:
+            continue
+        lanes = [lane for lane in SIZES if lane in admitted] if suite in LANED_SUITES else [""]
+        for lane in lanes:
+            entries.append({"suite": suite, "lane": lane, "slug": python_slug(suite, lane)})
+    return entries
 
 
 def python_commands(
@@ -98,6 +130,7 @@ def python_commands(
     results: Path | None = None,
     runner: str = "local",
     suite: str | None = None,
+    only_size: str | None = None,
 ) -> list[list[str]]:
     """Команды Python для профиля: наборы тех размеров, что ворота принимают.
 
@@ -113,13 +146,25 @@ def python_commands(
         raise ValueError(f"профиль {profile!r} для Python не описан") from None
     if suite is not None and suite not in python_suite_names():
         raise ValueError(f"набор {suite!r} не описан; известны: {', '.join(python_suite_names())}")
+    # Полоса размера: джоба гоняет один размер из допущенных воротами внутри
+    # набора. Размер, которого ворота не принимают, даёт пустой список —
+    # команд нет, а не «все». Сам набор допускается по его объявленному размеру.
+    lane_sizes = list(admitted)
+    if only_size:
+        if only_size not in SIZES:
+            raise ValueError(f"размер {only_size!r} не описан; известны: {', '.join(SIZES)}")
+        lane_sizes = [size for size in admitted if size == only_size]
+        if not lane_sizes:
+            return []
     # Размер набора — умолчание; манифест поднимает отдельные классы и тесты
     # до `medium`. Ворота, допускающие не все размеры, получают `--admit`;
     # `all` без записи результатов повторяет прежнюю команду один в один.
     def tail(size: str) -> list[str]:
         sizing: list[str] = []
-        if set(admitted) != set(SIZES):
-            sizing = ["--sizes", str(PYTHON_SIZES), "--admit", ",".join(admitted)]
+        if set(lane_sizes) != set(SIZES):
+            sizing = ["--sizes", str(PYTHON_SIZES), "--admit", ",".join(lane_sizes)]
+        if only_size:
+            sizing += ["--lane", only_size]
         if results is None:
             return sizing
         return ["--results", str(results), "--runner", runner, "--profile", profile, "--size", size, "--sizes", str(PYTHON_SIZES), *sizing]
@@ -138,6 +183,7 @@ def commands(
     results: Path | None = None,
     runner: str = "local",
     suite: str | None = None,
+    only_size: str | None = None,
 ) -> list[list[str]]:
     if profile not in PROFILES:
         raise ValueError(f"неизвестный профиль {profile!r}; известны: {', '.join(PROFILES)}")
@@ -147,7 +193,7 @@ def commands(
     if ecosystem in ("rust", "all"):
         planned.extend(rust_commands(profile))
     if ecosystem in ("python", "all"):
-        planned.extend(python_commands(profile, interpreter, results, runner, suite))
+        planned.extend(python_commands(profile, interpreter, results, runner, suite, only_size))
     return planned
 
 
@@ -158,9 +204,9 @@ def write_rust_plan(results: Path, profile: str) -> int:
     return len(entries)
 
 
-def write_python_plan(profile: str, results: Path, runner: str, suite: str | None = None) -> int:
+def write_python_plan(profile: str, results: Path, runner: str, suite: str | None = None, only_size: str | None = None) -> int:
     """План Python — тем же швом и теми же командами, что и прогон, только состав."""
-    for command in python_commands(profile, results=results, runner=runner, suite=suite):
+    for command in python_commands(profile, results=results, runner=runner, suite=suite, only_size=only_size):
         completed = subprocess.run([*command, "--plan-only"], cwd=REPO_ROOT, stdout=subprocess.DEVNULL)
         if completed.returncode != 0:
             raise SystemExit(f"план Python не записан: {' '.join(command)}")
@@ -208,9 +254,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--sha", default=None, help="вершина линии для подписи; по умолчанию — из окружения")
     parser.add_argument("--suite", default=None, choices=python_suite_names(),
                         help="один набор Python вместо всех: в CI наборы идут джобами, по одной на набор")
+    parser.add_argument("--only-size", default="", help="полоса размера набора Python; пусто — все допущенные")
+    parser.add_argument("--python-matrix", action="store_true", help="напечатать матрицу джоб Python для ворот и выйти")
     args = parser.parse_args(argv)
+    only_size = args.only_size or None
 
-    planned = commands(args.profile, args.ecosystem, results=args.results, runner=args.runner, suite=args.suite)
+    if args.python_matrix:
+        print(json.dumps(python_matrix(args.profile), ensure_ascii=False, separators=(",", ":")))
+        return 0
+
+    planned = commands(args.profile, args.ecosystem, results=args.results, runner=args.runner, suite=args.suite, only_size=only_size)
     if args.dry_run:
         for command in planned:
             print(" ".join(command))
@@ -227,10 +280,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.ecosystem in ("rust", "all"):
             print(f"план Rust: {write_rust_plan(args.results, args.profile)} тестов")
         if args.ecosystem in ("python", "all"):
-            print(f"план Python: {write_python_plan(args.profile, args.results, args.runner, args.suite)} тестов")
+            print(f"план Python: {write_python_plan(args.profile, args.results, args.runner, args.suite, only_size)} тестов")
         return 0
 
-    return execute(args.profile, args.ecosystem, args.results, args.runner, line=args.line, sha=args.sha, suite=args.suite)
+    return execute(args.profile, args.ecosystem, args.results, args.runner, line=args.line, sha=args.sha, suite=args.suite, only_size=only_size)
 
 
 def execute(
@@ -243,6 +296,7 @@ def execute(
     line: str | None = None,
     sha: str | None = None,
     suite: str | None = None,
+    only_size: str | None = None,
 ) -> int:
     """Прогнать экосистемы и оставить результаты.
 
@@ -266,7 +320,7 @@ def execute(
         if code != 0:
             return code
     if ecosystem in ("python", "all"):
-        code = run_commands(python_commands(profile, results=results, runner=runner, suite=suite))
+        code = run_commands(python_commands(profile, results=results, runner=runner, suite=suite, only_size=only_size))
     return code
 
 

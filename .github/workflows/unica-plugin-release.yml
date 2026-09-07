@@ -58,6 +58,7 @@ jobs:
       assessment_required: ${{ steps.scope.outputs.assessment_required }}
       line: ${{ steps.line.outputs.line }}
       runners: ${{ steps.runners.outputs.runners }}
+      python_matrix: ${{ steps.python-matrix.outputs.python_matrix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -82,6 +83,10 @@ jobs:
           else
             echo 'runners=["ubuntu-latest"]' >> "$GITHUB_OUTPUT"
           fi
+      # Матрица джоб Python: набор на джобу, `tests/ci` — по полосам размера.
+      # Список считает шов: наборы и допуски ворот живут в нём, а не здесь.
+      - id: python-matrix
+        run: echo "python_matrix=$(python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --python-matrix)" >> "$GITHUB_OUTPUT"
       # Линия прогона едет в подписи результатов: для ветки — она сама, для
       # тега — релизная линия с его коммитом; тег вне релизной линии — отказ.
       - id: line
@@ -169,26 +174,23 @@ jobs:
           category: zizmor
 
   test-python:
-    name: Python tests (${{ matrix.suite }})
+    name: Python tests (${{ matrix.slug }})
     runs-on: ubuntu-latest
     timeout-minutes: 90
     needs: [classify-changes, guards]
-    # Наборы идут параллельными джобами, по одной на набор: одним процессом
-    # очередь и `main` ждали восемь минут, из них две — корпус приёмки.
-    # Каждая джоба зовёт тот же шов с `--suite`; гейт видит одну джобу.
+    # Наборы идут параллельными джобами, по одной на набор, а `tests/ci` —
+    # по полосам размера: одним процессом он шёл в очереди шесть с половиной
+    # минут, из них четыре — несколько `medium`-тестов. Матрицу считает шов
+    # по воротам; каждая джоба зовёт тот же шов с `--suite` и `--only-size`,
+    # гейт видит одну джобу.
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - suite: tests/ci
-            slug: ci
-          - suite: tests/arch
-            slug: arch
-          - suite: tests/dev
-            slug: dev
+        include: ${{ fromJSON(needs.classify-changes.outputs.python_matrix) }}
     env:
       RUN_LINE: ${{ needs.classify-changes.outputs.line }}
       SUITE: ${{ matrix.suite }}
+      LANE: ${{ matrix.lane }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -201,7 +203,7 @@ jobs:
       - run: python -m pip install -r tests/ci/requirements.txt
       # План выгружается до тестов, как у Rust: джоба, умершая на середине
       # набора, оставляет состав, и недошедшие тесты попадут в отчёт `skipped`.
-      - run: python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --suite "$SUITE" --plan-only --results .build/results --runner ubuntu-latest --line "$RUN_LINE"
+      - run: python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --suite "$SUITE" --only-size "$LANE" --plan-only --results .build/results --runner ubuntu-latest --line "$RUN_LINE"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: plan-python-${{ matrix.slug }}
@@ -210,7 +212,7 @@ jobs:
           overwrite: true
       # Наборы гоняет одна точка входа: профиль ворот меняется в ней, а не
       # здесь; `--suite` сужает вызов до набора этой джобы.
-      - run: python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --suite "$SUITE" --results .build/results --runner ubuntu-latest --line "$RUN_LINE"
+      - run: python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --suite "$SUITE" --only-size "$LANE" --results .build/results --runner ubuntu-latest --line "$RUN_LINE"
       # Результаты едут артефактом и при красном прогоне: ради них он и шёл.
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

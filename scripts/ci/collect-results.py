@@ -35,7 +35,13 @@ from site_fetch import fetch  # noqa: E402
 # Имя Rust-джобы в workflow и шаблоны имён артефактов: сайт читает их отсюда,
 # а страж сверяет с workflow — переименование в одном месте красит тест.
 RUST_JOB = "Rust tests ({runner})"
-PYTHON_JOB = "Python tests ({suite})"
+PYTHON_JOB = "Python tests ({slug})"
+
+
+def python_slug(suite: str, lane: str) -> str:
+    """То же правило, что у шва `run-tests.py`: основание набора и полоса."""
+    base = suite.rstrip("/").split("/")[-1]
+    return f"{base}-{lane}" if lane else base
 RESULTS_PREFIX = "results-"
 PLAN_PREFIX = "plan-"
 
@@ -120,6 +126,9 @@ def fill_gaps(plan_dir: Path, run: dict, seen: set[str], out: Path, conclusions:
     job = RUST_JOB.format(runner=runner)
     conclusion = conclusions.get(job) or "unknown"
     filled = 0
+    # Полоса, которую ворота не принимают, оставляет подпись без плана: пусто.
+    if not (plan_dir / "plan.json").is_file():
+        return 0
     for case in load_json(plan_dir / "plan.json"):
         if "binary" not in case:
             continue
@@ -150,10 +159,12 @@ def fill_python_gaps(plan_dir: Path, run: dict, seen: set[str], out: Path, concl
     runner = run.get("runner", "")
     profile = run.get("profile", "all")
     filled = 0
+    if not (plan_dir / "plan.json").is_file():
+        return 0
     for case in load_json(plan_dir / "plan.json"):
         if case.get("ecosystem") != "python" or case["id"] in seen:
             continue
-        job = PYTHON_JOB.format(suite=case["suite"])
+        job = PYTHON_JOB.format(slug=python_slug(case["suite"], case.get("lane", "")))
         conclusion = conclusions.get(job) or "unknown"
         message = f"раннер не дошёл: {job} · {conclusion}"
         if run.get("run_url"):

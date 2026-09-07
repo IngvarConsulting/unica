@@ -100,10 +100,10 @@ class CollectResultsTests(unittest.TestCase):
         plan = self.signed("plan-python-ci", "ubuntu-latest", "python", [])
         (plan / "plan.json").write_text(json.dumps([
             {"ecosystem": "python", "id": "test_x.Guard.test_it", "name": "страж", "suite": "tests/ci", "subSuite": "Guard", "size": "small"},
-            {"ecosystem": "python", "id": "test_x.Guard.test_never_reached", "name": "не дошёл", "suite": "tests/ci", "subSuite": "Guard", "size": "medium"},
+            {"ecosystem": "python", "id": "test_x.Guard.test_never_reached", "name": "не дошёл", "suite": "tests/ci", "lane": "medium", "subSuite": "Guard", "size": "medium"},
         ]), encoding="utf-8")
         jobs = self.root / "jobs.json"
-        jobs.write_text(json.dumps({"jobs": [{"name": "Python tests (tests/ci)", "conclusion": "cancelled"}]}), encoding="utf-8")
+        jobs.write_text(json.dumps({"jobs": [{"name": "Python tests (ci-medium)", "conclusion": "cancelled"}]}), encoding="utf-8")
         out = self.root / "fresh"
 
         lines = self.collect.collect(self.artifacts, out, jobs, "", "https://example.invalid")
@@ -113,7 +113,7 @@ class CollectResultsTests(unittest.TestCase):
         gaps = [json.loads(r.read_text(encoding="utf-8")) for r in (out / "release-v0.12").glob("*-result.json")]
         gap = next(g for g in gaps if g["fullName"] == "test_x.Guard.test_never_reached")
         self.assertEqual(gap["status"], "skipped")
-        self.assertIn("раннер не дошёл: Python tests (tests/ci) · cancelled", gap["statusDetails"]["message"])
+        self.assertIn("раннер не дошёл: Python tests (ci-medium) · cancelled", gap["statusDetails"]["message"])
         labels = {l["name"]: l["value"] for l in gap["labels"]}
         self.assertEqual((labels["language"], labels["suite"], labels["size"]), ("python", "tests/ci", "medium"))
         self.assertEqual(gap["historyId"], self.allure.history_id("test_x.Guard.test_never_reached", "ubuntu-latest"))
@@ -230,7 +230,12 @@ class CollectResultsTests(unittest.TestCase):
         rust_job = release["jobs"]["test-rust-platforms"]["name"]
         self.assertEqual(rust_job.replace("${{ matrix.runner }}", "{runner}"), self.collect.RUST_JOB)
         python_job = release["jobs"]["test-python"]["name"]
-        self.assertEqual(python_job.replace("${{ matrix.suite }}", "{suite}"), self.collect.PYTHON_JOB)
+        self.assertEqual(python_job.replace("${{ matrix.slug }}", "{slug}"), self.collect.PYTHON_JOB)
+        # Правило имени полосы одно у шва и у сборщика: матрица ворот совпадает с ним.
+        run_tests = load("run-tests")
+        for profile in ("pr", "queue", "main"):
+            for entry in run_tests.python_matrix(profile):
+                self.assertEqual(entry["slug"], self.collect.python_slug(entry["suite"], entry["lane"]))
 
         prefixes = (self.collect.RESULTS_PREFIX, self.collect.PLAN_PREFIX)
         uploads = []

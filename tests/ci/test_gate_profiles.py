@@ -48,15 +48,15 @@ class GateProfileCompositionTests(unittest.TestCase):
         self.assertEqual(profiles["large"]["overrides"], [{"platform": "cfg(windows)", "default-filter": "all()"}])
         self.assertIn("--no-tests=pass", self.run_tests.rust_commands("large")[0])
 
-    def test_python_matrix_in_the_workflow_names_every_suite_of_the_seam(self) -> None:
-        """Джоба на набор: матрица workflow и `PYTHON_SUITES` шва — один список."""
-        import yaml
-
-        release = yaml.safe_load((REPO_ROOT / ".github" / "workflows" / "unica-plugin-release.yml").read_text(encoding="utf-8"))
-        matrix = release["jobs"]["test-python"]["strategy"]["matrix"]["include"]
-
-        self.assertEqual([entry["suite"] for entry in matrix], [suite for suite, _, _ in self.run_tests.PYTHON_SUITES])
-        self.assertEqual([entry["slug"] for entry in matrix], [suite.split("/")[-1] for suite, _, _ in self.run_tests.PYTHON_SUITES])
+    def test_python_matrix_names_every_suite_of_the_seam_and_lanes_only_admitted_sizes(self) -> None:
+        """Матрица ворот: каждый набор шва, полосатый — по допущенным размерам, не больше."""
+        for gate in ("pr", "queue", "main", "release"):
+            with self.subTest(gate=gate):
+                matrix = self.run_tests.python_matrix(gate)
+                self.assertEqual(sorted({entry["suite"] for entry in matrix}), sorted(suite for suite, _, _ in self.run_tests.PYTHON_SUITES))
+                lanes = {entry["lane"] for entry in matrix if entry["suite"] in self.run_tests.LANED_SUITES}
+                self.assertEqual(lanes, set(self.run_tests.ADMITTED[gate]))
+                self.assertTrue(all(not entry["lane"] for entry in matrix if entry["suite"] not in self.run_tests.LANED_SUITES))
 
     def test_nextest_version_in_config_matches_the_workflow_install(self) -> None:
         """Одна версия исполнителя для CI и локального прогона."""

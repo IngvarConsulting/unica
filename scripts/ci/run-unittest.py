@@ -133,6 +133,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--sizes", type=Path, default=None, help="манифест размеров .config/python-sizes.toml")
     parser.add_argument("--admit", default="", help="какие размеры гонять, через запятую; пусто — все")
     parser.add_argument("--plan-only", action="store_true", help="перечислить тесты и выйти")
+    parser.add_argument("--lane", default="", help="полоса размера этой джобы: идёт в план, чтобы сайт нашёл её джобу")
     args = parser.parse_args(argv)
 
     sizes = Sizes.load(args.sizes, args.size)
@@ -147,7 +148,7 @@ def main(argv: list[str] | None = None) -> int:
         for case in planned:
             print(case.id())
         if args.results is not None:
-            write_python_plan(args.results, planned, args.start_directory, sizes)
+            write_python_plan(args.results, planned, args.start_directory, sizes, args.lane)
         return 0
 
     AllureResult.out = args.results
@@ -162,7 +163,7 @@ def main(argv: list[str] | None = None) -> int:
     return 0 if result.wasSuccessful() else 1
 
 
-def write_python_plan(out: Path, cases, suite_name: str, sizes: Sizes) -> Path:
+def write_python_plan(out: Path, cases, suite_name: str, sizes: Sizes, lane: str = "") -> Path:
     """Состав набора до запуска: джоба, умершая на середине, оставляет список.
 
     Записи идут с той же подписью, что и результаты; сайт дописывает
@@ -172,7 +173,10 @@ def write_python_plan(out: Path, cases, suite_name: str, sizes: Sizes) -> Path:
     out.mkdir(parents=True, exist_ok=True)
     path = out / "plan.json"
     entries = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else []
-    entries = [entry for entry in entries if not (entry.get("ecosystem") == "python" and entry.get("suite") == suite_name)]
+    entries = [
+        entry for entry in entries
+        if not (entry.get("ecosystem") == "python" and entry.get("suite") == suite_name and entry.get("lane", "") == lane)
+    ]
     for case in cases:
         doc = (getattr(case, "_testMethodDoc", None) or "").strip().splitlines()
         entries.append(
@@ -181,6 +185,7 @@ def write_python_plan(out: Path, cases, suite_name: str, sizes: Sizes) -> Path:
                 "id": case.id(),
                 "name": doc[0] if doc else getattr(case, "_testMethodName", case.id()),
                 "suite": suite_name,
+                "lane": lane,
                 "subSuite": case.__class__.__qualname__,
                 "size": sizes.size_of(case.id()),
             }
