@@ -160,12 +160,26 @@ jobs:
           category: zizmor
 
   test-python:
-    name: Python tests (ubuntu-latest)
+    name: Python tests (${{ matrix.suite }})
     runs-on: ubuntu-latest
     timeout-minutes: 90
     needs: [classify-changes, guards]
+    # Наборы идут параллельными джобами, по одной на набор: одним процессом
+    # очередь и `main` ждали восемь минут, из них две — корпус приёмки.
+    # Каждая джоба зовёт тот же шов с `--suite`; гейт видит одну джобу.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: tests/ci
+            slug: ci
+          - suite: tests/arch
+            slug: arch
+          - suite: tests/dev
+            slug: dev
     env:
       RUN_LINE: ${{ needs.classify-changes.outputs.line }}
+      SUITE: ${{ matrix.suite }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -176,14 +190,14 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m pip install -r tests/ci/requirements.txt
-      # Наборы гоняет одна точка входа: профиль ворот меняется в ней, а не в
-      # трёх строках здесь. Сегодня `all` повторяет прежние команды один в один.
-      - run: python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --results .build/results --runner ubuntu-latest --line "$RUN_LINE"
+      # Наборы гоняет одна точка входа: профиль ворот меняется в ней, а не
+      # здесь; `--suite` сужает вызов до набора этой джобы.
+      - run: python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --suite "$SUITE" --results .build/results --runner ubuntu-latest --line "$RUN_LINE"
       # Результаты едут артефактом и при красном прогоне: ради них он и шёл.
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: results-python
+          name: results-python-${{ matrix.slug }}
           path: .build/results
           retention-days: 7
           overwrite: true

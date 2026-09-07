@@ -179,7 +179,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("cargo clippy --workspace --all-targets --all-features --message-format=json -- -D warnings", text)
         # Наборы гоняет шов; сами команды закреплены тестом `test_run_tests`.
         self.assertIn('python3 scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust --results', text)
-        self.assertIn('python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --results', text)
+        self.assertIn('python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --suite "$SUITE" --results', text)
         self.assertNotIn("cargo test --workspace", text)
         self.assertNotIn("unittest discover", text)
         self.assertIn("python -m py_compile scripts/dev/*.py tests/dev/*.py", text)
@@ -483,8 +483,12 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
 
         self.assertIn("python -m py_compile scripts/arch/*.py tests/arch/*.py", script(guards))
         self.assertIn("python scripts/arch/registry.py --check", script(guards))
-        self.assertIn('python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --results', script(python))
+        self.assertIn('python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --suite "$SUITE" --results', script(python))
         self.assertEqual(needs(python), ["classify-changes", "guards"])
+        # Наборы идут параллельными джобами, по одной на набор из шва `run-tests.py`.
+        self.assertEqual([entry["suite"] for entry in matrix_include(python)], ["tests/ci", "tests/arch", "tests/dev"])
+        self.assertEqual(python["env"]["SUITE"], "${{ matrix.suite }}")
+        self.assertEqual([upload["name"] for upload in uploads(python)], ["results-python-${{ matrix.slug }}"])
 
     def test_gate_profile_follows_the_event_not_the_job(self) -> None:
         """Ворота → профиль: pull request — `pr`, push в ветку — `main`, тег — `release`."""
