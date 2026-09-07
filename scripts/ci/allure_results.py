@@ -138,17 +138,14 @@ def ignore_reasons(root: Path) -> dict[str, str]:
     return found
 
 
-def nextest_list(root: Path, profile: str) -> list[dict]:
+def nextest_list(root: Path, command: list[str]) -> list[dict]:
     """Состав прогона по nextest: двоичный файл, имя, признак `ignored`.
 
     Это и план прогона, и источник дерева для отчёта. Проигнорированные
-    перечисляются тоже: план обязан знать всё, что дерево знает.
+    перечисляются тоже: план обязан знать всё, что дерево знает. Команду
+    строит шов прогона — тот же отбор, что и у `nextest run`.
     """
-    completed = subprocess.run(
-        ["cargo", "nextest", "list", "--workspace", "--profile", profile,
-         "--run-ignored", "all", "--message-format", "json"],
-        cwd=root, capture_output=True, text=True, check=True,
-    )
+    completed = subprocess.run(command, cwd=root, capture_output=True, text=True, check=True)
     listed = json.loads(completed.stdout)
     entries = []
     for suite in listed["rust-suites"].values():
@@ -168,29 +165,35 @@ def write_plan(out: Path, entries: list[dict]) -> Path:
     return path
 
 
-class MediumMatcher:
-    """Размер теста по выражению `medium` из `.config/nextest.toml`.
+class SizeMatcher:
+    """Размер теста по выражениям `medium` и `large` из `.config/nextest.toml`.
 
     Выражение объявляет размер вне теста: `kind(test)` — интеграционные
-    цели, `test(/…/)` — модули по пути. Здесь оно читается, чтобы отчёт нёс
+    цели, `test(/…/)` — модули по пути, `binary(…)` в `large` — цель, чьи
+    тесты по именам ушли в ночной ярус. Здесь они читаются, чтобы отчёт нёс
     метку `size` тем же правилом, каким ворота отбирают тесты.
     """
 
-    def __init__(self, expression: str):
-        self.integration = "kind(test)" in expression
-        self.patterns = [re.compile(found) for found in re.findall(r"test\(/(.*?)/\)", expression)]
+    def __init__(self, medium: str, large: str = ""):
+        self.integration = "kind(test)" in medium
+        self.patterns = [re.compile(found) for found in re.findall(r"test\(/(.*?)/\)", medium)]
+        self.large_binaries = set(re.findall(r"binary\(([A-Za-z0-9_-]+)\)", large))
+        self.large_patterns = [re.compile(found) for found in re.findall(r"test\(/(.*?)/\)", large)]
 
     @classmethod
-    def from_toml(cls, path: Path = NEXTEST_TOML) -> "MediumMatcher":
+    def from_toml(cls, path: Path = NEXTEST_TOML) -> "SizeMatcher":
         try:
             config = tomllib.loads(path.read_text(encoding="utf-8"))
             overrides = config["profile"]["default"].get("overrides", [])
-            expression = next(o["filter"] for o in overrides if "slow-timeout" in o)
+            medium = next(o["filter"] for o in overrides if "slow-timeout" in o)
+            large = config["profile"].get("large", {}).get("default-filter", "")
         except (OSError, KeyError, StopIteration):
-            expression = ""
-        return cls(expression)
+            medium, large = "", ""
+        return cls(medium, large)
 
     def size(self, binary: str, name: str) -> str:
+        if binary.rsplit("::", 1)[-1] in self.large_binaries and any(p.search(name) for p in self.large_patterns):
+            return "large"
         if self.integration and "::" in binary and "bin/" not in binary:
             return "medium"
         if any(pattern.search(name) for pattern in self.patterns):
@@ -198,14 +201,14 @@ class MediumMatcher:
         return "small"
 
 
-_MEDIUM: MediumMatcher | None = None
+_SIZES: SizeMatcher | None = None
 
 
 def size_of(binary: str, name: str) -> str:
-    global _MEDIUM
-    if _MEDIUM is None:
-        _MEDIUM = MediumMatcher.from_toml()
-    return _MEDIUM.size(binary, name)
+    global _SIZES
+    if _SIZES is None:
+        _SIZES = SizeMatcher.from_toml()
+    return _SIZES.size(binary, name)
 
 
 def rust_labels(binary: str, name: str, profile: str) -> dict[str, str]:

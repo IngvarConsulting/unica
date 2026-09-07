@@ -138,13 +138,19 @@ class JunitTranslationTests(unittest.TestCase):
             ["index out of bounds: первая попытка", "index out of bounds: вторая попытка"],
         )
 
-    def test_size_label_follows_the_medium_expression_of_nextest(self) -> None:
-        """Интеграционная цель и модуль с процессом — medium; остальное — small."""
-        matcher = self.module.MediumMatcher("kind(test)\n    | test(/^infrastructure::daemon::(tests)::/)")
+    def test_size_label_follows_the_size_expressions_of_nextest(self) -> None:
+        """Интеграционная цель и модуль с процессом — medium; названный ночной тест — large; остальное — small."""
+        matcher = self.module.SizeMatcher(
+            "kind(test)\n    | test(/^infrastructure::daemon::(tests)::/)",
+            "binary(daemon_receipt_ledger) & (\n    test(/^load_a$/)\n    | test(/^load_b$/)\n)",
+        )
 
         self.assertEqual(matcher.size("unica-coder::v13_search_integration", "canonical_search"), "medium")
         self.assertEqual(matcher.size("unica-coder", "infrastructure::daemon::tests::spawns"), "medium")
         self.assertEqual(matcher.size("unica-coder", "domain::address::tests::resolves"), "small")
+        self.assertEqual(matcher.size("unica-coder::daemon_receipt_ledger", "load_b"), "large")
+        self.assertEqual(matcher.size("unica-coder::daemon_receipt_ledger", "reserve_first"), "medium")
+        self.assertEqual(matcher.size("unica-coder::other_target", "load_b"), "medium")
         labels = {l["name"]: l["value"] for l in self.entries()["address::resolves_catalog"]["labels"]}
         self.assertIn(labels["size"], ("small", "medium"))
 
