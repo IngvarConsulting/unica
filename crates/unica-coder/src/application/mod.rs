@@ -3195,6 +3195,7 @@ pub(crate) mod tests {
                     kind: crate::domain::project_sources::SourceSetKind::Configuration,
                     path: "src".to_string(),
                     source_format: crate::domain::project_sources::SourceFormat::PlatformXml,
+                    source_state: crate::domain::project_sources::SourceSetState::Supported,
                     format_evidence: Vec::new(),
                     format_probe_error: None,
                 },

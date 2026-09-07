@@ -2131,6 +2131,7 @@ pub(crate) mod tests {
                 kind: SourceSetKind::Configuration,
                 path: "src".into(),
                 source_format: SourceFormat::PlatformXml,
+                source_state: crate::domain::project_sources::SourceSetState::Supported,
                 format_evidence: vec!["Configuration.xml".into()],
                 format_probe_error: None,
             }]),

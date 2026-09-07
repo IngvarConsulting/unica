@@ -1,6 +1,6 @@
 use crate::domain::project_sources::{
     config_dump_info_xml_kind, ConfigDumpInfoXmlKind, ProjectSourceMap, ProjectSourceSet,
-    SourceFormat, SourceSetKind,
+    SourceFormat, SourceSetKind, SourceSetState,
 };
 use crate::domain::source_roots::select_default_source_set;
 use crate::infrastructure::native_operations::compile_transaction::{
@@ -1915,6 +1915,9 @@ fn detect_source_set_format(
     let mut format_evidence = Vec::new();
     format_evidence.extend(platform_evidence);
     format_evidence.extend(edt_evidence);
+    // Наблюдение — это доказательство из файлов. Всё, что добавится ниже,
+    // приходит из объявления и наблюдением не является.
+    let observed = !format_evidence.is_empty();
     if format_evidence.is_empty() {
         if let Some(default_format) = source_set.default_format {
             let evidence = match default_format {
@@ -1929,11 +1932,26 @@ fn detect_source_set_format(
         }
     }
 
+    // Состояние выводится из того, наблюдался ли формат, а не из самого
+    // формата: без файловых доказательств формат берётся из объявления, и
+    // приписывать набору наблюдённое состояние по заявленному формату значило
+    // бы выдать заявку за факт.
+    let source_state = if observed {
+        if source_format.is_supported() {
+            SourceSetState::Supported
+        } else {
+            SourceSetState::Unsupported
+        }
+    } else {
+        SourceSetState::Declared
+    };
+
     Ok(ProjectSourceSet {
         name: source_set.name,
         kind: source_set.kind,
         path: source_set.path,
         source_format,
+        source_state,
         format_evidence,
         format_probe_error,
     })
@@ -2605,6 +2623,71 @@ fn yaml_mapping_get<'a>(value: &'a YamlValue, key: &str) -> Option<&'a YamlValue
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// Объявленный, но пустой набор — законное состояние, а не ошибка: так
+    /// рабочее пространство выглядит до знакомства с Unica. Прежде такому
+    /// набору приписывался формат из объявления, будто его наблюдали, и
+    /// читатель не мог отличить «работаем» от «надо наполнить».
+    #[test]
+    fn a_declared_but_empty_source_set_is_declared_not_observed() {
+        let root = temp_workspace("unica-source-state-declared");
+        fs::write(
+            root.join("v8project.yaml"),
+            b"format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+
+        let map = discover_project_source_map(&root).unwrap();
+        let set = map
+            .source_sets
+            .iter()
+            .find(|set| set.name == "main")
+            .expect("объявленный набор перечислен наравне с наполненными");
+
+        assert_eq!(set.source_state, SourceSetState::Declared);
+        assert!(
+            !set.source_state.is_observed(),
+            "формат взят из объявления, а не наблюдён"
+        );
+        assert_eq!(
+            set.format_evidence,
+            vec!["v8project.yaml:format=DESIGNER".to_string()],
+            "доказательство указывает на объявление, а не на файл"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Обратная сторона: как только выгрузка на месте, состояние наблюдённое,
+    /// и доказательство указывает на файл.
+    #[test]
+    fn a_filled_source_set_is_supported_and_its_evidence_points_at_a_file() {
+        let root = temp_workspace("unica-source-state-supported");
+        fs::write(
+            root.join("v8project.yaml"),
+            b"format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        write(&root.join("src/Configuration.xml"), "<MetaDataObject/>");
+
+        let map = discover_project_source_map(&root).unwrap();
+        let set = map
+            .source_sets
+            .iter()
+            .find(|set| set.name == "main")
+            .expect("наполненный набор перечислен");
+
+        assert_eq!(set.source_state, SourceSetState::Supported);
+        assert!(set.source_state.is_observed());
+        assert_eq!(
+            set.format_evidence,
+            vec!["src/Configuration.xml".to_string()]
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
     use crate::infrastructure::source_roots::resolve_source_root;
     use crate::infrastructure::workspace::discover_workspace;
     use std::ffi::{OsStr, OsString};
