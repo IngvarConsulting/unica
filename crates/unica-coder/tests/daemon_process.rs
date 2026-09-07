@@ -8,8 +8,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const PROCESS_FIXTURE_ENV: &str = "UNICA_DAEMON_PROCESS_FIXTURE";
-const IDENTITY_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-const IDENTITY_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const PRODUCTION_V5_IDENTITY: &str =
     "884b76181583ce34907a2a9758e2b493e5b40883e7cbb0d7f88dcec0e468cfa0";
 const PROCESS_FIXTURE_IDLE_GRACE_MS: u64 = 2_000;
@@ -130,56 +128,6 @@ fn two_frontend_processes_race_to_one_daemon_pid_record_and_endpoint() {
         Duration::from_secs(5),
         || !endpoint_path(&state_root, PRODUCTION_V5_IDENTITY).exists(),
         "owned endpoint removal",
-    );
-}
-
-#[test]
-fn incompatible_core_identities_spawn_separate_process_endpoints() {
-    let root = tempfile::tempdir().unwrap();
-    let state_root = std::fs::canonicalize(root.path()).unwrap();
-    let go = state_root.join("go");
-    let release = state_root.join("release");
-    let executable = PathBuf::from(env!("CARGO_BIN_EXE_unica"));
-    let mut first = spawn_frontend(
-        &state_root,
-        IDENTITY_A,
-        &executable,
-        "identity-a",
-        &go,
-        &release,
-    );
-    let mut second = spawn_frontend(
-        &state_root,
-        IDENTITY_B,
-        &executable,
-        "identity-b",
-        &go,
-        &release,
-    );
-    wait_for_frontend_ready(&state_root, &["identity-a", "identity-b"]);
-    std::fs::write(&go, b"go").unwrap();
-    wait_for_frontend_results(&state_root, &["identity-a", "identity-b"]);
-
-    let first_pid = read_pid(state_root.join("identity-a.result"));
-    let second_pid = read_pid(state_root.join("identity-b.result"));
-    assert_ne!(first_pid, second_pid);
-    assert_eq!(read_endpoint(&state_root, IDENTITY_A)["pid"], first_pid);
-    assert_eq!(read_endpoint(&state_root, IDENTITY_B)["pid"], second_pid);
-    assert_ne!(
-        endpoint_path(&state_root, IDENTITY_A),
-        endpoint_path(&state_root, IDENTITY_B)
-    );
-
-    std::fs::write(&release, b"release").unwrap();
-    assert_child_success(&mut first);
-    assert_child_success(&mut second);
-    wait_until(
-        Duration::from_secs(5),
-        || {
-            !endpoint_path(&state_root, IDENTITY_A).exists()
-                && !endpoint_path(&state_root, IDENTITY_B).exists()
-        },
-        "incompatible endpoint removal",
     );
 }
 

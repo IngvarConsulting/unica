@@ -1,4 +1,3 @@
-use super::protocol::{parse_endpoint_record, EndpointRecord, MAX_ENDPOINT_RECORD_BYTES};
 use super::protocol_v5::{
     parse_v5_endpoint_record, V5EndpointRecord, MAX_V5_ENDPOINT_RECORD_BYTES,
 };
@@ -30,20 +29,9 @@ const SPAWN_LOCK_NAME: &str = ".daemon-spawn.lock";
 const RECEIPT_AUTHORITY_DIRECTORY_NAME: &str = ".receipt-authority";
 const RECEIPT_AUTHORITY_LOCK_NAME: &str = ".receipt-authority.lock";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DaemonProtocolIdentity {
-    V3,
-    V5,
-}
-
-impl DaemonProtocolIdentity {
-    pub(crate) const fn protocol_version(self) -> u32 {
-        match self {
-            Self::V3 => 3,
-            Self::V5 => 5,
-        }
-    }
-}
+/// The one daemon wire protocol this core speaks; it names the state
+/// directory (`daemon-p5-…`) and the identity digest.
+pub(crate) const DAEMON_PROTOCOL_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct CoreIdentity(CoreIdentityDigest);
@@ -55,32 +43,13 @@ impl CoreIdentity {
         Self::production_v5()
     }
 
-    /// The retired protocol-v3 identity. It stays an explicit seam for the v3
-    /// runtime tests and for the cutover proof; no production path selects it.
-    #[cfg(any(test, feature = "receipt-ledger-test-support"))]
-    pub(crate) fn production_v3() -> Self {
-        Self::for_protocol(DaemonProtocolIdentity::V3)
-    }
-
     pub(crate) fn production_v5() -> Self {
-        Self::for_protocol(DaemonProtocolIdentity::V5)
-    }
-
-    fn for_protocol(protocol: DaemonProtocolIdentity) -> Self {
         let mut digest = Sha256::new();
         digest.update(CORE_ABI_IDENTITY.as_bytes());
         digest.update(b"\0");
         digest.update(DAEMON_PROTOCOL_IDENTITY_PREFIX.as_bytes());
-        digest.update(protocol.protocol_version().to_string().as_bytes());
+        digest.update(DAEMON_PROTOCOL_VERSION.to_string().as_bytes());
         Self(CoreIdentityDigest::from_sha256(digest.finalize().into()))
-    }
-
-    pub(crate) fn protocol_identity(&self) -> DaemonProtocolIdentity {
-        if self == &Self::production_v5() {
-            DaemonProtocolIdentity::V5
-        } else {
-            DaemonProtocolIdentity::V3
-        }
     }
 
     pub(crate) fn as_str(&self) -> &str {
@@ -140,8 +109,7 @@ pub(crate) struct DaemonStateDirectory {
 impl DaemonStateDirectory {
     pub(crate) fn path_for(state_root: &Path, core_identity: &CoreIdentity) -> PathBuf {
         state_root.join(format!(
-            "daemon-p{}-{}",
-            core_identity.protocol_identity().protocol_version(),
+            "daemon-p{DAEMON_PROTOCOL_VERSION}-{}",
             core_identity.as_str()
         ))
     }
@@ -153,8 +121,7 @@ impl DaemonStateDirectory {
         let parent = open_or_create_absolute_directory_path_nofollow(state_root)
             .map_err(|error| daemon_io_error("open or create daemon provider state root", error))?;
         let child_name = format!(
-            "daemon-p{}-{}",
-            core_identity.protocol_identity().protocol_version(),
+            "daemon-p{DAEMON_PROTOCOL_VERSION}-{}",
             core_identity.as_str()
         );
         let directory = match open_directory_child_nofollow(&parent, OsStr::new(&child_name)) {
@@ -324,120 +291,6 @@ impl DaemonStateDirectory {
         }
     }
 
-    pub(crate) fn read_endpoint_record(&self) -> Result<Option<EndpointRecord>, String> {
-        Ok(self
-            .read_endpoint_record_retained()?
-            .map(|retained| retained.record))
-    }
-
-    pub(crate) fn read_endpoint_record_retained(
-        &self,
-    ) -> Result<Option<RetainedEndpointRecord>, String> {
-        self.verify_identity()?;
-        let mut file =
-            match open_regular_child_nofollow(&self.directory, OsStr::new(ENDPOINT_FILE_NAME)) {
-                Ok(file) => file,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-                Err(error) => return Err(daemon_io_error("open daemon endpoint record", error)),
-            };
-        verify_owner_only_acl(&file)
-            .map_err(|error| daemon_io_error("daemon endpoint record is not owner-only", error))?;
-        let file_identity = file_identity(&file)
-            .map_err(|error| daemon_io_error("identify daemon endpoint record", error))?;
-        let mut bytes = Vec::new();
-        Read::by_ref(&mut file)
-            .take((MAX_ENDPOINT_RECORD_BYTES + 1) as u64)
-            .read_to_end(&mut bytes)
-            .map_err(|error| daemon_io_error("read daemon endpoint record", error))?;
-        if bytes.len() > MAX_ENDPOINT_RECORD_BYTES {
-            return Err("daemon endpoint record exceeds the byte limit".to_string());
-        }
-        let record = parse_endpoint_record(&bytes)?;
-        Ok(Some(RetainedEndpointRecord {
-            record,
-            file,
-            identity: file_identity,
-        }))
-    }
-
-    pub(crate) fn publish_endpoint_record(
-        &self,
-        record: &EndpointRecord,
-    ) -> Result<RetainedEndpointRecord, String> {
-        record.validate()?;
-        self.verify_identity()?;
-        let temporary_name = format!(".endpoint.{}.tmp", Uuid::new_v4());
-        let temporary_name = OsStr::new(&temporary_name);
-        let mut file = create_owner_only_file_child(&self.directory, temporary_name)
-            .map_err(|error| daemon_io_error("create private endpoint staging file", error))?;
-        let staged_identity = file_identity(&file)
-            .map_err(|error| daemon_io_error("identify endpoint staging file", error))?;
-        if let Err(error) = restrict_stage_to_owner(&file) {
-            let _ = remove_identity_bound_regular_child(
-                &self.directory,
-                temporary_name,
-                staged_identity,
-                &file,
-            );
-            return Err(daemon_io_error("restrict endpoint staging file", error));
-        }
-        let mut bytes = serde_json::to_vec(record)
-            .map_err(|_| "daemon endpoint record could not be serialized".to_string())?;
-        bytes.push(b'\n');
-        if bytes.len() > MAX_ENDPOINT_RECORD_BYTES {
-            return Err("daemon endpoint record exceeds the byte limit".to_string());
-        }
-        if let Err(error) = file.write_all(&bytes).and_then(|_| file.sync_all()) {
-            let _ = remove_identity_bound_regular_child(
-                &self.directory,
-                temporary_name,
-                staged_identity,
-                &file,
-            );
-            return Err(daemon_io_error("flush endpoint staging file", error));
-        }
-        replace_identity_bound_regular_child(
-            &self.directory,
-            temporary_name,
-            staged_identity,
-            &file,
-            OsStr::new(ENDPOINT_FILE_NAME),
-        )
-        .map_err(|error| daemon_io_error("publish endpoint record", error))?;
-        sync_directory(&self.directory)
-            .map_err(|error| daemon_io_error("sync endpoint publication", error))?;
-        file.seek(SeekFrom::Start(0))
-            .map_err(|error| daemon_io_error("rewind endpoint record", error))?;
-        Ok(RetainedEndpointRecord {
-            record: record.clone(),
-            file,
-            identity: staged_identity,
-        })
-    }
-
-    pub(crate) fn remove_endpoint_if_owned(
-        &self,
-        retained: &RetainedEndpointRecord,
-    ) -> Result<bool, String> {
-        self.verify_identity()?;
-        let Some(current) = self.read_endpoint_record_retained()? else {
-            return Ok(false);
-        };
-        if current.record != retained.record || current.identity != retained.identity {
-            return Ok(false);
-        }
-        remove_identity_bound_regular_child(
-            &self.directory,
-            OsStr::new(ENDPOINT_FILE_NAME),
-            retained.identity,
-            &retained.file,
-        )
-        .map_err(|error| daemon_io_error("remove owned endpoint record", error))?;
-        sync_directory(&self.directory)
-            .map_err(|error| daemon_io_error("sync endpoint removal", error))?;
-        Ok(true)
-    }
-
     pub(crate) fn read_v5_endpoint_record(&self) -> Result<Option<V5EndpointRecord>, String> {
         Ok(self
             .read_v5_endpoint_record_retained()?
@@ -576,21 +429,6 @@ impl DaemonStateDirectory {
         verify_owner_only_acl(&self.directory)
             .map_err(|error| daemon_io_error("daemon identity directory is not owner-only", error))
     }
-
-    #[cfg(test)]
-    pub(crate) fn write_endpoint_record_for_test(
-        &self,
-        record: &EndpointRecord,
-    ) -> Result<(), String> {
-        self.publish_endpoint_record(record).map(|_| ())
-    }
-}
-
-#[derive(Debug)]
-pub(crate) struct RetainedEndpointRecord {
-    pub(crate) record: EndpointRecord,
-    file: File,
-    identity: FileIdentity,
 }
 
 #[derive(Debug)]
@@ -639,68 +477,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn production_identity_is_the_frozen_v5_digest_and_v3_stays_an_explicit_seam() {
-        let production_v3 = CoreIdentity::production_v3();
-        let production_v5 = CoreIdentity::production_v5();
+    fn production_identity_is_the_frozen_v5_digest_and_the_only_daemon_protocol() {
+        let production = CoreIdentity::production();
 
+        assert_eq!(production, CoreIdentity::production_v5());
         assert_eq!(
-            CoreIdentity::production(),
-            production_v5,
-            "the production frontend selects the exact protocol-v5 identity"
-        );
-        assert_ne!(production_v3, production_v5);
-
-        assert_eq!(
-            production_v3.as_str(),
-            "2f4dd5713d11e5211a92c5fa01b1ec5722dc3a3160b9b1e0b667f8d8da3d9c28"
-        );
-        assert_eq!(
-            production_v5.as_str(),
+            production.as_str(),
             "884b76181583ce34907a2a9758e2b493e5b40883e7cbb0d7f88dcec0e468cfa0"
         );
-        assert_eq!(production_v3.digest().as_str(), production_v3.as_str());
-        assert_eq!(production_v5.digest().as_str(), production_v5.as_str());
-        assert_eq!(
-            production_v3.protocol_identity(),
-            DaemonProtocolIdentity::V3
+        assert_eq!(production.digest().as_str(), production.as_str());
+        assert_ne!(
+            production.as_str(),
+            "2f4dd5713d11e5211a92c5fa01b1ec5722dc3a3160b9b1e0b667f8d8da3d9c28",
+            "the retired protocol-v3 digest is not an identity of this core"
         );
-        assert_eq!(
-            production_v5.protocol_identity(),
-            DaemonProtocolIdentity::V5
-        );
+        assert_eq!(DAEMON_PROTOCOL_VERSION, 5);
     }
 
     #[test]
-    fn arbitrary_canonical_core_identity_keeps_the_v3_selector_and_state_path() {
+    fn every_canonical_core_identity_lives_under_the_protocol_v5_state_path() {
         let state_root = Path::new("/provider-state");
         for encoded in [
-            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-            "b1966ce0792d157e8716a0f29a386a2d8efe801b0abb752c342014bc6eec2d77",
+            CoreIdentity::production().as_str().to_owned(),
+            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".to_owned(),
+            "b1966ce0792d157e8716a0f29a386a2d8efe801b0abb752c342014bc6eec2d77".to_owned(),
         ] {
-            let arbitrary = CoreIdentity::from_str(encoded).unwrap();
+            let identity = CoreIdentity::from_str(&encoded).unwrap();
 
-            assert_eq!(arbitrary.protocol_identity(), DaemonProtocolIdentity::V3);
             assert_eq!(
-                DaemonStateDirectory::path_for(state_root, &arbitrary),
-                state_root.join(format!("daemon-p3-{}", arbitrary.as_str()))
+                DaemonStateDirectory::path_for(state_root, &identity),
+                state_root.join(format!("daemon-p5-{}", identity.as_str()))
             );
         }
-    }
-
-    #[test]
-    fn exact_production_v5_identity_forks_the_state_selector_from_v3() {
-        let state_root = Path::new("/provider-state");
-        let production_v3 = CoreIdentity::production_v3();
-        let production_v5 = CoreIdentity::production_v5();
-
-        assert_eq!(
-            DaemonStateDirectory::path_for(state_root, &production_v5),
-            state_root.join(format!("daemon-p5-{}", production_v5.as_str()))
-        );
-        assert_ne!(
-            DaemonStateDirectory::path_for(state_root, &production_v3),
-            DaemonStateDirectory::path_for(state_root, &production_v5)
-        );
     }
 
     #[test]

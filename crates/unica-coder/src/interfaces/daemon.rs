@@ -1,6 +1,5 @@
-use crate::infrastructure::daemon::client::{DaemonClient, DaemonClientConfig, DaemonOwner};
 use crate::infrastructure::daemon::client_v5::V5DaemonProcessOwner;
-use crate::infrastructure::daemon::identity::{CoreIdentity, DaemonProtocolIdentity};
+use crate::infrastructure::daemon::identity::CoreIdentity;
 use crate::infrastructure::daemon::server::DaemonServerConfig;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -25,24 +24,8 @@ pub fn run_from_args(args: &[String]) -> Result<(), String> {
     let state_root = PathBuf::from(parsed.state_root);
     let core_identity = CoreIdentity::from_str(&parsed.core_identity)?;
     let idle_grace = parsed.idle_grace;
-    let config = DaemonServerConfig::new(state_root, core_identity.clone(), idle_grace);
-    match runtime_selection(&core_identity) {
-        DaemonRuntimeSelection::V3 => crate::infrastructure::daemon::server::run_daemon(config),
-        DaemonRuntimeSelection::V5 => crate::infrastructure::daemon::runtime_v5::run_daemon(config),
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DaemonRuntimeSelection {
-    V3,
-    V5,
-}
-
-fn runtime_selection(core_identity: &CoreIdentity) -> DaemonRuntimeSelection {
-    match core_identity.protocol_identity() {
-        DaemonProtocolIdentity::V3 => DaemonRuntimeSelection::V3,
-        DaemonProtocolIdentity::V5 => DaemonRuntimeSelection::V5,
-    }
+    let config = DaemonServerConfig::new(state_root, core_identity, idle_grace);
+    crate::infrastructure::daemon::runtime_v5::run_daemon(config)
 }
 
 /// Resolve the persistent state root of the user daemon without mutating the
@@ -126,23 +109,12 @@ pub fn connect_owner_for_protocol_test(
     if idle_grace.is_zero() || idle_grace.as_millis() > MAX_IDLE_GRACE_MS {
         return Err("daemon idle grace is outside the supported range".to_string());
     }
-    let inner = match identity.protocol_identity() {
-        DaemonProtocolIdentity::V3 => DaemonClient::new(DaemonClientConfig::new(
-            state_root.to_path_buf(),
-            identity,
-            executable.to_path_buf(),
-            idle_grace,
-        ))
-        .connect_or_spawn()
-        .map(DaemonOwnerLeaseInner::V3),
-        DaemonProtocolIdentity::V5 => V5DaemonProcessOwner::connect_or_spawn(
-            state_root,
-            identity,
-            executable.to_path_buf(),
-            idle_grace,
-        )
-        .map(DaemonOwnerLeaseInner::V5),
-    }?;
+    let inner = V5DaemonProcessOwner::connect_or_spawn(
+        state_root,
+        identity,
+        executable.to_path_buf(),
+        idle_grace,
+    )?;
     Ok(DaemonOwnerLease { inner })
 }
 
@@ -156,35 +128,24 @@ pub fn endpoint_path_for_protocol_test(state_root: &Path, core_identity: &str) -
         )
     });
     identity_path
-        .unwrap_or_else(|| state_root.join(format!("daemon-p3-{core_identity}")))
+        .unwrap_or_else(|| state_root.join(format!("daemon-p5-{core_identity}")))
         .join("endpoint.json")
 }
 
 #[doc(hidden)]
 pub struct DaemonOwnerLease {
-    inner: DaemonOwnerLeaseInner,
-}
-
-enum DaemonOwnerLeaseInner {
-    V3(DaemonOwner),
-    V5(V5DaemonProcessOwner),
+    inner: V5DaemonProcessOwner,
 }
 
 impl DaemonOwnerLease {
     #[doc(hidden)]
     pub fn daemon_pid(&self) -> u32 {
-        match &self.inner {
-            DaemonOwnerLeaseInner::V3(owner) => owner.daemon_pid(),
-            DaemonOwnerLeaseInner::V5(owner) => owner.daemon_pid(),
-        }
+        self.inner.daemon_pid()
     }
 
     #[doc(hidden)]
     pub fn ping(&mut self) -> Result<(), String> {
-        match &mut self.inner {
-            DaemonOwnerLeaseInner::V3(owner) => owner.ping(),
-            DaemonOwnerLeaseInner::V5(owner) => owner.ping(),
-        }
+        self.inner.ping()
     }
 }
 
@@ -262,11 +223,9 @@ fn parse_daemon_args(args: &[String]) -> Result<ParsedDaemonArgs, String> {
 mod tests {
     use super::{
         configured_idle_grace, parse_daemon_args, resolve_default_user_daemon_state_root,
-        runtime_selection, DaemonRuntimeSelection, DEFAULT_IDLE_GRACE, IDLE_GRACE_ENV,
-        MAX_IDLE_GRACE_MS,
+        DEFAULT_IDLE_GRACE, IDLE_GRACE_ENV, MAX_IDLE_GRACE_MS,
     };
     use crate::infrastructure::daemon::identity::CoreIdentity;
-    use std::str::FromStr;
     use std::time::Duration;
 
     fn base_args() -> Vec<String> {
@@ -349,32 +308,6 @@ mod tests {
     }
 
     #[test]
-    fn exact_v5_identity_alone_selects_the_distinct_runtime() {
-        assert_eq!(
-            runtime_selection(&CoreIdentity::production_v5()),
-            DaemonRuntimeSelection::V5
-        );
-        assert_eq!(
-            runtime_selection(&CoreIdentity::production()),
-            DaemonRuntimeSelection::V5,
-            "the production identity selects the v5 runtime"
-        );
-        assert_eq!(
-            runtime_selection(&CoreIdentity::production_v3()),
-            DaemonRuntimeSelection::V3
-        );
-        for encoded in [
-            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-            "b1966ce0792d157e8716a0f29a386a2d8efe801b0abb752c342014bc6eec2d77",
-        ] {
-            assert_eq!(
-                runtime_selection(&CoreIdentity::from_str(encoded).unwrap()),
-                DaemonRuntimeSelection::V3
-            );
-        }
-    }
-
-    #[test]
     fn default_user_daemon_state_root_is_pure_and_requires_an_absolute_root() {
         let absolute_root = std::env::temp_dir().join("unica-provider-state");
         let alice_home = std::env::temp_dir().join("unica-home-alice");
@@ -409,7 +342,6 @@ mod tests {
     #[test]
     fn endpoint_fixture_path_uses_the_protocol_owned_by_the_typed_identity() {
         let state_root = std::path::Path::new("/provider-state");
-
         assert_eq!(
             super::endpoint_path_for_protocol_test(
                 state_root,
@@ -423,23 +355,11 @@ mod tests {
                 .join("endpoint.json")
         );
         assert_eq!(
-            super::endpoint_path_for_protocol_test(
-                state_root,
-                CoreIdentity::production_v3().as_str()
-            ),
-            state_root
-                .join(format!(
-                    "daemon-p3-{}",
-                    CoreIdentity::production_v3().as_str()
-                ))
-                .join("endpoint.json")
-        );
-        assert_eq!(
             super::endpoint_path_for_protocol_test(state_root, "legacy-fixture-identity"),
             state_root
-                .join("daemon-p3-legacy-fixture-identity")
+                .join("daemon-p5-legacy-fixture-identity")
                 .join("endpoint.json"),
-            "the pre-v5 fixture helper accepted opaque identities and must keep that ABI"
+            "the fixture helper accepts opaque identities and keeps that ABI"
         );
     }
 }

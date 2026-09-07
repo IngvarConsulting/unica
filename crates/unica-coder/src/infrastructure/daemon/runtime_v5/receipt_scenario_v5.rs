@@ -10,7 +10,6 @@ use super::{
 };
 use crate::application::invocation::normalized_arguments_hash;
 use crate::application::invocation_store::EpochMillisClock;
-use crate::application::invocation_store::ToolIdentity;
 use crate::application::invocation_store_v5::{
     InvocationStoreV5, V5SafeFailureReason, V5StoredInvocationRecord,
     V5StoredInvocationSchemaVersion, V5StoredTask, V5TaskRetirement, V5TaskStoreError,
@@ -35,7 +34,6 @@ use crate::domain::invocation::{
 };
 use crate::infrastructure::daemon::client_v5::{V5DaemonProcessOwner, V5RawHandshake};
 use crate::infrastructure::daemon::identity::{CoreIdentity, DaemonStateDirectory};
-use crate::infrastructure::daemon::protocol as protocol_v3;
 use crate::infrastructure::daemon::protocol_v5::{
     decode_v5_request_frame, decode_v5_server_response, strict_envelope_case_frame,
     StrictV5EnvelopeCase, V5AcknowledgedReceipt, V5ClientRequest, V5DaemonErrorCode,
@@ -8434,48 +8432,42 @@ fn run_v3_protocol_probe(
         tempfile::tempdir().map_err(|error| format!("create protocol-v3 probe state: {error}"))?;
     let state_root = std::fs::canonicalize(root.path())
         .map_err(|error| format!("canonicalize protocol-v3 probe state: {error}"))?;
-    let identity = presented_core_identity(client, &message, &CoreIdentity::production_v3())?;
-    let record = protocol_v3::EndpointRecord::new(identity.clone(), 9);
-    let client_hello_frame = jsonl_frame(&protocol_v3::ClientRequest::hello(
-        protocol_version_number(client),
-        record.token().to_string(),
-        identity.clone(),
-    ))?;
+    let identity = presented_core_identity(client, &message, &retired_v3_identity()?)?;
+    let record = v3_wire::RetiredEndpoint::new(identity.clone());
+    let client_hello_frame =
+        v3_wire::frame(&v3_wire::hello(protocol_version_number(client), &record));
     let request_frame = build_v3_probe_request_frame(client, &message)?;
     let accepted = client == ScenarioProtocolVersion::V3;
     let response = if accepted {
         match message {
-            ScenarioProtocolMessage::SubmitWithCoreIdentity { .. } => {
-                protocol_v3::ServerResponse::invocation(protocol_v3::InvocationResponse::Direct(
-                    crate::domain::invocation::DomainResult::success("v3-guard"),
-                ))
-            }
+            ScenarioProtocolMessage::SubmitWithCoreIdentity { .. } => v3_wire::invocation_direct(
+                &crate::domain::invocation::DomainResult::success("v3-guard"),
+            )?,
             ScenarioProtocolMessage::DirectFailureTerminal { reason }
                 if !failure_reason_introduced_in_v5(reason) =>
             {
                 let reason = fixture_failure_reason(reason);
                 let (code, message) = failure_projection(reason);
-                protocol_v3::ServerResponse::invocation(protocol_v3::InvocationResponse::Direct(
-                    DomainResult::scenario_rejection(None, code, message),
-                ))
+                v3_wire::invocation_direct(&DomainResult::scenario_rejection(None, code, message))?
             }
             ScenarioProtocolMessage::DirectFailureTerminal { .. } => {
-                protocol_v3::ServerResponse::error(protocol_v3::DaemonErrorCode::InvalidRequest)
+                v3_wire::error("invalid_request")
             }
             ScenarioProtocolMessage::StoredInvocationRecord {
                 schema_version,
                 reason,
             } => {
                 let _closed_v5_record = (schema_version, fixture_failure_reason(reason));
-                protocol_v3::ServerResponse::error(protocol_v3::DaemonErrorCode::InvalidRequest)
+                v3_wire::error("invalid_request")
             }
-            ScenarioProtocolMessage::Release => protocol_v3::ServerResponse::Released,
-            _ => protocol_v3::ServerResponse::Pong,
+            ScenarioProtocolMessage::Release => v3_wire::released(),
+            _ => v3_wire::pong(),
         }
     } else {
-        protocol_v3::ServerResponse::error(protocol_v3::DaemonErrorCode::ProtocolMismatch)
+        v3_wire::error("protocol_mismatch")
     };
-    let response_frame = jsonl_frame(&response)?;
+    let response_frame = v3_wire::frame(&response);
+    let response_error = response_error_value_v3(&response)?;
     Ok((
         protocol_probe_observation(
             &label,
@@ -8483,10 +8475,7 @@ fn run_v3_protocol_probe(
             ScenarioProtocolVersion::V3,
             ProtocolProbeFrames {
                 client_hello: client_hello_frame,
-                server_ready: accepted.then(|| {
-                    jsonl_frame(&protocol_v3::ServerResponse::ready(&record))
-                        .expect("serialize protocol-v3 ready frame")
-                }),
+                server_ready: accepted.then(|| v3_wire::frame(&v3_wire::ready(&record))),
                 client_write: request_frame.clone(),
                 server_read: accepted.then_some(request_frame),
                 server_write: response_frame.clone(),
@@ -8499,8 +8488,8 @@ fn run_v3_protocol_probe(
                     accepted,
                     service_capability_fingerprint_for(&message).is_some(),
                 ),
-                production_events: production_events(accepted, response.error_code().is_none()),
-                error: response_error_value_v3(&response)?,
+                production_events: production_events(accepted, response_error.is_none()),
+                error: response_error,
                 service_capability_fingerprint: service_capability_fingerprint_for(&message),
                 delivery: None,
             },
@@ -8524,14 +8513,7 @@ fn wait_for_protocol_endpoint(state_root: &Path, identity: &CoreIdentity) -> Res
     let deadline = Instant::now() + SCENARIO_OPERATION_TIMEOUT;
     loop {
         let state = DaemonStateDirectory::open(state_root, identity)?;
-        let published = match identity.protocol_identity() {
-            crate::infrastructure::daemon::identity::DaemonProtocolIdentity::V3 => {
-                state.read_endpoint_record()?.is_some()
-            }
-            crate::infrastructure::daemon::identity::DaemonProtocolIdentity::V5 => {
-                state.read_v5_endpoint_record()?.is_some()
-            }
-        };
+        let published = state.read_v5_endpoint_record()?.is_some();
         if published {
             return Ok(());
         }
@@ -8693,29 +8675,17 @@ fn build_v3_probe_request_frame(
         return jsonl_frame(&V5ClientRequest::Ping {});
     }
     match message {
-        ScenarioProtocolMessage::Ping => jsonl_frame(&protocol_v3::ClientRequest::Ping {}),
-        ScenarioProtocolMessage::Release => jsonl_frame(&protocol_v3::ClientRequest::Release {}),
+        ScenarioProtocolMessage::Ping => Ok(v3_wire::frame(&v3_wire::ping())),
+        ScenarioProtocolMessage::Release => Ok(v3_wire::frame(&v3_wire::release())),
         ScenarioProtocolMessage::SubmitWithCoreIdentity { .. } => {
-            jsonl_frame(&protocol_v3::ClientRequest::SubmitInvocation {
-                invocation: protocol_v3::InvocationRequest::new(
-                    ToolIdentity::View,
-                    Value::Object(Map::new()),
-                    "workspace-a",
-                    7_000,
-                )?,
-            })
+            Ok(v3_wire::frame(&v3_wire::submit_view("workspace-a", 7_000)))
         }
-        ScenarioProtocolMessage::GetTask => jsonl_frame(&protocol_v3::ClientRequest::GetTask {
-            task_id: TaskId::new(),
-        }),
-        ScenarioProtocolMessage::WaitTask => jsonl_frame(&protocol_v3::ClientRequest::WaitTask {
-            task_id: TaskId::new(),
-            wait_ms: 7_000,
-        }),
+        ScenarioProtocolMessage::GetTask => Ok(v3_wire::frame(&v3_wire::get_task(TaskId::new()))),
+        ScenarioProtocolMessage::WaitTask => {
+            Ok(v3_wire::frame(&v3_wire::wait_task(TaskId::new(), 7_000)))
+        }
         ScenarioProtocolMessage::CancelTask => {
-            jsonl_frame(&protocol_v3::ClientRequest::CancelTask {
-                task_id: TaskId::new(),
-            })
+            Ok(v3_wire::frame(&v3_wire::cancel_task(TaskId::new())))
         }
         ScenarioProtocolMessage::RecoverReceipt
         | ScenarioProtocolMessage::AcknowledgeReceipt
@@ -8738,7 +8708,7 @@ fn build_v3_probe_request_frame(
         | ScenarioProtocolMessage::TaskCancelledProjection
         | ScenarioProtocolMessage::TaskFailureProjection { .. }
         | ScenarioProtocolMessage::StoredInvocationRecord { .. } => {
-            jsonl_frame(&protocol_v3::ClientRequest::Ping {})
+            Ok(v3_wire::frame(&v3_wire::ping()))
         }
     }
 }
@@ -8763,15 +8733,10 @@ fn response_error_value_v5(response: &V5ServerResponse) -> Result<Option<Value>,
     }
 }
 
-fn response_error_value_v3(
-    response: &protocol_v3::ServerResponse,
-) -> Result<Option<Value>, String> {
-    match response.error_code() {
-        Some(code) => serde_json::to_value(code)
-            .map(Some)
-            .map_err(|error| format!("encode protocol-v3 response error: {error}")),
-        None => Ok(None),
-    }
+fn response_error_value_v3(response: &str) -> Result<Option<Value>, String> {
+    let frame: Value = serde_json::from_str(response)
+        .map_err(|error| format!("decode protocol-v3 response frame: {error}"))?;
+    Ok((frame["kind"] == "error").then(|| frame["code"].clone()))
 }
 
 struct ProtocolProbeFrames {
@@ -8855,6 +8820,127 @@ fn production_events(server_read: bool, accepted: bool) -> Vec<&'static str> {
     }
     events.extend(["server_frame_written", "client_frame_read"]);
     events
+}
+
+/// The digest protocol v3 carried as its core identity. The protocol retired
+/// with its client and loop; the probe keeps the frames it once exchanged so
+/// the v5 runtime's refusal of them stays observable.
+fn retired_v3_identity() -> Result<CoreIdentity, String> {
+    CoreIdentity::from_str(v3_wire::RETIRED_V3_IDENTITY)
+}
+
+/// The retired protocol-v3 JSONL frames, spelled out byte for byte: the same
+/// tags, camelCase fields and field order the serde types produced.
+mod v3_wire {
+    use crate::domain::invocation::{DomainResult, TaskId};
+    use crate::infrastructure::daemon::identity::CoreIdentity;
+    use serde_json::Value;
+
+    pub(super) const RETIRED_V3_IDENTITY: &str =
+        "2f4dd5713d11e5211a92c5fa01b1ec5722dc3a3160b9b1e0b667f8d8da3d9c28";
+
+    /// What a v3 daemon's endpoint record would have carried into `ready`.
+    pub(super) struct RetiredEndpoint {
+        core_identity: CoreIdentity,
+        pid: u32,
+        token: String,
+        instance_id: String,
+    }
+
+    impl RetiredEndpoint {
+        pub(super) fn new(core_identity: CoreIdentity) -> Self {
+            Self {
+                core_identity,
+                pid: std::process::id(),
+                token: uuid::Uuid::new_v4().to_string(),
+                instance_id: uuid::Uuid::new_v4().to_string(),
+            }
+        }
+    }
+
+    pub(super) fn frame(line: &str) -> Vec<u8> {
+        let mut bytes = line.as_bytes().to_vec();
+        bytes.push(b'\n');
+        bytes
+    }
+
+    fn text(value: &str) -> String {
+        serde_json::to_string(value).expect("encode a JSON string")
+    }
+
+    pub(super) fn hello(protocol_version: u32, record: &RetiredEndpoint) -> String {
+        format!(
+            "{{\"kind\":\"hello\",\"protocolVersion\":{protocol_version},\"token\":{},\"coreIdentity\":{},\"ownerLease\":{}}}",
+            text(&record.token),
+            text(record.core_identity.as_str()),
+            text(&uuid::Uuid::new_v4().to_string()),
+        )
+    }
+
+    pub(super) fn ping() -> String {
+        "{\"kind\":\"ping\"}".to_owned()
+    }
+
+    pub(super) fn release() -> String {
+        "{\"kind\":\"release\"}".to_owned()
+    }
+
+    pub(super) fn submit_view(workspace_hint: &str, response_budget_ms: u64) -> String {
+        format!(
+            "{{\"kind\":\"submit_invocation\",\"invocation\":{{\"tool\":\"unica.view\",\"arguments\":{{}},\"workspaceHint\":{},\"responseBudgetMs\":{response_budget_ms}}}}}",
+            text(workspace_hint)
+        )
+    }
+
+    pub(super) fn get_task(task_id: TaskId) -> String {
+        format!(
+            "{{\"kind\":\"get_task\",\"taskId\":{}}}",
+            text(&task_id.to_string())
+        )
+    }
+
+    pub(super) fn wait_task(task_id: TaskId, wait_ms: u64) -> String {
+        format!(
+            "{{\"kind\":\"wait_task\",\"taskId\":{},\"waitMs\":{wait_ms}}}",
+            text(&task_id.to_string())
+        )
+    }
+
+    pub(super) fn cancel_task(task_id: TaskId) -> String {
+        format!(
+            "{{\"kind\":\"cancel_task\",\"taskId\":{}}}",
+            text(&task_id.to_string())
+        )
+    }
+
+    pub(super) fn ready(record: &RetiredEndpoint) -> String {
+        format!(
+            "{{\"kind\":\"ready\",\"protocolVersion\":3,\"coreIdentity\":{},\"daemonPid\":{},\"instanceId\":{}}}",
+            text(record.core_identity.as_str()),
+            record.pid,
+            text(&record.instance_id),
+        )
+    }
+
+    pub(super) fn pong() -> String {
+        "{\"kind\":\"pong\"}".to_owned()
+    }
+
+    pub(super) fn released() -> String {
+        "{\"kind\":\"released\"}".to_owned()
+    }
+
+    pub(super) fn error(code: &str) -> String {
+        format!("{{\"kind\":\"error\",\"code\":{}}}", text(code))
+    }
+
+    pub(super) fn invocation_direct(result: &DomainResult) -> Result<String, String> {
+        let value: Value = serde_json::to_value(result)
+            .map_err(|error| format!("encode protocol-v3 direct result: {error}"))?;
+        Ok(format!(
+            "{{\"kind\":\"invocation\",\"outcome\":{{\"resultType\":\"direct\",\"value\":{value}}}}}"
+        ))
+    }
 }
 
 fn daemon_process_events(

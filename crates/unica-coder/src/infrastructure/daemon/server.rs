@@ -1,4 +1,4 @@
-use super::identity::{CoreIdentity, DaemonProtocolIdentity, DaemonStateDirectory};
+use super::identity::CoreIdentity;
 use crate::domain::refusal::RefusalCode;
 #[path = "invocation_service.rs"]
 mod invocation_service;
@@ -12,95 +12,23 @@ use self::invocation_service::{bind_workspace_invocation, WorkspaceAdmissionErro
 pub(crate) use self::invocation_service::{
     ActorBoundExecution, ActorBoundInvocation, CanonicalInvocationService,
 };
-use super::protocol::{
-    parse_request, read_bounded_request_line, read_bounded_request_line_before, ClientRequest,
-    DaemonErrorCode, DaemonTaskSnapshot, EndpointRecord, InvocationRequest, InvocationResponse,
-    ServerResponse, DAEMON_PROTOCOL_VERSION,
-};
-use crate::application::invocation::{
-    normalized_arguments_hash, InvocationExecutor, InvocationExecutorError,
-    InvocationResponseDeadline, PreparedDaemonInvocation, RESPONSE_SERIALIZATION_MARGIN_MS,
-    TASK_RECONCILIATION_BUDGET,
-};
-use crate::application::invocation_store::{InvocationStore, InvocationStoreError};
+use super::protocol::InvocationRequest;
+use crate::application::invocation::InvocationResponseDeadline;
 use crate::application::operation_descriptors::{ExecutionClass, KnownLongReason};
 use crate::application::ports::{Clock, TokioClock};
 use crate::application::shared_work::ProviderHostOwner;
 use crate::application::tool_contracts::SurfaceRelease;
-use crate::composition::open_daemon_invocation_store_from_directory;
 use crate::domain::cancellation::CancellationToken;
-use crate::domain::invocation::{DomainResult, InvocationFailure, InvocationOutcome};
-use crate::infrastructure::runtime_jobs::{RuntimeJobService, RuntimeResourceOwner};
+use crate::domain::invocation::{DomainResult, InvocationFailure};
+#[cfg(test)]
+use crate::infrastructure::runtime_jobs::RuntimeJobService;
+use crate::infrastructure::runtime_jobs::RuntimeResourceOwner;
 use crate::infrastructure::workspace_actor::WorkspaceActorRegistry;
-use std::collections::HashSet;
-use std::io::{self, BufReader, Write};
-use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
-use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::Duration;
 
-const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(20);
-const CONNECTION_READ_TIMEOUT: Duration = Duration::from_millis(100);
-const HANDSHAKE_READ_TIMEOUT: Duration = Duration::from_secs(2);
-const OWNER_RESPONSE_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 pub(crate) const MAX_HANDSHAKES: usize = 8;
 pub(crate) const MAX_OWNER_SESSIONS: usize = 64;
-
-#[derive(Debug)]
-enum DaemonInvocationError {
-    WorkspaceCapacity,
-    WorkspaceRegistryFailed,
-    Executor(InvocationExecutorError),
-}
-
-impl From<InvocationExecutorError> for DaemonInvocationError {
-    fn from(error: InvocationExecutorError) -> Self {
-        Self::Executor(error)
-    }
-}
-
-impl DaemonInvocationError {
-    fn protocol_code(&self) -> DaemonErrorCode {
-        match self {
-            Self::WorkspaceCapacity => DaemonErrorCode::WorkspaceCapacity,
-            Self::WorkspaceRegistryFailed => DaemonErrorCode::WorkspaceRegistryFailed,
-            Self::Executor(InvocationExecutorError::Store(InvocationStoreError::NotFound)) => {
-                DaemonErrorCode::TaskNotFound
-            }
-            Self::Executor(InvocationExecutorError::Store(InvocationStoreError::Expired)) => {
-                DaemonErrorCode::TaskExpired
-            }
-            Self::Executor(InvocationExecutorError::Store(InvocationStoreError::Capacity {
-                ..
-            })) => DaemonErrorCode::TaskCapacity,
-            Self::Executor(InvocationExecutorError::Store(
-                InvocationStoreError::ResultTooLarge { .. },
-            ))
-            | Self::Executor(InvocationExecutorError::ResultTooLarge) => {
-                DaemonErrorCode::ResultTooLarge
-            }
-            Self::Executor(InvocationExecutorError::Store(_)) => DaemonErrorCode::StoreFailed,
-            Self::Executor(InvocationExecutorError::ExecutionFailed) => {
-                DaemonErrorCode::InvocationFailed
-            }
-            Self::Executor(InvocationExecutorError::DeadlineAuthorityMismatch) => {
-                DaemonErrorCode::InvocationFailed
-            }
-            Self::Executor(InvocationExecutorError::StatePoisoned) => {
-                DaemonErrorCode::InvocationFailed
-            }
-            Self::Executor(InvocationExecutorError::RestartRequested) => {
-                DaemonErrorCode::DurabilityUncertain
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn workspace_capacity_protocol_code_for_test() -> DaemonErrorCode {
-    DaemonInvocationError::WorkspaceCapacity.protocol_code()
-}
 
 fn failed_domain_result(summary: &str) -> DomainResult {
     let mut result = DomainResult::success(summary);
@@ -241,241 +169,6 @@ fn validate_canonical_value(
         }
     }
     Ok(())
-}
-
-pub(crate) struct DaemonInvocationRuntime {
-    executor: Arc<InvocationExecutor>,
-    service: Arc<dyn CanonicalInvocationService>,
-    workspace_actors: WorkspaceActorRegistry,
-    deliveries: Arc<crate::infrastructure::engine_delivery::DeliveryDesk>,
-    provider_hosts: Arc<ProviderHostOwner>,
-    runtime_resources: Arc<RuntimeResourceOwner>,
-    runtime_service: Option<Arc<RuntimeJobService>>,
-}
-
-impl DaemonInvocationRuntime {
-    pub(super) fn new(
-        store: Arc<dyn InvocationStore>,
-        service: Arc<dyn CanonicalInvocationService>,
-        clock: Arc<dyn Clock>,
-    ) -> Self {
-        Self {
-            executor: Arc::new(InvocationExecutor::new(store, clock)),
-            service,
-            workspace_actors: WorkspaceActorRegistry::default(),
-            deliveries: Arc::new(crate::infrastructure::engine_delivery::DeliveryDesk::default()),
-            provider_hosts: Arc::new(ProviderHostOwner::default()),
-            runtime_resources: Arc::new(RuntimeResourceOwner::default()),
-            runtime_service: None,
-        }
-    }
-
-    #[cfg(test)]
-    fn new_with_reconciliation_budget_for_test(
-        store: Arc<dyn InvocationStore>,
-        service: Arc<dyn CanonicalInvocationService>,
-        clock: Arc<dyn Clock>,
-        budget: Duration,
-    ) -> Self {
-        Self {
-            executor: Arc::new(InvocationExecutor::new_with_reconciliation_budget_for_test(
-                store, clock, budget,
-            )),
-            service,
-            workspace_actors: WorkspaceActorRegistry::default(),
-            deliveries: Arc::new(crate::infrastructure::engine_delivery::DeliveryDesk::default()),
-            provider_hosts: Arc::new(ProviderHostOwner::default()),
-            runtime_resources: Arc::new(RuntimeResourceOwner::default()),
-            runtime_service: None,
-        }
-    }
-
-    fn capture_response_deadline(&self) -> InvocationResponseDeadline {
-        self.executor.capture_response_deadline()
-    }
-
-    fn submit(
-        &self,
-        request: InvocationRequest,
-        response_deadline: InvocationResponseDeadline,
-    ) -> Result<InvocationResponse, DaemonInvocationError> {
-        let actor_bound = match validate_hidden_v13_request(&request) {
-            Ok(()) => {
-                if let Some(result) = super::v13_workspace_bootstrap::execute_view_bootstrap(
-                    &request,
-                    &response_deadline,
-                ) {
-                    return Ok(InvocationResponse::Direct(result));
-                }
-                if let Some(result) = super::v13_workspace_initialize::execute_workspace_initialize(
-                    &request,
-                    &response_deadline,
-                ) {
-                    return Ok(InvocationResponse::Direct(result));
-                }
-                match super::v13_infobase_exports::prepare(&request) {
-                    super::v13_infobase_exports::Preparation::NotApplicable => {}
-                    super::v13_infobase_exports::Preparation::Rejected(result) => {
-                        return Ok(InvocationResponse::Direct(*result))
-                    }
-                    super::v13_infobase_exports::Preparation::Ready(prepared) => {
-                        return self.submit_infobase_export(&request, response_deadline, prepared)
-                    }
-                }
-                match bind_workspace_invocation(
-                    &request,
-                    &self.workspace_actors,
-                    Arc::clone(&self.deliveries),
-                    Arc::clone(&self.provider_hosts),
-                    Arc::clone(&self.runtime_resources),
-                    self.runtime_service.clone(),
-                    response_deadline.clone(),
-                ) {
-                    Ok(bound) => Ok(bound),
-                    Err(WorkspaceAdmissionError::Capacity) => {
-                        return Err(DaemonInvocationError::WorkspaceCapacity)
-                    }
-                    Err(WorkspaceAdmissionError::RegistryFailed) => {
-                        return Err(DaemonInvocationError::WorkspaceRegistryFailed)
-                    }
-                    Err(WorkspaceAdmissionError::Invalid) => {
-                        match super::v13_workspace_initialize::reject_unavailable_run_before_admission(
-                            &request,
-                        ) {
-                            Some(result) => return Ok(InvocationResponse::Direct(result)),
-                            None => Err(failed_domain_result("workspace actor admission failed")),
-                        }
-                    }
-                }
-            }
-            Err(summary) => Err(DomainResult::canonical_rejection(
-                None,
-                RefusalCode::BadValue,
-                summary,
-            )),
-        };
-        let prepared = match &actor_bound {
-            Ok(invocation) => self.service.prepare(invocation).map_err(|result| *result),
-            Err(result) => Err(result.clone()),
-        }
-        .map(|class| {
-            let invocation = actor_bound
-                .as_ref()
-                .expect("successful preparation retains actor-bound invocation");
-            PreparedDaemonInvocation::new(
-                invocation.tool(),
-                normalized_arguments_hash(invocation.arguments()),
-                invocation.workspace_identity_hash().clone(),
-                class,
-                invocation.response_deadline().clone(),
-            )
-            .with_resource_lease(Arc::new(invocation.clone()))
-        });
-        let service = Arc::clone(&self.service);
-        let execute_invocation = actor_bound.ok();
-        self.executor
-            .submit_prepared(response_deadline, prepared, move |cancellation| {
-                let invocation = execute_invocation.ok_or_else(|| {
-                    InvocationFailure::new(
-                        "workspace_admission_failed",
-                        "workspace actor admission failed",
-                    )
-                })?;
-                let execution = invocation.begin_execution(&cancellation).map_err(|_| {
-                    InvocationFailure::new(
-                        "workspace_changed",
-                        "workspace actor capability changed before execution",
-                    )
-                })?;
-                let outcome = service.execute(&execution, cancellation.clone());
-                execution.publish(outcome, &cancellation).map_err(|_| {
-                    InvocationFailure::new(
-                        "workspace_changed",
-                        "workspace actor capability changed before publication",
-                    )
-                })?
-            })
-            .map(|outcome| match outcome {
-                InvocationOutcome::Direct(result) => InvocationResponse::Direct(result),
-                InvocationOutcome::Task(task) => {
-                    InvocationResponse::Task(DaemonTaskSnapshot::from_domain(task))
-                }
-            })
-            .map_err(DaemonInvocationError::from)
-    }
-
-    fn submit_infobase_export(
-        &self,
-        request: &InvocationRequest,
-        response_deadline: InvocationResponseDeadline,
-        export: Arc<super::v13_infobase_exports::PreparedInfobaseExport>,
-    ) -> Result<InvocationResponse, DaemonInvocationError> {
-        let prepared = PreparedDaemonInvocation::new(
-            request.tool(),
-            normalized_arguments_hash(request.arguments()),
-            export.workspace_identity_hash(),
-            ExecutionClass::KnownLong(KnownLongReason::ExternalProcess),
-            response_deadline.clone(),
-        )
-        .with_resource_lease(export.clone());
-        self.executor
-            .submit_prepared(response_deadline, Ok(prepared), move |cancellation| {
-                Ok(export.execute(cancellation))
-            })
-            .map(|outcome| match outcome {
-                InvocationOutcome::Direct(result) => InvocationResponse::Direct(result),
-                InvocationOutcome::Task(task) => {
-                    InvocationResponse::Task(DaemonTaskSnapshot::from_domain(task))
-                }
-            })
-            .map_err(DaemonInvocationError::from)
-    }
-
-    fn get(
-        &self,
-        task_id: crate::domain::invocation::TaskId,
-    ) -> Result<DaemonTaskSnapshot, DaemonInvocationError> {
-        self.executor
-            .get_task(task_id)
-            .map(DaemonTaskSnapshot::from_domain)
-            .map_err(DaemonInvocationError::from)
-    }
-
-    fn wait(
-        &self,
-        task_id: crate::domain::invocation::TaskId,
-        wait_ms: u64,
-    ) -> Result<DaemonTaskSnapshot, DaemonInvocationError> {
-        self.executor
-            .wait_task(task_id, Duration::from_millis(wait_ms))
-            .map(DaemonTaskSnapshot::from_domain)
-            .map_err(DaemonInvocationError::from)
-    }
-
-    fn cancel(
-        &self,
-        task_id: crate::domain::invocation::TaskId,
-    ) -> Result<DaemonTaskSnapshot, DaemonInvocationError> {
-        let cancelled = self
-            .executor
-            .cancel_task(task_id)
-            .map(DaemonTaskSnapshot::from_domain)
-            .map_err(DaemonInvocationError::from);
-        if self.executor.restart_requested() {
-            // Process death is the release authority now; warm actors must
-            // not outlive the executing invocations until then.
-            let _ = self.workspace_actors.release_warm_actors();
-        }
-        cancelled
-    }
-
-    fn has_active_invocations(&self) -> bool {
-        self.executor.has_active_invocations()
-    }
-
-    fn restart_requested(&self) -> bool {
-        self.executor.restart_requested()
-    }
 }
 
 pub(super) struct V5CanonicalInvocationRuntime {
@@ -725,20 +418,12 @@ pub(crate) struct DaemonServerConfig {
     pub(crate) core_identity: CoreIdentity,
     pub(crate) idle_grace: Duration,
     invocation_service: Arc<dyn CanonicalInvocationService>,
-    #[cfg(test)]
-    invocation_store: Option<Arc<dyn InvocationStore>>,
-    #[cfg(test)]
-    reconciliation_budget: Option<Duration>,
     #[cfg(any(test, feature = "receipt-ledger-test-support"))]
     invocation_clock: Option<Arc<dyn Clock>>,
     #[cfg(feature = "receipt-ledger-test-support")]
     v5_epoch_clock: Option<Arc<dyn crate::application::invocation_store::EpochMillisClock>>,
     #[cfg(feature = "receipt-ledger-test-support")]
     skip_v5_startup_reconciliation: bool,
-    #[cfg(test)]
-    startup_pause: Option<Arc<HandshakePause>>,
-    #[cfg(test)]
-    handshake_pause: Option<Arc<HandshakePause>>,
     #[cfg(test)]
     canonical_runtime: Option<Arc<V5CanonicalInvocationRuntime>>,
 }
@@ -749,34 +434,20 @@ impl DaemonServerConfig {
         core_identity: CoreIdentity,
         idle_grace: Duration,
     ) -> Self {
-        let invocation_service: Arc<dyn CanonicalInvocationService> =
-            match core_identity.protocol_identity() {
-                DaemonProtocolIdentity::V3 => Arc::new(
-                    crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
-                ),
-                DaemonProtocolIdentity::V5 => Arc::new(
-                    crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
-                ),
-            };
+        let invocation_service: Arc<dyn CanonicalInvocationService> = Arc::new(
+            crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
+        );
         Self {
             state_root,
             core_identity,
             idle_grace,
             invocation_service,
-            #[cfg(test)]
-            invocation_store: None,
-            #[cfg(test)]
-            reconciliation_budget: None,
             #[cfg(any(test, feature = "receipt-ledger-test-support"))]
             invocation_clock: None,
             #[cfg(feature = "receipt-ledger-test-support")]
             v5_epoch_clock: None,
             #[cfg(feature = "receipt-ledger-test-support")]
             skip_v5_startup_reconciliation: false,
-            #[cfg(test)]
-            startup_pause: None,
-            #[cfg(test)]
-            handshake_pause: None,
             #[cfg(test)]
             canonical_runtime: None,
         }
@@ -837,22 +508,7 @@ impl DaemonServerConfig {
         self
     }
 
-    #[cfg(test)]
-    pub(crate) fn with_invocation_store_for_test(
-        mut self,
-        store: Arc<dyn InvocationStore>,
-    ) -> Self {
-        self.invocation_store = Some(store);
-        self
-    }
-
-    #[cfg(test)]
-    pub(crate) fn with_reconciliation_budget_for_test(mut self, budget: Duration) -> Self {
-        self.reconciliation_budget = Some(budget);
-        self
-    }
-
-    #[cfg(any(test, feature = "receipt-ledger-test-support"))]
+    #[cfg(feature = "receipt-ledger-test-support")]
     pub(crate) fn with_invocation_clock_for_test(mut self, clock: Arc<dyn Clock>) -> Self {
         self.invocation_clock = Some(clock);
         self
@@ -866,590 +522,6 @@ impl DaemonServerConfig {
         self.v5_epoch_clock = Some(clock);
         self
     }
-
-    #[cfg(test)]
-    pub(crate) fn with_startup_pause(mut self, pause: &HandshakePauseGuard) -> Self {
-        self.startup_pause = Some(Arc::clone(&pause.pause));
-        self
-    }
-
-    #[cfg(test)]
-    pub(crate) fn with_handshake_pause(mut self, pause: &HandshakePauseGuard) -> Self {
-        self.handshake_pause = Some(Arc::clone(&pause.pause));
-        self
-    }
-}
-
-pub(crate) fn run_daemon(config: DaemonServerConfig) -> Result<(), String> {
-    if config.idle_grace.is_zero() {
-        return Err("daemon idle grace must be positive".to_string());
-    }
-    let state = DaemonStateDirectory::open(&config.state_root, &config.core_identity)?;
-    if let Some(existing) = state.read_endpoint_record()? {
-        if existing.core_identity() != &config.core_identity {
-            return Err("daemon endpoint record belongs to a foreign core identity".to_string());
-        }
-    }
-
-    let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-        .map_err(|error| daemon_io_error("bind daemon loopback endpoint", error))?;
-    listener
-        .set_nonblocking(true)
-        .map_err(|error| daemon_io_error("configure daemon listener", error))?;
-    let port = listener
-        .local_addr()
-        .map_err(|error| daemon_io_error("inspect daemon listener", error))?
-        .port();
-
-    #[cfg(test)]
-    let invocation_store = if let Some(store) = config.invocation_store.clone() {
-        store
-    } else {
-        let task_store_directory = state.create_private_subdirectory("tasks")?;
-        let opened_store = open_daemon_invocation_store_from_directory(task_store_directory)?;
-        // Recovery belongs to this daemon before routing starts. Keeping the report beside the
-        // sole-writer store prevents the stdio frontend from consuming it early.
-        let _recovery_classifications = opened_store.recovery.classifications.len();
-        opened_store.store
-    };
-    #[cfg(not(test))]
-    let invocation_store = {
-        let task_store_directory = state.create_private_subdirectory("tasks")?;
-        let opened_store = open_daemon_invocation_store_from_directory(task_store_directory)?;
-        let _recovery_classifications = opened_store.recovery.classifications.len();
-        opened_store.store
-    };
-    let invocation_clock = config.invocation_clock_for_v5();
-    #[cfg(test)]
-    let invocation_runtime = Arc::new(match config.reconciliation_budget {
-        Some(budget) => DaemonInvocationRuntime::new_with_reconciliation_budget_for_test(
-            invocation_store,
-            Arc::clone(&config.invocation_service),
-            Arc::clone(&invocation_clock),
-            budget,
-        ),
-        None => DaemonInvocationRuntime::new(
-            invocation_store,
-            Arc::clone(&config.invocation_service),
-            invocation_clock,
-        ),
-    });
-    #[cfg(not(test))]
-    let invocation_runtime = Arc::new(DaemonInvocationRuntime::new(
-        invocation_store,
-        Arc::clone(&config.invocation_service),
-        invocation_clock,
-    ));
-
-    let record = EndpointRecord::new(config.core_identity.clone(), port);
-    let published = state.publish_endpoint_record(&record)?;
-    #[cfg(test)]
-    pause_test_thread_if_configured(config.startup_pause.clone());
-    let active_leases = Arc::new(LeaseRegistry::default());
-    let admitted_connections = Arc::new(AtomicUsize::new(0));
-    let shutting_down = Arc::new(AtomicBool::new(false));
-    let mut handlers = Vec::new();
-    let mut idle_since = Instant::now();
-    let mut restart_requested = false;
-
-    loop {
-        match listener.accept() {
-            Ok((stream, address)) if address.ip().is_loopback() => {
-                let connection = AcceptedConnection {
-                    stream,
-                    handshake_deadline: Instant::now() + HANDSHAKE_READ_TIMEOUT,
-                };
-                match ConnectionSlot::acquire(Arc::clone(&admitted_connections)) {
-                    Some(slot) => handlers.push(spawn_connection_handler(
-                        connection,
-                        record.clone(),
-                        Arc::clone(&active_leases),
-                        Arc::clone(&shutting_down),
-                        Arc::clone(&invocation_runtime),
-                        slot,
-                        #[cfg(test)]
-                        config.handshake_pause.clone(),
-                    )),
-                    None => reject_overloaded_connection(connection),
-                }
-            }
-            Ok((_stream, _)) => {}
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
-            Err(error) => {
-                shutting_down.store(true, Ordering::Release);
-                join_handlers(handlers);
-                let _ = state.remove_endpoint_if_owned(&published);
-                return Err(daemon_io_error("accept daemon connection", error));
-            }
-        }
-
-        handlers = reap_finished_handlers(handlers);
-        let _ = invocation_runtime.workspace_actors.evict_idle_warm_actors();
-        if invocation_runtime.restart_requested() {
-            let _ = invocation_runtime.workspace_actors.release_warm_actors();
-            restart_requested = true;
-            break;
-        }
-        if active_leases.is_empty()?
-            && admitted_connections.load(Ordering::Acquire) == 0
-            && !invocation_runtime.has_active_invocations()
-        {
-            if idle_since.elapsed() >= config.idle_grace {
-                break;
-            }
-        } else {
-            idle_since = Instant::now();
-        }
-        thread::sleep(ACCEPT_POLL_INTERVAL);
-    }
-
-    shutting_down.store(true, Ordering::Release);
-    drop(listener);
-    if restart_requested {
-        // Process death, not an in-process map or thread join, is the authority
-        // that releases a stalled store syscall or non-cooperative execution.
-        // Keep the PID-bound endpoint for stale-owner cleanup by the successor.
-        return Ok(());
-    }
-    join_handlers(handlers);
-    state.remove_endpoint_if_owned(&published)?;
-    Ok(())
-}
-
-struct AcceptedConnection {
-    stream: TcpStream,
-    handshake_deadline: Instant,
-}
-
-fn spawn_connection_handler(
-    connection: AcceptedConnection,
-    record: EndpointRecord,
-    active_leases: Arc<LeaseRegistry>,
-    shutting_down: Arc<AtomicBool>,
-    invocation_runtime: Arc<DaemonInvocationRuntime>,
-    slot: ConnectionSlot,
-    #[cfg(test)] handshake_pause: Option<Arc<HandshakePause>>,
-) -> JoinHandle<()> {
-    thread::spawn(move || {
-        #[cfg(test)]
-        pause_test_thread_if_configured(handshake_pause);
-        let _ = handle_connection(
-            connection.stream,
-            connection.handshake_deadline,
-            &record,
-            &active_leases,
-            &shutting_down,
-            &invocation_runtime,
-            slot,
-        );
-    })
-}
-
-enum HandshakeRequestError {
-    Invalid,
-    Transport,
-}
-
-fn read_handshake_request(
-    reader: &mut BufReader<TcpStream>,
-    handshake_deadline: Instant,
-) -> Result<ClientRequest, HandshakeRequestError> {
-    let bytes = read_bounded_request_line_before(reader, |reader| {
-        let remaining = handshake_deadline
-            .checked_duration_since(Instant::now())
-            .filter(|remaining| !remaining.is_zero())
-            .ok_or_else(|| io::Error::from(io::ErrorKind::TimedOut))?;
-        reader.get_ref().set_read_timeout(Some(remaining))
-    });
-    if Instant::now() >= handshake_deadline {
-        return Err(HandshakeRequestError::Transport);
-    }
-    let request = match bytes {
-        Ok(bytes) => parse_request(&bytes).map_err(|_| HandshakeRequestError::Invalid),
-        Err(error) if error.kind() == io::ErrorKind::InvalidData => {
-            Err(HandshakeRequestError::Invalid)
-        }
-        Err(_) => Err(HandshakeRequestError::Transport),
-    };
-    if Instant::now() >= handshake_deadline {
-        return Err(HandshakeRequestError::Transport);
-    }
-    request
-}
-
-fn handle_connection(
-    mut stream: TcpStream,
-    handshake_deadline: Instant,
-    record: &EndpointRecord,
-    active_leases: &Arc<LeaseRegistry>,
-    shutting_down: &AtomicBool,
-    invocation_runtime: &DaemonInvocationRuntime,
-    handshake_slot: ConnectionSlot,
-) -> Result<(), String> {
-    let reader_stream = stream
-        .try_clone()
-        .map_err(|error| daemon_io_error("clone daemon client stream", error))?;
-    let mut reader = BufReader::new(reader_stream);
-    let request = match read_handshake_request(&mut reader, handshake_deadline) {
-        Ok(request) => request,
-        Err(HandshakeRequestError::Invalid) => {
-            write_response_before(
-                &mut stream,
-                &ServerResponse::error(DaemonErrorCode::InvalidRequest),
-                handshake_deadline,
-            )?;
-            return Ok(());
-        }
-        Err(HandshakeRequestError::Transport) => return Ok(()),
-    };
-
-    let ClientRequest::Hello {
-        protocol_version,
-        token,
-        core_identity,
-        owner_lease,
-    } = request
-    else {
-        write_response_before(
-            &mut stream,
-            &ServerResponse::error(DaemonErrorCode::HandshakeRequired),
-            handshake_deadline,
-        )?;
-        return Ok(());
-    };
-    if protocol_version != DAEMON_PROTOCOL_VERSION {
-        write_response_before(
-            &mut stream,
-            &ServerResponse::error(DaemonErrorCode::ProtocolMismatch),
-            handshake_deadline,
-        )?;
-        return Ok(());
-    }
-    if core_identity != *record.core_identity() {
-        write_response_before(
-            &mut stream,
-            &ServerResponse::error(DaemonErrorCode::CoreMismatch),
-            handshake_deadline,
-        )?;
-        return Ok(());
-    }
-    if !tokens_equal(&token, record.token()) {
-        write_response_before(
-            &mut stream,
-            &ServerResponse::error(DaemonErrorCode::Unauthorized),
-            handshake_deadline,
-        )?;
-        return Ok(());
-    }
-
-    let _owner = match active_leases.acquire(owner_lease)? {
-        LeaseAdmission::Acquired(owner) => owner,
-        LeaseAdmission::Duplicate => {
-            write_response_before(
-                &mut stream,
-                &ServerResponse::error(DaemonErrorCode::DuplicateLease),
-                handshake_deadline,
-            )?;
-            return Ok(());
-        }
-        LeaseAdmission::Capacity => {
-            write_response_before(
-                &mut stream,
-                &ServerResponse::error(DaemonErrorCode::OwnerCapacity),
-                handshake_deadline,
-            )?;
-            return Ok(());
-        }
-    };
-    // The owner lease becomes the lifecycle fence before the pre-authentication admission
-    // permit is released, so idle shutdown observes at least one of them throughout handoff.
-    drop(handshake_slot);
-    write_response_before(
-        &mut stream,
-        &ServerResponse::ready(record),
-        handshake_deadline,
-    )?;
-    stream
-        .set_write_timeout(Some(OWNER_RESPONSE_WRITE_TIMEOUT))
-        .map_err(|error| daemon_io_error("configure daemon owner response timeout", error))?;
-    stream
-        .set_read_timeout(Some(CONNECTION_READ_TIMEOUT))
-        .map_err(|error| daemon_io_error("configure daemon owner timeout", error))?;
-    while !shutting_down.load(Ordering::Acquire) {
-        let bytes = match read_bounded_request_line(&mut reader) {
-            Ok(bytes) => bytes,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) =>
-            {
-                continue
-            }
-            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => break,
-            Err(_) => break,
-        };
-        // Capture before strict request/schema validation and before any actor
-        // discovery or dynamic service preparation. The parsed frontend budget
-        // can only narrow this already-running daemon-receipt deadline.
-        let response_deadline = invocation_runtime.capture_response_deadline();
-        let request = match parse_request(&bytes) {
-            Ok(request) => request,
-            Err(_) => {
-                write_response(
-                    &mut stream,
-                    &ServerResponse::error(DaemonErrorCode::InvalidRequest),
-                )?;
-                break;
-            }
-        };
-        match request {
-            ClientRequest::Ping {} => write_response_before(
-                &mut stream,
-                &ServerResponse::Pong,
-                session_response_deadline(Duration::ZERO),
-            )?,
-            ClientRequest::Release {} => {
-                write_response_before(
-                    &mut stream,
-                    &ServerResponse::Released,
-                    session_response_deadline(Duration::ZERO),
-                )?;
-                break;
-            }
-            ClientRequest::Hello { .. } => {
-                write_response(
-                    &mut stream,
-                    &ServerResponse::error(DaemonErrorCode::InvalidRequest),
-                )?;
-                break;
-            }
-            ClientRequest::SubmitInvocation { invocation } => {
-                let response_deadline = response_deadline.restrict_to_frontend_budget(
-                    Duration::from_millis(invocation.response_budget_ms()),
-                );
-                match invocation_runtime.submit(invocation, response_deadline.clone()) {
-                    Ok(outcome) => write_invocation_response_before(
-                        &mut stream,
-                        &ServerResponse::invocation(outcome),
-                        &response_deadline,
-                    )?,
-                    Err(error) => write_invocation_response_before(
-                        &mut stream,
-                        &ServerResponse::error(error.protocol_code()),
-                        &response_deadline,
-                    )?,
-                }
-            }
-            ClientRequest::GetTask { task_id } => {
-                let deadline = task_response_deadline(Duration::ZERO);
-                write_task_response_before(&mut stream, invocation_runtime.get(task_id), deadline)?
-            }
-            ClientRequest::WaitTask { task_id, wait_ms } => {
-                let deadline = task_response_deadline(Duration::from_millis(wait_ms));
-                write_task_response_before(
-                    &mut stream,
-                    invocation_runtime.wait(task_id, wait_ms),
-                    deadline,
-                )?
-            }
-            ClientRequest::CancelTask { task_id } => {
-                let deadline = task_response_deadline(Duration::ZERO);
-                write_task_response_before(
-                    &mut stream,
-                    invocation_runtime.cancel(task_id),
-                    deadline,
-                )?
-            }
-        }
-    }
-    Ok(())
-}
-
-fn write_task_response_before(
-    stream: &mut TcpStream,
-    result: Result<DaemonTaskSnapshot, DaemonInvocationError>,
-    deadline: Instant,
-) -> Result<(), String> {
-    match result {
-        Ok(snapshot) => write_response_before(stream, &ServerResponse::task(snapshot), deadline),
-        Err(error) => write_response_before(
-            stream,
-            &ServerResponse::error(error.protocol_code()),
-            deadline,
-        ),
-    }
-}
-
-fn session_response_deadline(operation_budget: Duration) -> Instant {
-    Instant::now() + operation_budget + Duration::from_millis(RESPONSE_SERIALIZATION_MARGIN_MS)
-}
-
-fn task_response_deadline(wait_budget: Duration) -> Instant {
-    // The frontend owns the one absolute task-operation cutoff and closes a late session.
-    // Protocol v3 does not transmit that cutoff, so the daemon must not manufacture a fresh
-    // 125 ms operation window here. The daemon-side bound covers the executor's canonical store
-    // reconciliation allowance and response margin, capped by the independent session safety
-    // limit; it does not replenish the frontend cutoff.
-    let operation_budget = wait_budget
-        .saturating_add(TASK_RECONCILIATION_BUDGET)
-        .saturating_add(Duration::from_millis(RESPONSE_SERIALIZATION_MARGIN_MS))
-        .min(OWNER_RESPONSE_WRITE_TIMEOUT);
-    Instant::now() + operation_budget
-}
-
-fn write_response(stream: &mut TcpStream, response: &ServerResponse) -> Result<(), String> {
-    write_response_before(
-        stream,
-        response,
-        Instant::now() + OWNER_RESPONSE_WRITE_TIMEOUT,
-    )
-}
-
-fn write_response_before(
-    stream: &mut TcpStream,
-    response: &ServerResponse,
-    session_deadline: Instant,
-) -> Result<(), String> {
-    write_response_before_with_now(stream, response, session_deadline, Instant::now)
-}
-
-fn write_invocation_response_before(
-    stream: &mut TcpStream,
-    response: &ServerResponse,
-    response_deadline: &InvocationResponseDeadline,
-) -> Result<(), String> {
-    write_response_before_with_now(stream, response, response_deadline.response_at(), || {
-        response_deadline.now()
-    })
-}
-
-fn write_response_before_with_now<N>(
-    stream: &mut TcpStream,
-    response: &ServerResponse,
-    session_deadline: Instant,
-    mut now: N,
-) -> Result<(), String>
-where
-    N: FnMut() -> Instant,
-{
-    let deadline = session_deadline.min(now() + OWNER_RESPONSE_WRITE_TIMEOUT);
-    if now() >= deadline {
-        return Err("write daemon response: session response deadline elapsed".to_string());
-    }
-    let mut bytes = match serialize_response_bounded(response) {
-        Ok(bytes) => bytes,
-        Err(ResponseSerializationError::TooLarge) => {
-            serialize_response_bounded(&ServerResponse::error(DaemonErrorCode::ResultTooLarge))
-                .map_err(|_| "bounded daemon error response could not be serialized".to_string())?
-        }
-        Err(ResponseSerializationError::Invalid) => {
-            return Err("daemon response could not be serialized".to_string())
-        }
-    };
-    if now() >= deadline {
-        return Err("write daemon response: session response deadline elapsed".to_string());
-    }
-    bytes.push(b'\n');
-    write_bytes_before(stream, &bytes, deadline, now, |stream, remaining| {
-        stream.set_write_timeout(Some(remaining))
-    })
-}
-
-pub(super) fn write_bytes_before<W, N, C>(
-    writer: &mut W,
-    bytes: &[u8],
-    deadline: Instant,
-    mut now: N,
-    mut configure_timeout: C,
-) -> Result<(), String>
-where
-    W: Write,
-    N: FnMut() -> Instant,
-    C: FnMut(&mut W, Duration) -> io::Result<()>,
-{
-    let mut written = 0;
-    while written < bytes.len() {
-        let remaining = deadline.saturating_duration_since(now());
-        if remaining.is_zero() {
-            return Err("write daemon response: bounded response deadline elapsed".to_string());
-        }
-        configure_timeout(writer, remaining)
-            .map_err(|error| daemon_io_error("configure daemon response timeout", error))?;
-        match writer.write(&bytes[written..]) {
-            Ok(0) => {
-                return Err("write daemon response: connection closed before response".to_string())
-            }
-            Ok(count) => written += count,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) =>
-            {
-                std::thread::sleep(Duration::from_millis(1).min(remaining));
-            }
-            Err(error) => return Err(daemon_io_error("write daemon response", error)),
-        }
-    }
-    writer
-        .flush()
-        .map_err(|error| daemon_io_error("flush daemon response", error))
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ResponseSerializationError {
-    TooLarge,
-    Invalid,
-}
-
-struct BoundedResponseWriter {
-    bytes: Vec<u8>,
-    max_bytes: usize,
-    too_large: bool,
-}
-
-impl Write for BoundedResponseWriter {
-    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        let Some(next) = self.bytes.len().checked_add(buffer.len()) else {
-            self.too_large = true;
-            return Err(io::Error::new(
-                io::ErrorKind::FileTooLarge,
-                "response too large",
-            ));
-        };
-        if next > self.max_bytes {
-            self.too_large = true;
-            return Err(io::Error::new(
-                io::ErrorKind::FileTooLarge,
-                "response too large",
-            ));
-        }
-        self.bytes.extend_from_slice(buffer);
-        Ok(buffer.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-fn serialize_response_bounded(
-    response: &ServerResponse,
-) -> Result<Vec<u8>, ResponseSerializationError> {
-    let mut writer = BoundedResponseWriter {
-        bytes: Vec::new(),
-        max_bytes: super::protocol::MAX_DAEMON_RESPONSE_LINE_BYTES.saturating_sub(1),
-        too_large: false,
-    };
-    let serialized = serde_json::to_writer(&mut writer, response);
-    if writer.too_large {
-        return Err(ResponseSerializationError::TooLarge);
-    }
-    if serialized.is_err() {
-        return Err(ResponseSerializationError::Invalid);
-    }
-    Ok(writer.bytes)
 }
 
 #[cfg(test)]
@@ -1460,9 +532,7 @@ pub(crate) mod actor_capacity_tests {
         V5DaemonTaskSnapshot, V5InvocationRequest, V5InvocationResponse, V5ServerResponse,
     };
     use super::*;
-    use crate::application::invocation_store::{
-        NewInvocationRecord, SafeFailureReason, SafeStatusMessage, ToolIdentity,
-    };
+    use crate::application::invocation_store::ToolIdentity;
     use crate::application::operation_descriptors::KnownLongReason;
     use crate::application::receipt_ledger::{ReceiptTerminalOutcome, V5ToolIdentity};
     use crate::application::shared_work::{
@@ -1475,14 +545,14 @@ pub(crate) mod actor_capacity_tests {
     use crate::infrastructure::runtime_jobs::{
         RuntimeJobOperation, RuntimeJobRequest, RuntimeJobService,
     };
-    use crate::infrastructure::task_store::{FileInvocationStore, SystemEpochMillisClock};
     use crate::infrastructure::workspace::discover_workspace;
     use crate::infrastructure::workspace_actor::{
         IndexWorkIdentity, WorkspaceActor, WorkspaceSourceSetInput,
     };
     use std::cell::RefCell;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{mpsc, Barrier, Condvar};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{mpsc, Barrier, Condvar, Mutex};
+    use std::time::Instant;
 
     thread_local! {
         static LOGICAL_READ_NOW: RefCell<Option<Instant>> = const { RefCell::new(None) };
@@ -1564,7 +634,7 @@ pub(crate) mod actor_capacity_tests {
 
     /// What one submission over the wire came back as.
     #[derive(Debug)]
-    enum V5Submission {
+    pub(crate) enum V5Submission {
         Direct(Box<DomainResult>),
         Task(crate::domain::invocation::TaskId),
     }
@@ -1572,7 +642,7 @@ pub(crate) mod actor_capacity_tests {
     /// A live v5 daemon in a thread over a canonical runtime the test holds:
     /// Task work goes through the wire exactly as production submits it, and
     /// the test still observes the actor and capability registries.
-    struct LiveV5Daemon {
+    pub(crate) struct LiveV5Daemon {
         _state: tempfile::TempDir,
         state_root: std::path::PathBuf,
         canonical: Arc<V5CanonicalInvocationRuntime>,
@@ -1580,7 +650,7 @@ pub(crate) mod actor_capacity_tests {
     }
 
     impl LiveV5Daemon {
-        fn start(service: Arc<dyn CanonicalInvocationService>) -> Self {
+        pub(crate) fn start(service: Arc<dyn CanonicalInvocationService>) -> Self {
             let canonical = Arc::new(V5CanonicalInvocationRuntime::new(
                 Arc::clone(&service),
                 Arc::new(TokioClock),
@@ -1615,7 +685,7 @@ pub(crate) mod actor_capacity_tests {
         }
 
         /// The owner lease that keeps the daemon alive for the test.
-        fn owner(&self) -> V5DaemonProcessOwner {
+        pub(crate) fn owner(&self) -> V5DaemonProcessOwner {
             let identity = CoreIdentity::production_v5();
             let deadline = Instant::now() + Duration::from_secs(10);
             loop {
@@ -1629,7 +699,7 @@ pub(crate) mod actor_capacity_tests {
             }
         }
 
-        fn submit(
+        pub(crate) fn submit(
             &self,
             owner: &V5DaemonProcessOwner,
             request: &InvocationRequest,
@@ -1665,7 +735,7 @@ pub(crate) mod actor_capacity_tests {
             }
         }
 
-        fn task_id(
+        pub(crate) fn task_id(
             &self,
             owner: &V5DaemonProcessOwner,
             request: &InvocationRequest,
@@ -1676,7 +746,7 @@ pub(crate) mod actor_capacity_tests {
             }
         }
 
-        fn get(
+        pub(crate) fn get(
             &self,
             owner: &V5DaemonProcessOwner,
             task_id: crate::domain::invocation::TaskId,
@@ -1686,7 +756,7 @@ pub(crate) mod actor_capacity_tests {
             peer.get_task_before(task_id, deadline).expect("get task")
         }
 
-        fn cancel(
+        pub(crate) fn cancel(
             &self,
             owner: &V5DaemonProcessOwner,
             task_id: crate::domain::invocation::TaskId,
@@ -1699,7 +769,7 @@ pub(crate) mod actor_capacity_tests {
 
         /// Waits for a terminal snapshot within `total`, one bounded wire wait
         /// at a time.
-        fn wait_terminal(
+        pub(crate) fn wait_terminal(
             &self,
             owner: &V5DaemonProcessOwner,
             task_id: crate::domain::invocation::TaskId,
@@ -1728,7 +798,12 @@ pub(crate) mod actor_capacity_tests {
         }
 
         /// Ends the daemon: the owner lease goes first, then the idle grace.
-        fn finish(mut self, owner: V5DaemonProcessOwner) {
+        pub(crate) fn finish(mut self, owner: V5DaemonProcessOwner) {
+            self.stop(owner);
+        }
+
+        /// Ends one life of the daemon; the state root stays for the next.
+        pub(crate) fn stop(&mut self, owner: V5DaemonProcessOwner) {
             drop(owner);
             self.thread
                 .take()
@@ -1736,6 +811,30 @@ pub(crate) mod actor_capacity_tests {
                 .join()
                 .expect("join the v5 daemon thread")
                 .expect("the v5 daemon exits on its idle grace");
+        }
+
+        /// Starts the daemon again over the same state root, as a new process
+        /// would: a fresh canonical runtime reads what the first life left durable.
+        pub(crate) fn restart(&mut self, service: Arc<dyn CanonicalInvocationService>) {
+            assert!(
+                self.thread.is_none(),
+                "the previous daemon life must be finished first"
+            );
+            let canonical = Arc::new(V5CanonicalInvocationRuntime::new(
+                Arc::clone(&service),
+                Arc::new(TokioClock),
+            ));
+            let config = DaemonServerConfig::new(
+                self.state_root.clone(),
+                CoreIdentity::production_v5(),
+                LIVE_V5_IDLE_GRACE,
+            )
+            .with_invocation_service(service)
+            .with_canonical_runtime_for_test(Arc::clone(&canonical));
+            self.canonical = canonical;
+            self.thread = Some(std::thread::spawn(move || {
+                super::super::runtime_v5::run_daemon(config)
+            }));
         }
     }
 
@@ -4509,7 +3608,7 @@ struct ActorLogicalReadLease {"#,
     }
 
     #[test]
-    fn production_v3_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools() {
+    fn production_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools() {
         struct PlatformDocsStandIn;
 
         impl crate::domain::documentation::DocumentationProvider for PlatformDocsStandIn {
@@ -5763,45 +4862,99 @@ struct ActorLogicalReadLease {"#,
         assert_eq!(std::fs::read(&descriptor).unwrap(), before_reverted);
     }
 
+    /// A task recovered as Working belongs to an attempt that died with its
+    /// process: recovery terminalizes it as uncertain without any domain
+    /// callback — apply is never re-executed to resume it.
     #[test]
     pub(crate) fn working_task_recovery_is_resume_unsupported_without_apply_reexecution() {
-        let task_root = tempfile::tempdir().unwrap();
-        let (store, _) =
-            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
-        let record = NewInvocationRecord::new(
-            crate::domain::invocation::InvocationId::new(),
-            ToolIdentity::Apply,
-            crate::domain::invocation::NormalizedArgumentsHash::from_sha256([0x91; 32]),
-            crate::domain::invocation::SafeIdentityHash::from_sha256([0x92; 32]),
-            SafeStatusMessage::Working,
-            250,
-            60_000,
-            Some(crate::domain::invocation::ResumeDescriptor::Delivery(
-                crate::domain::invocation::DeliveryResume::new(
-                    crate::domain::invocation::SafeIdentityHash::from_sha256([0x93; 32]),
-                ),
-            )),
-        );
-        let working = store.create_working(record).unwrap();
-        drop(store);
+        use crate::application::invocation_store::EpochMillisClock;
+        use crate::application::invocation_store_v5::{
+            InvocationStoreV5, NewV5InvocationRecord, RecoveryTerminalReason, V5SafeFailureReason,
+            V5StoredTask, V5TaskIdentity,
+        };
+        use crate::application::receipt_ledger::ReceiptKeyDigest;
+        use crate::domain::code_intelligence::ProviderDeadline;
+        use crate::infrastructure::task_store_v5::FileInvocationStoreV5;
+        use std::str::FromStr;
+
+        struct FixedEpoch(u64);
+        impl EpochMillisClock for FixedEpoch {
+            fn now_epoch_millis(&self) -> u64 {
+                self.0
+            }
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let state_root = std::fs::canonicalize(root.path()).unwrap();
+        let state = DaemonStateDirectory::open(&state_root, &CoreIdentity::production()).unwrap();
+        let tasks = state.create_private_retained_subdirectory("tasks").unwrap();
+        let deadline = ProviderDeadline::from_budget(Duration::from_secs(7));
+        let (store, _) = FileInvocationStoreV5::open_retained_directory_inspect_only(
+            tasks,
+            Arc::new(FixedEpoch(7_500)),
+            deadline,
+        )
+        .unwrap();
         let apply_executions = AtomicUsize::new(0);
 
-        let (reopened, report) =
-            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
-        let recovered = reopened.get(working.task_id).unwrap();
+        let working = store
+            .create_exact(
+                NewV5InvocationRecord::new(
+                    V5TaskIdentity::new(
+                        crate::domain::invocation::TaskId::new(),
+                        crate::domain::invocation::InvocationId::new(),
+                        ReceiptKeyDigest::from_str(&"91".repeat(32)).unwrap(),
+                    ),
+                    V5ToolIdentity::Apply,
+                    crate::domain::invocation::NormalizedArgumentsHash::from_sha256([0x91; 32]),
+                    crate::domain::invocation::SafeIdentityHash::from_sha256([0x92; 32]),
+                    250,
+                    60_000,
+                )
+                .for_recovered_begun(false),
+                deadline,
+            )
+            .unwrap();
+        assert_eq!(working.task, V5StoredTask::Working);
 
-        assert_eq!(recovered.status, InvocationStatus::Failed);
-        assert_eq!(
-            recovered.failure_reason,
-            Some(SafeFailureReason::ResumeUnsupported)
+        let recovered = store
+            .terminalize_recovered_exact(
+                &working.identity(),
+                working.version,
+                RecoveryTerminalReason::OutcomeUncertain,
+                deadline,
+            )
+            .unwrap();
+
+        assert!(
+            matches!(
+                recovered.task,
+                V5StoredTask::Failed {
+                    reason: V5SafeFailureReason::OutcomeUncertain,
+                    ..
+                }
+            ),
+            "a working task recovers as a closed uncertain failure: {:?}",
+            recovered.task
         );
-        assert!(recovered.result.is_none());
-        assert_eq!(apply_executions.load(Ordering::SeqCst), 0);
-        assert!(report.classifications.iter().any(|classification| matches!(
-            classification,
-            crate::infrastructure::task_store::RecoveryClassification::UnsupportedResume { task_id }
-                if *task_id == working.task_id
-        )));
+        assert_eq!(recovered.version, working.version + 1);
+        assert_eq!(
+            store
+                .terminalize_recovered_exact(
+                    &working.identity(),
+                    working.version,
+                    RecoveryTerminalReason::OutcomeUncertain,
+                    deadline,
+                )
+                .unwrap(),
+            recovered,
+            "repeated recovery is idempotent"
+        );
+        assert_eq!(
+            apply_executions.load(Ordering::SeqCst),
+            0,
+            "resume is unsupported: recovery never re-executes apply"
+        );
     }
 
     #[test]
@@ -6858,7 +6011,7 @@ struct ActorLogicalReadLease {"#,
         )
     }
 
-    fn ensure_platform_xml_workspace(workspace_hint: &str) {
+    pub(crate) fn ensure_platform_xml_workspace(workspace_hint: &str) {
         let workspace = std::path::Path::new(workspace_hint);
         let project = workspace.join("v8project.yaml");
         if project.exists() {
@@ -7638,250 +6791,5 @@ struct ActorLogicalReadLease {"#,
         crate::infrastructure::workspace_actor::tests::warm_actor_expires_after_the_idle_ttl_and_is_rebuilt();
         crate::infrastructure::workspace_actor::tests::warm_actor_whose_named_root_was_replaced_is_rebuilt();
         crate::infrastructure::workspace_actor::tests::warm_actors_yield_capacity_to_a_distinct_identity();
-    }
-
-    #[test]
-    fn typed_executor_errors_map_to_closed_protocol_codes_without_text_matching() {
-        let storage = DaemonInvocationError::Executor(InvocationExecutorError::Store(
-            InvocationStoreError::Storage(
-                "SECRET runtime prose /private/path must not classify".into(),
-            ),
-        ));
-        assert_eq!(storage.protocol_code(), DaemonErrorCode::StoreFailed);
-        assert_eq!(
-            DaemonInvocationError::Executor(InvocationExecutorError::Store(
-                InvocationStoreError::NotFound,
-            ))
-            .protocol_code(),
-            DaemonErrorCode::TaskNotFound
-        );
-        assert_eq!(
-            DaemonInvocationError::Executor(InvocationExecutorError::Store(
-                InvocationStoreError::Capacity { max_records: 4_096 },
-            ))
-            .protocol_code(),
-            DaemonErrorCode::TaskCapacity
-        );
-        assert_eq!(
-            DaemonInvocationError::Executor(InvocationExecutorError::Store(
-                InvocationStoreError::Expired,
-            ))
-            .protocol_code(),
-            DaemonErrorCode::TaskExpired
-        );
-        assert_eq!(
-            DaemonInvocationError::Executor(InvocationExecutorError::ExecutionFailed)
-                .protocol_code(),
-            DaemonErrorCode::InvocationFailed
-        );
-        assert_eq!(
-            DaemonInvocationError::Executor(InvocationExecutorError::RestartRequested)
-                .protocol_code(),
-            DaemonErrorCode::DurabilityUncertain
-        );
-        assert_eq!(
-            DaemonInvocationError::WorkspaceRegistryFailed.protocol_code(),
-            DaemonErrorCode::WorkspaceRegistryFailed
-        );
-    }
-}
-
-fn tokens_equal(left: &str, right: &str) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-    left.bytes()
-        .zip(right.bytes())
-        .fold(0u8, |difference, (left, right)| difference | (left ^ right))
-        == 0
-}
-
-#[derive(Default)]
-struct LeaseRegistry {
-    leases: Mutex<HashSet<String>>,
-}
-
-impl LeaseRegistry {
-    fn acquire(self: &Arc<Self>, lease: String) -> Result<LeaseAdmission, String> {
-        let mut leases = self
-            .leases
-            .lock()
-            .map_err(|_| "daemon owner lease registry is poisoned".to_string())?;
-        if leases.contains(&lease) {
-            return Ok(LeaseAdmission::Duplicate);
-        }
-        if leases.len() >= MAX_OWNER_SESSIONS {
-            return Ok(LeaseAdmission::Capacity);
-        }
-        leases.insert(lease.clone());
-        drop(leases);
-        Ok(LeaseAdmission::Acquired(LeaseGuard {
-            registry: Arc::clone(self),
-            lease,
-        }))
-    }
-
-    fn is_empty(&self) -> Result<bool, String> {
-        self.leases
-            .lock()
-            .map(|leases| leases.is_empty())
-            .map_err(|_| "daemon owner lease registry is poisoned".to_string())
-    }
-}
-
-enum LeaseAdmission {
-    Acquired(LeaseGuard),
-    Duplicate,
-    Capacity,
-}
-
-struct LeaseGuard {
-    registry: Arc<LeaseRegistry>,
-    lease: String,
-}
-
-impl Drop for LeaseGuard {
-    fn drop(&mut self) {
-        if let Ok(mut leases) = self.registry.leases.lock() {
-            leases.remove(&self.lease);
-        }
-    }
-}
-
-struct ConnectionSlot {
-    admitted: Arc<AtomicUsize>,
-}
-
-impl ConnectionSlot {
-    fn acquire(admitted: Arc<AtomicUsize>) -> Option<Self> {
-        admitted
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                (current < MAX_HANDSHAKES).then_some(current + 1)
-            })
-            .ok()
-            .map(|_| Self { admitted })
-    }
-}
-
-impl Drop for ConnectionSlot {
-    fn drop(&mut self) {
-        self.admitted.fetch_sub(1, Ordering::AcqRel);
-    }
-}
-
-fn reject_overloaded_connection(connection: AcceptedConnection) {
-    let mut stream = connection.stream;
-    let _ = write_response_before(
-        &mut stream,
-        &ServerResponse::error(DaemonErrorCode::Overloaded),
-        connection
-            .handshake_deadline
-            .min(Instant::now() + Duration::from_millis(100)),
-    );
-}
-
-fn reap_finished_handlers(handlers: Vec<JoinHandle<()>>) -> Vec<JoinHandle<()>> {
-    let mut active = Vec::with_capacity(handlers.len());
-    for handler in handlers {
-        if handler.is_finished() {
-            let _ = handler.join();
-        } else {
-            active.push(handler);
-        }
-    }
-    active
-}
-
-fn join_handlers(handlers: Vec<JoinHandle<()>>) {
-    for handler in handlers {
-        let _ = handler.join();
-    }
-}
-
-fn daemon_io_error(operation: &str, error: io::Error) -> String {
-    format!("{operation}: {error}")
-}
-
-#[cfg(test)]
-#[derive(Debug, Default)]
-struct HandshakePauseState {
-    entered: bool,
-    released: bool,
-}
-
-#[cfg(test)]
-#[derive(Debug)]
-struct HandshakePause {
-    state: Mutex<HandshakePauseState>,
-    wake: std::sync::Condvar,
-}
-
-#[cfg(test)]
-pub(crate) struct HandshakePauseGuard {
-    pause: Arc<HandshakePause>,
-}
-
-#[cfg(test)]
-impl HandshakePauseGuard {
-    pub(crate) fn wait_until_entered(&self) {
-        let deadline = Instant::now() + Duration::from_secs(2);
-        let mut state = self.pause.state.lock().expect("handshake pause state");
-        while !state.entered {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            assert!(
-                !remaining.is_zero(),
-                "daemon handler did not reach handshake pause"
-            );
-            let (next, timeout) = self
-                .pause
-                .wake
-                .wait_timeout(state, remaining)
-                .expect("handshake pause wait");
-            state = next;
-            assert!(
-                !timeout.timed_out() || state.entered,
-                "daemon handler pause timed out"
-            );
-        }
-    }
-
-    pub(crate) fn release(&self) {
-        let mut state = self.pause.state.lock().expect("handshake pause state");
-        state.released = true;
-        self.pause.wake.notify_all();
-    }
-}
-
-#[cfg(test)]
-impl Drop for HandshakePauseGuard {
-    fn drop(&mut self) {
-        self.release();
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn install_handshake_pause() -> HandshakePauseGuard {
-    let pause = Arc::new(HandshakePause {
-        state: Mutex::new(HandshakePauseState::default()),
-        wake: std::sync::Condvar::new(),
-    });
-    HandshakePauseGuard { pause }
-}
-
-#[cfg(test)]
-pub(crate) fn install_startup_pause() -> HandshakePauseGuard {
-    install_handshake_pause()
-}
-
-#[cfg(test)]
-fn pause_test_thread_if_configured(pause: Option<Arc<HandshakePause>>) {
-    let Some(pause) = pause else {
-        return;
-    };
-    let mut state = pause.state.lock().expect("handshake pause state");
-    state.entered = true;
-    pause.wake.notify_all();
-    while !state.released {
-        state = pause.wake.wait(state).expect("handshake pause wait");
     }
 }

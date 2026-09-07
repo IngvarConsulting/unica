@@ -10831,7 +10831,10 @@ mod tests {
         use std::str::FromStr;
 
         for identity in [
-            CoreIdentity::production_v3(),
+            CoreIdentity::from_str(
+                "2f4dd5713d11e5211a92c5fa01b1ec5722dc3a3160b9b1e0b667f8d8da3d9c28",
+            )
+            .expect("the retired protocol-v3 digest still parses as a canonical identity"),
             CoreIdentity::from_str(
                 "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
             )

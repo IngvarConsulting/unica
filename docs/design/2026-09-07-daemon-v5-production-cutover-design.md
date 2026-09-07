@@ -415,6 +415,41 @@ bound-invocation, а не Task), финальность выбора источ�
 (восстановление хранилища v3, проверка
 `INV.APP.RETAINED-SOURCE-SELECTION-FINALITY` переадресуется решением E).
 
+**Шаг E2 — v3 снят: клиент, цикл сервера, протокол, identity.** Удалены
+`client.rs` целиком, цикл v3 и исполнитель `DaemonInvocationRuntime` в
+`server.rs` (с реестром lease, писателями ответов и тестовыми паузами),
+`DaemonServerConfig` лишился ручек хранилища и бюджета сверки; из
+`protocol.rs` остался только `InvocationRequest`; в `identity.rs` нет
+`DaemonProtocolIdentity` и `production_v3` — каталог состояния любой
+core identity `daemon-p5-…`, `DAEMON_PROTOCOL_VERSION` один; вход
+`--daemon` (`interfaces/daemon.rs`) поднимает только рантайм v5, тестовый
+вход — только `V5DaemonProcessOwner`; `protocol_v5` проверяет точную
+production identity, а не «класс протокола». В `daemon/mod.rs` из 52 тестов
+v3 остались и переведены на v5 те, у которых есть предмет: каталог
+состояния и identity, аудит фасада `server` (syn), граница предметного
+сервиса, `injected_hidden_v13_service_executes_real_view_and_find…`
+(`realized` LOGICAL-READ-CORE-SLICE — на `LiveV5Daemon`, теперь общей
+обвязке `pub(crate)` из `server.rs`), actor-bound чтение и публикация
+после подмены корня/ревизии (staged-байты не утекают в терминал v5),
+`daemon_executes_one_canonical_invocation_and_poll_cancel_never_relaunches_it`
+(`realized` ROUTING-SLICE: один вызов — одно исполнение, cancel и
+перезапуск daemon ничего не переисполняют). Процесс-тест двух
+несовместимых identity удалён вместе с предметом; таблица кодов v3 и
+восстановление хранилища v3 — тоже, а
+`working_task_recovery_is_resume_unsupported…` (проверка
+`INV.APP.RETAINED-SOURCE-SELECTION-FINALITY`) доказывается на хранилище v5:
+Working после смерти процесса терминализируется как `OutcomeUncertain` без
+domain-вызова. Проба контракта «v5 отвергает v3» держит кадры v3 как
+рукописные байты (`v3_wire` в бегунке), identity v3 — литерал digest-а.
+Реестр: решение `DEC.2026-09-08.DAEMON-V3-RETIREMENT` берёт
+`INV.APP.V13-USEFUL-PARTIAL-MODES` (текст и имя проверки без «v3»).
+Находка: страж неизменности не даёт переадресовать `realized` решения
+кроме случая «агрегатор раскрыт в составляющие» — свидетельства снятых
+тестов не переадресуются, а воссоздаются под теми же именами на v5.
+Остаток для E3: `application/invocation.rs` (исполнитель v3),
+`task_store.rs`, `invocation_store_actor.rs`, v3-часть
+`invocation_store.rs`.
+
 ## Открытые вопросы
 
 - Cutoff до `Begun`: production deadline owner покрывает prepare и execute;

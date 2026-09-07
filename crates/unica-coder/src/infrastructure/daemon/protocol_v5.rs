@@ -1,4 +1,4 @@
-use super::identity::{CoreIdentity, DaemonProtocolIdentity};
+use super::identity::CoreIdentity;
 use crate::application::invocation::normalized_arguments_hash;
 use crate::application::invocation_store::{
     MAX_CANONICAL_RESULT_BYTES, MAX_TASK_RECORD_ENVELOPE_BYTES,
@@ -19,7 +19,7 @@ use std::io::{self, BufRead};
 use std::net::{Ipv4Addr, SocketAddrV4};
 use uuid::{Uuid, Variant, Version};
 
-pub(crate) const DAEMON_PROTOCOL_VERSION: u32 = DaemonProtocolIdentity::V5.protocol_version();
+pub(crate) const DAEMON_PROTOCOL_VERSION: u32 = super::identity::DAEMON_PROTOCOL_VERSION;
 pub(crate) const DAEMON_PROTOCOL_IDENTITY: &str = "unica-daemon-jsonl-5";
 pub(crate) const V5_ENDPOINT_SCHEMA_VERSION: u32 = 1;
 pub(crate) const MAX_V5_ENDPOINT_RECORD_BYTES: usize = 16 * 1024;
@@ -59,7 +59,7 @@ impl fmt::Debug for V5EndpointRecord {
 
 impl V5EndpointRecord {
     pub(crate) fn new(core_identity: CoreIdentity, port: u16) -> Result<Self, String> {
-        if core_identity.protocol_identity() != DaemonProtocolIdentity::V5 {
+        if core_identity != CoreIdentity::production_v5() {
             return Err("v5 endpoint requires the exact protocol-v5 core identity".to_string());
         }
         let record = Self {
@@ -83,7 +83,7 @@ impl V5EndpointRecord {
         if self.protocol_version != DAEMON_PROTOCOL_VERSION {
             return Err("unsupported v5 daemon endpoint protocol".to_string());
         }
-        if self.core_identity.protocol_identity() != DaemonProtocolIdentity::V5 {
+        if self.core_identity != CoreIdentity::production_v5() {
             return Err("v5 endpoint has a non-v5 core identity".to_string());
         }
         if self.pid == 0 || self.port == 0 || self.host != Ipv4Addr::LOCALHOST.to_string() {
