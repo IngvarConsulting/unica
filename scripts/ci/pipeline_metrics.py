@@ -72,7 +72,12 @@ def load_runs(gh, repo: str, since: datetime) -> dict[str, list[dict]]:
     by_event: dict[str, list[dict]] = defaultdict(list)
     for run in recent:
         by_event[run["event"]].append(run)
-    by_event["pages"] = [run for run in pages if run["status"] == "completed" and moment(run["createdAt"]) >= since]
+    # Отчёт на сайт приносит только пересборка по завершении прогона-источника:
+    # прямой push-прогон сайта, снятый 07.09.2026, шёл без свежих результатов.
+    by_event["pages"] = [
+        run for run in pages
+        if run["status"] == "completed" and run["event"] == "workflow_run" and moment(run["createdAt"]) >= since
+    ]
     return by_event
 
 
@@ -136,7 +141,7 @@ def compute(by_event: dict[str, list[dict]], merged: list[dict], retry_trend, su
         "metric": "Вливание → отчёт на сайте, медиана",
         "value": fmt_minutes(statistics.median(to_site)) if to_site else "—",
         "target": "15 мин",
-        "source": f"{len(to_site)} push в main с пересборкой сайта",
+        "source": f"{len(to_site)} push в main с пересборкой сайта по результатам прогона",
     })
 
     green = sum(1 for r in mains if r["conclusion"] == "success")

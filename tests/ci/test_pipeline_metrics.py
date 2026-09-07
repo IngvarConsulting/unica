@@ -47,7 +47,11 @@ class PipelineMetricsTests(unittest.TestCase):
             run("merge_group", "gh-readonly-queue/main/pr-3-x", "m3", "success", "2026-09-07T12:00:00+00:00", 9, 8),
             run("push", "main", "old", "success", "2026-08-01T10:20:00+00:00", 10, 9),
         ]
-        self.pages = [run("workflow_run", "main", "m1", "success", "2026-09-07T10:31:00+00:00", 3, 10)]
+        self.pages = [
+            run("workflow_run", "main", "m1", "success", "2026-09-07T10:31:00+00:00", 3, 10),
+            # Прямой push-прогон сайта без результатов — не пересборка по прогону.
+            run("push", "main", "m1", "success", "2026-09-07T10:20:00+00:00", 1, 11),
+        ]
         self.merged = [
             {"number": 1, "createdAt": "2026-09-07T08:00:00Z", "mergedAt": "2026-09-07T10:20:00Z", "headRefName": "feature/a", "mergeCommit": {"oid": "m1"}},
             {"number": 3, "createdAt": "2026-09-07T08:00:00Z", "mergedAt": "2026-09-07T12:19:00Z", "headRefName": "feature/c", "mergeCommit": {"oid": "m3"}},
