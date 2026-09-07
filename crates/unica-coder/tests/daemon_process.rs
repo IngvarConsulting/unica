@@ -48,7 +48,24 @@ fn daemon_frontend_process_fixture() {
         || release.exists(),
         "owner release marker",
     );
-    owner.ping().unwrap();
+    // A loaded runner can stall the daemon's authority probe past one ping
+    // budget; the proof is that the daemon still answers after the competitor
+    // left, so a fresh session gets a bounded number of tries.
+    let mut last_error = None;
+    for _ in 0..3 {
+        match owner.ping() {
+            Ok(()) => return,
+            Err(error) => last_error = Some(error),
+        }
+        owner = unica_coder::interfaces::daemon::connect_owner_for_protocol_test(
+            &state_root,
+            &identity,
+            &executable,
+            PROCESS_FIXTURE_IDLE_GRACE_MS,
+        )
+        .unwrap();
+    }
+    panic!("daemon stopped answering after the competitor left: {last_error:?}");
 }
 
 #[test]

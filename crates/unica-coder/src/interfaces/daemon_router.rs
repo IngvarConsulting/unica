@@ -35,6 +35,12 @@ pub(super) const TOOL_EXECUTION_ERROR: i32 = -32000;
 const ACKNOWLEDGEMENT_BUDGET: Duration = Duration::from_millis(500);
 /// Recovery of a still-reserved receipt polls the daemon no more often than this.
 const RECOVERY_POLL_INTERVAL: Duration = Duration::from_millis(25);
+/// A submit response is most often lost exactly at the frontend cutoff: the
+/// daemon hands the work off to a Task within its own budget, and the durable
+/// promotion under load overruns the 125 ms margin. Exact recovery is a
+/// read-only reconciliation of that receipt, so it gets a bounded window of
+/// its own after the cutoff instead of failing with nothing left to spend.
+const RECOVERY_BUDGET: Duration = Duration::from_millis(750);
 
 /// One absolute frontend budget per request: captured at receipt and only
 /// narrowed afterwards, never re-derived from a later `now`.
@@ -97,6 +103,7 @@ pub(super) fn remaining_invocation_budget(
 
 /// What one canonical call produced: the final `CallToolResult` of an
 /// acknowledged Direct terminal, or the durable Task the daemon handed off to.
+#[derive(Debug)]
 pub(super) enum CanonicalCallOutcome {
     Direct(CallToolResult),
     Task(V5DaemonTaskSnapshot),
@@ -266,7 +273,10 @@ fn submit_and_settle(
         Ok(response) => (peer, response),
         // The frame reached the daemon and the answer did not come back: the
         // daemon may already hold a reserved or terminal receipt for it.
-        Err(V5TransportError::ResponseLost(_)) => recover_receipt(anchor, &receipt_key, cutoff)?,
+        Err(V5TransportError::ResponseLost(_)) => {
+            let recovery_cutoff = cutoff.max(Instant::now()) + RECOVERY_BUDGET;
+            recover_receipt(anchor, &receipt_key, recovery_cutoff)?
+        }
         Err(error) => return Err(transport_refusal(error)),
     };
     settle(peer, response, &receipt_key)
@@ -295,7 +305,9 @@ fn receipt_key_for(
 
 /// Read the durable state of a submission whose response was lost. A receipt
 /// still inside its original budget is polled until that budget settles;
-/// nothing here opens a new budget or submits again.
+/// nothing here opens a new invocation budget or submits again. When even the
+/// recovery window closes, the host gets the same closed refusal the v3
+/// frontend answered with: the daemon may hold the work, nobody replays it.
 fn recover_receipt(
     anchor: &V5DaemonProcessOwner,
     receipt_key: &ReceiptKey,
@@ -304,10 +316,10 @@ fn recover_receipt(
     loop {
         let mut peer = anchor
             .connect_peer_before(cutoff)
-            .map_err(transport_refusal)?;
+            .map_err(|_| lost_submit_refusal())?;
         let response = peer
             .recover_invocation_receipt_before(receipt_key.clone(), cutoff)
-            .map_err(transport_refusal)?;
+            .map_err(|_| lost_submit_refusal())?;
         match response {
             V5ServerResponse::Invocation {
                 outcome:
@@ -330,14 +342,12 @@ fn recover_receipt(
                 }
                 std::thread::sleep(until_settled.max(RECOVERY_POLL_INTERVAL));
             }
+            // The daemon holds no receipt: the submission never reached its
+            // reserve, which is the same loss the host already knows how to
+            // treat.
             V5ServerResponse::Error {
                 code: V5DaemonErrorCode::ReceiptNotFound,
-            } => {
-                return Err(transport_refusal(V5TransportError::ResponseLost(
-                    "daemon invocation submission was lost before a receipt was reserved"
-                        .to_string(),
-                )));
-            }
+            } => return Err(lost_submit_refusal()),
             other => return Ok((peer, other)),
         }
     }
@@ -401,6 +411,17 @@ fn epoch_ms_now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis().min(u128::from(u64::MAX)) as u64)
         .unwrap_or(0)
+}
+
+/// The closed answer for a submit whose response was lost and whose receipt
+/// could not be recovered in time. Same code and text as the v3 frontend, so
+/// hosts keep one rule: a read-only tool may be replayed, a mutation may not.
+fn lost_submit_refusal() -> ErrorData {
+    ErrorData::new(
+        ErrorCode(TOOL_EXECUTION_ERROR),
+        "daemon deadline expired during invocation submit response",
+        None,
+    )
 }
 
 fn transport_refusal(error: V5TransportError) -> ErrorData {
@@ -907,12 +928,8 @@ mod tests {
         }));
         let router = canonical_daemon_router(fake.owner(), "/workspace".to_string());
 
-        let uncertain = call(&router, None)
-            .err()
-            .expect("failed terminal is an error");
-        let cancelled = call(&router, None)
-            .err()
-            .expect("cancelled terminal is an error");
+        let uncertain = call(&router, None).expect_err("failed terminal is an error");
+        let cancelled = call(&router, None).expect_err("cancelled terminal is an error");
 
         assert_eq!(uncertain.code, ErrorCode::INTERNAL_ERROR);
         assert_eq!(uncertain.message, "daemon invocation outcome is uncertain");
@@ -1111,8 +1128,7 @@ mod tests {
         let router = canonical_daemon_router(fake.owner(), "/workspace".to_string());
 
         let refusal = call(&router, Some(Duration::from_millis(400)))
-            .err()
-            .expect("a receipt pending past the cutoff is refused");
+            .expect_err("a receipt pending past the cutoff is refused");
 
         assert_eq!(refusal.data, Some(json!({"code": "receipt_pending"})));
         assert_eq!(fake.submissions(), 1);
@@ -1131,14 +1147,87 @@ mod tests {
         }));
         let router = canonical_daemon_router(fake.owner(), "/workspace".to_string());
 
-        let refusal = call(&router, None)
-            .err()
-            .expect("lost submission is refused");
+        let refusal = call(&router, None).expect_err("lost submission is refused");
 
         assert_eq!(refusal.code, ErrorCode(TOOL_EXECUTION_ERROR));
-        assert!(refusal
-            .message
-            .contains("lost before a receipt was reserved"));
+        assert_eq!(
+            refusal.message,
+            "daemon deadline expired during invocation submit response"
+        );
+        assert_eq!(fake.submissions(), 1);
+    }
+
+    #[test]
+    fn response_lost_at_the_cutoff_is_recovered_into_the_handed_off_task() {
+        let task_id = TaskId::new();
+        let fake = FakeDaemon::start(Box::new(move |_, request| match request {
+            // The daemon is still working when the frontend cutoff passes: the
+            // submit session sees nothing before the client gives up on it.
+            V5ClientRequest::SubmitInvocation { .. } => {
+                thread::sleep(Duration::from_millis(600));
+                Step::Close
+            }
+            V5ClientRequest::RecoverInvocationReceipt { receipt_key } => {
+                Step::Reply(V5ServerResponse::Invocation {
+                    outcome: V5InvocationResponse::Task {
+                        snapshot: V5DaemonTaskSnapshot::Working {
+                            task_id,
+                            invocation_id: receipt_key.invocation_id(),
+                            receipt_key_digest: "07".repeat(32).parse().unwrap(),
+                            created_at_epoch_ms: epoch_ms_now(),
+                            updated_at_epoch_ms: epoch_ms_now(),
+                            ttl_ms: 3_600_000,
+                            poll_interval_ms: 250,
+                            version: 2,
+                            cancel_requested: false,
+                        },
+                    },
+                })
+            }
+            other => panic!("unexpected frame {other:?}"),
+        }));
+        let router = canonical_daemon_router(fake.owner(), "/workspace".to_string());
+
+        let started = Instant::now();
+        let outcome = call(&router, Some(Duration::from_millis(300)));
+
+        let Ok(CanonicalCallOutcome::Task(snapshot)) = outcome else {
+            panic!("a lost response must recover the handed-off Task: {outcome:?}");
+        };
+        assert_eq!(snapshot.task_id(), task_id);
+        assert!(
+            started.elapsed()
+                < Duration::from_millis(300) + RECOVERY_BUDGET + Duration::from_millis(500),
+            "recovery stays inside its bounded window: {:?}",
+            started.elapsed()
+        );
+        assert_eq!(fake.submissions(), 1, "recovery never resubmits");
+    }
+
+    #[test]
+    fn recovery_window_closing_answers_the_closed_lost_submit_refusal() {
+        let fake = FakeDaemon::start(Box::new(move |_, request| match request {
+            V5ClientRequest::SubmitInvocation { .. } => {
+                thread::sleep(Duration::from_millis(500));
+                Step::Close
+            }
+            // Recovery answers only after the recovery window is spent.
+            V5ClientRequest::RecoverInvocationReceipt { .. } => {
+                thread::sleep(RECOVERY_BUDGET + Duration::from_millis(300));
+                Step::Close
+            }
+            other => panic!("unexpected frame {other:?}"),
+        }));
+        let router = canonical_daemon_router(fake.owner(), "/workspace".to_string());
+
+        let refusal = call(&router, Some(Duration::from_millis(300)))
+            .expect_err("a recovery that does not settle is refused");
+
+        assert_eq!(refusal.code, ErrorCode(TOOL_EXECUTION_ERROR));
+        assert_eq!(
+            refusal.message,
+            "daemon deadline expired during invocation submit response"
+        );
         assert_eq!(fake.submissions(), 1);
     }
 
@@ -1165,17 +1254,14 @@ mod tests {
         }));
         let router = canonical_daemon_router(fake.owner(), "/workspace".to_string());
 
-        let rejected = call(&router, None)
-            .err()
-            .expect("overloaded daemon refuses");
+        let rejected = call(&router, None).expect_err("overloaded daemon refuses");
         let foreign = (router.call)(
             V5ToolIdentity::Docs,
             &Map::new(),
             deadline(None),
             CancellationToken::new(),
         )
-        .err()
-        .expect("a foreign receipt is refused");
+        .expect_err("a foreign receipt is refused");
 
         assert_eq!(rejected.code, ErrorCode(TOOL_EXECUTION_ERROR));
         assert_eq!(
@@ -1304,9 +1390,7 @@ mod tests {
         let daemon = LiveDaemon::start(service.clone());
         let router = canonical_daemon_router(daemon.owner(), daemon.workspace_hint.clone());
 
-        let refusal = call(&router, None)
-            .err()
-            .expect("failed execution is an error");
+        let refusal = call(&router, None).expect_err("failed execution is an error");
 
         assert_eq!(refusal.code, ErrorCode::INTERNAL_ERROR);
         assert_eq!(refusal.message, "daemon invocation failed");
