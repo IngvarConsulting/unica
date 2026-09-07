@@ -116,7 +116,8 @@ def expected_results(
             "all contours enabled for tag, branch push, merge_group or workflow_dispatch",
         )
 
-    # Любая правка Rust — полная матрица: одного раннера класс `#[cfg]` не видит.
+    # Любая правка Rust — Rust-джоба обязательна; состав раннеров решает workflow:
+    # pull request — ubuntu, очередь и push — обе платформы.
     full_matrix = (
         values["rust_changed"] or values["platform_changed"] or values["toolchain_changed"] or values["ci_changed"]
     )
