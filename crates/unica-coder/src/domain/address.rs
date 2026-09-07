@@ -197,21 +197,35 @@ impl NodeKind {
         LEGACY_METADATA_KINDS
     }
 
-    pub(crate) fn parse(raw: &str) -> Result<Self, AddressError> {
+    /// Носит ли вид прикладное имя.
+    ///
+    /// Безымянный вид единственен у своего владельца, поэтому имени у него нет
+    /// и занимать под него сегмент нельзя: следующий сегмент — это уже вид.
+    /// Терминальный вид без имени — другое: это адрес ветки, и он допустим у
+    /// любого вида. См. `DEC.2026-09-07.NAMELESS-KINDS-IN-ADDRESS`.
+    pub(crate) const fn takes_name(self) -> bool {
+        !matches!(self, Self::Configuration | Self::Interface)
+    }
+
+    // Параметр назван `token`, а не `raw`: `&raw` — это спеллинг оператора
+    // сырого заимствования, и в позиции выражения он читается как начало
+    // `&raw const`/`&raw mut` и человеком, и разборщиками. Один такой случай
+    // уже делал этот файл неразбираемым для стража неизменности продукта.
+    pub(crate) fn parse(token: &str) -> Result<Self, AddressError> {
         if let Some(kind) = LEGACY_METADATA_KINDS
             .iter()
-            .find(|kind| metadata_address_kind_matches(kind.as_str(), raw))
+            .find(|kind| metadata_address_kind_matches(kind.as_str(), token))
         {
             return Ok(*kind);
         }
         V13_KIND_SPELLINGS
             .iter()
-            .find(|spelling| spelling.kind.as_str() == raw || spelling.aliases.contains(&raw))
+            .find(|spelling| spelling.kind.as_str() == token || spelling.aliases.contains(&token))
             .map(|spelling| spelling.kind)
             .ok_or_else(|| {
                 AddressError::new(
                     AddressErrorCode::UnknownKind,
-                    format!("unknown logical node kind `{raw}`"),
+                    format!("unknown logical node kind `{token}`"),
                 )
             })
     }
@@ -383,9 +397,37 @@ impl QualifiedAddress {
         }
 
         let mut segments = Vec::with_capacity(parts.len().div_ceil(2));
-        for pair in parts.chunks(2) {
-            let kind = NodeKind::parse(pair[0])?;
-            let name = pair.get(1).copied();
+        let mut index = 0;
+        while index < parts.len() {
+            let kind = NodeKind::parse(parts[index])?;
+            index += 1;
+            // Пары вслепую здесь не годятся: безымянный вид забрал бы
+            // следующий сегмент себе под имя, и объявленная ветвь перестала бы
+            // разрешаться. Имя берётся только у вида, который его носит.
+            let name = if kind.takes_name() {
+                let taken = parts.get(index).copied();
+                if taken.is_some() {
+                    index += 1;
+                }
+                taken
+            } else {
+                // Следующий сегмент у безымянного вида обязан быть видом. Если
+                // он им не читается, вызывающий написал имя — и сказать об
+                // этом надо прямо: «неизвестный вид» отправило бы его искать
+                // опечатку в том, что именем и было.
+                if let Some(written) = parts.get(index) {
+                    if NodeKind::parse(written).is_err() {
+                        return Err(AddressError::new(
+                            AddressErrorCode::ConfigurationRootOnly,
+                            format!(
+                                "`{}` has no application name; `{written}` cannot follow it",
+                                kind.as_str()
+                            ),
+                        ));
+                    }
+                }
+                None
+            };
             if name.is_some_and(|name| !xml_ncname_is_valid(name)) {
                 return Err(AddressError::new(
                     AddressErrorCode::InvalidName,
@@ -499,6 +541,64 @@ impl std::error::Error for AddressError {}
 
 #[cfg(test)]
 mod tests {
+
+    /// Безымянный вид единственен у владельца, поэтому следующий сегмент —
+    /// это вид, а не его имя. Пока разбор шёл парами вслепую, `Interface`
+    /// забирал `Command` себе под имя, и объявленная узлом ветвь
+    /// `...Interface.Command` разрешалась обратно в тот же узел: счёт называл
+    /// команды, спуск по названному адресу их не показывал.
+    #[test]
+    fn nameless_kinds_do_not_consume_the_next_segment_as_a_name() {
+        let at = QualifiedAddress::parse("main:Subsystem.Администрирование.Interface.Command")
+            .expect("адрес разбирается");
+        let shape: Vec<(&str, Option<&str>)> = at
+            .segments()
+            .iter()
+            .map(|segment| (segment.kind().as_str(), segment.name()))
+            .collect();
+        assert_eq!(
+            shape,
+            vec![
+                ("Subsystem", Some("Администрирование")),
+                ("Interface", None),
+                ("Command", None),
+            ],
+            "`Command` — это вид коллекции команд, а не имя интерфейса"
+        );
+
+        let root = QualifiedAddress::parse("main:Interface").expect("корневой интерфейс");
+        assert_eq!(root.segments().len(), 1);
+        assert_eq!(root.segments()[0].name(), None);
+    }
+
+    /// Обратная сторона того же правила: вид, который имя носит, забирает
+    /// следующий сегмент как прежде. Иначе правка сломала бы каждый обычный
+    /// адрес, а терминальная ветка перестала бы быть веткой.
+    #[test]
+    fn a_named_kind_still_takes_the_segment_that_follows_it() {
+        let deep = QualifiedAddress::parse("main:Catalog.Валюты.Module.Object")
+            .expect("адрес разбирается");
+        let shape: Vec<(&str, Option<&str>)> = deep
+            .segments()
+            .iter()
+            .map(|segment| (segment.kind().as_str(), segment.name()))
+            .collect();
+        assert_eq!(
+            shape,
+            vec![("Catalog", Some("Валюты")), ("Module", Some("Object"))]
+        );
+
+        let branch = QualifiedAddress::parse("main:Catalog.Валюты.Attribute").expect("адрес ветки");
+        assert_eq!(
+            branch
+                .segments()
+                .last()
+                .map(|segment| (segment.kind().as_str(), segment.name())),
+            Some(("Attribute", None)),
+            "терминальный вид без имени — это адрес ветки, и он остаётся допустимым"
+        );
+    }
+
     use super::{AddressErrorCode, NodeKind, QualifiedAddress};
     use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
     use serde::Deserialize;

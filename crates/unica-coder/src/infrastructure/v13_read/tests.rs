@@ -1825,7 +1825,7 @@ fn every_reader_rejects_an_extra_unconsumed_address_tail() {
             }),
         ),
         (
-            "main:Subsystem.Sales.Interface.main.Command.Open.Event.Change",
+            "main:Subsystem.Sales.Interface.Command.Open.Event.Change",
             json!({
                 "name": "Sales",
                 "content": [],
