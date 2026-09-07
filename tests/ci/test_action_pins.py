@@ -17,7 +17,8 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = sorted((REPO_ROOT / ".github" / "workflows").glob("*.yml"))
 OWN_ORG = "IngvarConsulting/"
-PINNED = re.compile(r"^\s*(?:- )?uses: (?P<action>\S+)@(?P<ref>\S+)(?: # (?P<version>\S+))?\s*$")
+USES_LINE = re.compile(r"^\s*(?:- )?uses:\s*(?P<spec>.*?)\s*$")
+PINNED = re.compile(r"^(?P<action>\S+)@(?P<ref>\S+)(?:\s+#\s*(?P<version>\S+).*)?$")
 
 
 def steps(workflow: dict) -> list[dict]:
@@ -28,9 +29,14 @@ class ActionPinTests(unittest.TestCase):
     def test_every_foreign_action_is_pinned_to_a_commit_with_its_version_named(self) -> None:
         for path in WORKFLOWS:
             for line in path.read_text(encoding="utf-8").splitlines():
-                found = PINNED.match(line)
-                if not found:
+                uses = USES_LINE.match(line)
+                if not uses:
                     continue
+                # Строка с `uses:`, которую страж не разобрал, — отказ, а не пропуск:
+                # иначе лишний пробел перед комментарием выводил бы пин из-под проверки.
+                found = PINNED.match(uses["spec"])
+                self.assertIsNotNone(found, f"строка не разобрана: {line.strip()}")
+                assert found is not None
                 with self.subTest(workflow=path.name, action=found["action"]):
                     if found["action"].startswith(OWN_ORG):
                         continue

@@ -83,9 +83,27 @@ class NightlyLinesTests(unittest.TestCase):
             download=lambda run_id, dest: downloaded.append((run_id, dest)),
         )
 
-        self.assertEqual(outcomes, [{"line": "release-v0.13", "run_id": 42, "conclusion": "success"}])
+        self.assertEqual(outcomes, [{"line": "release-v0.13", "run_id": 42, "conclusion": "success", "relayed": True}])
         self.assertEqual(downloaded, [(42, Path("/tmp/large/release-v0.13"))])
         self.assertIn("прогон 42: success", next(d for d in decisions if d["line"] == "release-v0.13")["reason"])
+
+    def test_a_cancelled_run_is_not_relayed_so_the_memory_stays_unproven(self) -> None:
+        """Артефакты отменённого прогона неполны, а память по ним пропустила бы вершину без Windows."""
+        decisions = self.decisions()
+        self.module.dispatch(decisions, run_workflow=lambda line: None)
+        downloaded = []
+
+        outcomes = self.module.follow(
+            decisions,
+            Path("/tmp/large"),
+            find=lambda line, since: 42,
+            watch=lambda run_id: "cancelled",
+            download=lambda run_id, dest: downloaded.append((run_id, dest)),
+        )
+
+        self.assertEqual(outcomes, [{"line": "release-v0.13", "run_id": 42, "conclusion": "cancelled", "relayed": False}])
+        self.assertEqual(downloaded, [])
+        self.assertIn("отменён", next(d for d in decisions if d["line"] == "release-v0.13")["reason"])
 
     def test_find_started_run_takes_the_newest_run_created_after_dispatch(self) -> None:
         runs = [

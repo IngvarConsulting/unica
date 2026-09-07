@@ -48,6 +48,20 @@ class GateProfileCompositionTests(unittest.TestCase):
         self.assertEqual(profiles["large"]["overrides"], [{"platform": "cfg(windows)", "default-filter": "all()"}])
         self.assertIn("--no-tests=pass", self.run_tests.rust_commands("large")[0])
 
+    def test_nextest_version_in_config_matches_the_workflow_install(self) -> None:
+        """Одна версия исполнителя для CI и локального прогона."""
+        import yaml
+
+        release = yaml.safe_load((REPO_ROOT / ".github" / "workflows" / "unica-plugin-release.yml").read_text(encoding="utf-8"))
+        tools = next(
+            step["with"]["tool"]
+            for step in release["jobs"]["test-rust-platforms"]["steps"]
+            if step.get("uses", "").startswith("taiki-e/install-action@")
+        )
+        installed = next(part.split("@")[1] for part in tools.split(",") if part.startswith("cargo-nextest@"))
+
+        self.assertEqual(self.config["nextest-version"], {"recommended": installed})
+
     def test_default_profile_carries_the_small_deadline_for_everyone(self) -> None:
         """Срок на тест — то, чем размер держится честным; пока он один на всех."""
         default = self.config["profile"]["default"]

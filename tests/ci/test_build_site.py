@@ -98,6 +98,21 @@ class MergeResultsTests(unittest.TestCase):
         self.assertTrue((stored["main"][1] / "a-result.json").is_file())
 
 
+class SiteProfilesTests(unittest.TestCase):
+    """Профили ворот, доходящие до сайта, сайт обязан хранить и читать назад."""
+
+    def test_every_gate_profile_that_reaches_the_site_is_stored(self) -> None:
+        site = load_module()
+        spec = importlib.util.spec_from_file_location("run_tests", MODULE_PATH.parent / "run-tests.py")
+        run_tests = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(run_tests)
+
+        # `pr` и `queue` на сайт не идут; всё остальное сайт кладёт по профилям.
+        reaching = set(run_tests.PROFILES) - {"pr", "queue"}
+        self.assertTrue(reaching <= set(site.SITE_PROFILES), reaching - set(site.SITE_PROFILES))
+        self.assertTrue(set(site.LARGE_PROFILES) <= reaching)
+
+
 class LargeMemoryTests(unittest.TestCase):
     """Память ночного прогона живёт на сайте и пишется только прогоном large."""
 
