@@ -337,7 +337,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         plan_index, clippy_index = order
         self.assertIn("--plan-only", steps(platforms)[plan_index]["run"])
         self.assertLess(plan_index, clippy_index)
-        # Любая правка Rust — полная матрица; отдельной джобы на одном раннере нет.
+        # Любая правка Rust гоняет Rust-джобу; отдельной джобы на одном раннере нет.
         self.assertNotIn("test-rust-primary", jobs(self.release))
         # Команда линта закреплена дословно: `-D warnings` красит джобу, JSON
         # идёт в SARIF, и убрать одно из двух молча не выйдет.
@@ -556,6 +556,15 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("github.event_name == 'workflow_dispatch' && inputs.profile", normalized(self.release["env"]["GATE_PROFILE"]))
         self.assertEqual(classify["outputs"]["runners"], "${{ steps.runners.outputs.runners }}")
         self.assertIn('runners=["ubuntu-latest", "macos-14", "windows-latest"]', script(classify))
+        # Две полосы: pull request — ubuntu, полная матрица — в очереди, на push
+        # и по кнопке; метка ci:full возвращает её на pull request.
+        runners = step_by_id(classify, "runners")
+        self.assertIn('runners=["ubuntu-latest"]', runners["run"])
+        self.assertIn('runners=["ubuntu-latest", "macos-14"]', runners["run"])
+        self.assertEqual(
+            normalized(runners["env"]["FULL_MATRIX"]),
+            "${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full') }}",
+        )
         self.assertEqual(platforms["strategy"]["matrix"]["runner"], "${{ fromJSON(needs.classify-changes.outputs.runners) }}")
         self.assertEqual(platforms["defaults"]["run"]["shell"], "bash")
         # Кэш зависимостей пишут push в ветку и ручной запуск; pull request и очередь читают.
