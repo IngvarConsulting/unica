@@ -3,7 +3,6 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use std::fmt;
 use std::str::FromStr;
-use std::time::Instant;
 use uuid::{Uuid, Variant, Version};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -263,70 +262,6 @@ impl DomainResult {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct DeliveryResume {
-    work_identity_hash: SafeIdentityHash,
-}
-
-impl DeliveryResume {
-    pub(crate) fn new(work_identity_hash: SafeIdentityHash) -> Self {
-        Self { work_identity_hash }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct IndexResume {
-    workspace_identity_hash: SafeIdentityHash,
-    source_revision_hash: SafeIdentityHash,
-}
-
-impl IndexResume {
-    pub(crate) fn new(
-        workspace_identity_hash: SafeIdentityHash,
-        source_revision_hash: SafeIdentityHash,
-    ) -> Self {
-        Self {
-            workspace_identity_hash,
-            source_revision_hash,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct ProviderResume {
-    work_identity_hash: SafeIdentityHash,
-}
-
-impl ProviderResume {
-    pub(crate) fn new(work_identity_hash: SafeIdentityHash) -> Self {
-        Self { work_identity_hash }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct RuntimeResume {
-    work_identity_hash: SafeIdentityHash,
-}
-
-impl RuntimeResume {
-    pub(crate) fn new(work_identity_hash: SafeIdentityHash) -> Self {
-        Self { work_identity_hash }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub(crate) enum ResumeDescriptor {
-    Delivery(DeliveryResume),
-    Index(IndexResume),
-    Provider(ProviderResume),
-    Runtime(RuntimeResume),
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum InvocationStatus {
@@ -352,53 +287,9 @@ impl InvocationFailure {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct TaskSnapshot {
-    pub(crate) task_id: TaskId,
-    pub(crate) invocation_id: InvocationId,
-    pub(crate) status: InvocationStatus,
-    pub(crate) result: Option<DomainResult>,
-    pub(crate) failure: Option<InvocationFailure>,
-    pub(crate) resume: Option<ResumeDescriptor>,
-    pub(crate) created_at: Instant,
-    pub(crate) updated_at: Instant,
-    /// Restart-stable persisted Task timestamps. The monotonic fields above
-    /// remain local state-machine evidence and are never projected onto MCP.
-    pub(crate) created_at_epoch_ms: u64,
-    pub(crate) updated_at_epoch_ms: u64,
-    pub(crate) ttl_ms: u64,
-    pub(crate) poll_interval_ms: u64,
-}
-
-impl TaskSnapshot {
-    pub(crate) fn terminal_result(&self) -> Option<&DomainResult> {
-        (self.status == InvocationStatus::Completed)
-            .then_some(self.result.as_ref())
-            .flatten()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) enum InvocationOutcome {
-    Direct(DomainResult),
-    Task(TaskSnapshot),
-}
-
-impl InvocationOutcome {
-    pub(crate) fn terminal_result(&self) -> Option<&DomainResult> {
-        match self {
-            Self::Direct(result) => Some(result),
-            Self::Task(task) => task.terminal_result(),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        DeliveryResume, DomainResult, IndexResume, InvocationId, NormalizedArgumentsHash,
-        ProviderResume, ResumeDescriptor, RuntimeResume, SafeIdentityHash, TaskId,
-    };
+    use super::{DomainResult, InvocationId, NormalizedArgumentsHash, SafeIdentityHash, TaskId};
     use serde_json::{json, Value};
 
     #[test]
@@ -489,47 +380,6 @@ mod tests {
                 "safe identity hash accepted {unsafe_value}"
             );
         }
-    }
-
-    #[test]
-    fn resume_descriptors_are_closed_and_contain_only_safe_typed_hashes() {
-        let identity = || SafeIdentityHash::from_sha256([0x11; 32]);
-        let descriptors = [
-            ResumeDescriptor::Delivery(DeliveryResume::new(identity())),
-            ResumeDescriptor::Index(IndexResume::new(identity(), identity())),
-            ResumeDescriptor::Provider(ProviderResume::new(identity())),
-            ResumeDescriptor::Runtime(RuntimeResume::new(identity())),
-        ];
-
-        let serialized = serde_json::to_value(descriptors).expect("serialize resume descriptors");
-        let text = serialized.to_string();
-        for forbidden in ["command", "credential", "password", "url", "path", "args"] {
-            assert!(!text.contains(forbidden), "unsafe resume slot {forbidden}");
-        }
-        assert_eq!(
-            serialized,
-            json!([
-                {"kind": "delivery", "workIdentityHash": "11".repeat(32)},
-                {
-                    "kind": "index",
-                    "workspaceIdentityHash": "11".repeat(32),
-                    "sourceRevisionHash": "11".repeat(32)
-                },
-                {"kind": "provider", "workIdentityHash": "11".repeat(32)},
-                {"kind": "runtime", "workIdentityHash": "11".repeat(32)}
-            ])
-        );
-    }
-
-    #[test]
-    fn resume_descriptors_reject_extra_unsafe_payload_slots() {
-        let with_command = json!({
-            "kind": "runtime",
-            "workIdentityHash": "11".repeat(32),
-            "command": ["runner", "--password", "secret"]
-        });
-
-        assert!(serde_json::from_value::<ResumeDescriptor>(with_command).is_err());
     }
 
     #[test]

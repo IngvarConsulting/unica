@@ -10,6 +10,7 @@ use super::{
 };
 use crate::application::invocation::normalized_arguments_hash;
 use crate::application::invocation_store::EpochMillisClock;
+use crate::application::invocation_store::SystemEpochMillisClock;
 use crate::application::invocation_store_v5::{
     InvocationStoreV5, V5SafeFailureReason, V5StoredInvocationRecord,
     V5StoredInvocationSchemaVersion, V5StoredTask, V5TaskRetirement, V5TaskStoreError,
@@ -49,7 +50,6 @@ use crate::infrastructure::task_lifecycle_link_store_v5::{
     TaskLifecycleLinkCatalogEntry, TaskLifecycleLinkRecord, TaskLifecycleLinkStoreError,
     TaskLifecycleLinkStoreV5,
 };
-use crate::infrastructure::task_store::SystemEpochMillisClock;
 use crate::infrastructure::task_store_v5::{FileInvocationStoreV5, PublicationFailure};
 use flate2::{write::GzEncoder, Compression};
 use serde::{Deserialize, Serialize};

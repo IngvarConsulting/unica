@@ -1225,7 +1225,7 @@ fn view_error_result(
 mod tests {
     #[test]
     fn logical_read_operation_budget_outlives_task_handoff_and_completes_once() {
-        crate::application::invocation::tests::assert_operation_budget_survives_handoff_and_completes_once(
+        crate::infrastructure::daemon::server::actor_capacity_tests::assert_operation_budget_survives_handoff_and_completes_once(
             crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
         );
     }

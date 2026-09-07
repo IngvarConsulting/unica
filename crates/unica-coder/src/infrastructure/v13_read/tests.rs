@@ -2133,7 +2133,7 @@ fn extension_root_platform_modules_are_owned_by_the_extension_root() {
 
 #[test]
 fn logical_read_operation_budget_survives_handoff_and_completes_once() {
-    crate::application::invocation::tests::assert_operation_budget_survives_handoff_and_completes_once(
+    crate::infrastructure::daemon::server::actor_capacity_tests::assert_operation_budget_survives_handoff_and_completes_once(
         crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
     );
 }

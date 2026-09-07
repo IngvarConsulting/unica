@@ -15,6 +15,7 @@ use super::server::{
     V5CanonicalInvocationRuntime, V5CanonicalPrepareError, MAX_HANDSHAKES, MAX_OWNER_SESSIONS,
 };
 use crate::application::invocation::{RESPONSE_SERIALIZATION_MARGIN, TASK_RECONCILIATION_BUDGET};
+use crate::application::invocation_store::SystemEpochMillisClock;
 use crate::application::invocation_store::{EpochMillisClock, ToolIdentity};
 use crate::application::invocation_store_v5::{
     InvocationStoreV5, NewV5InvocationRecord, RecoveryTerminalReason, TaskStoreRecoveryCatalog,
@@ -60,7 +61,6 @@ use crate::infrastructure::task_lifecycle_link_store_v5::{
     TaskLifecycleLinkCatalogEntry, TaskLifecycleLinkRecord, TaskLifecycleLinkStoreError,
     TaskLifecycleLinkStoreV5, TaskLinkReservation,
 };
-use crate::infrastructure::task_store::SystemEpochMillisClock;
 use crate::infrastructure::task_store_v5::FileInvocationStoreV5;
 #[cfg(feature = "receipt-ledger-test-support")]
 use crate::infrastructure::task_store_v5::PublicationFailure;

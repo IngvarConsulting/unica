@@ -1,21 +1,15 @@
-//! Application port for durable Invocation and Task lifecycle state.
+//! What every durable Task store shares: the epoch clock, the closed tool
+//! identity, the closed failure reason and the canonical result size limits.
 
-use crate::domain::invocation::{
-    DomainResult, InvocationId, InvocationStatus, NormalizedArgumentsHash, ResumeDescriptor,
-    SafeIdentityHash, TaskId,
-};
-use crate::domain::{cancellation::CancellationToken, code_intelligence::ProviderDeadline};
+use crate::domain::invocation::DomainResult;
 use serde::{Deserialize, Serialize};
-use std::fmt;
 use std::io::{self, Write};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) const MAX_CANONICAL_RESULT_BYTES: usize = 8 * 1024 * 1024;
 pub(crate) const MAX_TASK_RECORD_ENVELOPE_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_TASK_RECORD_BYTES: usize =
     MAX_CANONICAL_RESULT_BYTES + MAX_TASK_RECORD_ENVELOPE_BYTES;
-
-pub(crate) const LEGACY_INVOCATION_RECORD_SCHEMA_VERSION: u32 = 1;
-pub(crate) const INVOCATION_RECORD_SCHEMA_VERSION: u32 = 2;
 
 /// Restart-stable time used only for durable timestamps and retention.
 ///
@@ -23,6 +17,17 @@ pub(crate) const INVOCATION_RECORD_SCHEMA_VERSION: u32 = 2;
 /// `std::time::Instant` is process-local and cannot cross a daemon restart.
 pub(crate) trait EpochMillisClock: Send + Sync {
     fn now_epoch_millis(&self) -> u64;
+}
+
+pub(crate) struct SystemEpochMillisClock;
+
+impl EpochMillisClock for SystemEpochMillisClock {
+    fn now_epoch_millis(&self) -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
+            .unwrap_or_default()
+    }
 }
 
 /// Canonical invocation identity which cannot be populated with caller text.
@@ -86,19 +91,6 @@ impl ToolIdentity {
     }
 }
 
-/// Closed status code which cannot be populated from caller-owned runtime strings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) enum SafeStatusMessage {
-    Queued,
-    Working,
-    Delivering,
-    Completed,
-    Failed,
-    Interrupted,
-    Cancelled,
-}
-
 /// Closed reason persisted only for failed schema-v2 records. Runtime/store
 /// diagnostics are deliberately not representable here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -109,295 +101,6 @@ pub(crate) enum SafeFailureReason {
     Interrupted,
     ResumeUnsupported,
     PersistenceFailed,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct NewInvocationRecord {
-    task_id: TaskId,
-    invocation_id: InvocationId,
-    tool: ToolIdentity,
-    normalized_arguments_hash: NormalizedArgumentsHash,
-    workspace_identity_hash: SafeIdentityHash,
-    status_message: SafeStatusMessage,
-    poll_interval_ms: u64,
-    ttl_ms: u64,
-    resume: Option<ResumeDescriptor>,
-}
-
-impl NewInvocationRecord {
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new(
-        invocation_id: InvocationId,
-        tool: ToolIdentity,
-        normalized_arguments_hash: NormalizedArgumentsHash,
-        workspace_identity_hash: SafeIdentityHash,
-        status_message: SafeStatusMessage,
-        poll_interval_ms: u64,
-        ttl_ms: u64,
-        resume: Option<ResumeDescriptor>,
-    ) -> Self {
-        Self {
-            task_id: TaskId::new(),
-            invocation_id,
-            tool,
-            normalized_arguments_hash,
-            workspace_identity_hash,
-            status_message,
-            poll_interval_ms,
-            ttl_ms,
-            resume,
-        }
-    }
-
-    pub(crate) fn task_id(&self) -> TaskId {
-        self.task_id
-    }
-
-    pub(crate) fn into_stored(self, now_epoch_ms: u64) -> StoredInvocationRecord {
-        StoredInvocationRecord {
-            schema_version: INVOCATION_RECORD_SCHEMA_VERSION,
-            task_id: self.task_id,
-            invocation_id: self.invocation_id,
-            tool: self.tool,
-            normalized_arguments_hash: self.normalized_arguments_hash,
-            workspace_identity_hash: self.workspace_identity_hash,
-            created_at_epoch_ms: now_epoch_ms,
-            updated_at_epoch_ms: now_epoch_ms,
-            status: InvocationStatus::Queued,
-            status_message: self.status_message,
-            poll_interval_ms: self.poll_interval_ms,
-            ttl_ms: self.ttl_ms,
-            result: None,
-            failure_reason: None,
-            resume: self.resume,
-        }
-    }
-
-    pub(crate) fn into_working_stored(self, now_epoch_ms: u64) -> StoredInvocationRecord {
-        let mut stored = self.into_stored(now_epoch_ms);
-        stored.status = InvocationStatus::Working;
-        stored.status_message = SafeStatusMessage::Working;
-        stored
-    }
-}
-
-/// The exact versioned record persisted per materialized Task.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct StoredInvocationRecord {
-    pub(crate) schema_version: u32,
-    pub(crate) task_id: TaskId,
-    pub(crate) invocation_id: InvocationId,
-    pub(crate) tool: ToolIdentity,
-    pub(crate) normalized_arguments_hash: NormalizedArgumentsHash,
-    pub(crate) workspace_identity_hash: SafeIdentityHash,
-    pub(crate) created_at_epoch_ms: u64,
-    pub(crate) updated_at_epoch_ms: u64,
-    pub(crate) status: InvocationStatus,
-    pub(crate) status_message: SafeStatusMessage,
-    pub(crate) poll_interval_ms: u64,
-    pub(crate) ttl_ms: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) result: Option<DomainResult>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) failure_reason: Option<SafeFailureReason>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) resume: Option<ResumeDescriptor>,
-}
-
-impl StoredInvocationRecord {
-    pub(crate) fn is_terminal(&self) -> bool {
-        matches!(
-            self.status,
-            InvocationStatus::Completed | InvocationStatus::Failed | InvocationStatus::Cancelled
-        )
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) enum TaskTransition {
-    StartWorking {
-        status_message: SafeStatusMessage,
-    },
-    Complete {
-        status_message: SafeStatusMessage,
-        result: Box<DomainResult>,
-    },
-    Fail {
-        status_message: SafeStatusMessage,
-        reason: SafeFailureReason,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CommitOperation {
-    Create,
-    Update,
-    Cancel,
-    Recovery,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum InvocationStoreError {
-    NotFound,
-    Expired,
-    DeadlineExceeded,
-    Cancelled,
-    ActorUnavailable,
-    Capacity {
-        max_records: usize,
-    },
-    RecordTooLarge {
-        max_bytes: usize,
-    },
-    ResultTooLarge {
-        max_bytes: usize,
-    },
-    TaskIdCollision {
-        task_id: TaskId,
-    },
-    AlreadyOwned,
-    CommitUncertain {
-        task_id: TaskId,
-        operation: CommitOperation,
-    },
-    InvalidTransition {
-        from: InvocationStatus,
-        attempted: &'static str,
-    },
-    Corrupt(String),
-    Storage(String),
-}
-
-impl fmt::Display for InvocationStoreError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NotFound => formatter.write_str("task record not found"),
-            Self::Expired => formatter.write_str("task record expired"),
-            Self::DeadlineExceeded => formatter.write_str("task store deadline exceeded"),
-            Self::Cancelled => formatter.write_str("task store operation cancelled"),
-            Self::ActorUnavailable => formatter.write_str("task store actor is unavailable"),
-            Self::Capacity { max_records } => {
-                write!(
-                    formatter,
-                    "task store retained record capacity reached ({max_records})"
-                )
-            }
-            Self::RecordTooLarge { max_bytes } => {
-                write!(formatter, "task record exceeds the {max_bytes}-byte limit")
-            }
-            Self::ResultTooLarge { max_bytes } => {
-                write!(
-                    formatter,
-                    "canonical result exceeds the {max_bytes}-byte limit"
-                )
-            }
-            Self::TaskIdCollision { task_id } => {
-                write!(
-                    formatter,
-                    "preallocated task identity already exists: {task_id}"
-                )
-            }
-            Self::AlreadyOwned => formatter.write_str("task store already has an active owner"),
-            Self::CommitUncertain { task_id, operation } => write!(
-                formatter,
-                "task store {:?} commit durability is uncertain for {task_id}",
-                operation
-            ),
-            Self::InvalidTransition { from, attempted } => {
-                write!(
-                    formatter,
-                    "invalid task transition from {from:?}: {attempted}"
-                )
-            }
-            Self::Corrupt(message) => write!(formatter, "corrupt task record: {message}"),
-            Self::Storage(message) => write!(formatter, "task store failure: {message}"),
-        }
-    }
-}
-
-impl std::error::Error for InvocationStoreError {}
-
-/// Application-owned port. The daemon supplies the sole-writer implementation.
-pub(crate) trait InvocationStore: Send + Sync {
-    fn create(
-        &self,
-        new_record: NewInvocationRecord,
-    ) -> Result<StoredInvocationRecord, InvocationStoreError>;
-
-    fn create_working(
-        &self,
-        new_record: NewInvocationRecord,
-    ) -> Result<StoredInvocationRecord, InvocationStoreError>;
-
-    fn get(&self, task_id: TaskId) -> Result<StoredInvocationRecord, InvocationStoreError>;
-
-    fn update(
-        &self,
-        task_id: TaskId,
-        transition: TaskTransition,
-    ) -> Result<StoredInvocationRecord, InvocationStoreError>;
-
-    fn cancel(
-        &self,
-        task_id: TaskId,
-        status_message: SafeStatusMessage,
-    ) -> Result<StoredInvocationRecord, InvocationStoreError>;
-
-    fn create_working_before(
-        &self,
-        new_record: NewInvocationRecord,
-        deadline: ProviderDeadline,
-        cancellation: &CancellationToken,
-    ) -> Result<StoredInvocationRecord, InvocationStoreError> {
-        store_operation_checkpoint(deadline, cancellation)?;
-        self.create_working(new_record)
-    }
-
-    fn get_before(
-        &self,
-        task_id: TaskId,
-        deadline: ProviderDeadline,
-        cancellation: &CancellationToken,
-    ) -> Result<StoredInvocationRecord, InvocationStoreError> {
-        store_operation_checkpoint(deadline, cancellation)?;
-        self.get(task_id)
-    }
-
-    fn update_before(
-        &self,
-        task_id: TaskId,
-        transition: TaskTransition,
-        deadline: ProviderDeadline,
-        cancellation: &CancellationToken,
-    ) -> Result<StoredInvocationRecord, InvocationStoreError> {
-        store_operation_checkpoint(deadline, cancellation)?;
-        self.update(task_id, transition)
-    }
-
-    fn cancel_before(
-        &self,
-        task_id: TaskId,
-        status_message: SafeStatusMessage,
-        deadline: ProviderDeadline,
-        cancellation: &CancellationToken,
-    ) -> Result<StoredInvocationRecord, InvocationStoreError> {
-        store_operation_checkpoint(deadline, cancellation)?;
-        self.cancel(task_id, status_message)
-    }
-}
-
-pub(crate) fn store_operation_checkpoint(
-    deadline: ProviderDeadline,
-    cancellation: &CancellationToken,
-) -> Result<(), InvocationStoreError> {
-    if cancellation.is_cancelled() {
-        return Err(InvocationStoreError::Cancelled);
-    }
-    if deadline.remaining().is_zero() {
-        return Err(InvocationStoreError::DeadlineExceeded);
-    }
-    Ok(())
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -486,7 +189,7 @@ pub(crate) fn canonical_result_size(
 
 #[cfg(test)]
 mod tests {
-    use super::{SafeFailureReason, SafeStatusMessage, ToolIdentity};
+    use super::{SafeFailureReason, ToolIdentity};
     use crate::application::tool_contracts::SurfaceRelease;
     use crate::application::v13::tool_catalog::catalog_for;
 
@@ -520,17 +223,6 @@ mod tests {
             r#""https://user:password@example.invalid""#,
         ] {
             assert!(serde_json::from_str::<ToolIdentity>(rejected).is_err());
-        }
-    }
-
-    #[test]
-    fn safe_status_message_rejects_arbitrary_and_secret_bearing_values() {
-        for rejected in [
-            r#""cancelled again""#,
-            r#""https://user:password@example.invalid/private""#,
-            r#""TASK_STORE_SECRET_SENTINEL""#,
-        ] {
-            assert!(serde_json::from_str::<SafeStatusMessage>(rejected).is_err());
         }
     }
 

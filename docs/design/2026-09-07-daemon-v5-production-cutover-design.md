@@ -1,5 +1,5 @@
 - Date: `2026-09-07`
-- Status: `draft`
+- Status: `approved`
 - Decision: `DEC.2026-09-07.DAEMON-V5-PRODUCTION-CUTOVER`
 
 # Перевод production daemon с протокола v3 на v5 и снятие v3
@@ -449,6 +449,35 @@ domain-вызова. Проба контракта «v5 отвергает v3» 
 Остаток для E3: `application/invocation.rs` (исполнитель v3),
 `task_store.rs`, `invocation_store_actor.rs`, v3-часть
 `invocation_store.rs`.
+
+**Шаг D закрыт (run 34164918273, `main` = 643678b7 с production-владельцем
+cutoff).** Полный контур `profile: main` зелёный: сборка инструментов,
+пакет, проба bootstrap и дым упакованного MCP на трёх ОС, оценка на BSP
+3.2.1.446 — `passed`, blocking failures 0; четыре сценария, отпадавшие на
+7,2 с, теперь проходят за 8,6–9,4 с: daemon отдаёт Task на седьмой секунде,
+оценка добирает результат через `unica.task.result`. Push-прогоны `main`
+после #782, #783 зелёные, корпус `ci-medium` — через очередь.
+
+**Шаг E3 — исполнитель и хранилища v3 сняты.** Удалены исполнитель v3
+(`InvocationExecutor`, `PreparedDaemonInvocation`, `LiveInvocation`,
+сверка терминала, состояния `Invocation`) и legacy-адаптер
+`DomainResult → OperationResult` из `application/invocation.rs` — в модуле
+остались бюджет ответа (`InvocationResponseDeadline`, окно handoff, запас
+сериализации, бюджет сверки) и `normalized_arguments_hash`;
+`infrastructure/task_store.rs` и `application/invocation_store_actor.rs`
+целиком; из `application/invocation_store.rs` — записи, переходы, ошибки и
+trait хранилища v3, остались `EpochMillisClock` (и `SystemEpochMillisClock`
+рядом с ним), `ToolIdentity`, `SafeFailureReason` и пределы canonical result;
+из `domain/invocation.rs` — `TaskSnapshot`, `InvocationOutcome` и
+resume-дескрипторы v3. Доказательство «бюджет операции логического чтения
+переживает handoff и завершается один раз» (два вызывающих теста в
+`v13_service.rs` и `v13_read/tests.rs`) переведено на живой рантайм v5 с
+управляемыми часами: седьмая секунда наступает по часам daemon, submit
+получает Task, отпущенная попытка завершает его — `executions == 1`.
+Критерий шага E выполнен: `grep` не находит `unica-daemon-jsonl-3`,
+`DaemonOwner`, `protocol::DaemonTaskSnapshot` в коде (identity v3 живёт
+только литералом в пробе контракта и в тесте identity), реестр и стражи
+зелёные. Записка переведена в `approved`: замысел исполнен и доказан.
 
 ## Открытые вопросы
 

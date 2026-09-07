@@ -532,6 +532,7 @@ pub(crate) mod actor_capacity_tests {
         V5DaemonTaskSnapshot, V5InvocationRequest, V5InvocationResponse, V5ServerResponse,
     };
     use super::*;
+    use crate::application::invocation::INVOCATION_HANDOFF_WINDOW;
     use crate::application::invocation_store::ToolIdentity;
     use crate::application::operation_descriptors::KnownLongReason;
     use crate::application::receipt_ledger::{ReceiptTerminalOutcome, V5ToolIdentity};
@@ -552,6 +553,7 @@ pub(crate) mod actor_capacity_tests {
     use std::cell::RefCell;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{mpsc, Barrier, Condvar, Mutex};
+    use std::thread;
     use std::time::Instant;
 
     thread_local! {
@@ -5027,6 +5029,17 @@ struct ActorLogicalReadLease {"#,
 
     struct ManualInvocationClock(Mutex<Instant>);
 
+    impl ManualInvocationClock {
+        fn new(now: Instant) -> Self {
+            Self(Mutex::new(now))
+        }
+
+        fn advance(&self, duration: Duration) {
+            let mut now = self.0.lock().expect("manual clock lock");
+            *now += duration;
+        }
+    }
+
     impl Clock for ManualInvocationClock {
         fn now(&self) -> Instant {
             *self.0.lock().unwrap()
@@ -5485,6 +5498,103 @@ struct ActorLogicalReadLease {"#,
             accepted.is_empty(),
             "zero-fence publication accepted forbidden envelopes: {accepted:?}"
         );
+    }
+
+    /// An inline execution that outlives the handoff window and checks its
+    /// own operation budget only once it is released.
+    struct BudgetedHandoffService {
+        operation_budget: Duration,
+        executions: Arc<AtomicUsize>,
+        started: mpsc::Sender<()>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+
+    impl CanonicalInvocationService for BudgetedHandoffService {
+        fn prepare(
+            &self,
+            _invocation: &ActorBoundInvocation,
+        ) -> Result<ExecutionClass, Box<DomainResult>> {
+            Ok(ExecutionClass::InlineCandidate)
+        }
+
+        fn execute(
+            &self,
+            _invocation: &ActorBoundExecution,
+            _cancellation: CancellationToken,
+        ) -> Result<DomainResult, InvocationFailure> {
+            self.executions.fetch_add(1, Ordering::SeqCst);
+            let operation = ProviderDeadline::from_budget(self.operation_budget);
+            self.started.send(()).unwrap();
+            self.release.lock().unwrap().recv().unwrap();
+            if operation.remaining().is_zero() {
+                return Err(InvocationFailure::new(
+                    "provider_deadline",
+                    "operation budget elapsed at Task handoff",
+                ));
+            }
+            Ok(DomainResult::success("find completed after handoff"))
+        }
+    }
+
+    /// The operation budget of a logical read outlives the seven-second Task
+    /// handoff: the daemon hands the unfinished attempt off as a Task at its
+    /// cutoff, the same attempt keeps running and completes exactly once.
+    pub(crate) fn assert_operation_budget_survives_handoff_and_completes_once(
+        operation_budget: Duration,
+    ) {
+        assert!(
+            operation_budget > INVOCATION_HANDOFF_WINDOW,
+            "operation budget {operation_budget:?} must outlive the {INVOCATION_HANDOFF_WINDOW:?} Task handoff window"
+        );
+        let workspace = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(workspace.path()).unwrap();
+        ensure_platform_xml_workspace(&root.to_string_lossy());
+        let clock = Arc::new(ManualInvocationClock::new(Instant::now()));
+        let executions = Arc::new(AtomicUsize::new(0));
+        let (started, started_wait) = mpsc::channel();
+        let (release, release_wait) = mpsc::channel();
+        let service: Arc<dyn CanonicalInvocationService> = Arc::new(BudgetedHandoffService {
+            operation_budget,
+            executions: Arc::clone(&executions),
+            started,
+            release: Mutex::new(release_wait),
+        });
+        let canonical = Arc::new(V5CanonicalInvocationRuntime::new(
+            Arc::clone(&service),
+            Arc::clone(&clock) as Arc<dyn Clock>,
+        ));
+        let daemon = LiveV5Daemon::over(canonical, service);
+        let owner = daemon.owner();
+        let request = InvocationRequest::new(
+            ToolIdentity::Run,
+            serde_json::json!({"op": "infobase.build", "args": {}}),
+            root.to_string_lossy(),
+            7_000,
+        )
+        .unwrap();
+
+        let task_id = thread::scope(|scope| {
+            let submission = scope.spawn(|| daemon.submit(&owner, &request));
+            started_wait
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the inline execution starts under the handoff window");
+            // The seventh second by the daemon's own clock: the attempt is not
+            // done, so the daemon hands it off instead of waiting for it.
+            clock.advance(INVOCATION_HANDOFF_WINDOW);
+            match submission.join().expect("submission thread") {
+                V5Submission::Task(task_id) => task_id,
+                other => panic!("unfinished inline work did not hand off as Task: {other:?}"),
+            }
+        });
+        release.send(()).unwrap();
+        let terminal = daemon.wait_terminal(&owner, task_id, Duration::from_secs(10));
+        assert_eq!(terminal.status(), InvocationStatus::Completed);
+        assert_eq!(
+            terminal.completed_result().unwrap().summary,
+            "find completed after handoff"
+        );
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
+        daemon.finish(owner);
     }
 
     struct BlockingService {

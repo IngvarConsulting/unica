@@ -28,7 +28,6 @@ pub(crate) mod invocation;
 // Durable lifecycle ownership is connected by the daemon slice, not v0.12.
 #[allow(dead_code)]
 pub(crate) mod invocation_store;
-pub(crate) mod invocation_store_actor;
 #[allow(dead_code)]
 pub(crate) mod invocation_store_v5;
 // Pure protocol-v5 lifecycle decisions are composed only by the hidden daemon.

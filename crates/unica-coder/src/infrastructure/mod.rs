@@ -64,11 +64,6 @@ pub(crate) mod subsystem_topology;
 pub(crate) mod support_guard;
 #[allow(dead_code)]
 pub(crate) mod support_policy_evidence;
-// The daemon becomes this store's sole writer in the following migration slice.
-#[allow(dead_code)]
-pub(crate) mod task_store;
-// The isolated protocol-v5 TaskStore remains unreachable from production v0.12 composition.
-#[allow(dead_code)]
 pub(crate) mod task_store_v5;
 // The isolated protocol-v5 lifecycle-link pool is wired into the recovery
 // coordinator in the following D0 slice.

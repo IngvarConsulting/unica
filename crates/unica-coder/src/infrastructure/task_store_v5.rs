@@ -23,6 +23,7 @@ use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{self, Read, Write};
+#[cfg(test)]
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::time::Duration;
@@ -160,6 +161,7 @@ impl FileInvocationStoreV5 {
         self.publish_record(&mut writer, &record, V5CommitOperation::Create, deadline)
     }
 
+    #[cfg(test)]
     pub(crate) fn open_inspect_only(
         root: impl AsRef<Path>,
         clock: Arc<dyn EpochMillisClock>,
