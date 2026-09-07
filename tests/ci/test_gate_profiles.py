@@ -54,8 +54,16 @@ class GateProfileCompositionTests(unittest.TestCase):
         self.assertEqual(deadline["filter"].strip(), large)
         self.assertEqual(deadline["slow-timeout"], {"period": "900s", "terminate-after": 2})
         self.assertEqual(deadline["threads-required"], "num-cpus")
-        # Ночью Windows гоняет всё: переопределение по платформе в профиле large.
-        self.assertEqual(profiles["large"]["overrides"], [{"platform": "cfg(windows)", "default-filter": "all()"}])
+        # Ночью Windows гоняет всё, кроме детерминированной модели горизонта
+        # нагрузки: она платформе безразлична и на двух ядрах не укладывается
+        # в два срока `large`.
+        self.assertEqual(
+            profiles["large"]["overrides"],
+            [{
+                "platform": "cfg(windows)",
+                "default-filter": "all() - test(/^deterministic_horizon_load_does_not_saturate$/)",
+            }],
+        )
         for command in self.run_tests.rust_commands("large"):
             self.assertIn("--no-tests=pass", command)
 
