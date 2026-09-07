@@ -557,6 +557,10 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             "${{ github.ref_type == 'branch' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}",
         )
         assert_pinned(self, RELEASE_WORKFLOW, steps_using(platforms, "actions/setup-python")[0], "v7")
+        # Кэш компиляции: rustc через sccache в кэше GitHub, поверх кэша зависимостей.
+        assert_pinned(self, RELEASE_WORKFLOW, steps_using(platforms, "mozilla-actions/sccache-action")[0], "v0")
+        self.assertEqual(platforms["env"]["RUSTC_WRAPPER"], "sccache")
+        self.assertEqual(platforms["env"]["SCCACHE_GHA_ENABLED"], "true")
         # Консоль Windows — cp1252; сбой Windows виден, но упаковку ночи не блокирует.
         self.assertEqual(platforms["env"]["PYTHONUTF8"], "1")
         self.assertEqual(normalized(platforms["continue-on-error"]), "${{ matrix.runner == 'windows-latest' }}")
