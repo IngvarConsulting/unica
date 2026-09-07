@@ -420,7 +420,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
 
         self.assertRegex(combined, pinned("actions/checkout", "v7"))
         self.assertRegex(release, pinned("actions/setup-python", "v7"))
-        self.assertRegex(release, pinned("actions/cache", "v5"))
+        self.assertRegex(release, pinned("actions/cache", "v6"))
         self.assertRegex(release, pinned("actions/upload-artifact", "v7"))
         self.assertRegex(release, pinned("actions/download-artifact", "v8"))
         self.assertRegex(release, pinned("softprops/action-gh-release", "v3"))
@@ -525,6 +525,12 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn('runners=["ubuntu-latest", "macos-14", "windows-latest"]', classify)
         self.assertIn("runner: ${{ fromJSON(needs.classify-changes.outputs.runners) }}", platforms)
         self.assertIn("shell: bash", platforms)
+        # Кэш зависимостей пишут push в ветку и ручной запуск; pull request и очередь читают.
+        self.assertRegex(platforms, pinned("Swatinem/rust-cache", "v2"))
+        self.assertIn(
+            "save-if: ${{ github.ref_type == 'branch' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}",
+            platforms,
+        )
         self.assertRegex(platforms, pinned("actions/setup-python", "v7"))
         # Консоль Windows — cp1252; сбой Windows виден, но упаковку ночи не блокирует.
         self.assertIn('PYTHONUTF8: "1"', platforms)
@@ -560,7 +566,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("id: rust-toolchain", build)
         self.assertIn("id: cargo-cache", build)
         self.assertIn("continue-on-error: true", build)
-        self.assertRegex(build, pinned("actions/cache", "v5"))
+        self.assertRegex(build, pinned("actions/cache", "v6"))
         self.assertIn("path: .build/tool-work/${{ matrix.target }}/cargo-target", build)
         self.assertIn(
             "key: cargo-${{ runner.os }}-${{ matrix.target }}-${{ "
