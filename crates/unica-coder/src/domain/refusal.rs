@@ -324,6 +324,94 @@ impl Outcome {
     ];
 }
 
+/// Уточнение кода отказа, выбирающее исход там, где код один, а исходов
+/// несколько.
+///
+/// Уточнение знает, какой код оно сужает, поэтому пару «код и не его
+/// уточнение» составить нельзя: код берётся из [`RefusalDetail::code`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RefusalDetail {
+    /// Исходник на месте, но прочитать его нельзя: не UTF-8, разбор XML не
+    /// удался, дескрипторов владельца нет.
+    SourceUnreadable,
+    /// Поставщика нет: справка не установлена, поставщик диагностик не
+    /// стартовал.
+    ProviderAbsent,
+    /// Спросили не у того вида набора.
+    WrongSourceKind,
+    /// Предмет не помещается в ответ целиком.
+    InventoryTooLarge,
+    /// Внутренний кэш отравлен.
+    CachePoisoned,
+    /// Демон занят: очередь, ёмкость рабочего пространства или владельца.
+    BackendBusy,
+    /// Демон несовместим: протокол, ядро, права.
+    BackendIncompatible,
+    /// Демон сломан: запрос неверен, хранилище не отвечает, устойчивость под
+    /// вопросом.
+    BackendBroken,
+}
+
+impl RefusalDetail {
+    /// Имя уточнения на проводе.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SourceUnreadable => "source_unreadable",
+            Self::ProviderAbsent => "provider_absent",
+            Self::WrongSourceKind => "wrong_source_kind",
+            Self::InventoryTooLarge => "inventory_too_large",
+            Self::CachePoisoned => "cache_poisoned",
+            Self::BackendBusy => "backend_busy",
+            Self::BackendIncompatible => "backend_incompatible",
+            Self::BackendBroken => "backend_broken",
+        }
+    }
+
+    /// Код, который это уточнение сужает.
+    pub const fn code(self) -> RefusalCode {
+        match self {
+            Self::SourceUnreadable
+            | Self::ProviderAbsent
+            | Self::WrongSourceKind
+            | Self::InventoryTooLarge
+            | Self::CachePoisoned => RefusalCode::ProviderUnavailable,
+            Self::BackendBusy | Self::BackendIncompatible | Self::BackendBroken => {
+                RefusalCode::TaskBackendFailed
+            }
+        }
+    }
+
+    /// Исход, который это уточнение выбирает вместо умолчания кода.
+    pub const fn outcome(self) -> Outcome {
+        match self {
+            Self::SourceUnreadable => Outcome::FixSource,
+            Self::ProviderAbsent | Self::BackendIncompatible => Outcome::NeedsHuman,
+            Self::WrongSourceKind => Outcome::FixCall,
+            Self::InventoryTooLarge => Outcome::GoElsewhere,
+            Self::CachePoisoned | Self::BackendBusy => Outcome::RetryAsIs,
+            Self::BackendBroken => Outcome::DeadEnd,
+        }
+    }
+
+    /// Все уточнения — для проверок полноты.
+    pub const ALL: [Self; 8] = [
+        Self::SourceUnreadable,
+        Self::ProviderAbsent,
+        Self::WrongSourceKind,
+        Self::InventoryTooLarge,
+        Self::CachePoisoned,
+        Self::BackendBusy,
+        Self::BackendIncompatible,
+        Self::BackendBroken,
+    ];
+}
+
+impl std::fmt::Display for RefusalDetail {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -386,5 +474,47 @@ mod tests {
             !Outcome::ALL_WIRE_NAMES.contains(&"alreadyMet"),
             "«цель уже достигнута» — положительный ответ, а не отказ; седьмого исхода нет"
         );
+    }
+
+    #[test]
+    fn a_detail_only_refines_a_code_whose_outcome_is_undecided() {
+        for detail in RefusalDetail::ALL {
+            assert!(
+                detail.code().outcome_depends_on_detail(),
+                "{detail} сужает {}, у которого исход и так однозначен",
+                detail.code()
+            );
+        }
+    }
+
+    #[test]
+    fn every_undecided_code_has_at_least_one_detail() {
+        for code in RefusalCode::ALL {
+            if !code.outcome_depends_on_detail() {
+                continue;
+            }
+            assert!(
+                RefusalDetail::ALL
+                    .iter()
+                    .any(|detail| detail.code() == code),
+                "{code} объявлен зависящим от detailCode, но ни одного уточнения для него нет"
+            );
+        }
+    }
+
+    #[test]
+    fn detail_names_are_distinct_and_snake_case() {
+        let names: BTreeSet<&str> = RefusalDetail::ALL
+            .iter()
+            .map(|detail| detail.as_str())
+            .collect();
+        assert_eq!(names.len(), RefusalDetail::ALL.len(), "уточнения делят имя");
+        for name in names {
+            assert!(
+                name.chars()
+                    .all(|character| character.is_ascii_lowercase() || character == '_'),
+                "{name} не в змеином регистре"
+            );
+        }
     }
 }

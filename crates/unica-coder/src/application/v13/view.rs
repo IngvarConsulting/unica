@@ -2,7 +2,7 @@ use crate::application::result_store::{ViewCursorBinding, ViewCursorError, ViewC
 use crate::domain::address::QualifiedAddress;
 use crate::domain::invocation::DomainResult;
 use crate::domain::node_view::NodeViewData;
-use crate::domain::refusal::RefusalCode;
+use crate::domain::refusal::{RefusalCode, RefusalDetail};
 use serde_json::{Map, Value};
 use std::sync::Arc;
 
@@ -155,6 +155,7 @@ pub(crate) trait ViewReadAuthority: Send + Sync {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ViewError {
     code: RefusalCode,
+    detail: Option<RefusalDetail>,
     message: String,
 }
 
@@ -162,12 +163,27 @@ impl ViewError {
     pub(crate) fn new(code: RefusalCode, message: impl Into<String>) -> Self {
         Self {
             code,
+            detail: None,
+            message: message.into(),
+        }
+    }
+
+    /// Отказ с уточнением: код берётся из уточнения, поэтому пару «код и не
+    /// его уточнение» составить нельзя.
+    pub(crate) fn detailed(detail: RefusalDetail, message: impl Into<String>) -> Self {
+        Self {
+            code: detail.code(),
+            detail: Some(detail),
             message: message.into(),
         }
     }
 
     pub(crate) const fn code(&self) -> RefusalCode {
         self.code
+    }
+
+    pub(crate) const fn detail(&self) -> Option<RefusalDetail> {
+        self.detail
     }
 }
 
@@ -336,7 +352,10 @@ fn cursor_error(error: ViewCursorError) -> ViewError {
 }
 
 fn error_result(at: Option<String>, error: ViewError) -> DomainResult {
-    DomainResult::canonical_rejection(at, error.code, error.message)
+    match error.detail {
+        Some(detail) => DomainResult::canonical_rejection_detailed(at, detail, error.message),
+        None => DomainResult::canonical_rejection(at, error.code, error.message),
+    }
 }
 
 fn canonical_value(value: Value) -> Value {

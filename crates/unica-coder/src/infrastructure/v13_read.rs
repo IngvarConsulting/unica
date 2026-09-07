@@ -14,7 +14,7 @@ use crate::domain::platform_profile::{
     ModuleCapability, ModuleRole, ModuleSourceLayout, PlatformProfile,
 };
 use crate::domain::project_sources::SourceSetKind;
-use crate::domain::refusal::RefusalCode;
+use crate::domain::refusal::{RefusalCode, RefusalDetail};
 #[cfg(test)]
 use crate::domain::source_target::SourceTarget;
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
@@ -281,8 +281,8 @@ impl<'a> LogicalViewReadAuthority<'a> {
                         .flatten(),
                 };
                 let mut cache = self.typed_payloads.lock().map_err(|_| {
-                    ViewError::new(
-                        RefusalCode::ProviderUnavailable,
+                    ViewError::detailed(
+                        RefusalDetail::CachePoisoned,
                         "typed payload cache is poisoned",
                     )
                 })?;
@@ -395,8 +395,8 @@ impl<'a> LogicalViewReadAuthority<'a> {
             revision: admitted.revision.clone(),
         };
         let mut cache = self.configuration_payloads.lock().map_err(|_| {
-            ViewError::new(
-                RefusalCode::ProviderUnavailable,
+            ViewError::detailed(
+                RefusalDetail::CachePoisoned,
                 "configuration cache is poisoned",
             )
         })?;
@@ -648,7 +648,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             module_at: module_at.to_string(),
         };
         let mut cache = self.module_projections.lock().map_err(|_| {
-            ViewError::new(RefusalCode::ProviderUnavailable, "module cache is poisoned")
+            ViewError::detailed(RefusalDetail::CachePoisoned, "module cache is poisoned")
         })?;
         if let Some(projection) = cache.get(&key) {
             return Ok(Arc::clone(projection));
@@ -805,7 +805,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             .verified_owners
             .lock()
             .map_err(|_| {
-                ViewError::new(RefusalCode::ProviderUnavailable, "owner cache is poisoned")
+                ViewError::detailed(RefusalDetail::CachePoisoned, "owner cache is poisoned")
             })?
             .contains(&key)
         {
@@ -837,8 +837,8 @@ impl<'a> LogicalViewReadAuthority<'a> {
                     child: current_text.clone(),
                 };
                 let mut edges = self.verified_owner_edges.lock().map_err(|_| {
-                    ViewError::new(
-                        RefusalCode::ProviderUnavailable,
+                    ViewError::detailed(
+                        RefusalDetail::CachePoisoned,
                         "owner edge cache is poisoned",
                     )
                 })?;
@@ -907,7 +907,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
         self.verified_owners
             .lock()
             .map_err(|_| {
-                ViewError::new(RefusalCode::ProviderUnavailable, "owner cache is poisoned")
+                ViewError::detailed(RefusalDetail::CachePoisoned, "owner cache is poisoned")
             })?
             .insert(key);
         Ok(())
@@ -926,8 +926,8 @@ impl<'a> LogicalViewReadAuthority<'a> {
             owner: target.as_str().to_string(),
         };
         let mut cache = self.owner_evidence.lock().map_err(|_| {
-            ViewError::new(
-                RefusalCode::ProviderUnavailable,
+            ViewError::detailed(
+                RefusalDetail::CachePoisoned,
                 "owner evidence cache is poisoned",
             )
         })?;
@@ -954,7 +954,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             owner: target.as_str().to_string(),
         };
         let mut cache = self.form_data.lock().map_err(|_| {
-            ViewError::new(RefusalCode::ProviderUnavailable, "form cache is poisoned")
+            ViewError::detailed(RefusalDetail::CachePoisoned, "form cache is poisoned")
         })?;
         if let Some(data) = cache.get(&key) {
             return Ok(Arc::clone(data));
@@ -1628,8 +1628,8 @@ fn module_source_address(
 
 fn common_module_properties(bytes: &[u8]) -> Result<CommonModuleProperties, ViewError> {
     let text = std::str::from_utf8(bytes).map_err(|_| {
-        ViewError::new(
-            RefusalCode::ProviderUnavailable,
+        ViewError::detailed(
+            RefusalDetail::SourceUnreadable,
             "common module descriptor is not UTF-8",
         )
     })?;

@@ -7,7 +7,7 @@ use crate::domain::metadata::MetaSupportStatus;
 use crate::domain::project_sources::{
     classify_already_read_config_dump_info_xml, ConfigDumpInfoXmlKind, SourceSetKind,
 };
-use crate::domain::refusal::RefusalCode;
+use crate::domain::refusal::{RefusalCode, RefusalDetail};
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use crate::domain::support_state::{
     ConfigurationSupportData, ConfigurationSupportState, ObjectSupportData, ObjectSupportState,
@@ -260,8 +260,8 @@ impl ProviderReadAuthority {
         let bytes = self.read_relative(Path::new("Configuration.xml"), MAX_CONFIGURATION_BYTES)?;
         checkpoint()?;
         let text = std::str::from_utf8(&bytes).map_err(|_| {
-            ViewError::new(
-                RefusalCode::ProviderUnavailable,
+            ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
                 "Configuration.xml is not UTF-8",
             )
         })?;
@@ -278,8 +278,8 @@ impl ProviderReadAuthority {
             .as_object()
             .cloned()
             .ok_or_else(|| {
-                ViewError::new(
-                    RefusalCode::ProviderUnavailable,
+                ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
                     "configuration parser returned a non-object payload",
                 )
             })?;
@@ -304,8 +304,8 @@ impl ProviderReadAuthority {
             SourceSetKind::ExternalProcessor => "ExternalDataProcessor",
             SourceSetKind::ExternalReport => "ExternalReport",
             SourceSetKind::Configuration | SourceSetKind::Extension => {
-                return Err(ViewError::new(
-                    RefusalCode::ProviderUnavailable,
+                return Err(ViewError::detailed(
+                    RefusalDetail::WrongSourceKind,
                     "external inventory requested for a configuration source set",
                 ));
             }
@@ -394,8 +394,8 @@ impl ProviderReadAuthority {
             }
         }
         if registered.is_empty() {
-            return Err(ViewError::new(
-                RefusalCode::ProviderUnavailable,
+            return Err(ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
                 "external source set has no valid top-level owner descriptors",
             ));
         }
@@ -423,7 +423,7 @@ impl ProviderReadAuthority {
         let relative = self.attached_resource_relative(target, "Form.xml")?;
         let bytes = self.read_relative(&relative, MAX_CONFIGURATION_BYTES)?;
         let text = std::str::from_utf8(&bytes).map_err(|_| {
-            ViewError::new(RefusalCode::ProviderUnavailable, "Form.xml is not UTF-8")
+            ViewError::detailed(RefusalDetail::SourceUnreadable, "Form.xml is not UTF-8")
         })?;
         let parts = target.as_str().split('.').collect::<Vec<_>>();
         let form_name = parts.last().copied().unwrap_or("Form").to_string();
@@ -446,8 +446,8 @@ impl ProviderReadAuthority {
         let relative = self.attached_resource_relative(target, "Template.xml")?;
         let bytes = self.read_relative(&relative, MAX_CONFIGURATION_BYTES)?;
         let text = std::str::from_utf8(&bytes).map_err(|_| {
-            ViewError::new(
-                RefusalCode::ProviderUnavailable,
+            ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
                 "DCS Template.xml is not UTF-8",
             )
         })?;
@@ -463,12 +463,12 @@ impl ProviderReadAuthority {
             MAX_CONFIGURATION_BYTES,
         )?;
         let rights = std::str::from_utf8(&rights).map_err(|_| {
-            ViewError::new(RefusalCode::ProviderUnavailable, "Rights.xml is not UTF-8")
+            ViewError::detailed(RefusalDetail::SourceUnreadable, "Rights.xml is not UTF-8")
         })?;
         let descriptor = self.metadata_descriptor(target)?;
         let descriptor = std::str::from_utf8(&descriptor).map_err(|_| {
-            ViewError::new(
-                RefusalCode::ProviderUnavailable,
+            ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
                 "role descriptor is not UTF-8",
             )
         })?;
@@ -591,8 +591,8 @@ impl ProviderReadAuthority {
     pub(crate) fn subsystem_payload(&self, target: &MetadataAddress) -> Result<Value, ViewError> {
         let descriptor = self.metadata_descriptor(target)?;
         let descriptor = std::str::from_utf8(&descriptor).map_err(|_| {
-            ViewError::new(
-                RefusalCode::ProviderUnavailable,
+            ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
                 "subsystem descriptor is not UTF-8",
             )
         })?;
@@ -601,8 +601,8 @@ impl ProviderReadAuthority {
             .read_optional_relative(&ci_relative, MAX_CONFIGURATION_BYTES)?
             .map(|bytes| {
                 let text = std::str::from_utf8(&bytes).map_err(|_| {
-                    ViewError::new(
-                        RefusalCode::ProviderUnavailable,
+                    ViewError::detailed(
+                        RefusalDetail::SourceUnreadable,
                         "CommandInterface.xml is not UTF-8",
                     )
                 })?;
@@ -717,7 +717,10 @@ impl ProviderReadAuthority {
                 String::from_utf8(bytes)
                     .map(|text| text.trim_start_matches('\u{feff}').to_string())
                     .map_err(|_| {
-                        ViewError::new(RefusalCode::ProviderUnavailable, "BSL module is not UTF-8")
+                        ViewError::detailed(
+                            RefusalDetail::SourceUnreadable,
+                            "BSL module is not UTF-8",
+                        )
                     })
             })
             .transpose()
@@ -837,8 +840,8 @@ impl ProviderReadAuthority {
 
     fn support_state(&self) -> Result<Option<Arc<SupportState>>, ViewError> {
         let mut memo = self.support_state.lock().map_err(|_| {
-            ViewError::new(
-                RefusalCode::ProviderUnavailable,
+            ViewError::detailed(
+                RefusalDetail::CachePoisoned,
                 "support-state cache is poisoned",
             )
         })?;
@@ -868,8 +871,8 @@ impl ProviderReadAuthority {
             return Ok(None);
         };
         let text = std::str::from_utf8(&bytes).map_err(|_| {
-            ViewError::new(
-                RefusalCode::ProviderUnavailable,
+            ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
                 "HomePageWorkArea.xml is not UTF-8",
             )
         })?;

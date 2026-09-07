@@ -294,9 +294,7 @@ impl CanonicalV13ReadService {
         };
         let mut request = match ViewRequest::new(at) {
             Ok(request) => request,
-            Err(error) => {
-                return error_result(Some(at.to_string()), error.code(), error.to_string())
-            }
+            Err(error) => return view_error_result(Some(at.to_string()), error),
         };
         if let Some(filter) = arguments.get("filter") {
             let Some(filter) = filter.as_object() else {
@@ -318,9 +316,7 @@ impl CanonicalV13ReadService {
             };
             request = match request.with_limit(limit) {
                 Ok(request) => request,
-                Err(error) => {
-                    return error_result(Some(at.to_string()), error.code(), error.to_string())
-                }
+                Err(error) => return view_error_result(Some(at.to_string()), error),
             };
         }
         if let Some(cursor) = arguments.get("cursor") {
@@ -1191,6 +1187,19 @@ fn unreadable_target_format_refusal(
 
 fn error_result(at: Option<String>, code: RefusalCode, message: impl Into<String>) -> DomainResult {
     DomainResult::canonical_rejection(at, code, message)
+}
+
+/// Отказ чтения передаётся целиком, а не разбирается на код и текст: иначе
+/// уточнение теряется по дороге и один код снова обслуживает несколько
+/// исходов, не различая их.
+fn view_error_result(
+    at: Option<String>,
+    error: crate::application::v13::view::ViewError,
+) -> DomainResult {
+    match error.detail() {
+        Some(detail) => DomainResult::canonical_rejection_detailed(at, detail, error.to_string()),
+        None => DomainResult::canonical_rejection(at, error.code(), error.to_string()),
+    }
 }
 
 #[cfg(test)]

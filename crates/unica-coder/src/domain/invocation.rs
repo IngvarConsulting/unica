@@ -1,4 +1,4 @@
-use crate::domain::refusal::RefusalCode;
+use crate::domain::refusal::{RefusalCode, RefusalDetail};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use std::fmt;
@@ -221,12 +221,44 @@ impl DomainResult {
         code: RefusalCode,
         message: impl Into<String>,
     ) -> Self {
-        let code = code.as_str();
+        Self::rejection(at, code, None, message)
+    }
+
+    /// Отказ с уточнением: исход выбирает уточнение, а не умолчание кода.
+    /// Нужен там, где один код покрывает несколько исходов, — иначе читатель
+    /// не может выбрать действие, ради чего исход и вводится.
+    pub(crate) fn canonical_rejection_detailed(
+        at: Option<String>,
+        detail: RefusalDetail,
+        message: impl Into<String>,
+    ) -> Self {
+        Self::rejection(at, detail.code(), Some(detail), message)
+    }
+
+    fn rejection(
+        at: Option<String>,
+        code: RefusalCode,
+        detail: Option<RefusalDetail>,
+        message: impl Into<String>,
+    ) -> Self {
+        // Исход выводится, а не выбирается рядом с кодом: два закрытых словаря
+        // со временем разошлись бы. Уточнение, когда оно есть, перекрывает
+        // умолчание кода — так один код обслуживает несколько исходов, не
+        // теряя различия.
+        let outcome = detail.map_or_else(|| code.outcome(), RefusalDetail::outcome);
         let message = message.into();
         let mut result = Self::success(message.clone());
         result.ok = false;
         result.at = at;
-        result.diagnostics = vec![serde_json::json!({"code": code, "message": message})];
+        let mut diagnostic = serde_json::json!({
+            "code": code.as_str(),
+            "outcome": outcome.as_str(),
+            "message": message,
+        });
+        if let Some(detail) = detail {
+            diagnostic["detailCode"] = serde_json::Value::from(detail.as_str());
+        }
+        result.diagnostics = vec![diagnostic];
         result
     }
 }
@@ -542,6 +574,72 @@ mod tests {
             assert!(encoded.parse::<TaskId>().is_err(), "accepted {encoded}");
             assert!(serde_json::from_value::<InvocationId>(json!(encoded)).is_err());
             assert!(serde_json::from_value::<TaskId>(json!(encoded)).is_err());
+        }
+    }
+
+    mod refusal_envelope {
+        use super::super::*;
+        use crate::domain::refusal::{Outcome, RefusalCode, RefusalDetail};
+
+        #[test]
+        fn a_refusal_carries_code_outcome_and_message_and_nothing_else() {
+            let result = DomainResult::canonical_rejection(
+                Some("main:Catalog.Валюты".to_string()),
+                RefusalCode::NotFound,
+                "node was not found",
+            );
+            assert!(!result.ok);
+            assert_eq!(result.diagnostics.len(), 1);
+            let diagnostic = &result.diagnostics[0];
+            assert_eq!(diagnostic["code"], "not_found");
+            assert_eq!(diagnostic["outcome"], "fixCall");
+            assert_eq!(diagnostic["message"], "node was not found");
+            assert!(
+                diagnostic.get("detailCode").is_none(),
+                "уточнения не просили — поля быть не должно, иначе читатель \
+                 не отличит «уточнения нет» от «уточнение пустое»"
+            );
+            let keys: Vec<&str> = diagnostic
+                .as_object()
+                .expect("диагностика — объект")
+                .keys()
+                .map(String::as_str)
+                .collect();
+            assert_eq!(keys, vec!["code", "outcome", "message"]);
+        }
+
+        #[test]
+        fn a_detail_overrides_the_default_outcome_of_its_code() {
+            // Умолчание `provider_unavailable` — «нужен человек»; уточнение
+            // «исходник не читается» отправляет агента чинить предмет.
+            assert_eq!(
+                RefusalCode::ProviderUnavailable.outcome(),
+                Outcome::NeedsHuman
+            );
+            let result = DomainResult::canonical_rejection_detailed(
+                None,
+                RefusalDetail::SourceUnreadable,
+                "Configuration.xml is not UTF-8",
+            );
+            let diagnostic = &result.diagnostics[0];
+            assert_eq!(diagnostic["code"], "provider_unavailable");
+            assert_eq!(diagnostic["detailCode"], "source_unreadable");
+            assert_eq!(diagnostic["outcome"], "fixSource");
+        }
+
+        #[test]
+        fn every_code_answers_with_one_of_the_six_outcomes() {
+            for code in RefusalCode::ALL {
+                let result = DomainResult::canonical_rejection(None, code, "проба");
+                let outcome = result.diagnostics[0]["outcome"]
+                    .as_str()
+                    .expect("исход обязателен у всякого отказа")
+                    .to_string();
+                assert!(
+                    Outcome::ALL_WIRE_NAMES.contains(&outcome.as_str()),
+                    "{code} ответил исходом {outcome} вне закрытого набора"
+                );
+            }
         }
     }
 }
