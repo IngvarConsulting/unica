@@ -576,6 +576,24 @@ fn project_configuration(
             "totalObjects",
         ],
     );
+    // `interface` идёт рядом с `homePage` не по сходству имён: оба живут
+    // отдельным документом рядом с `Configuration.xml` и оба описывают корень
+    // целиком. Командного интерфейса как узла у конфигурации нет — внутри
+    // корневого документа только порядок подсистем, листать там нечего.
+    if let Some(Value::Object(interface)) = payload.get("interface") {
+        let mut interface = interface.clone();
+        // Ссылка `Subsystem.Планирование` дополняется до адреса: читателю
+        // нужен адрес, по которому можно спуститься, а не строка платформы.
+        if let Some(Value::Array(order)) = interface.get("subsystemOrder") {
+            let qualified: Vec<Value> = order
+                .iter()
+                .filter_map(Value::as_str)
+                .map(|reference| Value::String(format!("{}:{reference}", address.source_set())))
+                .collect();
+            interface.insert("subsystemOrder".to_string(), Value::Array(qualified));
+        }
+        props.insert("interface".to_string(), Value::Object(interface));
+    }
     for key in ["support", "properties", "homePage"] {
         match payload.get(key) {
             Some(Value::Object(object)) => {
@@ -677,6 +695,7 @@ fn validate_reader_payload(reader: LogicalReader, payload: &Value) -> Result<(),
             "registeredObjects",
             "totalObjects",
             "homePage",
+            "interface",
         ],
         LogicalReader::Metadata => &[
             "name",
