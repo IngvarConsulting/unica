@@ -337,8 +337,8 @@ impl ProviderReadAuthority {
             let relative = PathBuf::from(&name);
             let remaining = MAX_EXTERNAL_INVENTORY_BYTES.saturating_sub(retained_bytes);
             if remaining == 0 {
-                return Err(ViewError::new(
-                    RefusalCode::ProviderUnavailable,
+                return Err(ViewError::detailed(
+                    RefusalDetail::InventoryTooLarge,
                     format!(
                         "external owner inventory exceeds {MAX_EXTERNAL_INVENTORY_BYTES} bytes"
                     ),

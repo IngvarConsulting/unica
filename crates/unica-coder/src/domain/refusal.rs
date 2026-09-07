@@ -341,7 +341,8 @@ pub enum RefusalDetail {
     WrongSourceKind,
     /// Предмет не помещается в ответ целиком.
     InventoryTooLarge,
-    /// Внутренний кэш отравлен.
+    /// Внутренний кэш отравлен: поток запаниковал под замком, и до
+    /// перезапуска процесса замок не отдаётся.
     CachePoisoned,
     /// Демон занят: очередь, ёмкость рабочего пространства или владельца.
     BackendBusy,
@@ -388,7 +389,13 @@ impl RefusalDetail {
             Self::ProviderAbsent | Self::BackendIncompatible => Outcome::NeedsHuman,
             Self::WrongSourceKind => Outcome::FixCall,
             Self::InventoryTooLarge => Outcome::GoElsewhere,
-            Self::CachePoisoned | Self::BackendBusy => Outcome::RetryAsIs,
+            Self::BackendBusy => Outcome::RetryAsIs,
+            // Отравление `std::sync::Mutex` необратимо в пределах процесса:
+            // поток запаниковал под замком, и всякий следующий `lock` вернёт
+            // ошибку до перезапуска демона. «Повторить как есть» отправило бы
+            // агента в вечный цикл — та же ловушка, что у устаревшей метки
+            // ревизии. Снять отравление может только человек.
+            Self::CachePoisoned => Outcome::NeedsHuman,
             Self::BackendBroken => Outcome::DeadEnd,
         }
     }
@@ -515,6 +522,49 @@ mod tests {
                     .all(|character| character.is_ascii_lowercase() || character == '_'),
                 "{name} не в змеином регистре"
             );
+        }
+    }
+
+    /// Объявленный словарь без источника — это обещание, которого провод не
+    /// держит. Карта `code`→`detail` в типе такого не ловит: она
+    /// удовлетворяется одними объявлениями. Поэтому проверка идёт по дереву.
+    #[test]
+    fn every_detail_is_constructed_somewhere_outside_the_dictionary() {
+        let source_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut sources = Vec::new();
+        collect_rust_sources(&source_root, &mut sources);
+        assert!(
+            sources.len() > 100,
+            "обход дерева исходников ничего не нашёл: проверка стала бы пустой"
+        );
+        let corpus: String = sources
+            .iter()
+            .filter(|path| path.file_name().is_some_and(|name| name != "refusal.rs"))
+            .filter_map(|path| std::fs::read_to_string(path).ok())
+            .collect();
+        for detail in RefusalDetail::ALL {
+            let needle = format!("RefusalDetail::{detail:?}");
+            assert!(
+                corpus.contains(&needle),
+                "{detail} объявлено, но нигде не ставится — код {} так и будет \
+                 отвечать умолчанием, а различие, ради которого уточнение \
+                 заведено, до провода не дойдёт",
+                detail.code()
+            );
+        }
+    }
+
+    fn collect_rust_sources(directory: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_rust_sources(&path, out);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                out.push(path);
+            }
         }
     }
 }

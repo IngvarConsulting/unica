@@ -996,9 +996,9 @@ pub(crate) fn canonical_v13_docs_search(
         // new failure vocabulary: it answers with the closed provider code so
         // the caller's recovery (install help, restore network) stays the same
         // as for every other unavailable engine.
-        Err(error) => crate::domain::invocation::DomainResult::canonical_rejection(
+        Err(error) => crate::domain::invocation::DomainResult::canonical_rejection_detailed(
             None,
-            RefusalCode::ProviderUnavailable,
+            crate::domain::refusal::RefusalDetail::ProviderAbsent,
             error,
         ),
     }

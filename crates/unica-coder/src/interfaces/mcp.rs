@@ -19,6 +19,7 @@ use crate::application::{
 };
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::progress::{NoopProgressSink, ProgressEvent, ProgressSink};
+use crate::domain::refusal::RefusalDetail;
 use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, CancelTaskParams,
     ContentBlock, ErrorCode, ErrorData, GetTaskParams, GetTaskResult, Implementation,
@@ -1073,6 +1074,33 @@ fn ensure_task_identity(
     }
 }
 
+/// Сводит код демона к уточнению, а не к одному имени: очередь и ёмкость
+/// проходят с повтора, несовместимость требует человека, а сломанное
+/// хранилище не лечится ни тем, ни другим. Широкая ветка `_` здесь и теряла
+/// различие.
+fn backend_detail(code: crate::infrastructure::daemon::protocol::DaemonErrorCode) -> RefusalDetail {
+    use crate::infrastructure::daemon::protocol::DaemonErrorCode;
+    match code {
+        DaemonErrorCode::Overloaded
+        | DaemonErrorCode::TaskCapacity
+        | DaemonErrorCode::OwnerCapacity
+        | DaemonErrorCode::WorkspaceCapacity => RefusalDetail::BackendBusy,
+        DaemonErrorCode::ProtocolMismatch
+        | DaemonErrorCode::CoreMismatch
+        | DaemonErrorCode::Unauthorized
+        | DaemonErrorCode::HandshakeRequired => RefusalDetail::BackendIncompatible,
+        DaemonErrorCode::InvalidRequest
+        | DaemonErrorCode::DuplicateLease
+        | DaemonErrorCode::WorkspaceRegistryFailed
+        | DaemonErrorCode::InvocationFailed
+        | DaemonErrorCode::ResultTooLarge
+        | DaemonErrorCode::StoreFailed
+        | DaemonErrorCode::DurabilityUncertain
+        | DaemonErrorCode::TaskNotFound
+        | DaemonErrorCode::TaskExpired => RefusalDetail::BackendBroken,
+    }
+}
+
 fn project_task_exchange_error(
     error: crate::infrastructure::daemon::client::DaemonTaskExchangeError,
 ) -> ErrorData {
@@ -1092,7 +1120,9 @@ fn project_task_exchange_error(
                 Some(serde_json::json!({"code": "task_expired"})),
             )
         }
-        DaemonTaskExchangeError::Protocol(_) => task_internal_error("task_backend_failed"),
+        DaemonTaskExchangeError::Protocol(code) => {
+            task_internal_error_detailed(backend_detail(code))
+        }
         DaemonTaskExchangeError::Transport => task_internal_error("task_transport_failed"),
         DaemonTaskExchangeError::SessionPoisoned => task_internal_error("task_session_closed"),
         DaemonTaskExchangeError::UnexpectedResponse => task_internal_error("task_protocol_failed"),
@@ -1104,6 +1134,20 @@ fn task_internal_error(code: &'static str) -> ErrorData {
         ErrorCode::INTERNAL_ERROR,
         code,
         Some(serde_json::json!({"code": code})),
+    )
+}
+
+/// То же, но с уточнением: исход берётся из него, а не из умолчания кода.
+fn task_internal_error_detailed(detail: RefusalDetail) -> ErrorData {
+    let code = detail.code().as_str();
+    ErrorData::new(
+        ErrorCode::INTERNAL_ERROR,
+        code,
+        Some(serde_json::json!({
+            "code": code,
+            "outcome": detail.outcome().as_str(),
+            "detailCode": detail.as_str(),
+        })),
     )
 }
 

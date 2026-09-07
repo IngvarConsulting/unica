@@ -589,4 +589,51 @@ mod tests {
         assert_eq!(replay, page);
         assert!(page.cursor.is_some());
     }
+
+    /// Уточнение обязано пережить дорогу от чтения до провода. Разбирать
+    /// отказ на код и текст по дороге нельзя: тогда `detailCode` исчезает
+    /// молча, а код возвращается к своему умолчанию — и различие, ради
+    /// которого уточнение заведено, теряется.
+    #[test]
+    fn a_detailed_read_refusal_keeps_its_detail_and_overridden_outcome_on_the_wire() {
+        use crate::domain::refusal::{Outcome, RefusalCode, RefusalDetail};
+
+        struct UnreadableSource;
+
+        impl ViewReadAuthority for UnreadableSource {
+            fn snapshot(&self, _at: &QualifiedAddress) -> Result<ViewSourceSnapshot, ViewError> {
+                Err(ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
+                    "Configuration.xml is not UTF-8",
+                ))
+            }
+
+            fn read_exact(
+                &self,
+                _at: &QualifiedAddress,
+                _filter: &ViewFilter,
+                _admitted: &ViewSourceSnapshot,
+            ) -> Result<NodeViewData, ViewError> {
+                unreachable!("чтение не начинается, пока снимок не взят")
+            }
+        }
+
+        let service = ViewService::new(UnreadableSource, ViewCursorStore::default());
+        let request = ViewRequest::new("main:Catalog.Валюты").expect("адрес разбирается");
+        let result = service.view(request);
+
+        assert!(!result.ok, "{result:?}");
+        let diagnostic = &result.diagnostics[0];
+        assert_eq!(diagnostic["code"], "provider_unavailable");
+        assert_eq!(diagnostic["detailCode"], "source_unreadable");
+        assert_eq!(
+            diagnostic["outcome"], "fixSource",
+            "уточнение перекрывает умолчание кода: {result:?}"
+        );
+        assert_ne!(
+            RefusalCode::ProviderUnavailable.outcome(),
+            Outcome::FixSource,
+            "проверка пуста, если умолчание кода совпадает с исходом уточнения"
+        );
+    }
 }
