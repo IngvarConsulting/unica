@@ -1121,6 +1121,11 @@ fn project_subsystem_interface(
             )
         })?;
     let commands = interface_commands(interface);
+    // Имя команды в CommandInterface.xml — это ссылка на команду, живущую в
+    // другом месте: `CommonCommand.Печать` или `Catalog.Валюты.Command.Создать`.
+    // Приписывать её к адресу интерфейса нельзя — получается адрес, которого
+    // грамматика не знает. Команда адресуется по своему настоящему месту.
+    let (addressable, dangling) = split_interface_commands(address, &commands);
     if suffix.len() > 2 {
         return Err(ViewError::new(
             RefusalCode::NotFound,
@@ -1136,28 +1141,32 @@ fn project_subsystem_interface(
                 Map::new(),
             )
             .with_branches(
-                (!commands.is_empty())
-                    .then(|| BranchRef::new(format!("{}.Command", address), commands.len()))
+                (!addressable.is_empty())
+                    .then(|| BranchRef::new(format!("{}.Command", address), addressable.len()))
                     .into_iter()
                     .collect(),
-            ),
+            )
+            .with_limits(dangling_limits(&dangling)),
         ));
     }
     let command = &suffix[1];
     match (command.kind(), command.name()) {
         (NodeKind::Command, None) => Ok(NodeViewData::Collection(CollectionView::new(
-            NodeView::new(address.to_string(), "Command", "Commands", Map::new()),
-            commands
+            NodeView::new(address.to_string(), "Command", "Commands", Map::new())
+                .with_limits(dangling_limits(&dangling)),
+            addressable
                 .iter()
-                .filter_map(|item| {
+                .filter_map(|(at, item)| {
                     let name = item.get("name")?.as_str()?;
-                    let at = QualifiedAddress::parse(&format!("{address}.{name}")).ok()?;
-                    serde_json::to_value(NodeView::new(
-                        at.to_string(),
-                        "Command",
-                        name,
-                        reader_node_props(LogicalReader::Interface, NodeKind::Command, item),
-                    ))
+                    serde_json::to_value(
+                        NodeView::new(
+                            at.to_string(),
+                            at.segments().last()?.kind().as_str(),
+                            name,
+                            reader_node_props(LogicalReader::Interface, NodeKind::Command, item),
+                        )
+                        .with_limits(Vec::new()),
+                    )
                     .ok()
                 })
                 .collect(),
@@ -1184,6 +1193,44 @@ fn project_subsystem_interface(
             "interface projection was not found",
         )),
     }
+}
+
+/// Разводит записи командного интерфейса на адресуемые и повисшие.
+///
+/// Ссылка `CommonCommand.Печать` или `Catalog.Валюты.Command.Создать` читается
+/// как адрес в том же наборе исходников. Ссылка по идентификатору
+/// (`0:78b4152e-…`) логического адреса не имеет: платформа так пишет указатель
+/// на исчезнувший объект.
+fn split_interface_commands(
+    address: &QualifiedAddress,
+    commands: &[Value],
+) -> (Vec<(QualifiedAddress, Value)>, Vec<String>) {
+    let source_set = address.source_set();
+    let mut addressable = Vec::new();
+    let mut dangling = Vec::new();
+    for item in commands {
+        let Some(reference) = item.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        match QualifiedAddress::parse(&format!("{source_set}:{reference}")) {
+            Ok(at) => addressable.push((at, item.clone())),
+            Err(_) => dangling.push(reference.to_string()),
+        }
+    }
+    (addressable, dangling)
+}
+
+/// Повисшие ссылки называются слотом `limits`, а не выбрасываются молча: иначе
+/// счёт ветви и страница расходятся, а читатель считает, что видел всё.
+fn dangling_limits(dangling: &[String]) -> Vec<String> {
+    if dangling.is_empty() {
+        return Vec::new();
+    }
+    vec![format!(
+        "{} команд заданы ссылкой по идентификатору и логического адреса не имеют: {}",
+        dangling.len(),
+        dangling.join(", ")
+    )]
 }
 
 fn interface_commands(interface: &Value) -> Vec<Value> {
@@ -1603,5 +1650,105 @@ fn data_row(value: &Value) -> Value {
         Value::Null | Value::Bool(_) | Value::Number(_) => json!({"value": value}),
         Value::String(text) if text.len() <= MAX_COMPACT_PROP_BYTES => json!({"value": text}),
         Value::String(_) | Value::Array(_) | Value::Object(_) => json!({"value": "<omitted>"}),
+    }
+}
+
+#[cfg(test)]
+mod interface_command_tests {
+    use super::*;
+
+    /// Формы ссылок взяты из настоящего `CommandInterface.xml` конфигурации
+    /// класса УТ: двухсегментная общая команда, четырёхсегментная команда
+    /// объекта и повисшая ссылка по идентификатору — платформа так пишет
+    /// указатель на исчезнувший объект.
+    /// Адрес коллекции сегодня несёт `Command` дважды. Грамматика адреса
+    /// строго парная — `<Вид>.<Имя>`, — поэтому безымянный `Interface`
+    /// забирает следующий сегмент себе под имя, и объявленная ветвь
+    /// `...Interface.Command` разрешается обратно в узел интерфейса. Это
+    /// вторая половина дефекта, и чинится она в адресном контракте, а не
+    /// здесь. Тесты ниже держат первую половину: элементы адресованы верно, а
+    /// счёт сходится со страницей.
+    const COLLECTION: &str = "main:Subsystem.Администрирование.Interface.Command.Command";
+
+    fn payload() -> Value {
+        json!({
+            "commandInterface": {
+                "visibility": [
+                    {"command": "CommonCommand.ПанельОтчетовCRM", "visible": true},
+                    {"command": "Catalog.Валюты.Command.СоздатьНаОсновании", "visible": true},
+                    {"command": "0:78b4152e-8a04-45f1-a08f-397423e76fc8", "visible": false}
+                ]
+            }
+        })
+    }
+
+    fn view(at: &str) -> NodeViewData {
+        let address = QualifiedAddress::parse(at).expect("адрес разбирается");
+        let suffix: Vec<AddressSegment> = address
+            .segments()
+            .iter()
+            .skip_while(|segment| segment.kind() != NodeKind::Interface)
+            .cloned()
+            .collect();
+        project_subsystem_interface(&address, &payload(), &suffix).expect("проекция отвечает")
+    }
+
+    #[test]
+    fn a_command_item_is_addressed_where_the_command_actually_lives() {
+        let NodeViewData::Collection(page) = view(COLLECTION) else {
+            panic!("ожидалась страница");
+        };
+        let page = serde_json::to_value(&page).expect("страница сериализуется");
+        let addresses: Vec<&str> = page["items"]
+            .as_array()
+            .expect("страница несёт элементы")
+            .iter()
+            .filter_map(|item| item["at"].as_str())
+            .collect();
+        assert_eq!(
+            addresses,
+            vec![
+                "main:Catalog.Валюты.Command.СоздатьНаОсновании",
+                "main:CommonCommand.ПанельОтчетовCRM",
+            ],
+            "команда живёт вне интерфейса, и адресуется по своему месту"
+        );
+    }
+
+    #[test]
+    fn the_branch_count_equals_what_the_page_can_show() {
+        let NodeViewData::Node(node) = view("main:Subsystem.Администрирование.Interface")
+        else {
+            panic!("ожидался узел");
+        };
+        let declared = serde_json::to_value(&node).expect("узел сериализуется")["branches"][0]
+            ["count"]
+            .as_u64()
+            .expect("ветвь объявляет счёт");
+
+        let NodeViewData::Collection(page) = view(COLLECTION) else {
+            panic!("ожидалась страница");
+        };
+        let page = serde_json::to_value(&page).expect("страница сериализуется");
+        assert_eq!(
+            declared as usize,
+            page["items"].as_array().expect("элементы").len(),
+            "счёт ветви и страница обязаны сойтись: расхождение и было дефектом"
+        );
+    }
+
+    #[test]
+    fn a_reference_without_a_logical_address_is_named_not_dropped() {
+        let NodeViewData::Node(node) = view("main:Subsystem.Администрирование.Interface")
+        else {
+            panic!("ожидался узел");
+        };
+        let limits = serde_json::to_value(&node).expect("узел сериализуется")["limits"].clone();
+        let named = limits[0].as_str().unwrap_or_default().to_string();
+        assert!(
+            named.contains("78b4152e-8a04-45f1-a08f-397423e76fc8"),
+            "повисшая ссылка обязана быть названа, иначе читатель считает, что \
+             видел всё: {limits}"
+        );
     }
 }

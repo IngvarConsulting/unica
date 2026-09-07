@@ -43,6 +43,15 @@ impl NodeView {
         self
     }
 
+    /// Чего в ответе нет и почему. Слот существует, чтобы пропуск был назван:
+    /// молчаливое выбрасывание элементов делает счёт ветви и страницу
+    /// несогласуемыми, а читателя — уверенным, что он видел всё.
+    #[must_use]
+    pub(crate) fn with_limits(mut self, limits: Vec<String>) -> Self {
+        self.limits = limits;
+        self
+    }
+
     #[must_use]
     pub(crate) fn with_can(mut self, can: Vec<OperationRef>) -> Self {
         self.can = can;
