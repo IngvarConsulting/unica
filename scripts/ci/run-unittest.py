@@ -13,6 +13,7 @@ JUnit здесь не нужен: `unittest` принимает свой кла�
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import tomllib
 import traceback
@@ -142,8 +143,11 @@ def main(argv: list[str] | None = None) -> int:
     if admitted:
         suite = unittest.TestSuite(case for case in iter_cases(suite) if sizes.size_of(case.id()) in admitted)
     if args.plan_only:
-        for case in iter_cases(suite):
+        planned = list(iter_cases(suite))
+        for case in planned:
             print(case.id())
+        if args.results is not None:
+            write_python_plan(args.results, planned, args.start_directory, sizes)
         return 0
 
     AllureResult.out = args.results
@@ -156,6 +160,33 @@ def main(argv: list[str] | None = None) -> int:
         options["durations"] = args.durations
     result = unittest.TextTestRunner(**options).run(suite)
     return 0 if result.wasSuccessful() else 1
+
+
+def write_python_plan(out: Path, cases, suite_name: str, sizes: Sizes) -> Path:
+    """Состав набора до запуска: джоба, умершая на середине, оставляет список.
+
+    Записи идут с той же подписью, что и результаты; сайт дописывает
+    недошедшие тесты `skipped`. Планы нескольких наборов в одном каталоге
+    складываются, а не затирают друг друга; свой набор переписывается.
+    """
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / "plan.json"
+    entries = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else []
+    entries = [entry for entry in entries if not (entry.get("ecosystem") == "python" and entry.get("suite") == suite_name)]
+    for case in cases:
+        doc = (getattr(case, "_testMethodDoc", None) or "").strip().splitlines()
+        entries.append(
+            {
+                "ecosystem": "python",
+                "id": case.id(),
+                "name": doc[0] if doc else getattr(case, "_testMethodName", case.id()),
+                "suite": suite_name,
+                "subSuite": case.__class__.__qualname__,
+                "size": sizes.size_of(case.id()),
+            }
+        )
+    path.write_text(json.dumps(entries, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    return path
 
 
 def iter_cases(suite):

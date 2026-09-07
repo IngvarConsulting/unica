@@ -11,6 +11,7 @@ Workflow называет только этот скрипт — не `cargo tes
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -157,6 +158,17 @@ def write_rust_plan(results: Path, profile: str) -> int:
     return len(entries)
 
 
+def write_python_plan(profile: str, results: Path, runner: str, suite: str | None = None) -> int:
+    """План Python — тем же швом и теми же командами, что и прогон, только состав."""
+    for command in python_commands(profile, results=results, runner=runner, suite=suite):
+        completed = subprocess.run([*command, "--plan-only"], cwd=REPO_ROOT, stdout=subprocess.DEVNULL)
+        if completed.returncode != 0:
+            raise SystemExit(f"план Python не записан: {' '.join(command)}")
+    plan = results / "plan.json"
+    entries = json.loads(plan.read_text(encoding="utf-8")) if plan.is_file() else []
+    return sum(1 for entry in entries if entry.get("ecosystem") == "python")
+
+
 def emit_rust(results: Path, profile: str, runner: str, junit: Path | None = None) -> int:
     """JUnit от nextest + причины `#[ignore]` из атрибутов → allure-results."""
     junit = nextest_junit(profile) if junit is None else junit
@@ -214,6 +226,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         if args.ecosystem in ("rust", "all"):
             print(f"план Rust: {write_rust_plan(args.results, args.profile)} тестов")
+        if args.ecosystem in ("python", "all"):
+            print(f"план Python: {write_python_plan(args.profile, args.results, args.runner, args.suite)} тестов")
         return 0
 
     return execute(args.profile, args.ecosystem, args.results, args.runner, line=args.line, sha=args.sha, suite=args.suite)

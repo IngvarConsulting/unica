@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -206,6 +208,20 @@ class GateProfileTests(unittest.TestCase):
                 self.assertEqual(suites, [suite for suite, _, _ in module.PYTHON_SUITES])
         # Ночной ярус принимает только `large`, а таких наборов пока нет.
         self.assertEqual(module.python_commands("large", "python3"), [])
+
+    def test_plan_only_for_python_writes_the_composition_of_the_suite(self) -> None:
+        """Состав набора — до запуска, тем же швом: джоба, умершая на середине, его не унесёт."""
+        module = load_module()
+        results = Path(tempfile.mkdtemp(prefix="plan-py-"))
+
+        code = module.main(["--profile", "pr", "--ecosystem", "python", "--suite", "tests/arch", "--plan-only", "--results", str(results), "--runner", "ubuntu-latest"])
+
+        self.assertEqual(code, 0)
+        self.assertTrue((results / "run.json").is_file())
+        planned = [entry for entry in json.loads((results / "plan.json").read_text(encoding="utf-8")) if entry.get("ecosystem") == "python"]
+        self.assertGreater(len(planned), 50)
+        self.assertTrue(all(entry["suite"] == "tests/arch" for entry in planned))
+        self.assertTrue(all(entry["id"].count(".") >= 2 and entry["subSuite"] and entry["size"] for entry in planned))
 
     def test_one_suite_per_job_narrows_the_seam_without_changing_the_command(self) -> None:
         """В CI наборы идут параллельными джобами: `--suite` даёт ровно одну команду, ту же самую."""

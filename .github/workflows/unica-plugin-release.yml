@@ -192,6 +192,15 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m pip install -r tests/ci/requirements.txt
+      # План выгружается до тестов, как у Rust: джоба, умершая на середине
+      # набора, оставляет состав, и недошедшие тесты попадут в отчёт `skipped`.
+      - run: python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --suite "$SUITE" --plan-only --results .build/results --runner ubuntu-latest --line "$RUN_LINE"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: plan-python-${{ matrix.slug }}
+          path: .build/results
+          retention-days: 7
+          overwrite: true
       # Наборы гоняет одна точка входа: профиль ворот меняется в ней, а не
       # здесь; `--suite` сужает вызов до набора этой джобы.
       - run: python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --suite "$SUITE" --results .build/results --runner ubuntu-latest --line "$RUN_LINE"

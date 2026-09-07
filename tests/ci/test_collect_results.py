@@ -94,6 +94,30 @@ class CollectResultsTests(unittest.TestCase):
         self.assertIn("infrastructure", tags)
         self.assertEqual(gap["historyId"], self.allure.history_id("unica-coder::daemon::never_reached", "ubuntu-latest"))
 
+    def test_planned_python_test_without_a_result_becomes_skipped_with_the_job_outcome(self) -> None:
+        """План Python работает как план Rust: недошедший тест виден, а не пропадает."""
+        self.signed("results-python-ci", "ubuntu-latest", "python", [self.python("ubuntu-latest")])
+        plan = self.signed("plan-python-ci", "ubuntu-latest", "python", [])
+        (plan / "plan.json").write_text(json.dumps([
+            {"ecosystem": "python", "id": "test_x.Guard.test_it", "name": "страж", "suite": "tests/ci", "subSuite": "Guard", "size": "small"},
+            {"ecosystem": "python", "id": "test_x.Guard.test_never_reached", "name": "не дошёл", "suite": "tests/ci", "subSuite": "Guard", "size": "medium"},
+        ]), encoding="utf-8")
+        jobs = self.root / "jobs.json"
+        jobs.write_text(json.dumps({"jobs": [{"name": "Python tests (tests/ci)", "conclusion": "cancelled"}]}), encoding="utf-8")
+        out = self.root / "fresh"
+
+        lines = self.collect.collect(self.artifacts, out, jobs, "", "https://example.invalid")
+
+        stats = lines["release-v0.12"]
+        self.assertEqual((stats["copied"], stats["filled"]), (1, 1))
+        gaps = [json.loads(r.read_text(encoding="utf-8")) for r in (out / "release-v0.12").glob("*-result.json")]
+        gap = next(g for g in gaps if g["fullName"] == "test_x.Guard.test_never_reached")
+        self.assertEqual(gap["status"], "skipped")
+        self.assertIn("раннер не дошёл: Python tests (tests/ci) · cancelled", gap["statusDetails"]["message"])
+        labels = {l["name"]: l["value"] for l in gap["labels"]}
+        self.assertEqual((labels["language"], labels["suite"], labels["size"]), ("python", "tests/ci", "medium"))
+        self.assertEqual(gap["historyId"], self.allure.history_id("test_x.Guard.test_never_reached", "ubuntu-latest"))
+
     def test_metadata_files_describe_the_run_for_the_report(self) -> None:
         _, out = self.scenario()
         line = out / "release-v0.12"
@@ -205,6 +229,8 @@ class CollectResultsTests(unittest.TestCase):
         release = workflow("unica-plugin-release.yml")
         rust_job = release["jobs"]["test-rust-platforms"]["name"]
         self.assertEqual(rust_job.replace("${{ matrix.runner }}", "{runner}"), self.collect.RUST_JOB)
+        python_job = release["jobs"]["test-python"]["name"]
+        self.assertEqual(python_job.replace("${{ matrix.suite }}", "{suite}"), self.collect.PYTHON_JOB)
 
         prefixes = (self.collect.RESULTS_PREFIX, self.collect.PLAN_PREFIX)
         uploads = []

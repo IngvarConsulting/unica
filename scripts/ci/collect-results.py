@@ -2,7 +2,8 @@
 """Сложить артефакты прогона-источника в результаты линий для сайта.
 
 Джобы оставляют `results-*` с `allure-results` и подписью `run.json`, а
-Rust-джобы ещё и `plan-*` — план, выгруженный до тестов, с той же подписью.
+джобы тестов ещё и `plan-*` — план, выгруженный до тестов, с той же подписью:
+для Rust — состав из `nextest list`, для Python — состав набора из `discover`.
 Здесь всё это складывается по линиям, и по плану дописывается то, до чего
 раннер не дошёл: такой тест попадает в отчёт `skipped` с причиной «раннер не
 дошёл», а не исчезает из истории.
@@ -34,6 +35,7 @@ from site_fetch import fetch  # noqa: E402
 # Имя Rust-джобы в workflow и шаблоны имён артефактов: сайт читает их отсюда,
 # а страж сверяет с workflow — переименование в одном месте красит тест.
 RUST_JOB = "Rust tests ({runner})"
+PYTHON_JOB = "Python tests ({suite})"
 RESULTS_PREFIX = "results-"
 PLAN_PREFIX = "plan-"
 
@@ -93,16 +95,21 @@ def job_conclusions(jobs: Path | None) -> dict[str, str]:
     return {job["name"]: (job.get("conclusion") or job.get("status") or "unknown") for job in listed.get("jobs", [])}
 
 
-def copy_results(path: Path, out: Path) -> tuple[int, set[str]]:
-    """Скопировать записи; вернуть счёт и полные имена Rust-тестов."""
-    seen: set[str] = set()
+def empty_seen() -> dict[str, set[str]]:
+    return {"rust": set(), "python": set()}
+
+
+def copy_results(path: Path, out: Path) -> tuple[int, dict[str, set[str]]]:
+    """Скопировать записи; вернуть счёт и полные имена тестов по языку."""
+    seen = empty_seen()
     count = 0
     for record in path.glob("*-result.json"):
         shutil.copy2(record, out / record.name)
         count += 1
         entry = load_json(record)
-        if label(entry, "language") == "rust":
-            seen.add(entry["fullName"])
+        language = label(entry, "language")
+        if language in seen:
+            seen[language].add(entry["fullName"])
     return count, seen
 
 
@@ -114,6 +121,8 @@ def fill_gaps(plan_dir: Path, run: dict, seen: set[str], out: Path, conclusions:
     conclusion = conclusions.get(job) or "unknown"
     filled = 0
     for case in load_json(plan_dir / "plan.json"):
+        if "binary" not in case:
+            continue
         full_name = f"{case['binary']}::{case['name']}"
         if full_name in seen:
             continue
@@ -128,6 +137,43 @@ def fill_gaps(plan_dir: Path, run: dict, seen: set[str], out: Path, conclusions:
                 status="skipped",
                 runner=runner,
                 labels=allure_results.rust_labels(case["binary"], case["name"], profile),
+                tags=(profile, "infrastructure"),
+                message=message,
+            ),
+        )
+        filled += 1
+    return filled
+
+
+def fill_python_gaps(plan_dir: Path, run: dict, seen: set[str], out: Path, conclusions: dict[str, str]) -> int:
+    """Тест Python из плана без результата — джоба не дошла. Записать как `skipped`."""
+    runner = run.get("runner", "")
+    profile = run.get("profile", "all")
+    filled = 0
+    for case in load_json(plan_dir / "plan.json"):
+        if case.get("ecosystem") != "python" or case["id"] in seen:
+            continue
+        job = PYTHON_JOB.format(suite=case["suite"])
+        conclusion = conclusions.get(job) or "unknown"
+        message = f"раннер не дошёл: {job} · {conclusion}"
+        if run.get("run_url"):
+            message += f" · {run['run_url']}"
+        allure_results.write(
+            out,
+            allure_results.record(
+                name=case["name"],
+                full_name=case["id"],
+                status="skipped",
+                runner=runner,
+                labels={
+                    "language": "python",
+                    "framework": "unittest",
+                    "parentSuite": "python",
+                    "suite": case["suite"],
+                    "subSuite": case.get("subSuite", ""),
+                    "profile": profile,
+                    "size": case.get("size", "small"),
+                },
                 tags=(profile, "infrastructure"),
                 message=message,
             ),
@@ -231,7 +277,7 @@ def collect(artifacts: Path, out_root: Path, jobs: Path | None, fallback_line: s
         raise SystemExit(f"в {artifacts} нет ни одного results-* с подписью: складывать нечего")
     conclusions = job_conclusions(jobs)
     by_line: dict[str, dict] = {}
-    seen: dict[tuple[str, str], set[str]] = {}
+    seen: dict[tuple[str, str], dict[str, set[str]]] = {}
     for path, run in results:
         line = line_of(run, fallback_line)
         out = out_root / line
@@ -244,22 +290,28 @@ def collect(artifacts: Path, out_root: Path, jobs: Path | None, fallback_line: s
         by_line[line]["copied"] += copied
         if run.get("runner"):
             by_line[line]["runners"].add(run["runner"])
-        seen.setdefault((line, run.get("runner", "")), set()).update(names)
+        bucket = seen.setdefault((line, run.get("runner", "")), empty_seen())
+        for language, found in names.items():
+            bucket[language].update(found)
     planned: set[tuple[str, str]] = set()
     for plan_dir, run in signed_dirs(artifacts, PLAN_PREFIX):
         line = line_of(run, fallback_line)
         if line not in by_line:
             continue
         key = (line, run.get("runner", ""))
+        have = seen.get(key, empty_seen())
+        if run.get("ecosystem") == "python":
+            by_line[line]["filled"] += fill_python_gaps(plan_dir, run, have["python"], out_root / line, conclusions)
+            continue
         planned.add(key)
-        by_line[line]["filled"] += fill_gaps(plan_dir, run, seen.get(key, set()), out_root / line, conclusions)
+        by_line[line]["filled"] += fill_gaps(plan_dir, run, have["rust"], out_root / line, conclusions)
     # Rust-раннер с подписью, но без плана: сборка упала раньше `nextest list`.
     with tempfile.TemporaryDirectory(prefix="stored-") as work:
         for path, run in results:
             key = (line_of(run, fallback_line), run.get("runner", ""))
             if run.get("ecosystem") != "rust" or key in planned or not site:
                 continue
-            by_line[key[0]]["filled"] += fill_from_site(site, key[0], run, seen.get(key, set()), out_root / key[0], conclusions, Path(work))
+            by_line[key[0]]["filled"] += fill_from_site(site, key[0], run, seen.get(key, empty_seen())["rust"], out_root / key[0], conclusions, Path(work))
     for line, stats in by_line.items():
         stats["runners"] = sorted(stats["runners"])
         write_metadata(out_root / line, stats.pop("run"), line, stats["runners"], site)

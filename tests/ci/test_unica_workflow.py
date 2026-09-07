@@ -495,7 +495,11 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         # Наборы идут параллельными джобами, по одной на набор из шва `run-tests.py`.
         self.assertEqual([entry["suite"] for entry in matrix_include(python)], ["tests/ci", "tests/arch", "tests/dev"])
         self.assertEqual(python["env"]["SUITE"], "${{ matrix.suite }}")
-        self.assertEqual([upload["name"] for upload in uploads(python)], ["results-python-${{ matrix.slug }}"])
+        self.assertEqual([upload["name"] for upload in uploads(python)], ["plan-python-${{ matrix.slug }}", "results-python-${{ matrix.slug }}"])
+        # План выгружается до тестов, как у Rust.
+        plan_index = next(index for index, step in enumerate(steps(python)) if "--plan-only" in step.get("run", ""))
+        run_index = next(index for index, step in enumerate(steps(python)) if "run-tests.py" in step.get("run", "") and "--plan-only" not in step["run"])
+        self.assertLess(plan_index, run_index)
 
     def test_gate_profile_follows_the_event_not_the_job(self) -> None:
         """Ворота → профиль: pull request — `pr`, push в ветку — `main`, тег — `release`."""
@@ -518,7 +522,8 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             script(classify),
         )
         self.assertEqual(classify["outputs"]["line"], "${{ steps.line.outputs.line }}")
-        self.assertEqual(3, all_scripts(self.release).count('--line "$RUN_LINE"'))
+        # Подпись линии: план и прогон Rust, план и прогон Python.
+        self.assertEqual(4, all_scripts(self.release).count('--line "$RUN_LINE"'))
         signed_jobs = [
             job_id
             for job_id, found in jobs(self.release).items()
