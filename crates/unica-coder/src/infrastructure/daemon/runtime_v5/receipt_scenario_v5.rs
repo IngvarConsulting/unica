@@ -8834,10 +8834,12 @@ fn retired_v3_identity() -> Result<CoreIdentity, String> {
 mod v3_wire {
     use crate::domain::invocation::{DomainResult, TaskId};
     use crate::infrastructure::daemon::identity::CoreIdentity;
-    use serde_json::Value;
 
     pub(super) const RETIRED_V3_IDENTITY: &str =
         "2f4dd5713d11e5211a92c5fa01b1ec5722dc3a3160b9b1e0b667f8d8da3d9c28";
+
+    /// The process id a simulated v3 daemon presents; the probe never runs one.
+    const RETIRED_V3_PROBE_PID: u32 = 9;
 
     /// What a v3 daemon's endpoint record would have carried into `ready`.
     pub(super) struct RetiredEndpoint {
@@ -8851,11 +8853,26 @@ mod v3_wire {
         pub(super) fn new(core_identity: CoreIdentity) -> Self {
             Self {
                 core_identity,
-                pid: std::process::id(),
+                pid: RETIRED_V3_PROBE_PID,
                 token: uuid::Uuid::new_v4().to_string(),
                 instance_id: uuid::Uuid::new_v4().to_string(),
             }
         }
+    }
+
+    /// The retired v3 `invocation` response, typed the way its serde types
+    /// were: the codec boundary of v5 does not own this shape.
+    #[derive(serde::Serialize)]
+    struct RetiredInvocationFrame<'a> {
+        kind: &'static str,
+        outcome: RetiredDirectOutcome<'a>,
+    }
+
+    #[derive(serde::Serialize)]
+    struct RetiredDirectOutcome<'a> {
+        #[serde(rename = "resultType")]
+        result_type: &'static str,
+        value: &'a DomainResult,
     }
 
     pub(super) fn frame(line: &str) -> Vec<u8> {
@@ -8935,11 +8952,14 @@ mod v3_wire {
     }
 
     pub(super) fn invocation_direct(result: &DomainResult) -> Result<String, String> {
-        let value: Value = serde_json::to_value(result)
-            .map_err(|error| format!("encode protocol-v3 direct result: {error}"))?;
-        Ok(format!(
-            "{{\"kind\":\"invocation\",\"outcome\":{{\"resultType\":\"direct\",\"value\":{value}}}}}"
-        ))
+        serde_json::to_string(&RetiredInvocationFrame {
+            kind: "invocation",
+            outcome: RetiredDirectOutcome {
+                result_type: "direct",
+                value: result,
+            },
+        })
+        .map_err(|error| format!("encode protocol-v3 direct result: {error}"))
     }
 }
 

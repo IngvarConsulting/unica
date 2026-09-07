@@ -7,7 +7,7 @@
       "reason": "Base logical-node projection with closed props/branches/items sections is implemented; the requested can section is computed for metadata kinds and the Configuration root from the closed operation registry, while uncomputed can kinds and the limits section answer typed unsupported_section; richer domain projections remain incomplete.",
       "evidence": [{
         "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
-        "test": "production_v3_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"
+        "test": "production_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"
       }]
     },
     "unica.apply": {
@@ -15,7 +15,7 @@
       "reason": "Retained atomic publication is proven for props.set, the metadata member collections, predefined items and relations; the code planner (code.insert/code.replace) and the XDTO planner (valueType/objectType/property/type operations) plan through the same staged state; object.create, object.remove and help.create stage the template files, the owner registration and the embedded help facet through the same state; the DCS planner runs the schema text transforms (fields, parameters, filters, selection, queries, calculated fields, totals, variants, structure) over the staged template; roles (right.set with restrictions, role.create), subsystems (create, content, child subsystems) and vendor-support switches plan over the staged files too; forms (form.add/create/set/remove and the definition-driven element, attribute, command and event edits) plan through the form engine's shared definition core; mxl.set decompiles, edits and recompiles the spreadsheet through the shared cores; event.implement plans through the event planner with developer-style event addresses; templates are staged as their own descriptors with owner registration.",
       "evidence": [{
         "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
-        "test": "production_v3_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"
+        "test": "production_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"
       }, {
         "file": "crates/unica-coder/src/infrastructure/native_operations/apply_families/metadata.rs",
         "test": "metadata_planner_preserves_operation_order_in_one_staged_postimage_without_disk_mutation"
@@ -61,7 +61,7 @@
       "reason": "Bounded literal BSL search supports Configuration and resolved metadata-object subtrees; regex and symbol search remain incomplete.",
       "evidence": [{
         "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
-        "test": "production_v3_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"
+        "test": "production_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"
       }]
     },
     "unica.check": {
@@ -69,7 +69,7 @@
       "reason": "Workspace admission and logical readability are implemented; the closed validation profiles (cf, cfe, form, dcs, mxl, role, subsystem, interface) run the native validators over the logical node and the meta profile runs the typed metadata validator, with the verdict returned in data.",
       "evidence": [{
         "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
-        "test": "production_v3_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"
+        "test": "production_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"
       }]
     },
     "unica.diff": {
@@ -77,7 +77,7 @@
       "reason": "Same-kind bounded structural JSON diff supports closed paths/sections filters; revision-bound pagination remains incomplete.",
       "evidence": [{
         "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
-        "test": "production_v3_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"
+        "test": "production_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"
       }]
     },
     "unica.run": {
@@ -85,7 +85,7 @@
       "reason": "The closed directional twelve-operation dictionary, workspace.initialize, configuration-package export, and DT export are implemented through non-executing preview and revision-fenced apply; the other nine run operations remain unsupported.",
       "evidence": [{
         "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
-        "test": "production_v3_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"
+        "test": "production_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"
       }]
     },
     "unica.docs": {
