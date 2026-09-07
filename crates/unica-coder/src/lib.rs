@@ -20,6 +20,10 @@ pub use infrastructure::platform::run_platform_main;
 mod two_lane_rehearsal {
     #[test]
     fn fails_only_on_macos() {
-        assert_ne!(std::env::consts::OS, "macos", "репетиция двух полос: macOS краснеет в очереди");
+        assert_ne!(
+            std::env::consts::OS,
+            "macos",
+            "репетиция двух полос: macOS краснеет в очереди"
+        );
     }
 }
