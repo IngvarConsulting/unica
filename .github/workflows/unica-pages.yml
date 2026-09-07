@@ -145,14 +145,18 @@ jobs:
           RUN_SHA: ${{ github.event.workflow_run.head_sha }}
           RUN_URL: ${{ github.event.workflow_run.html_url }}
           RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          SITE: https://ingvarconsulting.github.io/unica
         run: |
           set -eu
+          # Критерии конвейера считаются здесь, в итоговом статусе, по прогонам
+          # за окно и трендам отчёта на сайте.
           python scripts/ci/site-status.py \
             --repo "$GITHUB_REPOSITORY" \
             --branch "$RUN_BRANCH" \
             --sha "$RUN_SHA" \
             --run-url "$RUN_URL" \
             --summaries .build/site/data \
+            --site "$SITE" --metrics \
             --out .build/status.json
           python scripts/ci/build-site.py --pages-only --status .build/status.json --out .build/site
 

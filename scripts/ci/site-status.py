@@ -18,6 +18,9 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import pipeline_metrics  # noqa: E402
+
 LINE_BRANCH = re.compile(r"\Arelease-v(\d+)\.(\d+)\Z")
 # Линия патчей живёт ещё месяц после того, как вышла следующая minor.
 LINE_GRACE = timedelta(days=30)
@@ -163,6 +166,8 @@ def main() -> int:
     parser.add_argument("--print-lines", action="store_true", help="напечатать открытые линии и выйти")
     parser.add_argument("--telegram", default="unica_ai", help="публичная группа Telegram")
     parser.add_argument("--report-url", default="allure/main/")
+    parser.add_argument("--site", default="", help="адрес сайта: тренды отчёта для метрик конвейера")
+    parser.add_argument("--metrics", action="store_true", help="посчитать критерии конвейера по прогонам за окно")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
 
@@ -241,6 +246,19 @@ def main() -> int:
             )
     status["tested_lines"] = tested
     status["plain_lines"] = plain
+
+    # Критерии конвейера считаются по прогонам за окно только в итоговой
+    # сборке страниц: черновой прогон рисует таблицу пустой и не ходит в API
+    # дважды. Значения без источника показывают прочерк, а не ноль.
+    status.update({"metrics": [], "metrics_days": str(pipeline_metrics.WINDOW_DAYS), "metrics_since": "—", "metrics_until": "—"})
+    if args.metrics:
+        document = pipeline_metrics.gather(args.repo, args.site, now=now)
+        status.update({
+            "metrics": document["metrics"],
+            "metrics_days": str(document["window_days"]),
+            "metrics_since": document["since"],
+            "metrics_until": document["until"],
+        })
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(status, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
