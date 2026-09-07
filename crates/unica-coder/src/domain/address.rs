@@ -542,6 +542,33 @@ impl std::error::Error for AddressError {}
 #[cfg(test)]
 mod tests {
 
+    /// Ни одна из двух форм не годится, и обе обязаны отказывать — но по
+    /// разным причинам, и причину надо называть.
+    ///
+    /// `Configuration.Interface` неверен по смыслу: `Configuration` — узел, а
+    /// не приставка пути, дети конфигурации адресуются от набора напрямую.
+    /// `Interface.main` неверен по форме: имени у интерфейса не бывает, и
+    /// `main` тут — выдуманный заполнитель. До правила безымянных видов вторая
+    /// форма молча разбиралась в «интерфейс по имени main», то есть негодный
+    /// адрес принимался за годный.
+    #[test]
+    fn neither_a_configuration_prefix_nor_an_invented_interface_name_is_accepted() {
+        let prefixed = QualifiedAddress::parse("main:Configuration.Interface")
+            .expect_err("приставка пути не годится");
+        assert_eq!(prefixed.code(), AddressErrorCode::ConfigurationRootOnly);
+
+        let invented = QualifiedAddress::parse("main:Subsystem.Sales.Interface.main")
+            .expect_err("имени у интерфейса не бывает");
+        assert!(
+            invented.to_string().contains("has no application name"),
+            "отказ обязан назвать причину, а не звать искать опечатку в имени: {invented}"
+        );
+
+        // А законная форма — вид сразу за безымянным видом — проходит.
+        QualifiedAddress::parse("main:Subsystem.Sales.Interface.Command")
+            .expect("вид за безымянным видом законен");
+    }
+
     /// Безымянный вид единственен у владельца, поэтому следующий сегмент —
     /// это вид, а не его имя. Пока разбор шёл парами вслепую, `Interface`
     /// забирал `Command` себе под имя, и объявленная узлом ветвь
