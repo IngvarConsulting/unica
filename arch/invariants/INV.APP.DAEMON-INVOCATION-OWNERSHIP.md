@@ -2,8 +2,10 @@
 id: INV.APP.DAEMON-INVOCATION-OWNERSHIP
 status: active
 governs: product
-decision: DEC.2026-08-24.DAEMON-INVOCATION-ROUTING-SLICE
-check: crates/unica-coder/src/infrastructure/daemon/mod.rs::daemon_executes_one_canonical_invocation_and_poll_cancel_never_relaunches_it
+decision: DEC.2026-09-07.DAEMON-V5-PRODUCTION-CUTOVER
+check:
+  - crates/unica-coder/tests/daemon_receipt_ledger.rs::exact_duplicate_preserves_cutoff_without_second_domain_callback
+  - crates/unica-coder/tests/daemon_receipt_ledger.rs::crash_after_begun_returns_outcome_uncertain_without_replay
 scope: [app]
 ---
 

@@ -2,7 +2,7 @@
 id: INV.WIRE.NATIVE-TASK-CAPABILITY
 status: active
 governs: product
-decision: DEC.2026-08-24.NATIVE-TASK-PROJECTION-SLICE
+decision: DEC.2026-09-07.DAEMON-V5-PRODUCTION-CUTOVER
 check: crates/unica-coder/src/interfaces/mcp.rs::native_task_projection_contract_is_capability_gated_durable_and_replay_free
 scope: [app, wire]
 ---

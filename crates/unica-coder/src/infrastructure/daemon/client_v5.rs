@@ -1,16 +1,14 @@
 use super::identity::{CoreIdentity, DaemonStateDirectory};
-#[cfg(feature = "receipt-ledger-test-support")]
-use super::protocol_v5::V5DaemonErrorCode;
 use super::protocol_v5::{
     decode_v5_server_response, read_bounded_v5_probe_response_frame_before, V5ClientRequest,
-    V5EndpointRecord, V5HandshakeServerResponse, V5InvocationRequest, V5ProbeResponseKind,
-    V5ProbeServerResponse, V5ServerResponse,
+    V5DaemonErrorCode, V5DaemonTaskSnapshot, V5EndpointRecord, V5HandshakeServerResponse,
+    V5InvocationRequest, V5ProbeResponseKind, V5ProbeServerResponse, V5ServerResponse,
 };
 use crate::application::invocation::{RESPONSE_SERIALIZATION_MARGIN, TASK_RECONCILIATION_BUDGET};
 use crate::application::receipt_ledger::{ReceiptKey, TerminalDigest};
-#[cfg(any(test, feature = "receipt-ledger-test-support"))]
 use crate::domain::invocation::TaskId;
 use crate::infrastructure::platform::ManagedStartupChild;
+use std::fmt;
 use std::io::{self, BufReader, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
@@ -24,17 +22,58 @@ const EXISTING_ENDPOINT_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 const STARTUP_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
 const RETRY_INTERVAL: Duration = Duration::from_millis(20);
 
-/// Minimal side-by-side protocol-v5 process client.
+/// Protocol-v5 process client: one authenticated owner session over the
+/// loopback endpoint of the exact production-v5 daemon.
 ///
-/// This is intentionally narrower than the v3 production client while W0a is
-/// non-default: it proves the same-binary `--daemon` dispatch and one strict
-/// Hello/Ping exchange without introducing a second launch selector or routing
-/// ordinary frontend traffic to v5 before W0c.
+/// The frontend keeps one anchor session for its lifetime and opens a peer
+/// session per invocation or Task operation; every exchange carries one
+/// absolute deadline and a malformed or truncated response poisons the session
+/// it arrived on.
 pub(crate) struct V5DaemonProcessOwner {
     writer: TcpStream,
     reader: BufReader<TcpStream>,
     record: V5EndpointRecord,
     poisoned: bool,
+}
+
+/// Why an exchange produced no strict response, phrased by its consequence for
+/// the durable receipt: a request that was never written cannot have been
+/// reserved by the daemon, a lost response may hide a reserved receipt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum V5TransportError {
+    SessionPoisoned,
+    RequestNotSent(String),
+    ResponseLost(String),
+}
+
+impl fmt::Display for V5TransportError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SessionPoisoned => formatter.write_str("protocol-v5 owner session is poisoned"),
+            Self::RequestNotSent(error) | Self::ResponseLost(error) => formatter.write_str(error),
+        }
+    }
+}
+
+/// Outcome classes of one Task operation, closed the same way as the v3
+/// exchange so the interface keeps one refusal mapping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum V5TaskExchangeError {
+    Protocol(V5DaemonErrorCode),
+    Transport,
+    SessionPoisoned,
+    UnexpectedResponse,
+}
+
+impl From<V5TransportError> for V5TaskExchangeError {
+    fn from(error: V5TransportError) -> Self {
+        match error {
+            V5TransportError::SessionPoisoned => Self::SessionPoisoned,
+            V5TransportError::RequestNotSent(_) | V5TransportError::ResponseLost(_) => {
+                Self::Transport
+            }
+        }
+    }
 }
 
 #[cfg(feature = "receipt-ledger-test-support")]
@@ -125,7 +164,9 @@ fn finish_ready_startup<C: V5StartupChildControl>(
 }
 
 impl V5DaemonProcessOwner {
-    pub(crate) fn connect_or_spawn_for_protocol_test(
+    /// Connect to the exact production-v5 daemon under `state_root`, spawning
+    /// the same binary in `--daemon` mode when no live endpoint answers.
+    pub(crate) fn connect_or_spawn(
         state_root: &Path,
         core_identity: CoreIdentity,
         executable: PathBuf,
@@ -225,7 +266,22 @@ impl V5DaemonProcessOwner {
         }
     }
 
-    fn connect_before(record: V5EndpointRecord, deadline: Instant) -> Result<Self, String> {
+    /// Open one more authenticated session on an already published endpoint.
+    /// Each session carries its own owner lease, so a slow direct response on
+    /// one peer never serializes another call behind it.
+    pub(crate) fn connect_peer_before(&self, deadline: Instant) -> Result<Self, V5TransportError> {
+        Self::connect_before(self.record.clone(), deadline)
+            .map_err(V5TransportError::RequestNotSent)
+    }
+
+    pub(crate) fn core_identity(&self) -> &CoreIdentity {
+        self.record.core_identity()
+    }
+
+    pub(crate) fn connect_before(
+        record: V5EndpointRecord,
+        deadline: Instant,
+    ) -> Result<Self, String> {
         let address = record.loopback_addr()?;
         let stream = TcpStream::connect_timeout(&address.into(), remaining(deadline, "connect")?)
             .map_err(|error| format!("connect protocol-v5 daemon: {error}"))?;
@@ -371,6 +427,96 @@ impl V5DaemonProcessOwner {
         )
     }
 
+    pub(crate) fn submit_invocation_before(
+        &mut self,
+        invocation: V5InvocationRequest,
+        deadline: Instant,
+    ) -> Result<V5ServerResponse, V5TransportError> {
+        self.exchange_typed_before(
+            V5ClientRequest::SubmitInvocation { invocation },
+            "submit invocation",
+            deadline,
+        )
+    }
+
+    pub(crate) fn recover_invocation_receipt_before(
+        &mut self,
+        receipt_key: ReceiptKey,
+        deadline: Instant,
+    ) -> Result<V5ServerResponse, V5TransportError> {
+        self.exchange_typed_before(
+            V5ClientRequest::RecoverInvocationReceipt { receipt_key },
+            "recover invocation receipt",
+            deadline,
+        )
+    }
+
+    pub(crate) fn acknowledge_invocation_receipt_before(
+        &mut self,
+        receipt_key: ReceiptKey,
+        terminal_digest: TerminalDigest,
+        deadline: Instant,
+    ) -> Result<V5ServerResponse, V5TransportError> {
+        self.exchange_typed_before(
+            V5ClientRequest::AcknowledgeInvocationReceipt {
+                receipt_key,
+                terminal_digest,
+            },
+            "acknowledge invocation receipt",
+            deadline,
+        )
+    }
+
+    pub(crate) fn get_task_before(
+        &mut self,
+        task_id: TaskId,
+        deadline: Instant,
+    ) -> Result<V5DaemonTaskSnapshot, V5TaskExchangeError> {
+        self.task_exchange_before(V5ClientRequest::GetTask { task_id }, "get task", deadline)
+    }
+
+    pub(crate) fn wait_task_before(
+        &mut self,
+        task_id: TaskId,
+        wait_ms: u64,
+        deadline: Instant,
+    ) -> Result<V5DaemonTaskSnapshot, V5TaskExchangeError> {
+        self.task_exchange_before(
+            V5ClientRequest::WaitTask { task_id, wait_ms },
+            "wait task",
+            deadline,
+        )
+    }
+
+    pub(crate) fn cancel_task_before(
+        &mut self,
+        task_id: TaskId,
+        deadline: Instant,
+    ) -> Result<V5DaemonTaskSnapshot, V5TaskExchangeError> {
+        self.task_exchange_before(
+            V5ClientRequest::CancelTask { task_id },
+            "cancel task",
+            deadline,
+        )
+    }
+
+    fn task_exchange_before(
+        &mut self,
+        request: V5ClientRequest,
+        stage: &'static str,
+        deadline: Instant,
+    ) -> Result<V5DaemonTaskSnapshot, V5TaskExchangeError> {
+        match self.exchange_typed_before(request, stage, deadline) {
+            Ok(V5ServerResponse::Task { snapshot }) => Ok(snapshot),
+            Ok(V5ServerResponse::Error { code }) => Err(V5TaskExchangeError::Protocol(code)),
+            Ok(_) => {
+                self.poison();
+                Err(V5TaskExchangeError::UnexpectedResponse)
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
     #[cfg(feature = "receipt-ledger-test-support")]
     pub(crate) fn submit_invocation_with_timeout_for_test(
         &mut self,
@@ -465,27 +611,45 @@ impl V5DaemonProcessOwner {
         stage: &'static str,
         deadline: Instant,
     ) -> Result<V5ServerResponse, String> {
+        self.exchange_typed_before(request, stage, deadline)
+            .map_err(|error| error.to_string())
+    }
+
+    fn exchange_typed_before(
+        &mut self,
+        request: V5ClientRequest,
+        stage: &'static str,
+        deadline: Instant,
+    ) -> Result<V5ServerResponse, V5TransportError> {
         if self.poisoned {
-            return Err("protocol-v5 owner session is poisoned".to_string());
+            return Err(V5TransportError::SessionPoisoned);
         }
         if let Err(error) = self.write_before(&request, deadline, stage) {
             self.poison();
-            return Err(error);
+            return Err(V5TransportError::RequestNotSent(error));
         }
         let frame = match self.read_before(deadline, stage) {
             Ok(frame) => frame,
             Err(error) => {
                 self.poison();
-                return Err(error);
+                return Err(V5TransportError::ResponseLost(error));
             }
         };
-        match decode_v5_server_response(&frame) {
-            Ok(response) => Ok(response),
+        let response = match decode_v5_server_response(&frame) {
+            Ok(response) => response,
             Err(error) => {
                 self.poison();
-                Err(error)
+                return Err(V5TransportError::ResponseLost(error));
             }
+        };
+        // The checkpoint after parse wins over a payload that crossed the
+        // cutoff while it was being read or decoded: it is not published and
+        // the session does not survive it.
+        if let Err(error) = remaining(deadline, stage) {
+            self.poison();
+            return Err(V5TransportError::ResponseLost(error));
         }
+        Ok(response)
     }
 
     #[cfg(feature = "receipt-ledger-test-support")]

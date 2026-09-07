@@ -139,6 +139,10 @@ jobs:
       - run: python -m py_compile scripts/arch/*.py tests/arch/*.py
       - run: python -m py_compile scripts/dev/*.py tests/dev/*.py
       - run: python scripts/ci/check-version-contract.py
+      # Страж неизменности разбирает Rust-свидетельства через tree-sitter и без
+      # него честно отказывает: правка продуктового правила без парсера не
+      # проходит. Зависимости — те же, что у наборов Python.
+      - run: python -m pip install -r tests/ci/requirements.txt
       - name: Check accepted architecture records
         if: github.event_name == 'pull_request'
         env:
@@ -225,7 +229,10 @@ jobs:
   test-rust-platforms:
     name: Rust tests (${{ matrix.runner }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    # Ночной ярус `large` на Windows гоняет весь набор вместе с контрактом
+    # ReceiptLedger и в час не укладывается (прогон 34141437672 отменён на
+    # 60-й минуте); остальным воротам часа хватает с запасом.
+    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.profile == 'large' && 180 || 60 }}
     permissions:
       contents: read
       security-events: write

@@ -458,7 +458,9 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             "classify-changes": 10,
             "guards": 15,
             "test-python": 90,
-            "test-rust-platforms": 60,
+            # Час всем воротам, три — ночному `large`: там Windows гоняет весь
+            # набор вместе с контрактом ReceiptLedger.
+            "test-rust-platforms": "${{ github.event_name == 'workflow_dispatch' && inputs.profile == 'large' && 180 || 60 }}",
             "build-tools": 90,
             "package-thin": 30,
             "probe-thin-bootstrap": 30,

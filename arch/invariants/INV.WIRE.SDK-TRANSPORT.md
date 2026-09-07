@@ -2,7 +2,7 @@
 id: INV.WIRE.SDK-TRANSPORT
 status: active
 governs: process
-decision: DEC.2026-08-24.NATIVE-TASK-PROJECTION-SLICE
+decision: DEC.2026-09-07.DAEMON-V5-PRODUCTION-CUTOVER
 check: tests/ci/test_product_contracts.py::test_rmcp_transport_is_confined_to_mcp_interface
 scope: [wire]
 ---

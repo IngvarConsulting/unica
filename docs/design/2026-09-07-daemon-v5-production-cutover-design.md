@@ -1,0 +1,306 @@
+- Date: `2026-09-07`
+- Status: `draft`
+- Decision: `DEC.2026-09-07.DAEMON-V5-PRODUCTION-CUTOVER`
+
+# Перевод production daemon с протокола v3 на v5 и снятие v3
+
+## Задача
+
+Production frontend (`unica` в режиме stdio) поднимает пользовательский
+daemon протокола v3. Протокол v5 с durable ReceiptLedger реализован
+полностью, доказан 65 именованными чёрноящичными тестами на трёх ОС
+(D0, #647) и стоит рядом, но в продукт не подключён: его выбирает только
+тестовый вход. Задача — перевести production на v5, довести до
+подтверждения на конвейере и после этого удалить v3 из системы, не оставив
+двух wire identity ни в коде, ни в реестре.
+
+Источники требований: план W0a → W0b → W0c в
+[`docs/plans/2026-08-28-v0-13-completion.md`](../plans/2026-08-28-v0-13-completion.md),
+семантика фронтенда в
+[2026-08-28-daemon-receipt-ledger-design.md](2026-08-28-daemon-receipt-ledger-design.md),
+порядок волн в
+[2026-08-28-v0-13-completion-wavefront-design.md](2026-08-28-v0-13-completion-wavefront-design.md),
+пункты J0-1 и J0-2 зонтичной задачи #581.
+
+## Что есть сейчас
+
+**Выбор протокола — только identity.** `CoreIdentity::production()`
+даёт digest v3, `production_v5()` — digest v5. Режим `--daemon` выбирает
+рантайм по identity (`interfaces/daemon.rs`): ровно v5-digest поднимает
+`runtime_v5::run_daemon`, любой другой — `server::run_daemon`. Каталоги
+состояния разведены: `daemon-p3-<digest>` и `daemon-p5-<digest>`, поэтому
+v3-процесс и v5-процесс никогда не делят endpoint, receipts и TaskStore.
+Производственный вход `connect_default_user_daemon` строит клиент v3 с
+`production()`; больше ничего в продукте v3 не выбирает.
+
+**Серверная сторона v5 готова.** `runtime_v5.rs` держит полный цикл:
+handshake, reserve до валидации, Direct/Task, recover, ACK, cancel,
+startup reconciliation, fail-stop, capacity. Предметный сервис v13 у него
+тот же, что у v3 (`DaemonServerConfig::invocation_service`), поэтому
+переключение не меняет исполнение инструментов, только durable-контур
+вокруг них.
+
+**Клиентской стороны v5 нет.** `client_v5.rs` умеет connect-or-spawn
+(имя `_for_protocol_test`), Hello/Ping, submit/cancel/recover/ACK
+(без вызывающих, `dead_code`), а `get/wait/cancel_task` закрыты под
+`cfg(test | feature)`. Маршрутизатор MCP (`canonical_daemon_router`),
+типы обработчиков, проекции native Task (`interfaces/task_projection.rs`)
+и compatibility-инструментов (`application/v13/task_tools.rs`) написаны
+на типах v3: `DaemonOwner`, `InvocationResponse`, `DaemonTaskSnapshot`,
+`DaemonErrorCode`. Модулей `task_projection_v5.rs` и `task_tools_v5.rs`,
+которые план называл, в дереве нет.
+
+**Свидетельства v5 не идут в конвейере.** Контракт
+`tests/daemon_receipt_ledger.rs` собирается только с признаком
+`receipt-ledger-test-support` (`required-features`), а команды nextest в
+`run-tests.py` и `allure_results.nextest_list` признаков не передают:
+65 тестов не попадают ни в план, ни в отчёт. Пять тестов
+`tests/daemon_process.rs` стоят под `#[ignore]` «до маршрутизации яруса»;
+из-за `#[ignore]` сломан и их собственный дочерний fixture: `spawn_frontend`
+запускает тест по имени без `--include-ignored`, ребёнок ничего не
+исполняет, и два v3-теста падают по таймауту готовности.
+
+**Реестр закреплён на v3.** `CTR.WIRE.DAEMON-INVOCATION-PROTOCOL`
+(версия 3, producer `protocol.rs`, четыре запроса), восемь
+`INV.APP.DAEMON-*` с проверками в `daemon/mod.rs`, `task_store.rs`,
+`invocation_store_actor.rs`, `application/invocation.rs`,
+`CTR.APP.DAEMON-LONG-WORK-CAPABILITIES` с producer `server.rs`; владельцы —
+`DEC.2026-08-24.DAEMON-INVOCATION-ROUTING-SLICE` и
+`DEC.2026-08-24.NATIVE-TASK-PROJECTION-SLICE`. Wavefront-замысел прямо
+требует, чтобы после W0c в реестре осталась ровно одна текущая wire
+identity.
+
+**Замер 07.09.2026, локально (Apple Silicon, профиль `default`, все ядра).**
+Контракт ledger и пять process-тестов: 70 тестов, 559 с стены, 67 зелёных
+(три нестабильных прошли повтором), три красных: нагрузочный
+`wall_clock_writer_sustains_32_receipts_per_second_on_posix` (p99 428 мс
+при бюджете 250 мс под параллельной нагрузкой) и два v3 process-теста
+(сломанный fixture, см. выше). Самые долгие — тесты ёмкости и нагрузки,
+200–520 с каждый.
+
+## Развилки и выбор
+
+**Фронтенд строится на wire v5 напрямую, а не через адаптер к типам v3.**
+Адаптер «v5 → DaemonTaskSnapshot v3» сохранил бы v3-типы в интерфейсе и
+сделал бы удаление v3 второй переделкой того же кода. Вместо этого
+интерфейс переводится на `V5DaemonTaskSnapshot` и коды `V5DaemonErrorCode`
+теми же функциями и с теми же именами проверок реестра; v3-ветки этих
+функций уходят вместе с v3.
+
+**Дисциплина квитанций — как в замысле ledger.** Direct-ответ приходит
+как `V5PendingDirectReceipt`; фронтенд сначала строит окончательную
+проекцию (`CallToolResult` для Completed, `ErrorData` -32603 с закрытым
+кодом для Failed/Cancelled), и только после этого шлёт ACK с exact
+`receiptKey` и `terminalDigest`. Ошибка проекции (размер, сериализация)
+ACK не шлёт: терминал остаётся unacked и истекает через час без replay.
+ACK идёт на той же сессии с собственным коротким бюджетом, а не на
+остатке транспортного, который к этому моменту может быть исчерпан.
+Ответ на ACK (tombstone, `tombstone_capacity`, `receipt_expired`,
+транспортная ошибка) на результат для хоста не влияет: ACK доказывает
+передачу daemon → frontend, не доставку хосту.
+
+**Потеря ответа на submit — восстановление, не повтор.** Если запись
+frame прошла, а ответ не пришёл, фронтенд открывает новую сессию и шлёт
+`RecoverInvocationReceipt` с ключом, который умеет вычислить сам
+(`invocationId`, `reservedTaskId`, digest core identity, инструмент,
+нормализованный hash аргументов, hash workspace hint —
+`receipt_key_is_canonicalized_identically_by_client_and_server`). Direct
+terminal → проекция и ACK, Task → снимок, `receipt_not_found` → submit не
+дошёл, честная транспортная ошибка; `ReceiptPending` → ждать до
+`acceptedEpochMs + originalBudgetMs + 125 мс` в пределах своего cutoff и
+спросить снова. UUID никогда не генерируются повторно, за горизонт
+cutoff восстановление не продолжается. Двух исполнений одного вызова не
+бывает ни в одной ветке.
+
+**Compatibility-инструменты держат действующий контракт v2, а не форму
+сценарного бегунка.** `CTR.WIRE.COMPATIBILITY-TASK-TOOLS` (версия 2,
+`DEC.2026-09-01.V0-13-REFUSAL-DISCIPLINE`) кладёт код отказа в
+`diagnostics[]` и оставляет `data.task` чистым снимком. Проекции в
+сценарном бегунке `receipt_scenario_v5.rs` написаны раньше этого решения и
+несут `data.code`; они — свидетельство ledger, а не продукта, и остаются
+как есть. Native-проекция совпадает с замыслом побайтово: `status`
+queued/working → `working`, `completed.result` — тот же `CallToolResult`,
+`failed.error` — таблица девяти закрытых причин, включая
+`outcome_uncertain`, `task_capacity`, `workspace_capacity`,
+`workspace_registry_failed`.
+
+**Отмена со стороны хоста в этом переходе не расширяется.** v3 не
+передаёт `notifications/cancelled` в daemon; v5 умеет `CancelInvocation`
+по exact ключу. Ленивая отмена — отдельный шаг после переключения: она
+меняет наблюдаемое поведение хоста и требует своего свидетельства.
+
+**Свидетельства v5 идут своими ярусами.** Контракт ledger — второй
+вызов nextest с признаком (`-p unica-coder --features
+receipt-ledger-test-support --test daemon_receipt_ledger`); признак не
+включается на весь workspace, потому что под ним рантайм ведёт себя иначе
+на пути fail-stop (`cfg(all(feature, not(test)))`), а тестировать надо
+поставляемый код. Размер `medium` (очередь, `main`, релиз) для всего
+контракта, кроме тестов ёмкости и нагрузки; те — `large` (ночь, все три
+ОС, `threads-required = "num-cpus"`, срок 900 с). На Windows ночью
+контракт идёт целиком, как весь набор. Ярус process-тестов
+маршрутизируется снятием `#[ignore]`: они `kind(test)` и уже `medium`.
+
+**Одна wire identity в реестре — одним решением.** Новое решение
+заводится вместе с переключением по умолчанию: оно заменяет
+`DEC.2026-08-24.DAEMON-INVOCATION-ROUTING-SLICE` и
+`DEC.2026-08-24.NATIVE-TASK-PROJECTION-SLICE`, принимает во владение
+каждое правило, чья проверка или producer переезжают на v5, переводит
+`CTR.WIRE.DAEMON-INVOCATION-PROTOCOL` в версию 5 и переносит проверки
+`INV.APP.DAEMON-*` на именованные тесты v5. Решения, чьи свидетельства
+достаточно переадресовать (`realized` — записываемое поле), не
+заменяются: `DEC.2026-08-23.USER-CORE-DAEMON-SLICE` получает v5-версию
+того же process-теста под тем же именем. `DEC.2026-08-28.DAEMON-RECEIPT-LEDGER`
+уже `active`, описывает сам ledger и остаётся в силе.
+
+**v3 снимается после подтверждения, а не вместе с переключением.**
+Переключение и снятие — разные риски: первое доказывается прогоном
+продукта, второе — тем, что после удаления ни одна проверка реестра не
+осиротела. Между ними — очередь, push в `main`, ночь с Windows и полный
+контур с дымом упакованного MCP.
+
+## Шаги
+
+| Шаг | PR | Содержание | Готово, когда |
+| --- | --- | --- | --- |
+| A | свидетельства v5 в конвейере | эта записка; второй вызов nextest для контракта ledger; план и результаты из двух вызовов; ярусы `medium`/`large` в `.config/nextest.toml`; снятие `#[ignore]` с process-тестов; стражи состава | `daemon_receipt_ledger` и `daemon_process` видны в отчёте очереди; large-подмножество — в ночном прогоне |
+| B | фронтенд v5 | клиент: `connect_or_spawn`, `connect_peer`, типизированные ошибки, операции Task без cfg; ключ квитанции на клиенте; проекции native и compatibility на `V5DaemonTaskSnapshot`; маршрутизатор v5 с ACK и recover; тесты на fake-сервере v5 и на настоящем рантайме в потоке | маршрутизатор v5 доказан тестами, production всё ещё v3 |
+| C | переключение и реестр | `connect_default_user_daemon` → v5; тест identity переписан под новый default (J0-2); решение-преемник, контракт протокола версии 5, проверки `INV.APP.DAEMON-*` на v5; process-тесты на v5 identity | реестр зелёный с одной wire identity; PR влит через очередь |
+| D | доказательство | push в `main`, ночь (Windows), ручной запуск полного контура с дымом упакованного MCP на трёх ОС; запись в «Ход» | все линии зелёные на вершине с v5 или каждый красный разобран |
+| E | снятие v3 | клиент, протокол и роутер v3, v3-ветки проекций, цикл сервера v3 в `server.rs` (общий предметный сервис остаётся), `FileInvocationStore`/`invocation_store_actor`, `production()` = v5, каталог `daemon-p3-*` больше не создаётся; тесты и документы v3 | `grep` не находит `unica-daemon-jsonl-3`, `DaemonOwner`, `protocol::DaemonTaskSnapshot`; реестр и стражи зелёные |
+
+Шаг E может идти несколькими PR по слоям (фронтенд → сервер → хранилища),
+каждый через очередь.
+
+## Критерии готовности
+
+| Критерий | Как измеряется |
+| --- | --- |
+| Production поднимает v5 | дым упакованного MCP на трёх ОС; в каталоге состояния появляется `daemon-p5-*`, `daemon-p3-*` — нет |
+| Ни одного двойного исполнения | тесты recover: потеря ответа на submit, крах фронтенда до ACK, повтор ACK |
+| Проекции побайтово | `completed.result` == direct `CallToolResult`; `failed.error` — девять причин; compatibility по контракту v2 |
+| Контракт ledger в отчёте | сайт показывает `unica-coder::daemon_receipt_ledger` в линии `main`; large-подмножество — в ночи |
+| Реестр | `registry.py --check`, `immutability.py --base origin/main`, `tests/arch` зелёные; ровно одна wire identity |
+| Стоимость | шаг тестов Rust в очереди растёт не больше чем на длительность второй компиляции с признаком; замер в «Ход» |
+
+## Реестр: что переустанавливается на шаге C
+
+| Запись | Сейчас | После |
+| --- | --- | --- |
+| `CTR.WIRE.DAEMON-INVOCATION-PROTOCOL` | версия 3, producer `protocol.rs`, check `mod.rs::invocation_protocol_round_trips_all_four_strict_requests_and_closed_responses` | версия 5, producer `protocol_v5.rs`, check `protocol_v5.rs::strict_v5_client_decoder_round_trips_every_closed_request_kind`; текст: identity `unica-daemon-jsonl-5`, десять запросов, receipt/ACK/recover, коды v5 |
+| `CTR.APP.DAEMON-LONG-WORK-CAPABILITIES` | producer/check `server.rs::daemon_exact_long_work_ownership_contract` | producer `runtime_v5.rs`, check `tests/daemon_receipt_ledger.rs::production_known_long_task_executes_after_the_initial_working_projection`; версия 1 — форма capability не меняется |
+| `INV.APP.DAEMON-INVOCATION-OWNERSHIP` | `mod.rs::daemon_executes_one_canonical_invocation_and_poll_cancel_never_relaunches_it` | `daemon_receipt_ledger.rs::exact_duplicate_preserves_cutoff_without_second_domain_callback` |
+| `INV.APP.DAEMON-INVOCATION-HANDOFF` | `mod.rs::daemon_invocation_receipt_deadline_is_single_and_never_replenished` | `runtime_v5.rs::complete_v5_frame_near_cutoff_cannot_receive_a_fresh_response_budget`, `daemon_receipt_ledger.rs::cutoff_during_admission_projects_exact_unbound_task` |
+| `INV.APP.DAEMON-TASK-PERSISTENCE` | `mod.rs::durable_handoff_persists_only_closed_hashes_not_arguments_paths_or_failure_text` | `invocation_store_v5.rs::all_five_task_statuses_round_trip_with_the_exact_selected_fields`, `record_rejects_wrong_schema_unknown_duplicate_and_every_missing_root_field` |
+| `INV.APP.DAEMON-TASK-RECOVERY` | восемь проверок миграции v1→v2 в `task_store.rs` | `task_store_v5.rs::recovery_terminalizes_queued_without_starting_domain_work`, `runtime_v5.rs::startup_terminalizes_pre_task_receipts_without_replaying_domain_work`, `daemon_receipt_ledger.rs::restart_begun_without_committed_handoff_is_direct_outcome_uncertain` |
+| `INV.APP.DAEMON-TERMINAL-RECONCILIATION` | `application/invocation.rs::terminal_publication_faults_reconcile_without_reexecution_or_false_idle` | `task_store_v5.rs::completed_terminal_cas_reconciles_commit_uncertain_by_exact_readback`, `daemon_receipt_ledger.rs::every_cross_store_crash_point_reconciles_without_split_brain` |
+| `INV.APP.DAEMON-STORE-FAIL-STOP` | семнадцать проверок в `invocation_store_actor.rs`, `task_store.rs`, `server.rs`, `mod.rs` | `receipt_ledger_actor.rs::*_fail_stops_actor`, `runtime_v5.rs::commit_uncertain_is_returned_before_process_owned_fail_stop_retains_endpoint`, `displaced_receipt_authority_fail_stops_until_process_death`, `task_store_v5.rs::capacity_never_lazily_expires_terminal_records_and_not_found_is_typed`, `daemon_receipt_ledger.rs::noncooperative_prepare_forces_fail_stop_after_two_second_grace` |
+| `INV.APP.DAEMON-ACTOR-AUTHORITY` | `mod.rs::canonical_invocation_authority_is_actor_bound_and_revision_fenced` | `daemon_receipt_ledger.rs::bound_task_start_rejects_missing_foreign_stale_actor_proof_without_mutation` |
+| `INV.APP.DAEMON-ACTOR-CAPACITY` | `server.rs::daemon_workspace_actor_admission_is_concurrent_bounded_and_fail_closed` | без изменений: реестр actor общий для v3 и v5 и остаётся в `server.rs` |
+| `INV.WIRE.NATIVE-TASK-CAPABILITY`, `CTR.WIRE.NATIVE-TASK-PROJECTION`, `INV.WIRE.V13-TASK-PROFILES`, `CTR.WIRE.COMPATIBILITY-TASK-TOOLS` | проверки в `mcp.rs` | те же имена проверок, тесты переписаны на v5; владелец native-проекции — решение-преемник |
+| `DEC.2026-08-23.USER-CORE-DAEMON-SLICE` | `realized: tests/daemon_process.rs::two_frontend_processes_race_to_one_daemon_pid_record_and_endpoint` (v3) | тот же тест на identity v5 |
+
+Точные имена сверяются с деревом при заведении решения; таблица — карта,
+а не текст записей.
+
+## Чего в плане нет
+
+- Ленивая отмена по `notifications/cancelled` через `CancelInvocation`.
+- Публичный idempotency/resume API, `unica.receipt.*`, второй MCP-сервер —
+  их запрещает замысел ledger.
+- Перенос общего предметного сервиса из `server.rs` в отдельный модуль:
+  пути проверок реестра остались бы теми же только при сохранении файла.
+- Переключение публичной версии (`0.13.0-rc.1`, G6) — отдельные ворота
+  зонтичной задачи.
+
+## Ход
+
+**Шаг A, 07.09.2026.** Контракт ledger в одиночном локальном прогоне
+(профиль `default`, все ядра): 65 тестов, все зелёные, 572 с стены, 2547 с
+суммарно; четыре прошли повтором (`wall_clock_writer…`, два
+`link_capacity_…`, `deterministic_horizon_load…`). Девять тестов по
+200–530 с плюс два настенных ворот (`wall_clock_writer…` 60 с,
+`thirty_two_lazy_cancel…` 125 мс) объявлены `large`; остальные 56 — 340 с
+суммарно, самый долгий 80 с — идут `medium`. Регулярное выражение nextest
+читается буквально, перенос строки внутри `test(/…/)` — символ имени,
+поэтому ярус объявлен по одному `test(/^имя$/)` на строку. Причина двух
+красных v3 process-тестов — `#[ignore]` на fixture: дочерний процесс
+запускал тест по имени без `--include-ignored`; снятие атрибута чинит их
+без правки кода.
+
+**Шаг A на `main`, PR #773 влит 07.09.2026 через очередь.** Прогон push в
+`main`: план Rust 4614 тестов на ubuntu и 4621 на macOS (контракт ledger
+и process-тесты в плане), второй вызов nextest с признаком записал по 56
+результатов `medium` на каждом раннере; вторая компиляция и прогон — 1 мин
+48 с на ubuntu и 2 мин 4 с на macOS. Джоба Rust целиком: 7 мин 21 с и
+10 мин 51 с. Сайт пересобрался. Ночь запущена руками для яруса `large`.
+
+**Шаг B.** Клиент v5: `connect_or_spawn`, `connect_peer_before`,
+типизированные `V5TransportError` (не отправлено / ответ потерян) и
+`V5TaskExchangeError`, операции submit/recover/ACK/get/wait/cancel с
+абсолютным сроком. Проекции v5 в `task_projection.rs`: native Task,
+`DirectProjection` с таблицей девяти закрытых причин. Маршрутизатор
+`interfaces/daemon_router.rs`: ACK после проекции, recover по ключу,
+ожидание `ReceiptPending` до `accepted + budget + 125 мс` в пределах
+cutoff. Тесты: сценарный fake-daemon по кадрам (ACK с точным digest,
+потеря ответа без повторной отправки, pending за cutoff, чужая квитанция,
+подделанный digest) и настоящий рантайм v5 в потоке (tombstone после ACK,
+закрытая причина без текста, known-long handoff с get/wait/cancel).
+Находка: ответ с поддельным digest строгий декодер клиента отвергает, и
+клиент идёт в recover — «oversized Direct» до проекции не доходит, его
+отсекает сам daemon (`canonical_v5_terminal`).
+
+**Шаг C.** `CoreIdentity::production()` — digest v5, `production_v3()` —
+явный seam для тестов рантайма v3 (под `cfg(test | feature)`);
+`connect_default_user_daemon` поднимает `V5DaemonProcessOwner`. Роутер MCP
+переведён на `CanonicalDaemonRouter`: прямой результат приходит уже
+проекцией (`SurfaceToolOutcome::Direct`), снимки — `V5DaemonTaskSnapshot`,
+коды — `V5DaemonErrorCode`; проекции v3 и роутер v3 удалены из `interfaces`.
+Cutoff `unica.task.result` выводится от момента приёма запроса
+(`received_at + waitMs + 125 мс`), а не от входа в роутер: так контракт
+compatibility-инструментов держится и при вызове роутера напрямую. Клиент v5
+получил checkpoint после разбора ответа: поздний payload не публикуется и
+травит сессию. Тесты MCP переписаны на fake-daemon v5 (сессия на поток,
+задержка handshake и ответа вместо ручных часов) и на живой рантайм v5 в
+потоке (перезапуск с сохранением Task); «враждебные формы снимка» ушли —
+закрытый union v5 их не представляет, остались утечки текста причины.
+Process-тест гонки двух фронтендов переведён на identity v5: второй daemon
+на том же корне получает `timed out waiting for stable receipt authority`.
+Реестр: решение `DEC.2026-09-07.DAEMON-V5-PRODUCTION-CUTOVER` заменяет
+ROUTING-SLICE и NATIVE-TASK-PROJECTION-SLICE, контракт протокола — версия 5,
+проверки `INV.APP.DAEMON-*`, `INV.APP.EXACT-LONG-WORK-OWNERSHIP` и
+`CTR.APP.DAEMON-LONG-WORK-CAPABILITIES` — на тестах v5. Находка: страж
+неизменности разбирает Rust через tree-sitter, и `&raw` он читает как
+raw-borrow — переменную с таким именем брать по ссылке нельзя.
+Джоба `guards` не ставила зависимости наборов, и страж на CI отказывал
+текстом «tree-sitter Rust parser unavailable» — починено отдельным PR
+(#778); ночной `large` на Windows не уложился в час — срок джобы Rust для
+`profile: large` поднят до трёх часов (#777).
+
+**Шаг E, план по инвентаризации после C.** Снаружи ядра v3 ссылки остались
+в четырёх файлах: пробы «v5 отвергает v3/v4» в `receipt_scenario_v5.rs`
+(кадры `protocol_v3`), ветка V3 тестового входа в `interfaces/daemon.rs`,
+`production_v3` в `identity.rs`, один тест `runtime_v5.rs`. Внутри:
+`client.rs` целиком; в `protocol.rs` общим остаётся только
+`InvocationRequest` (его принимает общий предметный сервис); в `server.rs`
+цикл v3 (`run_daemon`, `handle_connection`, `DaemonInvocationRuntime`,
+реестр lease v3) и пятнадцать тестов на этом цикле, среди них свидетельства
+реестра — `hidden_v13_logical_lease_survives…`, `canonical_refusals_answer…`,
+`daemon_shared_delivery…`, `v13_daemon_rejects_unproved_edt…`,
+`production_v3_daemon_configuration_executes_useful_modes…` и другие; их
+переписывать на рантайм v5 под теми же именами, чтобы правила реестра не
+трогать; в `daemon/mod.rs` 52 теста клиента v3 — снимаются, свидетельство
+`DEC.2026-08-25.LOGICAL-READ-CORE-SLICE` переадресуется (поле `realized`
+записываемое); хранилища v3 — `FileInvocationStore`, `invocation_store_actor`,
+исполнитель в `application/invocation.rs` — снимаются, общие константы и
+`normalized_arguments_hash` остаются. Снятие идёт своим решением: проверка
+`INV.APP.V13-USEFUL-PARTIAL-MODES` меняет имя, а единственной допустимой
+identity становится production v5 — process-тест двух несовместимых
+identity теряет предмет.
+
+## Открытые вопросы
+
+- Держит ли wall-clock ворота на раннерах ubuntu/macOS 32 квитанции в
+  секунду в одиночном прогоне (`threads-required = "num-cpus"`)? Локально
+  под параллельной нагрузкой — нет. Ответ даст первая ночь после шага A.
+- Сколько стоит вторая компиляция с признаком в очереди: если больше
+  трёх минут, контракт ledger переезжает в отдельную джобу матрицы.

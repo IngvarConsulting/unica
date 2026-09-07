@@ -49,30 +49,29 @@ impl DaemonProtocolIdentity {
 pub(crate) struct CoreIdentity(CoreIdentityDigest);
 
 impl CoreIdentity {
+    /// The identity the production frontend connects to: the exact protocol-v5
+    /// daemon of this core ABI.
     pub(crate) fn production() -> Self {
-        let mut digest = Sha256::new();
-        digest.update(CORE_ABI_IDENTITY.as_bytes());
-        digest.update(b"\0");
-        digest.update(DAEMON_PROTOCOL_IDENTITY_PREFIX.as_bytes());
-        digest.update(
-            super::protocol::DAEMON_PROTOCOL_VERSION
-                .to_string()
-                .as_bytes(),
-        );
-        Self(CoreIdentityDigest::from_sha256(digest.finalize().into()))
+        Self::production_v5()
+    }
+
+    /// The retired protocol-v3 identity. It stays an explicit seam for the v3
+    /// runtime tests and for the cutover proof; no production path selects it.
+    #[cfg(any(test, feature = "receipt-ledger-test-support"))]
+    pub(crate) fn production_v3() -> Self {
+        Self::for_protocol(DaemonProtocolIdentity::V3)
     }
 
     pub(crate) fn production_v5() -> Self {
+        Self::for_protocol(DaemonProtocolIdentity::V5)
+    }
+
+    fn for_protocol(protocol: DaemonProtocolIdentity) -> Self {
         let mut digest = Sha256::new();
         digest.update(CORE_ABI_IDENTITY.as_bytes());
         digest.update(b"\0");
         digest.update(DAEMON_PROTOCOL_IDENTITY_PREFIX.as_bytes());
-        digest.update(
-            DaemonProtocolIdentity::V5
-                .protocol_version()
-                .to_string()
-                .as_bytes(),
-        );
+        digest.update(protocol.protocol_version().to_string().as_bytes());
         Self(CoreIdentityDigest::from_sha256(digest.finalize().into()))
     }
 
@@ -88,7 +87,6 @@ impl CoreIdentity {
         self.0.as_str()
     }
 
-    #[allow(dead_code)] // Consumed by the injected v5 runtime before W0c selects it by default.
     pub(crate) fn digest(&self) -> &CoreIdentityDigest {
         &self.0
     }
@@ -641,9 +639,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn production_v5_has_its_frozen_protocol_identity_without_changing_v3_default() {
-        let production_v3 = CoreIdentity::production();
+    fn production_identity_is_the_frozen_v5_digest_and_v3_stays_an_explicit_seam() {
+        let production_v3 = CoreIdentity::production_v3();
         let production_v5 = CoreIdentity::production_v5();
+
+        assert_eq!(
+            CoreIdentity::production(),
+            production_v5,
+            "the production frontend selects the exact protocol-v5 identity"
+        );
+        assert_ne!(production_v3, production_v5);
 
         assert_eq!(
             production_v3.as_str(),
@@ -685,7 +690,7 @@ mod tests {
     #[test]
     fn exact_production_v5_identity_forks_the_state_selector_from_v3() {
         let state_root = Path::new("/provider-state");
-        let production_v3 = CoreIdentity::production();
+        let production_v3 = CoreIdentity::production_v3();
         let production_v5 = CoreIdentity::production_v5();
 
         assert_eq!(

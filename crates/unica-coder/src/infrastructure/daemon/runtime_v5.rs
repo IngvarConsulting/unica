@@ -7959,7 +7959,7 @@ mod tests {
             7_000,
         )
         .expect("valid known-long invocation");
-        let mut owner = V5DaemonProcessOwner::connect_or_spawn_for_protocol_test(
+        let mut owner = V5DaemonProcessOwner::connect_or_spawn(
             &state_root,
             identity,
             std::path::PathBuf::from("unused-existing-v5-endpoint"),
@@ -8233,7 +8233,7 @@ mod tests {
             7_000,
         )
         .expect("valid long-submit request");
-        let mut owner = V5DaemonProcessOwner::connect_or_spawn_for_protocol_test(
+        let mut owner = V5DaemonProcessOwner::connect_or_spawn(
             &state_root,
             identity,
             std::path::PathBuf::from("unused-existing-v5-endpoint"),
@@ -8286,7 +8286,7 @@ mod tests {
                 request_scope_hash("workspace-a").expect("request scope"),
             ),
         );
-        let mut owner = V5DaemonProcessOwner::connect_or_spawn_for_protocol_test(
+        let mut owner = V5DaemonProcessOwner::connect_or_spawn(
             &state_root,
             identity.clone(),
             std::path::PathBuf::from("unused-existing-v5-endpoint"),
@@ -8370,7 +8370,7 @@ mod tests {
             RESPONSE_SERIALIZATION_MARGIN,
             "response serialization gets exactly one non-renewable margin"
         );
-        let mut owner = V5DaemonProcessOwner::connect_or_spawn_for_protocol_test(
+        let mut owner = V5DaemonProcessOwner::connect_or_spawn(
             &state_root,
             identity.clone(),
             std::path::PathBuf::from("unused-existing-v5-endpoint"),
@@ -8493,7 +8493,7 @@ mod tests {
                 request_scope_hash("workspace-a").expect("request scope"),
             ),
         );
-        let mut owner = V5DaemonProcessOwner::connect_or_spawn_for_protocol_test(
+        let mut owner = V5DaemonProcessOwner::connect_or_spawn(
             &state_root,
             identity.clone(),
             std::path::PathBuf::from("unused-existing-v5-endpoint"),
@@ -8660,7 +8660,7 @@ mod tests {
             })
         });
         let _record = wait_for_v5_record(state_root, identity);
-        let mut owner = V5DaemonProcessOwner::connect_or_spawn_for_protocol_test(
+        let mut owner = V5DaemonProcessOwner::connect_or_spawn(
             state_root,
             identity.clone(),
             std::path::PathBuf::from("unused-existing-v5-endpoint"),
@@ -9952,7 +9952,7 @@ mod tests {
         .expect("strict invocation");
         let unused_executable = std::path::PathBuf::from("unused-existing-v5-endpoint");
 
-        let mut cancel_owner = V5DaemonProcessOwner::connect_or_spawn_for_protocol_test(
+        let mut cancel_owner = V5DaemonProcessOwner::connect_or_spawn(
             &state_root,
             identity.clone(),
             unused_executable.clone(),
@@ -9973,7 +9973,7 @@ mod tests {
             }
         ));
 
-        let mut submit_owner = V5DaemonProcessOwner::connect_or_spawn_for_protocol_test(
+        let mut submit_owner = V5DaemonProcessOwner::connect_or_spawn(
             &state_root,
             identity.clone(),
             unused_executable.clone(),
@@ -9991,7 +9991,7 @@ mod tests {
                 && receipt.receipt_key() == &key
         ));
 
-        let mut recover_owner = V5DaemonProcessOwner::connect_or_spawn_for_protocol_test(
+        let mut recover_owner = V5DaemonProcessOwner::connect_or_spawn(
             &state_root,
             identity,
             unused_executable,
@@ -10326,7 +10326,7 @@ mod tests {
         use std::str::FromStr;
 
         for identity in [
-            CoreIdentity::production(),
+            CoreIdentity::production_v3(),
             CoreIdentity::from_str(
                 "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
             )

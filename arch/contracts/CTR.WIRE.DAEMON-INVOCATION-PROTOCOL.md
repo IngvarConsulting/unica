@@ -2,48 +2,55 @@
 id: CTR.WIRE.DAEMON-INVOCATION-PROTOCOL
 status: active
 governs: product
-decision: DEC.2026-08-24.NATIVE-TASK-PROJECTION-SLICE
-check: crates/unica-coder/src/infrastructure/daemon/mod.rs::invocation_protocol_round_trips_all_four_strict_requests_and_closed_responses
+decision: DEC.2026-09-07.DAEMON-V5-PRODUCTION-CUTOVER
+check:
+  - crates/unica-coder/src/infrastructure/daemon/protocol_v5.rs::strict_v5_client_decoder_round_trips_every_closed_request_kind
+  - crates/unica-coder/src/infrastructure/daemon/protocol_v5.rs::strict_v5_server_response_round_trips_the_cr0_invocation_algebra
+  - crates/unica-coder/tests/daemon_receipt_ledger.rs::v5_rejects_v3_v4_and_strictly_round_trips_receipt_messages
 scope: [app, wire]
-version: 3
-producer: crates/unica-coder/src/infrastructure/daemon/protocol.rs
+version: 5
+producer: crates/unica-coder/src/infrastructure/daemon/protocol_v5.rs
 consumers: [host]
 ---
 
 # Внутренний daemon protocol canonical Invocation
 
-Protocol identity `unica-daemon-jsonl-3` является частью `CoreIdentity` и
-разделяет discovery/state от любой иной wire ABI.
+Protocol identity `unica-daemon-jsonl-5` является частью `CoreIdentity` и
+разделяет discovery/state от любой иной wire ABI: процесс и состояние v5
+(`daemon-p5-<digest>`) не делятся ни с одной предшествующей identity, и
+`Hello` с версией 3 или 4 отклоняется закрытым `protocol_mismatch`.
 
-Версионированный JSONL protocol принимает строгие `SubmitInvocation`,
-`GetTask`, `WaitTask`, `CancelTask`. Submit отвечает `Direct(DomainResult)` или
-`Task(DaemonTaskSnapshot)`. Неизвестные поля, сообщения, неканонические TaskId и
-wait больше 7000 мс отклоняются; ошибки транспорта используют закрытые коды.
-Task snapshot несёт сохранённые `createdAt`/`updatedAt` epoch milliseconds,
-`ttlMs` и `pollIntervalMs`: reconnect/restart не заменяет их временем чтения,
-а `updatedAt` не меняется от чтения и не убывает при durable transition.
-Исчерпание 64 одновременно живых workspace actor capabilities возвращает
-закрытый retryable код `workspace_capacity`; poison actor registry возвращает
-`workspace_registry_failed`. Исчерпание bounded Task retention возвращает
-закрытый retryable код `task_capacity`. Неподтверждаемая durable publication
-переводит daemon в `RestartRequested` и возвращает `durability_uncertain`, но
-не staged DomainResult. Старый процесс перестаёт принимать соединения и
-оставляет PID-bound endpoint до своей смерти; successor заменяет только stale
-record. Текст внутренних ошибок не классифицируется и не попадает в protocol.
+Версионированный JSONL protocol принимает строгие `Hello`, `Ping`, `Release`,
+`SubmitInvocation`, `GetTask`, `WaitTask`, `CancelTask`,
+`RecoverInvocationReceipt`, `AcknowledgeInvocationReceipt` и
+`CancelInvocation`. Submit несёт `invocationId`, `reservedTaskId`, инструмент,
+аргументы, `workspaceHint` и `responseBudgetMs` в 0..=7000; daemon сам выводит
+ключ квитанции из этих полей, digest core identity и нормализованного hash
+аргументов, и ровно тот же ключ строит frontend. Submit отвечает
+`direct` (квитанция с terminal, его digest и epoch), `task` (снимок) либо
+`error`; `receipt_pending` возвращается только на recover живой квитанции и не
+открывает нового бюджета. Direct-квитанция подтверждается
+`AcknowledgeInvocationReceipt` с точными ключом и digest после того, как
+frontend построил окончательное значение для хоста; неподтверждённая живёт час.
+Terminal закрыт: `completed` с DomainResult, `failed` с одной из девяти
+закрытых причин без текста, `cancelled`. Снимок Task несёт `taskId`,
+`invocationId`, `receiptKeyDigest`, epoch времена, `ttlMs`, `pollIntervalMs`, номер
+версии записи, `cancelRequested` и terminal-поля; reconnect/restart не заменяет их
+временем чтения. Неизвестные поля, сообщения, неканонические идентификаторы и
+wait больше 7000 мс отклоняются; ошибки используют восемнадцать закрытых кодов,
+текст внутренних ошибок в protocol не попадает.
 
 Request JSONL ограничен 16 KiB. Один canonical `DomainResult` ограничен 8 MiB;
 Task record и response JSONL ограничены 8 MiB + 64 KiB bounded envelope. Direct
-и Task применяют один result limit и закрытый код `result_too_large`. Frontend
-читает response cap независимо от request cap; oversized, malformed или
-truncated response закрывает owner session, повторное использование запрещено.
-IPC serialization имеет 125 мс сверх переданного operation budget, но не
+и Task применяют один result limit и закрытую причину `result_too_large`.
+Frontend читает response cap независимо от request cap; oversized, malformed,
+truncated или пришедший после cutoff response закрывает owner session.
+IPC serialization имеет 125 мс сверх переданного operation budget и не
 перезапускает этот deadline; внутренний safety cap ответа — 10 секунд.
 
-Для `SubmitInvocation` daemon захватывает absolute response deadline executor
-clock сразу после получения JSONL, до strict validation, workspace binding и
-service preparation. Wire `responseBudgetMs` только сужает этот deadline;
-ActorBound/Prepared/executor и writer получают одну capability, а не duration.
-Если handoff истёк, Invocation уже Task. После истечения также response margin
-writer закрывается без ответа, но durable Invocation не исполняется повторно.
-Task 7 не обещает обнаружение TaskId, не доставленного после final deadline:
-для этого нужен будущий protocol-level invocation/idempotency token.
+Для `SubmitInvocation` daemon резервирует квитанцию до валидации, admission и
+подготовки и захватывает absolute response deadline; wire `responseBudgetMs`
+только сужает его. Если handoff истёк, Invocation уже Task с
+`reservedTaskId`. Потерянный ответ восстанавливается по ключу без повторной
+отправки: `RecoverInvocationReceipt` читает durable state и никогда не
+исполняет вызов снова.

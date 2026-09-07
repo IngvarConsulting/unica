@@ -1,8 +1,9 @@
 """Страж состава: ворота, профили nextest и размеры наборов согласованы.
 
-Отбор объявлен профилями: `pr` пропускает только `small`, очередь, `main` и
-релиз гоняют всё, `large` пуст везде, кроме Windows. Меняется этот страж
-осознанно, вместе с выражениями профилей.
+Отбор объявлен профилями: `pr` пропускает только `small`, очередь и `main` —
+всё, кроме `large`, релиз гоняет всё, `large` — названные тесты ёмкости и
+нагрузки контракта ReceiptLedger, а на Windows — весь набор. Меняется этот
+страж осознанно, вместе с выражениями профилей.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ class GateProfileCompositionTests(unittest.TestCase):
     def test_every_gate_has_a_nextest_profile_that_admits_its_sizes(self) -> None:
         profiles = self.config["profile"]
 
+        large = profiles["large"]["default-filter"].strip()
         for gate in GATES:
             with self.subTest(gate=gate):
                 self.assertIn(gate, profiles)
@@ -39,14 +41,41 @@ class GateProfileCompositionTests(unittest.TestCase):
                 if gate == "pr":
                     # Pull request — только small: всё, что не объявлено medium.
                     self.assertTrue(profiles[gate]["default-filter"].startswith("not ("))
-                else:
+                elif gate == "release":
                     self.assertEqual(profiles[gate].get("default-filter"), "all()")
+                else:
+                    # Очередь и `main` — всё, кроме ночного яруса, тем же выражением.
+                    self.assertEqual(profiles[gate]["default-filter"].strip(), f"not (\n{large}\n)")
         self.assertEqual(set(self.run_tests.PROFILES), {"all", "large", *GATES})
-        # Ночной ярус пуст на ubuntu и macOS: их набор целиком идёт в `main`.
-        self.assertEqual(profiles["large"].get("default-filter"), "none()")
+        # Ночной ярус на ubuntu и macOS — только названные тесты одной цели;
+        # тот же список стоит и у срока `large`.
+        self.assertTrue(large.startswith("binary(daemon_receipt_ledger) & (\n    test(/^"))
+        deadline = next(o for o in profiles["default"]["overrides"] if o.get("threads-required"))
+        self.assertEqual(deadline["filter"].strip(), large)
+        self.assertEqual(deadline["slow-timeout"], {"period": "900s", "terminate-after": 2})
+        self.assertEqual(deadline["threads-required"], "num-cpus")
         # Ночью Windows гоняет всё: переопределение по платформе в профиле large.
         self.assertEqual(profiles["large"]["overrides"], [{"platform": "cfg(windows)", "default-filter": "all()"}])
-        self.assertIn("--no-tests=pass", self.run_tests.rust_commands("large")[0])
+        for command in self.run_tests.rust_commands("large"):
+            self.assertIn("--no-tests=pass", command)
+
+    def test_large_tier_names_only_tests_that_exist_in_the_ledger_contract(self) -> None:
+        """Ярус объявлен именами: переименованный тест выпал бы из ночи молча."""
+        import re
+
+        large = self.config["profile"]["large"]["default-filter"]
+        # Регулярное выражение nextest читается буквально, перенос строки в
+        # нём — символ имени; поэтому ярус — по одному `test(/^имя$/)` на строку.
+        names = re.findall(r"test\(/\^(\w+)\$/\)", large)
+        self.assertEqual(len(names), large.count("test("))
+        source = (REPO_ROOT / "crates" / "unica-coder" / "tests" / "daemon_receipt_ledger.rs").read_text(encoding="utf-8")
+
+        self.assertEqual(names, sorted(names))
+        for name in names:
+            with self.subTest(test=name.strip()):
+                self.assertIsNotNone(
+                    re.search(rf"^fn {name.strip()}\(\)", source, re.M), "тест яруса large не найден в контракте"
+                )
 
     def test_python_matrix_names_every_suite_of_the_seam_and_lanes_only_admitted_sizes(self) -> None:
         """Матрица ворот: каждый набор шва, полосатый — по допущенным размерам, не больше."""

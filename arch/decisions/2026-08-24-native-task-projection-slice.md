@@ -1,10 +1,10 @@
 ---
 id: DEC.2026-08-24.NATIVE-TASK-PROJECTION-SLICE
-status: active
+status: superseded
 governs: product
 realized: crates/unica-coder/src/interfaces/mcp.rs::native_task_projection_contract_is_capability_gated_durable_and_replay_free
 supersedes: []
-superseded-by: null
+superseded-by: DEC.2026-09-07.DAEMON-V5-PRODUCTION-CUTOVER
 establishes: [INV.WIRE.NATIVE-TASK-CAPABILITY, INV.WIRE.SDK-TRANSPORT, CTR.WIRE.NATIVE-TASK-PROJECTION, CTR.WIRE.DAEMON-INVOCATION-PROTOCOL]
 changes: [CTR.WIRE.DAEMON-INVOCATION-PROTOCOL]
 design: docs/design/2026-08-23-v0-13-execution-surface-design.md

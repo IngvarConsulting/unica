@@ -4310,7 +4310,7 @@ struct ActorLogicalReadLease {"#,
             FileInvocationStore::open(state_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
         let config = DaemonServerConfig::new(
             std::fs::canonicalize(state_root.path()).unwrap(),
-            CoreIdentity::production(),
+            CoreIdentity::production_v3(),
             Duration::from_millis(50),
         );
         let runtime = DaemonInvocationRuntime::new(
@@ -4660,7 +4660,7 @@ struct ActorLogicalReadLease {"#,
             FileInvocationStore::open(state_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
         let config = DaemonServerConfig::new(
             std::fs::canonicalize(state_root.path()).unwrap(),
-            CoreIdentity::production(),
+            CoreIdentity::production_v3(),
             Duration::from_millis(50),
         );
         let runtime = DaemonInvocationRuntime::new(

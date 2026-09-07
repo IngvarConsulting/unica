@@ -34,7 +34,15 @@ class RunTestsSeamTests(unittest.TestCase):
         python = module.commands("all", "python", interpreter="python")
 
         self.assertEqual(
-            rust, [["cargo", "nextest", "run", "--workspace", "--profile", "default"]]
+            rust,
+            [
+                ["cargo", "nextest", "run", "--workspace", "--profile", "default"],
+                [
+                    "cargo", "nextest", "run", "-p", "unica-coder",
+                    "--features", "receipt-ledger-test-support", "--test", "daemon_receipt_ledger",
+                    "--profile", "default",
+                ],
+            ],
         )
         runner_script = str(MODULE_PATH.with_name("run-unittest.py"))
         self.assertEqual(
@@ -63,10 +71,11 @@ class RunTestsSeamTests(unittest.TestCase):
 
         planned = module.commands("all", "all", interpreter="python")
 
-        self.assertEqual(planned[0][0], "cargo")
-        self.assertTrue(all(command[0] == "python" for command in planned[1:]))
-        self.assertTrue(all(command[1].endswith("run-unittest.py") for command in planned[1:]))
-        self.assertEqual(len(planned), 4)
+        # Два вызова nextest — workspace и контракт ReceiptLedger, — потом Python.
+        self.assertEqual([command[0] for command in planned[:2]], ["cargo", "cargo"])
+        self.assertTrue(all(command[0] == "python" for command in planned[2:]))
+        self.assertTrue(all(command[1].endswith("run-unittest.py") for command in planned[2:]))
+        self.assertEqual(len(planned), 5)
 
     def test_results_directory_turns_emission_on_for_python_suites(self) -> None:
         """Без `--results` набор идёт как раньше; с ним пишет результаты и знает раннер."""
@@ -114,7 +123,10 @@ class RunTestsSeamTests(unittest.TestCase):
                               junit=out / "no-such-junit.xml")
 
         self.assertEqual(code, 0)
-        self.assertEqual(len(calls), 2)
+        # Два вызова nextest — по одному, чтобы снять JUnit после каждого, — и
+        # один список Python.
+        self.assertEqual(len(calls), 3)
+        self.assertEqual([len(planned) for planned in calls[:2]], [1, 1])
         signature = json.loads((out / "run.json").read_text(encoding="utf-8"))
         self.assertEqual(signature["ecosystem"], "all")
         self.assertEqual(signature["runner"], "ubuntu-latest")
@@ -177,7 +189,12 @@ class RunTestsSeamTests(unittest.TestCase):
 
         self.assertEqual(code, 0)
         self.assertEqual(
-            captured.getvalue().strip(), "cargo nextest run --workspace --profile default"
+            captured.getvalue().strip().splitlines(),
+            [
+                "cargo nextest run --workspace --profile default",
+                "cargo nextest run -p unica-coder --features receipt-ledger-test-support"
+                " --test daemon_receipt_ledger --profile default",
+            ],
         )
 
 
@@ -187,14 +204,63 @@ class GateProfileTests(unittest.TestCase):
     def test_each_gate_maps_to_its_own_nextest_profile_and_junit_directory(self) -> None:
         module = load_module()
 
+        ledger = [
+            "-p", "unica-coder", "--features", "receipt-ledger-test-support", "--test", "daemon_receipt_ledger",
+        ]
         for gate in ("pr", "queue", "main", "release"):
             with self.subTest(gate=gate):
-                self.assertEqual(
-                    module.rust_commands(gate),
-                    [["cargo", "nextest", "run", "--workspace", "--profile", gate]],
-                )
+                commands = module.rust_commands(gate)
+                self.assertEqual(commands[0], ["cargo", "nextest", "run", "--workspace", "--profile", gate])
+                if gate == "pr":
+                    # Контракт ReceiptLedger — `medium` и `large` целиком; ворота
+                    # `small` его не гоняют и не вызывают nextest впустую.
+                    self.assertEqual(len(commands), 1)
+                else:
+                    self.assertEqual(commands[1], ["cargo", "nextest", "run", *ledger, "--profile", gate])
                 self.assertEqual(module.nextest_junit(gate).parts[-3:], ("nextest", gate, "junit.xml"))
         self.assertEqual(module.nextest_junit("all").parts[-3:], ("nextest", "default", "junit.xml"))
+
+    def test_plan_lists_exactly_the_selections_the_run_executes(self) -> None:
+        """Состав и прогон — один отбор: `list` повторяет `run` флаг в флаг."""
+        module = load_module()
+
+        for gate in module.PROFILES:
+            with self.subTest(gate=gate):
+                runs = module.rust_commands(gate)
+                lists = module.rust_list_commands(gate)
+                self.assertEqual(len(runs), len(lists))
+                for run, listing in zip(runs, lists):
+                    selection = run[3:run.index("--profile")]
+                    self.assertEqual(listing[:3], ["cargo", "nextest", "list"])
+                    self.assertEqual(listing[3:3 + len(selection)], selection)
+                    self.assertEqual(listing[-4:], ["--run-ignored", "all", "--message-format", "json"])
+
+    def test_second_rust_invocation_gets_its_own_junit_snapshot(self) -> None:
+        """JUnit одного каталога снимается после каждого вызова, а не раз в конце."""
+        import tempfile
+        from pathlib import Path as P
+
+        module = load_module()
+        out = P(tempfile.mkdtemp(prefix="run-tests-"))
+        junit = out / "junit.xml"
+        seen = []
+
+        def run_commands(planned):
+            seen.append(planned[0][3])
+            junit.write_text(
+                '<testsuites name="unica"><testsuite name="unica-coder' + ("::daemon_receipt_ledger" if planned[0][3] == "-p" else "") + '">'
+                '<testcase name="case" classname="unica-coder" time="0.1"/>'
+                "</testsuite></testsuites>",
+                encoding="utf-8",
+            )
+            return 0
+
+        code = module.execute("queue", "rust", out, "ubuntu-latest", run_commands=run_commands, junit=junit)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(seen, ["--workspace", "-p"])
+        names = sorted(json.loads(path.read_text(encoding="utf-8"))["fullName"] for path in out.glob("*-result.json"))
+        self.assertEqual(names, ["unica-coder::case", "unica-coder::daemon_receipt_ledger::case"])
 
     def test_every_gate_runs_every_python_suite_while_all_suites_are_small(self) -> None:
         """Отбора пока нет: все наборы `small`, и любые ворота гоняют все три."""

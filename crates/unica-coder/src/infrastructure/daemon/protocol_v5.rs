@@ -9,7 +9,7 @@ use crate::application::receipt_ledger::{
     ReceiptKey, ReceiptKeyDigest, ReceiptTerminalOutcome, RequestIdentity, TerminalDigest,
     V5ToolIdentity,
 };
-use crate::domain::invocation::{DomainResult, InvocationId, TaskId};
+use crate::domain::invocation::{DomainResult, InvocationId, InvocationStatus, TaskId};
 #[cfg(feature = "receipt-ledger-test-support")]
 use crate::infrastructure::receipt_ledger_test_evidence::ProductionMissingTransitionEvidence;
 use serde::{Deserialize, Serialize};
@@ -691,6 +691,133 @@ pub(crate) enum V5DaemonTaskSnapshot {
         terminal_epoch_ms: u64,
         terminal_digest: TerminalDigest,
     },
+}
+
+impl V5DaemonTaskSnapshot {
+    pub(crate) fn task_id(&self) -> TaskId {
+        match self {
+            Self::Queued { task_id, .. }
+            | Self::Working { task_id, .. }
+            | Self::Completed { task_id, .. }
+            | Self::Failed { task_id, .. }
+            | Self::Cancelled { task_id, .. } => *task_id,
+        }
+    }
+
+    pub(crate) fn invocation_id(&self) -> InvocationId {
+        match self {
+            Self::Queued { invocation_id, .. }
+            | Self::Working { invocation_id, .. }
+            | Self::Completed { invocation_id, .. }
+            | Self::Failed { invocation_id, .. }
+            | Self::Cancelled { invocation_id, .. } => *invocation_id,
+        }
+    }
+
+    pub(crate) fn created_at_epoch_ms(&self) -> u64 {
+        match self {
+            Self::Queued {
+                created_at_epoch_ms,
+                ..
+            }
+            | Self::Working {
+                created_at_epoch_ms,
+                ..
+            }
+            | Self::Completed {
+                created_at_epoch_ms,
+                ..
+            }
+            | Self::Failed {
+                created_at_epoch_ms,
+                ..
+            }
+            | Self::Cancelled {
+                created_at_epoch_ms,
+                ..
+            } => *created_at_epoch_ms,
+        }
+    }
+
+    pub(crate) fn updated_at_epoch_ms(&self) -> u64 {
+        match self {
+            Self::Queued {
+                updated_at_epoch_ms,
+                ..
+            }
+            | Self::Working {
+                updated_at_epoch_ms,
+                ..
+            }
+            | Self::Completed {
+                updated_at_epoch_ms,
+                ..
+            }
+            | Self::Failed {
+                updated_at_epoch_ms,
+                ..
+            }
+            | Self::Cancelled {
+                updated_at_epoch_ms,
+                ..
+            } => *updated_at_epoch_ms,
+        }
+    }
+
+    pub(crate) fn ttl_ms(&self) -> u64 {
+        match self {
+            Self::Queued { ttl_ms, .. }
+            | Self::Working { ttl_ms, .. }
+            | Self::Completed { ttl_ms, .. }
+            | Self::Failed { ttl_ms, .. }
+            | Self::Cancelled { ttl_ms, .. } => *ttl_ms,
+        }
+    }
+
+    pub(crate) fn poll_interval_ms(&self) -> u64 {
+        match self {
+            Self::Queued {
+                poll_interval_ms, ..
+            }
+            | Self::Working {
+                poll_interval_ms, ..
+            }
+            | Self::Completed {
+                poll_interval_ms, ..
+            }
+            | Self::Failed {
+                poll_interval_ms, ..
+            }
+            | Self::Cancelled {
+                poll_interval_ms, ..
+            } => *poll_interval_ms,
+        }
+    }
+
+    /// Closed lifecycle status of the durable Task behind this snapshot.
+    pub(crate) fn status(&self) -> InvocationStatus {
+        match self {
+            Self::Queued { .. } => InvocationStatus::Queued,
+            Self::Working { .. } => InvocationStatus::Working,
+            Self::Completed { .. } => InvocationStatus::Completed,
+            Self::Failed { .. } => InvocationStatus::Failed,
+            Self::Cancelled { .. } => InvocationStatus::Cancelled,
+        }
+    }
+
+    pub(crate) fn completed_result(&self) -> Option<&DomainResult> {
+        match self {
+            Self::Completed { result, .. } => Some(result),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn failure_reason(&self) -> Option<V5SafeFailureReason> {
+        match self {
+            Self::Failed { reason, .. } => Some(*reason),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

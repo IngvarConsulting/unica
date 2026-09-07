@@ -2,16 +2,14 @@
 id: INV.APP.DAEMON-TASK-RECOVERY
 status: active
 governs: product
-decision: DEC.2026-08-24.DAEMON-INVOCATION-ROUTING-SLICE
+decision: DEC.2026-09-07.DAEMON-V5-PRODUCTION-CUTOVER
 check:
-  - crates/unica-coder/src/infrastructure/task_store.rs::v1_nonresumable_working_record_recovers_as_interrupted_failure
-  - crates/unica-coder/src/infrastructure/task_store.rs::v1_resumable_working_without_a_registered_owner_recovers_as_unsupported
-  - crates/unica-coder/src/infrastructure/task_store.rs::v1_terminal_record_migrates_to_v2_without_changing_its_domain_result
-  - crates/unica-coder/src/infrastructure/task_store.rs::v1_failed_and_cancelled_terminal_records_migrate_deterministically
-  - crates/unica-coder/src/infrastructure/task_store.rs::v2_working_without_a_live_owner_recovers_as_interrupted
-  - crates/unica-coder/src/infrastructure/task_store.rs::v2_working_resume_descriptor_without_registered_owner_is_unsupported
-  - crates/unica-coder/src/infrastructure/task_store.rs::v2_failed_record_persists_only_a_closed_failure_reason
-  - crates/unica-coder/src/infrastructure/task_store.rs::unknown_record_schema_fails_closed_instead_of_reinterpreting_bytes
+  - crates/unica-coder/src/infrastructure/task_store_v5.rs::recovery_terminalizes_queued_without_starting_domain_work
+  - crates/unica-coder/src/infrastructure/task_store_v5.rs::recovered_begun_task_is_created_working_and_keeps_cancel_intent
+  - crates/unica-coder/src/infrastructure/daemon/runtime_v5.rs::startup_terminalizes_pre_task_receipts_without_replaying_domain_work
+  - crates/unica-coder/src/infrastructure/daemon/runtime_v5.rs::startup_materializes_handoff_without_replaying_begun_work
+  - crates/unica-coder/tests/daemon_receipt_ledger.rs::restart_begun_without_committed_handoff_is_direct_outcome_uncertain
+  - crates/unica-coder/tests/daemon_receipt_ledger.rs::working_readback_before_receipt_begun_recovers_interrupted_without_callback
 scope: [app, cache]
 ---
 
