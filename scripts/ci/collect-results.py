@@ -31,6 +31,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import allure_results  # noqa: E402
 from site_fetch import fetch  # noqa: E402
 
+# Имя Rust-джобы в workflow и шаблоны имён артефактов: сайт читает их отсюда,
+# а страж сверяет с workflow — переименование в одном месте красит тест.
+RUST_JOB = "Rust tests ({runner})"
+RESULTS_PREFIX = "results-"
+PLAN_PREFIX = "plan-"
+
 CATEGORIES = [
     {"name": "Инфраструктура: раннер не дошёл", "matchedStatuses": ["skipped"], "messageRegex": "раннер не дошёл.*"},
     {"name": "Отключены автором", "matchedStatuses": ["skipped"], "messageRegex": "отключён автором.*"},
@@ -104,7 +110,7 @@ def fill_gaps(plan_dir: Path, run: dict, seen: set[str], out: Path, conclusions:
     """Тест из плана без результата — раннер не дошёл. Записать как `skipped`."""
     runner = run.get("runner", "")
     profile = run.get("profile", "all")
-    job = f"Rust tests ({runner})"
+    job = RUST_JOB.format(runner=runner)
     conclusion = conclusions.get(job) or "unknown"
     filled = 0
     for case in load_json(plan_dir / "plan.json"):
@@ -152,7 +158,7 @@ def fill_from_site(site: str, line: str, run: dict, seen: set[str], out: Path, c
     """Подпись без плана — сборка не прошла. Состав берётся у сайта, тесты — `skipped`."""
     runner = run.get("runner", "")
     profile = run.get("profile", "all")
-    job = f"Rust tests ({runner})"
+    job = RUST_JOB.format(runner=runner)
     conclusion = conclusions.get(job) or "unknown"
     stored = stored_rust_records(site, line, profile, runner, work)
     if stored is None:
@@ -220,7 +226,7 @@ def write_metadata(out: Path, run: dict, line: str, runners: list[str], site: st
 
 def collect(artifacts: Path, out_root: Path, jobs: Path | None, fallback_line: str, site: str) -> dict[str, dict]:
     """Сложить по линиям. Возвращает «линия → счёт записей, недошедших, раннеры»."""
-    results = signed_dirs(artifacts, "results-")
+    results = signed_dirs(artifacts, RESULTS_PREFIX)
     if not results:
         raise SystemExit(f"в {artifacts} нет ни одного results-* с подписью: складывать нечего")
     conclusions = job_conclusions(jobs)
@@ -240,7 +246,7 @@ def collect(artifacts: Path, out_root: Path, jobs: Path | None, fallback_line: s
             by_line[line]["runners"].add(run["runner"])
         seen.setdefault((line, run.get("runner", "")), set()).update(names)
     planned: set[tuple[str, str]] = set()
-    for plan_dir, run in signed_dirs(artifacts, "plan-"):
+    for plan_dir, run in signed_dirs(artifacts, PLAN_PREFIX):
         line = line_of(run, fallback_line)
         if line not in by_line:
             continue

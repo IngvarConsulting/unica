@@ -1,4 +1,5 @@
 use crate::domain::invocation::{DomainResult, InvocationStatus, TaskId};
+use crate::domain::refusal::RefusalCode;
 use serde_json::{json, Map, Value};
 
 pub(crate) const DEFAULT_TASK_RESULT_WAIT_MS: u64 = 7_000;
@@ -38,18 +39,18 @@ pub(crate) enum TaskToolError {
 }
 
 impl TaskToolError {
-    pub(crate) const fn code(self) -> &'static str {
+    pub(crate) const fn code(self) -> RefusalCode {
         match self {
-            Self::InvalidTaskId => "invalid_task_id",
-            Self::BadWaitMs => "bad_wait_ms",
-            Self::BadArguments => "bad_task_arguments",
-            Self::TaskNotFound => "task_not_found",
-            Self::TaskExpired => "task_expired",
-            Self::TaskBackendFailed => "task_backend_failed",
-            Self::TaskTransportFailed => "task_transport_failed",
-            Self::TaskSessionClosed => "task_session_closed",
-            Self::TaskProtocolFailed => "task_protocol_failed",
-            Self::ProjectionFailed => "task_projection_failed",
+            Self::InvalidTaskId => RefusalCode::InvalidTaskId,
+            Self::BadWaitMs => RefusalCode::BadWaitMs,
+            Self::BadArguments => RefusalCode::BadTaskArguments,
+            Self::TaskNotFound => RefusalCode::TaskNotFound,
+            Self::TaskExpired => RefusalCode::TaskExpired,
+            Self::TaskBackendFailed => RefusalCode::TaskBackendFailed,
+            Self::TaskTransportFailed => RefusalCode::TaskTransportFailed,
+            Self::TaskSessionClosed => RefusalCode::TaskSessionClosed,
+            Self::TaskProtocolFailed => RefusalCode::TaskProtocolFailed,
+            Self::ProjectionFailed => RefusalCode::TaskProjectionFailed,
         }
     }
 }
@@ -410,7 +411,7 @@ mod tests {
             let error = parse_task_tool_call("unica.task.result", &arguments(args))
                 .expect("known compatibility tool")
                 .expect_err("invalid request must fail closed");
-            assert_eq!(error.code(), code);
+            assert_eq!(error.code().as_str(), code);
         }
         assert!(parse_task_tool_call("unica.check", &Map::new()).is_none());
     }
@@ -512,7 +513,7 @@ mod tests {
         ] {
             let projected = task_tool_error_result(error);
             assert!(!projected.ok);
-            assert_eq!(projected.diagnostics[0]["code"], error.code());
+            assert_eq!(projected.diagnostics[0]["code"], error.code().as_str());
             assert!(
                 projected.data.is_none(),
                 "a task tool refusal carries no data payload"

@@ -11,6 +11,7 @@ use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::invocation::{DomainResult, InvocationFailure, SafeIdentityHash};
 use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind};
+use crate::domain::refusal::RefusalCode;
 use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
 use crate::infrastructure::runtime_jobs::{RuntimeJobService, RuntimeResourceOwner};
 use crate::infrastructure::source_selection_evidence::discover_project_source_admission;
@@ -463,7 +464,7 @@ impl ActorBoundInvocation {
                                         ActorLogicalReadRoute::Rejected(Box::new(
                                             DomainResult::canonical_rejection(
                                                 Some(at.to_string()),
-                                                "provider_unavailable",
+                                                RefusalCode::ProviderUnavailable,
                                                 "view source set was not admitted by the workspace actor",
                                             ),
                                         )),
@@ -481,7 +482,7 @@ impl ActorBoundInvocation {
                                 ActorLogicalReadRoute::Rejected(Box::new(
                                     DomainResult::canonical_rejection(
                                         None,
-                                        "bad_value",
+                                        RefusalCode::BadValue,
                                         "view requires string argument `at`",
                                     ),
                                 )),
@@ -532,7 +533,7 @@ impl ActorBoundInvocation {
 fn invalid_view_address_result(at: &str, detail: impl std::fmt::Display) -> DomainResult {
     let mut result = DomainResult::canonical_rejection(
         Some(at.to_string()),
-        "bad_value",
+        RefusalCode::BadValue,
         format!("invalid logical address; expected <sourceSet>:<Kind>[.<Name>...]: {detail}"),
     );
     result.next.push(serde_json::Value::Object(

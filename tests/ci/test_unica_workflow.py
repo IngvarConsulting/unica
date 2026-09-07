@@ -330,6 +330,13 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         sarif = steps_using(platforms, "github/codeql-action/upload-sarif")[0]
         self.assertEqual(sarif["with"]["category"], "clippy-${{ matrix.runner }}")
         self.assertEqual(needs(platforms), ["classify-changes", "guards"])
+        # Подпись и план выгружаются раньше clippy: раннер, упавший на линте,
+        # оставляет подпись, и его тесты не исчезают из отчёта.
+        order = [index for index, step in enumerate(steps(platforms)) if "--plan-only" in step.get("run", "") or "cargo clippy" in step.get("run", "")]
+        self.assertEqual(len(order), 2)
+        plan_index, clippy_index = order
+        self.assertIn("--plan-only", steps(platforms)[plan_index]["run"])
+        self.assertLess(plan_index, clippy_index)
         # Любая правка Rust — полная матрица; отдельной джобы на одном раннере нет.
         self.assertNotIn("test-rust-primary", jobs(self.release))
         # Команда линта закреплена дословно: `-D warnings` красит джобу, JSON
@@ -530,6 +537,11 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         platforms = job(self.release, "test-rust-platforms")
 
         self.assertIn("schedule", triggers(self.nightly))
+        # Круглые минуты GitHub исполняет с наибольшим опозданием.
+        minute = triggers(self.nightly)["schedule"][0]["cron"].split()[0]
+        self.assertNotIn(minute, ("0", "30"))
+        # Ручной и ночной запуск идут своей группой: push их не вытесняет.
+        self.assertIn("format('-dispatch-{0}', inputs.profile)", normalized(self.release["concurrency"]["group"]))
         self.assertEqual(lines["permissions"].get("actions"), "write")
         self.assertIn("--dispatch --follow .build/large", script(lines))
         self.assertEqual([upload["name"] for upload in uploads(lines)], ["results-nightly"])

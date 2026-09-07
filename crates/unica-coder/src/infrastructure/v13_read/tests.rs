@@ -11,6 +11,7 @@ use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::platform_profile::PlatformProfile;
 use crate::domain::project_sources::SourceSetKind;
+use crate::domain::refusal::RefusalCode;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::logical_tree::route_logical_address;
 use crate::infrastructure::platform::filesystem::{
@@ -102,7 +103,7 @@ fn typed_projection_rejects_unknown_provider_payload_instead_of_dumping_it() {
     )
     .unwrap_err();
 
-    assert_eq!(error.code(), "provider_unavailable");
+    assert_eq!(error.code().as_str(), "provider_unavailable");
 }
 
 #[test]
@@ -233,7 +234,7 @@ fn retained_home_page_distinguishes_missing_from_malformed_and_wrong_root() {
 
     fs::write(&sidecar, "<broken>").unwrap();
     let malformed = configuration_payload(&reader).unwrap_err();
-    assert_eq!(malformed.code(), "provider_unavailable");
+    assert_eq!(malformed.code().as_str(), "provider_unavailable");
 
     fs::write(
         &sidecar,
@@ -241,7 +242,7 @@ fn retained_home_page_distinguishes_missing_from_malformed_and_wrong_root() {
     )
     .unwrap();
     let wrong_root = configuration_payload(&reader).unwrap_err();
-    assert_eq!(wrong_root.code(), "provider_unavailable");
+    assert_eq!(wrong_root.code().as_str(), "provider_unavailable");
 
     fs::copy(
         fixture_path("unica_mcp_script_parity/cf-info/Ext/HomePageWorkArea.xml"),
@@ -1009,7 +1010,11 @@ fn pure_event_source_resolver_requires_form_evidence_for_every_item_depth() {
             &QualifiedAddress::parse(raw).unwrap(),
         )
         .unwrap_err();
-        assert_eq!(error.code(), "provider_unavailable", "{raw}: {error}");
+        assert_eq!(
+            error.code().as_str(),
+            "provider_unavailable",
+            "{raw}: {error}"
+        );
     }
 }
 
@@ -1185,7 +1190,11 @@ fn pure_event_source_resolver_fails_closed_for_unproved_event_layouts() {
             &QualifiedAddress::parse(raw).unwrap(),
         )
         .unwrap_err();
-        assert_eq!(error.code(), "provider_unavailable", "{raw}: {error}");
+        assert_eq!(
+            error.code().as_str(),
+            "provider_unavailable",
+            "{raw}: {error}"
+        );
     }
 }
 
@@ -1832,7 +1841,7 @@ fn every_reader_rejects_an_extra_unconsumed_address_tail() {
         let address = QualifiedAddress::parse(at).unwrap();
         let route = route_logical_address(&address, PlatformProfile::v8_3_27()).unwrap();
         let error = project_typed_payload(&route, payload).unwrap_err();
-        assert_eq!(error.code(), "not_found", "{at}");
+        assert_eq!(error.code().as_str(), "not_found", "{at}");
     }
 
     let fixture = RealReaderFixture::new();
@@ -2454,7 +2463,7 @@ fn retained_external_inventory_is_cancellable_and_has_an_aggregate_byte_bound() 
             }
             if cancellation.is_cancelled() {
                 Err(crate::application::v13::view::ViewError::new(
-                    "cancelled",
+                    RefusalCode::Cancelled,
                     "external inventory cancelled",
                 ))
             } else {
@@ -2462,7 +2471,7 @@ fn retained_external_inventory_is_cancellable_and_has_an_aggregate_byte_bound() 
             }
         })
         .unwrap_err();
-    assert_eq!(error.code(), "cancelled");
+    assert_eq!(error.code().as_str(), "cancelled");
 
     let bounded_fixture = RealExternalReaderFixture::new();
     for index in 0..5 {
@@ -2493,7 +2502,7 @@ fn retained_external_inventory_is_cancellable_and_has_an_aggregate_byte_bound() 
         revisions,
     );
     let error = configuration_payload(&reader).unwrap_err();
-    assert_eq!(error.code(), "provider_unavailable");
+    assert_eq!(error.code().as_str(), "provider_unavailable");
     assert!(error.to_string().contains("read limit"));
 }
 
@@ -2689,7 +2698,7 @@ fn ambiguous_short_role_alias_is_rejected_and_canonical_aliases_work() {
     let short = QualifiedAddress::parse("main:Role.SalesReader.Right.Orders").unwrap();
     let route = route_logical_address(&short, PlatformProfile::v8_3_27()).unwrap();
     let error = project_typed_payload(&route, payload.clone()).unwrap_err();
-    assert_eq!(error.code(), "bad_value");
+    assert_eq!(error.code().as_str(), "bad_value");
     assert!(error.to_string().contains("Catalog_Orders"));
     assert!(error.to_string().contains("Document_Orders"));
 
@@ -2897,7 +2906,7 @@ impl<'a> ReaderReach<'a> {
                             // reader still knows the address. No other provider
                             // failure counts as coverage.
                             Err(error) => {
-                                error.code() == "provider_unavailable"
+                                error.code().as_str() == "provider_unavailable"
                                     && address.segments().first().is_some_and(|segment| {
                                         segment.kind()
                                             == crate::domain::address::NodeKind::WebSocketClient

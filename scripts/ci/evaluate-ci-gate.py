@@ -176,6 +176,11 @@ def evaluate_gate(
         actual_result = results.get(job, "missing")
         if actual_result != expected_result:
             unexpected[job] = (actual_result, expected_result)
+    # Джоба, которой нет в таблице ожиданий, — не «ничего», а отказ: иначе
+    # новая джоба в `needs` гейта падала бы незамеченной, и гейт был бы зелёным.
+    for job, actual_result in results.items():
+        if job not in expected:
+            unexpected[job] = (actual_result, "джоба не в таблице ворот")
 
     skipped_jobs = [job for job in expected if results.get(job) == "skipped"]
     return GateEvaluation(

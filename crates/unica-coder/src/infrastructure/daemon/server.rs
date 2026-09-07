@@ -1,4 +1,5 @@
 use super::identity::{CoreIdentity, DaemonProtocolIdentity, DaemonStateDirectory};
+use crate::domain::refusal::RefusalCode;
 #[path = "invocation_service.rs"]
 mod invocation_service;
 #[cfg(test)]
@@ -355,7 +356,7 @@ impl DaemonInvocationRuntime {
             }
             Err(summary) => Err(DomainResult::canonical_rejection(
                 None,
-                "bad_value",
+                RefusalCode::BadValue,
                 summary,
             )),
         };
@@ -542,7 +543,7 @@ impl V5CanonicalInvocationRuntime {
             .restrict_to_frontend_budget(Duration::from_millis(request.response_budget_ms()));
         if let Err(summary) = validate_hidden_v13_request(&request) {
             return Err(V5CanonicalPrepareError::Rejected(Box::new(
-                DomainResult::canonical_rejection(None, "bad_value", summary),
+                DomainResult::canonical_rejection(None, RefusalCode::BadValue, summary),
             )));
         }
         if let Some(result) =
@@ -4879,6 +4880,57 @@ struct ActorLogicalReadLease {"#,
                 .as_str()
                 .is_some_and(|message| message.contains("`props.set` expects `values`")),
             "an argument refusal names the expected skeleton: {wrong_args:?}"
+        );
+
+        // Отказ по операции называет маршрут к словарю узла. Перечислять
+        // операции в тексте не нужно — секция `can` уже их публикует, и агенту
+        // нужен путь к ней. Без маршрута пробел словаря не всплывает: агент
+        // повторяет вслепую.
+        let dictionary_route = |result: &DomainResult| {
+            result
+                .next
+                .iter()
+                .find(|entry| {
+                    entry["tool"] == "unica.view" && entry["args"]["filter"]["sections"][0] == "can"
+                })
+                .cloned()
+        };
+
+        let unknown_operation = call(
+            ToolIdentity::Apply,
+            serde_json::json!({
+                "at": "main:Catalog.Bare",
+                "ops": [{"op": "object.levitate", "args": {"values": {}}}],
+                "dryRun": true
+            }),
+        );
+        assert_eq!(
+            unknown_operation.diagnostics[0]["code"], "unsupported_operation",
+            "{unknown_operation:?}"
+        );
+        assert_eq!(
+            unknown_operation.diagnostics[0]["outcome"], "goElsewhere",
+            "исход зовёт взять альтернативу: {unknown_operation:?}"
+        );
+        assert_eq!(
+            dictionary_route(&unknown_operation)
+                .as_ref()
+                .map(|entry| entry["args"]["at"].clone()),
+            Some(serde_json::json!("main:Catalog.Bare")),
+            "неизвестная операция называет словарь своего узла: {unknown_operation:?}"
+        );
+
+        let wrong_kind = call(
+            ToolIdentity::Apply,
+            serde_json::json!({
+                "at": "main:Catalog.Bare",
+                "ops": [{"op": "enumValue.add", "args": {"items": []}}],
+                "dryRun": true
+            }),
+        );
+        assert!(
+            dictionary_route(&wrong_kind).is_some(),
+            "операция не того вида тоже называет словарь узла: {wrong_kind:?}"
         );
     }
 

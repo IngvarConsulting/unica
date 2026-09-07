@@ -36,8 +36,10 @@ permissions:
 env:
   GATE_PROFILE: ${{ github.event_name == 'pull_request' && 'pr' || github.event_name == 'merge_group' && 'queue' || github.event_name == 'workflow_dispatch' && inputs.profile || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) && 'release' || 'main' }}
 
+# Ручной и ночной запуск идут своей группой: в общей с push они ждали бы за
+# сборкой ветки, а второй push вытеснял бы ожидающий прогон.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}${{ github.event_name == 'workflow_dispatch' && format('-dispatch-{0}', inputs.profile) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -274,6 +276,17 @@ jobs:
       - uses: taiki-e/install-action@84f5ac3124727fb3d284d4d22ee9ab3654fd09a6 # v2.87.7
         with:
           tool: cargo-nextest@0.9.143,clippy-sarif@0.8.0,sarif-fmt@0.8.0
+      # Подпись и план выгружаются раньше линта и тестов: раннер, упавший на
+      # clippy или сборке, оставляет подпись, и недошедшие тесты попадут в
+      # отчёт как `skipped`, а не исчезнут из него.
+      - run: python3 scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust --plan-only --results .build/results --runner "$MATRIX_RUNNER" --line "$RUN_LINE"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: plan-rust-${{ matrix.runner }}
+          # План с подписью: сайт сопоставляет его с результатами по линии и раннеру.
+          path: .build/results
+          retention-days: 7
+          overwrite: true
       - run: |
           set -o pipefail
           cargo clippy --workspace --all-targets --all-features --message-format=json -- -D warnings \
@@ -283,16 +296,6 @@ jobs:
         with:
           sarif_file: clippy.sarif
           category: clippy-${{ matrix.runner }}
-      # План выгружается до тестов: упавший раннер не унесёт его с собой,
-      # и недошедшие тесты попадут в отчёт как `skipped`, а не исчезнут.
-      - run: python3 scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust --plan-only --results .build/results --runner "$MATRIX_RUNNER" --line "$RUN_LINE"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: plan-rust-${{ matrix.runner }}
-          # План с подписью: сайт сопоставляет его с результатами по линии и раннеру.
-          path: .build/results
-          retention-days: 7
-          overwrite: true
       - run: python3 scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust --results .build/results --runner "$MATRIX_RUNNER" --line "$RUN_LINE"
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

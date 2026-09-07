@@ -8,8 +8,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import yaml
+
 
 SCRIPTS = Path(__file__).resolve().parents[2] / "scripts" / "ci"
+WORKFLOWS = Path(__file__).resolve().parents[2] / ".github" / "workflows"
+
+
+def workflow(name: str) -> dict:
+    return yaml.safe_load((WORKFLOWS / name).read_text(encoding="utf-8"))
 
 
 def load(name: str):
@@ -192,6 +199,25 @@ class CollectResultsTests(unittest.TestCase):
         self.assertEqual(gap["historyId"], self.allure.history_id("unica-coder::daemon::never_built", "ubuntu-latest"))
         # Чужой раннер и Python из хранимого прогона в состав не попадают.
         self.assertFalse(any(g["fullName"] == "unica-coder::other_runner::test" for g in gaps))
+
+    def test_job_name_and_artifact_prefixes_match_the_workflows(self) -> None:
+        """Имя Rust-джобы и шаблоны артефактов — строковая связь; переименование красит тест."""
+        release = workflow("unica-plugin-release.yml")
+        rust_job = release["jobs"]["test-rust-platforms"]["name"]
+        self.assertEqual(rust_job.replace("${{ matrix.runner }}", "{runner}"), self.collect.RUST_JOB)
+
+        prefixes = (self.collect.RESULTS_PREFIX, self.collect.PLAN_PREFIX)
+        uploads = []
+        for job_id in ("test-python", "test-rust-platforms"):
+            uploads += [s["with"]["name"] for s in release["jobs"][job_id]["steps"] if "upload-artifact" in s.get("uses", "")]
+        nightly = workflow("unica-nightly.yml")
+        uploads += [s["with"]["name"] for s in nightly["jobs"]["lines"]["steps"] if "upload-artifact" in s.get("uses", "")]
+        for name in uploads:
+            with self.subTest(artifact=name):
+                self.assertTrue(name.startswith(prefixes), name)
+        pages = workflow("unica-pages.yml")
+        pattern = next(s["with"]["pattern"] for s in pages["jobs"]["build"]["steps"] if "download-artifact" in s.get("uses", ""))
+        self.assertEqual(pattern, "{" + ",".join(p.rstrip("-") for p in prefixes) + "}-*")
 
     def test_nested_artifacts_of_a_relayed_run_are_found_at_any_depth(self) -> None:
         """Ночь выкладывает артефакты запущенного large одним своим — вложенным."""

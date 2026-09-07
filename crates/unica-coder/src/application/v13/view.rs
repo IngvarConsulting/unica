@@ -2,6 +2,7 @@ use crate::application::result_store::{ViewCursorBinding, ViewCursorError, ViewC
 use crate::domain::address::QualifiedAddress;
 use crate::domain::invocation::DomainResult;
 use crate::domain::node_view::NodeViewData;
+use crate::domain::refusal::{RefusalCode, RefusalDetail};
 use serde_json::{Map, Value};
 use std::sync::Arc;
 
@@ -51,7 +52,7 @@ pub(crate) struct ViewRequest {
 impl ViewRequest {
     pub(crate) fn new(at: &str) -> Result<Self, ViewError> {
         let at = QualifiedAddress::parse(at)
-            .map_err(|error| ViewError::new("bad_value", error.to_string()))?;
+            .map_err(|error| ViewError::new(RefusalCode::BadValue, error.to_string()))?;
         Ok(Self {
             at,
             filter: ViewFilter::default(),
@@ -80,7 +81,7 @@ impl ViewRequest {
     pub(crate) fn with_limit(mut self, limit: usize) -> Result<Self, ViewError> {
         if limit == 0 || limit > MAX_LIMIT {
             return Err(ViewError::new(
-                "bad_value",
+                RefusalCode::BadValue,
                 format!("view limit must be between 1 and {MAX_LIMIT}"),
             ));
         }
@@ -153,20 +154,36 @@ pub(crate) trait ViewReadAuthority: Send + Sync {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ViewError {
-    code: &'static str,
+    code: RefusalCode,
+    detail: Option<RefusalDetail>,
     message: String,
 }
 
 impl ViewError {
-    pub(crate) fn new(code: &'static str, message: impl Into<String>) -> Self {
+    pub(crate) fn new(code: RefusalCode, message: impl Into<String>) -> Self {
         Self {
             code,
+            detail: None,
             message: message.into(),
         }
     }
 
-    pub(crate) const fn code(&self) -> &'static str {
+    /// Отказ с уточнением: код берётся из уточнения, поэтому пару «код и не
+    /// его уточнение» составить нельзя.
+    pub(crate) fn detailed(detail: RefusalDetail, message: impl Into<String>) -> Self {
+        Self {
+            code: detail.code(),
+            detail: Some(detail),
+            message: message.into(),
+        }
+    }
+
+    pub(crate) const fn code(&self) -> RefusalCode {
         self.code
+    }
+
+    pub(crate) const fn detail(&self) -> Option<RefusalDetail> {
+        self.detail
     }
 }
 
@@ -223,15 +240,15 @@ impl<A: ViewReadAuthority> ViewService<A> {
             .read_exact(&canonical_at, &request.filter, &snapshot)?;
         if view.at() != canonical_at.to_string() {
             return Err(ViewError::new(
-                "provider_unavailable",
+                RefusalCode::ProviderUnavailable,
                 "typed reader returned a projection for another logical address",
             ));
         }
         let serialized = serde_json::to_value(view)
-            .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))?;
+            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))?;
         let mut object = serialized.as_object().cloned().ok_or_else(|| {
             ViewError::new(
-                "provider_unavailable",
+                RefusalCode::ProviderUnavailable,
                 "typed node projection is not an object",
             )
         })?;
@@ -244,7 +261,7 @@ impl<A: ViewReadAuthority> ViewService<A> {
         };
         let items = items.as_array().cloned().ok_or_else(|| {
             ViewError::new(
-                "provider_unavailable",
+                RefusalCode::ProviderUnavailable,
                 "typed collection items are not an array",
             )
         })?;
@@ -261,14 +278,14 @@ impl<A: ViewReadAuthority> ViewService<A> {
     ) -> Result<DomainResult, ViewError> {
         if offset > items.len() {
             return Err(ViewError::new(
-                "invalid_cursor",
+                RefusalCode::InvalidCursor,
                 "view cursor offset is invalid",
             ));
         }
         let end = offset.saturating_add(request.limit).min(items.len());
         let mut page = node.as_object().cloned().ok_or_else(|| {
             ViewError::new(
-                "provider_unavailable",
+                RefusalCode::ProviderUnavailable,
                 "stored node projection is not an object",
             )
         })?;
@@ -282,7 +299,7 @@ impl<A: ViewReadAuthority> ViewService<A> {
                     .insert_pages(binding.clone(), node, items, end, request.limit)
                     .ok_or_else(|| {
                         ViewError::new(
-                            "result_too_large",
+                            RefusalCode::ResultTooLarge,
                             "logical collection exceeds the bounded cursor store",
                         )
                     })?,
@@ -308,7 +325,7 @@ impl<A: ViewReadAuthority> ViewService<A> {
     ) -> Result<DomainResult, ViewError> {
         let mut page = node.as_object().cloned().ok_or_else(|| {
             ViewError::new(
-                "provider_unavailable",
+                RefusalCode::ProviderUnavailable,
                 "stored node projection is not an object",
             )
         })?;
@@ -335,7 +352,10 @@ fn cursor_error(error: ViewCursorError) -> ViewError {
 }
 
 fn error_result(at: Option<String>, error: ViewError) -> DomainResult {
-    DomainResult::canonical_rejection(at, error.code, error.message)
+    match error.detail {
+        Some(detail) => DomainResult::canonical_rejection_detailed(at, detail, error.message),
+        None => DomainResult::canonical_rejection(at, error.code, error.message),
+    }
 }
 
 fn canonical_value(value: Value) -> Value {
@@ -430,7 +450,12 @@ mod tests {
                 .unwrap()
                 .get(&at.to_string())
                 .cloned()
-                .ok_or_else(|| ViewError::new("not_found", "fixture address was not found"))
+                .ok_or_else(|| {
+                    ViewError::new(
+                        crate::domain::refusal::RefusalCode::NotFound,
+                        "fixture address was not found",
+                    )
+                })
         }
 
         fn read_exact(
@@ -439,10 +464,12 @@ mod tests {
             _filter: &ViewFilter,
             _admitted: &ViewSourceSnapshot,
         ) -> Result<NodeViewData, ViewError> {
-            self.views
-                .get(&at.to_string())
-                .cloned()
-                .ok_or_else(|| ViewError::new("not_found", "fixture address was not found"))
+            self.views.get(&at.to_string()).cloned().ok_or_else(|| {
+                ViewError::new(
+                    crate::domain::refusal::RefusalCode::NotFound,
+                    "fixture address was not found",
+                )
+            })
         }
     }
 
@@ -457,7 +484,8 @@ mod tests {
                 .unwrap()
                 .with_limit(1_001)
                 .unwrap_err()
-                .code(),
+                .code()
+                .as_str(),
             "bad_value",
         );
     }
@@ -560,5 +588,52 @@ mod tests {
         let replay = service.view(request());
         assert_eq!(replay, page);
         assert!(page.cursor.is_some());
+    }
+
+    /// Уточнение обязано пережить дорогу от чтения до провода. Разбирать
+    /// отказ на код и текст по дороге нельзя: тогда `detailCode` исчезает
+    /// молча, а код возвращается к своему умолчанию — и различие, ради
+    /// которого уточнение заведено, теряется.
+    #[test]
+    fn a_detailed_read_refusal_keeps_its_detail_and_overridden_outcome_on_the_wire() {
+        use crate::domain::refusal::{Outcome, RefusalCode, RefusalDetail};
+
+        struct UnreadableSource;
+
+        impl ViewReadAuthority for UnreadableSource {
+            fn snapshot(&self, _at: &QualifiedAddress) -> Result<ViewSourceSnapshot, ViewError> {
+                Err(ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
+                    "Configuration.xml is not UTF-8",
+                ))
+            }
+
+            fn read_exact(
+                &self,
+                _at: &QualifiedAddress,
+                _filter: &ViewFilter,
+                _admitted: &ViewSourceSnapshot,
+            ) -> Result<NodeViewData, ViewError> {
+                unreachable!("чтение не начинается, пока снимок не взят")
+            }
+        }
+
+        let service = ViewService::new(UnreadableSource, ViewCursorStore::default());
+        let request = ViewRequest::new("main:Catalog.Валюты").expect("адрес разбирается");
+        let result = service.view(request);
+
+        assert!(!result.ok, "{result:?}");
+        let diagnostic = &result.diagnostics[0];
+        assert_eq!(diagnostic["code"], "provider_unavailable");
+        assert_eq!(diagnostic["detailCode"], "source_unreadable");
+        assert_eq!(
+            diagnostic["outcome"], "fixSource",
+            "уточнение перекрывает умолчание кода: {result:?}"
+        );
+        assert_ne!(
+            RefusalCode::ProviderUnavailable.outcome(),
+            Outcome::FixSource,
+            "проверка пуста, если умолчание кода совпадает с исходом уточнения"
+        );
     }
 }

@@ -2,6 +2,7 @@ use super::selected_scalar_props;
 use crate::application::v13::view::ViewError;
 use crate::domain::address::{AddressSegment, NodeKind, QualifiedAddress};
 use crate::domain::node_view::{BranchRef, CollectionView, NodeView, NodeViewData};
+use crate::domain::refusal::RefusalCode;
 use crate::infrastructure::metadata_kinds::metadata_kind;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
@@ -64,7 +65,10 @@ pub(super) fn project_role(
             }
             project_role_object_suffix(&canonical, object, &suffix[1..])
         }
-        _ => Err(ViewError::new("not_found", "role projection was not found")),
+        _ => Err(ViewError::new(
+            RefusalCode::NotFound,
+            "role projection was not found",
+        )),
     }
 }
 
@@ -75,13 +79,13 @@ fn project_role_object_suffix(
 ) -> Result<NodeViewData, ViewError> {
     let [rls] = suffix else {
         return Err(ViewError::new(
-            "not_found",
+            RefusalCode::NotFound,
             "role right projection did not consume the complete address suffix",
         ));
     };
     if rls.kind() != NodeKind::Rls {
         return Err(ViewError::new(
-            "not_found",
+            RefusalCode::NotFound,
             "role right has no requested child projection",
         ));
     }
@@ -114,7 +118,7 @@ fn project_role_object_suffix(
             })
             .ok_or_else(|| {
                 ViewError::new(
-                    "not_found",
+                    RefusalCode::NotFound,
                     format!("restricted role right `{name}` was not found"),
                 )
             }),
@@ -135,7 +139,7 @@ fn role_objects(payload: &Value) -> Result<Vec<RoleObject>, ViewError> {
             };
             if !is_role_right_owner_kind(group_kind) {
                 return Err(ViewError::new(
-                    "provider_unavailable",
+                    RefusalCode::ProviderUnavailable,
                     format!("role rights contain invalid metadata kind `{group_kind}`"),
                 ));
             }
@@ -208,7 +212,7 @@ fn resolve_role_object<'a>(
     match matches.as_slice() {
         [object] => Ok(*object),
         [] => Err(ViewError::new(
-            "not_found",
+            RefusalCode::NotFound,
             format!("role object `{requested}` was not found"),
         )),
         ambiguous => {
@@ -218,7 +222,7 @@ fn resolve_role_object<'a>(
                 .collect::<Vec<_>>()
                 .join(", ");
             Err(ViewError::new(
-                "bad_value",
+                RefusalCode::BadValue,
                 format!("role object alias `{requested}` is ambiguous; use one of: {candidates}"),
             ))
         }
@@ -233,14 +237,20 @@ fn canonical_role_object_address(
         .segments()
         .first()
         .and_then(AddressSegment::name)
-        .ok_or_else(|| ViewError::new("provider_unavailable", "role name is unavailable"))?;
-    let logical = role_object_logical_name(object)
-        .ok_or_else(|| ViewError::new("provider_unavailable", "role object identity is invalid"))?;
+        .ok_or_else(|| {
+            ViewError::new(RefusalCode::ProviderUnavailable, "role name is unavailable")
+        })?;
+    let logical = role_object_logical_name(object).ok_or_else(|| {
+        ViewError::new(
+            RefusalCode::ProviderUnavailable,
+            "role object identity is invalid",
+        )
+    })?;
     QualifiedAddress::parse(&format!(
         "{}:Role.{role_name}.Right.{logical}",
         requested.source_set()
     ))
-    .map_err(|error| ViewError::new("provider_unavailable", error.to_string()))
+    .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
 }
 
 fn role_object_node(address: &QualifiedAddress, object: &RoleObject) -> NodeView {

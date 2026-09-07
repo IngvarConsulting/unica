@@ -4,6 +4,7 @@ use crate::domain::module_projection::{
 };
 use crate::domain::platform_profile::{ModuleCapability, PlatformProfile};
 use crate::domain::project_sources::SourceSetKind;
+use crate::domain::refusal::RefusalCode;
 use crate::infrastructure::bsl_module_projection::{
     project_form_owner_event_record, project_form_owner_events, project_module,
     project_module_event_record, required_event_directive, EventDirectiveOwner, FormBindingOwner,
@@ -53,8 +54,8 @@ impl EventProjectionError {
         self.kind
     }
 
-    pub(crate) const fn code(&self) -> &'static str {
-        "provider_unavailable"
+    pub(crate) const fn code(&self) -> RefusalCode {
+        RefusalCode::ProviderUnavailable
     }
 }
 
@@ -607,7 +608,7 @@ mod tests {
                 &spec(&contexts),
             )
             .unwrap_err();
-            assert_eq!(error.code(), "provider_unavailable");
+            assert_eq!(error.code().as_str(), "provider_unavailable");
         }
         assert_eq!(
             required_event_directive(

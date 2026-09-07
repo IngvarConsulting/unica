@@ -274,6 +274,18 @@ class EvaluateCiGateTests(unittest.TestCase):
             {key: value for key, value in evaluation.unexpected.items() if key != "classification"},
         )
 
+    def test_a_job_outside_the_gate_table_fails_the_gate_even_when_green(self) -> None:
+        """Новая джоба в `needs` гейта без строки в таблице — отказ, а не молчание."""
+        gate = load_gate_module()
+        results = {**source_results(), "brand-new-job": "failure"}
+
+        evaluation = gate.evaluate_gate("pull_request", "refs/pull/1/merge", classification(), results)
+
+        self.assertFalse(evaluation.ok)
+        self.assertEqual(evaluation.unexpected["brand-new-job"], ("failure", "джоба не в таблице ворот"))
+        green = gate.evaluate_gate("pull_request", "refs/pull/1/merge", classification(), {**source_results(), "brand-new-job": "success"})
+        self.assertFalse(green.ok)
+
     def test_summary_reports_classification_results_and_skipped_jobs(self) -> None:
         module = load_gate_module()
         outputs = classification(rust_changed=True, release_required=True)

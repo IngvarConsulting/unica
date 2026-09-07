@@ -361,7 +361,7 @@ mod tests {
             ),
         )
         .unwrap_err();
-        assert_eq!(error.code(), "dependency_unavailable");
+        assert_eq!(error.code().as_str(), "dependency_unavailable");
     }
 
     /// `check` over a 2.21 root keeps the validator verdict and leads with

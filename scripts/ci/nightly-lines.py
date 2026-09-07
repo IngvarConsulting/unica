@@ -125,9 +125,15 @@ def follow(decisions: list[dict], dest: Path, *, find=find_started_run, watch=wa
             continue
         run_id = find(decision["line"], decision["since"])
         conclusion = watch(run_id)
+        # Отменённый прогон — не результат: его артефакты неполны, а память
+        # `large` по ним сочла бы вершину проверенной без Windows.
+        if conclusion == "cancelled":
+            decision["reason"] += f", прогон {run_id}: отменён, артефакты не пересылаются"
+            outcomes.append({"line": decision["line"], "run_id": run_id, "conclusion": conclusion, "relayed": False})
+            continue
         download(run_id, dest / decision["line"])
         decision["reason"] += f", прогон {run_id}: {conclusion}"
-        outcomes.append({"line": decision["line"], "run_id": run_id, "conclusion": conclusion})
+        outcomes.append({"line": decision["line"], "run_id": run_id, "conclusion": conclusion, "relayed": True})
     return outcomes
 
 
