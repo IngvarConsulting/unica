@@ -138,13 +138,16 @@ impl CanonicalV13ReadService {
         };
         for (index, operation) in request.ops().iter().enumerate() {
             let Some(descriptor) = OperationRegistry::closed().lookup(operation.name()) else {
-                return error_result(
-                    Some(format!("ops[{index}].op")),
-                    RefusalCode::UnsupportedOperation,
-                    format!(
-                        "apply operation `{}` is not in the canonical registry",
-                        operation.name()
+                return with_node_dictionary(
+                    error_result(
+                        Some(format!("ops[{index}].op")),
+                        RefusalCode::UnsupportedOperation,
+                        format!(
+                            "apply operation `{}` is not in the canonical registry",
+                            operation.name()
+                        ),
                     ),
+                    &operation.at().to_string(),
                 );
             };
             let target_kind = operation
@@ -154,14 +157,17 @@ impl CanonicalV13ReadService {
                 .expect("a parsed logical address has a terminal segment")
                 .kind();
             if !descriptor.applies_to_operation_target(operation.at()) {
-                return error_result(
-                    Some(format!("ops[{index}].at")),
-                    RefusalCode::BadValue,
-                    format!(
-                        "apply operation `{}` does not apply to {}",
-                        operation.name(),
-                        target_kind.as_str()
+                return with_node_dictionary(
+                    error_result(
+                        Some(format!("ops[{index}].at")),
+                        RefusalCode::BadValue,
+                        format!(
+                            "apply operation `{}` does not apply to {}",
+                            operation.name(),
+                            target_kind.as_str()
+                        ),
                     ),
+                    &operation.at().to_string(),
                 );
             }
         }
@@ -1183,6 +1189,19 @@ fn unreadable_target_format_refusal(
         RefusalCode::InvalidSource,
         format!("{warning}{actual}"),
     ))
+}
+
+/// Отказ по операции называет маршрут к словарю узла, а не перечисляет
+/// операции в тексте: перечень уже публикуется секцией `can`, и агенту нужен
+/// путь к нему, а не копия внутри сообщения. Без этого пробелы словаря
+/// `apply` не всплывают — агент повторяет вслепую.
+fn with_node_dictionary(mut result: DomainResult, at: &str) -> DomainResult {
+    result.next.push(serde_json::json!({
+        "tool": "unica.view",
+        "args": {"at": at, "filter": {"sections": ["can"]}},
+        "reason": "какие операции применимы к этому узлу",
+    }));
+    result
 }
 
 fn error_result(at: Option<String>, code: RefusalCode, message: impl Into<String>) -> DomainResult {
