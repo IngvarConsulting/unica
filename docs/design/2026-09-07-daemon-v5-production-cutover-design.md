@@ -227,6 +227,28 @@ receipt-ledger-test-support --test daemon_receipt_ledger`); признак не
 запускал тест по имени без `--include-ignored`; снятие атрибута чинит их
 без правки кода.
 
+**Шаг A на `main`, PR #773 влит 07.09.2026 через очередь.** Прогон push в
+`main`: план Rust 4614 тестов на ubuntu и 4621 на macOS (контракт ledger
+и process-тесты в плане), второй вызов nextest с признаком записал по 56
+результатов `medium` на каждом раннере; вторая компиляция и прогон — 1 мин
+48 с на ubuntu и 2 мин 4 с на macOS. Джоба Rust целиком: 7 мин 21 с и
+10 мин 51 с. Сайт пересобрался. Ночь запущена руками для яруса `large`.
+
+**Шаг B.** Клиент v5: `connect_or_spawn`, `connect_peer_before`,
+типизированные `V5TransportError` (не отправлено / ответ потерян) и
+`V5TaskExchangeError`, операции submit/recover/ACK/get/wait/cancel с
+абсолютным сроком. Проекции v5 в `task_projection.rs`: native Task,
+`DirectProjection` с таблицей девяти закрытых причин. Маршрутизатор
+`interfaces/daemon_router.rs`: ACK после проекции, recover по ключу,
+ожидание `ReceiptPending` до `accepted + budget + 125 мс` в пределах
+cutoff. Тесты: сценарный fake-daemon по кадрам (ACK с точным digest,
+потеря ответа без повторной отправки, pending за cutoff, чужая квитанция,
+подделанный digest) и настоящий рантайм v5 в потоке (tombstone после ACK,
+закрытая причина без текста, known-long handoff с get/wait/cancel).
+Находка: ответ с поддельным digest строгий декодер клиента отвергает, и
+клиент идёт в recover — «oversized Direct» до проекции не доходит, его
+отсекает сам daemon (`canonical_v5_terminal`).
+
 ## Открытые вопросы
 
 - Держит ли wall-clock ворота на раннерах ubuntu/macOS 32 квитанции в

@@ -566,10 +566,7 @@ mod tests {
         let hello = decode_v5_request_frame(hello).expect("strict hello");
         assert!(matches!(hello.request(), V5ClientRequest::Hello { .. }));
         write_frame(&mut writer, &V5HandshakeServerResponse::ready(&record));
-        loop {
-            let Ok(raw) = read_bounded_v5_request_frame(&mut reader) else {
-                break;
-            };
+        while let Ok(raw) = read_bounded_v5_request_frame(&mut reader) {
             let decoded = decode_v5_request_frame(raw.clone()).expect("strict client frame");
             let request = decoded.into_request();
             seen.lock().unwrap().push(request.clone());
