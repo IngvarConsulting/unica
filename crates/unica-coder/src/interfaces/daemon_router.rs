@@ -247,6 +247,13 @@ fn submit_and_settle(
     observer: Option<&ReceiptObserver>,
 ) -> Result<CanonicalCallOutcome, ErrorData> {
     let cutoff = deadline.transport_cutoff();
+    let mut peer = anchor
+        .connect_peer_before(cutoff)
+        .map_err(transport_refusal)?;
+    // The daemon anchors its handoff at the receipt of the frame, so its budget
+    // is what remains of the frontend budget once the connection stands: a slow
+    // connect or a spawn shortens the daemon's window instead of pushing its
+    // handoff past the frontend cutoff.
     let response_budget_ms = deadline
         .remaining_at(Instant::now())
         .as_millis()
@@ -266,9 +273,6 @@ fn submit_and_settle(
     if let Some(observer) = observer {
         observer(&receipt_key);
     }
-    let mut peer = anchor
-        .connect_peer_before(cutoff)
-        .map_err(transport_refusal)?;
     let (peer, response) = match peer.submit_invocation_before(invocation, cutoff) {
         Ok(response) => (peer, response),
         // The frame reached the daemon and the answer did not come back: the
@@ -335,10 +339,12 @@ fn recover_receipt(
                 let until_settled =
                     Duration::from_millis(settles_at_epoch_ms.saturating_sub(epoch_ms_now()));
                 let remaining = cutoff.saturating_duration_since(Instant::now());
-                // A receipt that settles after the frontend cutoff cannot be
-                // delivered by this call; the daemon keeps it, nobody resubmits.
+                // A receipt that settles after the recovery window cannot be
+                // delivered by this call: the daemon keeps it and promotes it
+                // on its own, nobody resubmits, and the host gets the same
+                // closed refusal as for a lost submission.
                 if until_settled >= remaining || remaining <= RECOVERY_POLL_INTERVAL {
-                    return Err(receipt_pending_refusal());
+                    return Err(lost_submit_refusal());
                 }
                 std::thread::sleep(until_settled.max(RECOVERY_POLL_INTERVAL));
             }
@@ -1130,8 +1136,46 @@ mod tests {
         let refusal = call(&router, Some(Duration::from_millis(400)))
             .expect_err("a receipt pending past the cutoff is refused");
 
-        assert_eq!(refusal.data, Some(json!({"code": "receipt_pending"})));
+        assert_eq!(refusal.code, ErrorCode(TOOL_EXECUTION_ERROR));
+        assert_eq!(
+            refusal.message,
+            "daemon deadline expired during invocation submit response"
+        );
+        assert_eq!(refusal.data, None);
         assert_eq!(fake.submissions(), 1);
+    }
+
+    #[test]
+    fn daemon_budget_is_what_remains_of_the_frontend_budget_once_the_connection_stands() {
+        let handshake_delay = Duration::from_millis(400);
+        let fake = FakeDaemon::start_with_handshake_delay(
+            Box::new(|raw, request| match request {
+                V5ClientRequest::SubmitInvocation { .. } => {
+                    Step::Reply(direct_receipt(daemon_side_key(raw), completed("viewed")))
+                }
+                V5ClientRequest::AcknowledgeInvocationReceipt { .. } => Step::Close,
+                other => panic!("unexpected frame {other:?}"),
+            }),
+            handshake_delay,
+        );
+        let router = canonical_daemon_router(fake.owner(), "/workspace".to_string());
+
+        let result = direct_result(call(&router, None));
+
+        assert_eq!(result.is_error, Some(false));
+        let seen = fake.seen();
+        let V5ClientRequest::SubmitInvocation { invocation } = &seen[0] else {
+            panic!("first frame must be the submission: {seen:?}");
+        };
+        let budget = Duration::from_millis(invocation.response_budget_ms());
+        assert!(
+            budget <= INVOCATION_HANDOFF_WINDOW - handshake_delay,
+            "the handshake spent before the submission comes off the daemon budget: {budget:?}"
+        );
+        assert!(
+            budget >= INVOCATION_HANDOFF_WINDOW - handshake_delay - Duration::from_secs(2),
+            "only the time actually spent comes off the daemon budget: {budget:?}"
+        );
     }
 
     #[test]

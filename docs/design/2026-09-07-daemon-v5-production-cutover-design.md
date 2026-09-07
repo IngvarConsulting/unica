@@ -300,6 +300,38 @@ cutoff — daemon к этому моменту уже передал работ�
 мутацию нельзя» не меняется. Ночь: большой ярус на ubuntu и macOS зелёный,
 Windows — под новым трёхчасовым сроком, итог ниже.
 
+**Ночь 07.09.2026 (run 34152595981).** Ubuntu и macOS: девять тестов
+яруса `large` зелёные, настенные ворота
+`wall_clock_writer_sustains_32_receipts_per_second_on_posix` держат
+32 квитанции в секунду на обоих раннерах (60 с) — открытый вопрос записки
+закрыт. Модель горизонта: 415 с на ubuntu, 465 с на macOS. Windows уложился
+в 85 минут при новом сроке 180: контракт ledger 64 из 65, не влезла в два
+срока `large` только детерминированная модель горизонта
+(`deterministic_horizon_load_does_not_saturate`) — она платформе
+безразлична и снята с Windows-ночи (#781); ещё два красных теста на Windows —
+`invocation_protocol_round_trips_all_four_strict_requests_and_closed_responses`
+и `truncated_handshake_transport_closes_without_a_protocol_response` из
+`daemon/mod.rs` — тесты v3, красные там и до перехода (прогон 34052206875
+от 06.09), уходят вместе с v3 на шаге E.
+
+**Выкидка #780 из очереди (run 34155030958).** Приёмочный корпус
+(`ci-medium`): пятнадцать из двадцати одного сценария `unica.docs` получили
+отказ «daemon invocation receipt is still pending at the frontend cutoff»
+вместо `ok | provider | task`. Причина глубже окна восстановления: роутер
+считал бюджет daemon до подключения, а daemon отсчитывает handoff от приёма
+кадра — при медленном connect (или запуске daemon) его передача в Task
+приходила уже после cutoff фронтенда, ответ терялся, recover находил
+квитанцию pending, срок которой лежит за окном, и отвечал отказом, которого
+корпус не знает. На `main` тот же случай выглядел как «protocol-v5 deadline
+expired during connect» и проходил корпус только благодаря подстроке
+«deadline expired» — класс `provider`. Правка в том же PR: бюджет daemon —
+остаток бюджета фронтенда после установленного соединения (тест
+`daemon_budget_is_what_remains_of_the_frontend_budget_once_the_connection_stands`),
+так что handoff daemon укладывается до cutoff, а окно 750 мс покрывает
+только задержку самой durable-промоции; квитанция, чей срок лежит за окном,
+получает тот же закрытый отказ, что потерянная отправка, — как и записано
+выше, а не отдельный `receipt_pending`.
+
 **Шаг E, план по инвентаризации после C.** Снаружи ядра v3 ссылки остались
 в четырёх файлах: пробы «v5 отвергает v3/v4» в `receipt_scenario_v5.rs`
 (кадры `protocol_v3`), ветка V3 тестового входа в `interfaces/daemon.rs`,
