@@ -119,7 +119,6 @@ pub(super) struct ReceiptScenarioControl {
     trace_sequence: AtomicU64,
     gate_events: Mutex<Vec<Value>>,
     operation_events: Mutex<Vec<Value>>,
-    staged_handoff: Mutex<Option<TaskHandoffActorBoundReceipt>>,
     staged_terminal_preparations: Mutex<Vec<Value>>,
     staged_terminal_publications: Mutex<Vec<Value>>,
     runtime: Mutex<Option<Weak<V5ReceiptRuntime>>>,
@@ -186,7 +185,6 @@ impl ReceiptScenarioControl {
             trace_sequence: AtomicU64::new(1),
             gate_events: Mutex::new(Vec::new()),
             operation_events: Mutex::new(Vec::new()),
-            staged_handoff: Mutex::new(None),
             staged_terminal_preparations: Mutex::new(Vec::new()),
             staged_terminal_publications: Mutex::new(Vec::new()),
             runtime: Mutex::new(None),
@@ -257,11 +255,6 @@ impl ReceiptScenarioControl {
         else {
             return Err("staged terminal preparation requires an exact staged receipt".to_owned());
         };
-        *self
-            .staged_handoff
-            .lock()
-            .map_err(|_| "scenario staged handoff mutex poisoned".to_owned())? =
-            Some(staged.clone());
         let receipt_key = receipt_key_observation(staged.key());
         if self
             .staged_terminal_preparations
@@ -408,13 +401,6 @@ impl ReceiptScenarioControl {
             .map_err(|_| "scenario staged terminal preparation mutex poisoned".to_owned())?
             .push(preparation);
         Ok(())
-    }
-
-    pub(super) fn staged_handoff(&self) -> Option<TaskHandoffActorBoundReceipt> {
-        self.staged_handoff
-            .lock()
-            .expect("scenario staged handoff mutex poisoned")
-            .clone()
     }
 
     pub(super) fn record_staged_terminal_publication(
@@ -1291,10 +1277,6 @@ impl ReceiptScenarioControl {
             .expect("scenario bound Task mutex poisoned");
         tasks.retain(|task| task.record.task_id != record.task_id);
         tasks.push(ScenarioBoundTask { record, bound });
-        *self
-            .staged_handoff
-            .lock()
-            .expect("scenario staged handoff mutex poisoned") = None;
     }
 
     pub(super) fn bound_task(&self) -> Option<ScenarioBoundTask> {

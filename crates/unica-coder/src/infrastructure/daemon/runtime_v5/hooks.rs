@@ -319,11 +319,6 @@ pub(crate) trait V5RuntimeHooks: Send + Sync {
     fn session_deadline_override(&self) -> Option<Instant> {
         None
     }
-
-    /// A handoff staged by the observer in place of the runtime's own.
-    fn staged_handoff(&self) -> Option<TaskHandoffActorBoundReceipt> {
-        None
-    }
 }
 
 /// Production: nothing observes and nothing is injected.

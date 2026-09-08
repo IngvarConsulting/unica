@@ -1056,10 +1056,4 @@ impl V5RuntimeHooks for ScenarioHooks {
             .filter(|control| control.has_precomputed_terminal())
             .map(|_| Self::bulk_deadline())
     }
-
-    fn staged_handoff(&self) -> Option<TaskHandoffActorBoundReceipt> {
-        self.control
-            .as_ref()
-            .and_then(|control| control.staged_handoff())
-    }
 }

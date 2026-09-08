@@ -3133,7 +3133,10 @@ impl V5ReceiptRuntime {
             let deadline = self
                 .hooks
                 .commit_deadline_at(V5PausePoint::BeforeTaskStoreCreate, deadline);
-            let handoff = self.hooks.staged_handoff().unwrap_or(handoff);
+            // Another owner may have staged a terminal onto this receipt while
+            // the pause held: re-read it so the Task is materialized from the
+            // committed state, not from a version that went stale in the pause.
+            let handoff = self.reread_handoff_after_pause(handoff, deadline)?;
             let (task_record, bound) = self
                 .task_projection
                 .materialize_staged_bound_handoff(
@@ -3730,7 +3733,10 @@ impl V5ReceiptRuntime {
         let deadline = self
             .hooks
             .commit_deadline_at(V5PausePoint::BeforeTaskStoreCreate, deadline);
-        let handoff = self.hooks.staged_handoff().unwrap_or(handoff);
+        // Another owner may have staged a terminal onto this receipt while the
+        // pause held: re-read it so the Task is materialized from the committed
+        // state, not from a version that went stale in the pause.
+        let handoff = self.reread_handoff_after_pause(handoff, deadline)?;
         let (task_record, bound) = self
             .task_projection
             .materialize_staged_bound_handoff(
@@ -4370,6 +4376,26 @@ impl V5ReceiptRuntime {
                 snapshot: task_store_snapshot(&terminal_record),
             },
         }))
+    }
+
+    /// Re-reads a handoff receipt after a pause that another owner could have
+    /// used to stage a terminal onto it. A no-op without an observer: nothing
+    /// pauses in production, so the receipt cannot have moved.
+    fn reread_handoff_after_pause(
+        &self,
+        handoff: TaskHandoffActorBoundReceipt,
+        deadline: Instant,
+    ) -> Result<TaskHandoffActorBoundReceipt, ReceiptLedgerError> {
+        if !self.hooks.observing() {
+            return Ok(handoff);
+        }
+        match self
+            .receipt_ledger
+            .recover(handoff.key().clone(), deadline)?
+        {
+            ReceiptState::TaskHandoffActorBound(fresh) => Ok(fresh),
+            _ => Ok(handoff),
+        }
     }
 
     fn publish_staged_handoff_terminal_reply(
