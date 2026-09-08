@@ -17,7 +17,7 @@ ROW = re.compile(r"^\| `([^`]+)` \|(?P<body>.+)$", re.MULTILINE)
 CANONICAL = {
     "unica.view",
     "unica.apply",
-    "unica.find",
+    "unica.resolve",
     "unica.search",
     "unica.check",
     "unica.diff",
@@ -46,8 +46,16 @@ class SurfaceFirstTransitionMatrixTests(unittest.TestCase):
 
     def test_matrix_names_all_eight_targets_and_explicitly_excludes_skills(self) -> None:
         text = MATRIX.read_text(encoding="utf-8")
-        for tool in sorted(CANONICAL):
+        # Матрица датирована и описывает намерение своего дня. Восьмое имя с
+        # тех пор сменилось: `find` разошёлся на `search` и `resolve`
+        # (DEC.2026-09-08.RESOLVE-REPLACES-FIND). Править датированный
+        # документ значило бы подделать историю, поэтому здесь проверяются
+        # семь неизменных имён, а действующий состав держит
+        # test_generated_ledger_and_review_are_the_exact_compatibility_profile
+        # по сгенерированному реестру.
+        for tool in sorted(CANONICAL - {"unica.resolve"}):
             self.assertIn(f"`{tool}`", text)
+        self.assertIn("`unica.find`", text)
         self.assertIn("`plugins/unica/skills/**`\nis excluded from scope", text)
         self.assertIn("**Merging to `main` is not a release**", text)
 

@@ -220,15 +220,14 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                     ),
                 },
                 V13ToolContract {
-                    name: "find",
-                    description: "Map between object names, logical addresses and where objects live in the source layout, in both directions.",
+                    name: "resolve",
+                    description: "Emergency bridge between a logical address and the source layout, in both directions. Use it only when a path arrived from outside Unica - a diff, a build log, a stack trace - or when a file has to be opened outside Unica. To find an object by name use search; to read it use view.",
                     input_schema: schema(
                         json!({
-                            "query": {"type": "string", "description": "Object name, synonym, logical address, or a path to a source file or object directory."},
-                            "kind": {"type": "string", "description": "Optional logical kind such as Catalog or CommonModule."},
-                            "limit": limit("Maximum candidates to return."),
+                            "at": logical_address_with("Qualified logical address whose source location is needed."),
+                            "path": {"type": "string", "description": "Path to a source file or object directory, absolute or relative to the workspace root."},
                         }),
-                        json!(["query"]),
+                        json!([]),
                     ),
                 },
                 V13ToolContract {
@@ -445,7 +444,16 @@ mod tests {
             properties,
             "unica.{name} argument set drifted"
         );
-        for forbidden in ["jobId", "path", "provider", "providerId"] {
+        // Физический путь на поверхности живёт ровно в одном инструменте.
+        // Аварийный мост затем и заведён, чтобы путь не просачивался в
+        // частые ответы: приглашение прочитать файл напрямую подрывает
+        // адресное пространство, ради которого весь слой и существует.
+        let forbidden: &[&str] = if name == "resolve" {
+            &["jobId", "provider", "providerId"]
+        } else {
+            &["jobId", "path", "provider", "providerId"]
+        };
+        for forbidden in forbidden {
             assert!(
                 schema["properties"].get(forbidden).is_none(),
                 "unica.{name} must not expose `{forbidden}`"
@@ -526,7 +534,7 @@ mod tests {
                 .iter()
                 .map(|contract| contract.name)
                 .collect::<Vec<_>>(),
-            ["view", "apply", "find", "search", "check", "diff", "run", "docs"]
+            ["view", "apply", "resolve", "search", "check", "diff", "run", "docs"]
         );
         assert_eq!(
             SurfaceRelease::from_package_version(),
@@ -547,12 +555,7 @@ mod tests {
             json!(["at", "ops"]),
             &["at", "ops", "dryRun", "ifRev"],
         );
-        assert_schema(
-            &catalog.tools,
-            "find",
-            json!(["query"]),
-            &["query", "kind", "limit"],
-        );
+        assert_schema(&catalog.tools, "resolve", json!([]), &["at", "path"]);
         assert_schema(
             &catalog.tools,
             "search",
@@ -583,8 +586,8 @@ mod tests {
             ("view", "at"),
             ("apply", "at"),
             ("apply", "ifRev"),
-            ("find", "query"),
-            ("find", "kind"),
+            ("resolve", "at"),
+            ("resolve", "path"),
             ("search", "query"),
             ("search", "scope"),
             ("check", "at"),
@@ -611,12 +614,7 @@ mod tests {
                 if field == "ops" { "array" } else { "object" },
             );
         }
-        for (tool, field) in [
-            ("view", "limit"),
-            ("find", "limit"),
-            ("search", "limit"),
-            ("diff", "limit"),
-        ] {
+        for (tool, field) in [("view", "limit"), ("search", "limit"), ("diff", "limit")] {
             let limit = input_field(&catalog.tools, tool, field);
             assert_eq!(limit["type"], "integer");
             assert_eq!(limit["minimum"], 1);

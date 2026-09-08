@@ -103,27 +103,26 @@ Search bundled Unica and safe 1C documentation by topic.
 - Искать по справке платформы или стандартам
 - Получить typed unsupported для документации конфигурации без обхода actor boundary
 
-## find
+## resolve
 
-### `unica.find`
+### `unica.resolve`
 
-Map between object names, logical addresses and where objects live in the source layout, in both directions.
+Emergency bridge between a logical address and the source layout, in both directions. Use it only when a path arrived from outside Unica - a diff, a build log, a stack trace - or when a file has to be opened outside Unica. To find an object by name use search; to read it use view.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `kind` | string | нет | Optional logical kind such as Catalog or CommonModule. |
-| `limit` | integer | нет | Maximum candidates to return. |
-| `query` | string | да | Object name, synonym, logical address, or a path to a source file or object directory. |
+| `at` | string | нет | Qualified logical address whose source location is needed. |
+| `path` | string | нет | Path to a source file or object directory, absolute or relative to the workspace root. |
 
-**Результат сейчас:** `data.candidates` содержит кандидатов с квалифицированным логическим адресом и путём к месту объекта в раскладке (файл дескриптора либо каталог команды); ответ не несёт `rev` (отвечают типизированным `data`)
+**Результат сейчас:** `data` несёт один предмет: `at`, `kind`, `path` и закрытый признак `lines`; ответ точный либо `not_found` и не несёт `rev` (отвечают типизированным `data`)
 
-**Целевой контракт:** Добавить закрытые виды сопоставления без возврата к физическим selector-ам
+**Целевой контракт:** Держать путь в одном редком инструменте: в частом ответе он звал бы читать файл мимо адреса
 
 **Сценарии:**
 
-- Узнать, какому объекту принадлежит найденный файл
+- Узнать, какому объекту принадлежит путь, пришедший из диффа, лога сборки или трассы
 - Получить путь к файлу или каталогу объекта, чтобы прочитать или починить его вне Unica
-- Разрешить имя или синоним в квалифицированный логический адрес перед точным `view` или `apply`
+- Узнать файл и диапазон строк метода, когда его открывают вне Unica
 
 ## run
 

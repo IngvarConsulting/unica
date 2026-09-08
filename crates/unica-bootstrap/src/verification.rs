@@ -13,7 +13,7 @@ use crate::error::{BootstrapError, Failure, Result};
 const EXPECTED_COMPATIBILITY_TOOLS: [&str; 11] = [
     "unica.view",
     "unica.apply",
-    "unica.find",
+    "unica.resolve",
     "unica.search",
     "unica.check",
     "unica.diff",

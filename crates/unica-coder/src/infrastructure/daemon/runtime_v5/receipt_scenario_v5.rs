@@ -98,6 +98,10 @@ pub(super) struct ReceiptScenarioControl {
     gate_cancel_waiting: AtomicBool,
     drop_ack_response_after_commit: AtomicBool,
     drop_submit_response_after_commit: AtomicBool,
+    /// Whether the fail-stop of the current process life was already cleaned up.
+    /// `restart_requested` is never cleared, so without this latch every later
+    /// quiesce would spend both deadlines again on an already-handled exit.
+    fail_stop_reclaimed: AtomicBool,
     validation_reject: AtomicBool,
     admission_rejection: Mutex<Option<ScenarioWorkspaceAdmissionFailure>>,
     prepare_reject: AtomicBool,
@@ -164,6 +168,7 @@ impl ReceiptScenarioControl {
             gate_cancel_waiting: AtomicBool::new(false),
             drop_ack_response_after_commit: AtomicBool::new(false),
             drop_submit_response_after_commit: AtomicBool::new(false),
+            fail_stop_reclaimed: AtomicBool::new(false),
             validation_reject: AtomicBool::new(false),
             admission_rejection: Mutex::new(None),
             prepare_reject: AtomicBool::new(false),
@@ -1474,6 +1479,19 @@ impl ReceiptScenarioControl {
             .store(true, Ordering::Release);
     }
 
+    fn fail_stop_reclaimed(&self) -> bool {
+        self.fail_stop_reclaimed.load(Ordering::Acquire)
+    }
+
+    fn mark_fail_stop_reclaimed(&self) {
+        self.fail_stop_reclaimed.store(true, Ordering::Release);
+    }
+
+    /// A restart begins a new process life: a later fail-stop is cleaned again.
+    fn clear_fail_stop_reclaimed(&self) {
+        self.fail_stop_reclaimed.store(false, Ordering::Release);
+    }
+
     fn arm_skip_next_startup_reconciliation(&self) {
         self.skip_next_startup_reconciliation
             .store(true, Ordering::Release);
@@ -1645,6 +1663,7 @@ impl ReceiptScenarioControl {
             .expect("scenario actor authorization mutex poisoned")
             .clear();
         self.process_exit_elapsed_ms.store(0, Ordering::Release);
+        self.fail_stop_reclaimed.store(false, Ordering::Release);
         self.crash_after_side_effect.store(false, Ordering::Release);
     }
 
@@ -3446,6 +3465,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                 }
             }
             ReceiptScenarioAction::Restart => {
+                control.clear_fail_stop_reclaimed();
                 startup_listener_override = true;
                 if pending_submit.is_some() {
                     if !control.process_exited() {
@@ -7004,7 +7024,11 @@ fn quiesce_promoted_continuation(
             thread::sleep(Duration::from_millis(2));
         }
     }
-    if telemetry.snapshot().restart_requested {
+    // Clean up one fail-stop once. `restart_requested` is never cleared, so
+    // without the latch every later quiesce would spend both deadlines again on
+    // an exit that was already handled.
+    if telemetry.snapshot().restart_requested && !control.fail_stop_reclaimed() {
+        control.mark_fail_stop_reclaimed();
         // A fail-stopped attempt exits the process on the runtime's own clock;
         // wait for that close so a checkpoint sees the closed listener.
         let deadline = Instant::now() + SCENARIO_OPERATION_TIMEOUT;

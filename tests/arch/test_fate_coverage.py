@@ -1046,7 +1046,7 @@ class FateCoverageTests(unittest.TestCase):
         for required_tool in (
             "unica.view",
             "unica.apply",
-            "unica.find",
+            "unica.resolve",
             "unica.search",
             "unica.check",
             "unica.diff",

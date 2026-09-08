@@ -2020,6 +2020,11 @@ fn method_node(method: &MethodProjection) -> NodeView {
         ("methodKind".to_string(), json!(method.method_kind)),
         ("export".to_string(), json!(method.export)),
         ("compile".to_string(), json!(method.compile)),
+        // Область уже называет свои строки; метод называет их теперь тоже.
+        // Это не физическая раскладка, а координата внутри модуля — той же
+        // природы, что пары `{line, text}` у тела.
+        ("line".to_string(), json!(method.body_from_line)),
+        ("endLine".to_string(), json!(method.body_to_line)),
     ]);
     if let Some(doc) = &method.doc {
         props.insert("doc".to_string(), json!(doc));

@@ -644,6 +644,32 @@ mod tests {
     }
 
     #[test]
+    fn the_bridge_locates_a_path_and_an_address_without_guessing() {
+        let index = Fixture::new().directory();
+        for query in [
+            "Catalogs/Валюты.xml",
+            "src/Catalogs/Валюты.xml",
+            "/home/user/project/src/Catalogs/Валюты.xml",
+        ] {
+            let located = index
+                .locate_path(query)
+                .unwrap_or_else(|| panic!("{query} must locate its owner"));
+            assert_eq!(located.at(), "main:Catalog.Валюты", "{query}");
+        }
+        // Хвост принимается только целиком, посегментно: иначе «Валюты.xml»
+        // притянул бы «НеВалюты.xml».
+        assert!(index.locate_path("алюты.xml").is_none());
+        assert!(index.locate_path("Catalogs/Нет.xml").is_none());
+
+        let located = index
+            .locate_address("main:Catalog.Валюты")
+            .expect("an address locates its own place");
+        assert_eq!(located.placed_path(), Some("Catalogs/Валюты.xml"));
+        // Мост не гадает: близкого адреса для него не существует.
+        assert!(index.locate_address("main:Catalog.Валют").is_none());
+    }
+
+    #[test]
     fn a_file_path_resolves_back_to_its_object_address() {
         let index = Fixture::new().directory();
         for (query, at) in [

@@ -22,7 +22,7 @@ BINARY = REPO_ROOT / "target/debug/unica"
 NATIVE_V13 = [
     "unica.view",
     "unica.apply",
-    "unica.find",
+    "unica.resolve",
     "unica.search",
     "unica.check",
     "unica.diff",
@@ -189,7 +189,10 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
         expected_properties = {
             "unica.view": {"at", "filter", "limit", "cursor"},
             "unica.apply": {"at", "ops", "dryRun", "ifRev"},
-            "unica.find": {"query", "kind", "limit"},
+            # Единственный инструмент, которому путь на входе разрешён:
+            # аварийный мост затем и заведён, чтобы путь не просачивался
+            # в частые ответы.
+            "unica.resolve": {"at", "path"},
             # `corpus` выбирает свод — текст модулей или имена метаданных, —
             # а `kind` сужает поиск по именам до одного вида узла. Оба входа
             # логические: ни один не называет файл.
@@ -206,7 +209,13 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
                 self.assertFalse(schema["additionalProperties"])
                 self.assertEqual(set(schema["properties"]), properties)
                 encoded = json.dumps(schema, ensure_ascii=False)
-                for physical in ("cwd", "path", "sourceDir", "workdir"):
+                # Аварийный мост — единственное место, где путь законен на
+                # входе: он затем и заведён, чтобы путь не просачивался в
+                # частые ответы (DEC.2026-09-08.RESOLVE-REPLACES-FIND).
+                physical_inputs = ("cwd", "sourceDir", "workdir")
+                if name != "unica.resolve":
+                    physical_inputs += ("path",)
+                for physical in physical_inputs:
                     self.assertNotIn(f'"{physical}"', encoded)
 
     def test_every_published_tool_has_exactly_one_review_entry(self) -> None:

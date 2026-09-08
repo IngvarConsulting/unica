@@ -44,7 +44,7 @@ class ReleaseProofTests(unittest.TestCase):
         self.native_names = {
             "unica.view",
             "unica.apply",
-            "unica.find",
+            "unica.resolve",
             "unica.search",
             "unica.check",
             "unica.diff",

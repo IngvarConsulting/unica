@@ -16,7 +16,7 @@ RUN_DICTIONARY_INVARIANT = REPO_ROOT / "arch/invariants/INV.APP.V13-RUN-DICTIONA
 SUBJECT_TOOLS = {
     "unica.view",
     "unica.apply",
-    "unica.find",
+    "unica.resolve",
     "unica.search",
     "unica.check",
     "unica.diff",

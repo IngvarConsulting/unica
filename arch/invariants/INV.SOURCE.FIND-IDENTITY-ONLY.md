@@ -1,8 +1,8 @@
 ---
 id: INV.SOURCE.FIND-IDENTITY-ONLY
-status: active
+status: superseded
 governs: product
-decision: DEC.2026-09-03.FIND-ADDRESS-PATH-DIRECTORY
+decision: DEC.2026-09-08.RESOLVE-REPLACES-FIND
 check:
   - crates/unica-coder/src/infrastructure/v13_find.rs::a_name_resolves_to_the_address_and_the_file_that_carries_it
   - crates/unica-coder/src/infrastructure/v13_find.rs::a_file_path_resolves_back_to_its_object_address
@@ -18,6 +18,11 @@ scope: [app, product, source, wire]
 ---
 
 # Find — двусторонний словарь адреса и файла
+
+**Снят.** Инструмент `find` снят решением `DEC.2026-09-08.RESOLVE-REPLACES-FIND`.
+Справочник раскладки остался и обслуживает обе стороны `resolve` и свод имён
+`search`; допуск перестал быть однородным — сторона `at` берёт ту же аренду,
+что `view`. Ниже — правило, которое действовало до снятия.
 
 Словарь строится перечислением физической раскладки допущенных actor-owned
 корней: каталоги коллекций, их прямые элементы и вложенные формы, макеты и

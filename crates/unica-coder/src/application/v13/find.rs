@@ -111,6 +111,16 @@ pub(crate) struct FindDocument {
 }
 
 impl FindDocument {
+    pub(crate) fn kind(&self) -> &str {
+        &self.kind
+    }
+
+    /// Присутствует у всякой записи, которую раскладка сумела разместить;
+    /// аварийный мост только такие и возвращает.
+    pub(crate) fn placed_path(&self) -> Option<&str> {
+        self.path.as_deref()
+    }
+
     pub(crate) fn new(
         at: impl Into<String>,
         kind: impl Into<String>,
@@ -264,6 +274,36 @@ impl FindIndex {
         documents.sort_by(|left, right| left.at.cmp(&right.at));
         documents.dedup_by(|left, right| left.at == right.at);
         Self { documents }
+    }
+
+    /// Точный поиск по адресу для аварийного моста: либо этот самый адрес,
+    /// либо ничего. Ранжирование и «ближайшее» сюда не попадают — мост на
+    /// догадки не имеет права.
+    pub(crate) fn locate_address(&self, at: &str) -> Option<&FindDocument> {
+        self.documents
+            .iter()
+            .find(|document| document.at == at && document.path.is_some())
+    }
+
+    /// Точный поиск по пути. Путь мог прийти абсолютным или относительно
+    /// корня рабочего пространства, поэтому хвост принимается тоже — но
+    /// только целиком, посегментно, а не подстрокой.
+    pub(crate) fn locate_path(&self, path: &str) -> Option<&FindDocument> {
+        let query = normalize(&path.replace('\\', "/"));
+        self.documents
+            .iter()
+            .filter(|document| {
+                document.path.as_ref().is_some_and(|stored| {
+                    let stored = normalize(stored);
+                    query == stored
+                        || query
+                            .strip_suffix(&stored)
+                            .is_some_and(|head| head.ends_with('/'))
+                })
+            })
+            // Каталог команды и файл дескриптора могут оба претендовать на
+            // путь; побеждает самый длинный, то есть самый точный.
+            .max_by_key(|document| document.path.as_ref().map_or(0, String::len))
     }
 
     pub(crate) fn find(&self, request: FindRequest) -> FindResult {

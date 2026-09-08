@@ -66,7 +66,7 @@ impl ActorReadSourceCapability {
         self.binding.source_set_name()
     }
 
-    const fn source_kind(&self) -> SourceSetKind {
+    pub(in crate::infrastructure::daemon) const fn source_kind(&self) -> SourceSetKind {
         self.binding.source_kind()
     }
 
@@ -106,6 +106,12 @@ impl ActorReadSourceCapability {
                 self.deadline,
             ),
         )
+    }
+
+    pub(in crate::infrastructure::daemon) fn retained_root(
+        &self,
+    ) -> Arc<RetainedDirectoryCapability> {
+        self.binding.retained_root()
     }
 
     pub(in crate::infrastructure::daemon) fn revision_identity(&self) -> String {
@@ -453,7 +459,14 @@ impl ActorBoundInvocation {
                         .collect(),
                 })
             }
-            crate::application::invocation_store::ToolIdentity::Find => {
+            // Мост в раскладку двусторонний, и стороны просят разного
+            // допуска. Путь пришёл снаружи — искать его надо по всем наборам,
+            // и хватает справочника раскладки. Адрес известен — предмет один,
+            // а диапазон строк у него берётся чтением исходника, значит нужен
+            // тот же допуск, что у `view`.
+            crate::application::invocation_store::ToolIdentity::Resolve
+                if !self.arguments.contains_key("at") =>
+            {
                 ActorExecutionRevision::LayoutRead(ActorLayoutReadLease {
                     deadline: logical_deadline,
                     bindings: self
@@ -464,12 +477,14 @@ impl ActorBoundInvocation {
                 })
             }
             crate::application::invocation_store::ToolIdentity::View
+            | crate::application::invocation_store::ToolIdentity::Resolve
             | crate::application::invocation_store::ToolIdentity::Search
             | crate::application::invocation_store::ToolIdentity::Check
             | crate::application::invocation_store::ToolIdentity::Diff
             | crate::application::invocation_store::ToolIdentity::Docs => {
                 let (selected, route) = match self.tool {
-                    crate::application::invocation_store::ToolIdentity::View => {
+                    crate::application::invocation_store::ToolIdentity::View
+                    | crate::application::invocation_store::ToolIdentity::Resolve => {
                         match self.arguments.get("at").and_then(serde_json::Value::as_str) {
                             Some(at) => match QualifiedAddress::parse(at) {
                                 Ok(address) => match self

@@ -1934,7 +1934,7 @@ impl V5InvocationExecutor {
         let tool = match invocation.tool() {
             crate::application::receipt_ledger::V5ToolIdentity::View => ToolIdentity::View,
             crate::application::receipt_ledger::V5ToolIdentity::Apply => ToolIdentity::Apply,
-            crate::application::receipt_ledger::V5ToolIdentity::Find => ToolIdentity::Find,
+            crate::application::receipt_ledger::V5ToolIdentity::Resolve => ToolIdentity::Resolve,
             crate::application::receipt_ledger::V5ToolIdentity::Search => ToolIdentity::Search,
             crate::application::receipt_ledger::V5ToolIdentity::Check => ToolIdentity::Check,
             crate::application::receipt_ledger::V5ToolIdentity::Diff => ToolIdentity::Diff,
@@ -2579,6 +2579,10 @@ impl V5ReceiptRuntime {
                 })?
         };
         let mut state = slot.lock();
+        // The cutoff is answered once. A second `promote_at_cutoff` would only
+        // enqueue another recover on the single ledger actor and delay the very
+        // report it is waiting for.
+        let mut cutoff_settled = false;
         loop {
             if let Some(report) = state.report.take() {
                 let owned = !matches!(state.decision, PipelineDecision::PromotedByOwner);
@@ -2604,7 +2608,10 @@ impl V5ReceiptRuntime {
                 let _ = worker.join();
                 return Err(ReceiptLedgerError::StoreUnavailable);
             }
-            if matches!(state.decision, PipelineDecision::PromotedByOwner) || state.begun {
+            if matches!(state.decision, PipelineDecision::PromotedByOwner)
+                || state.begun
+                || cutoff_settled
+            {
                 // Either the handler already answered, or the worker's drive
                 // claimed the cutoff: nothing to time here, wait for the report.
                 state = slot
@@ -2622,13 +2629,16 @@ impl V5ReceiptRuntime {
                 let mut next = slot.lock();
                 match promotion {
                     Ok(Some(reply)) => {
+                        // The worker continues this promoted attempt off the
+                        // reply thread; the harness waits on the count to see
+                        // the Task the runtime finishes for it. Count it before
+                        // the decision becomes visible: the worker decrements as
+                        // soon as it observes `PromotedByOwner`, and a decrement
+                        // that overtook this increment would wrap the count.
+                        self.promoted_continuations.fetch_add(1, Ordering::AcqRel);
                         next.decision = PipelineDecision::PromotedByOwner;
                         slot.changed.notify_all();
                         drop(next);
-                        // The worker continues this promoted attempt off the
-                        // reply thread; the harness waits on the count to see
-                        // the Task the runtime finishes for it.
-                        self.promoted_continuations.fetch_add(1, Ordering::AcqRel);
                         self.task_execution_threads
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -2637,7 +2647,8 @@ impl V5ReceiptRuntime {
                     }
                     Ok(None) => {
                         // The worker already ended the attempt: its reply is
-                        // on the way.
+                        // on the way, so stop timing the cutoff and wait.
+                        cutoff_settled = true;
                         next.decision = PipelineDecision::Waiting;
                         slot.changed.notify_all();
                         state = next;
@@ -3033,25 +3044,26 @@ impl V5ReceiptRuntime {
         self.hooks
             .event(V5ReceiptRuntimeEventKind::PrepareEntered, epoch_ms);
         self.hooks.pause(V5PausePoint::PrepareEntered, deadline)?;
+        // The session handler may have materialized this Task at the begun
+        // cutoff while the attempt was between `Begun` and the drive. Nobody
+        // else executes it, so this attempt does — with or without an observer.
+        if let Some((task_record, bound)) = slot.take_owner_materialized() {
+            let deadline = Self::continuation_deadline();
+            let (cancellation, cancellation_guard) = self
+                .active_task_cancellations
+                .register(task_record.task_id)?;
+            return self.drive_prepared_bound_task(
+                actor_bound,
+                task_record,
+                bound,
+                reservation.key().invocation_id(),
+                cancellation,
+                cancellation_guard,
+                epoch_ms,
+                deadline,
+            );
+        }
         if self.hooks.observing() {
-            if let Some((task_record, bound)) = slot.take_owner_materialized() {
-                // The session handler materialized this Task at the begun
-                // cutoff while this attempt was paused; execute into it.
-                let deadline = Self::continuation_deadline();
-                let (cancellation, cancellation_guard) = self
-                    .active_task_cancellations
-                    .register(task_record.task_id)?;
-                return self.drive_prepared_bound_task(
-                    actor_bound,
-                    task_record,
-                    bound,
-                    reservation.key().invocation_id(),
-                    cancellation,
-                    cancellation_guard,
-                    epoch_ms,
-                    deadline,
-                );
-            }
             if let Some((record, bound_task)) = self.hooks.bound_task_override() {
                 if self.hooks.prepare_rejects() {
                     let terminal =
