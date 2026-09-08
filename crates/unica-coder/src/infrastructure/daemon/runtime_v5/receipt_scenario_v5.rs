@@ -3,11 +3,9 @@ pub(super) mod scenario_probes;
 
 use self::scenario_hooks::{
     acknowledge_direct_for_scenario, inject_receipt_identity_collision_for_scenario,
-    open_receipt_actor_for_scenario, publish_direct_terminal_for_scenario,
-    publish_receipt_backed_task_terminal_for_scenario,
-    seed_receipt_backed_task_terminal_for_scenario, seed_receipt_tombstones_for_scenario,
-    stage_bound_handoff_terminal_for_scenario, ScenarioHooks, V5ReceiptRuntimeEvent,
-    V5ReceiptRuntimeListenerState, V5ReceiptRuntimeTelemetry,
+    open_receipt_actor_for_scenario, seed_receipt_backed_task_terminal_for_scenario,
+    seed_receipt_tombstones_for_scenario, stage_bound_handoff_terminal_for_scenario, ScenarioHooks,
+    V5ReceiptRuntimeEvent, V5ReceiptRuntimeListenerState, V5ReceiptRuntimeTelemetry,
 };
 use super::hooks::{
     V5AdmissionRejection, V5PausePoint, V5ReceiptRuntimeEventKind, V5StoreFaultPoint,
@@ -27,10 +25,10 @@ use crate::application::receipt_ledger::{
     AcknowledgedTombstoneReceipt, CoreIdentityDigest, HandoffTerminalStage,
     OriginalCutoffDescriptor, ProvenTaskLinkCapacity, ReceiptKey, ReceiptKeyDigest,
     ReceiptLedgerError, ReceiptState, ReceiptTaskProjection, ReceiptTerminalOutcome,
-    RequestIdentity, ReservedPhase, TaskBoundReceipt, TaskCancellationReceipt,
-    TaskHandoffActorBoundReceipt, TaskLinkIdentity, TaskLinkReference,
-    TaskRetirementPendingReceipt, TaskTerminalBoundReceipt, TaskTerminalReceiptBackedReceipt,
-    TerminalDigest, V5CanonicalTerminal, V5ToolIdentity, DIRECT_TERMINAL_RETENTION_MS,
+    RequestIdentity, ReservedPhase, TaskBoundReceipt, TaskHandoffActorBoundReceipt,
+    TaskLinkIdentity, TaskLinkReference, TaskRetirementPendingReceipt, TaskTerminalBoundReceipt,
+    TaskTerminalReceiptBackedReceipt, TerminalDigest, V5CanonicalTerminal, V5ToolIdentity,
+    DIRECT_TERMINAL_RETENTION_MS,
 };
 use crate::application::receipt_ledger_actor::ReceiptLedgerActor;
 use crate::domain::cancellation::CancellationToken;
@@ -3368,11 +3366,11 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                     let pending = pending_submit.as_ref().ok_or_else(|| {
                         "protocol-v5 TaskPromisedUnbound crash has no live submit".to_owned()
                     })?;
-                    let promised = match pending.actor.recover(
+                    match pending.actor.recover(
                         exact_key.clone(),
                         Instant::now() + SCENARIO_OPERATION_TIMEOUT,
                     ) {
-                        Ok(ReceiptState::TaskPromisedUnbound(promised)) => promised,
+                        Ok(ReceiptState::TaskPromisedUnbound(_)) => {}
                         Ok(other) => {
                             return Err(format!(
                                 "protocol-v5 TaskPromisedUnbound crash observed {}",
@@ -3384,53 +3382,22 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                                 "recover protocol-v5 TaskPromisedUnbound crash: {error}"
                             ))
                         }
-                    };
-                    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Failed {
-                        reason: V5SafeFailureReason::Interrupted,
-                    })
-                    .map_err(|error| format!("encode interrupted crash terminal: {error}"))?;
-                    let committed = publish_receipt_backed_task_terminal_for_scenario(
-                        &pending.actor,
-                        exact_key.clone(),
-                        TaskCancellationReceipt::PromisedUnbound(promised),
-                        clock.now_epoch_millis(),
-                        terminal,
-                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
-                        &telemetry,
-                    )
-                    .map_err(|error| {
-                        format!("terminalize crashed unbound Task promise: {error}")
-                    })?;
-                    control.record_receipt_backed_terminal(committed)?;
+                    }
+                    // The promise a crashed process left behind is the successor's
+                    // to reconcile; declaring the exit first is what makes the crash
+                    // stop the attempt instead of letting it run on.
+                    telemetry.record_forced_process_exit();
+                    control.record_process_exit(1);
                     control.release_pre_actor_barriers();
                     let pending = pending_submit
                         .take()
                         .expect("crashed pending submit was checked immediately before take");
-                    let (
-                        label,
-                        accepted_epoch_ms,
-                        response_budget_ms,
-                        response,
-                        actor,
-                        _,
-                        _,
-                        daemon,
-                    ) = pending.finish()?;
+                    // A crashed process delivers no response.
+                    let (_, _, _, _, actor, _, _, daemon) = pending.finish()?;
                     drop(actor);
                     daemon.stop_and_join(
                         "protocol-v5 receipt scenario daemon panicked during promised crash",
                     )?;
-                    report
-                        .responses
-                        .entry(label)
-                        .or_insert(response_observation_with_exact_task(
-                            &response,
-                            Some((accepted_epoch_ms, response_budget_ms)),
-                            &exact_key,
-                            state.path(),
-                            &identity,
-                            Some(None),
-                        )?);
                 } else if pending_submit.is_some() {
                     return Err(unsupported_shape(
                         "fail-stop with a live submit at this step",

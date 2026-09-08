@@ -11,9 +11,9 @@ use super::{ReceiptScenarioControl, SCENARIO_BULK_OPERATION_TIMEOUT};
 use crate::application::invocation_store_v5::V5StoredInvocationRecord;
 use crate::application::receipt_ledger::{
     AcknowledgedTombstoneReceipt, CommittedDirectPublication, ReceiptKey, ReceiptLedgerError,
-    TaskBoundReceipt, TaskCancellationReceipt, TaskHandoffActorBoundReceipt,
-    TaskPromisedActorBoundReceipt, TaskPromisedUnboundReceipt, TaskTerminalBoundReceipt,
-    TaskTerminalReceiptBackedReceipt, TerminalDigest, V5CanonicalTerminal,
+    TaskBoundReceipt, TaskHandoffActorBoundReceipt, TaskPromisedActorBoundReceipt,
+    TaskPromisedUnboundReceipt, TaskTerminalBoundReceipt, TaskTerminalReceiptBackedReceipt,
+    TerminalDigest, V5CanonicalTerminal,
 };
 use crate::application::receipt_ledger_actor::ReceiptLedgerActor;
 use crate::domain::invocation::{DomainResult, InvocationId, SafeIdentityHash};
@@ -693,52 +693,6 @@ pub(super) fn seed_receipt_tombstones_for_scenario(
         .seed_tombstones_for_test(keys, acknowledged_at_epoch_ms, terminal_digest, deadline)
         .map_err(|error| format!("seed tombstone fixture pool: {error}"))?;
     Ok((ReceiptLedgerActor::spawn(store), seeded))
-}
-
-pub(super) fn publish_direct_terminal_for_scenario(
-    actor: &ReceiptLedgerActor,
-    key: ReceiptKey,
-    expected_version: crate::application::receipt_ledger::ReceiptVersion,
-    terminal_epoch_ms: u64,
-    terminal: crate::application::receipt_ledger::V5CanonicalTerminal,
-    deadline: Instant,
-    telemetry: &V5ReceiptRuntimeTelemetry,
-) -> Result<CommittedDirectPublication, ReceiptLedgerError> {
-    let publication = actor.publish_direct_terminal(
-        key,
-        expected_version,
-        terminal_epoch_ms,
-        terminal,
-        deadline,
-    )?;
-    telemetry.record_event(
-        V5ReceiptRuntimeEventKind::ReceiptTerminalCommitted,
-        terminal_epoch_ms,
-    );
-    Ok(publication)
-}
-
-pub(super) fn publish_receipt_backed_task_terminal_for_scenario(
-    actor: &ReceiptLedgerActor,
-    key: ReceiptKey,
-    expected: TaskCancellationReceipt,
-    terminal_epoch_ms: u64,
-    terminal: crate::application::receipt_ledger::V5CanonicalTerminal,
-    deadline: Instant,
-    telemetry: &V5ReceiptRuntimeTelemetry,
-) -> Result<TaskTerminalReceiptBackedReceipt, ReceiptLedgerError> {
-    let publication = actor.publish_receipt_backed_task_terminal(
-        key,
-        expected,
-        terminal_epoch_ms,
-        terminal,
-        deadline,
-    )?;
-    telemetry.record_event(
-        V5ReceiptRuntimeEventKind::ReceiptTerminalCommitted,
-        terminal_epoch_ms,
-    );
-    Ok(publication)
 }
 
 pub(super) fn stage_bound_handoff_terminal_for_scenario(
