@@ -1773,7 +1773,7 @@ impl V5InvocationExecutor {
         let tool = match invocation.tool() {
             crate::application::receipt_ledger::V5ToolIdentity::View => ToolIdentity::View,
             crate::application::receipt_ledger::V5ToolIdentity::Apply => ToolIdentity::Apply,
-            crate::application::receipt_ledger::V5ToolIdentity::Find => ToolIdentity::Find,
+            crate::application::receipt_ledger::V5ToolIdentity::Resolve => ToolIdentity::Resolve,
             crate::application::receipt_ledger::V5ToolIdentity::Search => ToolIdentity::Search,
             crate::application::receipt_ledger::V5ToolIdentity::Check => ToolIdentity::Check,
             crate::application::receipt_ledger::V5ToolIdentity::Diff => ToolIdentity::Diff,

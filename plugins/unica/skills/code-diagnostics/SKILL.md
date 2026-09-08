@@ -7,7 +7,7 @@ description: "Диагностика BSL и объяснение отключе�
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.code.diagnostics`, `unica.find`, `unica.view {}`, `unica.code.graph`, `unica.code.definition`, `unica.code.search`, `unica.docs`, and `unica.runtime.execute`.
+- Preferred path: use MCP `unica` tools `unica.code.diagnostics`, `unica.resolve`, `unica.view {}`, `unica.code.graph`, `unica.code.definition`, `unica.code.search`, `unica.docs`, and `unica.runtime.execute`.
 - По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
 показывает запланированную команду без побочных эффектов, а с `dryRun: false`
 исполняет классифицированную операцию и отвечает её терминальным результатом в
@@ -30,7 +30,7 @@ description: "Диагностика BSL и объяснение отключе�
 
 ## Workflow
 
-1. Resolve the exact `sourceSet`. If the starting point is a physical file, use `unica.find` to obtain its logical `metadataPath`.
+1. Resolve the exact `sourceSet`. If the starting point is a physical file, use `unica.resolve` to obtain its logical `metadataPath`.
 2. Call `status` when resident readiness matters and `catalog` when rule ids need classification. Use `findings` for one logical target or `analyze` for the whole source set.
 3. Group diagnostics by logical `location`, provider-qualified code, and root cause. Follow `focus` for the exact source range or metadata element.
 4. Inspect the target with `unica.view` on the module node (its `Method` branch lists the methods), `unica.code.definition`, or `unica.code.search`. Use `unica.code.graph` before changing shared or exported behavior.

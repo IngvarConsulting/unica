@@ -500,7 +500,7 @@ SCENARIO_SKILLS = {
         "unica.runtime.execute",
     ],
     "source-access": [
-        "unica.find",
+        "unica.resolve",
         "unica.view",
         "unica.search",
         "unica.diff",
@@ -747,7 +747,7 @@ SCENARIO_REQUIRED_TOKENS = {
         "предметн",
         "dryRun",
         "unica.code.patch",
-        "unica.find",
+        "unica.resolve",
         "invalid_cursor",
     ],
 }
@@ -2938,7 +2938,7 @@ Use `.claude/commands/xdto.md` as the execution route.
         self.assertNotIn("unica.source.apply", text)
         self.assertRegex(text, r"(?s)dryRun.{0,80}true.{0,400}dryRun.{0,80}false")
         self.assertIn("Чтение не меняет исходники", text)
-        self.assertIn("unica.find", text)
+        self.assertIn("unica.resolve", text)
         self.assertIn("replace", text)
 
     def test_package_readme_documents_code_patch_target_migration(self) -> None:

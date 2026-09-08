@@ -22,7 +22,7 @@ BINARY = REPO_ROOT / "target/debug/unica"
 NATIVE_V13 = [
     "unica.view",
     "unica.apply",
-    "unica.find",
+    "unica.resolve",
     "unica.search",
     "unica.check",
     "unica.diff",
@@ -189,7 +189,10 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
         expected_properties = {
             "unica.view": {"at", "filter", "limit", "cursor"},
             "unica.apply": {"at", "ops", "dryRun", "ifRev"},
-            "unica.find": {"query", "kind", "limit"},
+            # Единственный инструмент, которому путь на входе разрешён:
+            # аварийный мост затем и заведён, чтобы путь не просачивался
+            # в частые ответы.
+            "unica.resolve": {"at", "path"},
             # `corpus` выбирает свод — текст модулей или имена метаданных, —
             # а `kind` сужает поиск по именам до одного вида узла. Оба входа
             # логические: ни один не называет файл.

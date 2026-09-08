@@ -17,7 +17,7 @@ ROW = re.compile(r"^\| `([^`]+)` \|(?P<body>.+)$", re.MULTILINE)
 CANONICAL = {
     "unica.view",
     "unica.apply",
-    "unica.find",
+    "unica.resolve",
     "unica.search",
     "unica.check",
     "unica.diff",

@@ -6,9 +6,10 @@ use crate::application::result_store::ViewCursorStore;
 use crate::application::tool_contracts::SurfaceRelease;
 use crate::application::v13::apply::parse_request as parse_apply_request;
 use crate::application::v13::find::FindRequest;
+use crate::application::v13::resolve::{ResolveRequest, ResolvedLines, ResolvedSource};
 use crate::application::v13::tool_catalog::catalog_for;
 use crate::application::v13::view::{ViewRequest, ViewService};
-use crate::domain::address::QualifiedAddress;
+use crate::domain::address::{NodeKind, QualifiedAddress};
 use crate::domain::apply::OperationRegistry;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::invocation::{DomainResult, InvocationFailure};
@@ -70,7 +71,7 @@ impl CanonicalInvocationService for CanonicalV13ReadService {
                 .rejected_logical_read_result()
                 .unwrap_or_else(|| self.execute_view(invocation, &cancellation))),
             ToolIdentity::Apply => Ok(self.execute_apply(invocation, &cancellation)),
-            ToolIdentity::Find => Ok(self.execute_find(invocation, &cancellation)),
+            ToolIdentity::Resolve => Ok(self.execute_resolve(invocation, &cancellation)),
             ToolIdentity::Search => Ok(self.execute_search(invocation, &cancellation)),
             ToolIdentity::Check => Ok(self.execute_check(invocation, &cancellation)),
             ToolIdentity::Diff => Ok(self.execute_diff(invocation, &cancellation)),
@@ -1044,45 +1045,58 @@ impl CanonicalV13ReadService {
         )
     }
 
-    fn execute_find(
+    /// Аварийный двусторонний мост в файловую раскладку.
+    ///
+    /// Ответ точный или его нет: догадок здесь не делают. Ранжирование живёт
+    /// в `search`, и путать эти два вопроса одним именем было главной бедой
+    /// снятого `find`.
+    fn execute_resolve(
         &self,
         invocation: &ActorBoundExecution,
         cancellation: &CancellationToken,
     ) -> DomainResult {
         let arguments = invocation.arguments();
-        let Some(query) = arguments.get("query").and_then(Value::as_str) else {
-            return error_result(
-                None,
-                RefusalCode::BadValue,
-                "find requires string argument `query`",
-            );
-        };
-        let mut request = match FindRequest::new(query) {
-            Ok(request) => request,
-            Err(error) => return error_result(None, error.code(), error.to_string()),
-        };
-        if let Some(kind) = arguments.get("kind") {
-            let Some(kind) = kind.as_str() else {
-                return error_result(None, RefusalCode::BadValue, "find kind must be a string");
-            };
-            request = match request.with_kind(kind) {
-                Ok(request) => request,
-                Err(error) => return error_result(None, error.code(), error.to_string()),
-            };
-        }
-        if let Some(limit) = arguments.get("limit") {
-            let Some(limit) = bounded_usize(limit) else {
+        for key in arguments.keys() {
+            if !["at", "path"].contains(&key.as_str()) {
                 return error_result(
                     None,
                     RefusalCode::BadValue,
-                    "find limit must be a positive integer",
+                    format!("resolve does not accept argument `{key}`"),
                 );
-            };
-            request = match request.with_limit(limit) {
-                Ok(request) => request,
-                Err(error) => return error_result(None, error.code(), error.to_string()),
-            };
+            }
         }
+        let at = match arguments.get("at") {
+            None => None,
+            Some(Value::String(at)) => Some(at.as_str()),
+            Some(_) => {
+                return error_result(None, RefusalCode::BadValue, "resolve at must be a string")
+            }
+        };
+        let path = match arguments.get("path") {
+            None => None,
+            Some(Value::String(path)) => Some(path.as_str()),
+            Some(_) => {
+                return error_result(None, RefusalCode::BadValue, "resolve path must be a string")
+            }
+        };
+        let request = match ResolveRequest::new(at, path) {
+            Ok(request) => request,
+            Err(error) => return error_result(None, error.code(), error.to_string()),
+        };
+        match request {
+            ResolveRequest::Path(path) => self.resolve_path(invocation, &path, cancellation),
+            ResolveRequest::Address(address) => {
+                self.resolve_address(invocation, &address, cancellation)
+            }
+        }
+    }
+
+    fn resolve_path(
+        &self,
+        invocation: &ActorBoundExecution,
+        path: &str,
+        cancellation: &CancellationToken,
+    ) -> DomainResult {
         let sources = match invocation.layout_sources() {
             Ok(sources) => sources,
             Err(error) => return error_result(None, RefusalCode::ProviderUnavailable, error),
@@ -1091,7 +1105,7 @@ impl CanonicalV13ReadService {
             return error_result(
                 None,
                 RefusalCode::ProviderUnavailable,
-                "find has no admitted source sets",
+                "resolve has no admitted source sets",
             );
         };
         let layout = sources
@@ -1102,17 +1116,171 @@ impl CanonicalV13ReadService {
             Ok(directory) => directory,
             Err(error) => return error_result(None, error.code(), error.to_string()),
         };
-        let found = directory.find(request);
-        let mut result = DomainResult::success("logical address candidates resolved");
-        result.data = Some(
-            serde_json::to_value(found)
-                .expect("the closed FindResult model always serializes to JSON"),
-        );
-        // A directory of addresses and paths is not a revision snapshot, so
-        // `find` publishes no `rev`.
-        let _ = cancellation;
-        result
+        let Some(entry) = directory.locate_path(path) else {
+            return error_result(
+                None,
+                RefusalCode::NotFound,
+                format!("no admitted source set places `{path}`"),
+            );
+        };
+        // Путь называет файл, а не узел внутри него: строки не спрашивали.
+        let Some(placed) = entry.placed_path() else {
+            return error_result(
+                None,
+                RefusalCode::NotFound,
+                format!("no admitted source set places `{path}`"),
+            );
+        };
+        resolve_result(ResolvedSource::new(
+            entry.at(),
+            entry.kind(),
+            placed,
+            ResolvedLines::NotLineBased,
+        ))
     }
+
+    fn resolve_address(
+        &self,
+        invocation: &ActorBoundExecution,
+        address: &QualifiedAddress,
+        cancellation: &CancellationToken,
+    ) -> DomainResult {
+        let at = address.to_string();
+        let sources = match invocation.read_sources() {
+            Ok(sources) => sources,
+            Err(error) => {
+                return error_result(Some(at), RefusalCode::ProviderUnavailable, error);
+            }
+        };
+        let Some(source) = sources
+            .iter()
+            .find(|source| source.source_set_name() == address.source_set())
+        else {
+            return error_result(
+                Some(at),
+                RefusalCode::ProviderUnavailable,
+                "resolve source set was not admitted by the workspace actor",
+            );
+        };
+        let root = source.retained_root();
+        let layout = vec![LayoutFindSource::new(
+            source.source_set_name(),
+            source.source_kind(),
+            root.as_ref(),
+        )];
+        let directory = match self
+            .find_builder
+            .build(&layout, source.deadline(), cancellation)
+        {
+            Ok(directory) => directory,
+            Err(error) => return error_result(Some(at), error.code(), error.to_string()),
+        };
+        let owner = owning_metadata_address(address);
+        let Some(entry) = directory.locate_address(&owner) else {
+            return error_result(
+                Some(at),
+                RefusalCode::NotFound,
+                format!("the source layout does not place `{owner}`"),
+            );
+        };
+        let Some(placed) = entry.placed_path() else {
+            return error_result(
+                Some(at),
+                RefusalCode::NotFound,
+                format!("the source layout does not place `{owner}`"),
+            );
+        };
+        let kind = entry.kind().to_string();
+        let placed = placed.to_string();
+        let lines = match self.resolve_lines(invocation, address, cancellation) {
+            Ok(lines) => lines,
+            Err(result) => return *result,
+        };
+        resolve_result(ResolvedSource::new(at, kind, placed, lines))
+    }
+
+    /// Строки обещаются там, где источник строчный. У BSL они настоящие, и
+    /// проекция модуля их уже знает; у реквизита и элемента формы источник
+    /// древовидный, и обещать строки значило бы обещать то, что развалится.
+    fn resolve_lines(
+        &self,
+        invocation: &ActorBoundExecution,
+        address: &QualifiedAddress,
+        cancellation: &CancellationToken,
+    ) -> Result<ResolvedLines, Box<DomainResult>> {
+        if !address
+            .segments()
+            .iter()
+            .any(|segment| segment.kind() == NodeKind::Module)
+        {
+            return Ok(ResolvedLines::NotLineBased);
+        }
+        let at = address.to_string();
+        let view_arguments = Map::from_iter([("at".to_string(), Value::String(at.clone()))]);
+        let viewed = self.execute_view_arguments(invocation, &view_arguments, cancellation);
+        if !viewed.ok {
+            return Err(Box::new(viewed));
+        }
+        let props = viewed
+            .data
+            .as_ref()
+            .and_then(|data| data.get("props"))
+            .cloned()
+            .unwrap_or(Value::Null);
+        let from = props.get("line").and_then(Value::as_u64);
+        let to = props.get("endLine").and_then(Value::as_u64);
+        match (from, to) {
+            (Some(from), Some(to)) => Ok(ResolvedLines::Range {
+                from: from as usize,
+                to: to as usize,
+            }),
+            // Узел модуля есть, но собственного диапазона у него нет: предмет
+            // занимает файл целиком, и называть часть было бы неверно.
+            _ => Ok(ResolvedLines::NotLineBased),
+        }
+    }
+}
+
+/// Ответ моста: один точный предмет и ничего больше.
+fn resolve_result(resolved: ResolvedSource) -> DomainResult {
+    let mut result = DomainResult::success("source location resolved");
+    result.at = Some(resolved.address().to_string());
+    result.data = Some(
+        serde_json::to_value(resolved).expect("the closed resolve model always serializes to JSON"),
+    );
+    // Справочник раскладки снимком ревизии не является, поэтому `rev` нет.
+    // И `next` отсюда не ведёт никуда: аварийный выход не следующий вопрос
+    // ни в одном маршруте.
+    result
+}
+
+/// Узел, который раскладка действительно размещает. Метод, область и тело
+/// лежат внутри файла своего владельца, поэтому путь берётся у владельца, а
+/// внутренняя часть адреса отвечает за строки.
+fn owning_metadata_address(address: &QualifiedAddress) -> String {
+    let segments = address.segments();
+    let owned = segments
+        .iter()
+        .position(|segment| {
+            matches!(
+                segment.kind(),
+                NodeKind::Module | NodeKind::Method | NodeKind::Region | NodeKind::Body
+            )
+        })
+        .unwrap_or(segments.len());
+    let mut owner = String::from(address.source_set());
+    owner.push(':');
+    for (index, segment) in segments.iter().take(owned.max(1)).enumerate() {
+        if index > 0 {
+            owner.push('.');
+        }
+        owner.push_str(segment.kind().as_str());
+        if let Some(name) = segment.name() {
+            owner.push('.');
+            owner.push_str(name);
+        }
+    }
+    owner
 }
 
 fn apply_plan_hash(staged: &ApplyStagedState, effects: &PlannedApplyEffects) -> String {

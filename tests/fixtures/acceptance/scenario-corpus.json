@@ -8,8 +8,9 @@
    "task": "Найти справочник валют по имени и открыть его свойства",
    "wire": [
     {
-     "tool": "unica.find",
+     "tool": "unica.search",
      "args": {
+      "corpus": "names",
       "query": "Валюты"
      },
      "expect": [
@@ -33,8 +34,9 @@
    "task": "Найти объект по синониму «Важность проблемы учета»",
    "wire": [
     {
-     "tool": "unica.find",
+     "tool": "unica.search",
      "args": {
+      "corpus": "names",
       "query": "Важность проблемы учета"
      },
      "expect": [
@@ -49,8 +51,9 @@
    "task": "Найти все справочники, отфильтровав кандидатов по виду",
    "wire": [
     {
-     "tool": "unica.find",
+     "tool": "unica.search",
      "args": {
+      "corpus": "names",
       "query": "Валюты",
       "kind": "Catalog"
      },
@@ -66,8 +69,9 @@
    "task": "Разрешить неточное имя «Валюта» в точный адрес (ближайшие кандидаты)",
    "wire": [
     {
-     "tool": "unica.find",
+     "tool": "unica.search",
      "args": {
+      "corpus": "names",
       "query": "Валюта"
      },
      "expect": [
@@ -349,8 +353,9 @@
    "task": "Найти документ по подстроке имени «Уничтожении»",
    "wire": [
     {
-     "tool": "unica.find",
+     "tool": "unica.search",
      "args": {
+      "corpus": "names",
       "query": "Уничтожении"
      },
      "expect": [
@@ -365,8 +370,9 @@
    "task": "Найти регистры сведений по виду",
    "wire": [
     {
-     "tool": "unica.find",
+     "tool": "unica.search",
      "args": {
+      "corpus": "names",
       "query": "Иерархия",
       "kind": "InformationRegister"
      },
@@ -382,8 +388,9 @@
    "task": "Найти общий модуль Google-переводчика",
    "wire": [
     {
-     "tool": "unica.find",
+     "tool": "unica.search",
      "args": {
+      "corpus": "names",
       "query": "GoogleПереводчик"
      },
      "expect": [
@@ -398,8 +405,9 @@
    "task": "Найти роль продавца-читателя",
    "wire": [
     {
-     "tool": "unica.find",
+     "tool": "unica.search",
      "args": {
+      "corpus": "names",
       "query": "SalesReader"
      },
      "expect": [
@@ -414,8 +422,9 @@
    "task": "Найти подсистему администрирования",
    "wire": [
     {
-     "tool": "unica.find",
+     "tool": "unica.search",
      "args": {
+      "corpus": "names",
       "query": "Администрирование"
      },
      "expect": [
@@ -2537,8 +2546,9 @@
    "task": "Полный маршрут: найти объект, изучить состав, превью добавления, перечитать состав",
    "wire": [
     {
-     "tool": "unica.find",
+     "tool": "unica.search",
      "args": {
+      "corpus": "names",
       "query": "АктОбУничтоженииПерсональныхДанных"
      },
      "expect": [
@@ -4579,8 +4589,9 @@
    "task": "Посмотреть, что за роль SalesReader",
    "wire": [
     {
-     "tool": "unica.find",
+     "tool": "unica.search",
      "args": {
+      "corpus": "names",
       "query": "SalesReader"
      },
      "expect": [
@@ -4836,8 +4847,9 @@
    "task": "Полный маршрут: найти роль, изучить, выдать право",
    "wire": [
     {
-     "tool": "unica.find",
+     "tool": "unica.search",
      "args": {
+      "corpus": "names",
       "query": "SalesReader"
      },
      "expect": [
@@ -6642,8 +6654,9 @@
    "task": "Найти табличную часть по имени",
    "wire": [
     {
-     "tool": "unica.find",
+     "tool": "unica.search",
      "args": {
+      "corpus": "names",
       "query": "Представления"
      },
      "expect": [
@@ -7806,8 +7819,9 @@
    "task": "Ограничить страницу подсказок поиска",
    "wire": [
     {
-     "tool": "unica.find",
+     "tool": "unica.search",
      "args": {
+      "corpus": "names",
       "query": "Валюты",
       "limit": 2
      },
@@ -7931,6 +7945,38 @@
      ]
     }
    ]
+  },
+  {
+   "area": "Навигация и чтение",
+   "task": "Перевести путь из чужого диффа в логический адрес",
+   "wire": [
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "path": "src/Catalogs/Валюты.xml"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S307"
+  },
+  {
+   "area": "Навигация и чтение",
+   "task": "Узнать файл и строки метода, чтобы открыть его вне Unica",
+   "wire": [
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:CommonModule.ОбщегоНазначения.Method.ПриЗаписи"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ],
+   "id": "S308"
   }
  ]
 }

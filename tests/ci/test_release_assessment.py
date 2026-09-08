@@ -151,7 +151,7 @@ class ReleaseAssessmentTests(unittest.TestCase):
             {
                 "unica.view",
                 "unica.apply",
-                "unica.find",
+                "unica.resolve",
                 "unica.search",
                 "unica.check",
                 "unica.diff",
@@ -282,7 +282,7 @@ import sys
 TOOLS = [
     "unica.view",
     "unica.apply",
-    "unica.find",
+    "unica.resolve",
     "unica.search",
     "unica.check",
     "unica.diff",
@@ -332,18 +332,26 @@ for raw in sys.stdin:
             }
         elif name == "unica.view":
             payload["data"] = {"kind": "Configuration", "branches": []}
-        elif name == "unica.find":
-            payload["data"] = {"candidates": [{"at": "main:CommonModule.Shared"}]}
-        elif name == "unica.search":
+        elif name == "unica.resolve":
             payload["data"] = {
-                "mode": "literal",
-                "matches": [{
-                    "scope": "main:Configuration",
-                    "line": 1,
-                    "column": 1,
-                    "snippet": "Процедура Smoke()",
-                }],
+                "at": "main:CommonModule.Shared",
+                "kind": "CommonModule",
+                "path": "src/CommonModules/Shared.xml",
+                "lines": {"state": "notLineBased"},
             }
+        elif name == "unica.search":
+            if arguments.get("corpus") == "names":
+                payload["data"] = {"matches": [{"at": "main:CommonModule.Shared"}]}
+            else:
+                payload["data"] = {
+                    "mode": "literal",
+                    "matches": [{
+                        "scope": "main:Configuration",
+                        "line": 1,
+                        "column": 1,
+                        "snippet": "Процедура Smoke()",
+                    }],
+                }
         elif name == "unica.diff":
             payload["data"] = {"equal": True, "changes": [], "truncated": False}
         response["result"] = {
@@ -415,6 +423,7 @@ for raw in sys.stdin:
                     "workspace-check",
                     "configuration-view",
                     "logical-find",
+                    "layout-resolve",
                     "literal-search",
                     "identity-diff",
                 ],

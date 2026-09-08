@@ -187,8 +187,8 @@ mod tests {
         let find = daemon.submit(
             &owner,
             &InvocationRequest::new(
-                ToolIdentity::Find,
-                serde_json::json!({"query": "Items"}),
+                ToolIdentity::Resolve,
+                serde_json::json!({"at": "main:Catalog.Items"}),
                 workspace_hint.as_str(),
                 7_000,
             )
@@ -206,10 +206,16 @@ mod tests {
             }
         };
         assert!(find.ok, "{} {:?}", find.summary, find.diagnostics);
-        assert_eq!(
-            find.data.as_ref().unwrap()["candidates"][0]["at"],
-            "main:Catalog.Items"
+        let bridged = find.data.as_ref().unwrap();
+        assert_eq!(bridged["at"], "main:Catalog.Items");
+        assert!(
+            bridged["path"]
+                .as_str()
+                .is_some_and(|path| !path.is_empty()),
+            "{bridged}"
         );
+        // Мост отвечает одним предметом: ранжированных кандидатов у него нет.
+        assert_eq!(bridged.get("candidates"), None);
         // A directory of addresses and paths is not a revision snapshot.
         assert!(find.rev.is_none());
 

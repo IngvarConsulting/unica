@@ -104,8 +104,9 @@ Platform XML Configuration and Extension targets; Unica resolves the physical
 `*Module.bsl` or descriptor location privately. `unica.meta.info` also stops
 accepting `Detailed`, which it never read.
 
-`unica.find` converts a name, a synonym, or a path discovered by other means
-into a logical address.
+`unica.search {corpus: "names"}` converts a name or a synonym into a logical
+address. `unica.resolve` converts a path discovered by other means, and is the
+emergency bridge: use it only when the path arrived from outside Unica.
 
 ### Readers that accept either selector
 

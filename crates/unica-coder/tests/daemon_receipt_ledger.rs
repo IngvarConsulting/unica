@@ -804,7 +804,7 @@ enum ToolIdentityObservation {
     View,
     #[serde(rename = "unica.apply")]
     Apply,
-    #[serde(rename = "unica.find")]
+    #[serde(rename = "unica.resolve")]
     Find,
     #[serde(rename = "unica.search")]
     Search,
@@ -2503,7 +2503,7 @@ fn tool_wire_name(tool: ToolIdentityObservation) -> &'static str {
     match tool {
         ToolIdentityObservation::View => "unica.view",
         ToolIdentityObservation::Apply => "unica.apply",
-        ToolIdentityObservation::Find => "unica.find",
+        ToolIdentityObservation::Find => "unica.resolve",
         ToolIdentityObservation::Search => "unica.search",
         ToolIdentityObservation::Check => "unica.check",
         ToolIdentityObservation::Diff => "unica.diff",
@@ -5173,7 +5173,7 @@ fn assert_exact_v5_request(frame: &serde_json::Value, expected_kind: &str) {
                 json_string(invocation, "tool"),
                 "unica.view"
                     | "unica.apply"
-                    | "unica.find"
+                    | "unica.resolve"
                     | "unica.search"
                     | "unica.check"
                     | "unica.diff"

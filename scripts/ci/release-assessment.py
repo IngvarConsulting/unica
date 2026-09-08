@@ -31,7 +31,7 @@ SOURCE_DIR = "src/cf"
 EXPECTED_PUBLIC_TOOLS = {
     "unica.view",
     "unica.apply",
-    "unica.find",
+    "unica.resolve",
     "unica.search",
     "unica.check",
     "unica.diff",
@@ -52,7 +52,7 @@ P0_LIFECYCLE_SCENARIOS = (
     "rollback",
 )
 SAFE_V13_AT_LEAST_ONCE_REPLAY_TOOLS = frozenset(
-    {"unica.check", "unica.view", "unica.find", "unica.search", "unica.diff"}
+    {"unica.check", "unica.view", "unica.resolve", "unica.search", "unica.diff"}
 )
 LOST_DAEMON_SUBMIT_RESPONSE_CODE = -32000
 LOST_DAEMON_SUBMIT_RESPONSE_MESSAGE = (
@@ -883,15 +883,24 @@ def validate_v13_scenario(
         if data.get("kind") != "Configuration" or not isinstance(data.get("branches"), list):
             fail_v13_scenario(scenario, "view did not return the BSP Configuration projection")
     elif scenario_id == "logical-find":
-        candidates = data.get("candidates")
-        if not isinstance(candidates, list) or not candidates:
-            fail_v13_scenario(scenario, "find did not return a BSP logical address")
+        matches = data.get("matches")
+        if not isinstance(matches, list) or not matches:
+            fail_v13_scenario(scenario, "name search did not return a BSP logical address")
         elif any(
-            not isinstance(candidate, dict)
-            or not str(candidate.get("at", "")).startswith("main:")
-            for candidate in candidates
+            not isinstance(match, dict) or not str(match.get("at", "")).startswith("main:")
+            for match in matches
         ):
-            fail_v13_scenario(scenario, "find returned a non-logical BSP candidate")
+            fail_v13_scenario(scenario, "name search returned a non-logical BSP hit")
+    elif scenario_id == "layout-resolve":
+        # Мост обязан отвечать путём — и обязан честно называть, есть ли у
+        # предмета строки: отсутствие поля читатель принял бы за «не
+        # посчиталось».
+        if not isinstance(data.get("path"), str) or not data["path"]:
+            fail_v13_scenario(scenario, "resolve did not answer a source path")
+        elif not str(data.get("at", "")).startswith("main:"):
+            fail_v13_scenario(scenario, "resolve did not answer a logical address")
+        elif not isinstance(data.get("lines"), dict) or "state" not in data["lines"]:
+            fail_v13_scenario(scenario, "resolve did not name whether the source has lines")
     elif scenario_id == "literal-search":
         matches = data.get("matches")
         if data.get("mode") != "literal" or not isinstance(matches, list) or not matches:
@@ -1373,9 +1382,16 @@ def build_assessment_report(
         ),
         (
             "logical-find",
-            "Resolve a BSP common module by logical identity",
-            "unica.find",
-            {"query": "ОбщегоНазначения", "kind": "CommonModule", "limit": 10},
+            "Find a BSP common module by name",
+            "unica.search",
+            {"corpus": "names", "query": "ОбщегоНазначения", "kind": "CommonModule", "limit": 10},
+            False,
+        ),
+        (
+            "layout-resolve",
+            "Bridge a BSP logical address to its source file",
+            "unica.resolve",
+            {"at": "main:Configuration"},
             False,
         ),
         (

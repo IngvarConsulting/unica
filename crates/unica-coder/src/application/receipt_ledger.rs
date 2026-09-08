@@ -737,8 +737,8 @@ pub(crate) enum V5ToolIdentity {
     View,
     #[serde(rename = "unica.apply")]
     Apply,
-    #[serde(rename = "unica.find")]
-    Find,
+    #[serde(rename = "unica.resolve")]
+    Resolve,
     #[serde(rename = "unica.search")]
     Search,
     #[serde(rename = "unica.check")]
@@ -755,7 +755,7 @@ impl V5ToolIdentity {
     pub(crate) const ALL: [Self; 8] = [
         Self::View,
         Self::Apply,
-        Self::Find,
+        Self::Resolve,
         Self::Search,
         Self::Check,
         Self::Diff,
@@ -767,7 +767,7 @@ impl V5ToolIdentity {
         match self {
             Self::View => "unica.view",
             Self::Apply => "unica.apply",
-            Self::Find => "unica.find",
+            Self::Resolve => "unica.resolve",
             Self::Search => "unica.search",
             Self::Check => "unica.check",
             Self::Diff => "unica.diff",
@@ -3460,7 +3460,7 @@ mod tests {
                 baseline.reserved_task_id(),
                 RequestIdentity::new(
                     baseline.core_identity_digest().clone(),
-                    V5ToolIdentity::Find,
+                    V5ToolIdentity::Resolve,
                     baseline.normalized_arguments_hash().clone(),
                     baseline.request_scope_hash().clone(),
                 ),

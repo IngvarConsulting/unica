@@ -37,8 +37,8 @@ pub(crate) enum ToolIdentity {
     View,
     #[serde(rename = "unica.apply")]
     Apply,
-    #[serde(rename = "unica.find")]
-    Find,
+    #[serde(rename = "unica.resolve")]
+    Resolve,
     #[serde(rename = "unica.search")]
     Search,
     #[serde(rename = "unica.check")]
@@ -55,7 +55,7 @@ impl ToolIdentity {
     pub(crate) const ALL: [Self; 8] = [
         Self::View,
         Self::Apply,
-        Self::Find,
+        Self::Resolve,
         Self::Search,
         Self::Check,
         Self::Diff,
@@ -67,7 +67,7 @@ impl ToolIdentity {
         match self {
             Self::View => "view",
             Self::Apply => "apply",
-            Self::Find => "find",
+            Self::Resolve => "resolve",
             Self::Search => "search",
             Self::Check => "check",
             Self::Diff => "diff",
@@ -80,7 +80,7 @@ impl ToolIdentity {
         match name {
             "unica.view" => Some(Self::View),
             "unica.apply" => Some(Self::Apply),
-            "unica.find" => Some(Self::Find),
+            "unica.resolve" => Some(Self::Resolve),
             "unica.search" => Some(Self::Search),
             "unica.check" => Some(Self::Check),
             "unica.diff" => Some(Self::Diff),
