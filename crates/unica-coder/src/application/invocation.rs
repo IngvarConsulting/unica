@@ -31,6 +31,9 @@ pub(crate) struct InvocationResponseDeadline {
     receipt_at: Instant,
     handoff_at: Instant,
     response_at: Instant,
+    /// How far past the handoff moment the actor admission may still run:
+    /// the grace of a Task the daemon promised at that moment.
+    admission_grace: Duration,
 }
 
 impl std::fmt::Debug for InvocationResponseDeadline {
@@ -53,7 +56,16 @@ impl InvocationResponseDeadline {
             receipt_at,
             handoff_at,
             response_at: handoff_at + RESPONSE_SERIALIZATION_MARGIN,
+            admission_grace: Duration::ZERO,
         }
+    }
+
+    /// The actor admission of a promised Task runs past the handoff moment
+    /// under the fail-stop grace of that promise: the daemon's watchdog, not
+    /// this checkpoint, bounds it there.
+    pub(crate) fn with_actor_admission_grace(mut self, grace: Duration) -> Self {
+        self.admission_grace = grace;
+        self
     }
 
     pub(crate) fn restrict_to_frontend_budget(mut self, remaining: Duration) -> Self {
@@ -82,11 +94,12 @@ impl InvocationResponseDeadline {
     }
 
     fn actor_admission_at(&self) -> Instant {
-        if self.handoff_at == self.receipt_at {
+        let boundary = if self.handoff_at == self.receipt_at {
             self.response_at
         } else {
             self.handoff_at
-        }
+        };
+        boundary + self.admission_grace
     }
 
     pub(crate) fn remaining_actor_admission_budget(&self) -> Duration {

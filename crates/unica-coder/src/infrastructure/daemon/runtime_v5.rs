@@ -30,8 +30,8 @@ use crate::application::receipt_ledger::{
     ReceiptKeyDigest, ReceiptLedgerError, ReceiptState, ReceiptTaskProjection,
     ReceiptTerminalOutcome, ReserveOutcome, ReservedPhase, TaskBoundReceipt,
     TaskCancellationReceipt, TaskHandoffActorBoundReceipt, TaskPromisedActorBoundReceipt,
-    TaskRetirementPendingReceipt, TaskTerminalBoundReceipt, TerminalDigest,
-    DIRECT_TERMINAL_RETENTION_MS,
+    TaskPromisedUnboundReceipt, TaskRetirementPendingReceipt, TaskTerminalBoundReceipt,
+    TerminalDigest, DIRECT_TERMINAL_RETENTION_MS,
 };
 use crate::application::receipt_ledger_actor::ReceiptLedgerActor;
 use crate::domain::cancellation::CancellationToken;
@@ -98,6 +98,11 @@ pub(crate) struct V5ReceiptRuntime {
     task_execution_threads: Mutex<Vec<thread::JoinHandle<()>>>,
     task_terminal_coordinator: Mutex<()>,
     external_store_fail_stop: AtomicBool,
+    fail_stop_watchdogs: FailStopWatchdogs,
+    /// How many promoted attempts the owner handed to a worker are still
+    /// running their continuation: the contract harness waits on this to
+    /// observe a promoted Task the runtime finishes off-thread.
+    promoted_continuations: AtomicUsize,
     /// Who observes this runtime and what it injects; production installs
     /// `NoHooks`.
     hooks: Arc<dyn V5RuntimeHooks>,
@@ -131,29 +136,6 @@ impl V5ActiveTaskCancellations {
                 task_id,
             },
         ))
-    }
-
-    /// Registers the token an inline worker already executes under: the
-    /// cutoff turned that execution into a Task without restarting it.
-    fn register_existing(
-        self: &Arc<Self>,
-        task_id: crate::domain::invocation::TaskId,
-        token: CancellationToken,
-    ) -> Result<V5ActiveTaskCancellationGuard, ReceiptLedgerError> {
-        let mut tokens = self
-            .tokens
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if tokens.contains_key(&task_id) {
-            return Err(ReceiptLedgerError::Corrupt(
-                "Task already owns an active cancellation token",
-            ));
-        }
-        tokens.insert(task_id, token);
-        Ok(V5ActiveTaskCancellationGuard {
-            registry: Arc::clone(self),
-            task_id,
-        })
     }
 
     fn cancel(&self, task_id: crate::domain::invocation::TaskId) {
@@ -190,6 +172,164 @@ impl Drop for V5ActiveTaskCancellationGuard {
             .remove(&self.task_id);
     }
 }
+
+/// What the pipeline worker hands back to the session handler that owns
+/// the reply and the pre-`Begun` cutoff.
+#[allow(clippy::large_enum_variant)]
+enum PipelineReport {
+    Reply(V5RuntimeReply),
+    Failed(ReceiptLedgerError),
+}
+
+/// Who answers the request while the worker runs the pipeline.
+enum PipelineDecision {
+    /// The session handler waits for the worker's reply under the cutoff.
+    Waiting,
+    /// The cutoff passed before `Begun`: the handler promotes the receipt.
+    HandoffInProgress,
+    /// The handler took the worker's reply.
+    HandlerOwns,
+    /// The handler promoted the receipt before `Begun` and answered with its
+    /// projection; the worker continues the attempt into that Task and its
+    /// own reply is dropped.
+    PromotedByOwner,
+}
+
+struct PipelineSlotState {
+    decision: PipelineDecision,
+    report: Option<PipelineReport>,
+    /// The worker committed `Begun`: from here the inline drive on the
+    /// worker thread owns the cutoff, not the session handler.
+    begun: bool,
+    /// A Task the session handler materialized at the begun cutoff while the
+    /// worker was paused before prepare: the worker executes into it.
+    owner_materialized: Option<(V5StoredInvocationRecord, TaskBoundReceipt)>,
+}
+
+/// One attempt shared between the session handler that owns the reply and
+/// the pre-`Begun` cutoff and the worker that runs the pipeline.
+struct PipelineSlot {
+    state: Mutex<PipelineSlotState>,
+    changed: Condvar,
+}
+
+impl PipelineSlot {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(PipelineSlotState {
+                decision: PipelineDecision::Waiting,
+                report: None,
+                begun: false,
+                owner_materialized: None,
+            }),
+            changed: Condvar::new(),
+        }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, PipelineSlotState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The worker's inline drive claims the cutoff before it starts timing:
+    /// from here the drive answers the seventh second. `false` when the
+    /// handler already promoted the receipt — the drive then hands off at
+    /// once into that intent.
+    fn claim_cutoff(&self) -> bool {
+        let mut state = self.lock();
+        while matches!(state.decision, PipelineDecision::HandoffInProgress) {
+            state = self
+                .changed
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        if matches!(state.decision, PipelineDecision::PromotedByOwner) {
+            return false;
+        }
+        state.begun = true;
+        self.changed.notify_all();
+        true
+    }
+
+    /// The session handler records the Task it materialized at the begun
+    /// cutoff so the paused worker executes into it once released.
+    fn stash_owner_materialized(&self, record: V5StoredInvocationRecord, bound: TaskBoundReceipt) {
+        self.lock().owner_materialized = Some((record, bound));
+    }
+
+    fn take_owner_materialized(&self) -> Option<(V5StoredInvocationRecord, TaskBoundReceipt)> {
+        self.lock().owner_materialized.take()
+    }
+
+    /// The worker deposits its reply. While the handler promotes the receipt
+    /// the worker waits for that decision instead of racing it.
+    fn report(&self, report: PipelineReport) {
+        let mut state = self.lock();
+        while matches!(state.decision, PipelineDecision::HandoffInProgress) {
+            state = self
+                .changed
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        state.report = Some(report);
+        self.changed.notify_all();
+    }
+
+    /// Whether the handler already answered with a promotion; a worker whose
+    /// durable transition lost the race asks this before re-reading.
+    fn promoted_by_owner(&self) -> bool {
+        let mut state = self.lock();
+        while matches!(state.decision, PipelineDecision::HandoffInProgress) {
+            state = self
+                .changed
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        matches!(state.decision, PipelineDecision::PromotedByOwner)
+    }
+}
+
+/// Deadlines after which a stalled attempt fail-stops the process: the grace
+/// after an unbound promise without an actor bind, and the grace after a
+/// cancel without a terminal. The accept loop reads them on the runtime's
+/// own clock, so the observer's clock drives them the same way.
+#[derive(Default)]
+struct FailStopWatchdogs {
+    armed: Mutex<HashMap<ReceiptKeyDigest, (Instant, Instant)>>,
+}
+
+impl FailStopWatchdogs {
+    fn arm(&self, digest: ReceiptKeyDigest, now: Instant, grace: Duration) {
+        self.armed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(digest)
+            .or_insert((now, now + grace));
+    }
+
+    fn disarm(&self, digest: &ReceiptKeyDigest) {
+        self.armed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(digest);
+    }
+
+    /// The elapsed grace of a watchdog that is due at `now`.
+    fn due(&self, now: Instant) -> Option<Duration> {
+        self.armed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .filter(|(_, due)| now >= *due)
+            .map(|(armed_at, _)| now.saturating_duration_since(*armed_at))
+            .max()
+    }
+}
+
+/// The grace a promised or cancelled attempt gets before the process
+/// fail-stops on it.
+const FAIL_STOP_GRACE: Duration = TASK_RECONCILIATION_BUDGET;
 
 /// What the inline worker hands back to the session handler.
 enum InlineWorkerReport {
@@ -293,6 +433,14 @@ enum InlineSettlement {
         report: InlineWorkerReport,
         ownership: Box<InlineTaskOwnership>,
     },
+}
+
+/// What the cutoff commit produced: the Task the running attempt continues
+/// into, or its terminal when the outcome was already there.
+#[allow(clippy::large_enum_variant)]
+enum CutoffCommit {
+    Bound(TaskBoundReceipt, V5StoredInvocationRecord),
+    Terminal(V5RuntimeReply),
 }
 
 /// How the session handler continues after the inline worker settled or the
@@ -1766,9 +1914,22 @@ impl V5InvocationExecutor {
         Self { invocation_runtime }
     }
 
+    fn capture_response_deadline(
+        &self,
+        response_budget_ms: u64,
+    ) -> crate::application::invocation::InvocationResponseDeadline {
+        self.invocation_runtime
+            .capture_response_deadline(response_budget_ms)
+    }
+
+    fn now(&self) -> Instant {
+        self.invocation_runtime.now()
+    }
+
     fn bind(
         &self,
         invocation: V5InvocationRequest,
+        response_deadline: crate::application::invocation::InvocationResponseDeadline,
     ) -> Result<V5ActorBoundCanonicalInvocation, V5CanonicalPrepareError> {
         let tool = match invocation.tool() {
             crate::application::receipt_ledger::V5ToolIdentity::View => ToolIdentity::View,
@@ -1795,7 +1956,8 @@ impl V5InvocationExecutor {
                 ),
             ))
         })?;
-        self.invocation_runtime.bind(request)
+        self.invocation_runtime
+            .bind_with_deadline(request, response_deadline)
     }
 }
 
@@ -1854,6 +2016,8 @@ impl V5ReceiptRuntime {
             task_execution_threads: Mutex::new(Vec::new()),
             task_terminal_coordinator: Mutex::new(()),
             external_store_fail_stop: AtomicBool::new(false),
+            fail_stop_watchdogs: FailStopWatchdogs::default(),
+            promoted_continuations: AtomicUsize::new(0),
             hooks,
         };
         if !config.skips_v5_startup_reconciliation() {
@@ -2163,6 +2327,24 @@ impl V5ReceiptRuntime {
             .map_err(|error| format!("validate protocol-v5 receipt authority: {error}"))
     }
 
+    /// Whether the attempt on this thread must stop: the observer simulated
+    /// the process's death, or the process latched fail-stop for real.
+    /// A cancelled Working Task gets the grace to reach its terminal before
+    /// the process fail-stops on it.
+    fn arm_cancel_grace(&self, record: &V5StoredInvocationRecord) {
+        if record.task == V5StoredTask::Working {
+            self.fail_stop_watchdogs.arm(
+                record.receipt_key_digest.clone(),
+                self.invocation_executor.now(),
+                FAIL_STOP_GRACE,
+            );
+        }
+    }
+
+    fn attempt_is_dead(&self) -> bool {
+        self.hooks.process_exited() || self.restart_required()
+    }
+
     fn restart_required(&self) -> bool {
         self.receipt_ledger.restart_required()
             || self.external_store_fail_stop.load(Ordering::Acquire)
@@ -2197,6 +2379,7 @@ impl V5ReceiptRuntime {
                 .map_err(|failure| self.project_task_failure(failure))?
             {
                 self.active_task_cancellations.cancel(record.task_id);
+                self.arm_cancel_grace(&record);
                 return Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
                     outcome: V5InvocationResponse::Task {
                         snapshot: task_store_snapshot(&record),
@@ -2234,6 +2417,7 @@ impl V5ReceiptRuntime {
                             terminal,
                             deadline,
                         )?;
+                        self.fail_stop_watchdogs.disarm(committed.key_digest());
                         self.hooks.receipt_backed_terminal(&committed)?;
                         self.hooks.release_pre_actor_pauses();
                         self.hooks.event(
@@ -2259,6 +2443,21 @@ impl V5ReceiptRuntime {
                         return Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
                             outcome: V5InvocationResponse::Task { snapshot },
                         }));
+                    }
+                    ReceiptState::Reserved(reserved)
+                        if matches!(reserved.phase(), ReservedPhase::Begun { .. }) =>
+                    {
+                        // A running inline attempt: signal its token and give
+                        // it the grace before the process fail-stops on it.
+                        self.active_task_cancellations
+                            .cancel(reserved.key().reserved_task_id());
+                        self.fail_stop_watchdogs.arm(
+                            crate::application::receipt_ledger::receipt_key_digest(reserved.key()),
+                            self.invocation_executor.now(),
+                            FAIL_STOP_GRACE,
+                        );
+                        return self
+                            .reply_for_existing_state(ReceiptState::Reserved(reserved), deadline);
                     }
                     other => return self.reply_for_existing_state(other, deadline),
                 };
@@ -2287,6 +2486,15 @@ impl V5ReceiptRuntime {
     ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
         self.hooks
             .event(V5ReceiptRuntimeEventKind::V5ExecutorEntered, epoch_ms);
+        // One opaque daemon-side deadline per request, captured before strict
+        // validation and narrowed to the frontend budget: every later stage
+        // measures against it and none of them starts a new clock.
+        let response_deadline = match decoded.request() {
+            V5ClientRequest::SubmitInvocation { invocation } => self
+                .invocation_executor
+                .capture_response_deadline(invocation.response_budget_ms()),
+            _ => return Err(ReceiptLedgerError::InvocationIdentityMismatch),
+        };
         let strict = decoded
             .into_strict_submit(&self.core_identity)
             .map_err(|_| ReceiptLedgerError::InvocationIdentityMismatch)?;
@@ -2303,9 +2511,14 @@ impl V5ReceiptRuntime {
             ReceiptLedgerError::Corrupt("canonical cancelled terminal could not be constructed")
         })?;
         match decision {
-            CancelReservedSubmitDecision::ExecuteReserved(reservation) => {
-                self.execute_reserved_invocation(reservation, invocation, epoch_ms, deadline)
-            }
+            CancelReservedSubmitDecision::ExecuteReserved(reservation) => self
+                .execute_reserved_invocation(
+                    reservation,
+                    invocation,
+                    response_deadline,
+                    epoch_ms,
+                    deadline,
+                ),
             other => self.reply_for_cancel_submit_decision(
                 other,
                 epoch_ms,
@@ -2316,10 +2529,292 @@ impl V5ReceiptRuntime {
         }
     }
 
+    /// The session handler owns the reply and the cutoff of a reserved
+    /// invocation from the reservation on: a worker thread runs validation,
+    /// admission, the durable transitions, prepare and execute, and the
+    /// handler answers with whatever arrives first — the worker's reply or
+    /// the seventh second. Before `Begun` the handler promotes the receipt
+    /// itself (`TaskPromisedUnbound` or the actor-bound handoff intent) and
+    /// answers with the projection; the worker then continues the single
+    /// attempt into that Task. From `Begun` on the inline drive on the worker
+    /// thread owns the cutoff, as before.
     fn execute_reserved_invocation(
         self: &Arc<Self>,
         reservation: crate::application::receipt_ledger::ReservedReceipt,
         invocation: V5InvocationRequest,
+        response_deadline: crate::application::invocation::InvocationResponseDeadline,
+        epoch_ms: u64,
+        deadline: Instant,
+    ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
+        let slot = Arc::new(PipelineSlot::new());
+        let worker = {
+            let runtime = Arc::clone(self);
+            let slot = Arc::clone(&slot);
+            let reservation = reservation.clone();
+            let response_deadline = response_deadline.clone();
+            thread::Builder::new()
+                .name("unica-v5-invocation-pipeline".to_owned())
+                .spawn(move || {
+                    let outcome = runtime.run_reserved_pipeline(
+                        reservation,
+                        invocation,
+                        response_deadline,
+                        &slot,
+                        epoch_ms,
+                        deadline,
+                    );
+                    slot.report(match outcome {
+                        Ok(reply) => PipelineReport::Reply(reply),
+                        Err(error) => PipelineReport::Failed(error),
+                    });
+                    if slot.promoted_by_owner() {
+                        runtime
+                            .promoted_continuations
+                            .fetch_sub(1, Ordering::AcqRel);
+                    }
+                })
+                .map_err(|_| {
+                    self.external_store_fail_stop.store(true, Ordering::Release);
+                    ReceiptLedgerError::StoreUnavailable
+                })?
+        };
+        let mut state = slot.lock();
+        loop {
+            if let Some(report) = state.report.take() {
+                let owned = !matches!(state.decision, PipelineDecision::PromotedByOwner);
+                state.decision = PipelineDecision::HandlerOwns;
+                drop(state);
+                let _ = worker.join();
+                return match report {
+                    PipelineReport::Reply(reply) if owned => Ok(reply),
+                    PipelineReport::Failed(error) if owned => Err(error),
+                    // The handler already answered with the promotion; the
+                    // worker's late reply belongs to a Task it published into.
+                    PipelineReport::Reply(_) | PipelineReport::Failed(_) => {
+                        Err(ReceiptLedgerError::Corrupt(
+                            "promoted invocation reported a reply after its owner answered",
+                        ))
+                    }
+                };
+            }
+            if worker.is_finished() {
+                // The worker died without a report: the attempt failed and the
+                // failure is what the caller learns.
+                drop(state);
+                let _ = worker.join();
+                return Err(ReceiptLedgerError::StoreUnavailable);
+            }
+            if matches!(state.decision, PipelineDecision::PromotedByOwner) || state.begun {
+                // Either the handler already answered, or the worker's drive
+                // claimed the cutoff: nothing to time here, wait for the report.
+                state = slot
+                    .changed
+                    .wait_timeout(state, INLINE_CUTOFF_POLL_INTERVAL)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .0;
+                continue;
+            }
+            let remaining = response_deadline.remaining_handoff_budget();
+            if remaining.is_zero() {
+                state.decision = PipelineDecision::HandoffInProgress;
+                drop(state);
+                let promotion = self.promote_at_cutoff(&reservation, &slot, epoch_ms);
+                let mut next = slot.lock();
+                match promotion {
+                    Ok(Some(reply)) => {
+                        next.decision = PipelineDecision::PromotedByOwner;
+                        slot.changed.notify_all();
+                        drop(next);
+                        // The worker continues this promoted attempt off the
+                        // reply thread; the harness waits on the count to see
+                        // the Task the runtime finishes for it.
+                        self.promoted_continuations.fetch_add(1, Ordering::AcqRel);
+                        self.task_execution_threads
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(worker);
+                        return Ok(reply);
+                    }
+                    Ok(None) => {
+                        // The worker already ended the attempt: its reply is
+                        // on the way.
+                        next.decision = PipelineDecision::Waiting;
+                        slot.changed.notify_all();
+                        state = next;
+                        continue;
+                    }
+                    Err(error) => {
+                        next.decision = PipelineDecision::HandlerOwns;
+                        slot.changed.notify_all();
+                        drop(next);
+                        self.task_execution_threads
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(worker);
+                        return Err(error);
+                    }
+                }
+            }
+            state = slot
+                .changed
+                .wait_timeout(state, remaining.min(INLINE_CUTOFF_POLL_INTERVAL))
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .0;
+        }
+    }
+
+    /// The handler's promotion at the seventh second, by the durable phase the
+    /// receipt is in: unbound — a promised Task with the fail-stop grace armed;
+    /// actor-bound, or begun before the drive claimed the cutoff — the handoff
+    /// intent, which the worker materializes and continues.
+    fn promote_at_cutoff(
+        &self,
+        reservation: &crate::application::receipt_ledger::ReservedReceipt,
+        slot: &PipelineSlot,
+        epoch_ms: u64,
+    ) -> Result<Option<V5RuntimeReply>, ReceiptLedgerError> {
+        let deadline = Instant::now() + CUTOFF_HANDOFF_COMMIT_BUDGET;
+        let cutoff_epoch_ms = self.epoch_ms();
+        let current = self
+            .receipt_ledger
+            .recover(reservation.key().clone(), deadline)?;
+        let reserved = match current {
+            ReceiptState::Reserved(reserved) => reserved,
+            // The worker already ended the attempt: its reply is on the way.
+            _ => return Ok(None),
+        };
+        match reserved.phase() {
+            ReservedPhase::Unbound => {
+                let promised = self.receipt_ledger.promise_task_unbound(
+                    reserved.key().clone(),
+                    reserved.record_version(),
+                    cutoff_epoch_ms,
+                    DIRECT_TERMINAL_RETENTION_MS,
+                    V5_TASK_POLL_INTERVAL_MS,
+                    deadline,
+                )?;
+                self.hooks.event(
+                    V5ReceiptRuntimeEventKind::UnboundPromiseCommitted,
+                    cutoff_epoch_ms,
+                );
+                // Validation or admission still runs: it gets the grace, and
+                // the process fail-stops if the actor is not bound by then.
+                self.fail_stop_watchdogs.arm(
+                    promised.key_digest().clone(),
+                    self.invocation_executor.now(),
+                    FAIL_STOP_GRACE,
+                );
+                let _ = epoch_ms;
+                Ok(Some(V5RuntimeReply::Json(V5ServerResponse::Invocation {
+                    outcome: V5InvocationResponse::Task {
+                        snapshot: queued_receipt_task_snapshot(
+                            promised.task(),
+                            promised.key_digest().clone(),
+                            promised.cancel_requested(),
+                        ),
+                    },
+                })))
+            }
+            ReservedPhase::ActorBound { .. } => {
+                let handoff = self.receipt_ledger.begin_bound_task_handoff(
+                    reserved.key().clone(),
+                    reserved.record_version(),
+                    cutoff_epoch_ms,
+                    DIRECT_TERMINAL_RETENTION_MS,
+                    V5_TASK_POLL_INTERVAL_MS,
+                    deadline,
+                )?;
+                self.hooks.event(
+                    V5ReceiptRuntimeEventKind::BoundHandoffCommitted,
+                    cutoff_epoch_ms,
+                );
+                Ok(Some(V5RuntimeReply::Json(V5ServerResponse::Invocation {
+                    outcome: V5InvocationResponse::Task {
+                        snapshot: queued_receipt_task_snapshot(
+                            handoff.task(),
+                            handoff.key_digest().clone(),
+                            handoff.cancel_requested(),
+                        ),
+                    },
+                })))
+            }
+            ReservedPhase::Begun { .. } => {
+                let handoff = self.receipt_ledger.begin_bound_task_handoff(
+                    reserved.key().clone(),
+                    reserved.record_version(),
+                    cutoff_epoch_ms,
+                    DIRECT_TERMINAL_RETENTION_MS,
+                    V5_TASK_POLL_INTERVAL_MS,
+                    deadline,
+                )?;
+                self.hooks.event(
+                    V5ReceiptRuntimeEventKind::BoundHandoffCommitted,
+                    cutoff_epoch_ms,
+                );
+                if self.hooks.holds(V5PausePoint::BeforeTaskStoreCreate) {
+                    // The observer holds the Task store create: the worker
+                    // stages the terminal on release, so answer with the
+                    // handoff's queued Task and defer materialization.
+                    return Ok(Some(V5RuntimeReply::Json(V5ServerResponse::Invocation {
+                        outcome: V5InvocationResponse::Task {
+                            snapshot: queued_receipt_task_snapshot(
+                                handoff.task(),
+                                handoff.key_digest().clone(),
+                                handoff.cancel_requested(),
+                            ),
+                        },
+                    })));
+                }
+                // Materialize the Task now so a client polling at the cutoff
+                // sees a working Task; the paused worker executes into it.
+                let (task_record, task_bound) = self
+                    .task_projection
+                    .materialize_bound_handoff(
+                        &handoff,
+                        cutoff_epoch_ms,
+                        deadline,
+                        self.hooks.as_ref(),
+                    )
+                    .map_err(|failure| self.project_task_failure(failure))?;
+                self.receipt_ledger.complete_bound_task_handoff(
+                    handoff.key().clone(),
+                    handoff.record_version(),
+                    task_bound.clone(),
+                    deadline,
+                )?;
+                let (task_record, task_bound) = self
+                    .task_projection
+                    .start_bound_task(&task_bound, task_record, deadline)
+                    .map_err(|failure| self.project_task_failure(failure))?;
+                self.hooks.bound_task(&task_record, &task_bound);
+                self.hooks.event(
+                    V5ReceiptRuntimeEventKind::TaskBoundCommitted,
+                    cutoff_epoch_ms,
+                );
+                let reply = V5RuntimeReply::Json(V5ServerResponse::Invocation {
+                    outcome: V5InvocationResponse::Task {
+                        snapshot: task_store_snapshot(&task_record),
+                    },
+                });
+                slot.stash_owner_materialized(task_record, task_bound);
+                Ok(Some(reply))
+            }
+        }
+    }
+
+    /// A fresh bound for the durable steps of an attempt the handler already
+    /// answered for: the operation budget of the submit is spent by definition.
+    fn continuation_deadline() -> Instant {
+        Instant::now() + TASK_TERMINAL_PUBLICATION_TIMEOUT
+    }
+
+    /// The pipeline of one reserved invocation on the worker thread.
+    fn run_reserved_pipeline(
+        self: &Arc<Self>,
+        reservation: crate::application::receipt_ledger::ReservedReceipt,
+        invocation: V5InvocationRequest,
+        response_deadline: crate::application::invocation::InvocationResponseDeadline,
+        slot: &PipelineSlot,
         epoch_ms: u64,
         deadline: Instant,
     ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
@@ -2354,7 +2849,7 @@ impl V5ReceiptRuntime {
             let current = self
                 .receipt_ledger
                 .recover(reservation.key().clone(), deadline)?;
-            if self.hooks.process_exited() || !reservation_is_still_unbound(&current) {
+            if self.attempt_is_dead() || !reservation_is_still_unbound(&current) {
                 return self.reply_for_existing_state(current, deadline);
             }
         }
@@ -2385,7 +2880,13 @@ impl V5ReceiptRuntime {
                 deadline,
             );
         }
-        let actor_bound = match self.invocation_executor.bind(invocation) {
+        // The actor bind may run into the grace of a promised Task: the
+        // handler promises at the handoff moment, and after it the watchdog,
+        // not the admission checkpoint, bounds the bind.
+        let actor_bound = match self.invocation_executor.bind(
+            invocation,
+            response_deadline.with_actor_admission_grace(FAIL_STOP_GRACE),
+        ) {
             Ok(actor_bound) => actor_bound,
             Err(error) => {
                 let fail_stop = matches!(error, V5CanonicalPrepareError::WorkspaceRegistryFailed);
@@ -2416,307 +2917,46 @@ impl V5ReceiptRuntime {
             .receipt_ledger
             .recover(reservation.key().clone(), deadline)?;
         if let ReceiptState::TaskPromisedUnbound(promised) = current {
-            self.hooks
-                .actor_workspace_identity(actor_bound.workspace_identity_hash());
-            let actor_promised = self.receipt_ledger.bind_promised_task_actor(
-                promised.key().clone(),
-                promised.record_version(),
-                actor_bound.workspace_identity_hash().clone(),
-                deadline,
-            )?;
-            self.hooks
-                .event(V5ReceiptRuntimeEventKind::ActorBoundCommitted, epoch_ms);
-            self.hooks.pause(V5PausePoint::ActorBound, deadline)?;
-            let handoff = self.receipt_ledger.begin_bound_task_handoff(
-                actor_promised.key().clone(),
-                actor_promised.record_version(),
-                actor_promised.task().created_at_epoch_ms(),
-                actor_promised.task().ttl_ms(),
-                actor_promised.task().poll_interval_ms(),
-                deadline,
-            )?;
-            self.hooks
-                .event(V5ReceiptRuntimeEventKind::BoundHandoffCommitted, epoch_ms);
-            let link_reservation = self
-                .task_projection
-                .reserve_bound_handoff_link(&handoff, epoch_ms, deadline, self.hooks.as_ref())
-                .map_err(|failure| self.project_task_failure(failure))?;
-            self.hooks.pause(
-                V5PausePoint::BeforeTaskStoreCreate,
-                self.hooks
-                    .commit_deadline_at(V5PausePoint::BeforeTaskStoreCreate, deadline),
-            )?;
-            let deadline = self
-                .hooks
-                .commit_deadline_at(V5PausePoint::BeforeTaskStoreCreate, deadline);
-            let handoff = self.hooks.staged_handoff().unwrap_or(handoff);
-            let (task_record, bound) = self
-                .task_projection
-                .materialize_staged_bound_handoff(
-                    &handoff,
-                    &link_reservation,
-                    epoch_ms,
-                    deadline,
-                    self.hooks.as_ref(),
-                )
-                .map_err(|failure| self.project_task_failure(failure))?;
-            self.hooks
-                .promised_actor_binding(&promised, &actor_promised, &bound);
-            if let HandoffTerminalStage::Staged { terminal, .. } = handoff.terminal_stage() {
-                let (terminal_record, terminal_link) = self
-                    .task_projection
-                    .publish_bound_task_terminal(
-                        &bound,
-                        &task_record,
-                        terminal,
-                        epoch_ms,
-                        deadline,
-                        self.hooks.as_ref(),
-                    )
-                    .map_err(|failure| self.project_task_failure(failure))?;
-                self.hooks.event(
-                    V5ReceiptRuntimeEventKind::TaskStoreTerminalCommitted,
-                    epoch_ms,
-                );
-                self.hooks.event(
-                    V5ReceiptRuntimeEventKind::TaskStoreTerminalReadback,
-                    epoch_ms,
-                );
-                let terminal_link = self.receipt_ledger.complete_staged_task_handoff(
-                    handoff.key().clone(),
-                    handoff.record_version(),
-                    terminal_link,
-                    deadline,
-                )?;
-                self.hooks.staged_terminal_publication(
-                    &handoff,
-                    &task_record,
-                    &terminal_record,
-                    &terminal_link,
-                )?;
-                self.hooks
-                    .terminal_bound_task(&terminal_record, &terminal_link);
-                self.hooks.event(
-                    V5ReceiptRuntimeEventKind::TaskTerminalBoundCommitted,
-                    epoch_ms,
-                );
-                return Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
-                    outcome: V5InvocationResponse::Task {
-                        snapshot: task_store_snapshot(&terminal_record),
-                    },
-                }));
-            }
-            self.receipt_ledger.complete_bound_task_handoff(
-                handoff.key().clone(),
-                handoff.record_version(),
-                bound.clone(),
-                deadline,
-            )?;
-            self.hooks.bound_task(&task_record, &bound);
-            self.hooks
-                .event(V5ReceiptRuntimeEventKind::TaskBoundCommitted, epoch_ms);
-            let authorized_bound =
-                if !task_record.cancel_requested && task_record.task == V5StoredTask::Queued {
-                    self.task_projection
-                        .authorize_not_begun_bound_task_start(&bound, &task_record, deadline)
-                        .map_err(|failure| self.project_task_failure(failure))?
-                } else {
-                    bound
-                };
-            self.hooks.bound_task(&task_record, &authorized_bound);
-            if !task_record.cancel_requested && task_record.task == V5StoredTask::Queued {
-                self.hooks.event(
-                    V5ReceiptRuntimeEventKind::FalseCancelObservationReached,
-                    epoch_ms,
-                );
-                self.hooks
-                    .pause(V5PausePoint::AfterFalseCancelObservation, deadline)?;
-            }
-            let lifecycle_gate_acquired = if self.hooks.holds(V5PausePoint::AfterWorkingReadback) {
-                self.hooks.acquire_lifecycle_gate("submit", deadline)?;
-                true
+            // The handler promised this Task at the cutoff; the submit's own
+            // budget is spent, the continuation runs under its own bound.
+            let deadline = if slot.promoted_by_owner() {
+                Self::continuation_deadline()
             } else {
-                false
+                deadline
             };
-            let (task_record, bound) = self
-                .task_projection
-                .start_not_begun_bound_task(&authorized_bound, task_record, deadline)
-                .map_err(|failure| self.project_task_failure(failure))?;
-            let mut task_record = task_record;
-            if task_record.task == V5StoredTask::Working {
-                self.hooks.event(
-                    V5ReceiptRuntimeEventKind::TaskStoreWorkingReadback,
-                    epoch_ms,
-                );
-            }
-            self.hooks.bound_task(&task_record, &bound);
-            if task_record.task == V5StoredTask::Working && bound.phase() == AttemptPhase::NotBegun
-            {
-                self.hooks
-                    .pause(V5PausePoint::AfterWorkingReadback, deadline)?;
-                self.hooks
-                    .pause(V5PausePoint::BeforeReceiptBegun, deadline)?;
-                if self.hooks.process_exited() {
-                    let current = self.receipt_ledger.recover(bound.key().clone(), deadline)?;
-                    return self.reply_for_existing_state(current, deadline);
-                }
-            }
-            let bound = if task_record.task == V5StoredTask::Working
-                && bound.phase() == AttemptPhase::NotBegun
-            {
-                let begun = self
-                    .task_projection
-                    .mark_not_begun_bound_task_begun(&bound, &task_record, deadline)
-                    .map_err(|failure| self.project_task_failure(failure))?;
-                self.hooks
-                    .event(V5ReceiptRuntimeEventKind::ReceiptBegunCommitted, epoch_ms);
-                self.hooks
-                    .event(V5ReceiptRuntimeEventKind::TokenSignalled, epoch_ms);
-                self.hooks
-                    .bound_task_start_authorization(&authorized_bound, &task_record, &begun);
-                self.hooks.bound_task(&task_record, &begun);
-                begun
-            } else {
-                bound
-            };
-            if lifecycle_gate_acquired {
-                self.hooks.release_lifecycle_gate("submit");
-                self.hooks.wait_for_gate_cancel(deadline)?;
-                if let Some(cancelled) = self
-                    .task_projection
-                    .cancel_exact_bound_task(bound.key(), deadline)
-                    .map_err(|failure| self.project_task_failure(failure))?
-                {
-                    task_record = cancelled;
-                    self.hooks.bound_task(&task_record, &bound);
-                }
-            }
-            if task_record.cancel_requested {
-                let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
-                    .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;
-                let (terminal_record, terminal_link) = self
-                    .task_projection
-                    .publish_bound_task_terminal(
-                        &bound,
-                        &task_record,
-                        &terminal,
-                        epoch_ms,
-                        deadline,
-                        self.hooks.as_ref(),
-                    )
-                    .map_err(|failure| self.project_task_failure(failure))?;
-                self.hooks.event(
-                    V5ReceiptRuntimeEventKind::TaskStoreTerminalCommitted,
-                    epoch_ms,
-                );
-                self.hooks.event(
-                    V5ReceiptRuntimeEventKind::TaskStoreTerminalReadback,
-                    epoch_ms,
-                );
-                self.hooks.event(
-                    V5ReceiptRuntimeEventKind::TaskTerminalBoundCommitted,
-                    epoch_ms,
-                );
-                self.hooks
-                    .terminal_bound_task(&terminal_record, &terminal_link);
-                return Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
-                    outcome: V5InvocationResponse::Task {
-                        snapshot: task_store_snapshot(&terminal_record),
-                    },
-                }));
-            }
-            let (cancellation, cancellation_guard) = self
-                .active_task_cancellations
-                .register(task_record.task_id)?;
-            self.hooks.pause(V5PausePoint::BeforePrepare, deadline)?;
-            self.hooks.stage_entered(V5Stage::Prepare);
-            self.hooks
-                .event(V5ReceiptRuntimeEventKind::PrepareEntered, epoch_ms);
-            self.hooks.pause(V5PausePoint::PrepareEntered, deadline)?;
-            if self.hooks.prepare_rejects() {
-                let terminal = injected_rejection_terminal("scenario prepare rejected invocation")?;
-                return self.publish_bound_terminal_reply(
-                    &bound,
-                    &task_record,
-                    &terminal,
-                    epoch_ms,
-                    deadline,
-                );
-            }
-            let prepared = match actor_bound.prepare() {
-                Ok(prepared) => prepared,
-                Err(result) => {
-                    let terminal =
-                        canonical_v5_terminal(&ReceiptTerminalOutcome::Completed { result })
-                            .map_err(|_| {
-                                ReceiptLedgerError::Corrupt("canonical v5 terminal failed")
-                            })?;
-                    return self.publish_bound_terminal_reply(
-                        &bound,
-                        &task_record,
-                        &terminal,
-                        epoch_ms,
-                        deadline,
-                    );
-                }
-            };
-            if matches!(
-                prepared.execution_class(),
-                crate::application::operation_descriptors::ExecutionClass::KnownLong(_)
-            ) {
-                self.spawn_task_execution(
-                    prepared,
-                    bound,
-                    task_record.clone(),
-                    cancellation,
-                    cancellation_guard,
-                )?;
-                return Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
-                    outcome: V5InvocationResponse::Task {
-                        snapshot: task_store_snapshot(&task_record),
-                    },
-                }));
-            }
-            self.hooks.stage_entered(V5Stage::Execute);
-            self.hooks
-                .event(V5ReceiptRuntimeEventKind::ExecuteEntered, epoch_ms);
-            self.hooks
-                .callback_invocation_id(reservation.key().invocation_id());
-            let result = prepared.execute(cancellation.clone());
-            let outcome = if cancellation.is_cancelled() {
-                ReceiptTerminalOutcome::Cancelled
-            } else {
-                match result {
-                    Ok(result) => ReceiptTerminalOutcome::Completed {
-                        result: Box::new(result),
-                    },
-                    Err(_) => ReceiptTerminalOutcome::Failed {
-                        reason: V5SafeFailureReason::InvocationFailed,
-                    },
-                }
-            };
-            if self.hooks.crash_after_side_effect() {
-                return Err(ReceiptLedgerError::StoreUnavailable);
-            }
-            self.hooks
-                .event(V5ReceiptRuntimeEventKind::ResultSerialized, epoch_ms);
-            let snapshot =
-                self.publish_task_execution_outcome(&bound, task_record.task_id, outcome, deadline);
-            drop(cancellation_guard);
-            return snapshot.map(|snapshot| {
-                V5RuntimeReply::Json(V5ServerResponse::Invocation {
-                    outcome: V5InvocationResponse::Task { snapshot },
-                })
-            });
+            return self.continue_promised(actor_bound, promised, &reservation, epoch_ms, deadline);
         }
         self.hooks
             .actor_workspace_identity(actor_bound.workspace_identity_hash());
-        let bound = self.receipt_ledger.bind_reserved_actor(
+        let bound = match self.receipt_ledger.bind_reserved_actor(
             reservation.key().clone(),
             reservation.record_version(),
             actor_bound.workspace_identity_hash().clone(),
             deadline,
-        )?;
+        ) {
+            Ok(bound) => bound,
+            Err(error) if slot.promoted_by_owner() => {
+                // The handler promised the Task while the actor was binding:
+                // the durable state moved under us, continue into the promise.
+                let deadline = Self::continuation_deadline();
+                match self
+                    .receipt_ledger
+                    .recover(reservation.key().clone(), deadline)?
+                {
+                    ReceiptState::TaskPromisedUnbound(promised) => {
+                        return self.continue_promised(
+                            actor_bound,
+                            promised,
+                            &reservation,
+                            epoch_ms,
+                            deadline,
+                        );
+                    }
+                    _ => return Err(error),
+                }
+            }
+            Err(error) => return Err(error),
+        };
         self.hooks
             .event(V5ReceiptRuntimeEventKind::ActorBoundCommitted, epoch_ms);
         self.hooks.pause(V5PausePoint::ActorBound, deadline)?;
@@ -2724,45 +2964,66 @@ impl V5ReceiptRuntime {
             .pause(V5PausePoint::BeforeReceiptBegun, deadline)?;
         if self.hooks.observing() {
             let current = self.receipt_ledger.recover(bound.key().clone(), deadline)?;
-            if self.hooks.process_exited() {
+            if self.attempt_is_dead() {
                 return self.reply_for_existing_state(current, deadline);
             }
             if let ReceiptState::TaskHandoffActorBound(handoff) = current {
-                let (task_record, task_bound) = self
-                    .task_projection
-                    .materialize_bound_handoff(&handoff, epoch_ms, deadline, self.hooks.as_ref())
-                    .map_err(|failure| self.project_task_failure(failure))?;
-                self.receipt_ledger.complete_bound_task_handoff(
-                    handoff.key().clone(),
-                    handoff.record_version(),
-                    task_bound.clone(),
+                let deadline = if slot.promoted_by_owner() {
+                    Self::continuation_deadline()
+                } else {
+                    deadline
+                };
+                return self.continue_handoff(
+                    actor_bound,
+                    handoff,
+                    reservation.key().invocation_id(),
+                    epoch_ms,
                     deadline,
-                )?;
-                self.hooks.bound_task(&task_record, &task_bound);
-                self.hooks
-                    .event(V5ReceiptRuntimeEventKind::TaskBoundCommitted, epoch_ms);
-                return Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
-                    outcome: V5InvocationResponse::Task {
-                        snapshot: task_store_snapshot(&task_record),
-                    },
-                }));
+                );
             }
         }
-        let begun = self.receipt_ledger.mark_reserved_begun(
+        let begun = match self.receipt_ledger.mark_reserved_begun(
             bound.key().clone(),
             bound.record_version(),
             deadline,
-        )?;
+        ) {
+            Ok(begun) => begun,
+            Err(error) if slot.promoted_by_owner() => {
+                // The handler committed the handoff intent at the cutoff while
+                // this attempt was between actor bind and begun: materialize
+                // its Task and continue into it.
+                let deadline = Self::continuation_deadline();
+                match self.receipt_ledger.recover(bound.key().clone(), deadline)? {
+                    ReceiptState::TaskHandoffActorBound(handoff) => {
+                        return self.continue_handoff(
+                            actor_bound,
+                            handoff,
+                            reservation.key().invocation_id(),
+                            epoch_ms,
+                            deadline,
+                        );
+                    }
+                    _ => return Err(error),
+                }
+            }
+            Err(error) => return Err(error),
+        };
         self.hooks
             .event(V5ReceiptRuntimeEventKind::ReceiptBegunCommitted, epoch_ms);
         self.hooks.pause(V5PausePoint::BeforePrepare, deadline)?;
         if self.hooks.observing() {
             let current = self.receipt_ledger.recover(begun.key().clone(), deadline)?;
-            if self.hooks.process_exited() {
+            if self.attempt_is_dead() {
                 return self.reply_for_existing_state(current, deadline);
             }
             if let ReceiptState::TaskHandoffActorBound(handoff) = current {
-                return self.continue_promoted_begun_handoff(handoff, epoch_ms, deadline);
+                // The handler promoted this begun attempt at the cutoff; the
+                // submit budget is spent, the continuation runs under its own.
+                return self.continue_promoted_begun_handoff(
+                    handoff,
+                    epoch_ms,
+                    Self::continuation_deadline(),
+                );
             }
             if !reservation_is_begun(&current) {
                 return self.reply_for_existing_state(current, deadline);
@@ -2773,6 +3034,24 @@ impl V5ReceiptRuntime {
             .event(V5ReceiptRuntimeEventKind::PrepareEntered, epoch_ms);
         self.hooks.pause(V5PausePoint::PrepareEntered, deadline)?;
         if self.hooks.observing() {
+            if let Some((task_record, bound)) = slot.take_owner_materialized() {
+                // The session handler materialized this Task at the begun
+                // cutoff while this attempt was paused; execute into it.
+                let deadline = Self::continuation_deadline();
+                let (cancellation, cancellation_guard) = self
+                    .active_task_cancellations
+                    .register(task_record.task_id)?;
+                return self.drive_prepared_bound_task(
+                    actor_bound,
+                    task_record,
+                    bound,
+                    reservation.key().invocation_id(),
+                    cancellation,
+                    cancellation_guard,
+                    epoch_ms,
+                    deadline,
+                );
+            }
             if let Some((record, bound_task)) = self.hooks.bound_task_override() {
                 if self.hooks.prepare_rejects() {
                     let terminal =
@@ -2787,11 +3066,17 @@ impl V5ReceiptRuntime {
                 }
             }
             let current = self.receipt_ledger.recover(begun.key().clone(), deadline)?;
-            if self.hooks.process_exited() {
+            if self.attempt_is_dead() {
                 return self.reply_for_existing_state(current, deadline);
             }
             if let ReceiptState::TaskHandoffActorBound(handoff) = current {
-                return self.continue_promoted_begun_handoff(handoff, epoch_ms, deadline);
+                // The handler promoted this begun attempt at the cutoff; the
+                // submit budget is spent, the continuation runs under its own.
+                return self.continue_promoted_begun_handoff(
+                    handoff,
+                    epoch_ms,
+                    Self::continuation_deadline(),
+                );
             }
             if !reservation_is_begun(&current) {
                 return self.reply_for_existing_state(current, deadline);
@@ -2800,6 +3085,17 @@ impl V5ReceiptRuntime {
                 let terminal = injected_rejection_terminal("scenario prepare rejected invocation")?;
                 return self.publish_direct_terminal(begun, epoch_ms, terminal, deadline);
             }
+        }
+        if !slot.claim_cutoff() {
+            // The handler promoted this begun attempt at the cutoff before the
+            // drive claimed it: continue the handoff the handler committed.
+            let deadline = Self::continuation_deadline();
+            return match self.receipt_ledger.recover(begun.key().clone(), deadline)? {
+                ReceiptState::TaskHandoffActorBound(handoff) => {
+                    self.continue_promoted_begun_handoff(handoff, epoch_ms, deadline)
+                }
+                other => self.reply_for_existing_state(other, deadline),
+            };
         }
         let (prepared, direct_outcome) = match self.drive_inline_invocation(actor_bound, &begun)? {
             InlineDrive::Rejected(result) => {
@@ -3018,7 +3314,11 @@ impl V5ReceiptRuntime {
     ) -> Result<InlineDrive, ReceiptLedgerError> {
         let response_deadline = actor_bound.response_deadline();
         let slot = Arc::new(InlineExecutionSlot::new());
-        let cancellation = CancellationToken::new();
+        // The running attempt is cancellable by its reserved Task identity
+        // from `Begun` on; the cutoff hands the same registration to the Task.
+        let (cancellation, guard) = self
+            .active_task_cancellations
+            .register(begun.key().reserved_task_id())?;
         let invocation_id = begun.key().invocation_id();
         let worker = {
             let runtime = Arc::clone(self);
@@ -3034,9 +3334,7 @@ impl V5ReceiptRuntime {
                     ReceiptLedgerError::StoreUnavailable
                 })?
         };
-        // Under the contract harness the harness itself still plays the
-        // deadline owner; the production runtime owns the cutoff otherwise.
-        let cutoff = response_deadline.filter(|_| self.hooks.owns_cutoff());
+        let cutoff = response_deadline;
 
         let mut state = slot.lock();
         loop {
@@ -3079,10 +3377,20 @@ impl V5ReceiptRuntime {
         // projection; the worker keeps the only attempt.
         state.decision = InlineHandoffDecision::HandoffInProgress;
         drop(state);
-        let committed = self.commit_cutoff_handoff(begun, cancellation.clone());
+        let committed = self.commit_cutoff_handoff(begun, &slot);
         let mut state = slot.lock();
         match committed {
-            Ok((bound, task_record, guard)) => {
+            Ok(CutoffCommit::Terminal(reply)) => {
+                // The outcome arrived while the handoff committed and was
+                // staged durably: the reply is the Task's terminal.
+                state.decision = InlineHandoffDecision::HandlerOwns;
+                slot.changed.notify_all();
+                drop(state);
+                let _ = worker.join();
+                drop(guard);
+                Ok(InlineDrive::HandedOff(Box::new(reply)))
+            }
+            Ok(CutoffCommit::Bound(bound, task_record)) => {
                 let task_id = task_record.task_id;
                 if let Some(report) = state.report.take() {
                     // The worker finished while the handoff was committing:
@@ -3290,15 +3598,8 @@ impl V5ReceiptRuntime {
     fn commit_cutoff_handoff(
         &self,
         begun: &crate::application::receipt_ledger::ReservedReceipt,
-        cancellation: CancellationToken,
-    ) -> Result<
-        (
-            TaskBoundReceipt,
-            V5StoredInvocationRecord,
-            V5ActiveTaskCancellationGuard,
-        ),
-        ReceiptLedgerError,
-    > {
+        slot: &InlineExecutionSlot,
+    ) -> Result<CutoffCommit, ReceiptLedgerError> {
         let epoch_ms = self.epoch_ms();
         let deadline = Instant::now() + CUTOFF_HANDOFF_COMMIT_BUDGET;
         let handoff = self.receipt_ledger.begin_bound_task_handoff(
@@ -3311,10 +3612,53 @@ impl V5ReceiptRuntime {
         )?;
         self.hooks
             .event(V5ReceiptRuntimeEventKind::BoundHandoffCommitted, epoch_ms);
+        // An outcome that is already in the slot goes into the handoff
+        // durably before any TaskStore row exists: a crash between the two
+        // loses nothing, the successor publishes the staged terminal.
+        let staged_outcome = {
+            let mut state = slot.lock();
+            match state.report.take() {
+                Some(InlineWorkerReport::Outcome(outcome)) => Some(outcome),
+                Some(other) => {
+                    state.report = Some(other);
+                    None
+                }
+                None => None,
+            }
+        };
+        if let Some(outcome) = staged_outcome {
+            let terminal = match canonical_v5_terminal(&outcome) {
+                Ok(terminal) => terminal,
+                Err(CanonicalTerminalError::ResultTooLarge) => {
+                    canonical_v5_terminal(&ReceiptTerminalOutcome::Failed {
+                        reason: V5SafeFailureReason::ResultTooLarge,
+                    })
+                    .map_err(|_| {
+                        ReceiptLedgerError::Corrupt("canonical result-too-large terminal failed")
+                    })?
+                }
+                Err(CanonicalTerminalError::Serialization) => {
+                    return Err(ReceiptLedgerError::Corrupt(
+                        "canonical v5 terminal serialization failed",
+                    ))
+                }
+            };
+            let reply =
+                self.publish_staged_handoff_terminal_reply(handoff, terminal, epoch_ms, deadline)?;
+            return Ok(CutoffCommit::Terminal(reply));
+        }
         let link_reservation = self
             .task_projection
             .reserve_bound_handoff_link(&handoff, epoch_ms, deadline, self.hooks.as_ref())
             .map_err(|failure| self.project_task_failure(failure))?;
+        self.hooks.pause(
+            V5PausePoint::BeforeTaskStoreCreate,
+            self.hooks
+                .commit_deadline_at(V5PausePoint::BeforeTaskStoreCreate, deadline),
+        )?;
+        let deadline = self
+            .hooks
+            .commit_deadline_at(V5PausePoint::BeforeTaskStoreCreate, deadline);
         let (task_record, bound) = self
             .task_projection
             .materialize_staged_bound_handoff(
@@ -3331,9 +3675,6 @@ impl V5ReceiptRuntime {
             bound.clone(),
             deadline,
         )?;
-        let guard = self
-            .active_task_cancellations
-            .register_existing(task_record.task_id, cancellation)?;
         let (task_record, bound) = self
             .task_projection
             .start_bound_task(&bound, task_record, deadline)
@@ -3341,7 +3682,439 @@ impl V5ReceiptRuntime {
         self.hooks.bound_task(&task_record, &bound);
         self.hooks
             .event(V5ReceiptRuntimeEventKind::TaskBoundCommitted, epoch_ms);
-        Ok((bound, task_record, guard))
+        Ok(CutoffCommit::Bound(bound, task_record))
+    }
+
+    /// The attempt after the handler promised its Task at the cutoff: bind
+    /// the actor to the promise, materialize the Task and continue the single
+    /// attempt into it. The handler already answered; the reply returned here
+    /// is the Task's final projection and nobody reads it.
+    fn continue_promised(
+        self: &Arc<Self>,
+        actor_bound: super::server::V5ActorBoundCanonicalInvocation,
+        promised: TaskPromisedUnboundReceipt,
+        reservation: &crate::application::receipt_ledger::ReservedReceipt,
+        epoch_ms: u64,
+        deadline: Instant,
+    ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
+        self.hooks
+            .actor_workspace_identity(actor_bound.workspace_identity_hash());
+        let actor_promised = self.receipt_ledger.bind_promised_task_actor(
+            promised.key().clone(),
+            promised.record_version(),
+            actor_bound.workspace_identity_hash().clone(),
+            deadline,
+        )?;
+        self.fail_stop_watchdogs.disarm(actor_promised.key_digest());
+        self.hooks
+            .event(V5ReceiptRuntimeEventKind::ActorBoundCommitted, epoch_ms);
+        self.hooks.pause(V5PausePoint::ActorBound, deadline)?;
+        let handoff = self.receipt_ledger.begin_bound_task_handoff(
+            actor_promised.key().clone(),
+            actor_promised.record_version(),
+            actor_promised.task().created_at_epoch_ms(),
+            actor_promised.task().ttl_ms(),
+            actor_promised.task().poll_interval_ms(),
+            deadline,
+        )?;
+        self.hooks
+            .event(V5ReceiptRuntimeEventKind::BoundHandoffCommitted, epoch_ms);
+        let link_reservation = self
+            .task_projection
+            .reserve_bound_handoff_link(&handoff, epoch_ms, deadline, self.hooks.as_ref())
+            .map_err(|failure| self.project_task_failure(failure))?;
+        self.hooks.pause(
+            V5PausePoint::BeforeTaskStoreCreate,
+            self.hooks
+                .commit_deadline_at(V5PausePoint::BeforeTaskStoreCreate, deadline),
+        )?;
+        let deadline = self
+            .hooks
+            .commit_deadline_at(V5PausePoint::BeforeTaskStoreCreate, deadline);
+        let handoff = self.hooks.staged_handoff().unwrap_or(handoff);
+        let (task_record, bound) = self
+            .task_projection
+            .materialize_staged_bound_handoff(
+                &handoff,
+                &link_reservation,
+                epoch_ms,
+                deadline,
+                self.hooks.as_ref(),
+            )
+            .map_err(|failure| self.project_task_failure(failure))?;
+        self.hooks
+            .promised_actor_binding(&promised, &actor_promised, &bound);
+        if let HandoffTerminalStage::Staged { terminal, .. } = handoff.terminal_stage() {
+            let (terminal_record, terminal_link) = self
+                .task_projection
+                .publish_bound_task_terminal(
+                    &bound,
+                    &task_record,
+                    terminal,
+                    epoch_ms,
+                    deadline,
+                    self.hooks.as_ref(),
+                )
+                .map_err(|failure| self.project_task_failure(failure))?;
+            self.hooks.event(
+                V5ReceiptRuntimeEventKind::TaskStoreTerminalCommitted,
+                epoch_ms,
+            );
+            self.hooks.event(
+                V5ReceiptRuntimeEventKind::TaskStoreTerminalReadback,
+                epoch_ms,
+            );
+            let terminal_link = self.receipt_ledger.complete_staged_task_handoff(
+                handoff.key().clone(),
+                handoff.record_version(),
+                terminal_link,
+                deadline,
+            )?;
+            self.hooks.staged_terminal_publication(
+                &handoff,
+                &task_record,
+                &terminal_record,
+                &terminal_link,
+            )?;
+            self.hooks
+                .terminal_bound_task(&terminal_record, &terminal_link);
+            self.hooks.event(
+                V5ReceiptRuntimeEventKind::TaskTerminalBoundCommitted,
+                epoch_ms,
+            );
+            return Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
+                outcome: V5InvocationResponse::Task {
+                    snapshot: task_store_snapshot(&terminal_record),
+                },
+            }));
+        }
+        self.receipt_ledger.complete_bound_task_handoff(
+            handoff.key().clone(),
+            handoff.record_version(),
+            bound.clone(),
+            deadline,
+        )?;
+        self.continue_into_bound_task(
+            actor_bound,
+            task_record,
+            bound,
+            reservation.key().invocation_id(),
+            epoch_ms,
+            deadline,
+        )
+    }
+
+    /// The attempt after the handler committed the actor-bound handoff intent
+    /// at the cutoff: materialize the Task and continue the single attempt
+    /// into it.
+    fn continue_handoff(
+        self: &Arc<Self>,
+        actor_bound: super::server::V5ActorBoundCanonicalInvocation,
+        handoff: TaskHandoffActorBoundReceipt,
+        invocation_id: crate::domain::invocation::InvocationId,
+        epoch_ms: u64,
+        deadline: Instant,
+    ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
+        let (task_record, task_bound) = self
+            .task_projection
+            .materialize_bound_handoff(&handoff, epoch_ms, deadline, self.hooks.as_ref())
+            .map_err(|failure| self.project_task_failure(failure))?;
+        self.receipt_ledger.complete_bound_task_handoff(
+            handoff.key().clone(),
+            handoff.record_version(),
+            task_bound.clone(),
+            deadline,
+        )?;
+        self.continue_into_bound_task(
+            actor_bound,
+            task_record,
+            task_bound,
+            invocation_id,
+            epoch_ms,
+            deadline,
+        )
+    }
+
+    /// One bound Task from `TaskBound` to its terminal, on the thread that
+    /// holds the actor: start, begin, prepare, then execute here or on a
+    /// known-long thread, and publish the outcome into the Task.
+    fn continue_into_bound_task(
+        self: &Arc<Self>,
+        actor_bound: super::server::V5ActorBoundCanonicalInvocation,
+        task_record: V5StoredInvocationRecord,
+        bound: TaskBoundReceipt,
+        invocation_id: crate::domain::invocation::InvocationId,
+        epoch_ms: u64,
+        deadline: Instant,
+    ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
+        self.hooks.bound_task(&task_record, &bound);
+        self.hooks
+            .event(V5ReceiptRuntimeEventKind::TaskBoundCommitted, epoch_ms);
+        let authorized_bound =
+            if !task_record.cancel_requested && task_record.task == V5StoredTask::Queued {
+                self.task_projection
+                    .authorize_not_begun_bound_task_start(&bound, &task_record, deadline)
+                    .map_err(|failure| self.project_task_failure(failure))?
+            } else {
+                bound
+            };
+        self.hooks.bound_task(&task_record, &authorized_bound);
+        if !task_record.cancel_requested && task_record.task == V5StoredTask::Queued {
+            self.hooks.event(
+                V5ReceiptRuntimeEventKind::FalseCancelObservationReached,
+                epoch_ms,
+            );
+            self.hooks
+                .pause(V5PausePoint::AfterFalseCancelObservation, deadline)?;
+        }
+        let lifecycle_gate_acquired = if self.hooks.holds(V5PausePoint::AfterWorkingReadback) {
+            self.hooks.acquire_lifecycle_gate("submit", deadline)?;
+            true
+        } else {
+            false
+        };
+        let (task_record, bound) = self
+            .task_projection
+            .start_not_begun_bound_task(&authorized_bound, task_record, deadline)
+            .map_err(|failure| self.project_task_failure(failure))?;
+        let mut task_record = task_record;
+        if task_record.task == V5StoredTask::Working {
+            self.hooks.event(
+                V5ReceiptRuntimeEventKind::TaskStoreWorkingReadback,
+                epoch_ms,
+            );
+        }
+        self.hooks.bound_task(&task_record, &bound);
+        if task_record.task == V5StoredTask::Working && bound.phase() == AttemptPhase::NotBegun {
+            self.hooks
+                .pause(V5PausePoint::AfterWorkingReadback, deadline)?;
+            self.hooks
+                .pause(V5PausePoint::BeforeReceiptBegun, deadline)?;
+            if self.hooks.process_exited() {
+                let current = self.receipt_ledger.recover(bound.key().clone(), deadline)?;
+                return self.reply_for_existing_state(current, deadline);
+            }
+        }
+        let bound = if task_record.task == V5StoredTask::Working
+            && bound.phase() == AttemptPhase::NotBegun
+        {
+            let begun = self
+                .task_projection
+                .mark_not_begun_bound_task_begun(&bound, &task_record, deadline)
+                .map_err(|failure| self.project_task_failure(failure))?;
+            self.hooks
+                .event(V5ReceiptRuntimeEventKind::ReceiptBegunCommitted, epoch_ms);
+            self.hooks
+                .event(V5ReceiptRuntimeEventKind::TokenSignalled, epoch_ms);
+            self.hooks
+                .bound_task_start_authorization(&authorized_bound, &task_record, &begun);
+            self.hooks.bound_task(&task_record, &begun);
+            begun
+        } else {
+            bound
+        };
+        if lifecycle_gate_acquired {
+            self.hooks.release_lifecycle_gate("submit");
+            self.hooks.wait_for_gate_cancel(deadline)?;
+            if let Some(cancelled) = self
+                .task_projection
+                .cancel_exact_bound_task(bound.key(), deadline)
+                .map_err(|failure| self.project_task_failure(failure))?
+            {
+                task_record = cancelled;
+                self.hooks.bound_task(&task_record, &bound);
+            }
+        }
+        if task_record.cancel_requested {
+            let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
+                .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;
+            let (terminal_record, terminal_link) = self
+                .task_projection
+                .publish_bound_task_terminal(
+                    &bound,
+                    &task_record,
+                    &terminal,
+                    epoch_ms,
+                    deadline,
+                    self.hooks.as_ref(),
+                )
+                .map_err(|failure| self.project_task_failure(failure))?;
+            self.hooks.event(
+                V5ReceiptRuntimeEventKind::TaskStoreTerminalCommitted,
+                epoch_ms,
+            );
+            self.hooks.event(
+                V5ReceiptRuntimeEventKind::TaskStoreTerminalReadback,
+                epoch_ms,
+            );
+            self.hooks.event(
+                V5ReceiptRuntimeEventKind::TaskTerminalBoundCommitted,
+                epoch_ms,
+            );
+            self.hooks
+                .terminal_bound_task(&terminal_record, &terminal_link);
+            return Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
+                outcome: V5InvocationResponse::Task {
+                    snapshot: task_store_snapshot(&terminal_record),
+                },
+            }));
+        }
+        let (cancellation, cancellation_guard) = self
+            .active_task_cancellations
+            .register(task_record.task_id)?;
+        self.hooks.pause(V5PausePoint::BeforePrepare, deadline)?;
+        self.hooks.stage_entered(V5Stage::Prepare);
+        self.hooks
+            .event(V5ReceiptRuntimeEventKind::PrepareEntered, epoch_ms);
+        self.hooks.pause(V5PausePoint::PrepareEntered, deadline)?;
+        self.drive_prepared_bound_task(
+            actor_bound,
+            task_record,
+            bound,
+            invocation_id,
+            cancellation,
+            cancellation_guard,
+            epoch_ms,
+            deadline,
+        )
+    }
+
+    /// Prepare and execute a begun bound Task on the thread that holds the
+    /// actor. The `PrepareEntered` pause has already run; the caller registers
+    /// the cancellation token so a cancel during that pause is observed.
+    #[allow(clippy::too_many_arguments)]
+    fn drive_prepared_bound_task(
+        self: &Arc<Self>,
+        actor_bound: super::server::V5ActorBoundCanonicalInvocation,
+        task_record: V5StoredInvocationRecord,
+        bound: TaskBoundReceipt,
+        invocation_id: crate::domain::invocation::InvocationId,
+        cancellation: CancellationToken,
+        cancellation_guard: V5ActiveTaskCancellationGuard,
+        epoch_ms: u64,
+        deadline: Instant,
+    ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
+        if self.hooks.prepare_rejects() {
+            let terminal = injected_rejection_terminal("scenario prepare rejected invocation")?;
+            return self.publish_bound_terminal_reply(
+                &bound,
+                &task_record,
+                &terminal,
+                epoch_ms,
+                deadline,
+            );
+        }
+        let prepared = match actor_bound.prepare() {
+            Ok(prepared) => prepared,
+            Err(result) => {
+                let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed { result })
+                    .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;
+                return self.publish_bound_terminal_reply(
+                    &bound,
+                    &task_record,
+                    &terminal,
+                    epoch_ms,
+                    deadline,
+                );
+            }
+        };
+        if self.hooks.holds(V5PausePoint::BeforeTaskTerminalReceipt)
+            || self
+                .hooks
+                .holds(V5PausePoint::AfterTaskStoreTerminalBeforeLifecycleLinkTerminal)
+        {
+            // An observer holds the terminal receipt: the promoted attempt
+            // runs on this thread so the pause sees its exact outcome.
+            self.hooks
+                .pause(V5PausePoint::BeforeTaskTerminalReceipt, deadline)?;
+            self.hooks.stage_entered(V5Stage::Execute);
+            self.hooks
+                .event(V5ReceiptRuntimeEventKind::ExecuteEntered, epoch_ms);
+            self.hooks.callback_invocation_id(invocation_id);
+            let result = prepared.execute(cancellation.clone());
+            let outcome = if cancellation.is_cancelled() {
+                ReceiptTerminalOutcome::Cancelled
+            } else {
+                match result {
+                    Ok(result) => ReceiptTerminalOutcome::Completed {
+                        result: Box::new(result),
+                    },
+                    Err(_) => ReceiptTerminalOutcome::Failed {
+                        reason: V5SafeFailureReason::InvocationFailed,
+                    },
+                }
+            };
+            if self.hooks.crash_after_side_effect() {
+                return Err(ReceiptLedgerError::StoreUnavailable);
+            }
+            self.hooks
+                .event(V5ReceiptRuntimeEventKind::ResultSerialized, epoch_ms);
+            let snapshot = self.publish_task_execution_outcome(
+                &bound,
+                task_record.task_id,
+                outcome,
+                deadline,
+            )?;
+            drop(cancellation_guard);
+            return Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
+                outcome: V5InvocationResponse::Task { snapshot },
+            }));
+        }
+        // A known-long attempt runs on its own thread: the client already
+        // holds the Task reply, so the continuation need not wait for it.
+        if matches!(
+            prepared.execution_class(),
+            crate::application::operation_descriptors::ExecutionClass::KnownLong(_)
+        ) {
+            if task_record.task == V5StoredTask::Working {
+                self.spawn_task_execution(
+                    prepared,
+                    bound,
+                    task_record.clone(),
+                    cancellation,
+                    cancellation_guard,
+                )?;
+            } else {
+                drop(cancellation_guard);
+            }
+            return Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
+                outcome: V5InvocationResponse::Task {
+                    snapshot: task_store_snapshot(&task_record),
+                },
+            }));
+        }
+        // A direct attempt promoted to a Task runs to its terminal on this
+        // continuation thread; the client already holds the Task reply.
+        self.hooks.stage_entered(V5Stage::Execute);
+        self.hooks
+            .event(V5ReceiptRuntimeEventKind::ExecuteEntered, epoch_ms);
+        self.hooks.callback_invocation_id(invocation_id);
+        let result = prepared.execute(cancellation.clone());
+        let outcome = if cancellation.is_cancelled() {
+            ReceiptTerminalOutcome::Cancelled
+        } else {
+            match result {
+                Ok(result) => ReceiptTerminalOutcome::Completed {
+                    result: Box::new(result),
+                },
+                Err(_) => ReceiptTerminalOutcome::Failed {
+                    reason: V5SafeFailureReason::InvocationFailed,
+                },
+            }
+        };
+        if self.hooks.crash_after_side_effect() {
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+        self.hooks
+            .event(V5ReceiptRuntimeEventKind::ResultSerialized, epoch_ms);
+        let snapshot =
+            self.publish_task_execution_outcome(&bound, task_record.task_id, outcome, deadline);
+        drop(cancellation_guard);
+        snapshot.map(|snapshot| {
+            V5RuntimeReply::Json(V5ServerResponse::Invocation {
+                outcome: V5InvocationResponse::Task { snapshot },
+            })
+        })
     }
 
     fn spawn_task_execution(
@@ -3531,6 +4304,10 @@ impl V5ReceiptRuntime {
             terminal,
             deadline,
         )?;
+        self.fail_stop_watchdogs
+            .disarm(&crate::application::receipt_ledger::receipt_key_digest(
+                reservation.key(),
+            ));
         self.hooks.event(
             V5ReceiptRuntimeEventKind::ReceiptTerminalCommitted,
             epoch_ms,
@@ -3565,6 +4342,8 @@ impl V5ReceiptRuntime {
                 self.hooks.as_ref(),
             )
             .map_err(|failure| self.project_task_failure(failure))?;
+        self.fail_stop_watchdogs
+            .disarm(&task_record.receipt_key_digest);
         self.hooks.event(
             V5ReceiptRuntimeEventKind::TaskStoreTerminalCommitted,
             epoch_ms,
@@ -3773,6 +4552,7 @@ impl V5ReceiptRuntime {
                     terminal,
                     deadline,
                 )?;
+                self.fail_stop_watchdogs.disarm(receipt.key_digest());
                 self.hooks.receipt_backed_terminal(&receipt)?;
                 self.hooks.event(
                     V5ReceiptRuntimeEventKind::ReceiptTerminalCommitted,
@@ -4098,6 +4878,7 @@ impl V5ReceiptRuntime {
                 .map_err(|failure| self.project_task_failure(failure))?
             {
                 self.active_task_cancellations.cancel(task_id);
+                self.arm_cancel_grace(&record);
                 let provider_deadline =
                     crate::domain::code_intelligence::ProviderDeadline::new(deadline);
                 let link = self
@@ -4181,6 +4962,7 @@ impl V5ReceiptRuntime {
                 terminal,
                 deadline,
             )?;
+            self.fail_stop_watchdogs.disarm(committed.key_digest());
             self.hooks.receipt_backed_terminal(&committed)?;
             self.hooks.release_pre_actor_pauses();
             self.hooks.event(
@@ -4271,6 +5053,17 @@ enum V5RuntimeReply {
     JsonFailStop(V5ServerResponse),
     Prepared(PreparedWireFrame),
     PreparedFailStop(PreparedWireFrame),
+}
+
+impl V5RuntimeReply {
+    /// The same reply as the closed one a fail-stopped process writes.
+    fn after_fail_stop(self) -> Self {
+        match self {
+            Self::Json(response) => Self::JsonFailStop(response),
+            Self::Prepared(frame) => Self::PreparedFailStop(frame),
+            closed @ (Self::JsonFailStop(_) | Self::PreparedFailStop(_)) => closed,
+        }
+    }
 }
 
 /// The terminal an injected rejection publishes in place of the real stage.
@@ -4630,9 +5423,24 @@ fn run_daemon_configured_until(
         // request's own response budget elapses. Mutations and session admission validate the
         // named authority themselves; the accept loop only observes their process-owned
         // fail-stop latch.
+        if let Some(elapsed) = runtime
+            .fail_stop_watchdogs
+            .due(runtime.invocation_executor.now())
+        {
+            // A promised attempt without its actor, or a cancelled attempt
+            // without its terminal, outlived the grace: the process stops
+            // admitting and dies, and the successor terminalizes it.
+            runtime
+                .external_store_fail_stop
+                .store(true, Ordering::Release);
+            runtime.hooks.restart_requested();
+            restart_requested = true;
+            runtime.hooks.forced_process_exit(Some(elapsed));
+            break;
+        }
         if runtime.restart_required() {
             restart_requested = true;
-            runtime.hooks.forced_process_exit();
+            runtime.hooks.forced_process_exit(None);
             break;
         }
         match listener.accept() {
@@ -4640,7 +5448,7 @@ fn run_daemon_configured_until(
                 if runtime.restart_required() {
                     drop(stream);
                     restart_requested = true;
-                    runtime.hooks.forced_process_exit();
+                    runtime.hooks.forced_process_exit(None);
                     break;
                 }
                 let connection = V5AcceptedConnection {
@@ -4694,8 +5502,12 @@ fn run_daemon_configured_until(
             // The contract harness runs the daemon in a thread; joining that
             // thread is its simulated process-death boundary. Release the
             // authority so unrelated scenarios do not share resources that
-            // production releases at PID exit.
+            // production releases at PID exit. A promoted attempt the owner
+            // handed to a worker still holds an `Arc` to this runtime; join
+            // those workers first so the drop actually releases the authority
+            // an off-thread continuation would otherwise keep alive.
             join_v5_handlers(sessions);
+            runtime.join_task_executions();
             drop(runtime);
         } else {
             drop(sessions);
@@ -5019,6 +5831,14 @@ fn handle_probe_connection(
                         if runtime.hooks.submit_response_disconnect() {
                             return Ok(());
                         }
+                        // The process may have latched fail-stop while this
+                        // attempt ran: its reply is still written, as the
+                        // closed one this daemon admits nothing after.
+                        let reply = if runtime.restart_required() {
+                            reply.after_fail_stop()
+                        } else {
+                            reply
+                        };
                         write_runtime_reply_before(&mut stream, runtime, reply, deadlines.response)
                     }
                     Err(error) => write_runtime_ledger_error_before(
@@ -5276,7 +6096,7 @@ fn write_runtime_ledger_error_before(
         code: daemon_error_code(error),
     };
     if error.requires_reopen() {
-        runtime.hooks.forced_process_exit();
+        runtime.hooks.forced_process_exit(None);
         // The actor has already latched fail-stop, so asking it for another
         // generation check would turn the required closed response into EOF.
         // The runtime still owns the authenticated stream, PID endpoint,
@@ -5560,7 +6380,7 @@ mod tests {
             V5ToolIdentity::View,
             serde_json::Map::from_iter([(
                 "at".to_owned(),
-                serde_json::Value::String("main:Configuration".to_owned()),
+                serde_json::Value::String("main:Catalog.Items".to_owned()),
             )]),
             workspace.to_string_lossy().into_owned(),
             7_000,
