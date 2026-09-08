@@ -104,6 +104,7 @@
 | `DEC.2026-09-07.NAMELESS-KINDS-IN-ADDRESS` | решение · product | active | да | Вид, который не носит имени, не занимает под него сегмент | [decisions/2026-09-07-nameless-kinds-in-address.md](decisions/2026-09-07-nameless-kinds-in-address.md) |
 | `DEC.2026-09-08.DAEMON-V3-RETIREMENT` | решение · product | active | да | Протокол v3 снят: у daemon одна wire identity и один рантайм | [decisions/2026-09-08-daemon-v3-retirement.md](decisions/2026-09-08-daemon-v3-retirement.md) |
 | `DEC.2026-09-08.DAEMON-V5-CUTOFF-OWNER` | решение · product | active | да | Production-рантайм v5 сам владеет cutoff inline-исполнения | [decisions/2026-09-08-daemon-v5-cutoff-owner.md](decisions/2026-09-08-daemon-v5-cutoff-owner.md) |
+| `DEC.2026-09-08.ROOT-VERDICT-IN-CHECK` | решение · product | active | да | Корень отвечает так же, как узел: факты в `view`, вердикт в `check` | [decisions/2026-09-08-root-verdict-in-check.md](decisions/2026-09-08-root-verdict-in-check.md) |
 | `DEC.2026-09-08.SEARCH-NAME-CORPUS` | решение · product | active | да | Поиск выбирает свод, а не инструмент | [decisions/2026-09-08-search-name-corpus.md](decisions/2026-09-08-search-name-corpus.md) |
 | `DEC.2026-09-08.SEARCH-PROVIDER-ROLES` | решение · product | active | да | Роль называет, чем искать, и без роли поиск остаётся своим | [decisions/2026-09-08-search-provider-roles.md](decisions/2026-09-08-search-provider-roles.md) |
 | `DEC.2026-09-08.TEMPLATE-CELL-CONTENT` | решение · product | active | да | Текст ячеек макета — адрес, а не признак | [decisions/2026-09-08-template-cell-content.md](decisions/2026-09-08-template-cell-content.md) |
@@ -384,6 +385,7 @@
 | `INV.WIRE.ONE-SERVER` | инвариант · product | active |  | Плагин объявляет один публичный MCP-сервер | [invariants/INV.WIRE.ONE-SERVER.md](invariants/INV.WIRE.ONE-SERVER.md) |
 | `INV.WIRE.PINNED-FALLBACK-VERSION` | инвариант · product | active |  | Legacy fallback закреплён на 2025-11-25 | [invariants/INV.WIRE.PINNED-FALLBACK-VERSION.md](invariants/INV.WIRE.PINNED-FALLBACK-VERSION.md) |
 | `INV.WIRE.PREVIEW-IS-MUTATION-ONLY` | инвариант · product | active |  | Предпросмотр принадлежит мутации | [invariants/INV.WIRE.PREVIEW-IS-MUTATION-ONLY.md](invariants/INV.WIRE.PREVIEW-IS-MUTATION-ONLY.md) |
+| `INV.WIRE.ROOT-FACTS-AND-VERDICT` | инвариант · product | active |  | Корень не смешивает факты с вердиктом | [invariants/INV.WIRE.ROOT-FACTS-AND-VERDICT.md](invariants/INV.WIRE.ROOT-FACTS-AND-VERDICT.md) |
 | `INV.WIRE.SDK-DEPENDENCY` | инвариант · process | active |  | Зависимость от SDK принадлежит только транспортному package | [invariants/INV.WIRE.SDK-DEPENDENCY.md](invariants/INV.WIRE.SDK-DEPENDENCY.md) |
 | `INV.WIRE.SDK-INITIALIZE` | инвариант · product | active |  | Legacy initialize публикует имя, версию сборки и согласованный протокол | [invariants/INV.WIRE.SDK-INITIALIZE.md](invariants/INV.WIRE.SDK-INITIALIZE.md) |
 | `INV.WIRE.SDK-MODULE-EXPORTS` | инвариант · product | active |  | Транспортный модуль сохраняет точный legacy Rust API | [invariants/INV.WIRE.SDK-MODULE-EXPORTS.md](invariants/INV.WIRE.SDK-MODULE-EXPORTS.md) |

@@ -476,7 +476,13 @@ fn staged_platform_marker_completes_repository_resource_aggregate() {
     let data = result.data.unwrap();
     assert_eq!(data["ready"], false);
     assert_eq!(data["repositoryReady"], false);
-    assert_eq!(data["sourceSets"][0]["sourceFormat"], "unknown");
+    // Формат набора — факт о пространстве, и живёт он в `view {}`.
+    let discovered = facts(&root);
+    assert!(discovered.ok, "{:?}", discovered.errors);
+    assert_eq!(
+        discovered.data.unwrap()["sourceSets"][0]["sourceFormat"],
+        "unknown"
+    );
     for check in [
         "repository.attributes",
         "repository.index_eol",
@@ -1635,7 +1641,7 @@ fn project_health_linked_source_route_is_reported_without_following_it() {
 
 static STATE_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// The canonical readiness answer of `unica.view {}` over the stdio surface,
+/// The canonical readiness answer of `unica.check {}` over the stdio surface,
 /// in the shape the assertions below read: `ok`, `errors` and `data`.
 struct StatusResult {
     ok: bool,
@@ -1643,7 +1649,17 @@ struct StatusResult {
     data: Option<Value>,
 }
 
+/// Вердикт: готовность, проверки и диагностики.
 fn status(workspace: &Path) -> StatusResult {
+    root_answer(workspace, "unica.check")
+}
+
+/// Факты: корень, конфигурация, наборы, база, заготовка `v8project.yaml`.
+fn facts(workspace: &Path) -> StatusResult {
+    root_answer(workspace, "unica.view")
+}
+
+fn root_answer(workspace: &Path, tool: &str) -> StatusResult {
     use std::io::{BufRead, BufReader};
     use std::process::{ChildStdout, Stdio};
     use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -1733,7 +1749,7 @@ fn status(workspace: &Path) -> StatusResult {
     );
     let view = serde_json::json!({
         "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-        "params": {"name": "unica.view", "arguments": {}}
+        "params": {"name": tool, "arguments": {}}
     });
     send(&mut stdin, &view);
     let response = receive(&mut child, &lines, &view["id"]);

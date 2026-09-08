@@ -618,8 +618,30 @@ pub(crate) mod actor_capacity_tests {
         workspace: &std::path::Path,
         arguments: serde_json::Value,
     ) -> DomainResult {
+        submit_root(runtime, workspace, ToolIdentity::View, arguments)
+    }
+
+    /// Вердикт по корню: `check {}` отвечает до допуска наборов.
+    fn submit_root_verdict(
+        runtime: &V5CanonicalInvocationRuntime,
+        workspace: &std::path::Path,
+    ) -> DomainResult {
+        submit_root(
+            runtime,
+            workspace,
+            ToolIdentity::Check,
+            serde_json::json!({}),
+        )
+    }
+
+    fn submit_root(
+        runtime: &V5CanonicalInvocationRuntime,
+        workspace: &std::path::Path,
+        tool: ToolIdentity,
+        arguments: serde_json::Value,
+    ) -> DomainResult {
         let request = InvocationRequest::new(
-            ToolIdentity::View,
+            tool,
             arguments,
             std::fs::canonicalize(workspace).unwrap().to_string_lossy(),
             7_000,
@@ -905,11 +927,20 @@ pub(crate) mod actor_capacity_tests {
         assert_eq!(data["config"]["state"], "configured");
         assert_eq!(data["sourceSets"], serde_json::json!([]));
         assert_eq!(data["infobase"]["configured"], true);
-        assert_eq!(data["ready"], true);
         assert_eq!(data["sourceSelectionError"], serde_json::Value::Null);
-        assert_eq!(data["diagnostics"], serde_json::json!([]));
         assert_eq!(data["setup"], serde_json::Value::Null);
-        assert_eq!(result.next.len(), 2, "{result:?}");
+        // Факты не несут вердикта: ни готовности, ни проверок, ни диагностик.
+        for verdict in [
+            "ready",
+            "discoveredReady",
+            "repositoryReady",
+            "readinessState",
+            "checks",
+            "diagnostics",
+        ] {
+            assert_eq!(data.get(verdict), None, "{verdict} принадлежит check {{}}");
+        }
+        assert_eq!(result.next.len(), 3, "{result:?}");
         assert_eq!(
             result.next[0]["args"],
             serde_json::json!({
@@ -926,6 +957,15 @@ pub(crate) mod actor_capacity_tests {
                 "dryRun": true
             })
         );
+        assert_eq!(result.next[2]["tool"], "unica.check", "{result:?}");
+
+        let verdict = submit_root_verdict(&runtime, workspace.path());
+
+        assert!(verdict.ok, "{verdict:?}");
+        let verdict_data = verdict.data.as_ref().expect("verdict data");
+        assert_eq!(verdict_data["status"], "passed");
+        assert_eq!(verdict_data["ready"], true);
+        assert_eq!(verdict_data["diagnostics"], serde_json::json!([]));
     }
 
     #[test]
@@ -940,17 +980,35 @@ pub(crate) mod actor_capacity_tests {
         let data = result.data.as_ref().expect("bootstrap data");
         assert_eq!(data["config"]["state"], "missing");
         assert_eq!(data["config"]["path"], "v8project.yaml");
-        assert_eq!(data["ready"], false);
         assert_eq!(data["sourceSets"], serde_json::json!([]));
         assert_eq!(data["setup"]["path"], "v8project.yaml");
         assert_eq!(data["setup"]["content"], serde_json::Value::Null);
-        assert_eq!(data["checks"], serde_json::json!([]));
-        assert_eq!(data["diagnostics"].as_array().unwrap().len(), 1);
-        assert_eq!(data["diagnostics"][0]["code"], "source_roots_missing");
         let wire = serde_json::to_string(data).unwrap();
         assert!(
             !wire.contains("unica.project."),
             "bootstrap must not recommend retired project tools: {wire}"
+        );
+
+        // Ненастроенное пространство — как раз тот случай, где вопрос «что не
+        // так» главный, поэтому маршрут к вердикту здесь обязателен.
+        assert!(
+            result
+                .next
+                .iter()
+                .any(|action| action["tool"] == "unica.check"),
+            "{result:?}"
+        );
+        let verdict = submit_root_verdict(&runtime, workspace.path());
+
+        assert!(verdict.ok, "{verdict:?}");
+        let verdict_data = verdict.data.as_ref().expect("verdict data");
+        assert_eq!(verdict_data["status"], "failed");
+        assert_eq!(verdict_data["ready"], false);
+        assert_eq!(verdict_data["checks"], serde_json::json!([]));
+        assert_eq!(verdict_data["diagnostics"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            verdict_data["diagnostics"][0]["code"],
+            "source_roots_missing"
         );
         assert_eq!(before, crate::test_support::tree_snapshot(workspace.path()));
     }
@@ -977,11 +1035,16 @@ pub(crate) mod actor_capacity_tests {
         assert!(result.ok, "{result:?}");
         let data = result.data.as_ref().expect("bootstrap data");
         assert_eq!(data["config"]["state"], "configured");
-        assert_eq!(data["ready"], true);
-        assert_eq!(data["repositoryReady"], false);
         assert_eq!(data["effectiveSourceSet"], "main");
         assert_eq!(result.next[0]["tool"], "unica.view");
         assert_eq!(result.next[0]["args"]["at"], "main:Configuration");
+
+        let verdict = submit_root_verdict(&runtime, workspace.path());
+
+        assert!(verdict.ok, "{verdict:?}");
+        let verdict_data = verdict.data.as_ref().expect("verdict data");
+        assert_eq!(verdict_data["ready"], true);
+        assert_eq!(verdict_data["repositoryReady"], false);
     }
 
     #[test]
@@ -1038,10 +1101,10 @@ pub(crate) mod actor_capacity_tests {
             result.data.as_ref().unwrap()["sourceSets"][0]["sourceFormat"],
             "edt"
         );
-        assert!(
-            result.next.is_empty(),
-            "EDT cannot enter canonical actor admission: {result:?}"
-        );
+        // Единственный оставшийся маршрут — вопрос о вердикте: адрес узла
+        // предлагать нечего, EDT в допуск не входит.
+        assert_eq!(result.next.len(), 1, "{result:?}");
+        assert_eq!(result.next[0]["tool"], "unica.check", "{result:?}");
     }
 
     #[test]
@@ -1064,9 +1127,14 @@ pub(crate) mod actor_capacity_tests {
         let result = submit_bootstrap(&runtime, workspace.path(), serde_json::json!({}));
 
         assert!(result.ok, "{result:?}");
-        let data = result.data.as_ref().unwrap();
+        assert_eq!(result.next.len(), 1, "{result:?}");
+        assert_eq!(result.next[0]["tool"], "unica.check", "{result:?}");
+
+        let verdict = submit_root_verdict(&runtime, workspace.path());
+
+        assert!(verdict.ok, "{verdict:?}");
+        let data = verdict.data.as_ref().unwrap();
         assert_eq!(data["ready"], false, "{data}");
-        assert!(result.next.is_empty(), "{result:?}");
         assert!(
             data["diagnostics"]
                 .as_array()
@@ -1176,7 +1244,6 @@ pub(crate) mod actor_capacity_tests {
         assert!(result.ok, "{result:?}");
         let data = result.data.as_ref().expect("bootstrap data");
         assert_eq!(data["config"]["state"], "configured");
-        assert_eq!(data["ready"], false);
         assert_eq!(data["setup"]["path"], "v8project.yaml");
         assert_eq!(data["setup"]["content"], serde_json::Value::Null, "{data}");
         assert_eq!(data["setup"]["sourceSetExample"]["name"], "main");
@@ -1213,10 +1280,10 @@ pub(crate) mod actor_capacity_tests {
         assert!(git.success());
         let runtime = bootstrap_runtime();
 
-        let result = submit_bootstrap(&runtime, workspace.path(), serde_json::json!({}));
+        let result = submit_root_verdict(&runtime, workspace.path());
 
         assert!(result.ok, "{result:?}");
-        let data = result.data.as_ref().expect("bootstrap data");
+        let data = result.data.as_ref().expect("verdict data");
         assert_eq!(data["repositoryReady"], false, "{data}");
         assert!(data["checks"].is_array(), "{data}");
         assert!(data["diagnostics"].is_array(), "{data}");
@@ -3741,7 +3808,7 @@ struct ActorLogicalReadLease {"#,
                 }),
                 "matches",
             ),
-            (ToolIdentity::Check, serde_json::json!({}), "sources"),
+            (ToolIdentity::Check, serde_json::json!({}), "readinessState"),
             (
                 ToolIdentity::Check,
                 serde_json::json!({"at": "main:Catalog.Items"}),
