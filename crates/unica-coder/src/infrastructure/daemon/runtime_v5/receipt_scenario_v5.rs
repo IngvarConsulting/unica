@@ -5507,11 +5507,9 @@ fn rotate_receipt_generation(
 ) -> Result<(), String> {
     let state = DaemonStateDirectory::open(state_root, identity)?;
     let receipts = state.create_private_retained_subdirectory("receipts")?;
-    let store = crate::infrastructure::receipt_ledger::ReceiptLedgerStore::open_retained_directory(
-        receipts,
-    )
-    .map_err(|error| format!("open receipt retention generation owner: {error}"))?;
-    store
+    let actor =
+        open_receipt_actor_for_scenario(receipts, "open receipt retention generation owner")?;
+    actor
         .rotate_generation_for_test(deadline)
         .map(|_| ())
         .map_err(|error| format!("rotate receipt retention generation: {error}"))
