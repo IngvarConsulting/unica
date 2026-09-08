@@ -86,6 +86,10 @@ pub(super) struct ReceiptScenarioControl {
     changed: Condvar,
     lifecycle_gate_changed: Condvar,
     operation_changed: Condvar,
+    /// Presents a seeded mid-flight fixture to one gated operation: that
+    /// operation's runtime skips startup reconciliation, so the fixture it was
+    /// given is the state it observes. Never armed on a production path.
+    skip_next_startup_reconciliation: AtomicBool,
     gate_cancel_requested: Mutex<bool>,
     gate_cancel_changed: Condvar,
     /// Whether the runtime is currently blocked waiting for a gate cancel:
@@ -94,7 +98,6 @@ pub(super) struct ReceiptScenarioControl {
     gate_cancel_waiting: AtomicBool,
     drop_ack_response_after_commit: AtomicBool,
     drop_submit_response_after_commit: AtomicBool,
-    skip_next_startup_reconciliation: AtomicBool,
     validation_reject: AtomicBool,
     admission_rejection: Mutex<Option<ScenarioWorkspaceAdmissionFailure>>,
     prepare_reject: AtomicBool,
@@ -155,12 +158,12 @@ impl ReceiptScenarioControl {
             changed: Condvar::new(),
             lifecycle_gate_changed: Condvar::new(),
             operation_changed: Condvar::new(),
+            skip_next_startup_reconciliation: AtomicBool::new(false),
             gate_cancel_requested: Mutex::new(false),
             gate_cancel_changed: Condvar::new(),
             gate_cancel_waiting: AtomicBool::new(false),
             drop_ack_response_after_commit: AtomicBool::new(false),
             drop_submit_response_after_commit: AtomicBool::new(false),
-            skip_next_startup_reconciliation: AtomicBool::new(false),
             validation_reject: AtomicBool::new(false),
             admission_rejection: Mutex::new(None),
             prepare_reject: AtomicBool::new(false),
@@ -2228,12 +2231,12 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                 operations.insert(label, operation);
             }
             ReceiptScenarioAction::SpawnStageBoundHandoffTerminal { terminal, label } => {
+                control.arm_skip_next_startup_reconciliation();
                 if operations.contains_key(&label) {
                     return Err(unsupported_shape(
                         "spawn_stage_bound_handoff_terminal label is already in use",
                     ));
                 }
-                control.arm_skip_next_startup_reconciliation();
                 let daemon_state = DaemonStateDirectory::open(state.path(), &identity)?;
                 let config = scenario_server_config_with_clock(
                     state.path(),
@@ -2285,7 +2288,11 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                     return Err(format!("operation {label} reported completion before exit"));
                 }
             }
-            ReceiptScenarioAction::Cancel { key, label, .. } => {
+            ReceiptScenarioAction::Cancel {
+                key,
+                label,
+                _lazy_session: lazy_session,
+            } => {
                 let is_exact = matches!(&key, ScenarioKey::Exact);
                 let wire_key = match key {
                     ScenarioKey::Exact => exact_key.clone(),
@@ -2297,14 +2304,19 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                     }
                     _ => return Err(unsupported_shape("cancel key shape")),
                 };
-                if pending_submit.is_none() && live_daemon.is_none() {
-                    control.arm_skip_next_startup_reconciliation();
-                }
                 let response = if let Some(pending) = &pending_submit {
                     pending.cancel_additional(state.path(), &identity, wire_key.clone())?
                 } else if live_daemon.is_some() {
                     cancel_on_live_daemon(state.path(), &identity, wire_key.clone())?
                 } else {
+                    // A session that owns the attempt cancels against the
+                    // process holding it: the seeded fixture is handed to that
+                    // one owner, which is why its startup does not reconcile.
+                    // A lazy session owns nothing, so it meets what a successor
+                    // left behind — production reconciles the orphan first.
+                    if !lazy_session {
+                        control.arm_skip_next_startup_reconciliation();
+                    }
                     exchange_once(
                         state.path(),
                         &identity,
@@ -2468,7 +2480,6 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                             format!("parse Task cancel selector from {read_label}: {error}")
                         })?,
                 };
-                control.arm_skip_next_startup_reconciliation();
                 let response = exchange_once(
                     state.path(),
                     &identity,
@@ -2999,24 +3010,21 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                 };
                 let response = match available_response {
                     Some(response) => response,
-                    None => {
-                        control.arm_skip_next_startup_reconciliation();
-                        exchange_once(
-                            state.path(),
-                            &identity,
-                            Arc::clone(&clock),
-                            Arc::clone(&telemetry),
-                            Some(Arc::clone(&control)),
-                            |owner| match api {
-                                ScenarioTaskApi::NativeWait => {
-                                    owner.wait_task(task_id, SCENARIO_TASK_POLL_INTERVAL_MS)
-                                }
-                                ScenarioTaskApi::NativeGet
-                                | ScenarioTaskApi::CompatibilityGet
-                                | ScenarioTaskApi::CompatibilityResult => owner.get_task(task_id),
-                            },
-                        )?
-                    }
+                    None => exchange_once(
+                        state.path(),
+                        &identity,
+                        Arc::clone(&clock),
+                        Arc::clone(&telemetry),
+                        Some(Arc::clone(&control)),
+                        |owner| match api {
+                            ScenarioTaskApi::NativeWait => {
+                                owner.wait_task(task_id, SCENARIO_TASK_POLL_INTERVAL_MS)
+                            }
+                            ScenarioTaskApi::NativeGet
+                            | ScenarioTaskApi::CompatibilityGet
+                            | ScenarioTaskApi::CompatibilityResult => owner.get_task(task_id),
+                        },
+                    )?,
                 };
                 report.task_reads.insert(
                     label,
@@ -9364,8 +9372,10 @@ fn open_scenario_operation_runtime(
         &HashMap::new(),
     )?;
     let task_store_create_attempts = telemetry.snapshot().task_store_create_attempts;
-    control.arm_skip_next_startup_reconciliation();
     let daemon_state = DaemonStateDirectory::open(state_root, identity)?;
+    // A gated operation observes the seeded fixture it was handed, not what a
+    // successor would reconcile it into.
+    control.arm_skip_next_startup_reconciliation();
     let config = scenario_server_config_with_clock(state_root, identity, Some(control), clock);
     let runtime = V5ReceiptRuntime::open_with_epoch_clock(&daemon_state, &config, clock.clone())?
         .with_hooks_for_test(ScenarioHooks::install(
@@ -9642,7 +9652,6 @@ fn start_blocked_submit(
         &HashMap::new(),
     )?;
     let task_store_create_attempts = telemetry.snapshot().task_store_create_attempts;
-    control.arm_skip_next_startup_reconciliation();
     let config = scenario_server_config_with_clock(state_root, identity, Some(&control), &clock);
     let (actor_tx, actor_rx) = mpsc::sync_channel(1);
     let daemon = ScenarioDaemon::spawn(config, move |runtime| {
