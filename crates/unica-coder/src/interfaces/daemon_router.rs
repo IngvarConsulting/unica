@@ -1431,6 +1431,80 @@ mod tests {
     }
 
     #[test]
+    fn live_daemon_hands_a_failing_inline_attempt_over_the_cutoff_and_the_task_fails_once() {
+        // The production runtime (no `receipt-ledger-test-support` feature) owns
+        // the cutoff: a slow inline attempt is answered as a Task at the seventh
+        // second, and the same single attempt's failure becomes that Task's
+        // terminal — proving the deadline owner, not the harness, drives it.
+        let service = Arc::new(ScriptedService {
+            delay: Duration::from_millis(9_000),
+            known_long: false,
+            outcome: Mutex::new(Some(Err(
+                crate::domain::invocation::InvocationFailure::new(
+                    "provider_exploded",
+                    "/private/workspace bearer-secret",
+                ),
+            ))),
+            executions: AtomicUsize::new(0),
+        });
+        let daemon = LiveDaemon::start(service.clone());
+        let router = canonical_daemon_router(daemon.owner(), daemon.workspace_hint.clone());
+
+        let started = Instant::now();
+        let outcome = call(&router, None);
+        let answered_after = started.elapsed();
+
+        let Ok(CanonicalCallOutcome::Task(snapshot)) = outcome else {
+            panic!("a slow inline attempt past the cutoff must become a Task: {outcome:?}");
+        };
+        assert!(
+            snapshot.completed_result().is_none(),
+            "the handoff answers before the attempt finishes: {snapshot:?}"
+        );
+        assert!(
+            answered_after
+                < INVOCATION_HANDOFF_WINDOW + RESPONSE_SERIALIZATION_MARGIN + RECOVERY_BUDGET,
+            "the Task answered at {answered_after:?}"
+        );
+        assert!(
+            answered_after >= INVOCATION_HANDOFF_WINDOW - Duration::from_millis(500),
+            "a running attempt is not shortened before the cutoff: {answered_after:?}"
+        );
+
+        let task_id = snapshot.task_id();
+        let settle_by = Instant::now() + Duration::from_secs(20);
+        let terminal = loop {
+            let observed =
+                (router.wait)(task_id, 2_000, deadline(None)).expect("wait on the handed-off Task");
+            if !matches!(
+                observed.status(),
+                crate::domain::invocation::InvocationStatus::Working
+                    | crate::domain::invocation::InvocationStatus::Queued
+            ) {
+                break observed;
+            }
+            assert!(
+                Instant::now() < settle_by,
+                "the Task never reached its terminal: {observed:?}"
+            );
+        };
+        assert_eq!(
+            terminal.status(),
+            crate::domain::invocation::InvocationStatus::Failed,
+            "the worker's own failure becomes the Task terminal: {terminal:?}"
+        );
+        // The safe failure reason never leaks the provider's private text.
+        assert!(!format!("{terminal:?}").contains("bearer-secret"));
+        assert_eq!(
+            service.executions.load(Ordering::SeqCst),
+            1,
+            "the handoff keeps the only attempt; nothing is re-executed"
+        );
+        drop(router);
+        daemon.finish();
+    }
+
+    #[test]
     fn live_daemon_executes_once_and_compacts_the_acknowledged_receipt_to_a_tombstone() {
         let service = Arc::new(ScriptedService {
             delay: Duration::ZERO,

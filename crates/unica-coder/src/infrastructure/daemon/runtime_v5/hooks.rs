@@ -19,7 +19,7 @@ use crate::domain::invocation::{DomainResult, InvocationId, SafeIdentityHash};
 use serde::{Deserialize, Serialize};
 use std::any::Any;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// One observable step of the runtime, in the order a request meets them.
 /// A few steps are raised only by the observer's own probes and leases
@@ -139,7 +139,9 @@ pub(crate) trait V5RuntimeHooks: Send + Sync {
 
     fn restart_requested(&self) {}
 
-    fn forced_process_exit(&self) {}
+    /// The process stops admitting and dies. `grace` is the elapsed grace of
+    /// the watchdog that fired, if one did.
+    fn forced_process_exit(&self, grace: Option<Duration>) {}
 
     /// Held while the listener is published; dropping it closes the count.
     fn listener_lease(&self) -> Option<Box<dyn Any + Send>> {
@@ -316,12 +318,6 @@ pub(crate) trait V5RuntimeHooks: Send + Sync {
     /// observer configures a precomputed terminal.
     fn session_deadline_override(&self) -> Option<Instant> {
         None
-    }
-
-    /// Whether this runtime owns the cutoff of an inline invocation. The
-    /// contract harness still plays the deadline owner itself.
-    fn owns_cutoff(&self) -> bool {
-        true
     }
 
     /// A handoff staged by the observer in place of the runtime's own.

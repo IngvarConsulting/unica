@@ -603,7 +603,13 @@ impl V5ReceiptRuntime {
             let bindings = work
                 .iter()
                 .map(|(_, invocation, _)| {
-                    scope.spawn(|| self.invocation_executor.bind(invocation.clone()))
+                    scope.spawn(|| {
+                        let response_deadline = self
+                            .invocation_executor
+                            .capture_response_deadline(invocation.response_budget_ms());
+                        self.invocation_executor
+                            .bind(invocation.clone(), response_deadline)
+                    })
                 })
                 .collect::<Vec<_>>();
             bindings
@@ -912,37 +918,6 @@ impl V5ReceiptRuntime {
         result
     }
 
-    pub(super) fn materialize_cutoff_handoff_for_test(
-        &self,
-        handoff: &TaskHandoffActorBoundReceipt,
-        deadline: Instant,
-    ) -> Result<(), String> {
-        let epoch_ms = self.epoch_ms();
-        let (task_record, task_bound) = self
-            .task_projection
-            .materialize_bound_handoff(handoff, epoch_ms, deadline, self.hooks.as_ref())
-            .map_err(|failure| format!("materialize cutoff Task handoff: {}", failure.error))?;
-        self.receipt_ledger
-            .complete_bound_task_handoff(
-                handoff.key().clone(),
-                handoff.record_version(),
-                task_bound.clone(),
-                deadline,
-            )
-            .map_err(|error| format!("commit cutoff Task handoff: {error}"))?;
-        let (task_record, task_bound) = self
-            .task_projection
-            .start_bound_task(&task_bound, task_record, deadline)
-            .map_err(|failure| format!("start cutoff Task handoff: {}", failure.error))?;
-        if let Some(control) = &self.scenario_hooks().control {
-            control.record_bound_task(task_record, task_bound);
-        }
-        self.scenario_hooks()
-            .telemetry
-            .record_event(V5ReceiptRuntimeEventKind::TaskBoundCommitted, epoch_ms);
-        Ok(())
-    }
-
     pub(super) fn bind_task_under_gate_for_test(
         &self,
         key: &ReceiptKey,
@@ -1089,6 +1064,21 @@ impl V5ReceiptRuntime {
     /// still applies itself.
     pub(super) fn scenario_telemetry(&self) -> &V5ReceiptRuntimeTelemetry {
         &self.scenario_hooks().telemetry
+    }
+
+    /// Whether a fail-stop watchdog is due on the runtime's clock: the accept
+    /// loop exits on it, and the harness waits for that exit.
+    /// How many promoted attempts the owner handed to a worker are still
+    /// running their continuation off the reply thread.
+    pub(super) fn promoted_continuation_in_flight_for_test(&self) -> usize {
+        self.promoted_continuations
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub(super) fn fail_stop_due_for_test(&self) -> bool {
+        self.fail_stop_watchdogs
+            .due(self.invocation_executor.now())
+            .is_some()
     }
 
     /// The observer the harness installed; probes read its telemetry and

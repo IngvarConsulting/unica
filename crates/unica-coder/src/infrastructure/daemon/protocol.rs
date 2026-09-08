@@ -63,6 +63,7 @@ impl InvocationRequest {
         &self.workspace_hint
     }
 
+    #[cfg(test)]
     pub(crate) fn response_budget_ms(&self) -> u64 {
         self.response_budget_ms
     }
