@@ -8,8 +8,6 @@ use super::protocol_v5::{
     V5InvocationResponse, V5ProbeServerResponse, V5RequestFrameError, V5ServerResponse,
     DAEMON_PROTOCOL_VERSION, MAX_V5_RESPONSE_LINE_BYTES,
 };
-#[cfg(feature = "receipt-ledger-test-support")]
-use super::protocol_v5::{decode_v5_server_response, read_bounded_v5_probe_response_frame};
 use super::server::{
     CanonicalInvocationService, DaemonServerConfig, V5ActorBoundCanonicalInvocation,
     V5CanonicalInvocationRuntime, V5CanonicalPrepareError, MAX_HANDSHAKES, MAX_OWNER_SESSIONS,
@@ -53,10 +51,7 @@ use crate::infrastructure::receipt_ledger::ReceiptLedgerStore;
 #[cfg(feature = "receipt-ledger-test-support")]
 use crate::infrastructure::receipt_ledger::{
     inject_receipt_row_directory_sync_failure_for_test, ReceiptBackedTaskTerminalSeed,
-    StableReceiptLedgerObservation,
 };
-#[cfg(feature = "receipt-ledger-test-support")]
-use crate::infrastructure::receipt_ledger_test_evidence::ProductionMissingTransitionEvidence;
 use crate::infrastructure::task_lifecycle_link_store_v5::{
     TaskLifecycleLinkCatalogEntry, TaskLifecycleLinkRecord, TaskLifecycleLinkStoreError,
     TaskLifecycleLinkStoreV5, TaskLinkReservation,
@@ -73,8 +68,6 @@ use std::collections::{HashMap, HashSet};
 use std::io::{self, BufReader, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-#[cfg(feature = "receipt-ledger-test-support")]
-use std::sync::mpsc::{sync_channel, SyncSender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -1010,8 +1003,6 @@ struct V5ReceiptRuntime {
     receipt_ledger: ReceiptLedgerActor,
     _stable_authority: ReceiptAuthorityLock,
     epoch_clock: Arc<dyn EpochMillisClock>,
-    #[cfg(feature = "receipt-ledger-test-support")]
-    initial_receipt_observation: StableReceiptLedgerObservation,
     #[cfg_attr(not(feature = "receipt-ledger-test-support"), allow(dead_code))]
     invocation_executor: V5InvocationExecutor,
     #[cfg_attr(not(feature = "receipt-ledger-test-support"), allow(dead_code))]
@@ -1020,8 +1011,6 @@ struct V5ReceiptRuntime {
     task_execution_threads: Mutex<Vec<thread::JoinHandle<()>>>,
     task_terminal_coordinator: Mutex<()>,
     external_store_fail_stop: AtomicBool,
-    #[cfg(feature = "receipt-ledger-test-support")]
-    evidence_capture: Option<SyncSender<ProductionMissingTransitionEvidence>>,
     #[cfg(feature = "receipt-ledger-test-support")]
     scenario_control: Option<Arc<receipt_scenario_v5::ReceiptScenarioControl>>,
     #[cfg(feature = "receipt-ledger-test-support")]
@@ -1230,7 +1219,7 @@ enum InlineDrive {
 }
 
 struct V5TaskProjection {
-    #[cfg_attr(not(feature = "receipt-ledger-test-support"), allow(dead_code))]
+    #[allow(dead_code)]
     task_store_root: RetainedDirectoryCapability,
     #[allow(dead_code)]
     task_store: Arc<FileInvocationStoreV5>,
@@ -1448,16 +1437,6 @@ impl V5TaskProjection {
             ));
         }
         Ok(())
-    }
-
-    #[cfg(feature = "receipt-ledger-test-support")]
-    fn validate_named_identity(&self) -> Result<(), String> {
-        self.task_store_root
-            .validate_named_identity()
-            .map_err(|error| format!("validate protocol-v5 task projection root: {error}"))?;
-        self.lifecycle_link_root
-            .validate_named_identity()
-            .map_err(|error| format!("validate protocol-v5 lifecycle-link root: {error}"))
     }
 
     fn reconcile_materialized_startup(
@@ -2528,17 +2507,6 @@ impl V5TaskProjection {
         }
         self.cancel_bound_task(key.reserved_task_id(), deadline)
     }
-
-    #[cfg(feature = "receipt-ledger-test-support")]
-    fn observe_missing_seed_writer(
-        &self,
-        observation: StableReceiptLedgerObservation,
-    ) -> V5TaskProjectionReachability {
-        V5TaskProjectionReachability {
-            _task_store_root: self.task_store_root.clone(),
-            observation,
-        }
-    }
 }
 
 fn project_bound_task_for_read(
@@ -2880,19 +2848,6 @@ fn receipt_task_projection_from_store(
     .map_err(Into::into)
 }
 
-#[cfg(feature = "receipt-ledger-test-support")]
-pub(in crate::infrastructure) struct V5TaskProjectionReachability {
-    _task_store_root: RetainedDirectoryCapability,
-    observation: StableReceiptLedgerObservation,
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-impl V5TaskProjectionReachability {
-    pub(in crate::infrastructure) const fn observation(&self) -> &StableReceiptLedgerObservation {
-        &self.observation
-    }
-}
-
 struct V5InvocationExecutor {
     invocation_runtime: Arc<V5CanonicalInvocationRuntime>,
 }
@@ -2939,54 +2894,6 @@ impl V5InvocationExecutor {
             ))
         })?;
         self.invocation_runtime.bind(request)
-    }
-
-    #[cfg(feature = "receipt-ledger-test-support")]
-    fn observe_missing_writer(
-        &self,
-        action: V5ExecutorReachabilityAction,
-        observation: StableReceiptLedgerObservation,
-    ) -> V5ExecutorReachability {
-        V5ExecutorReachability {
-            action,
-            observation,
-        }
-    }
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::infrastructure) enum V5ExecutorReachabilityAction {
-    SubmitInvocation,
-    RunDirectLoad,
-    RunLazyCancelStorm,
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-impl V5ExecutorReachabilityAction {
-    pub(in crate::infrastructure) const fn wire_name(self) -> &'static str {
-        match self {
-            Self::SubmitInvocation => "submit",
-            Self::RunDirectLoad => "run_direct_load",
-            Self::RunLazyCancelStorm => "run_lazy_cancel_storm",
-        }
-    }
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-pub(in crate::infrastructure) struct V5ExecutorReachability {
-    action: V5ExecutorReachabilityAction,
-    observation: StableReceiptLedgerObservation,
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-impl V5ExecutorReachability {
-    pub(in crate::infrastructure) const fn action(&self) -> V5ExecutorReachabilityAction {
-        self.action
-    }
-
-    pub(in crate::infrastructure) const fn observation(&self) -> &StableReceiptLedgerObservation {
-        &self.observation
     }
 }
 
@@ -3055,10 +2962,6 @@ impl V5ReceiptRuntime {
         let recovery_keys = receipt_ledger
             .recovery_keys(startup_deadline)
             .map_err(|error| format!("inspect protocol-v5 receipt recovery catalog: {error}"))?;
-        #[cfg(feature = "receipt-ledger-test-support")]
-        let initial_receipt_observation = receipt_ledger
-            .observe_stable_generation()
-            .map_err(|error| format!("observe initial protocol-v5 receipt generation: {error}"))?;
         let receipt_ledger = ReceiptLedgerActor::spawn(receipt_ledger);
         let task_projection =
             V5TaskProjection::open(state, Arc::clone(&epoch_clock), startup_deadline)?;
@@ -3068,8 +2971,6 @@ impl V5ReceiptRuntime {
             _stable_authority: stable_authority,
             receipt_ledger,
             epoch_clock,
-            #[cfg(feature = "receipt-ledger-test-support")]
-            initial_receipt_observation,
             invocation_executor: {
                 #[cfg(test)]
                 let preset = config.canonical_runtime_for_v5();
@@ -3088,8 +2989,6 @@ impl V5ReceiptRuntime {
             task_execution_threads: Mutex::new(Vec::new()),
             task_terminal_coordinator: Mutex::new(()),
             external_store_fail_stop: AtomicBool::new(false),
-            #[cfg(feature = "receipt-ledger-test-support")]
-            evidence_capture: None,
             #[cfg(feature = "receipt-ledger-test-support")]
             scenario_control,
             #[cfg(feature = "receipt-ledger-test-support")]
@@ -6880,85 +6779,6 @@ impl V5ReceiptRuntime {
         }
         Ok(())
     }
-
-    #[cfg(feature = "receipt-ledger-test-support")]
-    fn observe_missing_executor_writer(
-        &self,
-        action: V5ExecutorReachabilityAction,
-    ) -> Result<V5ExecutorReachability, String> {
-        self.ensure_named_authority()?;
-        let observation = self.initial_receipt_observation.clone();
-        Ok(self
-            .invocation_executor
-            .observe_missing_writer(action, observation))
-    }
-
-    #[cfg(feature = "receipt-ledger-test-support")]
-    fn observe_missing_task_projection_writer(
-        &self,
-    ) -> Result<V5TaskProjectionReachability, String> {
-        self.ensure_named_authority()?;
-        self.task_projection.validate_named_identity()?;
-        let observation = self.initial_receipt_observation.clone();
-        Ok(self
-            .task_projection
-            .observe_missing_seed_writer(observation))
-    }
-
-    #[cfg(feature = "receipt-ledger-test-support")]
-    fn with_evidence_capture(
-        mut self,
-        capture: SyncSender<ProductionMissingTransitionEvidence>,
-    ) -> Self {
-        self.evidence_capture = Some(capture);
-        self
-    }
-
-    #[cfg(feature = "receipt-ledger-test-support")]
-    fn capture_protocol_transition_after_frame(
-        &self,
-        decoded: &DecodedV5Request,
-    ) -> Result<(), String> {
-        let Some(capture) = &self.evidence_capture else {
-            return Ok(());
-        };
-        self.ensure_named_authority()?;
-        let evidence = ProductionMissingTransitionEvidence::protocol_behavior_unavailable(decoded);
-        capture
-            .try_send(evidence)
-            .map_err(|_| "capture protocol-v5 reachability evidence".to_string())
-    }
-
-    #[cfg(feature = "receipt-ledger-test-support")]
-    fn capture_missing_submit_writer_after_reserve(
-        &self,
-        reply: &V5RuntimeReply,
-        deadline: Instant,
-    ) -> Result<(), String> {
-        let Some(capture) = &self.evidence_capture else {
-            return Ok(());
-        };
-        if !matches!(
-            reply,
-            V5RuntimeReply::Json(V5ServerResponse::Invocation {
-                outcome: V5InvocationResponse::ReceiptPending {
-                    phase: V5InvocationPhase::ReservedUnbound,
-                    ..
-                }
-            })
-        ) {
-            return Ok(());
-        }
-        self.ensure_named_authority_before(deadline)?;
-        let token = self.invocation_executor.observe_missing_writer(
-            V5ExecutorReachabilityAction::SubmitInvocation,
-            self.initial_receipt_observation.clone(),
-        );
-        let evidence = ProductionMissingTransitionEvidence::writer_path_unavailable(token);
-        capture
-            .try_send(evidence)
-            .map_err(|_| "capture protocol-v5 submit writer evidence".to_string())
-    }
 }
 
 enum V5RuntimeReply {
@@ -7704,25 +7524,16 @@ fn handle_probe_connection(
         let _actor_telemetry_lease = (kind == V5ClientRequestKind::SubmitInvocation)
             .then(|| runtime.telemetry.actor_lease());
         let result = match kind {
-            V5ClientRequestKind::Ping => {
-                #[cfg(feature = "receipt-ledger-test-support")]
-                runtime.capture_protocol_transition_after_frame(&decoded)?;
-                write_runtime_json_line_before(
-                    &mut stream,
-                    runtime,
-                    &V5ProbeServerResponse::Pong {},
-                    deadlines.response,
-                )
-            }
+            V5ClientRequestKind::Ping => write_runtime_json_line_before(
+                &mut stream,
+                runtime,
+                &V5ProbeServerResponse::Pong {},
+                deadlines.response,
+            ),
             V5ClientRequestKind::SubmitInvocation => {
                 let epoch_ms = runtime.epoch_ms();
                 match runtime.submit_invocation(decoded, epoch_ms, deadlines.operation) {
                     Ok(reply) => {
-                        #[cfg(feature = "receipt-ledger-test-support")]
-                        runtime.capture_missing_submit_writer_after_reserve(
-                            &reply,
-                            deadlines.operation,
-                        )?;
                         #[cfg(feature = "receipt-ledger-test-support")]
                         if runtime
                             .scenario_control
@@ -8180,184 +7991,6 @@ fn tokens_equal(left: &str, right: &str) -> bool {
 
 fn daemon_io_error(operation: &str, error: io::Error) -> String {
     format!("{operation}: {error}")
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-pub(crate) fn run_protocol_ping_reachability_probe_for_test(
-) -> Result<ProductionMissingTransitionEvidence, String> {
-    run_v5_reachability_probe_for_test(V5ClientRequest::Ping {}, ReachabilityExpectedResponse::Pong)
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-pub(crate) fn run_submit_reachability_probe_for_test(
-) -> Result<ProductionMissingTransitionEvidence, String> {
-    run_v5_reachability_probe_for_test(
-        fixed_submit_request_for_test()?,
-        ReachabilityExpectedResponse::ReceiptPending(V5InvocationPhase::ReservedUnbound),
-    )
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-pub(crate) fn run_direct_load_reachability_probe_for_test(
-) -> Result<ProductionMissingTransitionEvidence, String> {
-    run_executor_reachability_probe_for_test(V5ExecutorReachabilityAction::RunDirectLoad)
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-pub(crate) fn run_lazy_cancel_storm_reachability_probe_for_test(
-) -> Result<ProductionMissingTransitionEvidence, String> {
-    run_executor_reachability_probe_for_test(V5ExecutorReachabilityAction::RunLazyCancelStorm)
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-pub(crate) fn run_seed_task_reachability_probe_for_test(
-) -> Result<ProductionMissingTransitionEvidence, String> {
-    let root =
-        tempfile::tempdir().map_err(|error| format!("create v5 task projection state: {error}"))?;
-    let state_root = std::fs::canonicalize(root.path())
-        .map_err(|error| format!("canonicalize v5 task projection state: {error}"))?;
-    let identity = CoreIdentity::production_v5();
-    let state = DaemonStateDirectory::open(&state_root, &identity)?;
-    let runtime = V5ReceiptRuntime::open(
-        &state,
-        &DaemonServerConfig::new(state_root, identity, Duration::from_millis(50)),
-    )?;
-    let token = runtime.observe_missing_task_projection_writer()?;
-    Ok(ProductionMissingTransitionEvidence::task_projection_unavailable(token))
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-fn run_executor_reachability_probe_for_test(
-    action: V5ExecutorReachabilityAction,
-) -> Result<ProductionMissingTransitionEvidence, String> {
-    let root = tempfile::tempdir().map_err(|error| format!("create v5 executor state: {error}"))?;
-    let state_root = std::fs::canonicalize(root.path())
-        .map_err(|error| format!("canonicalize v5 executor state: {error}"))?;
-    let identity = CoreIdentity::production_v5();
-    let state = DaemonStateDirectory::open(&state_root, &identity)?;
-    let runtime = V5ReceiptRuntime::open(
-        &state,
-        &DaemonServerConfig::new(state_root, identity, Duration::from_millis(50)),
-    )?;
-    let token = runtime.observe_missing_executor_writer(action)?;
-    Ok(ProductionMissingTransitionEvidence::writer_path_unavailable(token))
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-fn fixed_submit_request_for_test() -> Result<V5ClientRequest, String> {
-    use crate::application::receipt_ledger::V5ToolIdentity;
-    use crate::domain::invocation::{InvocationId, TaskId};
-    use std::str::FromStr;
-
-    let invocation = V5InvocationRequest::new(
-        InvocationId::from_str("11111111-1111-4111-8111-111111111111")
-            .map_err(|_| "invalid fixed v5 reachability invocation id".to_string())?,
-        TaskId::from_str("22222222-2222-4222-8222-222222222222")
-            .map_err(|_| "invalid fixed v5 reachability task id".to_string())?,
-        V5ToolIdentity::View,
-        serde_json::Map::new(),
-        "workspace-a".to_string(),
-        7_000,
-    )?;
-    Ok(V5ClientRequest::SubmitInvocation { invocation })
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-#[derive(Clone, Copy)]
-enum ReachabilityExpectedResponse {
-    Pong,
-    ReceiptPending(V5InvocationPhase),
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-fn run_v5_reachability_probe_for_test(
-    request: V5ClientRequest,
-    expected_response: ReachabilityExpectedResponse,
-) -> Result<ProductionMissingTransitionEvidence, String> {
-    let root = tempfile::tempdir().map_err(|error| format!("create v5 probe state: {error}"))?;
-    let state_root = std::fs::canonicalize(root.path())
-        .map_err(|error| format!("canonicalize v5 probe state: {error}"))?;
-    let identity = CoreIdentity::production_v5();
-    let config = DaemonServerConfig::new(
-        state_root.clone(),
-        identity.clone(),
-        Duration::from_millis(50),
-    );
-    let (evidence_tx, evidence_rx) = sync_channel(1);
-    let server = thread::spawn(move || {
-        run_daemon_configured(config, |runtime| runtime.with_evidence_capture(evidence_tx))
-    });
-
-    let startup_deadline = Instant::now() + Duration::from_secs(5);
-    let record = loop {
-        let state = DaemonStateDirectory::open(&state_root, &identity)?;
-        if let Some(record) = state.read_v5_endpoint_record()? {
-            break record;
-        }
-        if Instant::now() >= startup_deadline {
-            return Err("protocol-v5 reachability endpoint was not published".to_string());
-        }
-        thread::sleep(Duration::from_millis(5));
-    };
-
-    let mut stream = TcpStream::connect(record.loopback_addr()?)
-        .map_err(|error| daemon_io_error("connect protocol-v5 reachability endpoint", error))?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .map_err(|error| daemon_io_error("bound protocol-v5 reachability read", error))?;
-    write_json_line_before(
-        &mut stream,
-        &V5ClientRequest::Hello {
-            protocol_version: DAEMON_PROTOCOL_VERSION,
-            token: record.token().to_string(),
-            core_identity: identity,
-            owner_lease: uuid::Uuid::new_v4().to_string(),
-        },
-        Instant::now() + Duration::from_secs(2),
-    )?;
-    let mut reader = BufReader::new(
-        stream
-            .try_clone()
-            .map_err(|error| daemon_io_error("clone protocol-v5 reachability stream", error))?,
-    );
-    let ready_frame = read_bounded_v5_probe_response_frame(&mut reader)
-        .map_err(|error| daemon_io_error("read protocol-v5 reachability ready", error))?;
-    let ready: V5HandshakeServerResponse = serde_json::from_slice(&ready_frame)
-        .map_err(|_| "protocol-v5 reachability ready is not strict JSON".to_string())?;
-    if !ready.matches_record(&record) {
-        return Err("protocol-v5 reachability ready does not match endpoint".to_string());
-    }
-
-    write_json_line_before(
-        &mut stream,
-        &request,
-        Instant::now() + Duration::from_secs(2),
-    )?;
-    let response_frame = read_bounded_v5_probe_response_frame(&mut reader)
-        .map_err(|error| daemon_io_error("read protocol-v5 reachability response", error))?;
-    let response = decode_v5_server_response(&response_frame).map_err(|error| {
-        format!("protocol-v5 reachability response is not strict JSON: {error}")
-    })?;
-    let response_matches = match expected_response {
-        ReachabilityExpectedResponse::Pong => matches!(response, V5ServerResponse::Pong),
-        ReachabilityExpectedResponse::ReceiptPending(expected_phase) => matches!(
-            response,
-            V5ServerResponse::Invocation {
-                outcome: V5InvocationResponse::ReceiptPending { phase, .. }
-            } if phase == expected_phase
-        ),
-    };
-    if !response_matches {
-        return Err("protocol-v5 reachability probe received an unexpected response".to_string());
-    }
-    let evidence = evidence_rx
-        .recv_timeout(Duration::from_secs(2))
-        .map_err(|_| "protocol-v5 reachability evidence was not captured".to_string())?;
-    drop(stream);
-    server
-        .join()
-        .map_err(|_| "protocol-v5 reachability daemon panicked".to_string())??;
-    Ok(evidence)
 }
 
 #[cfg(test)]

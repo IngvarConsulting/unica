@@ -10,8 +10,6 @@ use crate::application::receipt_ledger::{
     V5ToolIdentity,
 };
 use crate::domain::invocation::{DomainResult, InvocationId, InvocationStatus, TaskId};
-#[cfg(feature = "receipt-ledger-test-support")]
-use crate::infrastructure::receipt_ledger_test_evidence::ProductionMissingTransitionEvidence;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::fmt;
@@ -1197,70 +1195,6 @@ impl StrictV5EnvelopeCase {
 }
 
 #[cfg(feature = "receipt-ledger-test-support")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::infrastructure) enum StrictV5EnvelopeRejectionKind {
-    BoundedFrame,
-    StrictDecode,
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-pub(in crate::infrastructure) struct StrictV5EnvelopeRejection {
-    raw_frame: Vec<u8>,
-    rejection: StrictV5EnvelopeRejectionKind,
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-impl StrictV5EnvelopeRejection {
-    pub(in crate::infrastructure) fn raw_frame(&self) -> &[u8] {
-        &self.raw_frame
-    }
-
-    pub(in crate::infrastructure) const fn rejection(&self) -> StrictV5EnvelopeRejectionKind {
-        self.rejection
-    }
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-impl StrictV5EnvelopeRejectionKind {
-    pub(in crate::infrastructure) const fn wire_name(self) -> &'static str {
-        match self {
-            Self::BoundedFrame => "bounded_frame",
-            Self::StrictDecode => "strict_decode",
-        }
-    }
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-pub(crate) fn run_strict_envelope_reachability_probe_for_test(
-    case: StrictV5EnvelopeCase,
-) -> Result<ProductionMissingTransitionEvidence, String> {
-    let raw_frame = strict_envelope_case_frame(case)?;
-    let mut terminated = raw_frame.clone();
-    terminated.push(b'\n');
-    let mut reader = std::io::BufReader::new(std::io::Cursor::new(terminated));
-    let rejection = match read_and_decode_v5_request(&mut reader) {
-        Ok(_) => return Err("strict protocol-v5 decoder accepted malformed envelope".to_string()),
-        Err(V5RequestFrameError::InvalidRequest(_)) => StrictV5EnvelopeRejectionKind::StrictDecode,
-        Err(V5RequestFrameError::Read(error)) if error.kind() == io::ErrorKind::InvalidData => {
-            StrictV5EnvelopeRejectionKind::BoundedFrame
-        }
-        Err(V5RequestFrameError::Read(error)) => {
-            return Err(format!(
-                "strict protocol-v5 malformed-envelope probe failed: {error}"
-            ));
-        }
-    };
-    Ok(
-        ProductionMissingTransitionEvidence::strict_envelope_observation_unavailable(
-            StrictV5EnvelopeRejection {
-                raw_frame,
-                rejection,
-            },
-        ),
-    )
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
 pub(crate) fn strict_envelope_case_frame(case: StrictV5EnvelopeCase) -> Result<Vec<u8>, String> {
     use serde_json::{json, Value};
 
@@ -1752,9 +1686,14 @@ mod tests {
     #[cfg(feature = "receipt-ledger-test-support")]
     #[test]
     fn bounded_read_or_strict_decode_pipeline_rejects_every_closed_malformed_envelope_case() {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        enum StrictV5EnvelopeRejectionKind {
+            BoundedFrame,
+            StrictDecode,
+        }
         let mut bounded_frame_rejections = 0;
         let mut strict_decode_rejections = 0;
-        for (index, case) in StrictV5EnvelopeCase::ALL.into_iter().enumerate() {
+        for case in StrictV5EnvelopeCase::ALL {
             let raw_frame = strict_envelope_case_frame(case).expect("closed malformed fixture");
             let mut wire_frame = raw_frame;
             wire_frame.push(b'\n');
@@ -1788,23 +1727,6 @@ mod tests {
                 StrictV5EnvelopeRejectionKind::BoundedFrame => bounded_frame_rejections += 1,
                 StrictV5EnvelopeRejectionKind::StrictDecode => strict_decode_rejections += 1,
             }
-
-            let evidence = run_strict_envelope_reachability_probe_for_test(case)
-                .unwrap_or_else(|error| panic!("{case:?} reaches the rejection pipeline: {error}"));
-            let encoded = evidence
-                .encode_facade_envelope(index as u32, "send_outer_envelope")
-                .expect("strict owner evidence correlates");
-            let encoded: serde_json::Value =
-                serde_json::from_str(&encoded).expect("closed strict evidence envelope");
-            assert_eq!(
-                encoded["payload"]["reachedBoundary"],
-                "strict_envelope_validation"
-            );
-            assert_eq!(encoded["payload"]["currentProtocol"], "v5");
-            assert_eq!(
-                encoded["payload"]["evidence"]["code"],
-                "strict_envelope_observation_unavailable"
-            );
         }
         assert_eq!(bounded_frame_rejections, 2);
         assert_eq!(strict_decode_rejections, 11);

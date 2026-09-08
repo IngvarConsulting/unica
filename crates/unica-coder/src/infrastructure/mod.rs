@@ -44,12 +44,6 @@ pub(crate) mod redaction;
 // The v5 runtime consumes this production store in the following W0a slice.
 #[allow(dead_code)]
 pub(crate) mod receipt_ledger;
-#[cfg(feature = "receipt-ledger-test-support")]
-#[allow(dead_code)]
-pub(crate) mod receipt_ledger_reachability;
-#[cfg(feature = "receipt-ledger-test-support")]
-#[allow(dead_code)]
-pub(crate) mod receipt_ledger_test_evidence;
 mod revision_artifact_policy;
 pub(crate) mod rlm_navigation;
 pub(crate) mod runtime_build_fallback;
