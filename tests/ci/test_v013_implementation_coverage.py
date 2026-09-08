@@ -92,7 +92,7 @@ class V013ImplementationCoverageTests(unittest.TestCase):
         self.assertEqual(set(self.coverage["subjectTools"]), SUBJECT_TOOLS)
         self.assertEqual(set(self.coverage["compatibilityTools"]), COMPATIBILITY_TOOLS)
         self.assertEqual(set(self.coverage["runOperations"]), catalog_run_operations())
-        self.assertEqual(len(self.coverage["runOperations"]), 12)
+        self.assertEqual(len(self.coverage["runOperations"]), 10)
         self.assertNotIn("query.execute", self.coverage["runOperations"])
 
     def test_no_query_dictionary_invariant_remains_active(self) -> None:
@@ -126,9 +126,8 @@ class V013ImplementationCoverageTests(unittest.TestCase):
                             f"{location} supported status requires executable evidence",
                         )
 
-    def test_runtime_truth_supports_workspace_initialization_and_two_infobase_exports(self) -> None:
+    def test_runtime_truth_supports_exactly_the_two_infobase_exports(self) -> None:
         supported = {
-            "workspace.initialize",
             "infobase.configuration.export",
             "infobase.dump",
         }

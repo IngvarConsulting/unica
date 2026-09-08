@@ -38,8 +38,6 @@ pub(crate) struct CatalogSemantics {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RunIntent {
-    WorkspaceInitialize,
-    SourceCreate,
     InfobaseCreate,
     InfobaseBuild,
     SourceDump,
@@ -63,8 +61,6 @@ pub(crate) struct RunOperation {
 impl RunOperation {
     pub(crate) const fn name(&self) -> &'static str {
         match self.intent {
-            RunIntent::WorkspaceInitialize => "workspace.initialize",
-            RunIntent::SourceCreate => "source.create",
             RunIntent::InfobaseCreate => "infobase.create",
             RunIntent::InfobaseBuild => "infobase.build",
             RunIntent::SourceDump => "source.dump",
@@ -80,12 +76,6 @@ impl RunOperation {
 
     pub(crate) const fn description(&self) -> &'static str {
         match self.intent {
-            RunIntent::WorkspaceInitialize => {
-                "Create a missing v8project.yaml from autodetected 1C source sets."
-            }
-            RunIntent::SourceCreate => {
-                "Create a new 1C source set in a requested supported source format."
-            }
             RunIntent::InfobaseCreate => "Create an empty target 1C infobase.",
             RunIntent::InfobaseBuild => "Build or update a 1C infobase from attached sources.",
             RunIntent::SourceDump => "Export a 1C infobase into a workspace source set.",
@@ -118,10 +108,7 @@ impl RunOperation {
 
     pub(crate) const fn effects(&self) -> &'static [&'static str] {
         match self.intent {
-            RunIntent::WorkspaceInitialize
-            | RunIntent::SourceCreate
-            | RunIntent::SourceConvert
-            | RunIntent::ArtifactBuild => &["workspaceFiles"],
+            RunIntent::SourceConvert | RunIntent::ArtifactBuild => &["workspaceFiles"],
             RunIntent::SourceDump
             | RunIntent::InfobaseConfigurationExport
             | RunIntent::InfobaseDump => &["infobaseRead", "workspaceFiles"],
@@ -135,12 +122,6 @@ impl RunOperation {
 
     pub(crate) fn args_schema(&self) -> Option<Value> {
         match self.intent {
-            RunIntent::WorkspaceInitialize => Some(json!({
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {},
-                "required": []
-            })),
             RunIntent::InfobaseConfigurationExport => Some(json!({
                 "type": "object",
                 "additionalProperties": false,
@@ -350,8 +331,6 @@ fn cursor(description: &'static str) -> Value {
 
 fn run_dictionary() -> Vec<RunOperation> {
     [
-        RunIntent::WorkspaceInitialize,
-        RunIntent::SourceCreate,
         RunIntent::InfobaseCreate,
         RunIntent::InfobaseBuild,
         RunIntent::SourceDump,
@@ -369,9 +348,7 @@ fn run_dictionary() -> Vec<RunOperation> {
         rejects_sessions: intent == RunIntent::ClientRun,
         implemented: matches!(
             intent,
-            RunIntent::WorkspaceInitialize
-                | RunIntent::InfobaseConfigurationExport
-                | RunIntent::InfobaseDump
+            RunIntent::InfobaseConfigurationExport | RunIntent::InfobaseDump
         ),
         intent,
     })
@@ -732,8 +709,6 @@ mod tests {
                 .map(|operation| operation.intent)
                 .collect::<Vec<_>>(),
             [
-                RunIntent::WorkspaceInitialize,
-                RunIntent::SourceCreate,
                 RunIntent::InfobaseCreate,
                 RunIntent::InfobaseBuild,
                 RunIntent::SourceDump,
@@ -764,11 +739,8 @@ mod tests {
                 .filter(|operation| operation.implemented)
                 .map(|operation| operation.name())
                 .collect::<Vec<_>>(),
-            [
-                "workspace.initialize",
-                "infobase.configuration.export",
-                "infobase.dump"
-            ]
+            ["infobase.configuration.export", "infobase.dump"],
+            "реализованы обе вертикали выгрузки; проектный файл в словаре не числится вовсе"
         );
 
         let output = &catalog.result_envelope_schema;
@@ -838,6 +810,11 @@ mod tests {
     }
 
     #[test]
+    // Имя удерживает счёт, которого больше нет: две операции сняты решением
+    // DEC.2026-09-09.PROJECT-CONFIG-IS-HANDWRITTEN. Переименовать нельзя —
+    // на это имя ссылаются принятые записи реестра как на доказательство, а
+    // переименование там читается как правка обещания. Счёт в имени проверки
+    // устаревает так же, как счёт в прозе правила (#798).
     fn v13_run_dictionary_has_twelve_directional_runtime_intents() {
         let catalog =
             catalog_for(SurfaceRelease::V13).expect("v0.13 catalog must be test-loadable");
@@ -850,8 +827,6 @@ mod tests {
         assert_eq!(
             names,
             [
-                "workspace.initialize",
-                "source.create",
                 "infobase.create",
                 "infobase.build",
                 "source.dump",
@@ -863,7 +838,7 @@ mod tests {
                 "infobase.restore",
                 "client.run",
             ],
-            "v0.13 Run dictionary must distinguish source builds, configuration transfers, and full infobase transfers"
+            "словарь `run` различает сборку исходников, перенос конфигурации и перенос базы целиком — и не держит операции, которым платформа не нужна"
         );
         for ambiguous_or_deferred in [
             "source.attach",
@@ -886,12 +861,8 @@ mod tests {
                 .filter(|operation| operation.implemented)
                 .map(|operation| operation.name())
                 .collect::<Vec<_>>(),
-            [
-                "workspace.initialize",
-                "infobase.configuration.export",
-                "infobase.dump"
-            ],
-            "the initialization and first two infobase export verticals are implemented"
+            ["infobase.configuration.export", "infobase.dump"],
+            "реализованы обе вертикали выгрузки; проектный файл в словаре не числится вовсе"
         );
     }
 

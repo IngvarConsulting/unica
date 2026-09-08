@@ -14,10 +14,18 @@ file is not located at `./v8project.yaml`.
 `unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
 `unica.build.*`.
 
-For a new repository with no workspace, call `unica.view {}` first. In v0.13,
-discover the runtime contract through `unica.run {}` and use
-`workspace.initialize` only when its dictionary entry says `implemented: true`.
-Do not infer arguments for an operation whose `argsSchema` is `null`.
+For a new repository with no workspace, call `unica.view {}` first. Оно
+работает и без проектного файла: отвечает `config.state: "autodetected"`,
+перечисляет найденные наборы и несёт в `setup` рекомендуемое содержимое
+`v8project.yaml`.
+
+**Файл заводит человек или модель своими файловыми средствами.** Инструмента
+записи `v8project.yaml` в продукте нет: операция `workspace.initialize` снята,
+и в словаре `run` её больше не числится. Возьми содержимое из `setup`, запиши
+файл и спроси `unica.check {}` о готовности.
+
+Остальной рантайм-контракт открывается через `unica.run {}`. Не выдумывай
+аргументы операции, у которой `argsSchema` равен `null`.
 
 Preview the config-init arguments through MCP `unica.runtime.execute`:
 
