@@ -153,12 +153,14 @@ List canonical runtime operations and their invocation contract, or preview/exec
 
 ### `unica.search`
 
-Search BSL content or symbols, optionally under one logical subtree.
+Search one corpus for a query: BSL module text, or the names and synonyms of metadata objects. Optionally under one logical subtree.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
+| `corpus` | string | нет | Where to search: `text` matches BSL module content and answers scope, line, column and snippet; `names` matches metadata names and synonyms and answers at, kind and title. Defaults to `text`. |
+| `kind` | string | нет | `names` corpus only: narrow the search to one logical node kind. |
 | `limit` | integer | нет | Maximum matches to return. |
-| `query` | string | да | Literal BSL text or symbol to search for. |
+| `query` | string | да | Literal BSL text, symbol, or metadata name to search for. |
 | `regex` | boolean | нет | Request regex matching; currently only false is implemented. |
 | `scope` | string | нет | logical subtree address |
 

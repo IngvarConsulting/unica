@@ -432,6 +432,27 @@ impl ActorBoundInvocation {
             crate::application::invocation_store::ToolIdentity::Apply => {
                 ActorExecutionRevision::UnpublishedApply(std::sync::atomic::AtomicBool::new(false))
             }
+            // Поиск по именам ходит в тот же справочник адресов и путей, что
+            // и разрешение локатора, и потому просит тот же допуск: раскладку
+            // без аренды ревизии. Свод выбирает режим, потому что режимы у
+            // сводов разные по природе — текст читается на ревизии и отдаёт
+            // `rev`, справочник имён ревизией не является.
+            crate::application::invocation_store::ToolIdentity::Search
+                if self
+                    .arguments
+                    .get("corpus")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("names") =>
+            {
+                ActorExecutionRevision::LayoutRead(ActorLayoutReadLease {
+                    deadline: logical_deadline,
+                    bindings: self
+                        .read_sources
+                        .iter()
+                        .map(|source| source.binding.clone())
+                        .collect(),
+                })
+            }
             crate::application::invocation_store::ToolIdentity::Find => {
                 ActorExecutionRevision::LayoutRead(ActorLayoutReadLease {
                     deadline: logical_deadline,
