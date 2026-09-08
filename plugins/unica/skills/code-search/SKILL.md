@@ -7,58 +7,67 @@ description: "Поиск и исследование BSL-кода и точек 
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.code.search`, `unica.code.definition`, `unica.code.graph`, `unica.meta.info`, and `unica.view {}`.
-- Use object-specific `unica.*.info` tools when code behavior depends on metadata, forms, DCS, roles, or HTTP service structure.
-- Do not call internal code-index, analyzer, or package adapters directly. They are hidden behind MCP `unica`.
-- `sourceSet` — это имя набора исходников из `v8project.yaml`, а не
-  константа. Получите его через `unica.view {}`; `"main"` в примерах
-  ниже — иллюстрация, а не значение по умолчанию.
+- Preferred path: use MCP `unica` tools `unica.search`, `unica.view`, and
+  `unica.check`.
+- Не зови индекс кода, анализатор или пакетные адаптеры напрямую: они спрятаны
+  за MCP `unica`.
+- Имя набора исходников — не константа. Его называет `unica.view {}`;
+  `"main"` в примерах ниже иллюстрация, а не умолчание. В адресе имя стоит до
+  двоеточия: `main:Document.Заказ`.
 
 ## Tool choice
 
-- MCP-first discipline: prefer the public `unica.*` project-index tools before
-  shell search for 1C source. Use shell search only after the relevant
-  `unica.code.*` / `unica.meta.*` attempts did not close the context gap, and
-  report what was tried when that fallback matters to the answer.
-- Use `unica.code.definition` for an exact procedure/function definition by name, especially exported methods.
-- Use `unica.view` on the module node (its `Method` branch lists the methods) before reading a large module; it gives regions, header context, and method ranges.
-- Use `unica.code.search` for arbitrary text, XML, query fragments, string literals, captions, and non-method tokens. Read its role sections independently: `semantic`, `symbol`, then `lexical`; `provider` only reports the replaceable implementation that produced a section.
-- `unica.code.search.limit` is the per-provider result cap: `1..50`, default `20`.
-- Prefer the logical selector `sourceSet` from `unica.view {}`; add
-  `metadataPath` to constrain the search to one logical object. The migration
-  selector `sourceDir` is accepted only instead of `sourceSet`, never together
-  with it, and cannot be combined with `metadataPath`.
-- While a search is running, treat `notifications/progress` with typed
-  `io.unica/searchProgress` metadata as proof of life. Wait for the terminal
-  result from all three roles; do not poll by starting another search.
-- Interpret `searchComplete`, `matches.relation`, `ranking`, and `ordering`
-  together. `empty` proves exact zero; `limitReached` and `timedOut` preserve a
-  lower-bound prefix and are not empty. The lexical role is deliberately
-  unranked (`ranking: none`, `ordering: providerTraversal`).
-- Inspect `termination` instead of parsing diagnostics: it is `null` for
-  `ok`/`empty`, otherwise its provider-neutral `code` explains the terminal
-  condition and `retryable` says whether repeating later can help. In
-  particular, `dependencyPending` with `detailCode: buildingIndex` means the
-  RLM deadline ended while the index was still building; keep results from the
-  other roles and retry search later only if semantic evidence is still needed.
-- Reuse an `addressed` hit through its `sourceSet` and `metadataPath`.
-  `unaddressable` is an observable source-relative location, not a logical
-  target for a following mutation or subject reader.
-- Use `unica.code.graph` for callers, callees, neighbors, graph overview, and impact analysis when a method or metadata node id is known or can be resolved.
-- Use `unica.meta.info` for a compact metadata object profile: structure, modules, roles, event subscriptions, functional options, and predefined items.
+- MCP-first discipline: держись публичных `unica.*` до того, как спускаться к
+  оболочке. К поиску по файлам переходи, только когда вызовы выше не закрыли
+  пробел, и сообщай what was tried, если это важно для ответа.
+- **Что искать** выбирает свод. `unica.search` с `corpus: "text"` (умолчание)
+  ищет по тексту модулей BSL и отвечает `scope`, `line`, `column`, `snippet`.
+  С `corpus: "names"` ищет по именам и синонимам метаданных и отвечает `at`,
+  `kind`, `title`. Физического пути нет ни у одного свода — работа идёт
+  адресами.
+- **Чем искать** выбирает `role` в текстовом своде: `lexical` совпадает
+  буквально, `symbol` идёт по индексу символов, `semantic` — по смыслу. Без
+  `role` Unica ищет литерал сама и провайдеров не поднимает.
+- `scope` сужает поиск до одного логического поддерева; `limit` ограничивает
+  выдачу.
+- Признак `approximate` у попадания по имени означает совпадение по близости,
+  а не точное. Пустая выдача — это ноль, а не отказ.
+- **Читать узел** — `unica.view {at}`. У владельца есть ветвь `Module`, у
+  модуля — `Method`, у метода — подпись, контекст компиляции, собственные
+  строки и ветвь `Body` парами `{line, text}`. Это дешевле, чем читать модуль
+  целиком, и точнее, чем догадываться по совпадению.
+- Профиль объекта метаданных — тот же `unica.view {at}`: состав, модули, права,
+  подписки и функциональные опции лежат в его `props` и ветвях.
+- Путь к файлу нужен только когда он пришёл снаружи — из диффа, лога сборки
+  или трассы. Тогда его переводит в адрес аварийный `unica.resolve`. В обычном
+  ходе работы он не нужен.
+
+### Чего на канонической поверхности пока нет
+
+- **граф вызовов и impact analysis** — ветвей `Caller`/`Callee` у узла метода
+  ещё нет. Пока доказательством потока служит `unica.search` с
+  `role: "symbol"` по имени метода, и это доказательство неполное: скажи об
+  этом, а не выдавай его за полный обход вызовов.
 
 ## Workflow
 
-1. Map the workspace with `unica.view {}` when the active source-set or source format is unclear.
-2. For an exact metadata object name, call `unica.meta.info` before broad search to identify related modules, rights, subscriptions, and functional options.
-3. Resolve exact method names with `unica.code.definition`; inspect large candidate modules with `unica.view` on the module node (its `Method` branch lists the methods).
-4. For flow questions, resolve the node and ask `unica.code.graph` for callers, callees, or neighbors before treating lexical hits as execution flow.
-5. Search exact identifiers next: object names, module names, event handlers, exported procedures, command names, URL templates.
-6. Use `unica.code.search` for raw text fragments that are not BSL method names and inspect its role-local sections independently, including incomplete or unavailable roles.
-7. Broaden only after exact search fails: synonyms, business terms, common module prefixes, form command captions.
-8. Fall back to local `rg` only for repository files outside the public Unica index or after the MCP-first attempts above were insufficient.
-9. For every result, separate declaration, caller, handler, graph edge, and dead-looking match. Do not infer flow from one hit.
-10. Report concrete file paths and line anchors; include the query that produced each important hit when the search was non-obvious.
+1. Разметь пространство: `unica.view {}` называет наборы исходников и их
+   формат, когда набор или формат неясен.
+2. Найди предмет по имени: `unica.search {corpus: "names"}` с необязательным
+   `kind`. Точное имя объекта закрывает вопрос быстрее любого текстового
+   поиска.
+3. Прочти узел: `unica.view {at}`. Ветвь `Module` ведёт к модулям владельца,
+   ветвь `Method` — к его методам; узел метода даёт подпись и строки.
+4. Ищи по тексту то, что именем не находится: фрагменты запросов, строковые
+   литералы, заголовки, нестандартные токены. `role` выбирай под вопрос.
+5. Расширяй только после неудачи точного поиска: синонимы, деловые термины,
+   префиксы общих модулей, заголовки команд форм.
+6. К локальному `rg` спускайся только за файлами вне индекса Unica или когда
+   попытки выше не закрыли пробел — и скажи, что было испробовано.
+7. Разделяй объявление, вызов, обработчик и мёртвое совпадение. Поток по
+   одному попаданию не выводится.
+8. Отчитывайся логическими адресами и строками внутри узла, а не путями к
+   файлам; приводи запрос, которым получено важное попадание.
 
 ## Common searches
 
@@ -80,81 +89,81 @@ description: "Поиск и исследование BSL-кода и точек 
 }
 ```
 
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.code.search",
-    "arguments": {
-      "cwd": "<workspace>",
-      "sourceSet": "main",
-      "query": "ОбработкаПроведения",
-      "limit": 20
-    }
-  }
-}
-```
+Объект по имени:
 
 ```json
 {
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.code.graph",
+    "name": "unica.search",
     "arguments": {
-      "cwd": "<workspace>",
-      "mode": "callers",
-      "id": "method:CommonModule.Продажи.ОбработкаПроведения",
+      "query": "Заказ",
+      "corpus": "names",
+      "kind": "Document",
+      "limit": 20
+    }
+  }
+}
+```
+
+Текст внутри поддерева:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "unica.search",
+    "arguments": {
+      "query": "ОбработкаПроведения",
+      "scope": "main:Configuration",
+      "limit": 20
+    }
+  }
+}
+```
+
+Символ по индексу — ближайшее, чем сегодня заменяется граф вызовов:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "unica.search",
+    "arguments": {
+      "query": "ОбработкаПроведения",
+      "role": "symbol",
+      "scope": "main:Configuration",
       "limit": 25
     }
   }
 }
 ```
 
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.meta.info",
-    "arguments": {
-      "sourceSet": "main",
-      "metadataPath": "Document.SalesOrder",
-      "sections": ["roles", "subscriptions", "functionalOptions"],
-      "limit": 20
-    }
-  }
-}
-```
+Профиль объекта метаданных:
 
 ```json
 {
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.code.definition",
-    "arguments": {
-      "cwd": "<workspace>",
-      "name": "ОбработкаПроведения",
-      "limit": 10
-    }
+    "name": "unica.view",
+    "arguments": { "at": "main:Document.Заказ" }
   }
 }
 ```
+
+Метод целиком: подпись в узле, текст в ветви `Body`:
 
 ```json
 {
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.code.search",
-    "arguments": {
-      "cwd": "<workspace>",
-      "sourceSet": "main",
-      "query": "ВЫБРАТЬ",
-      "limit": 20
-    }
+    "name": "unica.view",
+    "arguments": { "at": "main:CommonModule.Продажи.Method.ОбработкаПроведения" }
   }
 }
 ```
