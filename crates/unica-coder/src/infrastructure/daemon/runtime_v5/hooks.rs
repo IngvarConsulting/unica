@@ -324,11 +324,6 @@ pub(crate) trait V5RuntimeHooks: Send + Sync {
     fn staged_handoff(&self) -> Option<TaskHandoffActorBoundReceipt> {
         None
     }
-
-    /// A bound Task the observer materialized in place of the runtime's own.
-    fn bound_task_override(&self) -> Option<(V5StoredInvocationRecord, TaskBoundReceipt)> {
-        None
-    }
 }
 
 /// Production: nothing observes and nothing is injected.

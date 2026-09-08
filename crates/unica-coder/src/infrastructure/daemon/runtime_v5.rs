@@ -3064,19 +3064,6 @@ impl V5ReceiptRuntime {
             );
         }
         if self.hooks.observing() {
-            if let Some((record, bound_task)) = self.hooks.bound_task_override() {
-                if self.hooks.prepare_rejects() {
-                    let terminal =
-                        injected_rejection_terminal("scenario prepare rejected invocation")?;
-                    return self.publish_bound_terminal_reply(
-                        &bound_task,
-                        &record,
-                        &terminal,
-                        epoch_ms,
-                        deadline,
-                    );
-                }
-            }
             let current = self.receipt_ledger.recover(begun.key().clone(), deadline)?;
             if self.attempt_is_dead() {
                 return self.reply_for_existing_state(current, deadline);

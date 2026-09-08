@@ -1062,11 +1062,4 @@ impl V5RuntimeHooks for ScenarioHooks {
             .as_ref()
             .and_then(|control| control.staged_handoff())
     }
-
-    fn bound_task_override(&self) -> Option<(V5StoredInvocationRecord, TaskBoundReceipt)> {
-        self.control
-            .as_ref()
-            .and_then(|control| control.bound_task())
-            .map(|bound_task| (bound_task.record, bound_task.bound))
-    }
 }
