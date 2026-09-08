@@ -1966,8 +1966,8 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         module = load_module()
         payload = {
             "ok": True,
-            "summary": "workspace source sets are admitted",
-            "data": {"status": "admitted", "sources": ["main"]},
+            "summary": "workspace is ready",
+            "data": {"status": "passed", "ready": True},
             "rev": "unica-read-set-sha256-v1:test",
         }
 

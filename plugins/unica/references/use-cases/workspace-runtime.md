@@ -30,9 +30,12 @@ Use the package-selected MCP runtime surface directly. In v0.13, call
 через `unica.build.*`.
 
 After clone or workspace initialization, and before `build` or `dump`, first
-call `unica.view {}`. It returns `ready`, `repositoryReady`, `checks[]`,
-`sourceSets` (possibly an empty array), and `diagnostics[]`. A false `ready`
-blocks the source operation
+call `unica.check {}`. It returns `status`, `ready`, `repositoryReady`,
+`checks[]` and `diagnostics[]` — the verdict on the workspace. The facts it
+judges live in `unica.view {}`: `sourceSets` (possibly an empty array),
+`config`, `infobase` and the recommended `v8project.yaml` content. The split is
+the same as on a node, where `view {at}` gives `props` and `check {at}` gives
+`status`. A false `ready` blocks the source operation
 until its source-set problem is fixed. In particular, `sourceSet.path: .` is an
 error: explain how to move the export into a strict child such as `src/` and
 update `v8project.yaml` safely.
@@ -56,12 +59,13 @@ for team work or another clone. Follow `diagnostics[].remediation.steps` when
 explaining a fix. `diagnostics[].remediation.commands` are advisory evidence,
 not authorization to change `.gitignore`, `.gitattributes`, files, or the Git
 index: never execute them automatically. After an approved fix, call
-`unica.view {}` again.
+`unica.check {}` again.
 
 Use `unica.view {}` when only the source layout or metadata format matters.
 It returns discovered `sourceSets[]` with `kind`, `path`, `sourceFormat`, and
-`formatEvidence`; the same bootstrap also reports repository health, which can
-be ignored only when the task does not make portability or team-readiness claims.
+`formatEvidence`. Repository health is a verdict and lives in `unica.check {}`;
+it can be ignored only when the task does not make portability or
+team-readiness claims.
 
 `v8project.yaml` can contain several source-sets. Format is resolved per
 source-set, not for the workspace as a whole. One source-set cannot be mixed:

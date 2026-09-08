@@ -133,6 +133,13 @@
       "canonical": "main:Report.Продажи.Template.Печать.Area.Шапка.Parameter.Заголовок",
       "terminalKind": "Parameter",
       "route": "mxl"
+    },
+    {
+      "case": "mxl-area-body",
+      "input": "main:Report.Продажи.Template.Печать.Area.Шапка.Body",
+      "canonical": "main:Report.Продажи.Template.Печать.Area.Шапка.Body",
+      "terminalKind": "Body",
+      "route": "mxl"
     }
   ],
   "contextualInputs": [

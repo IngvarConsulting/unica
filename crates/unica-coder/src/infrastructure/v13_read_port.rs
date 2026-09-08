@@ -581,14 +581,20 @@ impl ProviderReadAuthority {
         }
     }
 
-    pub(crate) fn mxl_payload(&self, target: &MetadataAddress) -> Result<Value, ViewError> {
+    /// `with_content` carries the cell text. It is off for every structural
+    /// read: the area count and its parameters are cheap, the text is not.
+    pub(crate) fn mxl_payload(
+        &self,
+        target: &MetadataAddress,
+        with_content: bool,
+    ) -> Result<Value, ViewError> {
         self.metadata_descriptor(target)?;
         let bytes = self.read_relative(
             &self.attached_resource_relative(target, "Template.xml")?,
             MAX_CONFIGURATION_BYTES,
         )?;
         let name = target.as_str().rsplit('.').next().unwrap_or("Template");
-        let data = parse_mxl_info_xml(&bytes, name, self.object_support(target)?, false)
+        let data = parse_mxl_info_xml(&bytes, name, self.object_support(target)?, with_content)
             .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error))?;
         serde_json::to_value(data)
             .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
