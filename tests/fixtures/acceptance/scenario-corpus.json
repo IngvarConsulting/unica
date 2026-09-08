@@ -6227,11 +6227,8 @@
       "at": "main:CommonModule.GoogleПереводчик"
      },
      "expect": [
-      "ok"
-     ],
-     "status": "passed",
-     "validators": [
-      "bsl"
+      "ok",
+      "provider"
      ]
     }
    ],
