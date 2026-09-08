@@ -32,6 +32,12 @@ use std::sync::Arc;
 pub(crate) struct CanonicalV13ReadService {
     cursors: Arc<ViewCursorStore>,
     find_builder: WorkspaceFindDirectoryBuilder,
+    /// Порты приложения живут столько же, сколько служба, а не сколько вызов.
+    /// Внутри них стол доставок: он принадлежит серверу и переживает вызов,
+    /// который доставку начал, чтобы её получил следующий. Порты на каждый
+    /// вызов означали бы стол на каждый вызов — и доставки перестали бы
+    /// делиться.
+    ports: Arc<crate::infrastructure::application_ports::InfrastructureApplicationPorts>,
 }
 
 impl Default for CanonicalV13ReadService {
@@ -39,6 +45,9 @@ impl Default for CanonicalV13ReadService {
         Self {
             cursors: Arc::new(ViewCursorStore::default()),
             find_builder: WorkspaceFindDirectoryBuilder::default(),
+            ports: Arc::new(
+                crate::infrastructure::application_ports::InfrastructureApplicationPorts::new(),
+            ),
         }
     }
 }
@@ -703,8 +712,14 @@ impl CanonicalV13ReadService {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string();
-            let mut result =
-                run_node_checks(invocation, at, &kind, viewed.data.as_ref(), cancellation);
+            let mut result = run_node_checks(
+                &self.ports,
+                invocation,
+                at,
+                &kind,
+                viewed.data.as_ref(),
+                cancellation,
+            );
             if result.ok {
                 result.rev = viewed.rev;
             }
@@ -1068,6 +1083,7 @@ fn bounded_usize(value: &Value) -> Option<usize> {
 /// доставок не трогает, бинарь анализатора берётся из поставляемых
 /// инструментов, — и потому общий стол сервера не нужен.
 fn run_bsl_diagnostics(
+    ports: &crate::infrastructure::application_ports::InfrastructureApplicationPorts,
     address: &QualifiedAddress,
     context: &crate::domain::workspace::WorkspaceContext,
     cancellation: &CancellationToken,
@@ -1078,7 +1094,6 @@ fn run_bsl_diagnostics(
         DiagnosticAction, DiagnosticFilter, DiagnosticRequest, DiagnosticResultState,
     };
 
-    let ports = crate::infrastructure::application_ports::InfrastructureApplicationPorts::new();
     let registry = match ports.diagnostic_provider_registry() {
         Ok(registry) => registry,
         Err(error) => {
@@ -1141,7 +1156,7 @@ fn run_bsl_diagnostics(
             },
         ),
     };
-    match DiagnosticCoordinator::new(registry, &ports).execute(&request, context, cancellation) {
+    match DiagnosticCoordinator::new(registry, ports).execute(&request, context, cancellation) {
         Ok(result) => {
             // Провайдер, который не отработал, не доказывает чистоту кода.
             // Пустой список находок при незавершённом прогоне выглядел бы как
@@ -1182,6 +1197,7 @@ fn run_bsl_diagnostics(
 }
 
 fn run_node_checks(
+    ports: &crate::infrastructure::application_ports::InfrastructureApplicationPorts,
     invocation: &ActorBoundExecution,
     at: &str,
     kind: &str,
@@ -1224,7 +1240,7 @@ fn run_node_checks(
                 run_native_validator(&address, kind, validator, context)
             }
             CheckStep::Meta => run_meta_validator(&address, at, context, cancellation),
-            CheckStep::Bsl => run_bsl_diagnostics(&address, context, cancellation),
+            CheckStep::Bsl => run_bsl_diagnostics(ports, &address, context, cancellation),
         };
         match verdict {
             Err(refusal) => return *refusal,
