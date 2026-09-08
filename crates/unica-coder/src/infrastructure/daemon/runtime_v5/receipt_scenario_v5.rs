@@ -1,13 +1,19 @@
-use super::{
-    acknowledge_direct_for_scenario, begin_bound_task_handoff_for_scenario, daemon_error_code,
+pub(super) mod scenario_hooks;
+pub(super) mod scenario_probes;
+
+use self::scenario_hooks::{
+    acknowledge_direct_for_scenario, begin_bound_task_handoff_for_scenario,
     inject_receipt_identity_collision_for_scenario, open_receipt_actor_for_scenario,
     promise_task_unbound_for_scenario, publish_direct_terminal_for_scenario,
-    publish_receipt_backed_task_terminal_for_scenario, run_daemon_configured_until,
+    publish_receipt_backed_task_terminal_for_scenario,
     seed_receipt_backed_task_terminal_for_scenario, seed_receipt_tombstones_for_scenario,
-    stage_bound_handoff_terminal_for_scenario, ScenarioTaskTiming, V5ReceiptRuntime,
-    V5ReceiptRuntimeEvent, V5ReceiptRuntimeEventKind, V5ReceiptRuntimeListenerState,
-    V5ReceiptRuntimeTelemetry, V5TaskProjection,
+    stage_bound_handoff_terminal_for_scenario, ScenarioHooks, ScenarioTaskTiming,
+    V5ReceiptRuntimeEvent, V5ReceiptRuntimeListenerState, V5ReceiptRuntimeTelemetry,
 };
+use super::hooks::{
+    V5AdmissionRejection, V5PausePoint, V5ReceiptRuntimeEventKind, V5StoreFaultPoint,
+};
+use super::{daemon_error_code, run_daemon_configured_until, V5ReceiptRuntime, V5TaskProjection};
 use crate::application::invocation::normalized_arguments_hash;
 use crate::application::invocation_store::EpochMillisClock;
 use crate::application::invocation_store::SystemEpochMillisClock;
@@ -559,7 +565,7 @@ impl ReceiptScenarioControl {
                 .join(format!("{}.json", receipt.key_digest().as_str())),
         )
         .map_err(|error| format!("read staged capacity fallback receipt: {error}"))?;
-        let snapshot = super::receipt_state_task_snapshot_for_test(
+        let snapshot = self::scenario_probes::receipt_state_task_snapshot_for_test(
             ReceiptState::TaskTerminalReceiptBacked(receipt.clone()),
         )
         .map_err(|error| format!("project staged capacity fallback Task: {error}"))?;
@@ -1860,10 +1866,12 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                     Some(&control),
                     &clock,
                 );
-                let mut runtime =
+                let runtime =
                     V5ReceiptRuntime::open_with_epoch_clock(&daemon_state, &config, clock.clone())?
-                        .with_shared_telemetry(Arc::clone(&telemetry));
-                runtime.scenario_control = Some(Arc::clone(&control));
+                        .with_hooks_for_test(ScenarioHooks::install(
+                            Arc::clone(&telemetry),
+                            Some(Arc::clone(&control)),
+                        ));
                 let deadline = Instant::now() + SCENARIO_OPERATION_TIMEOUT;
                 let staged = match runtime.receipt_ledger.recover(exact_key.clone(), deadline) {
                     Ok(ReceiptState::TaskHandoffActorBound(staged))
@@ -2042,12 +2050,15 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                 let daemon_state = DaemonStateDirectory::open(state.path(), &identity)?;
                 let config =
                     scenario_server_config_with_clock(state.path(), &identity, None, &clock);
-                match V5ReceiptRuntime::open_with_epoch_clock_and_telemetry_for_test(
+                match V5ReceiptRuntime::open_with_epoch_clock(
                     &daemon_state,
-                    &config,
+                    &config
+                        .clone()
+                        .with_runtime_hooks_for_test(ScenarioHooks::install(
+                            Arc::clone(&telemetry),
+                            Some(Arc::clone(&control)),
+                        )),
                     clock.clone(),
-                    Arc::clone(&telemetry),
-                    Some(Arc::clone(&control)),
                 ) {
                     Ok(runtime) => {
                         bulk_receipt_snapshot = match &bulk_receipt_catalog {
@@ -2222,10 +2233,12 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                     Some(&control),
                     &clock,
                 );
-                let mut runtime =
+                let runtime =
                     V5ReceiptRuntime::open_with_epoch_clock(&daemon_state, &config, clock.clone())?
-                        .with_shared_telemetry(Arc::clone(&telemetry));
-                runtime.scenario_control = Some(Arc::clone(&control));
+                        .with_hooks_for_test(ScenarioHooks::install(
+                            Arc::clone(&telemetry),
+                            Some(Arc::clone(&control)),
+                        ));
                 let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
                     result: Box::new(domain_result_for_fixture(&terminal)?),
                 })
@@ -3654,12 +3667,15 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                 let daemon_state = DaemonStateDirectory::open(state.path(), &identity)?;
                 let config =
                     scenario_server_config_with_clock(state.path(), &identity, None, &clock);
-                match V5ReceiptRuntime::open_with_epoch_clock_and_telemetry_for_test(
+                match V5ReceiptRuntime::open_with_epoch_clock(
                     &daemon_state,
-                    &config,
+                    &config
+                        .clone()
+                        .with_runtime_hooks_for_test(ScenarioHooks::install(
+                            Arc::clone(&telemetry),
+                            Some(Arc::clone(&control)),
+                        )),
                     clock.clone(),
-                    Arc::clone(&telemetry),
-                    Some(Arc::clone(&control)),
                 ) {
                     Ok(runtime) => {
                         bulk_receipt_snapshot = match &bulk_receipt_catalog {
@@ -4012,7 +4028,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                     scenario_server_config_with_clock(state.path(), &identity, None, &clock);
                 let runtime =
                     V5ReceiptRuntime::open_with_epoch_clock(&daemon_state, &config, clock.clone())?
-                        .with_shared_telemetry(Arc::clone(&telemetry));
+                        .with_hooks_for_test(ScenarioHooks::install(Arc::clone(&telemetry), None));
                 let epoch_ms = clock.now_epoch_millis();
                 for index in 0..count {
                     let key = if matches!(fill, ScenarioSeedReceiptState::CancelReserved)
@@ -4123,10 +4139,12 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                     Some(&control),
                     &clock,
                 );
-                let mut runtime =
+                let runtime =
                     V5ReceiptRuntime::open_with_epoch_clock(&daemon_state, &config, clock.clone())?
-                        .with_shared_telemetry(Arc::clone(&telemetry));
-                runtime.scenario_control = Some(Arc::clone(&control));
+                        .with_hooks_for_test(ScenarioHooks::install(
+                            Arc::clone(&telemetry),
+                            Some(Arc::clone(&control)),
+                        ));
                 if inject_task_store_capacity_invariant_once {
                     inject_task_store_capacity_invariant_once = false;
                     let violation = runtime.inject_task_store_capacity_invariant_for_test(
@@ -4180,10 +4198,12 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                     Some(&control),
                     &clock,
                 );
-                let mut runtime =
+                let runtime =
                     V5ReceiptRuntime::open_with_epoch_clock(&daemon_state, &config, clock.clone())?
-                        .with_shared_telemetry(Arc::clone(&telemetry));
-                runtime.scenario_control = Some(Arc::clone(&control));
+                        .with_hooks_for_test(ScenarioHooks::install(
+                            Arc::clone(&telemetry),
+                            Some(Arc::clone(&control)),
+                        ));
                 let response = runtime.continue_receipt_owned_attempt_for_test(
                     &exact_key,
                     domain_result_for_fixture(&terminal)?,
@@ -4739,7 +4759,7 @@ fn read_promised_task_from_actor(
         Err(ReceiptLedgerError::ReceiptNotFound) => return Ok(None),
         Err(error) => return Err(format!("resolve receipt-backed scenario Task: {error}")),
     };
-    let snapshot = match super::receipt_state_task_snapshot_for_test(state) {
+    let snapshot = match self::scenario_probes::receipt_state_task_snapshot_for_test(state) {
         Ok(snapshot) => snapshot,
         Err(ReceiptLedgerError::ReceiptRowPresentUnsupported) => return Ok(None),
         Err(error) => return Err(format!("project receipt-backed scenario Task: {error}")),
@@ -5040,7 +5060,7 @@ fn seed_receipt_state(
             }
             let (task_record, task_bound) = runtime
                 .task_projection
-                .materialize_bound_handoff(&handoff, epoch_ms, deadline, &runtime.telemetry)
+                .materialize_bound_handoff(&handoff, epoch_ms, deadline, runtime.hooks.as_ref())
                 .map_err(|failure| format!("materialize seeded TaskBound: {}", failure.error))?;
             runtime
                 .receipt_ledger
@@ -5212,7 +5232,7 @@ fn seed_receipt_state(
                             epoch_ms,
                             terminal,
                             deadline,
-                            &runtime.telemetry,
+                            runtime.scenario_telemetry(),
                         )
                         .map_err(|error| format!("stage Task terminal fixture: {error}"))?;
                     }
@@ -5523,9 +5543,11 @@ fn seed_staged_cross_store_terminal(
     let receipts = daemon_state.create_private_retained_subdirectory("receipts")?;
     control.set_state_root(receipts.path());
     let config = scenario_server_config_with_clock(state_root, identity, Some(&control), clock);
-    let mut runtime =
-        V5ReceiptRuntime::open_with_epoch_clock(&daemon_state, &config, clock.clone())?;
-    runtime.scenario_control = Some(Arc::clone(&control));
+    let runtime = V5ReceiptRuntime::open_with_epoch_clock(&daemon_state, &config, clock.clone())?
+        .with_hooks_for_test(ScenarioHooks::install(
+            Arc::new(V5ReceiptRuntimeTelemetry::new()),
+            Some(Arc::clone(&control)),
+        ));
     let deadline = Instant::now() + SCENARIO_BULK_OPERATION_TIMEOUT;
     let epoch_ms = clock.now_epoch_millis();
     let reserved = runtime
@@ -5573,7 +5595,7 @@ fn seed_staged_cross_store_terminal(
         .publish_staged_handoff_terminal_reply(handoff, terminal, epoch_ms, deadline)
         .map_err(|error| {
             let events = runtime
-                .telemetry
+                .scenario_telemetry()
                 .snapshot()
                 .events
                 .into_iter()
@@ -5687,9 +5709,11 @@ fn run_direct_load(
     let daemon_clock = Arc::clone(&clock);
     let daemon_telemetry = Arc::clone(&telemetry);
     let daemon = ScenarioDaemon::spawn(config, move |runtime| {
-        let mut runtime = runtime.with_shared_telemetry(daemon_telemetry);
+        let mut runtime = runtime.with_hooks_for_test(ScenarioHooks::install(
+            daemon_telemetry,
+            Some(daemon_control),
+        ));
         runtime.epoch_clock = daemon_clock;
-        runtime.scenario_control = Some(daemon_control);
         runtime
     });
     let operation = (|| {
@@ -5888,9 +5912,11 @@ fn run_lazy_cancel_storm(
     let daemon_clock = Arc::clone(&clock);
     let daemon_telemetry = Arc::clone(&telemetry);
     let daemon = ScenarioDaemon::spawn(config, move |runtime| {
-        let mut runtime = runtime.with_shared_telemetry(daemon_telemetry);
+        let mut runtime = runtime.with_hooks_for_test(ScenarioHooks::install(
+            daemon_telemetry,
+            Some(daemon_control),
+        ));
         runtime.epoch_clock = daemon_clock;
-        runtime.scenario_control = Some(daemon_control);
         runtime
     });
     let operation = (|| {
@@ -7032,11 +7058,18 @@ fn scenario_server_config(
     identity: &CoreIdentity,
     control: Option<&Arc<ReceiptScenarioControl>>,
 ) -> DaemonServerConfig {
+    // Every scenario runtime observes through scenario hooks: a fresh
+    // telemetry unless the runner shares its own later, and the control it
+    // was handed, exactly as the runtime used to default them.
     let mut config = DaemonServerConfig::new(
         state_root.to_path_buf(),
         identity.clone(),
         SCENARIO_IDLE_GRACE,
-    );
+    )
+    .with_runtime_hooks_for_test(ScenarioHooks::install(
+        Arc::new(V5ReceiptRuntimeTelemetry::new()),
+        control.cloned(),
+    ));
     if control.is_some_and(|control| control.take_skip_next_startup_reconciliation()) {
         config = config.without_v5_startup_reconciliation_for_test();
     }
@@ -7107,9 +7140,9 @@ fn exchange_once(
     let config =
         scenario_server_config_with_clock(state_root, identity, scenario_control.as_ref(), &clock);
     let daemon = ScenarioDaemon::spawn(config, move |runtime| {
-        let mut runtime = runtime.with_shared_telemetry(telemetry);
+        let mut runtime =
+            runtime.with_hooks_for_test(ScenarioHooks::install(telemetry, scenario_control));
         runtime.epoch_clock = clock;
-        runtime.scenario_control = scenario_control;
         runtime
     });
     let response = (|| {
@@ -7136,7 +7169,7 @@ fn publish_listener_once(
 ) -> Result<(), String> {
     let config = scenario_server_config_with_clock(state_root, identity, None, &clock);
     let daemon = ScenarioDaemon::spawn(config, move |runtime| {
-        let mut runtime = runtime.with_shared_telemetry(telemetry);
+        let mut runtime = runtime.with_hooks_for_test(ScenarioHooks::install(telemetry, None));
         runtime.epoch_clock = clock;
         runtime
     });
@@ -7158,9 +7191,9 @@ fn exchange_once_retaining_actor(
     let (actor_sender, actor_receiver) = mpsc::sync_channel(1);
     let daemon = ScenarioDaemon::spawn(config, move |runtime| {
         let _ = actor_sender.send(runtime.receipt_ledger.clone());
-        let mut runtime = runtime.with_shared_telemetry(telemetry);
+        let mut runtime =
+            runtime.with_hooks_for_test(ScenarioHooks::install(telemetry, scenario_control));
         runtime.epoch_clock = clock;
-        runtime.scenario_control = scenario_control;
         runtime
     });
     let response = (|| {
@@ -7193,9 +7226,9 @@ fn exchange_raw_v5_request(
     let config =
         scenario_server_config_with_clock(state_root, identity, scenario_control.as_ref(), &clock);
     let daemon = ScenarioDaemon::spawn(config, move |runtime| {
-        let mut runtime = runtime.with_shared_telemetry(telemetry);
+        let mut runtime =
+            runtime.with_hooks_for_test(ScenarioHooks::install(telemetry, scenario_control));
         runtime.epoch_clock = clock;
-        runtime.scenario_control = scenario_control;
         runtime
     });
     let response = (|| {
@@ -7283,7 +7316,7 @@ fn run_v5_protocol_probe(
         DaemonServerConfig::new(state_root.clone(), identity.clone(), SCENARIO_IDLE_GRACE),
         {
             let telemetry = Arc::clone(&telemetry);
-            move |runtime| runtime.with_shared_telemetry(telemetry)
+            move |runtime| runtime.with_hooks_for_test(ScenarioHooks::install(telemetry, None))
         },
     );
     let result =
@@ -9207,9 +9240,9 @@ fn exchange_ack_and_expect_disconnect(
 ) -> Result<(), String> {
     let config = scenario_server_config_with_clock(state_root, identity, Some(&control), &clock);
     let daemon = ScenarioDaemon::spawn(config, move |runtime| {
-        let mut runtime = runtime.with_shared_telemetry(telemetry);
+        let mut runtime =
+            runtime.with_hooks_for_test(ScenarioHooks::install(telemetry, Some(control)));
         runtime.epoch_clock = clock;
-        runtime.scenario_control = Some(control);
         runtime
     });
     let result = (|| {
@@ -9243,9 +9276,9 @@ fn exchange_submit_and_expect_disconnect(
 ) -> Result<(), String> {
     let config = scenario_server_config_with_clock(state_root, identity, Some(&control), &clock);
     let daemon = ScenarioDaemon::spawn(config, move |runtime| {
-        let mut runtime = runtime.with_shared_telemetry(telemetry);
+        let mut runtime =
+            runtime.with_hooks_for_test(ScenarioHooks::install(telemetry, Some(control)));
         runtime.epoch_clock = clock;
-        runtime.scenario_control = Some(control);
         runtime
     });
     let result = (|| {
@@ -9281,9 +9314,9 @@ fn submit_and_disconnect_after_write(
     let config = scenario_server_config_with_clock(state_root, identity, Some(&control), &clock);
     let daemon_telemetry = Arc::clone(&telemetry);
     let daemon = ScenarioDaemon::spawn(config, move |runtime| {
-        let mut runtime = runtime.with_shared_telemetry(daemon_telemetry);
+        let mut runtime =
+            runtime.with_hooks_for_test(ScenarioHooks::install(daemon_telemetry, Some(control)));
         runtime.epoch_clock = clock;
-        runtime.scenario_control = Some(control);
         runtime
     });
     let result = (|| {
@@ -9333,9 +9366,9 @@ fn exchange_batch(
     let config =
         scenario_server_config_with_clock(state_root, identity, scenario_control.as_ref(), &clock);
     let daemon = ScenarioDaemon::spawn(config, move |runtime| {
-        let mut runtime = runtime.with_shared_telemetry(telemetry);
+        let mut runtime =
+            runtime.with_hooks_for_test(ScenarioHooks::install(telemetry, scenario_control));
         runtime.epoch_clock = clock;
-        runtime.scenario_control = scenario_control;
         runtime
     });
     let responses = (|| {
@@ -9442,10 +9475,11 @@ fn open_scenario_operation_runtime(
     control.arm_skip_next_startup_reconciliation();
     let daemon_state = DaemonStateDirectory::open(state_root, identity)?;
     let config = scenario_server_config_with_clock(state_root, identity, Some(control), clock);
-    let mut runtime =
-        V5ReceiptRuntime::open_with_epoch_clock(&daemon_state, &config, clock.clone())?
-            .with_shared_telemetry(Arc::clone(telemetry));
-    runtime.scenario_control = Some(Arc::clone(control));
+    let runtime = V5ReceiptRuntime::open_with_epoch_clock(&daemon_state, &config, clock.clone())?
+        .with_hooks_for_test(ScenarioHooks::install(
+            Arc::clone(telemetry),
+            Some(Arc::clone(control)),
+        ));
     Ok((
         Arc::new(runtime),
         task_projection,
@@ -9633,9 +9667,9 @@ fn start_blocked_submit(
     let config = scenario_server_config_with_clock(state_root, identity, Some(&control), &clock);
     let (actor_tx, actor_rx) = mpsc::sync_channel(1);
     let daemon = ScenarioDaemon::spawn(config, move |runtime| {
-        let mut runtime = runtime.with_shared_telemetry(telemetry);
+        let mut runtime =
+            runtime.with_hooks_for_test(ScenarioHooks::install(telemetry, Some(control)));
         runtime.epoch_clock = clock;
-        runtime.scenario_control = Some(control);
         actor_tx
             .send(runtime.receipt_ledger.clone())
             .expect("scenario actor observer receiver must remain live");
@@ -12167,33 +12201,9 @@ enum ScenarioReceiptLinkCase {
     Foreign,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(super) enum ScenarioBarrierPoint {
-    ValidationEntered,
-    AdmissionEntered,
-    ActorBound,
-    BeforePrepare,
-    PrepareEntered,
-    BeforeTaskStoreCreate,
-    AfterWorkingReadback,
-    AfterFalseCancelObservation,
-    BeforeReceiptBegun,
-    BeforeTaskTerminalReceipt,
-    AfterCancelReservationConvertedBeforeTerminal,
-    AfterTaskStoreReadbackBeforeTaskBound,
-    BeforeMarkReservedBegunGateAcquire,
-    BeforeCancelGateAcquire,
-    AfterTaskStoreTerminalBeforeLifecycleLinkTerminal,
-}
+pub(super) type ScenarioBarrierPoint = V5PausePoint;
 
-#[derive(Clone, Copy, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(super) enum ScenarioWorkspaceAdmissionFailure {
-    Invalid,
-    Capacity,
-    RegistryFailed,
-}
+pub(super) type ScenarioWorkspaceAdmissionFailure = V5AdmissionRejection;
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -12218,12 +12228,7 @@ enum ScenarioCrashPoint {
     AfterTaskStoreTerminalBeforeLifecycleLinkTerminal,
 }
 
-#[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub(super) enum ScenarioStoreFaultPoint {
-    AfterTerminalPayloadRenameBeforeDirectorySync,
-    AfterTaskCreateRenameBeforeDirectorySync,
-}
+pub(super) type ScenarioStoreFaultPoint = V5StoreFaultPoint;
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]

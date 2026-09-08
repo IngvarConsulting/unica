@@ -1,4 +1,6 @@
 use crate::application::invocation_store::MAX_TASK_RECORD_ENVELOPE_BYTES;
+#[cfg(feature = "receipt-ledger-test-support")]
+use crate::application::receipt_ledger::RequestIdentity;
 use crate::application::receipt_ledger::{
     receipt_key_digest, AcknowledgedTombstoneReceipt, AttemptPhase, CancelExpiryOutcome,
     CancelReservedReceipt, CancelResolution, CommittedDirectPublication,
@@ -16,10 +18,9 @@ use crate::application::receipt_ledger::{
     MAX_ACKNOWLEDGED_TOMBSTONE_POOL_BYTES, MAX_LIVE_RECEIPTS, MAX_LIVE_RECEIPT_BYTES,
     MAX_RECEIPT_ENTITLEMENT_BYTES, MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES,
 };
-#[cfg(feature = "receipt-ledger-test-support")]
 use crate::application::receipt_ledger::{
     ReceiptLedgerCatalogSnapshot, ReceiptLedgerCatalogSnapshotAuthority,
-    ReceiptLedgerCatalogSnapshotParts, RequestIdentity,
+    ReceiptLedgerCatalogSnapshotParts,
 };
 use crate::domain::invocation::{InvocationId, SafeIdentityHash, TaskId};
 use crate::infrastructure::daemon::terminal_codec_v5::{
@@ -40,9 +41,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path};
-#[cfg(feature = "receipt-ledger-test-support")]
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -96,15 +95,17 @@ struct ReceiptBatchBacking {
     encoded: Arc<Vec<u8>>,
 }
 
-#[cfg(all(test, not(feature = "receipt-ledger-test-support")))]
+// A row-directory sync fault armed by the runtime hooks (process-wide, the
+// daemon thread differs from the observer) or by a unit test (this thread
+// only, so parallel tests never consume each other's fault). Production arms
+// neither; both slots are read on every row sync so the store behaves the
+// same whatever the build.
+static ARMED_RECEIPT_ROW_DIRECTORY_SYNC_FAULT: AtomicBool = AtomicBool::new(false);
 thread_local! {
-    static TEST_RECEIPT_ROW_DIRECTORY_SYNC_FAILURE: std::cell::Cell<bool> = const {
+    static ARMED_RECEIPT_ROW_DIRECTORY_SYNC_FAULT_ON_THIS_THREAD: std::cell::Cell<bool> = const {
         std::cell::Cell::new(false)
     };
 }
-
-#[cfg(feature = "receipt-ledger-test-support")]
-static TEST_RECEIPT_ROW_DIRECTORY_SYNC_FAILURE: AtomicBool = AtomicBool::new(false);
 
 #[cfg(test)]
 thread_local! {
@@ -128,14 +129,15 @@ thread_local! {
     };
 }
 
-#[cfg(all(test, not(feature = "receipt-ledger-test-support")))]
-pub(crate) fn inject_receipt_row_directory_sync_failure_for_test() {
-    TEST_RECEIPT_ROW_DIRECTORY_SYNC_FAILURE.with(|slot| slot.set(true));
+/// Arms one row-directory sync failure for whichever store syncs next in
+/// this process. Only the runtime hooks arm it.
+pub(crate) fn arm_receipt_row_directory_sync_fault() {
+    ARMED_RECEIPT_ROW_DIRECTORY_SYNC_FAULT.store(true, Ordering::Release);
 }
 
-#[cfg(feature = "receipt-ledger-test-support")]
-pub(crate) fn inject_receipt_row_directory_sync_failure_for_test() {
-    TEST_RECEIPT_ROW_DIRECTORY_SYNC_FAILURE.store(true, Ordering::Release);
+#[cfg(test)]
+fn inject_receipt_row_directory_sync_failure_for_test() {
+    ARMED_RECEIPT_ROW_DIRECTORY_SYNC_FAULT_ON_THIS_THREAD.with(|slot| slot.set(true));
 }
 
 #[cfg(test)]
@@ -1379,7 +1381,6 @@ impl ReceiptLedgerStore {
         latch_catalog_result(&mut catalog, self.generation_under_writer_lock())
     }
 
-    #[cfg(feature = "receipt-ledger-test-support")]
     pub(crate) fn rotate_generation_for_test(
         &self,
         deadline: Instant,
@@ -1509,7 +1510,6 @@ impl ReceiptLedgerStore {
         Ok(keys)
     }
 
-    #[cfg(feature = "receipt-ledger-test-support")]
     pub(crate) fn snapshot_catalog(
         &self,
         authority: ReceiptLedgerCatalogSnapshotAuthority,
@@ -7286,7 +7286,6 @@ impl ReceiptLedgerStore {
 }
 
 impl ReceiptLedgerPort for ReceiptLedgerStore {
-    #[cfg(feature = "receipt-ledger-test-support")]
     fn snapshot_catalog(
         &mut self,
         authority: ReceiptLedgerCatalogSnapshotAuthority,
@@ -7302,7 +7301,6 @@ impl ReceiptLedgerPort for ReceiptLedgerStore {
         Ok(generation)
     }
 
-    #[cfg(feature = "receipt-ledger-test-support")]
     fn rotate_generation_for_test(&mut self, deadline: Instant) -> Result<u64, ReceiptLedgerError> {
         ReceiptLedgerStore::rotate_generation_for_test(self, deadline)
     }
@@ -9856,14 +9854,10 @@ fn cleanup_staged_file(
 }
 
 fn sync_receipt_row_directory(directory: &File) -> io::Result<()> {
-    #[cfg(all(test, not(feature = "receipt-ledger-test-support")))]
-    if TEST_RECEIPT_ROW_DIRECTORY_SYNC_FAILURE.with(|slot| slot.replace(false)) {
-        return Err(io::Error::other(
-            "injected receipt row directory sync failure",
-        ));
-    }
-    #[cfg(feature = "receipt-ledger-test-support")]
-    if TEST_RECEIPT_ROW_DIRECTORY_SYNC_FAILURE.swap(false, Ordering::AcqRel) {
+    let armed_on_this_thread =
+        ARMED_RECEIPT_ROW_DIRECTORY_SYNC_FAULT_ON_THIS_THREAD.with(|slot| slot.replace(false));
+    if armed_on_this_thread || ARMED_RECEIPT_ROW_DIRECTORY_SYNC_FAULT.swap(false, Ordering::AcqRel)
+    {
         return Err(io::Error::other(
             "injected receipt row directory sync failure",
         ));
