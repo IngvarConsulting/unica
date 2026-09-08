@@ -12,150 +12,111 @@ allowed-tools:
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tool `unica.mxl.info`; `unica` owns XML/JSON DSL work and refreshes related workspace caches after mutations.
-- Do not call internal MCP/CLI adapters directly. They are hidden behind `unica` and synchronized by the orchestrator.
-- Execution path: call MCP `unica` tool `unica.mxl.info`; skill-local operation scripts are not part of the workflow.
-- For mutating operations, pass `dryRun: false` only when the user explicitly requested the change; otherwise keep the default dry run.
+- Preferred path: use MCP `unica` tools `unica.view` and `unica.search`.
+- Do not call internal MCP/CLI adapters directly. They are hidden behind
+  `unica` and synchronized by the orchestrator.
+- Макет — узел логического дерева: `unica.view {at}` по адресу
+  `<набор>:<Вид>.<Имя>.Template.<Макет>`. Файлового селектора у чтения нет;
+  путь, пришедший снаружи, переводит в адрес аварийный `unica.resolve`.
 
-Читает Template.xml табличного документа и выводит компактную сводку: именованные области, параметры, наборы колонок. Заменяет необходимость читать тысячи строк XML.
+Узел макета отдаёт компактную сводку: именованные области, параметры, наборы
+колонок. Читать тысячи строк XML не нужно.
 
-В текстовом выводе показывает `Поддержка` для объекта-владельца макета по `Ext/ParentConfigurations.bin`. JSON-режим сохраняет структурный контракт; состояние поддержки учитывай перед mutating `unica.mxl.*`.
+Поддержка объекта-владельца приходит полем `support`; учитывай её состояние
+перед правкой макета.
 
-## Использование
+## Адресация
 
-```
-/mxl-info <TemplatePath>
-```
+| Что | Как |
+|-----|-----|
+| Имя набора исходников | `unica.view {}` |
+| Адрес макета по имени | `unica.search {corpus: "names", kind: "Template"}` |
+| Адрес по пути извне | `unica.resolve {path}` |
+| Сам макет | `unica.view {at: "<набор>:<Вид>.<Имя>.Template.<Макет>"}` |
+| Область макета | `unica.view {at: "…Template.<Макет>.Area.<Область>"}` |
+| Содержимое ячеек области | `unica.view {at: "…Area.<Область>.Body"}` |
 
-## Параметры
-
-| Параметр | Описание |
-|----------|----------|
-| `TemplatePath` | Путь к `Template.xml` макета или к каталогу макета |
-| `sourceSet`    | Имя набора исходников из `v8project.yaml`          |
-| `metadataPath` | Логический адрес, например `Report.<Отчёт>.Template.<Макет>` |
-| `WithText` | Включить текстовое содержимое ячеек в `texts` и `templates` |
-
-Селектор цели ровно один: либо `sourceSet` + `metadataPath`, либо
-`TemplatePath`. Оба сразу отклоняются кодом `selector_conflict` (ADR-0049).
-
-`Format`, `MaxParams`, `Limit` и `Offset` сняты: результат приходит
-типизированным в `data` (ADR-0023), поэтому режим вывода, обрезка списков
-параметров и постраничная печать больше не нужны. `SrcDir`,
-`ProcessorName` и `TemplateName` сняты по ADR-0048: составной адрес требовал
-всех трёх, а `TemplatePath` был обязателен всегда, поэтому до этой ветки
-вызов не доходил. Макет адресуется одним `TemplatePath`.
-
-## Поля `data`
+## Поля узла
 
 | Поле | Что содержит |
 |------|--------------|
-| `name` | Имя макета |
-| `support` | Поддержка по `Ext/ParentConfigurations.bin` |
-| `rows`, `columns` | Логическая высота и ширина по умолчанию |
-| `columnSets` | Дополнительные наборы колонок: `id` и `size` |
-| `areas` | Именованные области: `name`, `kind` (`Rows`, `Columns`, `Rectangle`, `Drawing`), границы, `columnsId`, `drawingId`, `params`, `details` |
-| `areas[].texts`, `areas[].templates` | Содержимое ячеек — `null`, пока не запрошен `WithText` |
-| `outside` | Параметры, детали и тексты вне именованных областей |
-| `mergeCount`, `drawingCount` | Счётчики объединений и рисунков |
+| `title` | Имя макета |
+| `props.support` | Поддержка по `Ext/ParentConfigurations.bin` |
+| `props.rows`, `props.columns` | Логическая высота и ширина по умолчанию |
+| `props.columnSets` | Дополнительные наборы колонок: `id` и `size` |
+| ветвь `Area` | Именованные области; счёт ветви равен их числу |
+| `props.mergeCount`, `props.drawingCount` | Счётчики объединений и рисунков |
+
+У узла области в `props` лежат `kind` (`Rows`, `Columns`, `Rectangle`,
+`Drawing`), границы, `columnsId`, `drawingId` и `contentCount` — число непустых
+ячеек. Ветвь `Parameter` перечисляет параметры области, ветвь `Body` — её
+содержимое.
 
 Пересечения строчных и колоночных областей для `ПолучитьОбласть` строятся из
-`areas`: возьми `kind: "Rows"` и `kind: "Columns"` и перемножь имена.
+ветви `Area`: возьми области `kind: "Rows"` и `kind: "Columns"` и перемножь
+имена.
 
 ## MCP вызов
 
-### Прямой путь к Template.xml
+### Макет целиком
 
 ```json
 {
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.mxl.info",
-    "arguments": {
-      "cwd": "<workspace>",
-      "TemplatePath": "<путь>/Ext/Template.xml"
-    }
+    "name": "unica.view",
+    "arguments": { "at": "main:Report.Продажи.Template.Печать" }
   }
 }
 ```
 
-### Каталог макета вместо файла
-
-Каталог макета сам разрешается в `Ext/Template.xml`, поэтому путь из состава
-объекта можно передать как есть, не дописывая хвост.
+### Одна область
 
 ```json
 {
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.mxl.info",
-    "arguments": {
-      "cwd": "<workspace>",
-      "TemplatePath": "<каталог объекта>/Templates/<макет>"
-    }
+    "name": "unica.view",
+    "arguments": { "at": "main:Report.Продажи.Template.Печать.Area.Шапка" }
   }
 }
 ```
 
-### Включить текстовое содержимое ячеек
+### Содержимое ячеек области
 
-`WithText` — единственный оставшийся селектор состава: без него `texts` и
-`templates` равны `null`, то есть «не запрашивали», а не «пусто».
+Текст ячеек — отдельный адрес, а не признак в аргументах: структурное чтение
+области за текст не платит, а ветвь `Body` честно объявляет свою длину полем
+`contentCount`.
 
 ```json
 {
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.mxl.info",
-    "arguments": {
-      "cwd": "<workspace>",
-      "TemplatePath": "<путь>",
-      "WithText": true
-    }
+    "name": "unica.view",
+    "arguments": { "at": "main:Report.Продажи.Template.Печать.Area.Шапка.Body" }
   }
 }
 ```
+
+Каждая ячейка приходит в порядке чтения и несёт `index`, `text` и признак
+`template` — стоят ли в ней подстановки `[Параметр]`.
 
 ## Чтение данных
 
 ### Области отсортированы сверху вниз
 
-`areas` идут в порядке `beginRow` для строчных областей и `beginColumn` для
-колоночных, поэтому порядок в массиве совпадает с порядком в макете.
+Элементы ветви `Area` идут в порядке `beginRow` для строчных областей и
+`beginCol` для колоночных, поэтому порядок совпадает с порядком в макете.
 
 ### Параметры и detailParameter
 
-`params` — параметры области, `details` — её `detailParameter`. Параметры,
-пришедшие из шаблонов ячеек, помечены суффиксом `[tpl]`.
+Ветвь `Parameter` перечисляет параметры области. Параметры, пришедшие из
+шаблонов ячеек, помечены суффиксом `[tpl]`.
 
 ### Параметры вне областей
 
-Всё, что лежит за пределами именованных областей, собрано в `outside`, а не
+Всё, что лежит за пределами именованных областей, собрано отдельно, а не
 растворено среди областей.
-
-## Логический адрес вместо пути
-
-`unica.mxl.info` принимает либо логический селектор, либо файловый путь —
-ровно один из двух. Оба сразу отклоняются кодом `selector_conflict`.
-
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.mxl.info",
-    "arguments": {
-      "cwd": "<workspace>",
-      "sourceSet": "<имя набора>",
-      "metadataPath": "Report.<Отчёт>.Template.<Макет>"
-    }
-  }
-}
-```
-
-Имя набора даёт `unica.view {}`, адрес — `unica.search {corpus: "names"}`, а
-`unica.resolve` переводит в адрес путь, найденный иначе. Файловый селектор сохраняется до
-отдельного среза его снятия (ADR-0049).
