@@ -327,8 +327,8 @@ for raw in sys.stdin:
         elif name == "unica.task.result":
             payload = {
                 "ok": True,
-                "summary": "workspace source sets are admitted",
-                "data": {"status": "admitted", "sources": ["main"]},
+                "summary": "workspace is ready",
+                "data": {"status": "passed", "ready": True},
             }
         elif name == "unica.view":
             payload["data"] = {"kind": "Configuration", "branches": []}

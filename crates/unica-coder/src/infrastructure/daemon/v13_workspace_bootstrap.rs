@@ -25,21 +25,48 @@ struct InfobaseTarget {
     source: Option<&'static str>,
 }
 
+/// Какой вопрос задан корню рабочего пространства.
+///
+/// Разделение то же, что на узле: `view` отвечает фактами, `check` — вердиктом.
+/// Корень был единственным местом, где это стояло наоборот.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RootQuestion {
+    /// Что здесь есть: корень, конфигурация, наборы, база, рекомендуемая
+    /// заготовка `v8project.yaml`.
+    Facts,
+    /// Здорово ли: готовность, проверки и диагностики с советом.
+    Verdict,
+}
+
 pub(super) fn execute_view_bootstrap(
     request: &InvocationRequest,
     deadline: &InvocationResponseDeadline,
 ) -> Option<DomainResult> {
-    if request.tool() != ToolIdentity::View || request.arguments().contains_key("at") {
+    if request.arguments().contains_key("at") {
         return None;
     }
+    let question = match request.tool() {
+        ToolIdentity::View => RootQuestion::Facts,
+        // Вердикт по рабочему пространству обязан отвечать и до допуска: он и
+        // объясняет, почему ни один набор не допущен. Поэтому `check {}`
+        // разбирается здесь же, а не в actor-bound службе.
+        ToolIdentity::Check => RootQuestion::Verdict,
+        _ => return None,
+    };
     if !request.arguments().is_empty() {
-        let mut result = DomainResult::canonical_rejection(
-            None,
-            RefusalCode::BadValue,
-            "view filter, limit, and cursor require logical argument `at`; call unica.view with an empty object to inspect the workspace",
-        );
+        let (tool, summary) = match question {
+            RootQuestion::Facts => (
+                "unica.view",
+                "view filter, limit, and cursor require logical argument `at`; call unica.view with an empty object to inspect the workspace",
+            ),
+            RootQuestion::Verdict => (
+                "unica.check",
+                "check takes only `at`; call unica.check with an empty object for the workspace verdict",
+            ),
+        };
+        let mut result = DomainResult::canonical_rejection(None, RefusalCode::BadValue, summary);
         result.next.push(next_action(
-            "unica.view",
+            tool,
             Value::Object(Map::new()),
             "discover source sets and canonical logical addresses",
         ));
@@ -112,7 +139,9 @@ pub(super) fn execute_view_bootstrap(
             return Some(result);
         }
     };
-    Some(bootstrap_result(&context, source_map, infobase, deadline))
+    Some(bootstrap_result(
+        &context, source_map, infobase, deadline, question,
+    ))
 }
 
 fn bootstrap_result(
@@ -120,6 +149,7 @@ fn bootstrap_result(
     source_map: ProjectSourceMap,
     infobase: InfobaseTarget,
     response_deadline: &InvocationResponseDeadline,
+    question: RootQuestion,
 ) -> DomainResult {
     let config_state = if source_map.config_path.is_some() {
         "configured"
@@ -340,6 +370,43 @@ fn bootstrap_result(
     } else {
         source_map.source_selection_error.as_deref()
     };
+    if question == RootQuestion::Verdict {
+        // Вердикт говорит теми же словами, что и вердикт по узлу: `status`
+        // и диагностики. `ok` остаётся истиной — неготовое пространство
+        // законно, это факт о нём, а не сбой вызова.
+        let mut result = DomainResult::success(if ready {
+            "workspace is ready"
+        } else {
+            "workspace readiness reported findings"
+        });
+        result.data = Some(object([
+            (
+                "status",
+                Value::String(if ready { "passed" } else { "failed" }.to_string()),
+            ),
+            ("ready", Value::Bool(ready)),
+            ("discoveredReady", Value::Bool(discovered_ready)),
+            ("repositoryReady", Value::Bool(repository_ready)),
+            ("readinessState", Value::String(readiness_state.to_string())),
+            ("checks", checks),
+            ("diagnostics", diagnostics),
+        ]));
+        if !ready {
+            result.next.push(next_action(
+                "unica.view",
+                Value::Object(Map::new()),
+                "наборы, база и рекомендуемое содержимое v8project.yaml",
+            ));
+        }
+        if let (true, Some(Ok(at))) = (ready, next_address) {
+            result.next.push(next_action(
+                "unica.view",
+                object([("at", Value::String(at))]),
+                "inspect the root logical node of the selected source set",
+            ));
+        }
+        return result;
+    }
     let source_sets = serde_json::to_value(&source_map.source_sets)
         .expect("project source sets always serialize");
     let mut result = DomainResult::success(match (config_state, infobase.configured, source_map.source_sets.is_empty()) {
@@ -374,12 +441,6 @@ fn bootstrap_result(
             value(&source_map.effective_source_root),
         ),
         ("sourceSelectionError", value(source_selection_error)),
-        ("ready", Value::Bool(ready)),
-        ("discoveredReady", Value::Bool(discovered_ready)),
-        ("repositoryReady", Value::Bool(repository_ready)),
-        ("readinessState", Value::String(readiness_state.to_string())),
-        ("checks", checks),
-        ("diagnostics", diagnostics),
         ("setup", setup.unwrap_or(Value::Null)),
     ]));
     if config_state == "missing" {
@@ -437,12 +498,14 @@ fn bootstrap_result(
             object([("at", Value::String(at))]),
             "inspect the root logical node of the selected source set",
         ));
-        result.next.push(next_action(
-            "unica.check",
-            Value::Object(Map::new()),
-            "confirm source-set admission after discovery",
-        ));
     }
+    // Вердикт живёт в `check {}`, и спросить его уместно всегда — в том числе
+    // на ненастроенном пространстве, где вопрос «а что не так» и есть главный.
+    result.next.push(next_action(
+        "unica.check",
+        Value::Object(Map::new()),
+        "готовность рабочего пространства, проверки и диагностики",
+    ));
     result
 }
 

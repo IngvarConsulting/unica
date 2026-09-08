@@ -886,25 +886,14 @@ impl CanonicalV13ReadService {
             }
             return result;
         }
-        let sources = match invocation.read_sources() {
-            Ok(sources) => sources,
-            Err(error) => return error_result(None, RefusalCode::ProviderUnavailable, error),
-        };
-        let names = sources
-            .iter()
-            .map(|source| Value::String(source.source_set_name().to_string()))
-            .collect::<Vec<_>>();
-        let revisions = sources
-            .iter()
-            .map(|source| source.revision_identity())
-            .collect::<Vec<_>>();
-        let mut result = DomainResult::success("workspace source sets are admitted");
-        result.data = Some(serde_json::json!({
-            "status": "admitted",
-            "sources": names,
-        }));
-        result.rev = combined_revision(&revisions);
-        result
+        // Вердикт по рабочему пространству отвечается до допуска наборов:
+        // он и объясняет, почему допуска нет. Сюда управление доходит только
+        // при сломанной маршрутизации, и молчать об этом нельзя.
+        error_result(
+            None,
+            RefusalCode::InvalidState,
+            "workspace check was routed past the pre-admission root answer",
+        )
     }
 
     fn execute_diff(
