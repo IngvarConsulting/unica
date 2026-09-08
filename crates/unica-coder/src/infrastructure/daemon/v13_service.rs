@@ -460,6 +460,15 @@ impl CanonicalV13ReadService {
         if corpus == SearchCorpus::Names {
             return self.execute_search_names(invocation, query, arguments, cancellation);
         }
+        // Роль выбирает, чем искать по тексту: точным совпадением своими
+        // силами или провайдером — символьным индексом, смысловым поиском.
+        // Без роли поиск остаётся буквальным, каким был.
+        if let Some(role) = arguments.get("role") {
+            let Some(role) = role.as_str() else {
+                return error_result(None, RefusalCode::BadValue, "search role must be a string");
+            };
+            return self.execute_search_role(invocation, query, role, arguments, cancellation);
+        }
         let (matcher, mode) = match arguments.get("regex") {
             None | Some(Value::Bool(false)) => (
                 super::v13_read_modes::SearchMatcher::Literal(query.to_string()),
@@ -603,6 +612,158 @@ impl CanonicalV13ReadService {
     /// доказательство совпадения по имени: `at`, `kind`, `title` и `reason`.
     /// Пути тут нет намеренно: `search` — частый ответ, а путь в частом
     /// ответе зовёт читать файл мимо адреса.
+    /// Поиск по тексту силами провайдера выбранной роли.
+    ///
+    /// `lexical` — буквальное совпадение, `symbol` — символьный индекс,
+    /// `semantic` — смысловая близость. Роли и провайдеры под ними построены
+    /// давно; недоставало провода от канонической службы, потому что до
+    /// провайдеров ходил лишь legacy-диспетчер, которого на проводе нет.
+    fn execute_search_role(
+        &self,
+        invocation: &ActorBoundExecution,
+        query: &str,
+        role: &str,
+        arguments: &Map<String, Value>,
+        cancellation: &CancellationToken,
+    ) -> DomainResult {
+        use crate::application::code_intelligence::CodeSearchCoordinator;
+        use crate::application::ports::ApplicationPorts;
+        use crate::domain::code_intelligence::{ProviderRole, SearchRequest};
+
+        let Some(role) = ProviderRole::ALL
+            .into_iter()
+            .find(|candidate| candidate.as_str() == role)
+        else {
+            let mut refusal = error_result(
+                None,
+                RefusalCode::BadValue,
+                format!(
+                    "search role `{role}` is unknown; use one of {}",
+                    ProviderRole::ALL
+                        .iter()
+                        .map(|role| format!("`{}`", role.as_str()))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            );
+            refusal.next.push(serde_json::json!({
+                "tool": "unica.search",
+                "args": {"query": query},
+                "reason": "буквальный поиск без роли",
+            }));
+            return refusal;
+        };
+
+        let context = invocation.workspace_context();
+        // Канонический вход — логический адрес; порт разрешения контекста
+        // говорит словарём v0.12. Перевод делается здесь и только здесь.
+        let mut selector = Map::new();
+        match arguments.get("scope").and_then(Value::as_str) {
+            Some(scope) => match QualifiedAddress::parse(scope) {
+                Ok(address) => {
+                    selector.insert(
+                        "sourceSet".to_string(),
+                        Value::String(address.source_set().to_string()),
+                    );
+                    let owner = address
+                        .segments()
+                        .iter()
+                        .take_while(|segment| segment.name().is_some())
+                        .map(|segment| {
+                            format!(
+                                "{}.{}",
+                                segment.kind().as_str(),
+                                segment.name().unwrap_or("")
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(".");
+                    if !owner.is_empty() {
+                        selector.insert("metadataPath".to_string(), Value::String(owner));
+                    }
+                }
+                Err(error) => {
+                    return error_result(
+                        Some(scope.to_string()),
+                        RefusalCode::BadValue,
+                        error.to_string(),
+                    )
+                }
+            },
+            None => match invocation.admitted_source_set_names().first() {
+                Some(name) => {
+                    selector.insert("sourceSet".to_string(), Value::String((*name).to_string()));
+                }
+                None => {
+                    return error_result(
+                        None,
+                        RefusalCode::ProviderUnavailable,
+                        "no admitted source set is available for a role search",
+                    )
+                }
+            },
+        }
+
+        let (search_context, _scope) =
+            match self.ports.resolve_code_search_context(context, &selector) {
+                Ok(resolved) => resolved,
+                Err(error) => return error_result(None, RefusalCode::ProviderUnavailable, error),
+            };
+        let registry = match self.ports.code_intelligence_registry() {
+            Ok(registry) => registry,
+            Err(error) => return error_result(None, RefusalCode::ProviderUnavailable, error),
+        };
+        // Срок берётся из настройки пользователя, а не подменяется умолчанием:
+        // человек настроил срок и должен узнать, что настройка не читается.
+        let operational = match crate::infrastructure::operational_config::load_operational_config(
+            &context.workspace_root,
+        ) {
+            Ok(config) => config,
+            Err(diagnostic) => {
+                return error_result(
+                    None,
+                    RefusalCode::InvalidState,
+                    format!("operational config is unreadable: {diagnostic}"),
+                )
+            }
+        };
+        let limit = arguments
+            .get("limit")
+            .and_then(bounded_usize)
+            .filter(|limit| *limit <= 200)
+            .unwrap_or(20);
+        let request = SearchRequest {
+            query: query.to_string(),
+            limit,
+        };
+        let execution =
+            match CodeSearchCoordinator::with_deadlines(registry, operational.code_intelligence())
+                .search_observed(
+                    &request,
+                    &search_context,
+                    cancellation,
+                    &crate::domain::progress::NoopProgressSink,
+                ) {
+                Ok(execution) => execution,
+                Err(error) => return error_result(None, RefusalCode::ProviderUnavailable, error),
+            };
+        // Провайдер, который не отработал, ничего не доказывает: пустой ответ
+        // при неудачном прогоне выглядел бы как «искали и не нашли».
+        if !execution.ok {
+            return error_result(
+                None,
+                RefusalCode::ProviderUnavailable,
+                format!("`{}` search did not complete", role.as_str()),
+            );
+        }
+        let mut result = DomainResult::success(format!("{} search completed", role.as_str()));
+        result.data = Some(serde_json::json!({
+            "mode": role.as_str(),
+            "matches": execution.result.sections,
+        }));
+        result
+    }
+
     fn execute_search_names(
         &self,
         invocation: &ActorBoundExecution,
