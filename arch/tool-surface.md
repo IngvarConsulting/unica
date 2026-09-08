@@ -162,6 +162,7 @@ Search one corpus for a query: BSL module text, or the names and synonyms of met
 | `limit` | integer | нет | Maximum matches to return. |
 | `query` | string | да | Literal BSL text, symbol, or metadata name to search for. |
 | `regex` | boolean | нет | Request regex matching; currently only false is implemented. |
+| `role` | string | нет | `text` corpus only: which provider answers. `lexical` matches literally, `symbol` uses the symbol index, `semantic` matches by meaning. Omit for the literal search Unica performs itself. |
 | `scope` | string | нет | logical subtree address |
 
 **Результат сейчас:** Литеральный bounded-поиск по BSL возвращает `data.matches` для `Configuration` и разрешённого поддерева объекта метаданных; regex и symbol остаются неподдержанными (отвечают типизированным `data`)

@@ -239,6 +239,7 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                             "query": {"type": "string", "description": "Literal BSL text, symbol, or metadata name to search for."},
                             "corpus": {"type": "string", "enum": ["text", "names"], "description": "Where to search: `text` matches BSL module content and answers scope, line, column and snippet; `names` matches metadata names and synonyms and answers at, kind and title. Defaults to `text`.", "default": "text"},
                             "kind": {"type": "string", "description": "`names` corpus only: narrow the search to one logical node kind."},
+                            "role": {"type": "string", "enum": ["lexical", "symbol", "semantic"], "description": "`text` corpus only: which provider answers. `lexical` matches literally, `symbol` uses the symbol index, `semantic` matches by meaning. Omit for the literal search Unica performs itself."},
                             "scope": logical_subtree_address(),
                             "regex": {"type": "boolean", "description": "Request regex matching; currently only false is implemented.", "default": false},
                             "limit": limit("Maximum matches to return."),
@@ -484,6 +485,24 @@ mod tests {
         );
     }
 
+    /// Роль объявлена закрытым набором и **без умолчания**: отсутствие роли
+    /// не равно `lexical`, оно означает поиск силами самой Unica, без
+    /// внешнего провайдера и без его цены.
+    #[test]
+    fn search_publishes_three_provider_roles_and_stays_literal_without_one() {
+        let catalog = catalog_for(SurfaceRelease::V13).expect("canonical catalog");
+        let role = input_field(&catalog.tools, "search", "role");
+        assert_eq!(role["type"], "string");
+        assert_eq!(
+            role["enum"],
+            serde_json::json!(["lexical", "symbol", "semantic"])
+        );
+        assert!(
+            role.get("default").is_none(),
+            "у роли не должно быть умолчания: {role}"
+        );
+    }
+
     /// Свод объявлен закрытым набором и по умолчанию текстовый: третий свод
     /// нельзя добавить молча, а существующий вызов без `corpus` обязан
     /// остаться текстовым поиском, каким он был.
@@ -538,7 +557,7 @@ mod tests {
             &catalog.tools,
             "search",
             json!(["query"]),
-            &["query", "corpus", "kind", "scope", "regex", "limit"],
+            &["query", "corpus", "kind", "role", "scope", "regex", "limit"],
         );
         assert_schema(&catalog.tools, "check", json!([]), &["at"]);
         assert_schema(
