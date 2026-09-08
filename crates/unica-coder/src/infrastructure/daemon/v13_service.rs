@@ -1074,7 +1074,9 @@ fn run_bsl_diagnostics(
 ) -> Result<(bool, Vec<Value>), Box<DomainResult>> {
     use crate::application::diagnostics::DiagnosticCoordinator;
     use crate::application::ports::ApplicationPorts;
-    use crate::domain::diagnostics::{DiagnosticAction, DiagnosticFilter, DiagnosticRequest};
+    use crate::domain::diagnostics::{
+        DiagnosticAction, DiagnosticFilter, DiagnosticRequest, DiagnosticResultState,
+    };
 
     let ports = crate::infrastructure::application_ports::InfrastructureApplicationPorts::new();
     let registry = match ports.diagnostic_provider_registry() {
@@ -1087,20 +1089,33 @@ fn run_bsl_diagnostics(
             )))
         }
     };
-    let metadata_path = crate::domain::source_target::MetadataAddress::parse(
-        "platform_xml",
-        &address
-            .segments()
-            .iter()
-            .take_while(|segment| segment.name().is_some())
-            .map(|segment| match segment.name() {
-                Some(name) => format!("{}.{name}", segment.kind().as_str()),
-                None => segment.kind().as_str().to_string(),
-            })
-            .collect::<Vec<_>>()
-            .join("."),
-    )
-    .ok();
+    // Сужение обязательно: `metadata_path: None` означает анализ всего набора
+    // исходников, и на боевой конфигурации это минуты работы и диагностики
+    // чужих файлов, приписанные спрошенному узлу. Неразобранный адрес — отказ,
+    // а не молчаливое расширение области.
+    let owner = address
+        .segments()
+        .iter()
+        .take_while(|segment| segment.name().is_some())
+        .map(|segment| {
+            let name = segment.name().unwrap_or_default();
+            format!("{}.{name}", segment.kind().as_str())
+        })
+        .collect::<Vec<_>>()
+        .join(".");
+    let metadata_path = match crate::domain::source_target::MetadataAddress::parse(
+        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+        &owner,
+    ) {
+        Ok(path) => Some(path),
+        Err(error) => {
+            return Err(Box::new(error_result(
+                Some(address.to_string()),
+                RefusalCode::BadValue,
+                format!("BSL diagnostics cannot narrow to `{owner}`: {error}"),
+            )))
+        }
+    };
     let request = DiagnosticRequest {
         action: DiagnosticAction::Analyze,
         source_set: address.source_set().to_string(),
@@ -1108,22 +1123,55 @@ fn run_bsl_diagnostics(
         filter: DiagnosticFilter::default(),
         range: None,
         limit: 200,
+        // Срок берётся из настройки пользователя. Подменять его выдуманным
+        // умолчанием нельзя: человек настроил срок и не узнал бы, что
+        // настройка не читается.
         timeout: Some(
-            crate::infrastructure::operational_config::load_operational_config(
+            match crate::infrastructure::operational_config::load_operational_config(
                 &context.workspace_root,
-            )
-            .map(|config| config.code_diagnostics().analyze_timeout())
-            .unwrap_or_else(|_| std::time::Duration::from_secs(60)),
+            ) {
+                Ok(config) => config.code_diagnostics().analyze_timeout(),
+                Err(diagnostic) => {
+                    return Err(Box::new(error_result(
+                        Some(address.to_string()),
+                        RefusalCode::InvalidState,
+                        format!("operational config is unreadable: {diagnostic}"),
+                    )))
+                }
+            },
         ),
     };
     match DiagnosticCoordinator::new(registry, &ports).execute(&request, context, cancellation) {
         Ok(result) => {
+            // Провайдер, который не отработал, не доказывает чистоту кода.
+            // Пустой список находок при незавершённом прогоне выглядел бы как
+            // «проверено и чисто» — худшее направление ошибки для инструмента
+            // проверки.
+            if !result.ok || result.state != DiagnosticResultState::Completed {
+                return Err(Box::new(error_result(
+                    Some(address.to_string()),
+                    RefusalCode::ProviderUnavailable,
+                    "BSL analysis did not complete, so the module is unproven",
+                )));
+            }
             let findings: Vec<Value> = result
                 .items
                 .iter()
                 .filter_map(|item| serde_json::to_value(item).ok())
                 .collect();
-            Ok((findings.is_empty(), findings))
+            // Провалом считается ошибка, а не всякая пометка: подсказка по
+            // стилю не ломает модуль, и остальные валидаторы поверхности
+            // судят так же.
+            let passed = !result.items.iter().any(|item| {
+                matches!(
+                    item,
+                    crate::domain::diagnostics::DiagnosticItem::Diagnostic {
+                        severity: crate::domain::diagnostics::DiagnosticSeverity::Error,
+                        ..
+                    } | crate::domain::diagnostics::DiagnosticItem::ResourceFailure { .. }
+                )
+            });
+            Ok((passed, findings))
         }
         Err(error) => Err(Box::new(error_result(
             Some(address.to_string()),
