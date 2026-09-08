@@ -2480,6 +2480,8 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                             format!("parse Task cancel selector from {read_label}: {error}")
                         })?,
                 };
+                // Cancelling by a projected Task observes the fixture too.
+                control.arm_skip_next_startup_reconciliation();
                 let response = exchange_once(
                     state.path(),
                     &identity,
@@ -3010,21 +3012,26 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                 };
                 let response = match available_response {
                     Some(response) => response,
-                    None => exchange_once(
-                        state.path(),
-                        &identity,
-                        Arc::clone(&clock),
-                        Arc::clone(&telemetry),
-                        Some(Arc::clone(&control)),
-                        |owner| match api {
-                            ScenarioTaskApi::NativeWait => {
-                                owner.wait_task(task_id, SCENARIO_TASK_POLL_INTERVAL_MS)
-                            }
-                            ScenarioTaskApi::NativeGet
-                            | ScenarioTaskApi::CompatibilityGet
-                            | ScenarioTaskApi::CompatibilityResult => owner.get_task(task_id),
-                        },
-                    )?,
+                    None => {
+                        // A read observes the fixture it was given; it does not
+                        // stand in for the successor that would reconcile it.
+                        control.arm_skip_next_startup_reconciliation();
+                        exchange_once(
+                            state.path(),
+                            &identity,
+                            Arc::clone(&clock),
+                            Arc::clone(&telemetry),
+                            Some(Arc::clone(&control)),
+                            |owner| match api {
+                                ScenarioTaskApi::NativeWait => {
+                                    owner.wait_task(task_id, SCENARIO_TASK_POLL_INTERVAL_MS)
+                                }
+                                ScenarioTaskApi::NativeGet
+                                | ScenarioTaskApi::CompatibilityGet
+                                | ScenarioTaskApi::CompatibilityResult => owner.get_task(task_id),
+                            },
+                        )?
+                    }
                 };
                 report.task_reads.insert(
                     label,
@@ -9652,6 +9659,9 @@ fn start_blocked_submit(
         &HashMap::new(),
     )?;
     let task_store_create_attempts = telemetry.snapshot().task_store_create_attempts;
+    // The submitting process owns the attempt it is about to run, and any
+    // fixture the scenario seeded for it.
+    control.arm_skip_next_startup_reconciliation();
     let config = scenario_server_config_with_clock(state_root, identity, Some(&control), &clock);
     let (actor_tx, actor_rx) = mpsc::sync_channel(1);
     let daemon = ScenarioDaemon::spawn(config, move |runtime| {
