@@ -1,4 +1,4 @@
-"""Линия прогона: ветка как есть, тег — только на релизной линии."""
+"""Линия прогона: ветка как есть, очередь — её база, тег — только на релизной линии."""
 
 from __future__ import annotations
 
@@ -23,6 +23,18 @@ class ResolveLineTests(unittest.TestCase):
 
         self.assertEqual(module.resolve("branch", "release-v0.12", "abc", lambda sha: []), "release-v0.12")
         self.assertEqual(module.resolve("branch", "main", "abc", lambda sha: []), "main")
+
+    def test_merge_queue_branch_resolves_to_its_base_line(self) -> None:
+        """Очередь проверяет дерево базы: отчёт едет в линию базы, а не во временную ветку."""
+        module = load_module()
+
+        self.assertEqual(
+            module.resolve("branch", "gh-readonly-queue/main/pr-786-edc939f6e3a824cab93e3c06dd1daf9c93ecb78c", "abc", lambda sha: []),
+            "main",
+        )
+        self.assertEqual(module.resolve("branch", "gh-readonly-queue/release-v0.13/pr-9-0abc", "abc", lambda sha: []), "release-v0.13")
+        # Похожее имя без формы очереди остаётся веткой как есть.
+        self.assertEqual(module.resolve("branch", "gh-readonly-queue/main", "abc", lambda sha: []), "gh-readonly-queue/main")
 
     def test_tag_resolves_to_the_youngest_release_line_holding_its_commit(self) -> None:
         module = load_module()

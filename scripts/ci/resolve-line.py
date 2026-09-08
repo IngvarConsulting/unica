@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""Линия прогона: ветка для push в ветку, релизная линия для тега.
+"""Линия прогона: ветка для push в ветку, база для очереди, релизная линия для тега.
 
 У тега нет ветки, а линия нужна: по ней сайт кладёт отчёт и память ночного
 прогона. Линия тега — та `release-vX.Y`, что содержит его коммит; тег вне
 релизной линии — отказ. Это практика «теги только на релизных линиях», под
 которую лёг замысел площадки, и страж держит её на входе, а не по памяти.
+
+Очередь слияния идёт на временной ветке `gh-readonly-queue/<база>/pr-N-<sha>`:
+её линия — база. Прогон очереди проверяет то дерево, что ляжет в базу, и его
+отчёт сайт кладёт в линию базы, а не в ветку, которой через минуту не станет.
 """
 
 from __future__ import annotations
@@ -15,6 +19,7 @@ import subprocess
 import sys
 
 LINE = re.compile(r"\Arelease-v(\d+)\.(\d+)\Z")
+QUEUE_BRANCH = re.compile(r"\Agh-readonly-queue/(?P<base>[^/]+)/pr-\d+-[0-9a-f]+\Z")
 
 
 def git_branches_containing(sha: str) -> list[str]:
@@ -27,7 +32,8 @@ def git_branches_containing(sha: str) -> list[str]:
 
 def resolve(ref_type: str, ref_name: str, sha: str, branches_containing=git_branches_containing) -> str:
     if ref_type == "branch":
-        return ref_name
+        queued = QUEUE_BRANCH.match(ref_name)
+        return queued.group("base") if queued else ref_name
     if ref_type != "tag":
         raise SystemExit(f"неизвестный тип ссылки {ref_type!r}: ожидались branch или tag")
     lines = [name for name in branches_containing(sha) if LINE.match(name)]
