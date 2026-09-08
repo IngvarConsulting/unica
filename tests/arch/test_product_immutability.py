@@ -323,6 +323,73 @@ class ProductImmutabilityTests(unittest.TestCase):
         self.assertEqual(len(verdict.offenders), 1)
         self.assertIn("без нового решения", verdict.offenders[0])
 
+    RUST_EVIDENCE = "crates/evidence.rs::test_rust_reason"
+
+    def base_rule_on_rust_evidence(self) -> None:
+        """Ставит базовое правило на Rust-свидетельство: `_declaration_in`
+        читает `fn`, поэтому переезд проверяется на том языке, который она
+        понимает. Для Python исключение просто не срабатывает — и правка идёт
+        обычным путём через основание."""
+        self.fixture.rule.write_text(
+            RULE.replace("tests/ci/test_x.py::test_y", self.RUST_EVIDENCE),
+            encoding="utf-8",
+        )
+        self.fixture._git("add", "arch")
+        self.fixture._git("commit", "--amend", "--no-edit", "--no-gpg-sign", "--quiet")
+
+    def relocate_check_to(self, reference: str):
+        self.fixture.rule.write_text(
+            RULE.replace("tests/ci/test_x.py::test_y", reference), encoding="utf-8"
+        )
+        return self.fixture.inspect()
+
+    def write(self, relative: str, text: str) -> None:
+        target = self.fixture.root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+
+    def test_moving_a_check_to_another_file_keeps_the_promise(self) -> None:
+        """Разрез файла не меняет обещания: то же имя держит его из соседа."""
+        self.base_rule_on_rust_evidence()
+        self.write("crates/evidence/moved.rs", "#[test]\nfn test_rust_reason() {}\n")
+        self.write("crates/evidence.rs", "const LABEL: &str = \"evidence\";\n")
+
+        verdict = self.relocate_check_to("crates/evidence/moved.rs::test_rust_reason")
+
+        self.assertEqual(verdict.offenders, ())
+
+    def test_a_second_home_for_a_check_is_not_a_move(self) -> None:
+        """Старый адрес всё ещё объявляет имя — это расширение, не переезд."""
+        self.base_rule_on_rust_evidence()
+        self.write("crates/evidence/moved.rs", "#[test]\nfn test_rust_reason() {}\n")
+
+        verdict = self.relocate_check_to("crates/evidence/moved.rs::test_rust_reason")
+
+        self.assertEqual(len(verdict.offenders), 1)
+        self.assertIn("без нового решения", verdict.offenders[0])
+
+    def test_renaming_a_check_while_moving_it_is_not_a_move(self) -> None:
+        """Другое имя — другое обещание, сколько бы файлов ни поменялось."""
+        self.base_rule_on_rust_evidence()
+        self.write("crates/evidence/moved.rs", "#[test]\nfn test_rust_renamed() {}\n")
+        self.write("crates/evidence.rs", "const LABEL: &str = \"evidence\";\n")
+
+        verdict = self.relocate_check_to("crates/evidence/moved.rs::test_rust_renamed")
+
+        self.assertEqual(len(verdict.offenders), 1)
+        self.assertIn("без нового решения", verdict.offenders[0])
+
+    def test_a_move_to_a_file_that_does_not_declare_it_is_caught(self) -> None:
+        """Переезд в файл без объявления — обещание без держателя."""
+        self.base_rule_on_rust_evidence()
+        self.write("crates/evidence/moved.rs", "#[test]\nfn test_other() {}\n")
+        self.write("crates/evidence.rs", "const LABEL: &str = \"evidence\";\n")
+
+        verdict = self.relocate_check_to("crates/evidence/moved.rs::test_rust_reason")
+
+        self.assertEqual(len(verdict.offenders), 1)
+        self.assertIn("без нового решения", verdict.offenders[0])
+
     def test_surface_ledger_change_without_new_product_ground_is_caught(self) -> None:
         self.fixture.surface.write_text("# Surface\n\nunica.new\n", encoding="utf-8")
 
