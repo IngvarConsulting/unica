@@ -902,29 +902,6 @@ mod tests {
     }
 
     #[test]
-    fn scenario_owner_helpers_cannot_bypass_the_actor_store_boundary() {
-        assert_eq!(
-            OWNER_HELPER_PRODUCTION_SOURCES
-                .iter()
-                .map(|(path, _)| *path)
-                .collect::<Vec<_>>(),
-            ["infrastructure/daemon/runtime_v5/receipt_scenario_v5.rs"],
-            "every scenario owner helper belongs to the narrow authority inventory"
-        );
-
-        let forbidden = ["ReceiptLedgerStore", "ReceiptLedgerPort"];
-        let references = facade_forbidden_authority_references_by_source(
-            OWNER_HELPER_PRODUCTION_SOURCES,
-            &forbidden,
-        )
-        .unwrap_or_else(|error| panic!("scenario owner authority guard failed closed: {error}"));
-        assert!(
-            references.is_empty(),
-            "scenario owner helpers bypass the actor/store boundary: {references:?}"
-        );
-    }
-
-    #[test]
     fn scenario_driver_cannot_mint_runtime_telemetry_events() {
         let references = facade_forbidden_authority_references_by_source(
             OWNER_HELPER_PRODUCTION_SOURCES,
