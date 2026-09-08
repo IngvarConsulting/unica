@@ -1762,6 +1762,17 @@ fn mxl_area_parameter_consumes_the_complete_suffix() {
     assert_eq!(data["title"], "Title");
 }
 
+/// Коды отказов из ответа. Сообщение провала несёт только их: разбор в панике
+/// затягивает в текст всю нагрузку вместе с идентификаторами фикстуры, и
+/// сканер справедливо не отличает такой текст от записи в журнал.
+fn refusal_codes(result: &crate::domain::invocation::DomainResult) -> Vec<&str> {
+    result
+        .diagnostics
+        .iter()
+        .filter_map(|diagnostic| diagnostic.get("code").and_then(serde_json::Value::as_str))
+        .collect()
+}
+
 #[test]
 fn template_area_cell_content_is_a_branch_read_only_when_its_address_is_asked() {
     let fixture = RealReaderFixture::new();
@@ -1769,7 +1780,7 @@ fn template_area_cell_content_is_a_branch_read_only_when_its_address_is_asked() 
     let area = "main:Report.ParityReport.Template.Print.Area.Header";
 
     let node = service.view(ViewRequest::new(area).unwrap());
-    assert!(node.ok, "{} {:?}", node.summary, node.diagnostics);
+    assert!(node.ok, "{:?}", refusal_codes(&node));
     let data = node.data.as_ref().unwrap();
     // Структурное чтение области знает длину содержимого, но не несёт текста.
     assert_eq!(data["props"]["contentCount"], 2);
@@ -1783,7 +1794,7 @@ fn template_area_cell_content_is_a_branch_read_only_when_its_address_is_asked() 
     );
 
     let body = service.view(ViewRequest::new(&format!("{area}.Body")).unwrap());
-    assert!(body.ok, "{} {:?}", body.summary, body.diagnostics);
+    assert!(body.ok, "{:?}", refusal_codes(&body));
     let items = body.data.as_ref().unwrap()["items"].as_array().unwrap();
     assert_eq!(
         items,
@@ -1804,10 +1815,10 @@ fn a_structural_template_read_never_serves_a_cached_payload_to_a_content_read() 
     // Один вызов сначала берёт структуру, потом текст: если признак
     // содержимого не входит в ключ кэша, второе чтение получит первый разбор.
     let structural = service.view(ViewRequest::new(area).unwrap());
-    assert!(structural.ok, "{}", structural.summary);
+    assert!(structural.ok, "{:?}", refusal_codes(&structural));
     let body = service.view(ViewRequest::new(&format!("{area}.Body")).unwrap());
 
-    assert!(body.ok, "{} {:?}", body.summary, body.diagnostics);
+    assert!(body.ok, "{:?}", refusal_codes(&body));
     assert_eq!(
         body.data.as_ref().unwrap()["items"]
             .as_array()
