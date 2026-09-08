@@ -940,6 +940,79 @@ fn bounded_usize(value: &Value) -> Option<usize> {
 /// truth; the plan follows from the node kind and the facts the projection
 /// states, never from a caller choice. A node without validators reports
 /// readability only.
+/// Диагностика BSL через провайдер анализа.
+///
+/// Провайдеры собраны в продуктовом реестре давно, но канонический провод до
+/// них не доходил: `check` отвечал «читается» и молчал о находках, ради
+/// которых его и зовут. Порты здесь строятся свои — путь диагностик стола
+/// доставок не трогает, бинарь анализатора берётся из поставляемых
+/// инструментов, — и потому общий стол сервера не нужен.
+fn run_bsl_diagnostics(
+    address: &QualifiedAddress,
+    context: &crate::domain::workspace::WorkspaceContext,
+    cancellation: &CancellationToken,
+) -> Result<(bool, Vec<Value>), Box<DomainResult>> {
+    use crate::application::diagnostics::DiagnosticCoordinator;
+    use crate::application::ports::ApplicationPorts;
+    use crate::domain::diagnostics::{DiagnosticAction, DiagnosticFilter, DiagnosticRequest};
+
+    let ports = crate::infrastructure::application_ports::InfrastructureApplicationPorts::new();
+    let registry = match ports.diagnostic_provider_registry() {
+        Ok(registry) => registry,
+        Err(error) => {
+            return Err(Box::new(error_result(
+                Some(address.to_string()),
+                RefusalCode::ProviderUnavailable,
+                error,
+            )))
+        }
+    };
+    let metadata_path = crate::domain::source_target::MetadataAddress::parse(
+        "platform_xml",
+        &address
+            .segments()
+            .iter()
+            .take_while(|segment| segment.name().is_some())
+            .map(|segment| match segment.name() {
+                Some(name) => format!("{}.{name}", segment.kind().as_str()),
+                None => segment.kind().as_str().to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join("."),
+    )
+    .ok();
+    let request = DiagnosticRequest {
+        action: DiagnosticAction::Analyze,
+        source_set: address.source_set().to_string(),
+        metadata_path,
+        filter: DiagnosticFilter::default(),
+        range: None,
+        limit: 200,
+        timeout: Some(
+            crate::infrastructure::operational_config::load_operational_config(
+                &context.workspace_root,
+            )
+            .map(|config| config.code_diagnostics().analyze_timeout())
+            .unwrap_or_else(|_| std::time::Duration::from_secs(60)),
+        ),
+    };
+    match DiagnosticCoordinator::new(registry, &ports).execute(&request, context, cancellation) {
+        Ok(result) => {
+            let findings: Vec<Value> = result
+                .items
+                .iter()
+                .filter_map(|item| serde_json::to_value(item).ok())
+                .collect();
+            Ok((findings.is_empty(), findings))
+        }
+        Err(error) => Err(Box::new(error_result(
+            Some(address.to_string()),
+            RefusalCode::ProviderUnavailable,
+            format!("{}: {}", error.code, error.message),
+        ))),
+    }
+}
+
 fn run_node_checks(
     invocation: &ActorBoundExecution,
     at: &str,
@@ -983,6 +1056,7 @@ fn run_node_checks(
                 run_native_validator(&address, kind, validator, context)
             }
             CheckStep::Meta => run_meta_validator(&address, at, context, cancellation),
+            CheckStep::Bsl => run_bsl_diagnostics(&address, context, cancellation),
         };
         match verdict {
             Err(refusal) => return *refusal,
