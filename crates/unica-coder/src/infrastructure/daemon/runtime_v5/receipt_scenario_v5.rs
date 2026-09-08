@@ -3485,38 +3485,9 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                             "protocol-v5 receipt scenario cannot restart a live submit".to_owned()
                         );
                     }
-                    let pending = pending_submit.as_ref().expect("pending submit exists");
-                    match pending.actor.recover(
-                        exact_key.clone(),
-                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
-                    ) {
-                        Ok(ReceiptState::Reserved(reserved))
-                            if matches!(reserved.phase(), ReservedPhase::Begun { .. }) =>
-                        {
-                            let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Failed {
-                                reason: V5SafeFailureReason::OutcomeUncertain,
-                            })
-                            .map_err(|error| {
-                                format!("encode fail-stopped begun terminal: {error}")
-                            })?;
-                            publish_direct_terminal_for_scenario(
-                                &pending.actor,
-                                exact_key.clone(),
-                                reserved.record_version(),
-                                clock.now_epoch_millis(),
-                                terminal,
-                                Instant::now() + SCENARIO_OPERATION_TIMEOUT,
-                                &telemetry,
-                            )
-                            .map_err(|error| {
-                                format!("terminalize fail-stopped begun submit: {error}")
-                            })?;
-                        }
-                        Ok(_) | Err(ReceiptLedgerError::ReceiptNotFound) => {}
-                        Err(error) => {
-                            return Err(format!("recover fail-stopped submit: {error}"));
-                        }
-                    }
+                    // The receipt a fail-stopped process left behind is the
+                    // successor's to reconcile at startup. Terminalizing it here
+                    // would be the harness doing the restart's own work early.
                     control.release_all_barriers();
                     let pending = pending_submit
                         .take()
