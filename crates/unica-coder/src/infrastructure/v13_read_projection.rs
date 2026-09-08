@@ -490,13 +490,67 @@ fn project_mxl(
             .get("params")
             .and_then(Value::as_array)
             .map_or(0, Vec::len);
+        let mut branches = Vec::new();
         if parameter_count > 0 {
-            node = node.with_branches(vec![BranchRef::new(
+            branches.push(BranchRef::new(
                 format!("{}.Parameter", address),
                 parameter_count,
-            )]);
+            ));
+        }
+        // Счёт непустых ячеек известен и без текста, поэтому ветвь честно
+        // объявляет свою длину, а текст читается только по её адресу.
+        let content_count = area
+            .get("contentCount")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        if content_count > 0 {
+            branches.push(BranchRef::new(
+                format!("{}.{}", address, NodeKind::Body.as_str()),
+                content_count as usize,
+            ));
+        }
+        if !branches.is_empty() {
+            node = node.with_branches(branches);
         }
         return Ok(NodeViewData::Node(node));
+    }
+    if let [body] = &suffix[1..] {
+        if body.kind() == NodeKind::Body {
+            if body.name().is_some() {
+                return Err(ViewError::new(
+                    RefusalCode::NotFound,
+                    "MXL area body is a collection and takes no name",
+                ));
+            }
+            let content = area
+                .get("content")
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    ViewError::new(
+                        RefusalCode::ProviderUnavailable,
+                        "MXL area body was projected without cell content",
+                    )
+                })?;
+            return Ok(NodeViewData::Collection(CollectionView::new(
+                NodeView::new(
+                    address.to_string(),
+                    NodeKind::Body.as_str(),
+                    NodeKind::Body.as_str(),
+                    Map::new(),
+                ),
+                content
+                    .iter()
+                    .enumerate()
+                    .map(|(index, cell)| {
+                        json!({
+                            "index": index + 1,
+                            "template": cell.get("template").and_then(Value::as_bool).unwrap_or(false),
+                            "text": cell.get("text").and_then(Value::as_str).unwrap_or_default(),
+                        })
+                    })
+                    .collect(),
+            )));
+        }
     }
     let [parameter] = &suffix[1..] else {
         return Err(ViewError::new(
@@ -1536,6 +1590,7 @@ fn reader_node_props(reader: LogicalReader, kind: NodeKind, value: &Value) -> Ma
             "endCol",
             "columnsId",
             "drawingId",
+            "contentCount",
         ],
         (LogicalReader::Subsystem, _) => &[
             "synonym",

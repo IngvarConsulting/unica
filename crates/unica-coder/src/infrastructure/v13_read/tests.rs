@@ -1763,6 +1763,60 @@ fn mxl_area_parameter_consumes_the_complete_suffix() {
 }
 
 #[test]
+fn template_area_cell_content_is_a_branch_read_only_when_its_address_is_asked() {
+    let fixture = RealReaderFixture::new();
+    let service = fixture.view_service();
+    let area = "main:Report.ParityReport.Template.Print.Area.Header";
+
+    let node = service.view(ViewRequest::new(area).unwrap());
+    assert!(node.ok, "{} {:?}", node.summary, node.diagnostics);
+    let data = node.data.as_ref().unwrap();
+    // Структурное чтение области знает длину содержимого, но не несёт текста.
+    assert_eq!(data["props"]["contentCount"], 2);
+    assert_eq!(data.get("content"), None);
+    let branches = data["branches"].as_array().unwrap();
+    assert!(
+        branches
+            .iter()
+            .any(|branch| branch["at"] == format!("{area}.Body") && branch["count"] == 2),
+        "{branches:?}"
+    );
+
+    let body = service.view(ViewRequest::new(&format!("{area}.Body")).unwrap());
+    assert!(body.ok, "{} {:?}", body.summary, body.diagnostics);
+    let items = body.data.as_ref().unwrap()["items"].as_array().unwrap();
+    assert_eq!(
+        items,
+        &vec![
+            json!({"index": 1, "template": false, "text": "Sales report"}),
+            json!({"index": 2, "template": true, "text": "Period: [Since]"}),
+        ],
+        "порядок ячеек — это и есть смысл печатной формы"
+    );
+}
+
+#[test]
+fn a_structural_template_read_never_serves_a_cached_payload_to_a_content_read() {
+    let fixture = RealReaderFixture::new();
+    let service = fixture.view_service();
+    let area = "main:Report.ParityReport.Template.Print.Area.Header";
+
+    // Один вызов сначала берёт структуру, потом текст: если признак
+    // содержимого не входит в ключ кэша, второе чтение получит первый разбор.
+    let structural = service.view(ViewRequest::new(area).unwrap());
+    assert!(structural.ok, "{}", structural.summary);
+    let body = service.view(ViewRequest::new(&format!("{area}.Body")).unwrap());
+
+    assert!(body.ok, "{} {:?}", body.summary, body.diagnostics);
+    assert_eq!(
+        body.data.as_ref().unwrap()["items"]
+            .as_array()
+            .map(Vec::len),
+        Some(2)
+    );
+}
+
+#[test]
 fn unsupported_view_filter_is_a_typed_bad_value_instead_of_a_noop() {
     let fixture = RealReaderFixture::new();
     let result =
@@ -3085,7 +3139,7 @@ impl RealReaderFixture {
             )
             .replace(
                 "\n\t\t\t<empty>true</empty>",
-                "\n\t\t\t<c><c><f>0</f><parameter>Title</parameter></c></c>",
+                "\n\t\t\t<c><c><f>0</f><parameter>Title</parameter></c></c><c><c><f>1</f><tl><content>Sales report</content></tl></c></c><c><c><f>2</f><tl><content>Period: [Since]</content></tl></c></c>",
             );
         write(
             &source.join("Reports/ParityReport/Templates/Print/Ext/Template.xml"),
