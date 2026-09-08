@@ -132,6 +132,11 @@ pub(crate) fn invoke_preview(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> Option<PreviewInvocation> {
+    if operation == "subsystem-edit" {
+        return subsystem::validate_subsystem_edit_preview(args, context)
+            .err()
+            .map(|error| PreviewInvocation::Planned(Err(error)));
+    }
     if operation == "form-compile" && !form::has_compile_payload(args) {
         return None;
     }

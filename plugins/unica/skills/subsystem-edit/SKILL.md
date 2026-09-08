@@ -39,7 +39,7 @@ allowed-tools:
     "name": "unica.subsystem.edit",
     "arguments": {
       "cwd": "<workspace>",
-      "SubsystemPath": "src/Subsystems/Продажи",
+      "SubsystemPath": "Subsystems/Продажи.xml",
       "Operation": "add-content",
       "Value": "Catalog.Номенклатура",
       "dryRun": false
