@@ -173,7 +173,7 @@ daemon; терминал упавшей квитанции ставит прее
   `tests/ci/test_receipt_ledger_test_support_boundary.py`: атрибут признака
   висит только на элементах (mod, use, fn, struct, enum, impl, поле), никогда
   на выражении или операторе; `cfg(not(feature))` запрещён. Решение
-  `DEC.2026-09-09.V5-RUNTIME-HOOKS`, правило
+  `DEC.2026-09-08.V5-RUNTIME-HOOKS`, правило
   `INV.TEST.LEDGER-SUPPORT-GATES-ITEMS`.
 - **F3 — владелец срока.** Срок захватывается при резервировании и
   передаётся в bind; `drive_reserved_invocation` со слотом по фазам; сторож
@@ -216,7 +216,7 @@ push.
 | Шаг | Решение | Правило | Свидетельство |
 | --- | --- | --- | --- |
 | F1 | нет | нет | — |
-| F2 | `DEC.2026-09-09.V5-RUNTIME-HOOKS` | `INV.TEST.LEDGER-SUPPORT-GATES-ITEMS` (новое) | `tests/ci/test_receipt_ledger_test_support_boundary.py` |
+| F2 | `DEC.2026-09-08.V5-RUNTIME-HOOKS` | `INV.TEST.LEDGER-SUPPORT-GATES-ITEMS` (новое) | `tests/ci/test_receipt_ledger_test_support_boundary.py` |
 | F3 | `DEC.2026-09-09.DAEMON-V5-DEADLINE-OWNER`, замещает `DEC.2026-09-08.DAEMON-V5-CUTOFF-OWNER` | `INV.APP.DAEMON-INVOCATION-HANDOFF`, `INV.APP.DAEMON-STORE-FAIL-STOP` (переходят к новому решению, получают production-проверки) | тест владельца на живом рантайме без признака |
 | F4 | `DEC.2026-09-09.LEDGER-HARNESS-OBSERVES-ONLY` | `INV.TEST.LEDGER-HARNESS-OBSERVES` (новое) | `tests/ci/test_receipt_harness_boundary.py` |
 | F5 | нет | нет | — |
@@ -256,6 +256,36 @@ push.
 `skip_next_startup_reconciliation`, и отмена застаёт квитанцию живой. Тест
 прав, ручка — подмена; оба остаются красными до шага F4, где страж на `syn`
 заменяется стражем в `tests/ci`, а ручка снимается.
+
+**Шаг F2 — крючки.** `runtime_v5/hooks.rs`: трейт `V5RuntimeHooks` с
+пустыми методами по умолчанию, `NoHooks` для production, production-типы
+`V5ReceiptRuntimeEventKind` (сорок событий), `V5Stage`, `V5PausePoint`
+(шестнадцать точек, включая новую `BeforeRetirementSnapshot` вместо
+барьера под `cfg(all(test, feature))`), `V5AdmissionRejection`,
+`V5StoreFaultPoint`. Рантайм держит `hooks: Arc<dyn V5RuntimeHooks>` и
+берёт его из `DaemonServerConfig` (`runtime_hooks`, поля переопределений
+часов и пропуска сверки теперь безусловные). Телеметрия, аренды и
+писатели `*_for_scenario` переехали в
+`runtime_v5/receipt_scenario_v5/scenario_hooks.rs` вместе с
+`ScenarioHooks` — реализацией трейта поверх телеметрии и сценарного
+управления; методы `_for_test` рантайма и проекции — в
+`receipt_scenario_v5/scenario_probes.rs` (дочерний модуль бегунка, доступ к
+внутренностям сохранён). В `runtime_v5.rs` осталось два атрибута признака
+(объявление модуля и реэкспорт) против 261; `cfg(not(feature))` в `src/`
+нет. Слоты впрыска сбоев хранилищ безусловны: `arm_receipt_row_directory_sync_fault`
+для всего процесса плюс поток-локальный слот для unit-тестов,
+`inject_next_publication_failure` у TaskStore; команды наблюдателя
+`SnapshotCatalog` и `RotateGenerationForTest` актора и порт ledger
+безусловны — их шлёт только наблюдатель. Два выравнивания production с
+тем, что раньше делал только впрыснутый отказ: `WorkspaceRegistryFailed`
+на admission переводит daemon в fail-stop, а ответ идёт вариантом
+`JsonFailStop`/`PreparedFailStop`; тест на гонку retirement снят с
+признака и идёт в обычной полосе. Страж
+`scripts/ci/check-receipt-ledger-test-support-boundary.py` с
+`tests/ci/test_receipt_ledger_test_support_boundary.py`: признак только на
+элементах, `not(feature)` запрещён; решение
+`DEC.2026-09-08.V5-RUNTIME-HOOKS`, правило
+`INV.TEST.LEDGER-SUPPORT-GATES-ITEMS`.
 
 ## Открытые вопросы
 

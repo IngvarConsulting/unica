@@ -6841,12 +6841,10 @@ mod tests {
 
     /// Two retirement passes meet at the snapshot: the hook holds each one
     /// until the other arrives.
-    #[cfg(feature = "receipt-ledger-test-support")]
     struct RetirementSnapshotBarrier {
         barrier: Arc<std::sync::Barrier>,
     }
 
-    #[cfg(feature = "receipt-ledger-test-support")]
     impl V5RuntimeHooks for RetirementSnapshotBarrier {
         fn as_any(&self) -> &dyn std::any::Any {
             self
@@ -6860,7 +6858,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "receipt-ledger-test-support")]
     #[test]
     fn concurrent_terminal_retirement_is_idempotent() {
         let root = tempfile::tempdir().expect("temporary retirement-race state root");

@@ -7,7 +7,6 @@ use crate::domain::invocation::{
 };
 use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
-#[cfg(feature = "receipt-ledger-test-support")]
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::num::NonZeroU64;
@@ -236,7 +235,6 @@ impl fmt::Display for ReceiptLedgerError {
 
 impl std::error::Error for ReceiptLedgerError {}
 
-#[cfg(feature = "receipt-ledger-test-support")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ReceiptLedgerCatalogSnapshot {
     generation: u64,
@@ -250,7 +248,6 @@ pub(crate) struct ReceiptLedgerCatalogSnapshot {
     tombstone_bytes: u64,
 }
 
-#[cfg(feature = "receipt-ledger-test-support")]
 impl ReceiptLedgerCatalogSnapshot {
     pub(crate) const fn generation(&self) -> u64 {
         self.generation
@@ -294,12 +291,10 @@ impl ReceiptLedgerCatalogSnapshot {
 /// Only the application actor can mint the authority. The concrete store may
 /// consume it after observing its complete catalog under the retained writer
 /// fence, while callers receive only the validated, read-only snapshot.
-#[cfg(feature = "receipt-ledger-test-support")]
 pub(crate) struct ReceiptLedgerCatalogSnapshotAuthority {
     _private: (),
 }
 
-#[cfg(feature = "receipt-ledger-test-support")]
 pub(crate) struct ReceiptLedgerCatalogSnapshotParts {
     generation: u64,
     keys: Vec<ReceiptKey>,
@@ -312,7 +307,6 @@ pub(crate) struct ReceiptLedgerCatalogSnapshotParts {
     tombstone_bytes: u64,
 }
 
-#[cfg(feature = "receipt-ledger-test-support")]
 impl ReceiptLedgerCatalogSnapshotParts {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
@@ -340,7 +334,6 @@ impl ReceiptLedgerCatalogSnapshotParts {
     }
 }
 
-#[cfg(feature = "receipt-ledger-test-support")]
 impl ReceiptLedgerCatalogSnapshotAuthority {
     pub(super) const fn new() -> Self {
         Self { _private: () }
@@ -450,7 +443,6 @@ impl ReceiptLedgerCatalogSnapshotAuthority {
     }
 }
 
-#[cfg(feature = "receipt-ledger-test-support")]
 fn same_exact_receipt_key_set(
     expected: &HashMap<ReceiptKeyDigest, &ReceiptKey>,
     observed: &[ReceiptKey],
@@ -468,7 +460,6 @@ fn same_exact_receipt_key_set(
 /// The port deliberately requires only `Send`: the actor moves one concrete
 /// writer to its worker thread and never shares it behind a mutex.
 pub(crate) trait ReceiptLedgerPort: Send + 'static {
-    #[cfg(feature = "receipt-ledger-test-support")]
     fn snapshot_catalog(
         &mut self,
         _authority: ReceiptLedgerCatalogSnapshotAuthority,
@@ -481,7 +472,6 @@ pub(crate) trait ReceiptLedgerPort: Send + 'static {
         Err(ReceiptLedgerError::StoreUnavailable)
     }
 
-    #[cfg(feature = "receipt-ledger-test-support")]
     fn rotate_generation_for_test(
         &mut self,
         _deadline: Instant,

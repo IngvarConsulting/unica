@@ -495,7 +495,7 @@ impl DaemonServerConfig {
         self.runtime_hooks.clone()
     }
 
-    #[cfg(feature = "receipt-ledger-test-support")]
+    #[cfg(any(test, feature = "receipt-ledger-test-support"))]
     pub(crate) fn with_runtime_hooks_for_test(
         mut self,
         hooks: Arc<dyn super::runtime_v5::V5RuntimeHooks>,
@@ -525,7 +525,7 @@ impl DaemonServerConfig {
         self
     }
 
-    #[cfg(feature = "receipt-ledger-test-support")]
+    #[cfg(any(test, feature = "receipt-ledger-test-support"))]
     pub(crate) fn with_v5_epoch_clock_for_test(
         mut self,
         clock: Arc<dyn crate::application::invocation_store::EpochMillisClock>,

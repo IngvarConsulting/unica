@@ -1,4 +1,6 @@
 use crate::application::invocation_store::MAX_TASK_RECORD_ENVELOPE_BYTES;
+#[cfg(feature = "receipt-ledger-test-support")]
+use crate::application::receipt_ledger::RequestIdentity;
 use crate::application::receipt_ledger::{
     receipt_key_digest, AcknowledgedTombstoneReceipt, AttemptPhase, CancelExpiryOutcome,
     CancelReservedReceipt, CancelResolution, CommittedDirectPublication,
@@ -16,10 +18,9 @@ use crate::application::receipt_ledger::{
     MAX_ACKNOWLEDGED_TOMBSTONE_POOL_BYTES, MAX_LIVE_RECEIPTS, MAX_LIVE_RECEIPT_BYTES,
     MAX_RECEIPT_ENTITLEMENT_BYTES, MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES,
 };
-#[cfg(feature = "receipt-ledger-test-support")]
 use crate::application::receipt_ledger::{
     ReceiptLedgerCatalogSnapshot, ReceiptLedgerCatalogSnapshotAuthority,
-    ReceiptLedgerCatalogSnapshotParts, RequestIdentity,
+    ReceiptLedgerCatalogSnapshotParts,
 };
 use crate::domain::invocation::{InvocationId, SafeIdentityHash, TaskId};
 use crate::infrastructure::daemon::terminal_codec_v5::{
@@ -1380,7 +1381,6 @@ impl ReceiptLedgerStore {
         latch_catalog_result(&mut catalog, self.generation_under_writer_lock())
     }
 
-    #[cfg(feature = "receipt-ledger-test-support")]
     pub(crate) fn rotate_generation_for_test(
         &self,
         deadline: Instant,
@@ -1510,7 +1510,6 @@ impl ReceiptLedgerStore {
         Ok(keys)
     }
 
-    #[cfg(feature = "receipt-ledger-test-support")]
     pub(crate) fn snapshot_catalog(
         &self,
         authority: ReceiptLedgerCatalogSnapshotAuthority,
@@ -7287,7 +7286,6 @@ impl ReceiptLedgerStore {
 }
 
 impl ReceiptLedgerPort for ReceiptLedgerStore {
-    #[cfg(feature = "receipt-ledger-test-support")]
     fn snapshot_catalog(
         &mut self,
         authority: ReceiptLedgerCatalogSnapshotAuthority,
@@ -7303,7 +7301,6 @@ impl ReceiptLedgerPort for ReceiptLedgerStore {
         Ok(generation)
     }
 
-    #[cfg(feature = "receipt-ledger-test-support")]
     fn rotate_generation_for_test(&mut self, deadline: Instant) -> Result<u64, ReceiptLedgerError> {
         ReceiptLedgerStore::rotate_generation_for_test(self, deadline)
     }

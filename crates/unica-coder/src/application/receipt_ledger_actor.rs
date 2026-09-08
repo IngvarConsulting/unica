@@ -8,7 +8,6 @@ use crate::application::receipt_ledger::{
     TaskReceiptOwnedActorBoundReceipt, TaskTerminalBoundReceipt, TaskTerminalReceiptBackedReceipt,
     TerminalDigest, V5CanonicalTerminal,
 };
-#[cfg(feature = "receipt-ledger-test-support")]
 use crate::application::receipt_ledger::{
     ReceiptLedgerCatalogSnapshot, ReceiptLedgerCatalogSnapshotAuthority,
 };
@@ -206,7 +205,8 @@ impl ActorHealth {
 }
 
 enum Command {
-    #[cfg(feature = "receipt-ledger-test-support")]
+    /// An observer's read of the whole catalog; production never sends it.
+    #[allow(dead_code)]
     SnapshotCatalog {
         deadline: Instant,
         ticket: Arc<Ticket<ReceiptLedgerCatalogSnapshot>>,
@@ -215,7 +215,8 @@ enum Command {
         deadline: Instant,
         ticket: Arc<Ticket<u64>>,
     },
-    #[cfg(feature = "receipt-ledger-test-support")]
+    /// An observer's retention rotation; production never sends it.
+    #[allow(dead_code)]
     RotateGenerationForTest {
         deadline: Instant,
         ticket: Arc<Ticket<u64>>,
@@ -539,10 +540,10 @@ impl<R> Ticket<R> {
 }
 
 enum TimeoutClass {
-    #[cfg(feature = "receipt-ledger-test-support")]
+    #[allow(dead_code)]
     SnapshotCatalog,
     Generation,
-    #[cfg(feature = "receipt-ledger-test-support")]
+    #[allow(dead_code)]
     RotateGenerationForTest,
     Reserve(ReceiptKeyDigest),
     BindReservedActor(ReceiptKeyDigest),
@@ -574,10 +575,8 @@ enum TimeoutClass {
 impl TimeoutClass {
     fn running_error(self) -> ReceiptLedgerError {
         match self {
-            #[cfg(feature = "receipt-ledger-test-support")]
             Self::SnapshotCatalog => ReceiptLedgerError::StoreUnavailable,
             Self::Generation => ReceiptLedgerError::StoreUnavailable,
-            #[cfg(feature = "receipt-ledger-test-support")]
             Self::RotateGenerationForTest => ReceiptLedgerError::StoreUnavailable,
             Self::Reserve(receipt_key_digest)
             | Self::BindReservedActor(receipt_key_digest)
@@ -1538,7 +1537,6 @@ fn run_worker(
 ) {
     while let Ok(command) = receiver.recv() {
         match command {
-            #[cfg(feature = "receipt-ledger-test-support")]
             Command::SnapshotCatalog { deadline, ticket } => {
                 if !ticket.try_begin(&health) {
                     continue;
@@ -1671,7 +1669,6 @@ fn run_worker(
                     .unwrap_or(Err(ReceiptLedgerError::StoreUnavailable));
                 ticket.finish(result, &health);
             }
-            #[cfg(feature = "receipt-ledger-test-support")]
             Command::RotateGenerationForTest { deadline, ticket } => {
                 if !ticket.try_begin(&health) {
                     continue;

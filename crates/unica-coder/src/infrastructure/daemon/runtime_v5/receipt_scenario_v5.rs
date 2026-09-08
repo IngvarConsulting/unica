@@ -7058,11 +7058,18 @@ fn scenario_server_config(
     identity: &CoreIdentity,
     control: Option<&Arc<ReceiptScenarioControl>>,
 ) -> DaemonServerConfig {
+    // Every scenario runtime observes through scenario hooks: a fresh
+    // telemetry unless the runner shares its own later, and the control it
+    // was handed, exactly as the runtime used to default them.
     let mut config = DaemonServerConfig::new(
         state_root.to_path_buf(),
         identity.clone(),
         SCENARIO_IDLE_GRACE,
-    );
+    )
+    .with_runtime_hooks_for_test(ScenarioHooks::install(
+        Arc::new(V5ReceiptRuntimeTelemetry::new()),
+        control.cloned(),
+    ));
     if control.is_some_and(|control| control.take_skip_next_startup_reconciliation()) {
         config = config.without_v5_startup_reconciliation_for_test();
     }
