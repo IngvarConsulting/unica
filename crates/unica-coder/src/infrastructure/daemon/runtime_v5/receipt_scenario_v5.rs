@@ -2942,6 +2942,16 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                 match disconnect {
                     ScenarioAckDisconnect::Never => {
                         let response = match &live_actor {
+                            // A live daemon has a listener: acknowledge over the wire,
+                            // the way production does. Without one the harness itself
+                            // holds the sole writer, so no listener can exist and the
+                            // retained actor is the only owner there is.
+                            Some(_) if live_daemon.is_some() => acknowledge_on_live_daemon(
+                                state.path(),
+                                &identity,
+                                acknowledge_key.clone(),
+                                terminal_digest,
+                            )?,
                             Some(actor) => match acknowledge_direct_for_scenario(
                                 actor,
                                 acknowledge_key.clone(),
@@ -9522,6 +9532,21 @@ fn spawn_additional_submit_client(
         response_budget_ms,
         client,
     }
+}
+
+fn acknowledge_on_live_daemon(
+    state_root: &Path,
+    identity: &CoreIdentity,
+    key: ReceiptKey,
+    terminal_digest: TerminalDigest,
+) -> Result<V5ServerResponse, String> {
+    let mut owner = V5DaemonProcessOwner::connect_or_spawn(
+        state_root,
+        identity.clone(),
+        std::path::PathBuf::from("unused-existing-v5-scenario-endpoint"),
+        SCENARIO_IDLE_GRACE,
+    )?;
+    owner.acknowledge_invocation_receipt(key, terminal_digest)
 }
 
 fn cancel_on_live_daemon(
