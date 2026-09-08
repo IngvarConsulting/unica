@@ -3,14 +3,18 @@ id: DEC.2026-09-08.RESOLVE-REPLACES-FIND
 status: active
 governs: product
 realized: crates/unica-coder/src/application/v13/tool_catalog.rs::v13_catalog_locks_the_eight_domain_contracts_without_publishing_them
-supersedes: [DEC.2026-09-03.FIND-ADDRESS-PATH-DIRECTORY]
+supersedes: []
 superseded-by: null
 establishes: [INV.WIRE.RESOLVE-EXACT-BRIDGE, CTR.WIRE.FIND-CANDIDATE-SHAPE, INV.SOURCE.FIND-IDENTITY-ONLY]
-changes: [CTR.WIRE.TOOL-SURFACE]
+changes: [CTR.WIRE.TOOL-SURFACE, INV.PKG.PACKAGED-PUBLIC-SURFACE]
 design: docs/design/2026-09-04-canonical-surface-distribution-design.md
 ---
 
 # `find` снимается, приходит аварийный `resolve`
+
+Справочник адреса и файла из `DEC.2026-09-03.FIND-ADDRESS-PATH-DIRECTORY`
+остаётся и обслуживает обе стороны моста и свод имён `search`: снимается
+инструмент, а не словарь, поэтому то решение не заменяется.
 
 **Решение.** Восьмым предметным именем вместо `find` публикуется `resolve` —
 двусторонний мост между адресом и файловой раскладкой. Он принимает `at` либо

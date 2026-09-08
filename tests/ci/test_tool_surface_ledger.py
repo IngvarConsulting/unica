@@ -209,7 +209,13 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
                 self.assertFalse(schema["additionalProperties"])
                 self.assertEqual(set(schema["properties"]), properties)
                 encoded = json.dumps(schema, ensure_ascii=False)
-                for physical in ("cwd", "path", "sourceDir", "workdir"):
+                # Аварийный мост — единственное место, где путь законен на
+                # входе: он затем и заведён, чтобы путь не просачивался в
+                # частые ответы (DEC.2026-09-08.RESOLVE-REPLACES-FIND).
+                physical_inputs = ("cwd", "sourceDir", "workdir")
+                if name != "unica.resolve":
+                    physical_inputs += ("path",)
+                for physical in physical_inputs:
                     self.assertNotIn(f'"{physical}"', encoded)
 
     def test_every_published_tool_has_exactly_one_review_entry(self) -> None:

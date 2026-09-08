@@ -219,6 +219,35 @@ mod tests {
         // A directory of addresses and paths is not a revision snapshot.
         assert!(find.rev.is_none());
 
+        // Обратная сторона моста: путь, пришедший снаружи, даёт адрес.
+        let by_path = daemon.submit(
+            &owner,
+            &InvocationRequest::new(
+                ToolIdentity::Resolve,
+                serde_json::json!({"path": bridged["path"].as_str().unwrap()}),
+                workspace_hint.as_str(),
+                7_000,
+            )
+            .unwrap(),
+        );
+        let by_path = match by_path {
+            V5Submission::Direct(result) => *result,
+            V5Submission::Task(task_id) => {
+                let terminal = daemon.wait_terminal(&owner, task_id, INTEGRATION_TASK_WAIT);
+                terminal
+                    .completed_result()
+                    .cloned()
+                    .expect("the handed-off bridge call must publish its result")
+            }
+        };
+        assert!(by_path.ok, "{} {:?}", by_path.summary, by_path.diagnostics);
+        assert_eq!(
+            by_path.data.as_ref().unwrap()["at"],
+            "main:Catalog.Items",
+            "{:?}",
+            by_path.data
+        );
+
         let unknown = daemon.submit(
             &owner,
             &InvocationRequest::new(

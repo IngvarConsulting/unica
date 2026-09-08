@@ -403,6 +403,20 @@ def _evidence_dependency_error(evidence: object) -> str | None:
     return None
 
 
+def _decision_declaring_change(
+    introduced: dict[str, "IntroducedRecord"], rule_id: object
+) -> "IntroducedRecord | None":
+    """The decision introduced here that names this rule in `changes`."""
+    if not rule_id:
+        return None
+    for record in introduced.values():
+        if record.kind != "decision":
+            continue
+        if str(rule_id) in _list_property(record.props.get("changes")):
+            return record
+    return None
+
+
 def _ground_error(repo: Path, ground: IntroducedRecord) -> str | None:
     """A new product-rule ground must be an implemented product decision."""
     if ground.kind != "decision":
@@ -490,8 +504,16 @@ def inspect(repo: Path, base_ref: str) -> Verdict:
         if _is_evidence_repoint(repo, base_ref, before, after):
             continue
 
+        # Либо правило переадресовано на заведённое здесь же решение, либо
+        # такое решение прямо назвало его в `changes`. Второй путь нужен там,
+        # где основание правила шире правки: инвариант о составе поставки
+        # стоит на решении о переходе, а имя инструмента в нём меняет решение
+        # об этом инструменте. Без него правка была бы либо запрещена, либо
+        # оплачена ложной переадресацией основания.
+        rule_id = _split(after)[0].get("id")
+        declared_by = _decision_declaring_change(introduced, rule_id)
         ground = _split(after)[0].get("decision")
-        introduced_ground = introduced.get(ground)
+        introduced_ground = introduced.get(ground) or declared_by
         if introduced_ground is None:
             offenders.append(
                 f"{path}: продуктовое правило изменено без нового решения о причине"

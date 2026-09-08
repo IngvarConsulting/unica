@@ -7953,7 +7953,7 @@
     {
      "tool": "unica.resolve",
      "args": {
-      "path": "src/Catalogs/Валюты.xml"
+      "path": "src/CommonModules/GoogleПереводчик.xml"
      },
      "expect": [
       "ok"
@@ -7969,7 +7969,7 @@
     {
      "tool": "unica.resolve",
      "args": {
-      "at": "main:CommonModule.ОбщегоНазначения.Method.ПриЗаписи"
+      "at": "main:CommonModule.GoogleПереводчик.Method.ПеревестиТекст"
      },
      "expect": [
       "ok"

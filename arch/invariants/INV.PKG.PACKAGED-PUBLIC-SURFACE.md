@@ -11,7 +11,7 @@ scope: [host, pkg, product, wire]
 
 Проверка runtime требует успешный legacy `initialize` с последующим
 `tools/list`, а также direct-first `server/discover` и `tools/list`. Оба списка
-должны быть точно равны `unica.view`, `unica.apply`, `unica.find`,
+должны быть точно равны `unica.view`, `unica.apply`, `unica.resolve`,
 `unica.search`, `unica.check`, `unica.diff`, `unica.run`, `unica.docs` плюс
 `unica.task.get`, `unica.task.result`, `unica.task.cancel`. Отсутствующее новое
 или оставшееся legacy-имя закрывает package gate. Аргументы, результаты и
