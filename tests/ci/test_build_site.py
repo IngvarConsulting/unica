@@ -140,5 +140,88 @@ class LargeMemoryTests(unittest.TestCase):
             self.assertIn("нет", note)
 
 
+class HistoryKeyTests(unittest.TestCase):
+    """Ключ истории считается ровно так, как его пишет CLI 2.46."""
+
+    def test_key_matches_what_allure_writes_for_zero_one_and_two_parameters(self) -> None:
+        """Значения сняты с отчёта, собранного `allure 2.46.1` на этих же результатах."""
+        module = load_module()
+        self.assertEqual(
+            "6537b3c2c412c480515337ab37a23f77.41e8a2ef4570710d63a48f1e44998ba9",
+            module.history_key("suite::alpha", [{"name": "runner", "value": "ubuntu-latest"}]),
+        )
+        self.assertEqual(
+            "dc3830b1fb15ec1c89901ac766fbf403.d41d8cd98f00b204e9800998ecf8427e",
+            module.history_key("probe::noparams", []),
+        )
+        # Два параметра CLI сортирует по строке `имя:значение`, а не по порядку
+        # в результате: порядок записи на ключ влиять не должен.
+        forward = module.history_key(
+            "probe::two",
+            [{"name": "runner", "value": "ubuntu-latest"}, {"name": "os", "value": "linux"}],
+        )
+        backward = module.history_key(
+            "probe::two",
+            [{"name": "os", "value": "linux"}, {"name": "runner", "value": "ubuntu-latest"}],
+        )
+        self.assertEqual("ab4a29f76e544ace112ad756068bf537.8bedd3325b5fded90d32559f43a11b33", forward)
+        self.assertEqual(forward, backward)
+
+
+class MigrateHistoryKeysTests(unittest.TestCase):
+    """Переклейка истории на ключ 2.46: без неё файл истории удваивается."""
+
+    def results_with(self, root: Path, pairs: dict[str, str]) -> Path:
+        results = root / "results"
+        results.mkdir(parents=True, exist_ok=True)
+        for uid, (history_id, full_name) in enumerate(pairs.items()):
+            (results / f"{uid}-result.json").write_text(json.dumps({
+                "uuid": str(uid), "historyId": history_id, "name": full_name, "fullName": full_name,
+                "status": "passed", "parameters": [{"name": "runner", "value": "ubuntu-latest"}],
+                "start": 1, "stop": 2, "labels": [],
+            }), encoding="utf-8")
+        return results
+
+    def history(self, results: Path, document: dict) -> Path:
+        path = results / "history" / "history.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(document), encoding="utf-8")
+        return path
+
+    def test_old_key_moves_to_the_new_one_and_a_test_that_is_gone_is_dropped(self) -> None:
+        module = load_module()
+        root = Path(tempfile.mkdtemp(prefix="migrate-"))
+        results = self.results_with(root, {"old-alpha": "suite::alpha"})
+        path = self.history(results, {
+            "old-alpha": {"statistic": {"passed": 2, "total": 2}, "items": [{"status": "passed"}] * 2},
+            "old-gone": {"statistic": {"passed": 1, "total": 1}, "items": [{"status": "passed"}]},
+        })
+
+        moved = module.migrate_history_keys(results)
+
+        migrated = json.loads(path.read_text(encoding="utf-8"))
+        alpha = module.history_key("suite::alpha", [{"name": "runner", "value": "ubuntu-latest"}])
+        self.assertEqual(1, moved)
+        self.assertEqual({alpha}, set(migrated))
+        self.assertEqual(2, len(migrated[alpha]["items"]))
+
+    def test_second_pass_changes_nothing_and_a_new_key_is_never_overwritten(self) -> None:
+        module = load_module()
+        root = Path(tempfile.mkdtemp(prefix="migrate-again-"))
+        results = self.results_with(root, {"old-alpha": "suite::alpha"})
+        alpha = module.history_key("suite::alpha", [{"name": "runner", "value": "ubuntu-latest"}])
+        path = self.history(results, {
+            alpha: {"statistic": {"passed": 3, "total": 3}, "items": [{"status": "passed"}] * 3},
+            "old-alpha": {"statistic": {"passed": 1, "total": 1}, "items": [{"status": "passed"}]},
+        })
+
+        self.assertEqual(0, module.migrate_history_keys(results))
+
+        kept = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual({alpha}, set(kept))
+        self.assertEqual(3, len(kept[alpha]["items"]))
+        self.assertEqual(0, module.migrate_history_keys(results))
+
+
 if __name__ == "__main__":
     unittest.main()

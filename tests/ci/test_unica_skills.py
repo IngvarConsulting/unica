@@ -2792,19 +2792,31 @@ Use `.claude/commands/xdto.md` as the execution route.
         for block in re.findall(r"```json\s*(.*?)```", text, re.DOTALL):
             payload = json.loads(block)
             params = payload.get("params", {})
-            if params.get("name") == "unica.code.patch":
+            if params.get("name") == "unica.apply":
                 calls.append(params.get("arguments", {}))
 
         self.assertGreaterEqual(len(calls), 2)
+        previews = 0
         for arguments in calls:
             with self.subTest(arguments=arguments):
-                self.assertIn("sourceSet", arguments)
-                self.assertIn("metadataPath", arguments)
+                # Цель называет адрес, а не пара селекторов и уж точно не путь.
+                self.assertRegex(arguments["at"], r"^[^:]+:.+")
                 self.assertNotIn("path", arguments)
                 self.assertNotIn("sourceDir", arguments)
-        self.assertRegex(text, r"Configuration.{0,120}Extension")
-        self.assertIn("sourceSet", text)
-        self.assertIn("metadataPath", text)
+                self.assertNotIn("sourceSet", arguments)
+                self.assertNotIn("metadataPath", arguments)
+                for operation in arguments["ops"]:
+                    self.assertIn(operation["op"], {"code.insert", "code.replace"})
+                    self.assertRegex(operation["args"]["at"], r"^[^:]+:.+")
+                    self.assertTrue(operation["args"]["text"])
+                if arguments.get("dryRun") is True:
+                    previews += 1
+                    self.assertNotIn("ifRev", arguments)
+                else:
+                    # Применение связано с предпросмотром забором ревизии.
+                    self.assertTrue(arguments["ifRev"])
+        self.assertTrue(previews, "скилл обязан показать предпросмотр")
+        self.assertRegex(text, r"Configuration.{0,200}Extension")
 
     def test_code_patch_prompt_metadata_covers_every_public_operation(self) -> None:
         """Prompt metadata names the published operations and only those.
@@ -2834,10 +2846,11 @@ Use `.claude/commands/xdto.md` as the execution route.
                 with self.subTest(field=field, retired=operation):
                     self.assertNotRegex(value, rf"\b{operation}\b")
 
-        # A selector-less insert is the whole point of the current surface, so
-        # the body must say where the content lands when the selector is absent.
-        self.assertRegex(text, r"(?is)`selector` is optional for `insert`")
-        self.assertIn("end of the module", text)
+        # Селектором стал адрес, и это надо сказать прямо: иначе модель будет
+        # искать поле `selector`, которого на канонической поверхности нет.
+        self.assertIn("Селектор — это адрес", text)
+        # Куда ляжет вставка, обязано быть сказано: у тела модуля свой адрес.
+        self.assertIn("тело модуля целиком", text)
 
     def test_xdto_skill_uses_one_confirmed_info_preview_apply_mcp_flow(self) -> None:
         path = self.skill_root() / "xdto" / "SKILL.md"
