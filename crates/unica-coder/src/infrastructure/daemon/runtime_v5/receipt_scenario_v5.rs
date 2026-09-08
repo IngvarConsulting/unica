@@ -2959,14 +2959,26 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                                     code: daemon_error_code(&error),
                                 },
                             },
-                            None => acknowledge_without_startup(
-                                state.path(),
-                                &identity,
-                                Arc::clone(&clock),
-                                Arc::clone(&telemetry),
-                                acknowledge_key.clone(),
-                                terminal_digest,
-                            )?,
+                            None => {
+                                // Production acknowledges against a daemon that is
+                                // already up; the scenario has to start one for the
+                                // request. That extra startup must not reconcile the
+                                // fixture the acknowledgement is aimed at — it owns it.
+                                control.arm_skip_next_startup_reconciliation();
+                                exchange_once(
+                                    state.path(),
+                                    &identity,
+                                    Arc::clone(&clock),
+                                    Arc::clone(&telemetry),
+                                    Some(Arc::clone(&control)),
+                                    |owner| {
+                                        owner.acknowledge_invocation_receipt(
+                                            acknowledge_key.clone(),
+                                            terminal_digest,
+                                        )
+                                    },
+                                )?
+                            }
                         };
                         report
                             .responses
@@ -6968,38 +6980,6 @@ fn scenario_server_config_with_clock(
     scenario_server_config(state_root, identity, control)
         .with_invocation_clock_for_test(invocation_clock)
         .with_v5_epoch_clock_for_test(epoch_clock)
-}
-
-fn acknowledge_without_startup(
-    state_root: &Path,
-    identity: &CoreIdentity,
-    clock: Arc<ScenarioEpochClock>,
-    telemetry: Arc<V5ReceiptRuntimeTelemetry>,
-    key: ReceiptKey,
-    terminal_digest: TerminalDigest,
-) -> Result<V5ServerResponse, String> {
-    let state = DaemonStateDirectory::open(state_root, identity)?;
-    let receipts = state.create_private_retained_subdirectory("receipts")?;
-    let actor = open_receipt_actor_for_scenario(receipts, "open protocol-v5 receipt ACK owner")?;
-    let epoch_ms = clock.now_epoch_millis();
-    let result = acknowledge_direct_for_scenario(
-        &actor,
-        key,
-        terminal_digest,
-        epoch_ms,
-        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
-        &telemetry,
-    );
-    let response = match result {
-        Ok(receipt) => V5ServerResponse::InvocationAcknowledged {
-            acknowledgement: V5AcknowledgedReceipt::from_receipt(&receipt),
-        },
-        Err(error) => V5ServerResponse::Error {
-            code: daemon_error_code(&error),
-        },
-    };
-    drop(actor);
-    Ok(response)
 }
 
 /// Waits for a promoted attempt the runtime finished off the reply thread to
