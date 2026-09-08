@@ -19,8 +19,9 @@
 3. бегунок не называет `ReceiptLedgerStore` и `ReceiptLedgerPort` — дверь к
    хранилищу одна, актор.
 
-Модуль `mod tests` в конце файла — обычные unit-тесты хранилища, а не
-обвязка; он не проверяется.
+Обвязка разложена по файлам, и каждый `.rs` рядом с ней обязан быть назван:
+либо это файл-водитель (проверяется), либо явно освобождённый слой с причиной.
+Незнакомый файл роняет стража — классифицировать его должен человек.
 """
 
 from __future__ import annotations
@@ -30,11 +31,21 @@ import re
 import sys
 from pathlib import Path
 
-HARNESS = Path(
+HARNESS_ROOT = Path(
     "crates/unica-coder/src/infrastructure/daemon/runtime_v5/receipt_scenario_v5.rs"
 )
+HARNESS_DIR = Path(
+    "crates/unica-coder/src/infrastructure/daemon/runtime_v5/receipt_scenario_v5"
+)
+# Файлы-водители: их и проверяем. Новый водитель добавляется сюда осознанно.
+DRIVER_FILES = ("control.rs", "dispatch.rs", "wire.rs")
+# Освобождённые слои — с причиной, а не молча.
+EXEMPT_FILES = {
+    "scenario_hooks.rs": "слой крючков: здесь и живут обёртки-писатели и дверь к актору",
+    "scenario_probes.rs": "пробы рантайма, а не действия сценария",
+    "tests.rs": "юнит-тесты хранилища, а не обвязка",
+}
 DISPATCHER = "run_supported_receipt_scenario_for_test"
-TESTS_MODULE = "\nmod tests {"
 
 # Durable-переходы квитанции: команды актора и обёртки бегунка над ними.
 WRITERS = (
@@ -104,16 +115,10 @@ WRITER_CALL = re.compile(
 FORBIDDEN_TYPE = re.compile(r"\b(" + "|".join(FORBIDDEN_TYPES) + r")\b")
 
 
-def harness_body(source: str) -> str:
-    """Обвязка без хвостового `mod tests` — там обычные unit-тесты."""
-    cut = source.find(TESTS_MODULE)
-    return source if cut < 0 else source[:cut]
-
-
 def offenders(path: Path, source: str) -> list[str]:
     found: list[str] = []
     enclosing = "<file>"
-    for index, line in enumerate(harness_body(source).split("\n"), start=1):
+    for index, line in enumerate(source.split("\n"), start=1):
         match = TOP_LEVEL_FN.match(line)
         if match:
             enclosing = match.group(1)
@@ -136,10 +141,26 @@ def offenders(path: Path, source: str) -> list[str]:
 
 
 def scan(root: Path) -> list[str]:
-    path = root / HARNESS
-    if not path.is_file():
-        return [f"{HARNESS.as_posix()}: harness source is missing"]
-    return offenders(HARNESS, path.read_text(encoding="utf-8"))
+    drivers = [HARNESS_ROOT] + [HARNESS_DIR / name for name in DRIVER_FILES]
+    found: list[str] = []
+    for driver in drivers:
+        path = root / driver
+        if not path.is_file():
+            found.append(f"{driver.as_posix()}: harness source is missing")
+            continue
+        found.extend(offenders(driver, path.read_text(encoding="utf-8")))
+
+    # Каждый файл обвязки обязан быть назван: водитель или освобождённый слой.
+    directory = root / HARNESS_DIR
+    if directory.is_dir():
+        known = set(DRIVER_FILES) | set(EXEMPT_FILES)
+        for path in sorted(directory.glob("*.rs")):
+            if path.name not in known:
+                found.append(
+                    f"{(HARNESS_DIR / path.name).as_posix()}: unclassified harness file; "
+                    f"name it a driver or an exempt layer in the guard"
+                )
+    return found
 
 
 def main() -> int:
