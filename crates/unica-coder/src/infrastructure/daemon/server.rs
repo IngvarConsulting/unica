@@ -418,12 +418,13 @@ pub(crate) struct DaemonServerConfig {
     pub(crate) core_identity: CoreIdentity,
     pub(crate) idle_grace: Duration,
     invocation_service: Arc<dyn CanonicalInvocationService>,
-    #[cfg(any(test, feature = "receipt-ledger-test-support"))]
+    /// Overrides installed by tests and the contract harness. Production
+    /// leaves every one of them empty; the fields exist unconditionally so
+    /// the runtime reads one configuration whatever the build.
     invocation_clock: Option<Arc<dyn Clock>>,
-    #[cfg(feature = "receipt-ledger-test-support")]
     v5_epoch_clock: Option<Arc<dyn crate::application::invocation_store::EpochMillisClock>>,
-    #[cfg(feature = "receipt-ledger-test-support")]
     skip_v5_startup_reconciliation: bool,
+    runtime_hooks: Option<Arc<dyn super::runtime_v5::V5RuntimeHooks>>,
     #[cfg(test)]
     canonical_runtime: Option<Arc<V5CanonicalInvocationRuntime>>,
 }
@@ -442,12 +443,10 @@ impl DaemonServerConfig {
             core_identity,
             idle_grace,
             invocation_service,
-            #[cfg(any(test, feature = "receipt-ledger-test-support"))]
             invocation_clock: None,
-            #[cfg(feature = "receipt-ledger-test-support")]
             v5_epoch_clock: None,
-            #[cfg(feature = "receipt-ledger-test-support")]
             skip_v5_startup_reconciliation: false,
+            runtime_hooks: None,
             #[cfg(test)]
             canonical_runtime: None,
         }
@@ -474,23 +473,35 @@ impl DaemonServerConfig {
     }
 
     pub(super) fn invocation_clock_for_v5(&self) -> Arc<dyn Clock> {
-        #[cfg(any(test, feature = "receipt-ledger-test-support"))]
-        if let Some(clock) = &self.invocation_clock {
-            return Arc::clone(clock);
+        match &self.invocation_clock {
+            Some(clock) => Arc::clone(clock),
+            None => Arc::new(TokioClock),
         }
-        Arc::new(TokioClock)
     }
 
-    #[cfg(feature = "receipt-ledger-test-support")]
-    pub(super) fn epoch_clock_for_v5_test(
+    pub(super) fn epoch_clock_for_v5(
         &self,
     ) -> Option<Arc<dyn crate::application::invocation_store::EpochMillisClock>> {
         self.v5_epoch_clock.clone()
     }
 
-    #[cfg(feature = "receipt-ledger-test-support")]
-    pub(super) const fn skip_v5_startup_reconciliation_for_test(&self) -> bool {
+    pub(super) const fn skips_v5_startup_reconciliation(&self) -> bool {
         self.skip_v5_startup_reconciliation
+    }
+
+    pub(super) fn runtime_hooks_for_v5(
+        &self,
+    ) -> Option<Arc<dyn super::runtime_v5::V5RuntimeHooks>> {
+        self.runtime_hooks.clone()
+    }
+
+    #[cfg(feature = "receipt-ledger-test-support")]
+    pub(crate) fn with_runtime_hooks_for_test(
+        mut self,
+        hooks: Arc<dyn super::runtime_v5::V5RuntimeHooks>,
+    ) -> Self {
+        self.runtime_hooks = Some(hooks);
+        self
     }
 
     #[cfg(feature = "receipt-ledger-test-support")]

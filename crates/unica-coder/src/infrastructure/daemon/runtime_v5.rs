@@ -1,6 +1,4 @@
 use super::identity::{CoreIdentity, DaemonStateDirectory, ReceiptAuthorityLock};
-#[cfg(feature = "receipt-ledger-test-support")]
-use super::protocol_v5::V5PendingDirectReceipt;
 use super::protocol_v5::{
     decode_v5_request_frame, read_bounded_v5_request_frame_before, DecodedV5Request,
     V5AcknowledgedReceipt, V5ClientRequest, V5ClientRequestKind, V5DaemonErrorCode,
@@ -26,8 +24,6 @@ use crate::application::invocation_v5::{
     CancelReservedExpiryDecision, CancelReservedRecoveryDecision, CancelReservedSubmitDecision,
 };
 use crate::application::ports::Clock;
-#[cfg(feature = "receipt-ledger-test-support")]
-use crate::application::receipt_ledger::receipt_key_digest;
 use crate::application::receipt_ledger::{
     canonical_v5_terminal, AttemptPhase, CanonicalTerminalError, ClosedTerminalStatus,
     HandoffTerminalStage, OriginalCutoffDescriptor, PreparedWireFrame, ReceiptKey,
@@ -37,31 +33,20 @@ use crate::application::receipt_ledger::{
     TaskRetirementPendingReceipt, TaskTerminalBoundReceipt, TerminalDigest,
     DIRECT_TERMINAL_RETENTION_MS,
 };
-#[cfg(feature = "receipt-ledger-test-support")]
-use crate::application::receipt_ledger::{
-    AcknowledgedTombstoneReceipt, CommittedDirectPublication, ProvenTaskLinkCapacity,
-    TaskPromisedUnboundReceipt, TaskTerminalReceiptBackedReceipt,
-};
 use crate::application::receipt_ledger_actor::ReceiptLedgerActor;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::refusal::RefusalCode;
 use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
+use crate::infrastructure::receipt_ledger::arm_receipt_row_directory_sync_fault;
 use crate::infrastructure::receipt_ledger::canonical_staged_transfer_certificate;
 use crate::infrastructure::receipt_ledger::ReceiptLedgerStore;
-#[cfg(feature = "receipt-ledger-test-support")]
-use crate::infrastructure::receipt_ledger::{
-    inject_receipt_row_directory_sync_failure_for_test, ReceiptBackedTaskTerminalSeed,
-};
 use crate::infrastructure::task_lifecycle_link_store_v5::{
     TaskLifecycleLinkCatalogEntry, TaskLifecycleLinkRecord, TaskLifecycleLinkStoreError,
     TaskLifecycleLinkStoreV5, TaskLinkReservation,
 };
 use crate::infrastructure::task_store_v5::FileInvocationStoreV5;
-#[cfg(feature = "receipt-ledger-test-support")]
 use crate::infrastructure::task_store_v5::PublicationFailure;
 use serde::Serialize;
-#[cfg(feature = "receipt-ledger-test-support")]
-use serde_json::json;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -73,6 +58,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
+mod hooks;
+pub(crate) use hooks::{
+    NoHooks, V5AdmissionRejection, V5PausePoint, V5ReceiptRuntimeEventKind, V5RuntimeHooks,
+    V5Stage, V5StoreFaultPoint,
+};
 #[cfg(feature = "receipt-ledger-test-support")]
 mod receipt_scenario_v5;
 #[cfg(feature = "receipt-ledger-test-support")]
@@ -94,908 +84,7 @@ const CUTOFF_HANDOFF_COMMIT_BUDGET: Duration = TASK_RECONCILIATION_BUDGET;
 const V5_TASK_POLL_INTERVAL_MS: u64 = 100;
 static NEXT_RETIREMENT_PROCESS_GENERATION: AtomicU64 = AtomicU64::new(1);
 
-#[cfg(feature = "receipt-ledger-test-support")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum V5ReceiptRuntimeEventKind {
-    StrictEnvelopeParsed,
-    V5ReceiptRuntimeEntered,
-    V5ExecutorEntered,
-    CanonicalV13ServiceEntered,
-    ReceiptReserved,
-    ValidationEntered,
-    AdmissionEntered,
-    ActorBoundCommitted,
-    ReceiptBegunCommitted,
-    PrepareEntered,
-    ExecuteEntered,
-    UnboundPromiseCommitted,
-    BoundHandoffCommitted,
-    BoundHandoffTerminalStaged,
-    TaskBoundCommitted,
-    TaskLinkCapacityReserved,
-    TaskLinkCapacityRejected,
-    TaskStoreCreateAttempted,
-    TaskStoreCapacityInvariantViolation,
-    TaskStoreCreated,
-    TaskLinkReservationConverted,
-    FalseCancelObservationReached,
-    TaskStoreWorkingReadback,
-    TaskStoreTerminalCommitted,
-    TaskStoreTerminalReadback,
-    TaskTerminalBoundCommitted,
-    TokenSignalled,
-    MarkReservedBegunBlocked,
-    CancelCommitBlocked,
-    TaskStoreReadbackBeforeBind,
-    CancelCommitted,
-    OperationCompleted,
-    LeaseReleased,
-    ListenerPublished,
-    ListenerClosed,
-    CancelReservationConverted,
-    ResultSerialized,
-    ReceiptTerminalCommitted,
-    FinalResultProjected,
-    AcknowledgementCommitted,
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct V5ReceiptRuntimeEvent {
-    sequence: u64,
-    monotonic_ms: u64,
-    epoch_ms: u64,
-    event: V5ReceiptRuntimeEventKind,
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-#[derive(Debug, Clone, Copy, Default, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct V5ReceiptRuntimeCallbackCounts {
-    validation: u64,
-    admission: u64,
-    prepare: u64,
-    execute: u64,
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum V5ReceiptRuntimeListenerState {
-    NotPublished,
-    Listening,
-    Closed,
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-struct V5ReceiptRuntimeTelemetryState {
-    next_sequence: u64,
-    wait_floor_sequence: u64,
-    events: Vec<V5ReceiptRuntimeEvent>,
-    callbacks: V5ReceiptRuntimeCallbackCounts,
-    listener: V5ReceiptRuntimeListenerState,
-    active_listeners: u64,
-    daemon_running: bool,
-    restart_requested: bool,
-    actor_leases: u64,
-    terminal_publications: Vec<Value>,
-    next_preflight_sequence: u64,
-    task_store_create_attempts: u64,
-    store_fault: Option<receipt_scenario_v5::ScenarioStoreFaultPoint>,
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-#[derive(Clone)]
-struct V5ReceiptRuntimeTelemetrySnapshot {
-    events: Vec<V5ReceiptRuntimeEvent>,
-    callbacks: V5ReceiptRuntimeCallbackCounts,
-    listener: V5ReceiptRuntimeListenerState,
-    daemon_running: bool,
-    restart_requested: bool,
-    actor_leases: u64,
-    terminal_publications: Vec<Value>,
-    task_store_create_attempts: u64,
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-struct V5ReceiptRuntimeTelemetry {
-    started_at: Instant,
-    state: Mutex<V5ReceiptRuntimeTelemetryState>,
-    changed: Condvar,
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-impl V5ReceiptRuntimeTelemetry {
-    fn new() -> Self {
-        Self {
-            started_at: Instant::now(),
-            state: Mutex::new(V5ReceiptRuntimeTelemetryState {
-                next_sequence: 1,
-                wait_floor_sequence: 1,
-                events: Vec::new(),
-                callbacks: V5ReceiptRuntimeCallbackCounts::default(),
-                listener: V5ReceiptRuntimeListenerState::NotPublished,
-                active_listeners: 0,
-                daemon_running: false,
-                restart_requested: false,
-                actor_leases: 0,
-                terminal_publications: Vec::new(),
-                next_preflight_sequence: 1,
-                task_store_create_attempts: 0,
-                store_fault: None,
-            }),
-            changed: Condvar::new(),
-        }
-    }
-
-    fn lock_state(&self) -> MutexGuard<'_, V5ReceiptRuntimeTelemetryState> {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    fn record_event(&self, event: V5ReceiptRuntimeEventKind, epoch_ms: u64) -> u64 {
-        let monotonic_ms = u64::try_from(self.started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let mut state = self.lock_state();
-        let sequence = state.next_sequence;
-        state.next_sequence = state
-            .next_sequence
-            .checked_add(1)
-            .expect("protocol-v5 runtime telemetry sequence exhausted u64");
-        state.events.push(V5ReceiptRuntimeEvent {
-            sequence,
-            monotonic_ms,
-            epoch_ms,
-            event,
-        });
-        self.changed.notify_all();
-        sequence
-    }
-
-    fn record_prepare(&self) {
-        let mut state = self.lock_state();
-        state.callbacks.prepare = state.callbacks.prepare.saturating_add(1);
-        self.changed.notify_all();
-    }
-
-    fn record_validation(&self) {
-        let mut state = self.lock_state();
-        state.callbacks.validation = state.callbacks.validation.saturating_add(1);
-        self.changed.notify_all();
-    }
-
-    fn record_admission(&self) {
-        let mut state = self.lock_state();
-        state.callbacks.admission = state.callbacks.admission.saturating_add(1);
-        self.changed.notify_all();
-    }
-
-    fn record_execute(&self) {
-        let mut state = self.lock_state();
-        state.callbacks.execute = state.callbacks.execute.saturating_add(1);
-        self.changed.notify_all();
-    }
-
-    fn record_task_store_create_attempt(&self) {
-        let mut state = self.lock_state();
-        state.task_store_create_attempts = state.task_store_create_attempts.saturating_add(1);
-        self.changed.notify_all();
-    }
-
-    fn record_restart_requested(&self) {
-        let mut state = self.lock_state();
-        state.restart_requested = true;
-        self.changed.notify_all();
-    }
-
-    fn record_forced_process_exit(&self) {
-        let mut state = self.lock_state();
-        if state.restart_requested
-            && state.listener == V5ReceiptRuntimeListenerState::Closed
-            && !state.daemon_running
-        {
-            return;
-        }
-        let epoch_ms = state.events.last().map_or(1, |event| event.epoch_ms.max(1));
-        state.restart_requested = true;
-        state.listener = V5ReceiptRuntimeListenerState::Closed;
-        state.daemon_running = false;
-        self.changed.notify_all();
-        drop(state);
-        self.record_event(V5ReceiptRuntimeEventKind::ListenerClosed, epoch_ms);
-    }
-
-    fn reset_for_scenario(&self) {
-        let mut state = self.lock_state();
-        state.wait_floor_sequence = state.next_sequence;
-        state.callbacks = V5ReceiptRuntimeCallbackCounts::default();
-        state.listener = V5ReceiptRuntimeListenerState::NotPublished;
-        state.active_listeners = 0;
-        state.daemon_running = false;
-        state.restart_requested = false;
-        state.actor_leases = 0;
-        state.terminal_publications.clear();
-        state.task_store_create_attempts = 0;
-        state.store_fault = None;
-        self.changed.notify_all();
-    }
-
-    fn arm_store_fault(&self, point: receipt_scenario_v5::ScenarioStoreFaultPoint) {
-        self.lock_state().store_fault = Some(point);
-    }
-
-    fn take_store_fault(&self, point: receipt_scenario_v5::ScenarioStoreFaultPoint) -> bool {
-        let mut state = self.lock_state();
-        if state.store_fault == Some(point) {
-            state.store_fault = None;
-            true
-        } else {
-            false
-        }
-    }
-
-    fn snapshot(&self) -> V5ReceiptRuntimeTelemetrySnapshot {
-        let state = self.lock_state();
-        V5ReceiptRuntimeTelemetrySnapshot {
-            events: state.events.clone(),
-            callbacks: state.callbacks,
-            listener: state.listener,
-            daemon_running: state.daemon_running,
-            restart_requested: state.restart_requested,
-            actor_leases: if state.restart_requested && !state.daemon_running {
-                0
-            } else {
-                state.actor_leases
-            },
-            terminal_publications: state.terminal_publications.clone(),
-            task_store_create_attempts: state.task_store_create_attempts,
-        }
-    }
-
-    fn record_direct_publication(
-        &self,
-        publication: &CommittedDirectPublication,
-        response_kind: &'static str,
-        origin: &'static str,
-        candidate_result_override: Option<Value>,
-    ) {
-        let mut state = self.lock_state();
-        let receipt_key = receipt_key_observation_value(publication.receipt().key());
-        let response_prepared_sequence = state.next_preflight_sequence;
-        let response_write_sequence = response_prepared_sequence
-            .checked_add(1)
-            .expect("protocol-v5 preflight sequence exhausted u64");
-        if let Some(existing) = state
-            .terminal_publications
-            .iter_mut()
-            .find(|value| value.get("receiptKey") == Some(&receipt_key))
-        {
-            if let Some(frames) = existing
-                .get_mut("responseFrames")
-                .and_then(Value::as_array_mut)
-            {
-                frames.push(json!({
-                    "responseKind": response_kind,
-                    "origin": origin,
-                    "responseJsonl": artifact_value(
-                        publication.wire_frame().jsonl(),
-                        publication.wire_frame().encoded_bytes(),
-                        publication.wire_frame().sha256(),
-                    ),
-                    "preparedSequence": response_prepared_sequence,
-                    "writeSequence": response_write_sequence,
-                }));
-            }
-            state.next_preflight_sequence = response_write_sequence
-                .checked_add(1)
-                .expect("protocol-v5 preflight sequence exhausted u64");
-            return;
-        }
-
-        let Some(record) = publication.prepared_record() else {
-            return;
-        };
-        let terminal_payload_sequence = response_prepared_sequence;
-        let receipt_record_sequence = terminal_payload_sequence
-            .checked_add(1)
-            .expect("protocol-v5 preflight sequence exhausted u64");
-        let receipt_commit_sequence = receipt_record_sequence
-            .checked_add(1)
-            .expect("protocol-v5 preflight sequence exhausted u64");
-        state.next_preflight_sequence = receipt_commit_sequence
-            .checked_add(1)
-            .expect("protocol-v5 preflight sequence exhausted u64");
-        state.terminal_publications.push(json!({
-            "receiptKey": receipt_key,
-            "terminal": terminal_observation_value(
-                publication.receipt().terminal(),
-                publication.receipt().terminal_epoch_ms(),
-            ),
-            "commit": {
-                "owner": "direct_receipt_ledger",
-                "receipt": {
-                    "terminalPayload": artifact_value(
-                        record.terminal().payload(),
-                        u64::try_from(record.terminal().payload().len())
-                            .expect("terminal payload length fits u64"),
-                        &crate::application::receipt_ledger::ArtifactSha256::from_sha256(
-                            Sha256::digest(record.terminal().payload()).into(),
-                        ),
-                    ),
-                    "receiptRecord": artifact_value(
-                        record.bytes(),
-                        record.encoded_bytes(),
-                        record.sha256(),
-                    ),
-                    "candidateResult": candidate_result_override
-                        .or_else(|| candidate_result_value(record.terminal())),
-                    "terminalPayloadPreparedSequence": terminal_payload_sequence,
-                    "receiptRecordPreparedSequence": receipt_record_sequence,
-                    "receiptCommitSequence": receipt_commit_sequence,
-                    "receiptExpectedVersion": record.binding().expected_version().get(),
-                }
-            },
-            "responseFrames": [{
-                "responseKind": response_kind,
-                "origin": origin,
-                "responseJsonl": artifact_value(
-                    publication.wire_frame().jsonl(),
-                    publication.wire_frame().encoded_bytes(),
-                    publication.wire_frame().sha256(),
-                ),
-                "preparedSequence": response_prepared_sequence,
-                "writeSequence": Value::Null,
-            }],
-        }));
-    }
-
-    fn record_receipt_backed_publication(
-        &self,
-        receipt: &TaskTerminalReceiptBackedReceipt,
-        record_bytes: &[u8],
-    ) {
-        let mut state = self.lock_state();
-        let terminal_payload_sequence = state.next_preflight_sequence;
-        let receipt_record_sequence = terminal_payload_sequence.saturating_add(1);
-        let receipt_commit_sequence = receipt_record_sequence.saturating_add(1);
-        state.next_preflight_sequence = receipt_commit_sequence.saturating_add(1);
-        let record_sha = crate::application::receipt_ledger::ArtifactSha256::from_sha256(
-            Sha256::digest(record_bytes).into(),
-        );
-        state.terminal_publications.push(json!({
-            "receiptKey": receipt_key_observation_value(receipt.key()),
-            "terminal": terminal_observation_value(
-                receipt.terminal(),
-                receipt.terminal_epoch_ms(),
-            ),
-            "commit": {
-                "owner": "receipt_backed_task",
-                "receipt": {
-                    "terminalPayload": artifact_value(
-                        receipt.terminal().payload(),
-                        u64::try_from(receipt.terminal().payload().len()).unwrap_or(u64::MAX),
-                        &crate::application::receipt_ledger::ArtifactSha256::from_sha256(
-                            Sha256::digest(receipt.terminal().payload()).into(),
-                        ),
-                    ),
-                    "receiptRecord": artifact_value(
-                        record_bytes,
-                        u64::try_from(record_bytes.len()).unwrap_or(u64::MAX),
-                        &record_sha,
-                    ),
-                    "candidateResult": candidate_result_value(receipt.terminal()),
-                    "terminalPayloadPreparedSequence": terminal_payload_sequence,
-                    "receiptRecordPreparedSequence": receipt_record_sequence,
-                    "receiptCommitSequence": receipt_commit_sequence,
-                    "receiptExpectedVersion": receipt.record_version().get().saturating_sub(1),
-                }
-            },
-            "responseFrames": [],
-        }));
-    }
-
-    fn wait_for_event(
-        &self,
-        event: V5ReceiptRuntimeEventKind,
-        deadline: Instant,
-    ) -> Result<(), String> {
-        let mut state = self.lock_state();
-        while !state
-            .events
-            .iter()
-            .any(|record| record.sequence >= state.wait_floor_sequence && record.event == event)
-        {
-            let remaining = deadline
-                .checked_duration_since(Instant::now())
-                .ok_or_else(|| format!("protocol-v5 runtime event {event:?} was not observed"))?;
-            let (next, timeout) = self
-                .changed
-                .wait_timeout(state, remaining)
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            state = next;
-            if timeout.timed_out()
-                && !state.events.iter().any(|record| {
-                    record.sequence >= state.wait_floor_sequence && record.event == event
-                })
-            {
-                let observed = state
-                    .events
-                    .iter()
-                    .filter(|record| record.sequence >= state.wait_floor_sequence)
-                    .map(|record| format!("{:?}", record.event))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                return Err(format!(
-                    "protocol-v5 runtime event {event:?} was not observed; observed: [{observed}]"
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    fn wait_for_event_count(
-        &self,
-        event: V5ReceiptRuntimeEventKind,
-        count: usize,
-        deadline: Instant,
-    ) -> Result<(), String> {
-        let mut state = self.lock_state();
-        let observed_count = |state: &V5ReceiptRuntimeTelemetryState| {
-            state
-                .events
-                .iter()
-                .filter(|record| {
-                    record.sequence >= state.wait_floor_sequence && record.event == event
-                })
-                .count()
-        };
-        while observed_count(&state) < count {
-            let remaining = deadline
-                .checked_duration_since(Instant::now())
-                .ok_or_else(|| {
-                    format!(
-                    "protocol-v5 runtime event {event:?} was observed {} times, expected {count}",
-                    observed_count(&state)
-                )
-                })?;
-            let (next, timeout) = self
-                .changed
-                .wait_timeout(state, remaining)
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            state = next;
-            if timeout.timed_out() && observed_count(&state) < count {
-                return Err(format!(
-                    "protocol-v5 runtime event {event:?} was observed {} times, expected {count}",
-                    observed_count(&state)
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    fn wait_for_either_event(
-        &self,
-        first: V5ReceiptRuntimeEventKind,
-        second: V5ReceiptRuntimeEventKind,
-        deadline: Instant,
-    ) -> Result<(), String> {
-        let mut state = self.lock_state();
-        let observed = |state: &V5ReceiptRuntimeTelemetryState| {
-            state.events.iter().any(|record| {
-                record.sequence >= state.wait_floor_sequence
-                    && (record.event == first || record.event == second)
-            })
-        };
-        while !observed(&state) {
-            let remaining = deadline
-                .checked_duration_since(Instant::now())
-                .ok_or_else(|| {
-                    format!(
-                        "neither protocol-v5 runtime event {first:?} nor {second:?} was observed"
-                    )
-                })?;
-            let (next, timeout) = self
-                .changed
-                .wait_timeout(state, remaining)
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            state = next;
-            if timeout.timed_out() && !observed(&state) {
-                return Err(format!(
-                    "neither protocol-v5 runtime event {first:?} nor {second:?} was observed"
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    fn listener_lease(self: &Arc<Self>) -> V5ReceiptRuntimeListenerLease {
-        let mut state = self.lock_state();
-        let epoch_ms = state.events.last().map_or(1, |event| event.epoch_ms.max(1));
-        state.active_listeners = state
-            .active_listeners
-            .checked_add(1)
-            .expect("protocol-v5 runtime listener telemetry exhausted u64");
-        state.listener = V5ReceiptRuntimeListenerState::Listening;
-        state.daemon_running = true;
-        self.changed.notify_all();
-        drop(state);
-        self.record_event(V5ReceiptRuntimeEventKind::ListenerPublished, epoch_ms);
-        V5ReceiptRuntimeListenerLease {
-            telemetry: Arc::clone(self),
-        }
-    }
-
-    fn actor_lease(self: &Arc<Self>) -> V5ReceiptRuntimeActorLease {
-        let mut state = self.lock_state();
-        state.actor_leases = state
-            .actor_leases
-            .checked_add(1)
-            .expect("protocol-v5 runtime actor-lease telemetry exhausted u64");
-        self.changed.notify_all();
-        V5ReceiptRuntimeActorLease {
-            telemetry: Arc::clone(self),
-        }
-    }
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-fn receipt_key_observation_value(key: &ReceiptKey) -> Value {
-    json!({
-        "invocationId": key.invocation_id(),
-        "reservedTaskId": key.reserved_task_id(),
-        "coreIdentityDigest": key.core_identity_digest(),
-        "tool": key.tool(),
-        "normalizedArgumentsHash": key.normalized_arguments_hash(),
-        "requestScopeHash": key.request_scope_hash(),
-        "keyDigest": crate::application::receipt_ledger::receipt_key_digest(key),
-    })
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-fn artifact_value(
-    bytes: &[u8],
-    encoded_bytes: u64,
-    sha256: &crate::application::receipt_ledger::ArtifactSha256,
-) -> Value {
-    json!({
-        "rawHex": lower_hex(bytes),
-        "encodedBytes": encoded_bytes,
-        "sha256": sha256.to_string(),
-    })
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-fn artifact_from_bytes(bytes: &[u8]) -> Value {
-    artifact_value(
-        bytes,
-        u64::try_from(bytes.len()).expect("artifact length fits u64"),
-        &crate::application::receipt_ledger::ArtifactSha256::from_sha256(
-            Sha256::digest(bytes).into(),
-        ),
-    )
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-fn terminal_observation_value(
-    terminal: &crate::application::receipt_ledger::V5CanonicalTerminal,
-    terminal_epoch_ms: u64,
-) -> Value {
-    let mut value = serde_json::to_value(terminal.outcome())
-        .expect("protocol-v5 terminal outcome must serialize");
-    let object = value
-        .as_object_mut()
-        .expect("protocol-v5 terminal outcome must be an object");
-    object.insert(
-        "canonical_payload_hex".to_owned(),
-        Value::String(lower_hex(terminal.payload())),
-    );
-    object.insert(
-        "terminal_digest".to_owned(),
-        Value::String(terminal.digest().to_string()),
-    );
-    object.insert(
-        "terminal_epoch_ms".to_owned(),
-        Value::Number(terminal_epoch_ms.into()),
-    );
-    value
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-fn candidate_result_value(
-    terminal: &crate::application::receipt_ledger::V5CanonicalTerminal,
-) -> Option<Value> {
-    match terminal.outcome() {
-        crate::application::receipt_ledger::ReceiptTerminalOutcome::Completed { result } => {
-            let bytes = serde_json::to_vec(result).expect("DomainResult must serialize");
-            Some(artifact_from_bytes(&bytes))
-        }
-        crate::application::receipt_ledger::ReceiptTerminalOutcome::Failed { .. }
-        | crate::application::receipt_ledger::ReceiptTerminalOutcome::Cancelled => None,
-    }
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-fn lower_hex(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut encoded = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        encoded.push(HEX[(byte >> 4) as usize] as char);
-        encoded.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    encoded
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-struct V5ReceiptRuntimeListenerLease {
-    telemetry: Arc<V5ReceiptRuntimeTelemetry>,
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-impl Drop for V5ReceiptRuntimeListenerLease {
-    fn drop(&mut self) {
-        let mut state = self.telemetry.lock_state();
-        state.active_listeners = state
-            .active_listeners
-            .checked_sub(1)
-            .expect("protocol-v5 runtime listener telemetry lease released only once");
-        if state.active_listeners == 0 {
-            state.listener = V5ReceiptRuntimeListenerState::Closed;
-            state.daemon_running = false;
-        }
-        self.telemetry.changed.notify_all();
-    }
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-struct V5ReceiptRuntimeActorLease {
-    telemetry: Arc<V5ReceiptRuntimeTelemetry>,
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-impl Drop for V5ReceiptRuntimeActorLease {
-    fn drop(&mut self) {
-        let mut state = self.telemetry.lock_state();
-        let epoch_ms = state.events.last().map_or(1, |event| event.epoch_ms.max(1));
-        state.actor_leases = state
-            .actor_leases
-            .checked_sub(1)
-            .expect("protocol-v5 runtime actor telemetry lease released only once");
-        self.telemetry.changed.notify_all();
-        drop(state);
-        self.telemetry
-            .record_event(V5ReceiptRuntimeEventKind::LeaseReleased, epoch_ms);
-    }
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-fn open_receipt_actor_for_scenario(
-    receipts: RetainedDirectoryCapability,
-    context: &'static str,
-) -> Result<ReceiptLedgerActor, String> {
-    // Opening a fixture after a horizon/full-pool action performs the same bounded
-    // retained-store recovery as daemon startup. Keep that test-only I/O inside the
-    // bulk fixture budget instead of accidentally applying the ordinary 5-second
-    // operation timeout to thousands of durable rows.
-    let store = ReceiptLedgerStore::open_retained_directory_before(
-        receipts,
-        Instant::now() + receipt_scenario_v5::SCENARIO_BULK_OPERATION_TIMEOUT,
-    )
-    .map_err(|error| format!("{context}: {error}"))?;
-    Ok(ReceiptLedgerActor::spawn(store))
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-fn inject_receipt_identity_collision_for_scenario(
-    receipts: RetainedDirectoryCapability,
-    collide_on_invocation_id: bool,
-    deadline: Instant,
-) -> Result<(), String> {
-    let store = ReceiptLedgerStore::open_retained_directory(receipts)
-        .map_err(|error| format!("reopen identity-collision fixture store: {error}"))?;
-    store
-        .inject_identity_index_collision_for_test(collide_on_invocation_id, deadline)
-        .map_err(|error| format!("inject persisted identity collision: {error}"))
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-fn seed_receipt_backed_task_terminal_for_scenario(
-    receipts: RetainedDirectoryCapability,
-    seed: ReceiptBackedTaskTerminalSeed,
-    deadline: Instant,
-) -> Result<TaskTerminalReceiptBackedReceipt, String> {
-    let store = ReceiptLedgerStore::open_retained_directory(receipts)
-        .map_err(|error| format!("open receipt-backed Task fixture ledger: {error}"))?;
-    store
-        .seed_task_terminal_receipt_backed_for_test(seed, deadline)
-        .map_err(|error| format!("seed receipt-backed Task terminal: {error}"))
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-fn seed_receipt_tombstones_for_scenario(
-    receipts: RetainedDirectoryCapability,
-    keys: Vec<ReceiptKey>,
-    acknowledged_at_epoch_ms: u64,
-    terminal_digest: TerminalDigest,
-    deadline: Instant,
-) -> Result<(ReceiptLedgerActor, Vec<AcknowledgedTombstoneReceipt>), String> {
-    let store = ReceiptLedgerStore::open_retained_directory(receipts)
-        .map_err(|error| format!("open tombstone fixture ledger: {error}"))?;
-    let seeded = store
-        .seed_tombstones_for_test(keys, acknowledged_at_epoch_ms, terminal_digest, deadline)
-        .map_err(|error| format!("seed tombstone fixture pool: {error}"))?;
-    Ok((ReceiptLedgerActor::spawn(store), seeded))
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-#[derive(Clone, Copy)]
-struct ScenarioTaskTiming {
-    created_at_epoch_ms: u64,
-    ttl_ms: u64,
-    poll_interval_ms: u64,
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-impl ScenarioTaskTiming {
-    fn new(created_at_epoch_ms: u64, ttl_ms: u64, poll_interval_ms: u64) -> Self {
-        Self {
-            created_at_epoch_ms,
-            ttl_ms,
-            poll_interval_ms,
-        }
-    }
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-fn promise_task_unbound_for_scenario(
-    actor: &ReceiptLedgerActor,
-    key: ReceiptKey,
-    expected_version: crate::application::receipt_ledger::ReceiptVersion,
-    timing: ScenarioTaskTiming,
-    deadline: Instant,
-    telemetry: &V5ReceiptRuntimeTelemetry,
-) -> Result<TaskPromisedUnboundReceipt, ReceiptLedgerError> {
-    let promised = actor.promise_task_unbound(
-        key,
-        expected_version,
-        timing.created_at_epoch_ms,
-        timing.ttl_ms,
-        timing.poll_interval_ms,
-        deadline,
-    )?;
-    telemetry.record_event(
-        V5ReceiptRuntimeEventKind::UnboundPromiseCommitted,
-        timing.created_at_epoch_ms,
-    );
-    Ok(promised)
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-fn begin_bound_task_handoff_for_scenario(
-    actor: &ReceiptLedgerActor,
-    key: ReceiptKey,
-    expected_version: crate::application::receipt_ledger::ReceiptVersion,
-    timing: ScenarioTaskTiming,
-    deadline: Instant,
-    telemetry: &V5ReceiptRuntimeTelemetry,
-) -> Result<TaskHandoffActorBoundReceipt, ReceiptLedgerError> {
-    let handoff = actor.begin_bound_task_handoff(
-        key,
-        expected_version,
-        timing.created_at_epoch_ms,
-        timing.ttl_ms,
-        timing.poll_interval_ms,
-        deadline,
-    )?;
-    telemetry.record_event(
-        V5ReceiptRuntimeEventKind::BoundHandoffCommitted,
-        timing.created_at_epoch_ms,
-    );
-    Ok(handoff)
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-fn publish_direct_terminal_for_scenario(
-    actor: &ReceiptLedgerActor,
-    key: ReceiptKey,
-    expected_version: crate::application::receipt_ledger::ReceiptVersion,
-    terminal_epoch_ms: u64,
-    terminal: crate::application::receipt_ledger::V5CanonicalTerminal,
-    deadline: Instant,
-    telemetry: &V5ReceiptRuntimeTelemetry,
-) -> Result<CommittedDirectPublication, ReceiptLedgerError> {
-    let publication = actor.publish_direct_terminal(
-        key,
-        expected_version,
-        terminal_epoch_ms,
-        terminal,
-        deadline,
-    )?;
-    telemetry.record_event(
-        V5ReceiptRuntimeEventKind::ReceiptTerminalCommitted,
-        terminal_epoch_ms,
-    );
-    Ok(publication)
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-fn publish_receipt_backed_task_terminal_for_scenario(
-    actor: &ReceiptLedgerActor,
-    key: ReceiptKey,
-    expected: TaskCancellationReceipt,
-    terminal_epoch_ms: u64,
-    terminal: crate::application::receipt_ledger::V5CanonicalTerminal,
-    deadline: Instant,
-    telemetry: &V5ReceiptRuntimeTelemetry,
-) -> Result<TaskTerminalReceiptBackedReceipt, ReceiptLedgerError> {
-    let publication = actor.publish_receipt_backed_task_terminal(
-        key,
-        expected,
-        terminal_epoch_ms,
-        terminal,
-        deadline,
-    )?;
-    telemetry.record_event(
-        V5ReceiptRuntimeEventKind::ReceiptTerminalCommitted,
-        terminal_epoch_ms,
-    );
-    Ok(publication)
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-fn stage_bound_handoff_terminal_for_scenario(
-    actor: &ReceiptLedgerActor,
-    handoff: TaskHandoffActorBoundReceipt,
-    epoch_ms: u64,
-    terminal: crate::application::receipt_ledger::V5CanonicalTerminal,
-    deadline: Instant,
-    telemetry: &V5ReceiptRuntimeTelemetry,
-) -> Result<TaskHandoffActorBoundReceipt, ReceiptLedgerError> {
-    telemetry.record_execute();
-    telemetry.record_event(V5ReceiptRuntimeEventKind::ExecuteEntered, epoch_ms);
-    telemetry.record_event(V5ReceiptRuntimeEventKind::ResultSerialized, epoch_ms);
-    let certificate = canonical_staged_transfer_certificate(
-        handoff.key(),
-        handoff.key_digest(),
-        handoff.link(),
-        epoch_ms,
-        &terminal,
-    )?;
-    let staged = actor.stage_bound_task_handoff_terminal(
-        handoff.key().clone(),
-        handoff.record_version(),
-        epoch_ms,
-        terminal,
-        certificate,
-        deadline,
-    )?;
-    telemetry.record_event(
-        V5ReceiptRuntimeEventKind::BoundHandoffTerminalStaged,
-        epoch_ms,
-    );
-    Ok(staged)
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-fn acknowledge_direct_for_scenario(
-    actor: &ReceiptLedgerActor,
-    key: ReceiptKey,
-    terminal_digest: TerminalDigest,
-    acknowledged_at_epoch_ms: u64,
-    deadline: Instant,
-    telemetry: &V5ReceiptRuntimeTelemetry,
-) -> Result<AcknowledgedTombstoneReceipt, ReceiptLedgerError> {
-    let acknowledgement =
-        actor.acknowledge_direct(key, terminal_digest, acknowledged_at_epoch_ms, deadline)?;
-    telemetry.record_event(
-        V5ReceiptRuntimeEventKind::AcknowledgementCommitted,
-        acknowledged_at_epoch_ms,
-    );
-    Ok(acknowledgement)
-}
-
-struct V5ReceiptRuntime {
+pub(crate) struct V5ReceiptRuntime {
     core_identity: CoreIdentity,
     // On healthy shutdown Rust drops fields in declaration order: the actor
     // joins and releases its store before named authority is released. A
@@ -1003,18 +92,15 @@ struct V5ReceiptRuntime {
     receipt_ledger: ReceiptLedgerActor,
     _stable_authority: ReceiptAuthorityLock,
     epoch_clock: Arc<dyn EpochMillisClock>,
-    #[cfg_attr(not(feature = "receipt-ledger-test-support"), allow(dead_code))]
     invocation_executor: V5InvocationExecutor,
-    #[cfg_attr(not(feature = "receipt-ledger-test-support"), allow(dead_code))]
     task_projection: V5TaskProjection,
     active_task_cancellations: Arc<V5ActiveTaskCancellations>,
     task_execution_threads: Mutex<Vec<thread::JoinHandle<()>>>,
     task_terminal_coordinator: Mutex<()>,
     external_store_fail_stop: AtomicBool,
-    #[cfg(feature = "receipt-ledger-test-support")]
-    scenario_control: Option<Arc<receipt_scenario_v5::ReceiptScenarioControl>>,
-    #[cfg(feature = "receipt-ledger-test-support")]
-    telemetry: Arc<V5ReceiptRuntimeTelemetry>,
+    /// Who observes this runtime and what it injects; production installs
+    /// `NoHooks`.
+    hooks: Arc<dyn V5RuntimeHooks>,
 }
 
 #[derive(Default)]
@@ -1232,8 +318,6 @@ struct V5TaskProjection {
     retirement_process_generation: u64,
     retirement_issued_sequence: AtomicU64,
     retirement_coordinator: Mutex<()>,
-    #[cfg(all(test, feature = "receipt-ledger-test-support"))]
-    retirement_snapshot_barrier: Mutex<Option<Arc<std::sync::Barrier>>>,
 }
 
 #[derive(Clone)]
@@ -1284,17 +368,7 @@ impl V5TaskProjection {
                 .fetch_add(1, Ordering::AcqRel),
             retirement_issued_sequence: AtomicU64::new(1),
             retirement_coordinator: Mutex::new(()),
-            #[cfg(all(test, feature = "receipt-ledger-test-support"))]
-            retirement_snapshot_barrier: Mutex::new(None),
         })
-    }
-
-    #[cfg(all(test, feature = "receipt-ledger-test-support"))]
-    fn install_retirement_snapshot_barrier_for_test(&self, barrier: Arc<std::sync::Barrier>) {
-        *self
-            .retirement_snapshot_barrier
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(barrier);
     }
 
     fn authorize_task_retirement(
@@ -1571,17 +645,11 @@ impl V5TaskProjection {
     fn retire_expired_terminal_tasks(
         &self,
         deadline: Instant,
+        hooks: &dyn V5RuntimeHooks,
     ) -> Result<(), V5TaskProjectionFailure> {
-        #[cfg(all(test, feature = "receipt-ledger-test-support"))]
-        let retirement_snapshot_barrier = self
-            .retirement_snapshot_barrier
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        #[cfg(all(test, feature = "receipt-ledger-test-support"))]
-        if let Some(barrier) = retirement_snapshot_barrier {
-            barrier.wait();
-        }
+        hooks
+            .pause(V5PausePoint::BeforeRetirementSnapshot, deadline)
+            .map_err(V5TaskProjectionFailure::fail_stop)?;
         // One process owns the receipt authority, and this coordinator makes
         // terminal retirement a single-owner operation inside that process.
         // A concurrent observation waits and then takes a fresh catalog snapshot
@@ -1678,13 +746,12 @@ impl V5TaskProjection {
         V5TaskProjectionFailure::fail_stop(ReceiptLedgerError::Corrupt(message))
     }
 
-    #[cfg(any(test, feature = "receipt-ledger-test-support"))]
     fn materialize_bound_handoff(
         &self,
         handoff: &TaskHandoffActorBoundReceipt,
         bind_epoch_ms: u64,
         deadline: Instant,
-        #[cfg(feature = "receipt-ledger-test-support")] telemetry: &V5ReceiptRuntimeTelemetry,
+        hooks: &dyn V5RuntimeHooks,
     ) -> Result<(V5StoredInvocationRecord, TaskBoundReceipt), V5TaskProjectionFailure> {
         self.materialize_actor_bound_task(
             handoff.key(),
@@ -1696,8 +763,7 @@ impl V5TaskProjection {
             handoff.phase() == AttemptPhase::Begun,
             bind_epoch_ms,
             deadline,
-            #[cfg(feature = "receipt-ledger-test-support")]
-            telemetry,
+            hooks,
         )
     }
 
@@ -1706,7 +772,7 @@ impl V5TaskProjection {
         handoff: &TaskHandoffActorBoundReceipt,
         _epoch_ms: u64,
         deadline: Instant,
-        #[cfg(feature = "receipt-ledger-test-support")] telemetry: &V5ReceiptRuntimeTelemetry,
+        hooks: &dyn V5RuntimeHooks,
     ) -> Result<TaskLinkReservation, V5TaskProjectionFailure> {
         let reservation = self
             .lifecycle_links
@@ -1716,8 +782,7 @@ impl V5TaskProjection {
                 crate::domain::code_intelligence::ProviderDeadline::new(deadline),
             )
             .map_err(V5TaskProjectionFailure::from_link_store)?;
-        #[cfg(feature = "receipt-ledger-test-support")]
-        telemetry.record_event(
+        hooks.event(
             V5ReceiptRuntimeEventKind::TaskLinkCapacityReserved,
             _epoch_ms,
         );
@@ -1730,7 +795,7 @@ impl V5TaskProjection {
         reservation: &TaskLinkReservation,
         bind_epoch_ms: u64,
         deadline: Instant,
-        #[cfg(feature = "receipt-ledger-test-support")] telemetry: &V5ReceiptRuntimeTelemetry,
+        hooks: &dyn V5RuntimeHooks,
     ) -> Result<(V5StoredInvocationRecord, TaskBoundReceipt), V5TaskProjectionFailure> {
         self.materialize_actor_bound_task_from_reservation(
             handoff.key(),
@@ -1743,8 +808,7 @@ impl V5TaskProjection {
             bind_epoch_ms,
             deadline,
             true,
-            #[cfg(feature = "receipt-ledger-test-support")]
-            telemetry,
+            hooks,
         )
     }
 
@@ -1753,7 +817,7 @@ impl V5TaskProjection {
         handoff: &TaskHandoffActorBoundReceipt,
         bind_epoch_ms: u64,
         deadline: Instant,
-        #[cfg(feature = "receipt-ledger-test-support")] telemetry: &V5ReceiptRuntimeTelemetry,
+        hooks: &dyn V5RuntimeHooks,
     ) -> Result<(V5StoredInvocationRecord, TaskBoundReceipt), V5TaskProjectionFailure> {
         self.materialize_actor_bound_task(
             handoff.key(),
@@ -1765,8 +829,7 @@ impl V5TaskProjection {
             handoff.phase() == AttemptPhase::Begun,
             bind_epoch_ms,
             deadline,
-            #[cfg(feature = "receipt-ledger-test-support")]
-            telemetry,
+            hooks,
         )
     }
 
@@ -1775,7 +838,7 @@ impl V5TaskProjection {
         promised: &TaskPromisedActorBoundReceipt,
         bind_epoch_ms: u64,
         deadline: Instant,
-        #[cfg(feature = "receipt-ledger-test-support")] telemetry: &V5ReceiptRuntimeTelemetry,
+        hooks: &dyn V5RuntimeHooks,
     ) -> Result<(V5StoredInvocationRecord, TaskBoundReceipt), V5TaskProjectionFailure> {
         self.materialize_actor_bound_task(
             promised.key(),
@@ -1787,8 +850,7 @@ impl V5TaskProjection {
             false,
             bind_epoch_ms,
             deadline,
-            #[cfg(feature = "receipt-ledger-test-support")]
-            telemetry,
+            hooks,
         )
     }
 
@@ -1804,15 +866,14 @@ impl V5TaskProjection {
         recovered_begun: bool,
         bind_epoch_ms: u64,
         deadline: Instant,
-        #[cfg(feature = "receipt-ledger-test-support")] telemetry: &V5ReceiptRuntimeTelemetry,
+        hooks: &dyn V5RuntimeHooks,
     ) -> Result<(V5StoredInvocationRecord, TaskBoundReceipt), V5TaskProjectionFailure> {
         let provider_deadline = crate::domain::code_intelligence::ProviderDeadline::new(deadline);
         let reservation = self
             .lifecycle_links
             .reserve_task_link(key.clone(), link.clone(), provider_deadline)
             .map_err(V5TaskProjectionFailure::from_link_store)?;
-        #[cfg(feature = "receipt-ledger-test-support")]
-        telemetry.record_event(
+        hooks.event(
             V5ReceiptRuntimeEventKind::TaskLinkCapacityReserved,
             bind_epoch_ms,
         );
@@ -1827,8 +888,7 @@ impl V5TaskProjection {
             bind_epoch_ms,
             deadline,
             true,
-            #[cfg(feature = "receipt-ledger-test-support")]
-            telemetry,
+            hooks,
         )
     }
 
@@ -1844,8 +904,8 @@ impl V5TaskProjection {
         reservation: &TaskLinkReservation,
         bind_epoch_ms: u64,
         deadline: Instant,
-        _record_reservation_conversion: bool,
-        #[cfg(feature = "receipt-ledger-test-support")] telemetry: &V5ReceiptRuntimeTelemetry,
+        record_reservation_conversion: bool,
+        hooks: &dyn V5RuntimeHooks,
     ) -> Result<(V5StoredInvocationRecord, TaskBoundReceipt), V5TaskProjectionFailure> {
         let provider_deadline = crate::domain::code_intelligence::ProviderDeadline::new(deadline);
         let identity = V5TaskIdentity::new(
@@ -1867,19 +927,14 @@ impl V5TaskProjection {
         } else {
             new_record
         };
-        #[cfg(feature = "receipt-ledger-test-support")]
-        {
-            telemetry.record_task_store_create_attempt();
-            telemetry.record_event(
-                V5ReceiptRuntimeEventKind::TaskStoreCreateAttempted,
-                bind_epoch_ms,
-            );
-            if telemetry.take_store_fault(
-                receipt_scenario_v5::ScenarioStoreFaultPoint::AfterTaskCreateRenameBeforeDirectorySync,
-            ) {
-                self.task_store
-                    .inject_next_publication_failure(PublicationFailure::AfterRenameBeforeSync);
-            }
+        hooks.task_store_create_attempted();
+        hooks.event(
+            V5ReceiptRuntimeEventKind::TaskStoreCreateAttempted,
+            bind_epoch_ms,
+        );
+        if hooks.store_fault(V5StoreFaultPoint::AfterTaskCreateRenameBeforeDirectorySync) {
+            self.task_store
+                .inject_next_publication_failure(PublicationFailure::AfterRenameBeforeSync);
         }
         let created = self
             .task_store
@@ -1908,8 +963,7 @@ impl V5TaskProjection {
                 },
             ));
         }
-        #[cfg(feature = "receipt-ledger-test-support")]
-        telemetry.record_event(V5ReceiptRuntimeEventKind::TaskStoreCreated, bind_epoch_ms);
+        hooks.event(V5ReceiptRuntimeEventKind::TaskStoreCreated, bind_epoch_ms);
         if cancel_requested && !readback.cancel_requested {
             readback = self
                 .task_store
@@ -1934,9 +988,8 @@ impl V5TaskProjection {
                 provider_deadline,
             )
             .map_err(V5TaskProjectionFailure::from_link_store)?;
-        #[cfg(feature = "receipt-ledger-test-support")]
-        if _record_reservation_conversion {
-            telemetry.record_event(
+        if record_reservation_conversion {
+            hooks.event(
                 V5ReceiptRuntimeEventKind::TaskLinkReservationConverted,
                 bind_epoch_ms,
             );
@@ -2172,14 +1225,11 @@ impl V5TaskProjection {
     fn publish_bound_task_terminal(
         &self,
         expected: &TaskBoundReceipt,
-        record: V5StoredInvocationRecord,
+        record: &V5StoredInvocationRecord,
         terminal: &crate::application::receipt_ledger::V5CanonicalTerminal,
         terminal_epoch_ms: u64,
         deadline: Instant,
-        #[cfg(feature = "receipt-ledger-test-support")] telemetry: &V5ReceiptRuntimeTelemetry,
-        #[cfg(feature = "receipt-ledger-test-support")] scenario_control: Option<
-            &Arc<receipt_scenario_v5::ReceiptScenarioControl>,
-        >,
+        hooks: &dyn V5RuntimeHooks,
     ) -> Result<(V5StoredInvocationRecord, TaskTerminalBoundReceipt), V5TaskProjectionFailure> {
         let terminal_digest = terminal.digest().clone();
         let (publication, terminal_status) = match terminal.outcome() {
@@ -2216,21 +1266,21 @@ impl V5TaskProjection {
             .map_err(|error| {
                 V5TaskProjectionFailure::from_task_store(error, receipt_key_digest, true)
             })?;
-        #[cfg(feature = "receipt-ledger-test-support")]
-        if let Some(control) = scenario_control.filter(|control| {
-            control.is_barrier_installed(
-                receipt_scenario_v5::ScenarioBarrierPoint::AfterTaskStoreTerminalBeforeLifecycleLinkTerminal,
-            )
-        }) {
-            telemetry.record_event(
+        if hooks.holds(V5PausePoint::AfterTaskStoreTerminalBeforeLifecycleLinkTerminal) {
+            hooks.event(
                 V5ReceiptRuntimeEventKind::TaskStoreTerminalCommitted,
                 terminal_epoch_ms,
             );
-            control.pause(
-                receipt_scenario_v5::ScenarioBarrierPoint::AfterTaskStoreTerminalBeforeLifecycleLinkTerminal,
-                Instant::now() + receipt_scenario_v5::SCENARIO_BULK_OPERATION_TIMEOUT,
-            ).map_err(V5TaskProjectionFailure::fail_stop)?;
-            if control.process_exited() {
+            hooks
+                .pause(
+                    V5PausePoint::AfterTaskStoreTerminalBeforeLifecycleLinkTerminal,
+                    hooks.commit_deadline_at(
+                        V5PausePoint::AfterTaskStoreTerminalBeforeLifecycleLinkTerminal,
+                        deadline,
+                    ),
+                )
+                .map_err(V5TaskProjectionFailure::fail_stop)?;
+            if hooks.process_exited() {
                 return Err(V5TaskProjectionFailure::fail_stop(
                     ReceiptLedgerError::StoreUnavailable,
                 ));
@@ -2250,154 +1300,6 @@ impl V5TaskProjection {
             )
             .map_err(V5TaskProjectionFailure::from_link_store)?;
         Ok((terminal_record, terminal_link))
-    }
-
-    #[cfg(feature = "receipt-ledger-test-support")]
-    fn publish_staged_terminal_against_exact_provisional(
-        &self,
-        staged: &TaskHandoffActorBoundReceipt,
-        reservation: &TaskLinkReservation,
-        expected: &V5StoredInvocationRecord,
-        expected_link_digest: &crate::application::receipt_ledger::TaskLinkDigest,
-        deadline: Instant,
-    ) -> Result<(V5StoredInvocationRecord, TaskTerminalBoundReceipt), V5TaskProjectionFailure> {
-        if reservation.key() != staged.key()
-            || reservation.link() != staged.link()
-            || reservation.link().digest() != expected_link_digest
-            || staged.link().digest() != expected_link_digest
-        {
-            return Err(V5TaskProjectionFailure::fail_stop(
-                ReceiptLedgerError::TaskBoundMismatch,
-            ));
-        }
-        let HandoffTerminalStage::Staged {
-            terminal_epoch_ms,
-            terminal,
-            ..
-        } = staged.terminal_stage()
-        else {
-            return Err(V5TaskProjectionFailure::fail_stop(
-                ReceiptLedgerError::TaskBoundMismatch,
-            ));
-        };
-        let provider_deadline = crate::domain::code_intelligence::ProviderDeadline::new(deadline);
-        let observed = self
-            .task_store
-            .get(expected.task_id, provider_deadline)
-            .map_err(|error| {
-                V5TaskProjectionFailure::from_task_store(error, staged.key_digest().clone(), true)
-            })?;
-        if observed != *expected {
-            return Err(V5TaskProjectionFailure::fail_stop(
-                ReceiptLedgerError::TaskBoundMismatch,
-            ));
-        }
-        let task = receipt_task_projection_from_store(&observed)?;
-        let bound = self
-            .lifecycle_links
-            .materialize_task_bound(
-                reservation,
-                task,
-                observed.version,
-                *terminal_epoch_ms,
-                staged.phase(),
-                provider_deadline,
-            )
-            .map_err(V5TaskProjectionFailure::from_link_store)?;
-        let (publication, terminal_status) = match terminal.outcome() {
-            ReceiptTerminalOutcome::Completed { result } => (
-                V5TerminalPublication::Completed {
-                    terminal_epoch_ms: *terminal_epoch_ms,
-                    terminal_digest: terminal.digest().clone(),
-                    result: result.clone(),
-                },
-                ClosedTerminalStatus::Completed,
-            ),
-            ReceiptTerminalOutcome::Failed { reason } => (
-                V5TerminalPublication::Failed {
-                    terminal_epoch_ms: *terminal_epoch_ms,
-                    terminal_digest: terminal.digest().clone(),
-                    reason: *reason,
-                },
-                ClosedTerminalStatus::Failed,
-            ),
-            ReceiptTerminalOutcome::Cancelled => (
-                V5TerminalPublication::Cancelled {
-                    terminal_epoch_ms: *terminal_epoch_ms,
-                    terminal_digest: terminal.digest().clone(),
-                },
-                ClosedTerminalStatus::Cancelled,
-            ),
-        };
-        let terminal_record = self
-            .task_store
-            .publish_staged_terminal_against_exact_provisional(
-                expected,
-                publication,
-                provider_deadline,
-            )
-            .map_err(|error| {
-                V5TaskProjectionFailure::from_task_store(error, staged.key_digest().clone(), true)
-            })?;
-        let terminal_task = receipt_task_projection_from_store(&terminal_record)?;
-        let terminal_link = self
-            .lifecycle_links
-            .publish_task_terminal_bound(
-                &bound,
-                terminal_task,
-                terminal_record.version,
-                terminal_status,
-                terminal.digest().clone(),
-                *terminal_epoch_ms,
-                provider_deadline,
-            )
-            .map_err(V5TaskProjectionFailure::from_link_store)?;
-        Ok((terminal_record, terminal_link))
-    }
-
-    #[cfg(feature = "receipt-ledger-test-support")]
-    fn exact_task_link_reservation(
-        &self,
-        key: &ReceiptKey,
-        deadline: Instant,
-    ) -> Result<TaskLinkReservation, V5TaskProjectionFailure> {
-        let catalog = self
-            .lifecycle_links
-            .catalog_snapshot(crate::domain::code_intelligence::ProviderDeadline::new(
-                deadline,
-            ))
-            .map_err(V5TaskProjectionFailure::from_link_store)?;
-        catalog
-            .entries()
-            .iter()
-            .find_map(|entry| match entry {
-                TaskLifecycleLinkCatalogEntry::Reservation(reservation)
-                    if reservation.key_digest() == &receipt_key_digest(key) =>
-                {
-                    Some(reservation.clone())
-                }
-                TaskLifecycleLinkCatalogEntry::Reservation(_)
-                | TaskLifecycleLinkCatalogEntry::Record(_) => None,
-            })
-            .ok_or_else(|| {
-                V5TaskProjectionFailure::fail_stop(ReceiptLedgerError::TaskBoundMismatch)
-            })
-    }
-
-    #[cfg(feature = "receipt-ledger-test-support")]
-    fn exact_task_record(
-        &self,
-        key: &ReceiptKey,
-        deadline: Instant,
-    ) -> Result<V5StoredInvocationRecord, V5TaskProjectionFailure> {
-        self.task_store
-            .get(
-                key.reserved_task_id(),
-                crate::domain::code_intelligence::ProviderDeadline::new(deadline),
-            )
-            .map_err(|error| {
-                V5TaskProjectionFailure::from_task_store(error, receipt_key_digest(key), true)
-            })
     }
 
     fn read_bound_task(
@@ -2899,11 +1801,10 @@ impl V5InvocationExecutor {
 
 impl V5ReceiptRuntime {
     fn open(state: &DaemonStateDirectory, config: &DaemonServerConfig) -> Result<Self, String> {
-        #[cfg(feature = "receipt-ledger-test-support")]
-        if let Some(epoch_clock) = config.epoch_clock_for_v5_test() {
-            return Self::open_with_epoch_clock(state, config, epoch_clock);
-        }
-        Self::open_with_epoch_clock(state, config, Arc::new(SystemEpochMillisClock))
+        let epoch_clock = config
+            .epoch_clock_for_v5()
+            .unwrap_or_else(|| Arc::new(SystemEpochMillisClock));
+        Self::open_with_epoch_clock(state, config, epoch_clock)
     }
 
     fn open_with_epoch_clock(
@@ -2911,45 +1812,9 @@ impl V5ReceiptRuntime {
         config: &DaemonServerConfig,
         epoch_clock: Arc<dyn EpochMillisClock>,
     ) -> Result<Self, String> {
-        Self::open_with_epoch_clock_inner(
-            state,
-            config,
-            epoch_clock,
-            #[cfg(feature = "receipt-ledger-test-support")]
-            None,
-            #[cfg(feature = "receipt-ledger-test-support")]
-            None,
-        )
-    }
-
-    #[cfg(feature = "receipt-ledger-test-support")]
-    fn open_with_epoch_clock_and_telemetry_for_test(
-        state: &DaemonStateDirectory,
-        config: &DaemonServerConfig,
-        epoch_clock: Arc<dyn EpochMillisClock>,
-        telemetry: Arc<V5ReceiptRuntimeTelemetry>,
-        scenario_control: Option<Arc<receipt_scenario_v5::ReceiptScenarioControl>>,
-    ) -> Result<Self, String> {
-        Self::open_with_epoch_clock_inner(
-            state,
-            config,
-            epoch_clock,
-            Some(telemetry),
-            scenario_control,
-        )
-    }
-
-    fn open_with_epoch_clock_inner(
-        state: &DaemonStateDirectory,
-        config: &DaemonServerConfig,
-        epoch_clock: Arc<dyn EpochMillisClock>,
-        #[cfg(feature = "receipt-ledger-test-support")] telemetry: Option<
-            Arc<V5ReceiptRuntimeTelemetry>,
-        >,
-        #[cfg(feature = "receipt-ledger-test-support")] scenario_control: Option<
-            Arc<receipt_scenario_v5::ReceiptScenarioControl>,
-        >,
-    ) -> Result<Self, String> {
+        let hooks = config
+            .runtime_hooks_for_v5()
+            .unwrap_or_else(|| Arc::new(NoHooks));
         let stable_authority = state.acquire_receipt_authority(AUTHORITY_ACQUIRE_TIMEOUT)?;
         let startup_deadline = Instant::now() + STARTUP_RECONCILIATION_TIMEOUT;
         let receipts = state.create_private_retained_subdirectory("receipts")?;
@@ -2989,16 +1854,9 @@ impl V5ReceiptRuntime {
             task_execution_threads: Mutex::new(Vec::new()),
             task_terminal_coordinator: Mutex::new(()),
             external_store_fail_stop: AtomicBool::new(false),
-            #[cfg(feature = "receipt-ledger-test-support")]
-            scenario_control,
-            #[cfg(feature = "receipt-ledger-test-support")]
-            telemetry: telemetry.unwrap_or_else(|| Arc::new(V5ReceiptRuntimeTelemetry::new())),
+            hooks,
         };
-        #[cfg(feature = "receipt-ledger-test-support")]
-        let skip_reconciliation = config.skip_v5_startup_reconciliation_for_test();
-        #[cfg(not(feature = "receipt-ledger-test-support"))]
-        let skip_reconciliation = false;
-        if !skip_reconciliation {
+        if !config.skips_v5_startup_reconciliation() {
             runtime.preflight_existing_handoff_tasks(&recovery_keys, startup_deadline)?;
             runtime.reconcile_pre_task_startup(recovery_keys, startup_deadline)?;
             runtime
@@ -3010,914 +1868,6 @@ impl V5ReceiptRuntime {
                 })?;
         }
         Ok(runtime)
-    }
-
-    #[cfg(feature = "receipt-ledger-test-support")]
-    fn attempt_task_store_bind_under_gate_for_test(
-        &self,
-        key: &ReceiptKey,
-        operation_label: &str,
-        deadline: Instant,
-    ) -> Result<(Value, Value), String> {
-        let epoch_ms = self.epoch_clock.now_epoch_millis();
-        let state = self
-            .receipt_ledger
-            .recover(key.clone(), deadline)
-            .map_err(|error| format!("recover capacity handoff receipt: {error}"))?;
-        let handoff = match state {
-            ReceiptState::TaskPromisedActorBound(promised) => self
-                .receipt_ledger
-                .begin_bound_task_handoff(
-                    promised.key().clone(),
-                    promised.record_version(),
-                    promised.task().created_at_epoch_ms(),
-                    promised.task().ttl_ms(),
-                    promised.task().poll_interval_ms(),
-                    deadline,
-                )
-                .map_err(|error| format!("begin capacity handoff: {error}"))?,
-            ReceiptState::TaskHandoffActorBound(handoff) => handoff,
-            other => {
-                return Err(format!(
-                    "capacity bind requires actor-bound Task handoff, found {}",
-                    other.kind().diagnostic_name()
-                ))
-            }
-        };
-        let task_store_generation = u64::try_from(self.task_projection.recovery.entries().len())
-            .map_err(|_| "TaskStore generation does not fit capacity evidence".to_owned())?;
-        let attempts_before = self.telemetry.snapshot().task_store_create_attempts;
-        let checked_sequence = self
-            .telemetry
-            .record_event(V5ReceiptRuntimeEventKind::V5ReceiptRuntimeEntered, epoch_ms);
-        let failure = match self.task_projection.materialize_bound_handoff(
-            &handoff,
-            epoch_ms,
-            deadline,
-            &self.telemetry,
-        ) {
-            Ok(_) => {
-                return Err(
-                    "full lifecycle-link pool unexpectedly admitted another Task".to_owned(),
-                )
-            }
-            Err(failure) => failure,
-        };
-        if failure.fail_stop || failure.error != ReceiptLedgerError::CapacityExceeded {
-            return Err(format!(
-                "capacity bind failed for a non-capacity reason: {}",
-                failure.error
-            ));
-        }
-        let rejected_sequence = self.telemetry.record_event(
-            V5ReceiptRuntimeEventKind::TaskLinkCapacityRejected,
-            epoch_ms,
-        );
-        let proof = ProvenTaskLinkCapacity::Count {
-            observed_live_links: u64::try_from(
-                crate::infrastructure::task_lifecycle_link_store_v5::MAX_TASK_LIFECYCLE_LINK_RECORDS,
-            )
-            .expect("Task lifecycle-link limit fits u64"),
-            maximum_live_links: u64::try_from(
-                crate::infrastructure::task_lifecycle_link_store_v5::MAX_TASK_LIFECYCLE_LINK_RECORDS,
-            )
-            .expect("Task lifecycle-link limit fits u64"),
-        };
-        let staged = match handoff.terminal_stage() {
-            HandoffTerminalStage::NoTerminal => None,
-            HandoffTerminalStage::Staged {
-                terminal,
-                certificate,
-                ..
-            } => Some((terminal.clone(), certificate.clone())),
-        };
-        let terminal = if let Some((staged_terminal, _)) = &staged {
-            let committed = self
-                .receipt_ledger
-                .publish_receipt_backed_task_terminal(
-                    handoff.key().clone(),
-                    TaskCancellationReceipt::HandoffActorBound(handoff.clone()),
-                    epoch_ms,
-                    staged_terminal.clone(),
-                    deadline,
-                )
-                .map_err(|error| {
-                    format!("preserve staged Task terminal after link capacity: {error}")
-                })?;
-            if let Some(control) = &self.scenario_control {
-                control
-                    .record_staged_capacity_fallback(&committed)
-                    .map_err(|error| format!("record staged capacity fallback: {error}"))?;
-                control
-                    .record_receipt_backed_terminal(committed.clone())
-                    .map_err(|error| format!("record staged link-capacity terminal: {error}"))?;
-            }
-            self.telemetry.record_event(
-                V5ReceiptRuntimeEventKind::ReceiptTerminalCommitted,
-                epoch_ms,
-            );
-            Some(committed.terminal().clone())
-        } else if handoff.phase() == AttemptPhase::Begun {
-            self.receipt_ledger
-                .retain_begun_task_after_link_capacity(
-                    handoff.key().clone(),
-                    handoff.record_version(),
-                    proof,
-                    deadline,
-                )
-                .map_err(|error| format!("retain receipt-owned begun Task: {error}"))?;
-            None
-        } else {
-            let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Failed {
-                reason: V5SafeFailureReason::TaskCapacity,
-            })
-            .map_err(|error| format!("encode Task capacity terminal: {error}"))?;
-            let committed = self
-                .receipt_ledger
-                .publish_receipt_backed_task_terminal(
-                    handoff.key().clone(),
-                    TaskCancellationReceipt::HandoffActorBound(handoff.clone()),
-                    epoch_ms,
-                    terminal,
-                    deadline,
-                )
-                .map_err(|error| format!("publish Task capacity terminal: {error}"))?;
-            if let Some(control) = &self.scenario_control {
-                control
-                    .record_receipt_backed_terminal(committed.clone())
-                    .map_err(|error| format!("record Task capacity terminal: {error}"))?;
-            }
-            self.telemetry.record_event(
-                V5ReceiptRuntimeEventKind::ReceiptTerminalCommitted,
-                epoch_ms,
-            );
-            Some(committed.terminal().clone())
-        };
-        let attempts_after = self.telemetry.snapshot().task_store_create_attempts;
-        let terminal_observation = terminal
-            .as_ref()
-            .map(|terminal| terminal_observation_value(terminal, epoch_ms));
-        let staged_certificate_sha256 = staged
-            .as_ref()
-            .map(|(_, certificate)| {
-                serde_json::to_vec(certificate.as_ref())
-                    .map(|bytes| format!("{:x}", Sha256::digest(bytes)))
-                    .map_err(|error| format!("encode staged transfer certificate: {error}"))
-            })
-            .transpose()?;
-        let response = json!({
-            "kind": if terminal.is_some() { "task" } else { "rejected" },
-            "error": if staged.is_some() { Value::Null } else { Value::String("task_capacity".to_owned()) },
-            "terminal": terminal_observation,
-            "key": receipt_key_observation_value(key),
-            "task": null,
-            "acknowledgement": null,
-            "cutoffEpochMs": null,
-            "originalBudgetMs": null,
-            "latencyMs": 0,
-        });
-        let observation = json!({
-            "operationLabel": operation_label,
-            "receiptKey": receipt_key_observation_value(key),
-            "terminal": terminal_observation,
-            "stagedTransferCertificateSha256": staged_certificate_sha256,
-            "evidence": {
-                "source": "link_capacity",
-                "capacity_checked_sequence": checked_sequence,
-                "capacity_rejected_sequence": rejected_sequence,
-                "task_store_generation_before": task_store_generation,
-                "task_store_generation_after": task_store_generation,
-                "task_store_create_attempts_before": attempts_before,
-                "task_store_create_attempts_after": attempts_after,
-            }
-        });
-        Ok((response, observation))
-    }
-
-    #[cfg(feature = "receipt-ledger-test-support")]
-    fn stage_bound_handoff_terminal_for_test(
-        &self,
-        key: &ReceiptKey,
-        terminal: crate::application::receipt_ledger::V5CanonicalTerminal,
-        deadline: Instant,
-    ) -> Result<(), String> {
-        let epoch_ms = self.epoch_clock.now_epoch_millis();
-        let handoff = match self
-            .receipt_ledger
-            .recover(key.clone(), deadline)
-            .map_err(|error| format!("recover handoff before staging terminal: {error}"))?
-        {
-            ReceiptState::TaskHandoffActorBound(handoff) => handoff,
-            other => {
-                return Err(format!(
-                    "staging terminal requires actor-bound Task handoff, found {}",
-                    other.kind().diagnostic_name()
-                ))
-            }
-        };
-        let certificate = canonical_staged_transfer_certificate(
-            handoff.key(),
-            handoff.key_digest(),
-            handoff.link(),
-            epoch_ms,
-            &terminal,
-        )
-        .map_err(|error| format!("prepare staged transfer certificate: {error}"))?;
-        let staged = self
-            .receipt_ledger
-            .stage_bound_task_handoff_terminal(
-                handoff.key().clone(),
-                handoff.record_version(),
-                epoch_ms,
-                terminal,
-                certificate,
-                deadline,
-            )
-            .map_err(|error| format!("stage bound Task handoff terminal: {error}"))?;
-        if let Some(control) = &self.scenario_control {
-            control
-                .record_staged_terminal_preparation(&staged)
-                .map_err(|error| format!("record staged terminal preparation: {error}"))?;
-        }
-        self.telemetry.record_event(
-            V5ReceiptRuntimeEventKind::BoundHandoffTerminalStaged,
-            epoch_ms,
-        );
-        Ok(())
-    }
-
-    #[cfg(feature = "receipt-ledger-test-support")]
-    fn inject_task_store_capacity_invariant_for_test(
-        &self,
-        key: &ReceiptKey,
-        operation_label: &str,
-        deadline: Instant,
-    ) -> Result<Value, String> {
-        let epoch_ms = self.epoch_clock.now_epoch_millis();
-        let handoff = match self
-            .receipt_ledger
-            .recover(key.clone(), deadline)
-            .map_err(|error| format!("recover staged handoff before capacity invariant: {error}"))?
-        {
-            ReceiptState::TaskHandoffActorBound(handoff) => handoff,
-            other => {
-                return Err(format!(
-                    "capacity invariant injection requires actor-bound Task handoff, found {}",
-                    other.kind().diagnostic_name()
-                ))
-            }
-        };
-        let (terminal_epoch_ms, staged_terminal, certificate) = match handoff.terminal_stage() {
-            HandoffTerminalStage::Staged {
-                terminal_epoch_ms,
-                terminal,
-                certificate,
-            } => (*terminal_epoch_ms, terminal, certificate),
-            HandoffTerminalStage::NoTerminal => {
-                return Err("capacity invariant injection requires a staged terminal".to_owned())
-            }
-        };
-        let attempts_before = self.telemetry.snapshot().task_store_create_attempts;
-        let task_records = u64::try_from(self.task_projection.recovery.entries().len())
-            .map_err(|_| "TaskStore record count does not fit u64".to_owned())?;
-        let reservation = self
-            .task_projection
-            .reserve_bound_handoff_link(&handoff, epoch_ms, deadline, &self.telemetry)
-            .map_err(|failure| format!("reserve invariant lifecycle link: {}", failure.error))?;
-        let reserved_sequence = self
-            .telemetry
-            .snapshot()
-            .events
-            .last()
-            .filter(|event| event.event == V5ReceiptRuntimeEventKind::TaskLinkCapacityReserved)
-            .map(|event| event.sequence)
-            .ok_or_else(|| "capacity invariant reservation event is missing".to_owned())?;
-        self.telemetry.record_task_store_create_attempt();
-        let create_sequence = self.telemetry.record_event(
-            V5ReceiptRuntimeEventKind::TaskStoreCreateAttempted,
-            epoch_ms,
-        );
-        let injected = V5TaskProjectionFailure::from_task_store(
-            V5TaskStoreError::Capacity {
-                max_records: crate::application::invocation_store_v5::MAX_V5_TASK_RECORDS,
-            },
-            handoff.key_digest().clone(),
-            true,
-        );
-        if !injected.fail_stop {
-            return Err(
-                "injected post-reservation TaskStore Capacity did not fail-stop".to_owned(),
-            );
-        }
-        let capacity_sequence = self.telemetry.record_event(
-            V5ReceiptRuntimeEventKind::TaskStoreCapacityInvariantViolation,
-            epoch_ms,
-        );
-        self.telemetry.record_forced_process_exit();
-        let listener_closed_sequence = self
-            .telemetry
-            .snapshot()
-            .events
-            .last()
-            .filter(|event| event.event == V5ReceiptRuntimeEventKind::ListenerClosed)
-            .map(|event| event.sequence)
-            .ok_or_else(|| "capacity invariant listener-close event is missing".to_owned())?;
-        let restart_requested_sequence = listener_closed_sequence.saturating_add(1);
-        let daemon_stopped_sequence = listener_closed_sequence.saturating_add(2);
-        let lifecycle = self
-            .task_projection
-            .lifecycle_links
-            .catalog_snapshot(crate::domain::code_intelligence::ProviderDeadline::new(
-                deadline,
-            ))
-            .map_err(|error| format!("inspect invariant lifecycle reservation: {error}"))?;
-        let certificate_bytes = serde_json::to_vec(certificate.as_ref())
-            .map_err(|error| format!("encode invariant staged certificate: {error}"))?;
-        let reservation_fingerprint = format!(
-            "{:x}",
-            Sha256::digest(format!(
-                "{}:{}:{}:{}",
-                reservation.key_digest(),
-                reservation.link().digest(),
-                reservation.reservation_version(),
-                reservation.mutation_sequence()
-            ))
-        );
-        let materialized_links = lifecycle.count().saturating_sub(lifecycle.reserved_count());
-        Ok(json!({
-            "operationLabel": operation_label,
-            "receiptKey": receipt_key_observation_value(key),
-            "stagedTerminal": terminal_observation_value(staged_terminal, terminal_epoch_ms),
-            "stagedTransferCertificateSha256": format!("{:x}", Sha256::digest(certificate_bytes)),
-            "liveTaskLinkReservationFingerprint": reservation_fingerprint,
-            "taskLinkReservedSequence": reserved_sequence,
-            "taskStoreCreateSequence": create_sequence,
-            "capacityObservedSequence": capacity_sequence,
-            "listenerClosedSequence": listener_closed_sequence,
-            "restartRequestedSequence": restart_requested_sequence,
-            "daemonStoppedSequence": daemon_stopped_sequence,
-            "taskStoreRecordCountBefore": task_records,
-            "taskStoreRecordCountAfter": task_records,
-            "materializedLifecycleLinkCountBefore": materialized_links,
-            "materializedLifecycleLinkCountAfter": materialized_links,
-            "liveLinkReservationCountBefore": lifecycle.reserved_count(),
-            "liveLinkReservationCountAfter": lifecycle.reserved_count(),
-            "taskStoreGenerationBefore": task_records,
-            "taskStoreGenerationAfter": task_records,
-            "taskStoreCreateAttemptsBefore": attempts_before,
-            "taskStoreCreateAttemptsAfter": attempts_before.saturating_add(1),
-        }))
-    }
-
-    #[cfg(feature = "receipt-ledger-test-support")]
-    fn seed_cancel_reserved_pool_entry_for_test(
-        &self,
-        key: ReceiptKey,
-        epoch_ms: u64,
-        deadline: Instant,
-    ) -> Result<(), ReceiptLedgerError> {
-        self.telemetry
-            .record_event(V5ReceiptRuntimeEventKind::V5ReceiptRuntimeEntered, epoch_ms);
-        self.receipt_ledger
-            .request_cancel_or_reserve(key, epoch_ms, deadline)?;
-        Ok(())
-    }
-
-    #[cfg(feature = "receipt-ledger-test-support")]
-    fn submit_direct_batch_for_load(
-        &self,
-        work: Vec<(ReceiptKey, V5InvocationRequest, u64)>,
-        deadline: Instant,
-    ) -> Result<Vec<V5PendingDirectReceipt>, ReceiptLedgerError> {
-        if work.is_empty() || work.len() > 32 {
-            return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported);
-        }
-        let reservations = self.receipt_ledger.reserve_batch(
-            work.iter()
-                .map(|(key, _, epoch_ms)| {
-                    OriginalCutoffDescriptor::new(*epoch_ms, 7_000)
-                        .map(|cutoff| (key.clone(), cutoff))
-                        .map_err(|_| ReceiptLedgerError::TimestampOverflow)
-                })
-                .collect::<Result<Vec<_>, _>>()?,
-            deadline,
-        )?;
-        let reservations = reservations
-            .into_iter()
-            .map(|outcome| {
-                outcome.into_reservation().map_err(|_| {
-                    ReceiptLedgerError::Corrupt("direct load batch reserve was not newly created")
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let batch_epoch_ms =
-            work.first()
-                .map(|(_, _, epoch_ms)| *epoch_ms)
-                .ok_or(ReceiptLedgerError::Corrupt(
-                    "direct load batch unexpectedly had no work",
-                ))?;
-        // The load report retains per-invocation lifecycle and callback counts. Record the
-        // repeated phase boundaries once per durable writer batch so the diagnostic event trace
-        // remains bounded at the full retention horizon.
-        self.telemetry
-            .record_event(V5ReceiptRuntimeEventKind::V5ExecutorEntered, batch_epoch_ms);
-        self.telemetry.record_event(
-            V5ReceiptRuntimeEventKind::V5ReceiptRuntimeEntered,
-            batch_epoch_ms,
-        );
-        self.telemetry
-            .record_event(V5ReceiptRuntimeEventKind::ValidationEntered, batch_epoch_ms);
-        self.telemetry
-            .record_event(V5ReceiptRuntimeEventKind::AdmissionEntered, batch_epoch_ms);
-        for _ in &work {
-            self.telemetry.record_validation();
-            self.telemetry.record_admission();
-        }
-        // The transport admits these calls concurrently. Keep every invocation's own validation
-        // and actor binding, but do not serialize that admission ahead of the durable writer
-        // batch. The scope joins every binding before the ledger can advance to ActorBound.
-        let actor_bounds = thread::scope(|scope| {
-            let bindings = work
-                .iter()
-                .map(|(_, invocation, _)| {
-                    scope.spawn(|| self.invocation_executor.bind(invocation.clone()))
-                })
-                .collect::<Vec<_>>();
-            bindings
-                .into_iter()
-                .map(|binding| {
-                    binding
-                        .join()
-                        .map_err(|_| {
-                            ReceiptLedgerError::Corrupt(
-                                "direct load batch invocation binding panicked",
-                            )
-                        })?
-                        .map_err(|_| {
-                            ReceiptLedgerError::Corrupt("direct load batch invocation did not bind")
-                        })
-                })
-                .collect::<Result<Vec<_>, _>>()
-        })?;
-        let bound = self.receipt_ledger.bind_reserved_actor_batch(
-            reservations
-                .iter()
-                .zip(&actor_bounds)
-                .map(|(reservation, actor_bound)| {
-                    (
-                        reservation.key().clone(),
-                        reservation.record_version(),
-                        actor_bound.workspace_identity_hash().clone(),
-                    )
-                })
-                .collect(),
-            deadline,
-        )?;
-        let begun = self.receipt_ledger.mark_reserved_begun_batch(
-            bound
-                .iter()
-                .zip(&actor_bounds)
-                .map(|(bound, actor_bound)| {
-                    (
-                        bound.key().clone(),
-                        bound.record_version(),
-                        actor_bound.workspace_identity_hash().clone(),
-                    )
-                })
-                .collect(),
-            deadline,
-        )?;
-        drop(actor_bounds);
-        self.telemetry
-            .record_event(V5ReceiptRuntimeEventKind::PrepareEntered, batch_epoch_ms);
-        self.telemetry
-            .record_event(V5ReceiptRuntimeEventKind::ExecuteEntered, batch_epoch_ms);
-        let mut terminal_requests = Vec::with_capacity(work.len());
-        for ((key, _, epoch_ms), begun) in work.iter().zip(&begun) {
-            self.telemetry.record_prepare();
-            self.telemetry.record_execute();
-            let outcome = match self
-                .scenario_control
-                .as_ref()
-                .ok_or(ReceiptLedgerError::Corrupt(
-                    "direct load callback owner is unavailable",
-                ))?
-                .execute_direct_load_callback(key.invocation_id())
-            {
-                Ok(result) => ReceiptTerminalOutcome::Completed {
-                    result: Box::new(result),
-                },
-                Err(_) => ReceiptTerminalOutcome::Failed {
-                    reason: V5SafeFailureReason::InvocationFailed,
-                },
-            };
-            let terminal = canonical_v5_terminal(&outcome)
-                .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;
-            terminal_requests.push((
-                begun.key().clone(),
-                begun.record_version(),
-                *epoch_ms,
-                terminal,
-            ));
-        }
-        let publications = self
-            .receipt_ledger
-            .publish_direct_terminal_batch(terminal_requests, deadline)?;
-        publications
-            .into_iter()
-            .zip(work)
-            .map(|(publication, (key, _, epoch_ms))| {
-                let receipt = publication.receipt();
-                self.telemetry.record_event(
-                    V5ReceiptRuntimeEventKind::ReceiptTerminalCommitted,
-                    epoch_ms,
-                );
-                Ok(V5PendingDirectReceipt::new(
-                    key,
-                    receipt.terminal().outcome().clone(),
-                    receipt.terminal().digest().clone(),
-                    receipt.terminal_epoch_ms(),
-                ))
-            })
-            .collect()
-    }
-
-    #[cfg(feature = "receipt-ledger-test-support")]
-    fn seed_reserved_pool_entry_for_test(
-        &self,
-        key: ReceiptKey,
-        cutoff: OriginalCutoffDescriptor,
-        epoch_ms: u64,
-        deadline: Instant,
-    ) -> Result<(), ReceiptLedgerError> {
-        self.telemetry
-            .record_event(V5ReceiptRuntimeEventKind::V5ReceiptRuntimeEntered, epoch_ms);
-        self.receipt_ledger.reserve(key, cutoff, deadline)?;
-        Ok(())
-    }
-
-    #[cfg(feature = "receipt-ledger-test-support")]
-    fn seed_receipt_backed_terminal_pool_entry_for_test(
-        &self,
-        key: ReceiptKey,
-        epoch_ms: u64,
-        task_ttl_ms: u64,
-        task_poll_interval_ms: u64,
-        terminal: crate::application::receipt_ledger::V5CanonicalTerminal,
-        deadline: Instant,
-    ) -> Result<(), ReceiptLedgerError> {
-        self.telemetry
-            .record_event(V5ReceiptRuntimeEventKind::V5ReceiptRuntimeEntered, epoch_ms);
-        let reserved = self
-            .receipt_ledger
-            .reserve(
-                key.clone(),
-                OriginalCutoffDescriptor::new(epoch_ms, 7_000)
-                    .map_err(|_| ReceiptLedgerError::TimestampOverflow)?,
-                deadline,
-            )?
-            .into_reservation()
-            .map_err(|_| ReceiptLedgerError::Corrupt("fixture receipt already exists"))?;
-        let promised = self.receipt_ledger.promise_task_unbound(
-            key.clone(),
-            reserved.record_version(),
-            epoch_ms,
-            task_ttl_ms,
-            task_poll_interval_ms,
-            deadline,
-        )?;
-        self.receipt_ledger.publish_receipt_backed_task_terminal(
-            key,
-            TaskCancellationReceipt::PromisedUnbound(promised),
-            epoch_ms,
-            terminal,
-            deadline,
-        )?;
-        Ok(())
-    }
-
-    #[cfg(feature = "receipt-ledger-test-support")]
-    fn mark_reserved_begun_under_gate_for_test(
-        &self,
-        key: &ReceiptKey,
-        operation_label: &str,
-        deadline: Instant,
-    ) -> Result<(), String> {
-        self.telemetry.record_event(
-            V5ReceiptRuntimeEventKind::V5ReceiptRuntimeEntered,
-            self.epoch_ms(),
-        );
-        let control = self
-            .scenario_control
-            .as_ref()
-            .ok_or_else(|| "reserved-begin scenario control is unavailable".to_owned())?;
-        if control.is_barrier_installed(
-            receipt_scenario_v5::ScenarioBarrierPoint::BeforeMarkReservedBegunGateAcquire,
-        ) {
-            control.record_operation_event(operation_label, "blocked");
-            self.telemetry.record_event(
-                V5ReceiptRuntimeEventKind::MarkReservedBegunBlocked,
-                self.epoch_ms(),
-            );
-            control
-                .pause(
-                    receipt_scenario_v5::ScenarioBarrierPoint::BeforeMarkReservedBegunGateAcquire,
-                    deadline,
-                )
-                .map_err(|error| format!("wait before reserved-begin lifecycle gate: {error}"))?;
-        }
-        control
-            .acquire_lifecycle_gate(operation_label, deadline)
-            .map_err(|error| format!("acquire reserved-begin lifecycle gate: {error}"))?;
-        let result = (|| {
-            let current = self
-                .receipt_ledger
-                .recover(key.clone(), deadline)
-                .map_err(|error| format!("recover actor-bound receipt before begin: {error}"))?;
-            let ReceiptState::Reserved(reserved) = current else {
-                return Ok(());
-            };
-            if !matches!(reserved.phase(), ReservedPhase::ActorBound { .. }) {
-                return Ok(());
-            }
-            let begun = match self.receipt_ledger.mark_reserved_begun(
-                key.clone(),
-                reserved.record_version(),
-                deadline,
-            ) {
-                Ok(begun) => begun,
-                Err(error) => {
-                    let winner = self.receipt_ledger.recover(key.clone(), deadline).map_err(
-                        |recover_error| {
-                            format!(
-                                "mark actor-bound receipt begun: {error}; recover winner: {recover_error}"
-                            )
-                        },
-                    )?;
-                    if !matches!(winner, ReceiptState::Reserved(_)) {
-                        return Ok(());
-                    }
-                    return Err(format!("mark actor-bound receipt begun: {error}"));
-                }
-            };
-            control.record_reserved_begin_authorization(operation_label, begun.key());
-            self.telemetry.record_event(
-                V5ReceiptRuntimeEventKind::ReceiptBegunCommitted,
-                self.epoch_ms(),
-            );
-            self.telemetry
-                .record_event(V5ReceiptRuntimeEventKind::TokenSignalled, self.epoch_ms());
-            Ok(())
-        })();
-        control.release_lifecycle_gate(operation_label);
-        self.telemetry.record_event(
-            V5ReceiptRuntimeEventKind::OperationCompleted,
-            self.epoch_ms(),
-        );
-        result
-    }
-
-    #[cfg(feature = "receipt-ledger-test-support")]
-    fn cancel_under_gate_for_test(
-        &self,
-        key: &ReceiptKey,
-        operation_label: &str,
-        deadline: Instant,
-    ) -> Result<(), String> {
-        self.telemetry.record_event(
-            V5ReceiptRuntimeEventKind::V5ReceiptRuntimeEntered,
-            self.epoch_ms(),
-        );
-        let control = self
-            .scenario_control
-            .as_ref()
-            .ok_or_else(|| "cancel scenario control is unavailable".to_owned())?;
-        if control.is_barrier_installed(
-            receipt_scenario_v5::ScenarioBarrierPoint::BeforeCancelGateAcquire,
-        ) {
-            control.record_operation_event(operation_label, "blocked");
-            self.telemetry.record_event(
-                V5ReceiptRuntimeEventKind::CancelCommitBlocked,
-                self.epoch_ms(),
-            );
-            control
-                .pause(
-                    receipt_scenario_v5::ScenarioBarrierPoint::BeforeCancelGateAcquire,
-                    deadline,
-                )
-                .map_err(|error| format!("wait before cancel lifecycle gate: {error}"))?;
-        }
-        control
-            .acquire_lifecycle_gate(operation_label, deadline)
-            .map_err(|error| format!("acquire cancel lifecycle gate: {error}"))?;
-        let result = (|| {
-            self.cancel_invocation(key.clone(), self.epoch_ms(), deadline)
-                .map_err(|error| format!("cancel under lifecycle gate: {error}"))?;
-            match self.receipt_ledger.recover(key.clone(), deadline) {
-                Ok(ReceiptState::Reserved(reserved))
-                    if matches!(reserved.phase(), ReservedPhase::ActorBound { .. })
-                        && reserved.cancel_requested() =>
-                {
-                    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
-                        .map_err(|error| format!("prepare cancel winner terminal: {error}"))?;
-                    self.receipt_ledger
-                        .publish_direct_terminal(
-                            key.clone(),
-                            reserved.record_version(),
-                            self.epoch_ms(),
-                            terminal,
-                            deadline,
-                        )
-                        .map_err(|error| format!("publish cancel winner terminal: {error}"))?;
-                    self.telemetry.record_event(
-                        V5ReceiptRuntimeEventKind::ReceiptTerminalCommitted,
-                        self.epoch_ms(),
-                    );
-                }
-                Ok(_) | Err(ReceiptLedgerError::ReceiptNotFound) => {}
-                Err(error) => return Err(format!("recover cancel winner: {error}")),
-            }
-            Ok(())
-        })();
-        if result.is_ok() {
-            self.telemetry
-                .record_event(V5ReceiptRuntimeEventKind::CancelCommitted, self.epoch_ms());
-        }
-        control.release_lifecycle_gate(operation_label);
-        self.telemetry.record_event(
-            V5ReceiptRuntimeEventKind::OperationCompleted,
-            self.epoch_ms(),
-        );
-        result
-    }
-
-    #[cfg(feature = "receipt-ledger-test-support")]
-    fn materialize_cutoff_handoff_for_test(
-        &self,
-        handoff: &TaskHandoffActorBoundReceipt,
-        deadline: Instant,
-    ) -> Result<(), String> {
-        let epoch_ms = self.epoch_ms();
-        let (task_record, task_bound) = self
-            .task_projection
-            .materialize_bound_handoff(handoff, epoch_ms, deadline, &self.telemetry)
-            .map_err(|failure| format!("materialize cutoff Task handoff: {}", failure.error))?;
-        self.receipt_ledger
-            .complete_bound_task_handoff(
-                handoff.key().clone(),
-                handoff.record_version(),
-                task_bound.clone(),
-                deadline,
-            )
-            .map_err(|error| format!("commit cutoff Task handoff: {error}"))?;
-        let (task_record, task_bound) = self
-            .task_projection
-            .start_bound_task(&task_bound, task_record, deadline)
-            .map_err(|failure| format!("start cutoff Task handoff: {}", failure.error))?;
-        if let Some(control) = &self.scenario_control {
-            control.record_bound_task(task_record, task_bound);
-        }
-        self.telemetry
-            .record_event(V5ReceiptRuntimeEventKind::TaskBoundCommitted, epoch_ms);
-        Ok(())
-    }
-
-    #[cfg(feature = "receipt-ledger-test-support")]
-    fn bind_task_under_gate_for_test(
-        &self,
-        key: &ReceiptKey,
-        operation_label: &str,
-        deadline: Instant,
-    ) -> Result<(), String> {
-        self.telemetry.record_event(
-            V5ReceiptRuntimeEventKind::V5ReceiptRuntimeEntered,
-            self.epoch_ms(),
-        );
-        let control = self
-            .scenario_control
-            .as_ref()
-            .ok_or_else(|| "Task bind scenario control is unavailable".to_owned())?;
-        control
-            .acquire_lifecycle_gate(operation_label, deadline)
-            .map_err(|error| format!("acquire Task bind lifecycle gate: {error}"))?;
-        let result = (|| {
-            let current = self
-                .receipt_ledger
-                .recover(key.clone(), deadline)
-                .map_err(|error| format!("recover actor-bound Task promise: {error}"))?;
-            let handoff = match current {
-                ReceiptState::TaskPromisedActorBound(promised) => self
-                    .receipt_ledger
-                    .begin_bound_task_handoff(
-                        promised.key().clone(),
-                        promised.record_version(),
-                        promised.task().created_at_epoch_ms(),
-                        promised.task().ttl_ms(),
-                        promised.task().poll_interval_ms(),
-                        deadline,
-                    )
-                    .map_err(|error| format!("begin Task handoff: {error}"))?,
-                ReceiptState::TaskHandoffActorBound(handoff) => handoff,
-                other => {
-                    return Err(format!(
-                        "Task bind requires actor-bound promise, found {}",
-                        other.kind().diagnostic_name()
-                    ))
-                }
-            };
-            let (record, bound) = self
-                .task_projection
-                .materialize_bound_handoff(&handoff, self.epoch_ms(), deadline, &self.telemetry)
-                .map_err(|failure| format!("materialize actor-bound Task: {}", failure.error))?;
-            control.record_bound_task(record.clone(), bound.clone());
-            self.telemetry.record_event(
-                V5ReceiptRuntimeEventKind::TaskStoreReadbackBeforeBind,
-                self.epoch_ms(),
-            );
-            if control.is_barrier_installed(
-                receipt_scenario_v5::ScenarioBarrierPoint::AfterTaskStoreReadbackBeforeTaskBound,
-            ) {
-                control.record_operation_event(operation_label, "blocked");
-                control
-                    .pause(
-                        receipt_scenario_v5::ScenarioBarrierPoint::AfterTaskStoreReadbackBeforeTaskBound,
-                        deadline,
-                    )
-                    .map_err(|error| format!("wait after TaskStore readback: {error}"))?;
-            }
-            self.receipt_ledger
-                .complete_bound_task_handoff(
-                    handoff.key().clone(),
-                    handoff.record_version(),
-                    bound.clone(),
-                    deadline,
-                )
-                .map_err(|error| format!("complete Task handoff: {error}"))?;
-            control.record_handoff_task_binding(operation_label, &handoff, &bound);
-            control.record_bound_task(record, bound);
-            self.telemetry.record_event(
-                V5ReceiptRuntimeEventKind::TaskBoundCommitted,
-                self.epoch_ms(),
-            );
-            Ok(())
-        })();
-        control.release_lifecycle_gate(operation_label);
-        self.telemetry.record_event(
-            V5ReceiptRuntimeEventKind::OperationCompleted,
-            self.epoch_ms(),
-        );
-        result
-    }
-
-    #[cfg(feature = "receipt-ledger-test-support")]
-    fn continue_receipt_owned_attempt_for_test(
-        &self,
-        key: &ReceiptKey,
-        result: crate::domain::invocation::DomainResult,
-        deadline: Instant,
-    ) -> Result<Value, String> {
-        let epoch_ms = self.epoch_clock.now_epoch_millis();
-        let state = self
-            .receipt_ledger
-            .recover(key.clone(), deadline)
-            .map_err(|error| format!("recover receipt-owned Task attempt: {error}"))?;
-        let ReceiptState::TaskReceiptOwnedActorBound(receipt_owned) = state else {
-            return Err("continued Task attempt is not receipt-owned".to_owned());
-        };
-        let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
-            result: Box::new(result),
-        })
-        .map_err(|error| format!("encode receipt-owned Task terminal: {error}"))?;
-        let committed = self
-            .receipt_ledger
-            .publish_receipt_backed_task_terminal(
-                key.clone(),
-                TaskCancellationReceipt::ReceiptOwnedActorBound(receipt_owned),
-                epoch_ms,
-                terminal,
-                deadline,
-            )
-            .map_err(|error| format!("publish receipt-owned Task terminal: {error}"))?;
-        if let Some(control) = &self.scenario_control {
-            control
-                .record_receipt_backed_terminal(committed.clone())
-                .map_err(|error| format!("record receipt-owned Task terminal: {error}"))?;
-        }
-        self.telemetry.record_event(
-            V5ReceiptRuntimeEventKind::ReceiptTerminalCommitted,
-            epoch_ms,
-        );
-        Ok(json!({
-            "kind": "task",
-            "error": null,
-            "terminal": terminal_observation_value(committed.terminal(), epoch_ms),
-            "key": receipt_key_observation_value(key),
-            "task": null,
-            "acknowledgement": null,
-            "cutoffEpochMs": null,
-            "originalBudgetMs": null,
-            "latencyMs": 0,
-        }))
     }
 
     fn preflight_existing_handoff_tasks(
@@ -4111,8 +2061,7 @@ impl V5ReceiptRuntime {
                             &promised,
                             terminal_epoch_ms,
                             deadline,
-                            #[cfg(feature = "receipt-ledger-test-support")]
-                            &self.telemetry,
+                            self.hooks.as_ref(),
                         )
                         .map_err(|failure| {
                             let error = self.project_task_failure(failure);
@@ -4166,8 +2115,7 @@ impl V5ReceiptRuntime {
                             &handoff,
                             terminal_epoch_ms,
                             deadline,
-                            #[cfg(feature = "receipt-ledger-test-support")]
-                            &self.telemetry,
+                            self.hooks.as_ref(),
                         )
                         .map_err(|failure| {
                             let error = self.project_task_failure(failure);
@@ -4199,12 +2147,6 @@ impl V5ReceiptRuntime {
             }
         }
         Ok(())
-    }
-
-    #[cfg(feature = "receipt-ledger-test-support")]
-    fn with_shared_telemetry(mut self, telemetry: Arc<V5ReceiptRuntimeTelemetry>) -> Self {
-        self.telemetry = telemetry;
-        self
     }
 
     fn ensure_named_authority(&self) -> Result<(), String> {
@@ -4285,30 +2227,19 @@ impl V5ReceiptRuntime {
                             .map_err(|_| {
                                 ReceiptLedgerError::Corrupt("canonical v5 terminal failed")
                             })?;
-                        let _committed = self.receipt_ledger.publish_receipt_backed_task_terminal(
+                        let committed = self.receipt_ledger.publish_receipt_backed_task_terminal(
                             cancelled.key().clone(),
                             cancelled,
                             epoch_ms,
                             terminal,
                             deadline,
                         )?;
-                        #[cfg(feature = "receipt-ledger-test-support")]
-                        {
-                            if let Some(control) = &self.scenario_control {
-                                control.record_receipt_backed_terminal(_committed).map_err(
-                                    |_| {
-                                        ReceiptLedgerError::Corrupt(
-                                            "capture receipt-backed terminal evidence failed",
-                                        )
-                                    },
-                                )?;
-                                control.release_pre_actor_barriers();
-                            }
-                            self.telemetry.record_event(
-                                V5ReceiptRuntimeEventKind::ReceiptTerminalCommitted,
-                                epoch_ms,
-                            );
-                        }
+                        self.hooks.receipt_backed_terminal(&committed)?;
+                        self.hooks.release_pre_actor_pauses();
+                        self.hooks.event(
+                            V5ReceiptRuntimeEventKind::ReceiptTerminalCommitted,
+                            epoch_ms,
+                        );
                         let snapshot = self.resolve_task(task_id, deadline)?;
                         return Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
                             outcome: V5InvocationResponse::Task { snapshot },
@@ -4354,9 +2285,8 @@ impl V5ReceiptRuntime {
         epoch_ms: u64,
         deadline: Instant,
     ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
-        #[cfg(feature = "receipt-ledger-test-support")]
-        self.telemetry
-            .record_event(V5ReceiptRuntimeEventKind::V5ExecutorEntered, epoch_ms);
+        self.hooks
+            .event(V5ReceiptRuntimeEventKind::V5ExecutorEntered, epoch_ms);
         let strict = decoded
             .into_strict_submit(&self.core_identity)
             .map_err(|_| ReceiptLedgerError::InvocationIdentityMismatch)?;
@@ -4365,10 +2295,9 @@ impl V5ReceiptRuntime {
         let cutoff = OriginalCutoffDescriptor::new(epoch_ms, response_budget_ms)
             .map_err(|_| ReceiptLedgerError::TimestampOverflow)?;
         let outcome = self.receipt_ledger.reserve(key, cutoff, deadline)?;
-        #[cfg(feature = "receipt-ledger-test-support")]
         if matches!(&outcome, ReserveOutcome::Created(_)) {
-            self.telemetry
-                .record_event(V5ReceiptRuntimeEventKind::ReceiptReserved, epoch_ms);
+            self.hooks
+                .event(V5ReceiptRuntimeEventKind::ReceiptReserved, epoch_ms);
         }
         let decision = decide_cancel_reserved_submit(outcome).map_err(|_| {
             ReceiptLedgerError::Corrupt("canonical cancelled terminal could not be constructed")
@@ -4394,184 +2323,110 @@ impl V5ReceiptRuntime {
         epoch_ms: u64,
         deadline: Instant,
     ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
-        #[cfg(feature = "receipt-ledger-test-support")]
-        self.telemetry
-            .record_event(V5ReceiptRuntimeEventKind::V5ReceiptRuntimeEntered, epoch_ms);
-        #[cfg(feature = "receipt-ledger-test-support")]
-        self.telemetry.record_event(
+        self.hooks
+            .event(V5ReceiptRuntimeEventKind::V5ReceiptRuntimeEntered, epoch_ms);
+        self.hooks.event(
             V5ReceiptRuntimeEventKind::CanonicalV13ServiceEntered,
             epoch_ms,
         );
-        #[cfg(feature = "receipt-ledger-test-support")]
-        {
-            self.telemetry.record_validation();
-            self.telemetry
-                .record_event(V5ReceiptRuntimeEventKind::ValidationEntered, epoch_ms);
-            if let Some(control) = &self.scenario_control {
-                control.pause(
-                    receipt_scenario_v5::ScenarioBarrierPoint::ValidationEntered,
-                    deadline,
-                )?;
-                let current = self
-                    .receipt_ledger
-                    .recover(reservation.key().clone(), deadline)?;
-                if !matches!(
-                    &current,
-                    ReceiptState::Reserved(receipt)
-                        if matches!(receipt.phase(), ReservedPhase::Unbound)
-                ) && !matches!(&current, ReceiptState::TaskPromisedUnbound(_))
-                {
-                    return self.reply_for_existing_state(current, deadline);
-                }
-                if control.validation_rejects() {
-                    let terminal = crate::application::receipt_ledger::canonical_v5_terminal(
-                        &crate::application::receipt_ledger::ReceiptTerminalOutcome::Completed {
-                            result: Box::new(
-                                crate::domain::invocation::DomainResult::canonical_rejection(
-                                    None,
-                                    RefusalCode::BadValue,
-                                    "scenario validation rejected invocation",
-                                ),
-                            ),
-                        },
-                    )
-                    .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;
-                    return self.publish_pre_actor_terminal(
-                        reservation,
-                        epoch_ms,
-                        terminal,
-                        deadline,
-                    );
-                }
+        self.hooks.stage_entered(V5Stage::Validation);
+        self.hooks
+            .event(V5ReceiptRuntimeEventKind::ValidationEntered, epoch_ms);
+        self.hooks
+            .pause(V5PausePoint::ValidationEntered, deadline)?;
+        if self.hooks.observing() {
+            let current = self
+                .receipt_ledger
+                .recover(reservation.key().clone(), deadline)?;
+            if !reservation_is_still_unbound(&current) {
+                return self.reply_for_existing_state(current, deadline);
             }
-            self.telemetry.record_admission();
-            self.telemetry
-                .record_event(V5ReceiptRuntimeEventKind::AdmissionEntered, epoch_ms);
-            if let Some(control) = &self.scenario_control {
-                control.pause(
-                    receipt_scenario_v5::ScenarioBarrierPoint::AdmissionEntered,
-                    deadline,
-                )?;
-                let current = self
-                    .receipt_ledger
-                    .recover(reservation.key().clone(), deadline)?;
-                if control.process_exited() {
-                    return self.reply_for_existing_state(current, deadline);
-                }
-                if !matches!(
-                    &current,
-                    ReceiptState::Reserved(receipt)
-                        if matches!(receipt.phase(), ReservedPhase::Unbound)
-                ) && !matches!(&current, ReceiptState::TaskPromisedUnbound(_))
-                {
-                    return self.reply_for_existing_state(current, deadline);
-                }
-                if let Some(rejection) = control.admission_rejection() {
-                    let fail_stop = matches!(
-                        rejection,
-                        receipt_scenario_v5::ScenarioWorkspaceAdmissionFailure::RegistryFailed
-                    );
-                    let outcome = match rejection {
-                        receipt_scenario_v5::ScenarioWorkspaceAdmissionFailure::Invalid => {
-                            crate::application::receipt_ledger::ReceiptTerminalOutcome::Completed {
-                                result: Box::new(
-                                    crate::domain::invocation::DomainResult::canonical_rejection(
-                                        None,
-                                        RefusalCode::BadValue,
-                                        "scenario workspace admission rejected invocation",
-                                    ),
-                                ),
-                            }
-                        }
-                        receipt_scenario_v5::ScenarioWorkspaceAdmissionFailure::Capacity => {
-                            crate::application::receipt_ledger::ReceiptTerminalOutcome::Failed {
-                                reason: V5SafeFailureReason::WorkspaceCapacity,
-                            }
-                        }
-                        receipt_scenario_v5::ScenarioWorkspaceAdmissionFailure::RegistryFailed => {
-                            crate::application::receipt_ledger::ReceiptTerminalOutcome::Failed {
-                                reason: V5SafeFailureReason::WorkspaceRegistryFailed,
-                            }
-                        }
-                    };
-                    let terminal =
-                        crate::application::receipt_ledger::canonical_v5_terminal(&outcome)
-                            .map_err(|_| {
-                                ReceiptLedgerError::Corrupt("canonical v5 terminal failed")
-                            })?;
-                    let reply =
-                        self.publish_pre_actor_terminal(reservation, epoch_ms, terminal, deadline);
-                    if fail_stop {
-                        self.telemetry.record_restart_requested();
-                        self.external_store_fail_stop.store(true, Ordering::Release);
-                    }
-                    return match (fail_stop, reply) {
-                        (true, Ok(V5RuntimeReply::Prepared(frame))) => {
-                            Ok(V5RuntimeReply::PreparedFailStop(frame))
-                        }
-                        (true, Ok(V5RuntimeReply::Json(response))) => {
-                            Ok(V5RuntimeReply::JsonFailStop(response))
-                        }
-                        (_, reply) => reply,
-                    };
-                }
+        }
+        if self.hooks.validation_rejects() {
+            let terminal = injected_rejection_terminal("scenario validation rejected invocation")?;
+            return self.publish_pre_actor_terminal(reservation, epoch_ms, terminal, deadline);
+        }
+        self.hooks.stage_entered(V5Stage::Admission);
+        self.hooks
+            .event(V5ReceiptRuntimeEventKind::AdmissionEntered, epoch_ms);
+        self.hooks.pause(V5PausePoint::AdmissionEntered, deadline)?;
+        if self.hooks.observing() {
+            let current = self
+                .receipt_ledger
+                .recover(reservation.key().clone(), deadline)?;
+            if self.hooks.process_exited() || !reservation_is_still_unbound(&current) {
+                return self.reply_for_existing_state(current, deadline);
             }
+        }
+        if let Some(rejection) = self.hooks.admission_rejection() {
+            let fail_stop = matches!(rejection, V5AdmissionRejection::RegistryFailed);
+            let outcome = match rejection {
+                V5AdmissionRejection::Invalid => ReceiptTerminalOutcome::Completed {
+                    result: Box::new(
+                        crate::domain::invocation::DomainResult::canonical_rejection(
+                            None,
+                            RefusalCode::BadValue,
+                            "scenario workspace admission rejected invocation",
+                        ),
+                    ),
+                },
+                V5AdmissionRejection::Capacity => ReceiptTerminalOutcome::Failed {
+                    reason: V5SafeFailureReason::WorkspaceCapacity,
+                },
+                V5AdmissionRejection::RegistryFailed => ReceiptTerminalOutcome::Failed {
+                    reason: V5SafeFailureReason::WorkspaceRegistryFailed,
+                },
+            };
+            return self.admission_failure_reply(
+                reservation,
+                outcome,
+                fail_stop,
+                epoch_ms,
+                deadline,
+            );
         }
         let actor_bound = match self.invocation_executor.bind(invocation) {
             Ok(actor_bound) => actor_bound,
             Err(error) => {
+                let fail_stop = matches!(error, V5CanonicalPrepareError::WorkspaceRegistryFailed);
                 let outcome = match error {
-                    V5CanonicalPrepareError::Direct(result) => {
-                        crate::application::receipt_ledger::ReceiptTerminalOutcome::Completed {
-                            result,
-                        }
+                    V5CanonicalPrepareError::Direct(result)
+                    | V5CanonicalPrepareError::Rejected(result) => {
+                        ReceiptTerminalOutcome::Completed { result }
                     }
-                    V5CanonicalPrepareError::Rejected(result) => {
-                        crate::application::receipt_ledger::ReceiptTerminalOutcome::Completed {
-                            result,
-                        }
-                    }
-                    V5CanonicalPrepareError::WorkspaceCapacity => {
-                        crate::application::receipt_ledger::ReceiptTerminalOutcome::Failed {
-                            reason: V5SafeFailureReason::WorkspaceCapacity,
-                        }
-                    }
+                    V5CanonicalPrepareError::WorkspaceCapacity => ReceiptTerminalOutcome::Failed {
+                        reason: V5SafeFailureReason::WorkspaceCapacity,
+                    },
                     V5CanonicalPrepareError::WorkspaceRegistryFailed => {
-                        crate::application::receipt_ledger::ReceiptTerminalOutcome::Failed {
+                        ReceiptTerminalOutcome::Failed {
                             reason: V5SafeFailureReason::WorkspaceRegistryFailed,
                         }
                     }
                 };
-                let terminal = crate::application::receipt_ledger::canonical_v5_terminal(&outcome)
-                    .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;
-                return self.publish_pre_actor_terminal(reservation, epoch_ms, terminal, deadline);
+                return self.admission_failure_reply(
+                    reservation,
+                    outcome,
+                    fail_stop,
+                    epoch_ms,
+                    deadline,
+                );
             }
         };
         let current = self
             .receipt_ledger
             .recover(reservation.key().clone(), deadline)?;
         if let ReceiptState::TaskPromisedUnbound(promised) = current {
-            #[cfg(feature = "receipt-ledger-test-support")]
-            if let Some(control) = &self.scenario_control {
-                control
-                    .record_actor_workspace_identity(actor_bound.workspace_identity_hash().clone());
-            }
+            self.hooks
+                .actor_workspace_identity(actor_bound.workspace_identity_hash());
             let actor_promised = self.receipt_ledger.bind_promised_task_actor(
                 promised.key().clone(),
                 promised.record_version(),
                 actor_bound.workspace_identity_hash().clone(),
                 deadline,
             )?;
-            #[cfg(feature = "receipt-ledger-test-support")]
-            self.telemetry
-                .record_event(V5ReceiptRuntimeEventKind::ActorBoundCommitted, epoch_ms);
-            #[cfg(feature = "receipt-ledger-test-support")]
-            if let Some(control) = &self.scenario_control {
-                control.pause(
-                    receipt_scenario_v5::ScenarioBarrierPoint::ActorBound,
-                    deadline,
-                )?;
-            }
+            self.hooks
+                .event(V5ReceiptRuntimeEventKind::ActorBoundCommitted, epoch_ms);
+            self.hooks.pause(V5PausePoint::ActorBound, deadline)?;
             let handoff = self.receipt_ledger.begin_bound_task_handoff(
                 actor_promised.key().clone(),
                 actor_promised.record_version(),
@@ -4580,42 +2435,21 @@ impl V5ReceiptRuntime {
                 actor_promised.task().poll_interval_ms(),
                 deadline,
             )?;
-            #[cfg(feature = "receipt-ledger-test-support")]
-            self.telemetry
-                .record_event(V5ReceiptRuntimeEventKind::BoundHandoffCommitted, epoch_ms);
+            self.hooks
+                .event(V5ReceiptRuntimeEventKind::BoundHandoffCommitted, epoch_ms);
             let link_reservation = self
                 .task_projection
-                .reserve_bound_handoff_link(
-                    &handoff,
-                    epoch_ms,
-                    deadline,
-                    #[cfg(feature = "receipt-ledger-test-support")]
-                    &self.telemetry,
-                )
+                .reserve_bound_handoff_link(&handoff, epoch_ms, deadline, self.hooks.as_ref())
                 .map_err(|failure| self.project_task_failure(failure))?;
-            #[cfg(feature = "receipt-ledger-test-support")]
-            if let Some(control) = &self.scenario_control {
-                control.pause(
-                    receipt_scenario_v5::ScenarioBarrierPoint::BeforeTaskStoreCreate,
-                    Instant::now() + receipt_scenario_v5::SCENARIO_BULK_OPERATION_TIMEOUT,
-                )?;
-            }
-            #[cfg(feature = "receipt-ledger-test-support")]
-            let deadline = if self.scenario_control.as_ref().is_some_and(|control| {
-                control.is_barrier_installed(
-                    receipt_scenario_v5::ScenarioBarrierPoint::BeforeTaskStoreCreate,
-                )
-            }) {
-                Instant::now() + receipt_scenario_v5::SCENARIO_BULK_OPERATION_TIMEOUT
-            } else {
-                deadline
-            };
-            #[cfg(feature = "receipt-ledger-test-support")]
-            let handoff = self
-                .scenario_control
-                .as_ref()
-                .and_then(|control| control.staged_handoff())
-                .unwrap_or(handoff);
+            self.hooks.pause(
+                V5PausePoint::BeforeTaskStoreCreate,
+                self.hooks
+                    .commit_deadline_at(V5PausePoint::BeforeTaskStoreCreate, deadline),
+            )?;
+            let deadline = self
+                .hooks
+                .commit_deadline_at(V5PausePoint::BeforeTaskStoreCreate, deadline);
+            let handoff = self.hooks.staged_handoff().unwrap_or(handoff);
             let (task_record, bound) = self
                 .task_projection
                 .materialize_staged_bound_handoff(
@@ -4623,68 +2457,49 @@ impl V5ReceiptRuntime {
                     &link_reservation,
                     epoch_ms,
                     deadline,
-                    #[cfg(feature = "receipt-ledger-test-support")]
-                    &self.telemetry,
+                    self.hooks.as_ref(),
                 )
                 .map_err(|failure| self.project_task_failure(failure))?;
-            #[cfg(feature = "receipt-ledger-test-support")]
-            if let Some(control) = &self.scenario_control {
-                control.record_promised_actor_binding(&promised, &actor_promised, &bound);
-            }
+            self.hooks
+                .promised_actor_binding(&promised, &actor_promised, &bound);
             if let HandoffTerminalStage::Staged { terminal, .. } = handoff.terminal_stage() {
-                #[cfg(feature = "receipt-ledger-test-support")]
-                let provisional_record = task_record.clone();
                 let (terminal_record, terminal_link) = self
                     .task_projection
                     .publish_bound_task_terminal(
                         &bound,
-                        task_record,
+                        &task_record,
                         terminal,
                         epoch_ms,
                         deadline,
-                        #[cfg(feature = "receipt-ledger-test-support")]
-                        &self.telemetry,
-                        #[cfg(feature = "receipt-ledger-test-support")]
-                        self.scenario_control.as_ref(),
+                        self.hooks.as_ref(),
                     )
                     .map_err(|failure| self.project_task_failure(failure))?;
-                #[cfg(feature = "receipt-ledger-test-support")]
-                {
-                    self.telemetry.record_event(
-                        V5ReceiptRuntimeEventKind::TaskStoreTerminalCommitted,
-                        epoch_ms,
-                    );
-                    self.telemetry.record_event(
-                        V5ReceiptRuntimeEventKind::TaskStoreTerminalReadback,
-                        epoch_ms,
-                    );
-                }
-                let _terminal_link = self.receipt_ledger.complete_staged_task_handoff(
+                self.hooks.event(
+                    V5ReceiptRuntimeEventKind::TaskStoreTerminalCommitted,
+                    epoch_ms,
+                );
+                self.hooks.event(
+                    V5ReceiptRuntimeEventKind::TaskStoreTerminalReadback,
+                    epoch_ms,
+                );
+                let terminal_link = self.receipt_ledger.complete_staged_task_handoff(
                     handoff.key().clone(),
                     handoff.record_version(),
                     terminal_link,
                     deadline,
                 )?;
-                #[cfg(feature = "receipt-ledger-test-support")]
-                {
-                    if let Some(control) = &self.scenario_control {
-                        control
-                            .record_staged_terminal_publication(
-                                &handoff,
-                                &provisional_record,
-                                &terminal_record,
-                                &_terminal_link,
-                            )
-                            .map_err(|_| {
-                                ReceiptLedgerError::Corrupt("record staged terminal publication")
-                            })?;
-                        control.record_terminal_bound_task(terminal_record.clone(), _terminal_link);
-                    }
-                    self.telemetry.record_event(
-                        V5ReceiptRuntimeEventKind::TaskTerminalBoundCommitted,
-                        epoch_ms,
-                    );
-                }
+                self.hooks.staged_terminal_publication(
+                    &handoff,
+                    &task_record,
+                    &terminal_record,
+                    &terminal_link,
+                )?;
+                self.hooks
+                    .terminal_bound_task(&terminal_record, &terminal_link);
+                self.hooks.event(
+                    V5ReceiptRuntimeEventKind::TaskTerminalBoundCommitted,
+                    epoch_ms,
+                );
                 return Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
                     outcome: V5InvocationResponse::Task {
                         snapshot: task_store_snapshot(&terminal_record),
@@ -4697,13 +2512,9 @@ impl V5ReceiptRuntime {
                 bound.clone(),
                 deadline,
             )?;
-            #[cfg(feature = "receipt-ledger-test-support")]
-            if let Some(control) = &self.scenario_control {
-                control.record_bound_task(task_record.clone(), bound.clone());
-            }
-            #[cfg(feature = "receipt-ledger-test-support")]
-            self.telemetry
-                .record_event(V5ReceiptRuntimeEventKind::TaskBoundCommitted, epoch_ms);
+            self.hooks.bound_task(&task_record, &bound);
+            self.hooks
+                .event(V5ReceiptRuntimeEventKind::TaskBoundCommitted, epoch_ms);
             let authorized_bound =
                 if !task_record.cancel_requested && task_record.task == V5StoredTask::Queued {
                     self.task_projection
@@ -4712,33 +2523,18 @@ impl V5ReceiptRuntime {
                 } else {
                     bound
                 };
-            #[cfg(feature = "receipt-ledger-test-support")]
-            if let Some(control) = &self.scenario_control {
-                control.record_bound_task(task_record.clone(), authorized_bound.clone());
-            }
-            #[cfg(feature = "receipt-ledger-test-support")]
+            self.hooks.bound_task(&task_record, &authorized_bound);
             if !task_record.cancel_requested && task_record.task == V5StoredTask::Queued {
-                self.telemetry.record_event(
+                self.hooks.event(
                     V5ReceiptRuntimeEventKind::FalseCancelObservationReached,
                     epoch_ms,
                 );
-                if let Some(control) = &self.scenario_control {
-                    control.pause(
-                        receipt_scenario_v5::ScenarioBarrierPoint::AfterFalseCancelObservation,
-                        deadline,
-                    )?;
-                }
+                self.hooks
+                    .pause(V5PausePoint::AfterFalseCancelObservation, deadline)?;
             }
-            #[cfg(feature = "receipt-ledger-test-support")]
-            let scenario_gate_acquired = if let Some(control) = &self.scenario_control {
-                if control.is_barrier_installed(
-                    receipt_scenario_v5::ScenarioBarrierPoint::AfterWorkingReadback,
-                ) {
-                    control.acquire_lifecycle_gate("submit", deadline)?;
-                    true
-                } else {
-                    false
-                }
+            let lifecycle_gate_acquired = if self.hooks.holds(V5PausePoint::AfterWorkingReadback) {
+                self.hooks.acquire_lifecycle_gate("submit", deadline)?;
+                true
             } else {
                 false
             };
@@ -4746,33 +2542,23 @@ impl V5ReceiptRuntime {
                 .task_projection
                 .start_not_begun_bound_task(&authorized_bound, task_record, deadline)
                 .map_err(|failure| self.project_task_failure(failure))?;
-            #[cfg(feature = "receipt-ledger-test-support")]
             let mut task_record = task_record;
-            #[cfg(feature = "receipt-ledger-test-support")]
             if task_record.task == V5StoredTask::Working {
-                self.telemetry.record_event(
+                self.hooks.event(
                     V5ReceiptRuntimeEventKind::TaskStoreWorkingReadback,
                     epoch_ms,
                 );
             }
-            #[cfg(feature = "receipt-ledger-test-support")]
-            if let Some(control) = &self.scenario_control {
-                control.record_bound_task(task_record.clone(), bound.clone());
-                if task_record.task == V5StoredTask::Working
-                    && bound.phase() == AttemptPhase::NotBegun
-                {
-                    control.pause(
-                        receipt_scenario_v5::ScenarioBarrierPoint::AfterWorkingReadback,
-                        deadline,
-                    )?;
-                    control.pause(
-                        receipt_scenario_v5::ScenarioBarrierPoint::BeforeReceiptBegun,
-                        deadline,
-                    )?;
-                    if control.process_exited() {
-                        let current = self.receipt_ledger.recover(bound.key().clone(), deadline)?;
-                        return self.reply_for_existing_state(current, deadline);
-                    }
+            self.hooks.bound_task(&task_record, &bound);
+            if task_record.task == V5StoredTask::Working && bound.phase() == AttemptPhase::NotBegun
+            {
+                self.hooks
+                    .pause(V5PausePoint::AfterWorkingReadback, deadline)?;
+                self.hooks
+                    .pause(V5PausePoint::BeforeReceiptBegun, deadline)?;
+                if self.hooks.process_exited() {
+                    let current = self.receipt_ledger.recover(bound.key().clone(), deadline)?;
+                    return self.reply_for_existing_state(current, deadline);
                 }
             }
             let bound = if task_record.task == V5StoredTask::Working
@@ -4782,75 +2568,57 @@ impl V5ReceiptRuntime {
                     .task_projection
                     .mark_not_begun_bound_task_begun(&bound, &task_record, deadline)
                     .map_err(|failure| self.project_task_failure(failure))?;
-                #[cfg(feature = "receipt-ledger-test-support")]
-                {
-                    self.telemetry
-                        .record_event(V5ReceiptRuntimeEventKind::ReceiptBegunCommitted, epoch_ms);
-                    self.telemetry
-                        .record_event(V5ReceiptRuntimeEventKind::TokenSignalled, epoch_ms);
-                    if let Some(control) = &self.scenario_control {
-                        control.record_bound_task_start_authorization(
-                            &authorized_bound,
-                            &task_record,
-                            &begun,
-                        );
-                        control.record_bound_task(task_record.clone(), begun.clone());
-                    }
-                }
+                self.hooks
+                    .event(V5ReceiptRuntimeEventKind::ReceiptBegunCommitted, epoch_ms);
+                self.hooks
+                    .event(V5ReceiptRuntimeEventKind::TokenSignalled, epoch_ms);
+                self.hooks
+                    .bound_task_start_authorization(&authorized_bound, &task_record, &begun);
+                self.hooks.bound_task(&task_record, &begun);
                 begun
             } else {
                 bound
             };
-            #[cfg(feature = "receipt-ledger-test-support")]
-            if scenario_gate_acquired {
-                if let Some(control) = &self.scenario_control {
-                    control.release_lifecycle_gate("submit");
-                    control.wait_for_gate_cancel(deadline)?;
-                    if let Some(cancelled) = self
-                        .task_projection
-                        .cancel_exact_bound_task(bound.key(), deadline)
-                        .map_err(|failure| self.project_task_failure(failure))?
-                    {
-                        task_record = cancelled;
-                        control.record_bound_task(task_record.clone(), bound.clone());
-                    }
+            if lifecycle_gate_acquired {
+                self.hooks.release_lifecycle_gate("submit");
+                self.hooks.wait_for_gate_cancel(deadline)?;
+                if let Some(cancelled) = self
+                    .task_projection
+                    .cancel_exact_bound_task(bound.key(), deadline)
+                    .map_err(|failure| self.project_task_failure(failure))?
+                {
+                    task_record = cancelled;
+                    self.hooks.bound_task(&task_record, &bound);
                 }
             }
             if task_record.cancel_requested {
                 let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
                     .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;
-                let (terminal_record, _terminal_link) = self
+                let (terminal_record, terminal_link) = self
                     .task_projection
                     .publish_bound_task_terminal(
                         &bound,
-                        task_record,
+                        &task_record,
                         &terminal,
                         epoch_ms,
                         deadline,
-                        #[cfg(feature = "receipt-ledger-test-support")]
-                        &self.telemetry,
-                        #[cfg(feature = "receipt-ledger-test-support")]
-                        self.scenario_control.as_ref(),
+                        self.hooks.as_ref(),
                     )
                     .map_err(|failure| self.project_task_failure(failure))?;
-                #[cfg(feature = "receipt-ledger-test-support")]
-                {
-                    self.telemetry.record_event(
-                        V5ReceiptRuntimeEventKind::TaskStoreTerminalCommitted,
-                        epoch_ms,
-                    );
-                    self.telemetry.record_event(
-                        V5ReceiptRuntimeEventKind::TaskStoreTerminalReadback,
-                        epoch_ms,
-                    );
-                    self.telemetry.record_event(
-                        V5ReceiptRuntimeEventKind::TaskTerminalBoundCommitted,
-                        epoch_ms,
-                    );
-                    if let Some(control) = &self.scenario_control {
-                        control.record_terminal_bound_task(terminal_record.clone(), _terminal_link);
-                    }
-                }
+                self.hooks.event(
+                    V5ReceiptRuntimeEventKind::TaskStoreTerminalCommitted,
+                    epoch_ms,
+                );
+                self.hooks.event(
+                    V5ReceiptRuntimeEventKind::TaskStoreTerminalReadback,
+                    epoch_ms,
+                );
+                self.hooks.event(
+                    V5ReceiptRuntimeEventKind::TaskTerminalBoundCommitted,
+                    epoch_ms,
+                );
+                self.hooks
+                    .terminal_bound_task(&terminal_record, &terminal_link);
                 return Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
                     outcome: V5InvocationResponse::Task {
                         snapshot: task_store_snapshot(&terminal_record),
@@ -4860,42 +2628,20 @@ impl V5ReceiptRuntime {
             let (cancellation, cancellation_guard) = self
                 .active_task_cancellations
                 .register(task_record.task_id)?;
-            #[cfg(feature = "receipt-ledger-test-support")]
-            {
-                if let Some(control) = &self.scenario_control {
-                    control.pause(
-                        receipt_scenario_v5::ScenarioBarrierPoint::BeforePrepare,
-                        deadline,
-                    )?;
-                }
-                self.telemetry.record_prepare();
-                self.telemetry
-                    .record_event(V5ReceiptRuntimeEventKind::PrepareEntered, epoch_ms);
-                if let Some(control) = &self.scenario_control {
-                    control.pause(
-                        receipt_scenario_v5::ScenarioBarrierPoint::PrepareEntered,
-                        deadline,
-                    )?;
-                    if control.prepare_rejects() {
-                        let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
-                            result: Box::new(
-                                crate::domain::invocation::DomainResult::canonical_rejection(
-                                    None,
-                                    RefusalCode::BadValue,
-                                    "scenario prepare rejected invocation",
-                                ),
-                            ),
-                        })
-                        .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;
-                        return self.publish_bound_terminal_reply(
-                            &bound,
-                            task_record,
-                            &terminal,
-                            epoch_ms,
-                            deadline,
-                        );
-                    }
-                }
+            self.hooks.pause(V5PausePoint::BeforePrepare, deadline)?;
+            self.hooks.stage_entered(V5Stage::Prepare);
+            self.hooks
+                .event(V5ReceiptRuntimeEventKind::PrepareEntered, epoch_ms);
+            self.hooks.pause(V5PausePoint::PrepareEntered, deadline)?;
+            if self.hooks.prepare_rejects() {
+                let terminal = injected_rejection_terminal("scenario prepare rejected invocation")?;
+                return self.publish_bound_terminal_reply(
+                    &bound,
+                    &task_record,
+                    &terminal,
+                    epoch_ms,
+                    deadline,
+                );
             }
             let prepared = match actor_bound.prepare() {
                 Ok(prepared) => prepared,
@@ -4907,7 +2653,7 @@ impl V5ReceiptRuntime {
                             })?;
                     return self.publish_bound_terminal_reply(
                         &bound,
-                        task_record,
+                        &task_record,
                         &terminal,
                         epoch_ms,
                         deadline,
@@ -4931,16 +2677,11 @@ impl V5ReceiptRuntime {
                     },
                 }));
             }
-            #[cfg(feature = "receipt-ledger-test-support")]
-            {
-                self.telemetry.record_execute();
-                self.telemetry
-                    .record_event(V5ReceiptRuntimeEventKind::ExecuteEntered, epoch_ms);
-            }
-            #[cfg(feature = "receipt-ledger-test-support")]
-            if let Some(control) = &self.scenario_control {
-                control.record_callback_invocation_id(reservation.key().invocation_id());
-            }
+            self.hooks.stage_entered(V5Stage::Execute);
+            self.hooks
+                .event(V5ReceiptRuntimeEventKind::ExecuteEntered, epoch_ms);
+            self.hooks
+                .callback_invocation_id(reservation.key().invocation_id());
             let result = prepared.execute(cancellation.clone());
             let outcome = if cancellation.is_cancelled() {
                 ReceiptTerminalOutcome::Cancelled
@@ -4954,17 +2695,11 @@ impl V5ReceiptRuntime {
                     },
                 }
             };
-            #[cfg(feature = "receipt-ledger-test-support")]
-            if self
-                .scenario_control
-                .as_ref()
-                .is_some_and(|control| control.take_crash_after_side_effect())
-            {
+            if self.hooks.crash_after_side_effect() {
                 return Err(ReceiptLedgerError::StoreUnavailable);
             }
-            #[cfg(feature = "receipt-ledger-test-support")]
-            self.telemetry
-                .record_event(V5ReceiptRuntimeEventKind::ResultSerialized, epoch_ms);
+            self.hooks
+                .event(V5ReceiptRuntimeEventKind::ResultSerialized, epoch_ms);
             let snapshot =
                 self.publish_task_execution_outcome(&bound, task_record.task_id, outcome, deadline);
             drop(cancellation_guard);
@@ -4974,37 +2709,28 @@ impl V5ReceiptRuntime {
                 })
             });
         }
-        #[cfg(feature = "receipt-ledger-test-support")]
-        if let Some(control) = &self.scenario_control {
-            control.record_actor_workspace_identity(actor_bound.workspace_identity_hash().clone());
-        }
+        self.hooks
+            .actor_workspace_identity(actor_bound.workspace_identity_hash());
         let bound = self.receipt_ledger.bind_reserved_actor(
             reservation.key().clone(),
             reservation.record_version(),
             actor_bound.workspace_identity_hash().clone(),
             deadline,
         )?;
-        #[cfg(feature = "receipt-ledger-test-support")]
-        self.telemetry
-            .record_event(V5ReceiptRuntimeEventKind::ActorBoundCommitted, epoch_ms);
-        #[cfg(feature = "receipt-ledger-test-support")]
-        if let Some(control) = &self.scenario_control {
-            control.pause(
-                receipt_scenario_v5::ScenarioBarrierPoint::ActorBound,
-                deadline,
-            )?;
-            control.pause(
-                receipt_scenario_v5::ScenarioBarrierPoint::BeforeReceiptBegun,
-                deadline,
-            )?;
+        self.hooks
+            .event(V5ReceiptRuntimeEventKind::ActorBoundCommitted, epoch_ms);
+        self.hooks.pause(V5PausePoint::ActorBound, deadline)?;
+        self.hooks
+            .pause(V5PausePoint::BeforeReceiptBegun, deadline)?;
+        if self.hooks.observing() {
             let current = self.receipt_ledger.recover(bound.key().clone(), deadline)?;
-            if control.process_exited() {
+            if self.hooks.process_exited() {
                 return self.reply_for_existing_state(current, deadline);
             }
             if let ReceiptState::TaskHandoffActorBound(handoff) = current {
                 let (task_record, task_bound) = self
                     .task_projection
-                    .materialize_bound_handoff(&handoff, epoch_ms, deadline, &self.telemetry)
+                    .materialize_bound_handoff(&handoff, epoch_ms, deadline, self.hooks.as_ref())
                     .map_err(|failure| self.project_task_failure(failure))?;
                 self.receipt_ledger.complete_bound_task_handoff(
                     handoff.key().clone(),
@@ -5012,9 +2738,9 @@ impl V5ReceiptRuntime {
                     task_bound.clone(),
                     deadline,
                 )?;
-                control.record_bound_task(task_record.clone(), task_bound);
-                self.telemetry
-                    .record_event(V5ReceiptRuntimeEventKind::TaskBoundCommitted, epoch_ms);
+                self.hooks.bound_task(&task_record, &task_bound);
+                self.hooks
+                    .event(V5ReceiptRuntimeEventKind::TaskBoundCommitted, epoch_ms);
                 return Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
                     outcome: V5InvocationResponse::Task {
                         snapshot: task_store_snapshot(&task_record),
@@ -5027,167 +2753,52 @@ impl V5ReceiptRuntime {
             bound.record_version(),
             deadline,
         )?;
-        #[cfg(feature = "receipt-ledger-test-support")]
-        self.telemetry
-            .record_event(V5ReceiptRuntimeEventKind::ReceiptBegunCommitted, epoch_ms);
-        #[cfg(feature = "receipt-ledger-test-support")]
-        {
-            if let Some(control) = &self.scenario_control {
-                control.pause(
-                    receipt_scenario_v5::ScenarioBarrierPoint::BeforePrepare,
-                    deadline,
-                )?;
-                let current = self.receipt_ledger.recover(begun.key().clone(), deadline)?;
-                if control.process_exited() {
-                    return self.reply_for_existing_state(current, deadline);
-                }
-                if let ReceiptState::TaskHandoffActorBound(handoff) = current {
-                    if control.prepare_rejects() {
-                        let terminal = crate::application::receipt_ledger::canonical_v5_terminal(
-                            &crate::application::receipt_ledger::ReceiptTerminalOutcome::Completed {
-                                result: Box::new(
-                                    crate::domain::invocation::DomainResult::canonical_rejection(
-                                        None,
-                                        RefusalCode::BadValue,
-                                        "scenario prepare rejected invocation",
-                                    ),
-                                ),
-                            },
-                        )
-                        .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;
-                        return self.publish_staged_handoff_terminal_reply(
-                            handoff, terminal, epoch_ms, deadline,
-                        );
-                    }
-                    let (task_record, task_bound) = self
-                        .task_projection
-                        .materialize_bound_handoff(&handoff, epoch_ms, deadline, &self.telemetry)
-                        .map_err(|failure| self.project_task_failure(failure))?;
-                    self.receipt_ledger.complete_bound_task_handoff(
-                        handoff.key().clone(),
-                        handoff.record_version(),
-                        task_bound.clone(),
+        self.hooks
+            .event(V5ReceiptRuntimeEventKind::ReceiptBegunCommitted, epoch_ms);
+        self.hooks.pause(V5PausePoint::BeforePrepare, deadline)?;
+        if self.hooks.observing() {
+            let current = self.receipt_ledger.recover(begun.key().clone(), deadline)?;
+            if self.hooks.process_exited() {
+                return self.reply_for_existing_state(current, deadline);
+            }
+            if let ReceiptState::TaskHandoffActorBound(handoff) = current {
+                return self.continue_promoted_begun_handoff(handoff, epoch_ms, deadline);
+            }
+            if !reservation_is_begun(&current) {
+                return self.reply_for_existing_state(current, deadline);
+            }
+        }
+        self.hooks.stage_entered(V5Stage::Prepare);
+        self.hooks
+            .event(V5ReceiptRuntimeEventKind::PrepareEntered, epoch_ms);
+        self.hooks.pause(V5PausePoint::PrepareEntered, deadline)?;
+        if self.hooks.observing() {
+            if let Some((record, bound_task)) = self.hooks.bound_task_override() {
+                if self.hooks.prepare_rejects() {
+                    let terminal =
+                        injected_rejection_terminal("scenario prepare rejected invocation")?;
+                    return self.publish_bound_terminal_reply(
+                        &bound_task,
+                        &record,
+                        &terminal,
+                        epoch_ms,
                         deadline,
-                    )?;
-                    let (task_record, task_bound) = self
-                        .task_projection
-                        .start_bound_task(&task_bound, task_record, deadline)
-                        .map_err(|failure| self.project_task_failure(failure))?;
-                    control.record_bound_task(task_record.clone(), task_bound);
-                    self.telemetry
-                        .record_event(V5ReceiptRuntimeEventKind::TaskBoundCommitted, epoch_ms);
-                    return Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
-                        outcome: V5InvocationResponse::Task {
-                            snapshot: task_store_snapshot(&task_record),
-                        },
-                    }));
-                }
-                if !matches!(
-                    &current,
-                    ReceiptState::Reserved(receipt)
-                        if matches!(receipt.phase(), ReservedPhase::Begun { .. })
-                ) {
-                    return self.reply_for_existing_state(current, deadline);
+                    );
                 }
             }
-            self.telemetry.record_prepare();
-            self.telemetry
-                .record_event(V5ReceiptRuntimeEventKind::PrepareEntered, epoch_ms);
-            if let Some(control) = &self.scenario_control {
-                control.pause(
-                    receipt_scenario_v5::ScenarioBarrierPoint::PrepareEntered,
-                    deadline,
-                )?;
-                if let Some(bound_task) = control.bound_task() {
-                    if control.prepare_rejects() {
-                        let terminal = crate::application::receipt_ledger::canonical_v5_terminal(
-                            &crate::application::receipt_ledger::ReceiptTerminalOutcome::Completed {
-                                result: Box::new(
-                                    crate::domain::invocation::DomainResult::canonical_rejection(
-                                        None,
-                                        RefusalCode::BadValue,
-                                        "scenario prepare rejected invocation",
-                                    ),
-                                ),
-                            },
-                        )
-                        .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;
-                        return self.publish_bound_terminal_reply(
-                            &bound_task.bound,
-                            bound_task.record,
-                            &terminal,
-                            epoch_ms,
-                            deadline,
-                        );
-                    }
-                }
-                let current = self.receipt_ledger.recover(begun.key().clone(), deadline)?;
-                if control.process_exited() {
-                    return self.reply_for_existing_state(current, deadline);
-                }
-                if let ReceiptState::TaskHandoffActorBound(handoff) = current {
-                    if control.prepare_rejects() {
-                        let terminal = crate::application::receipt_ledger::canonical_v5_terminal(
-                            &crate::application::receipt_ledger::ReceiptTerminalOutcome::Completed {
-                                result: Box::new(
-                                    crate::domain::invocation::DomainResult::canonical_rejection(
-                                        None,
-                                        RefusalCode::BadValue,
-                                        "scenario prepare rejected invocation",
-                                    ),
-                                ),
-                            },
-                        )
-                        .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;
-                        return self.publish_staged_handoff_terminal_reply(
-                            handoff, terminal, epoch_ms, deadline,
-                        );
-                    }
-                    let (task_record, task_bound) = self
-                        .task_projection
-                        .materialize_bound_handoff(&handoff, epoch_ms, deadline, &self.telemetry)
-                        .map_err(|failure| self.project_task_failure(failure))?;
-                    self.receipt_ledger.complete_bound_task_handoff(
-                        handoff.key().clone(),
-                        handoff.record_version(),
-                        task_bound.clone(),
-                        deadline,
-                    )?;
-                    let (task_record, task_bound) = self
-                        .task_projection
-                        .start_bound_task(&task_bound, task_record, deadline)
-                        .map_err(|failure| self.project_task_failure(failure))?;
-                    control.record_bound_task(task_record.clone(), task_bound);
-                    self.telemetry
-                        .record_event(V5ReceiptRuntimeEventKind::TaskBoundCommitted, epoch_ms);
-                    return Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
-                        outcome: V5InvocationResponse::Task {
-                            snapshot: task_store_snapshot(&task_record),
-                        },
-                    }));
-                }
-                if !matches!(
-                    &current,
-                    ReceiptState::Reserved(receipt)
-                        if matches!(receipt.phase(), ReservedPhase::Begun { .. })
-                ) {
-                    return self.reply_for_existing_state(current, deadline);
-                }
-                if control.prepare_rejects() {
-                    let terminal = crate::application::receipt_ledger::canonical_v5_terminal(
-                        &crate::application::receipt_ledger::ReceiptTerminalOutcome::Completed {
-                            result: Box::new(
-                                crate::domain::invocation::DomainResult::canonical_rejection(
-                                    None,
-                                    RefusalCode::BadValue,
-                                    "scenario prepare rejected invocation",
-                                ),
-                            ),
-                        },
-                    )
-                    .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;
-                    return self.publish_direct_terminal(begun, epoch_ms, terminal, deadline);
-                }
+            let current = self.receipt_ledger.recover(begun.key().clone(), deadline)?;
+            if self.hooks.process_exited() {
+                return self.reply_for_existing_state(current, deadline);
+            }
+            if let ReceiptState::TaskHandoffActorBound(handoff) = current {
+                return self.continue_promoted_begun_handoff(handoff, epoch_ms, deadline);
+            }
+            if !reservation_is_begun(&current) {
+                return self.reply_for_existing_state(current, deadline);
+            }
+            if self.hooks.prepare_rejects() {
+                let terminal = injected_rejection_terminal("scenario prepare rejected invocation")?;
+                return self.publish_direct_terminal(begun, epoch_ms, terminal, deadline);
             }
         }
         let (prepared, direct_outcome) = match self.drive_inline_invocation(actor_bound, &begun)? {
@@ -5213,42 +2824,21 @@ impl V5ReceiptRuntime {
                 V5_TASK_POLL_INTERVAL_MS,
                 deadline,
             )?;
-            #[cfg(feature = "receipt-ledger-test-support")]
-            self.telemetry
-                .record_event(V5ReceiptRuntimeEventKind::BoundHandoffCommitted, epoch_ms);
+            self.hooks
+                .event(V5ReceiptRuntimeEventKind::BoundHandoffCommitted, epoch_ms);
             let link_reservation = self
                 .task_projection
-                .reserve_bound_handoff_link(
-                    &handoff,
-                    epoch_ms,
-                    deadline,
-                    #[cfg(feature = "receipt-ledger-test-support")]
-                    &self.telemetry,
-                )
+                .reserve_bound_handoff_link(&handoff, epoch_ms, deadline, self.hooks.as_ref())
                 .map_err(|failure| self.project_task_failure(failure))?;
-            #[cfg(feature = "receipt-ledger-test-support")]
-            if let Some(control) = &self.scenario_control {
-                control.pause(
-                    receipt_scenario_v5::ScenarioBarrierPoint::BeforeTaskStoreCreate,
-                    Instant::now() + receipt_scenario_v5::SCENARIO_BULK_OPERATION_TIMEOUT,
-                )?;
-            }
-            #[cfg(feature = "receipt-ledger-test-support")]
-            let deadline = if self.scenario_control.as_ref().is_some_and(|control| {
-                control.is_barrier_installed(
-                    receipt_scenario_v5::ScenarioBarrierPoint::BeforeTaskStoreCreate,
-                )
-            }) {
-                Instant::now() + receipt_scenario_v5::SCENARIO_BULK_OPERATION_TIMEOUT
-            } else {
-                deadline
-            };
-            #[cfg(feature = "receipt-ledger-test-support")]
-            let handoff = self
-                .scenario_control
-                .as_ref()
-                .and_then(|control| control.staged_handoff())
-                .unwrap_or(handoff);
+            self.hooks.pause(
+                V5PausePoint::BeforeTaskStoreCreate,
+                self.hooks
+                    .commit_deadline_at(V5PausePoint::BeforeTaskStoreCreate, deadline),
+            )?;
+            let deadline = self
+                .hooks
+                .commit_deadline_at(V5PausePoint::BeforeTaskStoreCreate, deadline);
+            let handoff = self.hooks.staged_handoff().unwrap_or(handoff);
             let (task_record, bound) = self
                 .task_projection
                 .materialize_staged_bound_handoff(
@@ -5256,64 +2846,47 @@ impl V5ReceiptRuntime {
                     &link_reservation,
                     epoch_ms,
                     deadline,
-                    #[cfg(feature = "receipt-ledger-test-support")]
-                    &self.telemetry,
+                    self.hooks.as_ref(),
                 )
                 .map_err(|failure| self.project_task_failure(failure))?;
             if let HandoffTerminalStage::Staged { terminal, .. } = handoff.terminal_stage() {
-                #[cfg(feature = "receipt-ledger-test-support")]
-                let provisional_record = task_record.clone();
                 let (terminal_record, terminal_link) = self
                     .task_projection
                     .publish_bound_task_terminal(
                         &bound,
-                        task_record,
+                        &task_record,
                         terminal,
                         epoch_ms,
                         deadline,
-                        #[cfg(feature = "receipt-ledger-test-support")]
-                        &self.telemetry,
-                        #[cfg(feature = "receipt-ledger-test-support")]
-                        self.scenario_control.as_ref(),
+                        self.hooks.as_ref(),
                     )
                     .map_err(|failure| self.project_task_failure(failure))?;
-                #[cfg(feature = "receipt-ledger-test-support")]
-                {
-                    self.telemetry.record_event(
-                        V5ReceiptRuntimeEventKind::TaskStoreTerminalCommitted,
-                        epoch_ms,
-                    );
-                    self.telemetry.record_event(
-                        V5ReceiptRuntimeEventKind::TaskStoreTerminalReadback,
-                        epoch_ms,
-                    );
-                }
-                let _terminal_link = self.receipt_ledger.complete_staged_task_handoff(
+                self.hooks.event(
+                    V5ReceiptRuntimeEventKind::TaskStoreTerminalCommitted,
+                    epoch_ms,
+                );
+                self.hooks.event(
+                    V5ReceiptRuntimeEventKind::TaskStoreTerminalReadback,
+                    epoch_ms,
+                );
+                let terminal_link = self.receipt_ledger.complete_staged_task_handoff(
                     handoff.key().clone(),
                     handoff.record_version(),
                     terminal_link,
                     deadline,
                 )?;
-                #[cfg(feature = "receipt-ledger-test-support")]
-                {
-                    if let Some(control) = &self.scenario_control {
-                        control
-                            .record_staged_terminal_publication(
-                                &handoff,
-                                &provisional_record,
-                                &terminal_record,
-                                &_terminal_link,
-                            )
-                            .map_err(|_| {
-                                ReceiptLedgerError::Corrupt("record staged terminal publication")
-                            })?;
-                        control.record_terminal_bound_task(terminal_record.clone(), _terminal_link);
-                    }
-                    self.telemetry.record_event(
-                        V5ReceiptRuntimeEventKind::TaskTerminalBoundCommitted,
-                        epoch_ms,
-                    );
-                }
+                self.hooks.staged_terminal_publication(
+                    &handoff,
+                    &task_record,
+                    &terminal_record,
+                    &terminal_link,
+                )?;
+                self.hooks
+                    .terminal_bound_task(&terminal_record, &terminal_link);
+                self.hooks.event(
+                    V5ReceiptRuntimeEventKind::TaskTerminalBoundCommitted,
+                    epoch_ms,
+                );
                 return Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
                     outcome: V5InvocationResponse::Task {
                         snapshot: task_store_snapshot(&terminal_record),
@@ -5333,56 +2906,47 @@ impl V5ReceiptRuntime {
                 .task_projection
                 .start_bound_task(&bound, task_record, deadline)
                 .map_err(|failure| self.project_task_failure(failure))?;
-            #[cfg(feature = "receipt-ledger-test-support")]
-            if let Some(control) = &self.scenario_control {
-                control.record_bound_task(task_record.clone(), bound.clone());
-            }
-            #[cfg(feature = "receipt-ledger-test-support")]
-            self.telemetry
-                .record_event(V5ReceiptRuntimeEventKind::TaskBoundCommitted, epoch_ms);
-            #[cfg(feature = "receipt-ledger-test-support")]
-            if let Some(control) = &self.scenario_control {
-                if control.is_barrier_installed(
-                    receipt_scenario_v5::ScenarioBarrierPoint::BeforeTaskTerminalReceipt,
-                ) || control.is_barrier_installed(
-                    receipt_scenario_v5::ScenarioBarrierPoint::AfterTaskStoreTerminalBeforeLifecycleLinkTerminal,
-                ) {
-                    control.pause(
-                        receipt_scenario_v5::ScenarioBarrierPoint::BeforeTaskTerminalReceipt,
-                        deadline,
-                    )?;
-                    self.telemetry.record_execute();
-                    self.telemetry
-                        .record_event(V5ReceiptRuntimeEventKind::ExecuteEntered, epoch_ms);
-                    #[cfg(feature = "receipt-ledger-test-support")]
-                    if let Some(control) = &self.scenario_control {
-                        control.record_callback_invocation_id(reservation.key().invocation_id());
+            self.hooks.bound_task(&task_record, &bound);
+            self.hooks
+                .event(V5ReceiptRuntimeEventKind::TaskBoundCommitted, epoch_ms);
+            if self.hooks.holds(V5PausePoint::BeforeTaskTerminalReceipt)
+                || self
+                    .hooks
+                    .holds(V5PausePoint::AfterTaskStoreTerminalBeforeLifecycleLinkTerminal)
+            {
+                // An observer holds the terminal receipt: the known-long attempt
+                // runs on this thread so the pause sees its exact outcome.
+                self.hooks
+                    .pause(V5PausePoint::BeforeTaskTerminalReceipt, deadline)?;
+                self.hooks.stage_entered(V5Stage::Execute);
+                self.hooks
+                    .event(V5ReceiptRuntimeEventKind::ExecuteEntered, epoch_ms);
+                self.hooks
+                    .callback_invocation_id(reservation.key().invocation_id());
+                let result = prepared.execute(cancellation.clone());
+                let outcome = if cancellation.is_cancelled() {
+                    ReceiptTerminalOutcome::Cancelled
+                } else {
+                    match result {
+                        Ok(result) => ReceiptTerminalOutcome::Completed {
+                            result: Box::new(result),
+                        },
+                        Err(_) => ReceiptTerminalOutcome::Failed {
+                            reason: V5SafeFailureReason::InvocationFailed,
+                        },
                     }
-                    let result = prepared.execute(cancellation.clone());
-                    let outcome = if cancellation.is_cancelled() {
-                        ReceiptTerminalOutcome::Cancelled
-                    } else {
-                        match result {
-                            Ok(result) => ReceiptTerminalOutcome::Completed {
-                                result: Box::new(result),
-                            },
-                            Err(_) => ReceiptTerminalOutcome::Failed {
-                                reason: V5SafeFailureReason::InvocationFailed,
-                            },
-                        }
-                    };
-                    self.telemetry
-                        .record_event(V5ReceiptRuntimeEventKind::ResultSerialized, epoch_ms);
-                    let snapshot = self.publish_task_execution_outcome(
-                        &bound,
-                        task_record.task_id,
-                        outcome,
-                        deadline,
-                    )?;
-                    return Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
-                        outcome: V5InvocationResponse::Task { snapshot },
-                    }));
-                }
+                };
+                self.hooks
+                    .event(V5ReceiptRuntimeEventKind::ResultSerialized, epoch_ms);
+                let snapshot = self.publish_task_execution_outcome(
+                    &bound,
+                    task_record.task_id,
+                    outcome,
+                    deadline,
+                )?;
+                return Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
+                    outcome: V5InvocationResponse::Task { snapshot },
+                }));
             }
             if task_record.task == V5StoredTask::Working {
                 self.spawn_task_execution(
@@ -5403,19 +2967,14 @@ impl V5ReceiptRuntime {
         }
         let outcome = direct_outcome
             .expect("an inline drive without a handoff or a known-long class yields the outcome");
-        #[cfg(feature = "receipt-ledger-test-support")]
-        if self
-            .scenario_control
-            .as_ref()
-            .is_some_and(|control| control.take_crash_after_side_effect())
-        {
+        if self.hooks.crash_after_side_effect() {
             return Err(ReceiptLedgerError::StoreUnavailable);
         }
         // An outcome that arrived on the last tick of the budget is still
         // published: the ledger command gets the serialization margin, not
         // an already spent operation deadline.
         let deadline = deadline.max(Instant::now() + RESPONSE_SERIALIZATION_MARGIN);
-        let (terminal, _oversized_result) = match canonical_v5_terminal(&outcome) {
+        let (terminal, oversized_result) = match canonical_v5_terminal(&outcome) {
             Ok(terminal) => (terminal, false),
             Err(CanonicalTerminalError::ResultTooLarge) => (
                 canonical_v5_terminal(&ReceiptTerminalOutcome::Failed {
@@ -5432,37 +2991,19 @@ impl V5ReceiptRuntime {
                 ))
             }
         };
-        #[cfg(feature = "receipt-ledger-test-support")]
-        self.telemetry
-            .record_event(V5ReceiptRuntimeEventKind::ResultSerialized, epoch_ms);
-        #[cfg(feature = "receipt-ledger-test-support")]
-        {
-            let candidate_result_override = if _oversized_result {
-                match &outcome {
-                    ReceiptTerminalOutcome::Completed { result } => Some(artifact_from_bytes(
-                        &serde_json::to_vec(result).map_err(|_| {
-                            ReceiptLedgerError::Corrupt(
-                                "serialize oversized candidate result evidence",
-                            )
-                        })?,
-                    )),
-                    ReceiptTerminalOutcome::Failed { .. } | ReceiptTerminalOutcome::Cancelled => {
-                        None
-                    }
-                }
-            } else {
-                None
-            };
-            self.publish_direct_terminal_with_candidate(
-                begun,
-                epoch_ms,
-                terminal,
-                deadline,
-                candidate_result_override,
-            )
-        }
-        #[cfg(not(feature = "receipt-ledger-test-support"))]
-        self.publish_direct_terminal(begun, epoch_ms, terminal, deadline)
+        self.hooks
+            .event(V5ReceiptRuntimeEventKind::ResultSerialized, epoch_ms);
+        let oversized_candidate = match (&outcome, oversized_result) {
+            (ReceiptTerminalOutcome::Completed { result }, true) => Some(result.as_ref()),
+            _ => None,
+        };
+        self.publish_direct_terminal_with_candidate(
+            begun,
+            epoch_ms,
+            terminal,
+            deadline,
+            oversized_candidate,
+        )
     }
 
     /// Runs prepare and the inline execution of a begun receipt on a worker
@@ -5493,13 +3034,9 @@ impl V5ReceiptRuntime {
                     ReceiptLedgerError::StoreUnavailable
                 })?
         };
-        // Under the scenario harness the harness itself plays the deadline
-        // owner; the production runtime owns the cutoff otherwise.
-        #[cfg(feature = "receipt-ledger-test-support")]
-        let owns_cutoff = self.scenario_control.is_none();
-        #[cfg(not(feature = "receipt-ledger-test-support"))]
-        let owns_cutoff = true;
-        let cutoff = response_deadline.filter(|_| owns_cutoff);
+        // Under the contract harness the harness itself still plays the
+        // deadline owner; the production runtime owns the cutoff otherwise.
+        let cutoff = response_deadline.filter(|_| self.hooks.owns_cutoff());
 
         let mut state = slot.lock();
         loop {
@@ -5630,8 +3167,6 @@ impl V5ReceiptRuntime {
         cancellation: CancellationToken,
         invocation_id: crate::domain::invocation::InvocationId,
     ) {
-        #[cfg(not(feature = "receipt-ledger-test-support"))]
-        let _ = invocation_id;
         let prepared = match actor_bound.prepare() {
             Ok(prepared) => prepared,
             Err(result) => {
@@ -5681,17 +3216,10 @@ impl V5ReceiptRuntime {
         cancellation: &CancellationToken,
         invocation_id: crate::domain::invocation::InvocationId,
     ) -> ReceiptTerminalOutcome {
-        #[cfg(not(feature = "receipt-ledger-test-support"))]
-        let _ = invocation_id;
-        #[cfg(feature = "receipt-ledger-test-support")]
-        {
-            self.telemetry.record_execute();
-            self.telemetry
-                .record_event(V5ReceiptRuntimeEventKind::ExecuteEntered, self.epoch_ms());
-            if let Some(control) = &self.scenario_control {
-                control.record_callback_invocation_id(invocation_id);
-            }
-        }
+        self.hooks.stage_entered(V5Stage::Execute);
+        self.hooks
+            .event(V5ReceiptRuntimeEventKind::ExecuteEntered, self.epoch_ms());
+        self.hooks.callback_invocation_id(invocation_id);
         let result = prepared.execute(cancellation.clone());
         if cancellation.is_cancelled() {
             ReceiptTerminalOutcome::Cancelled
@@ -5781,18 +3309,11 @@ impl V5ReceiptRuntime {
             V5_TASK_POLL_INTERVAL_MS,
             deadline,
         )?;
-        #[cfg(feature = "receipt-ledger-test-support")]
-        self.telemetry
-            .record_event(V5ReceiptRuntimeEventKind::BoundHandoffCommitted, epoch_ms);
+        self.hooks
+            .event(V5ReceiptRuntimeEventKind::BoundHandoffCommitted, epoch_ms);
         let link_reservation = self
             .task_projection
-            .reserve_bound_handoff_link(
-                &handoff,
-                epoch_ms,
-                deadline,
-                #[cfg(feature = "receipt-ledger-test-support")]
-                &self.telemetry,
-            )
+            .reserve_bound_handoff_link(&handoff, epoch_ms, deadline, self.hooks.as_ref())
             .map_err(|failure| self.project_task_failure(failure))?;
         let (task_record, bound) = self
             .task_projection
@@ -5801,8 +3322,7 @@ impl V5ReceiptRuntime {
                 &link_reservation,
                 epoch_ms,
                 deadline,
-                #[cfg(feature = "receipt-ledger-test-support")]
-                &self.telemetry,
+                self.hooks.as_ref(),
             )
             .map_err(|failure| self.project_task_failure(failure))?;
         self.receipt_ledger.complete_bound_task_handoff(
@@ -5818,14 +3338,9 @@ impl V5ReceiptRuntime {
             .task_projection
             .start_bound_task(&bound, task_record, deadline)
             .map_err(|failure| self.project_task_failure(failure))?;
-        #[cfg(feature = "receipt-ledger-test-support")]
-        {
-            if let Some(control) = &self.scenario_control {
-                control.record_bound_task(task_record.clone(), bound.clone());
-            }
-            self.telemetry
-                .record_event(V5ReceiptRuntimeEventKind::TaskBoundCommitted, epoch_ms);
-        }
+        self.hooks.bound_task(&task_record, &bound);
+        self.hooks
+            .event(V5ReceiptRuntimeEventKind::TaskBoundCommitted, epoch_ms);
         Ok((bound, task_record, guard))
     }
 
@@ -5841,14 +3356,11 @@ impl V5ReceiptRuntime {
         let execution = thread::Builder::new()
             .name("unica-v5-task-execution".to_owned())
             .spawn(move || {
-                #[cfg(feature = "receipt-ledger-test-support")]
-                {
-                    runtime.telemetry.record_execute();
-                    runtime.telemetry.record_event(
-                        V5ReceiptRuntimeEventKind::ExecuteEntered,
-                        runtime.epoch_ms(),
-                    );
-                }
+                runtime.hooks.stage_entered(V5Stage::Execute);
+                runtime.hooks.event(
+                    V5ReceiptRuntimeEventKind::ExecuteEntered,
+                    runtime.epoch_ms(),
+                );
                 let result = prepared.execute(cancellation.clone());
                 let outcome = if cancellation.is_cancelled() {
                     ReceiptTerminalOutcome::Cancelled
@@ -5959,7 +3471,7 @@ impl V5ReceiptRuntime {
         };
         let reply = self.publish_bound_terminal_reply(
             &bound,
-            record,
+            &record,
             &terminal,
             self.epoch_ms(),
             deadline,
@@ -5995,14 +3507,7 @@ impl V5ReceiptRuntime {
         terminal: crate::application::receipt_ledger::V5CanonicalTerminal,
         deadline: Instant,
     ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
-        self.publish_direct_terminal_with_candidate(
-            reservation,
-            epoch_ms,
-            terminal,
-            deadline,
-            #[cfg(feature = "receipt-ledger-test-support")]
-            None,
-        )
+        self.publish_direct_terminal_with_candidate(reservation, epoch_ms, terminal, deadline, None)
     }
 
     fn publish_direct_terminal_with_candidate(
@@ -6011,13 +3516,13 @@ impl V5ReceiptRuntime {
         epoch_ms: u64,
         terminal: crate::application::receipt_ledger::V5CanonicalTerminal,
         deadline: Instant,
-        #[cfg(feature = "receipt-ledger-test-support")] candidate_result_override: Option<Value>,
+        oversized_candidate: Option<&crate::domain::invocation::DomainResult>,
     ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
-        #[cfg(feature = "receipt-ledger-test-support")]
-        if self.telemetry.take_store_fault(
-            receipt_scenario_v5::ScenarioStoreFaultPoint::AfterTerminalPayloadRenameBeforeDirectorySync,
-        ) {
-            inject_receipt_row_directory_sync_failure_for_test();
+        if self
+            .hooks
+            .store_fault(V5StoreFaultPoint::AfterTerminalPayloadRenameBeforeDirectorySync)
+        {
+            arm_receipt_row_directory_sync_fault();
         }
         let publication = self.receipt_ledger.publish_direct_terminal(
             reservation.key().clone(),
@@ -6026,20 +3531,17 @@ impl V5ReceiptRuntime {
             terminal,
             deadline,
         )?;
-        #[cfg(feature = "receipt-ledger-test-support")]
-        self.telemetry.record_event(
+        self.hooks.event(
             V5ReceiptRuntimeEventKind::ReceiptTerminalCommitted,
             epoch_ms,
         );
-        #[cfg(feature = "receipt-ledger-test-support")]
-        self.telemetry
-            .record_event(V5ReceiptRuntimeEventKind::FinalResultProjected, epoch_ms);
-        #[cfg(feature = "receipt-ledger-test-support")]
-        self.telemetry.record_direct_publication(
+        self.hooks
+            .event(V5ReceiptRuntimeEventKind::FinalResultProjected, epoch_ms);
+        self.hooks.direct_publication(
             &publication,
             "direct",
             "immediate_publication",
-            candidate_result_override,
+            oversized_candidate,
         );
         Ok(V5RuntimeReply::Prepared(publication.into_parts().1))
     }
@@ -6047,14 +3549,12 @@ impl V5ReceiptRuntime {
     fn publish_bound_terminal_reply(
         &self,
         bound: &TaskBoundReceipt,
-        task_record: V5StoredInvocationRecord,
+        task_record: &V5StoredInvocationRecord,
         terminal: &crate::application::receipt_ledger::V5CanonicalTerminal,
         epoch_ms: u64,
         deadline: Instant,
     ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
-        #[cfg(feature = "receipt-ledger-test-support")]
-        let provisional_record = task_record.clone();
-        let (terminal_record, _terminal_link) = self
+        let (terminal_record, terminal_link) = self
             .task_projection
             .publish_bound_task_terminal(
                 bound,
@@ -6062,42 +3562,31 @@ impl V5ReceiptRuntime {
                 terminal,
                 epoch_ms,
                 deadline,
-                #[cfg(feature = "receipt-ledger-test-support")]
-                &self.telemetry,
-                #[cfg(feature = "receipt-ledger-test-support")]
-                self.scenario_control.as_ref(),
+                self.hooks.as_ref(),
             )
             .map_err(|failure| self.project_task_failure(failure))?;
-        #[cfg(feature = "receipt-ledger-test-support")]
-        {
-            self.telemetry.record_event(
-                V5ReceiptRuntimeEventKind::TaskStoreTerminalCommitted,
-                epoch_ms,
-            );
-            self.telemetry.record_event(
-                V5ReceiptRuntimeEventKind::TaskStoreTerminalReadback,
-                epoch_ms,
-            );
-            self.telemetry.record_event(
-                V5ReceiptRuntimeEventKind::TaskTerminalBoundCommitted,
-                epoch_ms,
-            );
-            if let Some(control) = &self.scenario_control {
-                control
-                    .record_bound_terminal_publication(
-                        bound,
-                        &provisional_record,
-                        &terminal_record,
-                        &_terminal_link,
-                        terminal,
-                        epoch_ms,
-                    )
-                    .map_err(|_| {
-                        ReceiptLedgerError::Corrupt("record bound terminal publication")
-                    })?;
-                control.record_terminal_bound_task(terminal_record.clone(), _terminal_link);
-            }
-        }
+        self.hooks.event(
+            V5ReceiptRuntimeEventKind::TaskStoreTerminalCommitted,
+            epoch_ms,
+        );
+        self.hooks.event(
+            V5ReceiptRuntimeEventKind::TaskStoreTerminalReadback,
+            epoch_ms,
+        );
+        self.hooks.event(
+            V5ReceiptRuntimeEventKind::TaskTerminalBoundCommitted,
+            epoch_ms,
+        );
+        self.hooks.bound_terminal_publication(
+            bound,
+            task_record,
+            &terminal_record,
+            &terminal_link,
+            terminal,
+            epoch_ms,
+        )?;
+        self.hooks
+            .terminal_bound_task(&terminal_record, &terminal_link);
         Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
             outcome: V5InvocationResponse::Task {
                 snapshot: task_store_snapshot(&terminal_record),
@@ -6127,34 +3616,20 @@ impl V5ReceiptRuntime {
             certificate,
             deadline,
         )?;
-        #[cfg(feature = "receipt-ledger-test-support")]
-        if let Some(control) = &self.scenario_control {
-            control
-                .record_staged_terminal_preparation(&staged)
-                .map_err(|_| ReceiptLedgerError::Corrupt("record staged terminal preparation"))?;
-        }
-        #[cfg(feature = "receipt-ledger-test-support")]
-        self.telemetry.record_event(
+        self.hooks.staged_terminal_preparation(&staged)?;
+        self.hooks.event(
             V5ReceiptRuntimeEventKind::BoundHandoffTerminalStaged,
             epoch_ms,
         );
         let reservation = self
             .task_projection
-            .reserve_bound_handoff_link(
-                &staged,
-                epoch_ms,
-                deadline,
-                #[cfg(feature = "receipt-ledger-test-support")]
-                &self.telemetry,
-            )
+            .reserve_bound_handoff_link(&staged, epoch_ms, deadline, self.hooks.as_ref())
             .map_err(|failure| self.project_task_failure(failure))?;
-        #[cfg(feature = "receipt-ledger-test-support")]
-        if let Some(control) = &self.scenario_control {
-            control.pause(
-                receipt_scenario_v5::ScenarioBarrierPoint::BeforeTaskStoreCreate,
-                Instant::now() + receipt_scenario_v5::SCENARIO_BULK_OPERATION_TIMEOUT,
-            )?;
-        }
+        self.hooks.pause(
+            V5PausePoint::BeforeTaskStoreCreate,
+            self.hooks
+                .commit_deadline_at(V5PausePoint::BeforeTaskStoreCreate, deadline),
+        )?;
         let (task_record, task_bound) = self
             .task_projection
             .materialize_staged_bound_handoff(
@@ -6162,66 +3637,115 @@ impl V5ReceiptRuntime {
                 &reservation,
                 epoch_ms,
                 deadline,
-                #[cfg(feature = "receipt-ledger-test-support")]
-                &self.telemetry,
+                self.hooks.as_ref(),
             )
             .map_err(|failure| self.project_task_failure(failure))?;
-        #[cfg(feature = "receipt-ledger-test-support")]
-        let provisional_record = task_record.clone();
         let (terminal_record, terminal_link) = self
             .task_projection
             .publish_bound_task_terminal(
                 &task_bound,
-                task_record,
+                &task_record,
                 &terminal,
                 epoch_ms,
                 deadline,
-                #[cfg(feature = "receipt-ledger-test-support")]
-                &self.telemetry,
-                #[cfg(feature = "receipt-ledger-test-support")]
-                self.scenario_control.as_ref(),
+                self.hooks.as_ref(),
             )
             .map_err(|failure| self.project_task_failure(failure))?;
-        #[cfg(feature = "receipt-ledger-test-support")]
-        {
-            self.telemetry.record_event(
-                V5ReceiptRuntimeEventKind::TaskStoreTerminalCommitted,
-                epoch_ms,
-            );
-            self.telemetry.record_event(
-                V5ReceiptRuntimeEventKind::TaskStoreTerminalReadback,
-                epoch_ms,
-            );
-        }
-        let _terminal_link = self.receipt_ledger.complete_staged_task_handoff(
+        self.hooks.event(
+            V5ReceiptRuntimeEventKind::TaskStoreTerminalCommitted,
+            epoch_ms,
+        );
+        self.hooks.event(
+            V5ReceiptRuntimeEventKind::TaskStoreTerminalReadback,
+            epoch_ms,
+        );
+        let terminal_link = self.receipt_ledger.complete_staged_task_handoff(
             staged.key().clone(),
             staged.record_version(),
             terminal_link,
             deadline,
         )?;
-        #[cfg(feature = "receipt-ledger-test-support")]
-        if let Some(control) = &self.scenario_control {
-            control
-                .record_staged_terminal_publication(
-                    &staged,
-                    &provisional_record,
-                    &terminal_record,
-                    &_terminal_link,
-                )
-                .map_err(|_| ReceiptLedgerError::Corrupt("record staged terminal publication"))?;
-        }
-        #[cfg(feature = "receipt-ledger-test-support")]
-        self.telemetry.record_event(
+        self.hooks.staged_terminal_publication(
+            &staged,
+            &task_record,
+            &terminal_record,
+            &terminal_link,
+        )?;
+        self.hooks.event(
             V5ReceiptRuntimeEventKind::TaskTerminalBoundCommitted,
             epoch_ms,
         );
-        #[cfg(feature = "receipt-ledger-test-support")]
-        if let Some(control) = &self.scenario_control {
-            control.record_terminal_bound_task(terminal_record.clone(), _terminal_link);
-        }
+        self.hooks
+            .terminal_bound_task(&terminal_record, &terminal_link);
         Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
             outcome: V5InvocationResponse::Task {
                 snapshot: task_store_snapshot(&terminal_record),
+            },
+        }))
+    }
+
+    /// Publishes the terminal of a failed validation or admission and, when
+    /// the failure poisons the process, latches fail-stop so the reply is the
+    /// last one this daemon admits.
+    fn admission_failure_reply(
+        &self,
+        reservation: crate::application::receipt_ledger::ReservedReceipt,
+        outcome: ReceiptTerminalOutcome,
+        fail_stop: bool,
+        epoch_ms: u64,
+        deadline: Instant,
+    ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
+        let terminal = canonical_v5_terminal(&outcome)
+            .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;
+        let reply = self.publish_pre_actor_terminal(reservation, epoch_ms, terminal, deadline);
+        if fail_stop {
+            self.hooks.restart_requested();
+            self.external_store_fail_stop.store(true, Ordering::Release);
+        }
+        match (fail_stop, reply) {
+            (true, Ok(V5RuntimeReply::Prepared(frame))) => {
+                Ok(V5RuntimeReply::PreparedFailStop(frame))
+            }
+            (true, Ok(V5RuntimeReply::Json(response))) => {
+                Ok(V5RuntimeReply::JsonFailStop(response))
+            }
+            (_, reply) => reply,
+        }
+    }
+
+    /// A begun receipt an observer promoted to a handoff while this handler
+    /// was paused: materialize the Task and answer with it.
+    fn continue_promoted_begun_handoff(
+        &self,
+        handoff: TaskHandoffActorBoundReceipt,
+        epoch_ms: u64,
+        deadline: Instant,
+    ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
+        if self.hooks.prepare_rejects() {
+            let terminal = injected_rejection_terminal("scenario prepare rejected invocation")?;
+            return self
+                .publish_staged_handoff_terminal_reply(handoff, terminal, epoch_ms, deadline);
+        }
+        let (task_record, task_bound) = self
+            .task_projection
+            .materialize_bound_handoff(&handoff, epoch_ms, deadline, self.hooks.as_ref())
+            .map_err(|failure| self.project_task_failure(failure))?;
+        self.receipt_ledger.complete_bound_task_handoff(
+            handoff.key().clone(),
+            handoff.record_version(),
+            task_bound.clone(),
+            deadline,
+        )?;
+        let (task_record, task_bound) = self
+            .task_projection
+            .start_bound_task(&task_bound, task_record, deadline)
+            .map_err(|failure| self.project_task_failure(failure))?;
+        self.hooks.bound_task(&task_record, &task_bound);
+        self.hooks
+            .event(V5ReceiptRuntimeEventKind::TaskBoundCommitted, epoch_ms);
+        Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
+            outcome: V5InvocationResponse::Task {
+                snapshot: task_store_snapshot(&task_record),
             },
         }))
     }
@@ -6242,25 +3766,15 @@ impl V5ReceiptRuntime {
             }
             ReceiptState::TaskPromisedUnbound(promised) => {
                 let task_id = promised.task().task_id();
-                let _receipt = self.receipt_ledger.publish_receipt_backed_task_terminal(
+                let receipt = self.receipt_ledger.publish_receipt_backed_task_terminal(
                     promised.key().clone(),
                     TaskCancellationReceipt::PromisedUnbound(promised),
                     epoch_ms,
                     terminal,
                     deadline,
                 )?;
-                #[cfg(feature = "receipt-ledger-test-support")]
-                if let Some(control) = &self.scenario_control {
-                    control
-                        .record_receipt_backed_terminal(_receipt)
-                        .map_err(|_| {
-                            ReceiptLedgerError::Corrupt(
-                                "capture receipt-backed terminal evidence failed",
-                            )
-                        })?;
-                }
-                #[cfg(feature = "receipt-ledger-test-support")]
-                self.telemetry.record_event(
+                self.hooks.receipt_backed_terminal(&receipt)?;
+                self.hooks.event(
                     V5ReceiptRuntimeEventKind::ReceiptTerminalCommitted,
                     epoch_ms,
                 );
@@ -6286,18 +3800,14 @@ impl V5ReceiptRuntime {
                 pending_reserved_response(&reservation),
             )),
             CancelReservedSubmitDecision::PublishCancelledDirect(intent) => {
-                #[cfg(feature = "receipt-ledger-test-support")]
-                self.telemetry.record_event(
+                self.hooks.event(
                     V5ReceiptRuntimeEventKind::CancelReservationConverted,
                     epoch_ms,
                 );
-                #[cfg(feature = "receipt-ledger-test-support")]
-                if let Some(control) = &self.scenario_control {
-                    control.pause(
-                        receipt_scenario_v5::ScenarioBarrierPoint::AfterCancelReservationConvertedBeforeTerminal,
-                        deadline,
-                    )?;
-                }
+                self.hooks.pause(
+                    V5PausePoint::AfterCancelReservationConvertedBeforeTerminal,
+                    deadline,
+                )?;
                 let publication = self.receipt_ledger.publish_direct_terminal(
                     intent.reservation().key().clone(),
                     intent.reservation().record_version(),
@@ -6305,13 +3815,11 @@ impl V5ReceiptRuntime {
                     intent.terminal().clone(),
                     deadline,
                 )?;
-                #[cfg(feature = "receipt-ledger-test-support")]
-                self.telemetry.record_event(
+                self.hooks.event(
                     V5ReceiptRuntimeEventKind::ReceiptTerminalCommitted,
                     epoch_ms,
                 );
-                #[cfg(feature = "receipt-ledger-test-support")]
-                self.telemetry.record_direct_publication(
+                self.hooks.direct_publication(
                     &publication,
                     "cancelled",
                     "immediate_publication",
@@ -6428,8 +3936,7 @@ impl V5ReceiptRuntime {
         let acknowledged =
             self.receipt_ledger
                 .acknowledge_direct(key, terminal_digest, epoch_ms, deadline)?;
-        #[cfg(feature = "receipt-ledger-test-support")]
-        self.telemetry.record_event(
+        self.hooks.event(
             V5ReceiptRuntimeEventKind::AcknowledgementCommitted,
             epoch_ms,
         );
@@ -6446,7 +3953,7 @@ impl V5ReceiptRuntime {
         deadline: Instant,
     ) -> Result<super::protocol_v5::V5DaemonTaskSnapshot, ReceiptLedgerError> {
         self.task_projection
-            .retire_expired_terminal_tasks(deadline)
+            .retire_expired_terminal_tasks(deadline, self.hooks.as_ref())
             .map_err(|failure| self.project_task_failure(failure))?;
         if let Some(record) = self
             .task_projection
@@ -6578,7 +4085,7 @@ impl V5ReceiptRuntime {
         deadline: Instant,
     ) -> Result<super::protocol_v5::V5DaemonTaskSnapshot, ReceiptLedgerError> {
         self.task_projection
-            .retire_expired_terminal_tasks(deadline)
+            .retire_expired_terminal_tasks(deadline, self.hooks.as_ref())
             .map_err(|failure| self.project_task_failure(failure))?;
         {
             let _task_terminal_gate = self
@@ -6606,41 +4113,31 @@ impl V5ReceiptRuntime {
                             .map_err(|_| {
                                 ReceiptLedgerError::Corrupt("canonical v5 terminal failed")
                             })?;
-                        let (terminal_record, _terminal_link) = self
+                        let (terminal_record, terminal_link) = self
                             .task_projection
                             .publish_bound_task_terminal(
                                 &bound,
-                                record,
+                                &record,
                                 &terminal,
                                 self.epoch_ms(),
                                 deadline,
-                                #[cfg(feature = "receipt-ledger-test-support")]
-                                &self.telemetry,
-                                #[cfg(feature = "receipt-ledger-test-support")]
-                                self.scenario_control.as_ref(),
+                                self.hooks.as_ref(),
                             )
                             .map_err(|failure| self.project_task_failure(failure))?;
-                        #[cfg(feature = "receipt-ledger-test-support")]
-                        {
-                            self.telemetry.record_event(
-                                V5ReceiptRuntimeEventKind::TaskStoreTerminalCommitted,
-                                self.epoch_ms(),
-                            );
-                            self.telemetry.record_event(
-                                V5ReceiptRuntimeEventKind::TaskStoreTerminalReadback,
-                                self.epoch_ms(),
-                            );
-                            self.telemetry.record_event(
-                                V5ReceiptRuntimeEventKind::TaskTerminalBoundCommitted,
-                                self.epoch_ms(),
-                            );
-                            if let Some(control) = &self.scenario_control {
-                                control.record_terminal_bound_task(
-                                    terminal_record.clone(),
-                                    _terminal_link,
-                                );
-                            }
-                        }
+                        self.hooks.event(
+                            V5ReceiptRuntimeEventKind::TaskStoreTerminalCommitted,
+                            self.epoch_ms(),
+                        );
+                        self.hooks.event(
+                            V5ReceiptRuntimeEventKind::TaskStoreTerminalReadback,
+                            self.epoch_ms(),
+                        );
+                        self.hooks.event(
+                            V5ReceiptRuntimeEventKind::TaskTerminalBoundCommitted,
+                            self.epoch_ms(),
+                        );
+                        self.hooks
+                            .terminal_bound_task(&terminal_record, &terminal_link);
                         return Ok(task_store_snapshot(&terminal_record));
                     }
                 }
@@ -6677,30 +4174,19 @@ impl V5ReceiptRuntime {
         if terminalize_without_started_attempt {
             let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
                 .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;
-            let _committed = self.receipt_ledger.publish_receipt_backed_task_terminal(
+            let committed = self.receipt_ledger.publish_receipt_backed_task_terminal(
                 cancelled.key().clone(),
                 cancelled,
                 self.epoch_ms(),
                 terminal,
                 deadline,
             )?;
-            #[cfg(feature = "receipt-ledger-test-support")]
-            {
-                if let Some(control) = &self.scenario_control {
-                    control
-                        .record_receipt_backed_terminal(_committed)
-                        .map_err(|_| {
-                            ReceiptLedgerError::Corrupt(
-                                "capture receipt-backed terminal evidence failed",
-                            )
-                        })?;
-                    control.release_pre_actor_barriers();
-                }
-                self.telemetry.record_event(
-                    V5ReceiptRuntimeEventKind::ReceiptTerminalCommitted,
-                    self.epoch_ms(),
-                );
-            }
+            self.hooks.receipt_backed_terminal(&committed)?;
+            self.hooks.release_pre_actor_pauses();
+            self.hooks.event(
+                V5ReceiptRuntimeEventKind::ReceiptTerminalCommitted,
+                self.epoch_ms(),
+            );
             return self.resolve_task(task_id, deadline);
         }
         Ok(queued_receipt_task_snapshot(
@@ -6725,8 +4211,6 @@ impl V5ReceiptRuntime {
         origin: &'static str,
         response_kind: &'static str,
     ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
-        #[cfg(not(feature = "receipt-ledger-test-support"))]
-        let _ = (origin, response_kind);
         match state {
             ReceiptState::CancelReserved(receipt) => {
                 Ok(V5RuntimeReply::Json(pending_cancel_response(&receipt)))
@@ -6747,9 +4231,8 @@ impl V5ReceiptRuntime {
                     receipt.terminal().clone(),
                     deadline,
                 )?;
-                #[cfg(feature = "receipt-ledger-test-support")]
-                self.telemetry
-                    .record_direct_publication(&publication, response_kind, origin, None);
+                self.hooks
+                    .direct_publication(&publication, response_kind, origin, None);
                 Ok(V5RuntimeReply::Prepared(publication.into_parts().1))
             }
             ReceiptState::AcknowledgedTombstone(receipt) => {
@@ -6783,11 +4266,41 @@ impl V5ReceiptRuntime {
 
 enum V5RuntimeReply {
     Json(V5ServerResponse),
-    #[cfg(feature = "receipt-ledger-test-support")]
+    /// A closed reply written after the process latched fail-stop: the
+    /// daemon answers this request and admits nothing further.
     JsonFailStop(V5ServerResponse),
     Prepared(PreparedWireFrame),
-    #[cfg(feature = "receipt-ledger-test-support")]
     PreparedFailStop(PreparedWireFrame),
+}
+
+/// The terminal an injected rejection publishes in place of the real stage.
+fn injected_rejection_terminal(
+    summary: &'static str,
+) -> Result<crate::application::receipt_ledger::V5CanonicalTerminal, ReceiptLedgerError> {
+    canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
+        result: Box::new(
+            crate::domain::invocation::DomainResult::canonical_rejection(
+                None,
+                RefusalCode::BadValue,
+                summary,
+            ),
+        ),
+    })
+    .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))
+}
+
+fn reservation_is_still_unbound(state: &ReceiptState) -> bool {
+    matches!(
+        state,
+        ReceiptState::Reserved(receipt) if matches!(receipt.phase(), ReservedPhase::Unbound)
+    ) || matches!(state, ReceiptState::TaskPromisedUnbound(_))
+}
+
+fn reservation_is_begun(state: &ReceiptState) -> bool {
+    matches!(
+        state,
+        ReceiptState::Reserved(receipt) if matches!(receipt.phase(), ReservedPhase::Begun { .. })
+    )
 }
 
 fn queued_receipt_task_snapshot(
@@ -6902,13 +4415,6 @@ fn receipt_state_task_snapshot(
             terminal_digest: receipt.terminal().digest().clone(),
         },
     })
-}
-
-#[cfg(feature = "receipt-ledger-test-support")]
-pub(super) fn receipt_state_task_snapshot_for_test(
-    state: ReceiptState,
-) -> Result<super::protocol_v5::V5DaemonTaskSnapshot, ReceiptLedgerError> {
-    receipt_state_task_snapshot(state)
 }
 
 fn task_store_snapshot(
@@ -7079,10 +4585,7 @@ fn run_daemon_configured_until(
     // Receipt ownership and the initial durable generation are established before
     // a listener can become discoverable.
     let runtime = Arc::new(configure_runtime(V5ReceiptRuntime::open(&state, &config)?));
-    #[cfg(feature = "receipt-ledger-test-support")]
-    if let Some(control) = &runtime.scenario_control {
-        control.record_runtime(&runtime);
-    }
+    runtime.hooks.runtime_opened(&runtime);
     if let Err(error) = runtime.ensure_named_authority() {
         if runtime.restart_required() {
             std::mem::forget(runtime);
@@ -7109,8 +4612,7 @@ fn run_daemon_configured_until(
         let _ = state.remove_v5_endpoint_if_owned(&published);
         return Err(error);
     }
-    #[cfg(feature = "receipt-ledger-test-support")]
-    let listener_telemetry = runtime.telemetry.listener_lease();
+    let listener_lease = runtime.hooks.listener_lease();
     let active_leases = Arc::new(V5LeaseRegistry::default());
     let admitted_connections = Arc::new(AtomicUsize::new(0));
     let shutting_down = Arc::new(AtomicBool::new(false));
@@ -7130,8 +4632,7 @@ fn run_daemon_configured_until(
         // fail-stop latch.
         if runtime.restart_required() {
             restart_requested = true;
-            #[cfg(feature = "receipt-ledger-test-support")]
-            runtime.telemetry.record_forced_process_exit();
+            runtime.hooks.forced_process_exit();
             break;
         }
         match listener.accept() {
@@ -7139,8 +4640,7 @@ fn run_daemon_configured_until(
                 if runtime.restart_required() {
                     drop(stream);
                     restart_requested = true;
-                    #[cfg(feature = "receipt-ledger-test-support")]
-                    runtime.telemetry.record_forced_process_exit();
+                    runtime.hooks.forced_process_exit();
                     break;
                 }
                 let connection = V5AcceptedConnection {
@@ -7185,26 +4685,19 @@ fn run_daemon_configured_until(
 
     shutting_down.store(true, Ordering::Release);
     drop(listener);
-    #[cfg(feature = "receipt-ledger-test-support")]
-    drop(listener_telemetry);
+    drop(listener_lease);
     if restart_requested {
         // INV.APP.DAEMON-STORE-FAIL-STOP: keep both the PID-bound endpoint and
         // receipt authority alive until process death. A detached worker may
         // still be inside an uninterruptible adapter or syscall.
-        #[cfg(all(feature = "receipt-ledger-test-support", not(test)))]
-        {
-            // Integration scenarios run the feature-only daemon in a thread;
-            // joining that thread is their simulated process-death boundary.
-            // Release its authority so unrelated scenarios do not share resources
-            // that production releases at PID exit.
+        if runtime.hooks.releases_authority_on_fail_stop() {
+            // The contract harness runs the daemon in a thread; joining that
+            // thread is its simulated process-death boundary. Release the
+            // authority so unrelated scenarios do not share resources that
+            // production releases at PID exit.
             join_v5_handlers(sessions);
             drop(runtime);
-        }
-        #[cfg(any(
-            not(feature = "receipt-ledger-test-support"),
-            all(feature = "receipt-ledger-test-support", test)
-        ))]
-        {
+        } else {
             drop(sessions);
             std::mem::forget(runtime);
         }
@@ -7493,36 +4986,25 @@ fn handle_probe_connection(
                 }
                 Err(V5RequestFrameError::Read(_)) => break,
             };
-        let deadlines = v5_request_deadlines(&decoded, request_received_at)?;
-        #[cfg(feature = "receipt-ledger-test-support")]
-        let mut deadlines = deadlines;
-        #[cfg(feature = "receipt-ledger-test-support")]
-        if runtime
-            .scenario_control
-            .as_ref()
-            .is_some_and(|control| control.has_precomputed_terminal())
-        {
-            let bulk_deadline = Instant::now()
-                .checked_add(receipt_scenario_v5::SCENARIO_BULK_OPERATION_TIMEOUT)
-                .ok_or_else(|| "protocol-v5 scenario bulk deadline overflow".to_owned())?;
-            deadlines.operation = bulk_deadline;
-            deadlines.response = bulk_deadline;
-        }
-        #[cfg(feature = "receipt-ledger-test-support")]
-        runtime.telemetry.record_event(
+        let deadlines = match runtime.hooks.session_deadline_override() {
+            Some(bulk_deadline) => V5RequestDeadlines {
+                operation: bulk_deadline,
+                response: bulk_deadline,
+            },
+            None => v5_request_deadlines(&decoded, request_received_at)?,
+        };
+        runtime.hooks.event(
             V5ReceiptRuntimeEventKind::StrictEnvelopeParsed,
             runtime.epoch_ms(),
         );
-        #[cfg(feature = "receipt-ledger-test-support")]
-        runtime.telemetry.record_event(
+        runtime.hooks.event(
             V5ReceiptRuntimeEventKind::V5ReceiptRuntimeEntered,
             runtime.epoch_ms(),
         );
         runtime.ensure_named_authority_before(deadlines.operation)?;
         let kind = decoded.request().kind();
-        #[cfg(feature = "receipt-ledger-test-support")]
-        let _actor_telemetry_lease = (kind == V5ClientRequestKind::SubmitInvocation)
-            .then(|| runtime.telemetry.actor_lease());
+        let _actor_lease =
+            (kind == V5ClientRequestKind::SubmitInvocation).then(|| runtime.hooks.actor_lease());
         let result = match kind {
             V5ClientRequestKind::Ping => write_runtime_json_line_before(
                 &mut stream,
@@ -7534,12 +5016,7 @@ fn handle_probe_connection(
                 let epoch_ms = runtime.epoch_ms();
                 match runtime.submit_invocation(decoded, epoch_ms, deadlines.operation) {
                     Ok(reply) => {
-                        #[cfg(feature = "receipt-ledger-test-support")]
-                        if runtime
-                            .scenario_control
-                            .as_ref()
-                            .is_some_and(|control| control.take_submit_response_disconnect())
-                        {
+                        if runtime.hooks.submit_response_disconnect() {
                             return Ok(());
                         }
                         write_runtime_reply_before(&mut stream, runtime, reply, deadlines.response)
@@ -7605,12 +5082,7 @@ fn handle_probe_connection(
                     deadlines.operation,
                 ) {
                     Ok(reply) => {
-                        #[cfg(feature = "receipt-ledger-test-support")]
-                        if runtime
-                            .scenario_control
-                            .as_ref()
-                            .is_some_and(|control| control.take_ack_response_disconnect())
-                        {
+                        if runtime.hooks.ack_response_disconnect() {
                             return Ok(());
                         }
                         write_runtime_reply_before(&mut stream, runtime, reply, deadlines.response)
@@ -7804,8 +5276,7 @@ fn write_runtime_ledger_error_before(
         code: daemon_error_code(error),
     };
     if error.requires_reopen() {
-        #[cfg(feature = "receipt-ledger-test-support")]
-        runtime.telemetry.record_forced_process_exit();
+        runtime.hooks.forced_process_exit();
         // The actor has already latched fail-stop, so asking it for another
         // generation check would turn the required closed response into EOF.
         // The runtime still owns the authenticated stream, PID endpoint,
@@ -7861,7 +5332,6 @@ fn write_runtime_reply_before(
         V5RuntimeReply::Json(response) => {
             write_runtime_json_line_before(stream, runtime, &response, deadline)
         }
-        #[cfg(feature = "receipt-ledger-test-support")]
         V5RuntimeReply::JsonFailStop(response) => {
             write_fail_stop_json_line(stream, &response, deadline)
         }
@@ -7886,7 +5356,6 @@ fn write_runtime_reply_before(
                 .map(|_| ())
                 .ok_or_else(|| "protocol-v5 response deadline expired".to_string())
         }
-        #[cfg(feature = "receipt-ledger-test-support")]
         V5RuntimeReply::PreparedFailStop(frame) => {
             if frame.jsonl().len() > MAX_V5_RESPONSE_LINE_BYTES {
                 return Err("prepared protocol-v5 response exceeds the byte limit".to_string());
@@ -9356,13 +6825,7 @@ mod tests {
             .expect("begin materialized startup handoff");
         let (record, task_bound) = runtime
             .task_projection
-            .materialize_bound_handoff(
-                &handoff,
-                1_009,
-                deadline,
-                #[cfg(feature = "receipt-ledger-test-support")]
-                &runtime.telemetry,
-            )
+            .materialize_bound_handoff(&handoff, 1_009, deadline, runtime.hooks.as_ref())
             .unwrap_or_else(|failure| panic!("materialize startup TaskBound: {}", failure.error));
         let task_bound = runtime
             .receipt_ledger
@@ -9376,6 +6839,27 @@ mod tests {
         (key, record, task_bound)
     }
 
+    /// Two retirement passes meet at the snapshot: the hook holds each one
+    /// until the other arrives.
+    #[cfg(feature = "receipt-ledger-test-support")]
+    struct RetirementSnapshotBarrier {
+        barrier: Arc<std::sync::Barrier>,
+    }
+
+    #[cfg(feature = "receipt-ledger-test-support")]
+    impl V5RuntimeHooks for RetirementSnapshotBarrier {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn pause(&self, point: V5PausePoint, _deadline: Instant) -> Result<(), ReceiptLedgerError> {
+            if point == V5PausePoint::BeforeRetirementSnapshot {
+                self.barrier.wait();
+            }
+            Ok(())
+        }
+    }
+
     #[cfg(feature = "receipt-ledger-test-support")]
     #[test]
     fn concurrent_terminal_retirement_is_idempotent() {
@@ -9384,12 +6868,16 @@ mod tests {
             std::fs::canonicalize(root.path()).expect("physical retirement-race state root");
         let identity = CoreIdentity::production_v5();
         let clock = Arc::new(ManualEpochClock::new(1_000));
+        let barrier = Arc::new(std::sync::Barrier::new(2));
         let config = DaemonServerConfig::new(
             state_root.clone(),
             identity.clone(),
             Duration::from_millis(50),
         )
-        .with_v5_epoch_clock_for_test(clock.clone());
+        .with_v5_epoch_clock_for_test(clock.clone())
+        .with_runtime_hooks_for_test(Arc::new(RetirementSnapshotBarrier {
+            barrier: Arc::clone(&barrier),
+        }));
         let state = DaemonStateDirectory::open(&state_root, &identity)
             .expect("open retirement-race daemon state");
         let runtime =
@@ -9434,18 +6922,15 @@ mod tests {
             .expect("publish retirement-race terminal link");
         clock.set(4_000_000);
 
-        let barrier = Arc::new(std::sync::Barrier::new(2));
-        runtime
-            .task_projection
-            .install_retirement_snapshot_barrier_for_test(barrier);
         let runtime = Arc::new(runtime);
         let workers = (0..2)
             .map(|_| {
                 let runtime = Arc::clone(&runtime);
                 thread::spawn(move || {
-                    runtime
-                        .task_projection
-                        .retire_expired_terminal_tasks(Instant::now() + Duration::from_secs(2))
+                    runtime.task_projection.retire_expired_terminal_tasks(
+                        Instant::now() + Duration::from_secs(2),
+                        runtime.hooks.as_ref(),
+                    )
                 })
             })
             .collect::<Vec<_>>();

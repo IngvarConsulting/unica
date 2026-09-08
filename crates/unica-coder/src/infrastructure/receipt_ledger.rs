@@ -40,9 +40,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path};
-#[cfg(feature = "receipt-ledger-test-support")]
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -96,15 +94,17 @@ struct ReceiptBatchBacking {
     encoded: Arc<Vec<u8>>,
 }
 
-#[cfg(all(test, not(feature = "receipt-ledger-test-support")))]
+// A row-directory sync fault armed by the runtime hooks (process-wide, the
+// daemon thread differs from the observer) or by a unit test (this thread
+// only, so parallel tests never consume each other's fault). Production arms
+// neither; both slots are read on every row sync so the store behaves the
+// same whatever the build.
+static ARMED_RECEIPT_ROW_DIRECTORY_SYNC_FAULT: AtomicBool = AtomicBool::new(false);
 thread_local! {
-    static TEST_RECEIPT_ROW_DIRECTORY_SYNC_FAILURE: std::cell::Cell<bool> = const {
+    static ARMED_RECEIPT_ROW_DIRECTORY_SYNC_FAULT_ON_THIS_THREAD: std::cell::Cell<bool> = const {
         std::cell::Cell::new(false)
     };
 }
-
-#[cfg(feature = "receipt-ledger-test-support")]
-static TEST_RECEIPT_ROW_DIRECTORY_SYNC_FAILURE: AtomicBool = AtomicBool::new(false);
 
 #[cfg(test)]
 thread_local! {
@@ -128,14 +128,15 @@ thread_local! {
     };
 }
 
-#[cfg(all(test, not(feature = "receipt-ledger-test-support")))]
-pub(crate) fn inject_receipt_row_directory_sync_failure_for_test() {
-    TEST_RECEIPT_ROW_DIRECTORY_SYNC_FAILURE.with(|slot| slot.set(true));
+/// Arms one row-directory sync failure for whichever store syncs next in
+/// this process. Only the runtime hooks arm it.
+pub(crate) fn arm_receipt_row_directory_sync_fault() {
+    ARMED_RECEIPT_ROW_DIRECTORY_SYNC_FAULT.store(true, Ordering::Release);
 }
 
-#[cfg(feature = "receipt-ledger-test-support")]
-pub(crate) fn inject_receipt_row_directory_sync_failure_for_test() {
-    TEST_RECEIPT_ROW_DIRECTORY_SYNC_FAILURE.store(true, Ordering::Release);
+#[cfg(test)]
+fn inject_receipt_row_directory_sync_failure_for_test() {
+    ARMED_RECEIPT_ROW_DIRECTORY_SYNC_FAULT_ON_THIS_THREAD.with(|slot| slot.set(true));
 }
 
 #[cfg(test)]
@@ -9856,14 +9857,10 @@ fn cleanup_staged_file(
 }
 
 fn sync_receipt_row_directory(directory: &File) -> io::Result<()> {
-    #[cfg(all(test, not(feature = "receipt-ledger-test-support")))]
-    if TEST_RECEIPT_ROW_DIRECTORY_SYNC_FAILURE.with(|slot| slot.replace(false)) {
-        return Err(io::Error::other(
-            "injected receipt row directory sync failure",
-        ));
-    }
-    #[cfg(feature = "receipt-ledger-test-support")]
-    if TEST_RECEIPT_ROW_DIRECTORY_SYNC_FAILURE.swap(false, Ordering::AcqRel) {
+    let armed_on_this_thread =
+        ARMED_RECEIPT_ROW_DIRECTORY_SYNC_FAULT_ON_THIS_THREAD.with(|slot| slot.replace(false));
+    if armed_on_this_thread || ARMED_RECEIPT_ROW_DIRECTORY_SYNC_FAULT.swap(false, Ordering::AcqRel)
+    {
         return Err(io::Error::other(
             "injected receipt row directory sync failure",
         ));
