@@ -328,10 +328,13 @@ for raw in sys.stdin:
             payload = {
                 "ok": True,
                 "summary": "workspace is ready",
-                "data": {"status": "passed", "ready": True},
+                "data": {"status": "passed", "ready": True, "checks": [], "diagnostics": []},
             }
         elif name == "unica.view":
-            payload["data"] = {"kind": "Configuration", "branches": []}
+            if arguments:
+                payload["data"] = {"kind": "Configuration", "branches": []}
+            else:
+                payload["data"] = {"sourceSets": [{"name": "main"}]}
         elif name == "unica.find":
             payload["data"] = {"candidates": [{"at": "main:CommonModule.Shared"}]}
         elif name == "unica.search":
@@ -412,6 +415,7 @@ for raw in sys.stdin:
                 [scenario["id"] for scenario in report["scenarios"]],
                 [
                     "mcp-tools-list",
+                    "workspace-facts",
                     "workspace-check",
                     "configuration-view",
                     "logical-find",
