@@ -3198,6 +3198,9 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                             )?,
                         );
                         pending.response_projected = true;
+                        // A terminal staged onto the handoff while its owner is
+                        // parked between commit and store create is another owner's
+                        // write, not this attempt's: the scenario plays that owner.
                         if let Some(handoff) = held_handoff {
                             if control.has_precomputed_terminal() {
                                 let configured_terminal =
