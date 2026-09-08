@@ -7,47 +7,73 @@ description: "Диагностика BSL и объяснение отключе�
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.code.diagnostics`, `unica.resolve`, `unica.view {}`, `unica.code.graph`, `unica.code.definition`, `unica.code.search`, `unica.docs`, and `unica.runtime.execute`.
-- По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
-показывает запланированную команду без побочных эффектов, а с `dryRun: false`
-исполняет классифицированную операцию и отвечает её терминальным результатом в
-том же вызове, приложив названную причину риска (`runtime_risk_*`)
-предупреждением; неклассифицированная операция по-прежнему отказывает
-`runtime_operation_unbounded` до обнаружения рабочего пространства. Preview
-исполнением не является. Работу, которую вызов ждать не должен, запускай через
-`unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
-`unica.build.*`.
-- Every diagnostics call names an exact `sourceSet`; `cwd` selects the workspace only and never identifies the target. Use `unica.view {}` when the source-set name is unknown.
-- Use `action=status` before resident `findings` when readiness is uncertain. A completed status request is not proof that a provider is ready: read each `providers[].readiness.state` and call `findings` only for `ready`; `building`, `notStarted`, and `stale` are not clean results.
-- Use `action=findings` with a logical `metadataPath` for one module or metadata object, `action=analyze` for a complete one-shot source-set scan, and `action=catalog` to discover provider-qualified rules. Provider execution is routed internally; do not pass a provider selector. The current live provider `bsl-analyzer` supports module findings only. Until a metadata provider is registered, a metadata-object request fails at request level with `no_applicable_provider`; this means neither clean metadata nor a bad logical address.
-- `action=analyze` may set `timeoutSeconds` from 30 to 3600. Without it the call uses `operational.code_diagnostics.analyze_timeout_seconds` from `<workspaceRoot>/unica.local.toml`, then `unica.toml`, then the compiled 120-second fallback. `findings`, `status`, and `catalog` do not read this operational config, do not accept `timeoutSeconds`, and run on that same compiled 120-second budget.
-- Put severity and exact case-sensitive codes under `filter`. Every code is `{provider, code}`; obtain provider ids and codes from `catalog`. `limit` is global across providers after normalization and deterministic ordering.
-- Read `location` as the shared logical navigation target and `focus` as the position inside it. `location.kind=addressed` carries `sourceSet`, optional `metadataPath`, and derived `targetKind`; `location.kind=unaddressable` carries a safe relative `path` and the item carries `locationReason`. `focus.kind` is `target`, `sourceRange`, or `metadata`.
-- Treat `state=partial` as useful but incomplete. A `resourceFailure` is one provider's failure for one logical resource. `location.kind=unaddressable` means the observation is safe to report but cannot be navigated as its own logical target. A provider section with `complete=false` and an error may still carry proven items: one resource the mapper could not place never withdraws the rest. Neither means clean code.
-- For actions that return `items`, only `state=completed`, `complete=true`, `truncated=false`, and provider sections without failures prove an exhaustive answer. Check `itemsTotal` and `itemsReturned` before treating `items` as complete. `status` has no `truncated` field; its evidence is each provider's readiness.
-- `unica.code.definition` returns `index_pending:` only while an RLM index is building and `index_unavailable:` for missing, stale, failed, or unavailable indexes. Neither means “no definitions”.
-- Use `unica.code.graph` only for diagnostic impact context. v8std access goes only through `unica.docs` with `source: "development-standard"`. Do not call internal analyzer, standards, or package adapters directly.
+- Диагностику узла даёт `unica.check {at}`. Валидаторы следуют из вида узла:
+  у модуля это BSL-анализатор, у объекта метаданных — его собственные проверки.
+  Выбирать провайдера или действие не нужно и нечем: `check` принимает только
+  адрес.
+- Ответ несёт `status` (`passed` или `failed`), `validators` — какие проверки
+  отработали, и `diagnostics` — находки с кодом, важностью, местом и стандартом.
+  Провалом считается `error`, а не всякая пометка: подсказка по стилю модуль не
+  ломает.
+- **Пустой `diagnostics` при `status: passed` — доказательство.** Если анализ
+  не завершился, `check` отказывает `provider_unavailable` и прямо говорит, что
+  модуль не проверен. Отдельного вопроса о готовности провайдера больше нет:
+  чистый ответ и неотработавший провайдер теперь различимы по самому ответу.
+- Адрес узла даёт `unica.view {at}` по дереву или `unica.search {corpus: "names"}`
+  по имени. Если отправная точка — путь из диффа или лога сборки, переведи его
+  в адрес аварийным `unica.resolve`; в обычном ходе работы он не нужен.
+- Стандарт v8std спрашивается только через `unica.docs` с
+  `source: "development-standard"`. Не зови анализатор, стандарты или пакетные
+  адаптеры напрямую.
+- Код ищется `unica.search`: `role` выбирает, чем искать — `lexical` буквально,
+  `symbol` по индексу символов, `semantic` по смыслу. Без `role` Unica ищет
+  литерал сама.
+
+### Чего на канонической поверхности пока нет
+
+Называй это пробелом контракта, а не обходи стороной:
+
+- **сплошной прогон по всему набору** — `check` проверяет один адрес; обхода
+  всех модулей одним вызовом нет;
+- **отбор по важности и кодам, ограничение выдачи** — `check` принимает только
+  `at`;
+- **каталог правил провайдера** — коды берутся из находок и из `unica.docs`;
+- **граф вызовов для оценки влияния** — ветвей `Caller`/`Callee` у узла метода
+  ещё нет.
 
 ## Workflow
 
-1. Resolve the exact `sourceSet`. If the starting point is a physical file, use `unica.resolve` to obtain its logical `metadataPath`.
-2. Call `status` when resident readiness matters and `catalog` when rule ids need classification. Use `findings` for one logical target or `analyze` for the whole source set.
-3. Group diagnostics by logical `location`, provider-qualified code, and root cause. Follow `focus` for the exact source range or metadata element.
-4. Inspect the target with `unica.view` on the module node (its `Method` branch lists the methods), `unica.code.definition`, or `unica.code.search`. Use `unica.code.graph` before changing shared or exported behavior.
-5. Call `unica.docs` with `source: "development-standard"` with explicit codes; otherwise use `unica.docs` with `source: "development-standard"` by diagnostic name, АПК/EDT/BSL LS token, or nearby snippet.
-6. Report source cause, impacted diagnostics, logical target and focus, standard evidence, and verification result.
+1. Получи адрес узла: `unica.view {}` называет наборы исходников,
+   `unica.search {corpus: "names"}` находит объект по имени, `unica.view {at}`
+   спускается по дереву. У владельца есть ветвь `Module`, у модуля — `Method`.
+2. Вызови `unica.check {at}` на модуле или объекте. Прочти `status`,
+   `validators` и `diagnostics`.
+3. Сгруппируй находки по месту, коду и первопричине. Иди за точным диапазоном
+   в самой находке.
+4. Разгляди предмет: `unica.view {at}` на узле метода даёт подпись, контекст
+   компиляции и собственные строки; `unica.search` находит вхождения.
+5. Спроси стандарт: `unica.docs` с `source: "development-standard"` по коду,
+   имени диагностики, токену АПК/EDT/BSL LS или соседнему фрагменту.
+6. Отчитайся: причина в исходнике, затронутые диагностики, логический адрес и
+   место, доказательство из стандарта, результат перепроверки.
 
 ## Verification gate
 
 This verification gate is mandatory:
 
-- Run diagnostics after syntax-sensitive edits and treat new `error` findings as blocking.
-- Run impact analysis when an exported method, metadata handler, public API, query path, or shared module contract changes.
-- If public MCP `unica` cannot expose required evidence, report a contract gap instead of claiming full verification.
+- Проверяй `unica.check {at}` после правок, чувствительных к синтаксису, и
+  считай новые находки важности `error` блокирующими.
+- Оценивай влияние при изменении экспортного метода, обработчика метаданных,
+  публичного API, пути запроса или контракта общего модуля. Пока графа вызовов
+  на поверхности нет, доказательством служит `unica.search` по имени символа —
+  и скажи, что доказательство неполное.
+- Если публичный MCP `unica` не может показать нужное доказательство, сообщи о
+  пробеле контракта вместо заявления о полной проверке.
 
 ## Suppression and range-disable comments
 
-Когда inline/range disable markers или suppression-комментарии отключают диагностику строки или диапазона, считайте точный маркер частью доказательства.
+Когда inline/range disable markers или suppression-комментарии отключают
+диагностику строки или диапазона, считайте точный маркер частью доказательства.
 
 - Extract literal rule codes from АПК, EDT, BSL LS, analyzer, or suppression comments.
 - Explain an отключение only when the code, surrounding range, and standard support the reason.
@@ -55,48 +81,20 @@ This verification gate is mandatory:
 
 ## MCP examples
 
-One logical module, narrowed to one rule. Remove `filter.codes` to include all codes at the selected severity threshold; set `filter.minSeverity=hint` for every severity and still inspect `truncated`:
+Проверка одного модуля:
 
 ```jsonc
 {
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.code.diagnostics",
-    "arguments": {
-      "cwd": "<workspace>",
-      "action": "findings",
-      "sourceSet": "main",
-      "metadataPath": "CommonModule.Продажи.Module",
-      "filter": {
-        "minSeverity": "warning",
-        "codes": [
-          {"provider": "bsl-analyzer", "code": "UnusedLocalVariable"}
-        ]
-      },
-      "limit": 100
-    }
+    "name": "unica.check",
+    "arguments": { "at": "main:CommonModule.Продажи.Module.Manager" }
   }
 }
 ```
 
-Complete source-set scan:
-
-```jsonc
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.code.diagnostics",
-    "arguments": {
-      "cwd": "<workspace>",
-      "action": "analyze",
-      "sourceSet": "main",
-      "timeoutSeconds": 900
-    }
-  }
-}
-```
+Стандарт за диагностикой:
 
 ```jsonc
 {
@@ -112,17 +110,18 @@ Complete source-set scan:
 }
 ```
 
-```json
+Вхождения символа перед правкой общего кода:
+
+```jsonc
 {
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.runtime.execute",
+    "name": "unica.search",
     "arguments": {
-      "cwd": "<workspace>",
-      "operation": "syntax",
-      "mode": "designer-modules",
-      "dryRun": true
+      "query": "ПередЗаписью",
+      "role": "symbol",
+      "scope": "main:Configuration"
     }
   }
 }

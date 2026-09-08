@@ -13,7 +13,7 @@ MIN_RUNTIME_GUIDANCE_DOCS = 31
 # The retired v8-runner skill carried eleven duplicate examples. Remaining
 # examples belong to subject skills and shared references until their v0.13
 # operation is implemented and migrated to unica.run.
-MIN_RUNTIME_EXECUTE_EXAMPLES = 10
+MIN_RUNTIME_EXECUTE_EXAMPLES = 9
 
 
 # Both ways a document points at another one: a backticked path, where the
@@ -366,7 +366,7 @@ IN_SCOPE_TOOLS = {
     "dcs-edit": "unica.dcs.edit",
     "mxl-compile": "unica.mxl.compile",
     "mxl-decompile": "unica.mxl.decompile",
-    "mxl-info": "unica.mxl.info",
+    "mxl-info": "unica.view",
     "role-compile": "unica.role.compile",
     "role-edit": "unica.role.edit",
 }
@@ -381,17 +381,20 @@ SCENARIO_SKILLS = {
         "unica.docs",
         "unica.runtime.execute",
     ],
+        # Поиск по тексту и по именам — один `search`, различается свод;
+    # чтение узла и профиль объекта — один `view`.
     "code-search": [
-        "unica.code.search",
-        "unica.code.definition",
-        "unica.meta.info",
+        "unica.search",
         "unica.view",
+        "unica.resolve",
     ],
+    # Диагностика узла — канонический `check`; поиск — `search`; стандарт —
+    # `docs`. Прогон платформы этому скиллу не нужен: он читает и судит.
     "code-diagnostics": [
-        "unica.code.diagnostics",
-        "unica.code.search",
+        "unica.check",
+        "unica.search",
         "unica.docs",
-        "unica.runtime.execute",
+        "unica.view",
     ],
     "code-review": [
         "unica.code.search",
@@ -791,7 +794,8 @@ TASK_EXAMPLE_ARGUMENT_KEYS = {
     "dcs-edit": ["TemplatePath", "Operation", "Value"],
     "mxl-compile": ["JsonPath", "OutputPath"],
     "mxl-decompile": ["TemplatePath"],
-    "mxl-info": ["TemplatePath", "WithText"],
+    # Читающий макет адресуется логически: файлового селектора у `view` нет.
+    "mxl-info": ["at"],
     "role-compile": ["JsonPath", "OutputDir"],
     "role-edit": ["sourceSet", "metadataPath", "operations"],
 }
@@ -944,10 +948,12 @@ SCENARIO_PRESERVING_TOKENS = {
     # Eleven `Mode` values selected eleven reports. The typed answer carries
     # every section at once, so the scenarios are preserved by the sections the
     # skill names, not by the selector that no longer exists (ADR-0023).
+    # Содержимое ячеек стало отдельным адресом, а не признаком в аргументах,
+    # поэтому сценарий сохраняется адресом ветви, а не селектором состава.
     "mxl-info": [
-        '"WithText": true',
-        "`columnSets`",
-        "`outside`",
+        "Area.Шапка.Body",
+        "columnSets",
+        "contentCount",
     ],
 }
 
@@ -957,7 +963,14 @@ SCENARIO_PRESERVING_TOKENS = {
 SCENARIO_RETIRED_TOKENS = {
     "meta-add": ['"JsonPath"', '"OutputDir"', '"DefinitionFile"'],
     "meta-edit": ['"ObjectPath"', '"Operation"', '"Value"', '"DefinitionFile"'],
-    "mxl-info": ['"Format"', '"MaxParams"', '"Limit"', '"Offset"'],
+    "mxl-info": [
+        '"Format"',
+        '"MaxParams"',
+        '"Limit"',
+        '"Offset"',
+        '"TemplatePath"',
+        '"WithText"',
+    ],
     "meta-info": ['"ObjectPath"', '"objectPath"', '"Detailed"', '"detailed"'],
 }
 
@@ -1540,94 +1553,69 @@ class UnicaSkillRoutingTests(unittest.TestCase):
 
         self.assertEqual(offenders, [])
 
-    def test_code_diagnostics_describes_operational_config_fallback(self) -> None:
+    def test_code_diagnostics_names_the_gaps_it_cannot_cover(self) -> None:
+        """Пробел контракта называется, а не обходится стороной.
+
+        Канонический `check` принимает только адрес: ни сплошного прогона по
+        набору, ни отбора по важности и кодам, ни каталога правил у него нет.
+        Скилл, умолчавший об этом, толкает модель выдумывать аргументы.
+        """
         text = (self.skill_root() / "code-diagnostics" / "SKILL.md").read_text(
             encoding="utf-8"
         )
 
-        self.assertIn("operational.code_diagnostics.analyze_timeout_seconds", text)
-        self.assertIn("unica.local.toml", text)
-        self.assertIn("unica.toml", text)
-        self.assertIn("compiled 120-second fallback", text)
-        self.assertIn("do not read this operational config", text)
+        self.assertIn("Чего на канонической поверхности пока нет", text)
+        for gap in (
+            "сплошной прогон по всему набору",
+            "отбор по важности и кодам",
+            "каталог правил провайдера",
+            "граф вызовов",
+        ):
+            self.assertIn(gap, text)
 
     def test_code_diagnostics_routes_providers_internally(self) -> None:
         text = (self.skill_root() / "code-diagnostics" / "SKILL.md").read_text(
             encoding="utf-8"
         )
 
-        self.assertIn("no_applicable_provider", text)
-        self.assertIn("Provider execution is routed internally", text)
+        # Валидатор следует из вида узла, и выбрать его вызывающему нечем.
+        self.assertIn("Валидаторы следуют из вида узла", text)
         self.assertNotIn('providers: ["bsl-analyzer"]', text)
+        # Чистый ответ и неотработавший провайдер обязаны быть различимы:
+        # пустой список находок при незавершённом прогоне выглядел бы как
+        # «проверено и чисто».
+        self.assertIn("provider_unavailable", text)
         self.assertIn("inline/range disable markers", text)
         self.assertIn("suppression-комментарии", text)
 
-    def test_code_diagnostics_examples_use_logical_action_contract(self) -> None:
+    def test_code_diagnostics_examples_call_the_canonical_check(self) -> None:
+        """Пример — это маршрут, по которому пойдёт модель.
+
+        Пример на снятое имя учит звать то, чего на проводе нет: любое имя
+        v0.12 отвечает `-32602`. Проверка требует, чтобы примеры скилла звали
+        `unica.check` одним логическим адресом и ничем больше.
+        """
+        text = (self.skill_root() / "code-diagnostics" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
         calls = []
-        for path in sorted(self.skill_root().glob("*/SKILL.md")):
-            text = path.read_text(encoding="utf-8")
-            for block in re.findall(r"```(?:json|jsonc)\n(.*?)\n```", text, flags=re.S):
-                try:
-                    payload = json.loads(block)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(payload, dict):
-                    continue
-                params = payload.get("params", {})
-                if params.get("name") == "unica.code.diagnostics":
-                    calls.append((path, params.get("arguments", {})))
+        for block in re.findall(r"```(?:json|jsonc)\n(.*?)\n```", text, flags=re.S):
+            try:
+                payload = json.loads(block)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                calls.append(payload.get("params", {}))
 
-        self.assertGreaterEqual(len(calls), 2)
-        forbidden = {
-            "mode",
-            "sourceDir",
-            "path",
-            "codes",
-            "minSeverity",
-            "rangeStart",
-            "rangeEnd",
-            "config",
-            "format",
-            "detail",
-            "maxFiles",
-        }
-        for path, arguments in calls:
-            with self.subTest(
-                path=path.relative_to(self.repo_root()), arguments=arguments
-            ):
-                self.assertIn(
-                    arguments.get("action"),
-                    {"analyze", "findings", "status", "catalog"},
-                )
-                self.assertIsInstance(arguments.get("sourceSet"), str)
-                self.assertTrue(arguments["sourceSet"].strip())
-                self.assertEqual(forbidden.intersection(arguments), set())
-                if arguments["action"] == "findings":
-                    self.assertRegex(
-                        arguments.get("metadataPath", ""),
-                        r"^[^.]+\.[^.]+(?:\..+)?$",
-                    )
-                for code in arguments.get("filter", {}).get("codes", []):
-                    self.assertEqual(set(code), {"provider", "code"})
-                    self.assertTrue(code["provider"])
-                    self.assertTrue(code["code"])
+        checks = [call for call in calls if call.get("name") == "unica.check"]
+        self.assertTrue(checks, "скилл диагностик обязан показать вызов check")
+        for call in checks:
+            arguments = call.get("arguments", {})
+            self.assertEqual(set(arguments), {"at"})
+            self.assertRegex(arguments["at"], r"^[^:]+:.+")
 
-        code_diagnostics_calls = [
-            arguments
-            for path, arguments in calls
-            if path.parent.name == "code-diagnostics"
-        ]
-        self.assertTrue(
-            any(call["action"] == "analyze" for call in code_diagnostics_calls)
-        )
-        findings = next(
-            call
-            for call in code_diagnostics_calls
-            if call["action"] == "findings"
-        )
-        self.assertEqual(findings["sourceSet"], "main")
-        self.assertIn("metadataPath", findings)
-        self.assertTrue(findings.get("filter", {}).get("codes"))
+        for call in calls:
+            self.assertNotEqual(call.get("name"), "unica.code.diagnostics")
 
     def test_unica_owned_guidance_contains_required_operational_concepts(self) -> None:
         docs = {
@@ -3213,8 +3201,10 @@ class PlatformHelpRoutingTests(unittest.TestCase):
 # unconditionally required — contradicts the schema the tool publishes.
 CONDITIONAL_MARKER = "один из двух"
 
+# Скилл покидает этот список, когда его инструмент перестаёт принимать
+# файловый селектор: у канонического `view` его нет вовсе, а путь, пришедший
+# снаружи, переводит в адрес аварийный `resolve`.
 BRIDGED_SKILL_SELECTORS = {
-    "mxl-info": ("TemplatePath", True),
     "mxl-decompile": ("TemplatePath", True),
 }
 
