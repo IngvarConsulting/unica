@@ -38,9 +38,36 @@ pub struct ProjectSourceSet {
     pub kind: SourceSetKind,
     pub path: String,
     pub source_format: SourceFormat,
+    pub source_state: SourceSetState,
     pub format_evidence: Vec<String>,
     #[serde(skip_serializing)]
     pub(crate) format_probe_error: Option<String>,
+}
+
+/// Что в наборе исходников на самом деле: три состояния, которые читатель
+/// обязан различать без догадок.
+///
+/// Различие уже лежало в данных, но названо не было: у наполненного набора
+/// доказательство формата указывает на файл, у пустого — на объявление в
+/// `v8project.yaml`. Первое наблюдено, второе лишь заявлено, и по виду
+/// доказательства читателю приходилось это выводить.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SourceSetState {
+    /// Формат наблюдён в файлах и поддерживается — с набором работаем.
+    Supported,
+    /// Формат наблюдён и не поддерживается — с набором не работаем.
+    Unsupported,
+    /// Набор объявлен, но каталог пуст: формат лишь заявлен. Такой набор
+    /// надо наполнить каркасом, и действующим он быть не может.
+    Declared,
+}
+
+impl SourceSetState {
+    /// Наблюдался ли формат в файлах, а не взят из объявления.
+    pub const fn is_observed(self) -> bool {
+        matches!(self, Self::Supported | Self::Unsupported)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
@@ -73,6 +100,13 @@ impl SourceSetKind {
 }
 
 impl SourceFormat {
+    /// Работаем ли мы с этим форматом. Сегодня работаем с одним — выгрузкой
+    /// платформы; EDT не поддержан, а `unknown` и `invalid` форматом не
+    /// являются вовсе.
+    pub const fn is_supported(self) -> bool {
+        matches!(self, Self::PlatformXml)
+    }
+
     pub(crate) const fn stable_discriminant(self) -> u8 {
         match self {
             Self::PlatformXml => 1,

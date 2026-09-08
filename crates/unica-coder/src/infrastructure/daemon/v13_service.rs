@@ -1215,10 +1215,17 @@ fn view_error_result(
     at: Option<String>,
     error: crate::application::v13::view::ViewError,
 ) -> DomainResult {
-    match error.detail() {
+    let mut result = match error.detail() {
         Some(detail) => DomainResult::canonical_rejection_detailed(at, detail, error.to_string()),
         None => DomainResult::canonical_rejection(at, error.code(), error.to_string()),
+    };
+    // Маршрут переносится вместе с кодом и уточнением: иначе два пути наружу
+    // расходятся, и отказ теряет альтернативу в зависимости от того, каким
+    // из них он вышел.
+    if let Some(next) = error.next() {
+        result.next.push(next.clone());
     }
+    result
 }
 
 #[cfg(test)]

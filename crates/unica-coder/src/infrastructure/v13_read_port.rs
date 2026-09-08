@@ -258,7 +258,24 @@ impl ProviderReadAuthority {
         ) {
             return self.external_inventory_payload(checkpoint);
         }
-        let bytes = self.read_relative(Path::new("Configuration.xml"), MAX_CONFIGURATION_BYTES)?;
+        // Объявленный, но пустой набор — законное состояние, а не сбой. Без
+        // этой ветки отсутствие выгрузки протекало наружу текстом `strerror`
+        // («No such file or directory»), то есть файловый слой попадал в
+        // логический ответ и ничего не говорил о том, что делать дальше.
+        let Some(bytes) =
+            self.read_optional_relative(Path::new("Configuration.xml"), MAX_CONFIGURATION_BYTES)?
+        else {
+            let mut refusal = ViewError::new(
+                RefusalCode::InvalidState,
+                "source set is declared but its directory holds no configuration export;                  fill it with a scaffold before reading",
+            );
+            refusal.set_next(serde_json::json!({
+                "tool": "unica.check",
+                "args": {},
+                "reason": "вердикт по набору и совет, чем его наполнить",
+            }));
+            return Err(refusal);
+        };
         checkpoint()?;
         let text = std::str::from_utf8(&bytes).map_err(|_| {
             ViewError::detailed(
