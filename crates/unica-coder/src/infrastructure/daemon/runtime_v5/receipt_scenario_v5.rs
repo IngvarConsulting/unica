@@ -3346,63 +3346,24 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                     continue;
                 }
                 if matches!(point, ScenarioCrashPoint::ReservedBegun) {
-                    let pending = pending_submit.as_ref().ok_or_else(|| {
-                        "protocol-v5 ReservedBegun crash has no live submit".to_owned()
-                    })?;
-                    let reserved = match pending.actor.recover(
-                        exact_key.clone(),
-                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
-                    ) {
-                        Ok(ReceiptState::Reserved(reserved))
-                            if matches!(reserved.phase(), ReservedPhase::Begun { .. }) =>
-                        {
-                            reserved
-                        }
-                        Ok(other) => {
-                            return Err(format!(
-                                "protocol-v5 ReservedBegun crash observed {}",
-                                other.kind().diagnostic_name()
-                            ))
-                        }
-                        Err(error) => {
-                            return Err(format!("recover protocol-v5 ReservedBegun crash: {error}"))
-                        }
-                    };
-                    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Failed {
-                        reason: V5SafeFailureReason::OutcomeUncertain,
-                    })
-                    .map_err(|error| format!("encode uncertain crash terminal: {error}"))?;
-                    publish_direct_terminal_for_scenario(
-                        &pending.actor,
-                        exact_key.clone(),
-                        reserved.record_version(),
-                        clock.now_epoch_millis(),
-                        terminal,
-                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
-                        &telemetry,
-                    )
-                    .map_err(|error| format!("terminalize crashed begun receipt: {error}"))?;
+                    // A process that dies with a `Reserved(Begun)` receipt leaves it
+                    // Begun: nobody inside it terminalizes the attempt. The successor's
+                    // startup reconciliation is what turns it into an uncertain outcome.
+                    // Declaring the exit before the release is what makes the crash a
+                    // crash: the released attempt sees a dead process and abandons.
+                    telemetry.record_forced_process_exit();
+                    control.record_process_exit(1);
                     control.release(ScenarioBarrierPoint::BeforePrepare);
                     let pending = pending_submit
                         .take()
                         .expect("crashed begun submit was checked immediately before take");
-                    let (label, accepted, budget, response, actor, _, _, daemon) =
-                        pending.finish()?;
+                    // A crashed process delivers no response: whatever the abandoned
+                    // attempt replied dies with it, so the scenario projects none.
+                    let (_, _, _, _, actor, _, _, daemon) = pending.finish()?;
                     drop(actor);
                     daemon.stop_and_join(
                         "protocol-v5 receipt scenario daemon panicked during begun crash",
                     )?;
-                    report
-                        .responses
-                        .entry(label)
-                        .or_insert(response_observation_with_exact_task(
-                            &response,
-                            Some((accepted, budget)),
-                            &exact_key,
-                            state.path(),
-                            &identity,
-                            Some(None),
-                        )?);
                 } else if matches!(point, ScenarioCrashPoint::TaskPromisedUnbound) {
                     let pending = pending_submit.as_ref().ok_or_else(|| {
                         "protocol-v5 TaskPromisedUnbound crash has no live submit".to_owned()
