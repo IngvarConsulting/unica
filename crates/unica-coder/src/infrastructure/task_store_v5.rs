@@ -53,7 +53,7 @@ struct StoreCatalog {
     records: HashMap<TaskId, V5StoredInvocationRecord>,
 }
 
-#[cfg(any(test, feature = "receipt-ledger-test-support"))]
+/// A commit fault a test injects exactly once; production never arms one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PublicationFailure {
     AfterRenameBeforeSync,
@@ -69,7 +69,6 @@ pub(crate) struct FileInvocationStoreV5 {
     clock: Arc<dyn EpochMillisClock>,
     writer: Mutex<StoreCatalog>,
     limits: StoreLimits,
-    #[cfg(any(test, feature = "receipt-ledger-test-support"))]
     next_publication_failure: Mutex<Option<PublicationFailure>>,
 }
 
@@ -227,7 +226,6 @@ impl FileInvocationStoreV5 {
             clock,
             writer: Mutex::new(StoreCatalog::default()),
             limits,
-            #[cfg(any(test, feature = "receipt-ledger-test-support"))]
             next_publication_failure: Mutex::new(None),
         };
         let catalog = store.inspect_only(deadline)?;
@@ -507,7 +505,6 @@ impl FileInvocationStoreV5 {
         }
 
         catalog.records.insert(record.task_id, record.clone());
-        #[cfg(any(test, feature = "receipt-ledger-test-support"))]
         if self.take_publication_failure()? == Some(PublicationFailure::AfterRenameBeforeSync) {
             return Err(V5TaskStoreError::CommitUncertain {
                 task_id: record.task_id,
@@ -558,7 +555,6 @@ impl FileInvocationStoreV5 {
         .map_err(|error| storage_error("delete protocol-v5 terminal task record", error))?;
         catalog.records.remove(&task_id);
 
-        #[cfg(any(test, feature = "receipt-ledger-test-support"))]
         if self.take_publication_failure()? == Some(PublicationFailure::AfterDeleteBeforeSync) {
             return Err(V5TaskStoreError::CommitUncertain {
                 task_id,
@@ -610,7 +606,8 @@ impl FileInvocationStoreV5 {
             .ok_or(V5TaskStoreError::Corrupt("task record version overflow"))
     }
 
-    #[cfg(any(test, feature = "receipt-ledger-test-support"))]
+    /// Arms one commit fault for the next publication; only the runtime
+    /// hooks and store tests arm it.
     pub(crate) fn inject_next_publication_failure(&self, failure: PublicationFailure) {
         *self
             .next_publication_failure
@@ -618,7 +615,6 @@ impl FileInvocationStoreV5 {
             .expect("publication failure lock") = Some(failure);
     }
 
-    #[cfg(any(test, feature = "receipt-ledger-test-support"))]
     fn take_publication_failure(&self) -> Result<Option<PublicationFailure>, V5TaskStoreError> {
         self.next_publication_failure
             .lock()
