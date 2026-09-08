@@ -638,19 +638,23 @@ mod tests {
             server_only,
             "bind_workspace_invocation escaped server"
         );
-        let admission_error = owner
-            .items
-            .iter()
-            .find_map(|item| match item {
-                syn::Item::Enum(item) if item.ident == "WorkspaceAdmissionError" => Some(item),
-                _ => None,
-            })
-            .expect("workspace admission error exists");
-        assert_eq!(
-            tokens(&admission_error.vis),
-            server_only,
-            "workspace admission routing escaped server"
-        );
+        // Причина недопуска — часть той же маршрутизации: её читает только
+        // `server`, который и выбирает слова отказа.
+        for name in ["WorkspaceAdmissionError", "UnadmittedCause"] {
+            let admission_error = owner
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    syn::Item::Enum(item) if item.ident == name => Some(item),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("workspace admission enum {name} exists"));
+            assert_eq!(
+                tokens(&admission_error.vis),
+                server_only,
+                "workspace admission routing escaped server"
+            );
+        }
         for name in ["response_deadline", "begin_execution", "publish"] {
             let methods = owner
                 .items
