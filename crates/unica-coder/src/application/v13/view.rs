@@ -157,6 +157,7 @@ pub(crate) struct ViewError {
     code: RefusalCode,
     detail: Option<RefusalDetail>,
     message: String,
+    next: Option<Value>,
 }
 
 impl ViewError {
@@ -165,6 +166,7 @@ impl ViewError {
             code,
             detail: None,
             message: message.into(),
+            next: None,
         }
     }
 
@@ -175,6 +177,7 @@ impl ViewError {
             code: detail.code(),
             detail: Some(detail),
             message: message.into(),
+            next: None,
         }
     }
 
@@ -184,6 +187,16 @@ impl ViewError {
 
     pub(crate) const fn detail(&self) -> Option<RefusalDetail> {
         self.detail
+    }
+
+    /// Маршрут к следующему вопросу. Отказ, который знает альтернативу, обязан
+    /// её назвать — иначе агент останавливается там, где путь есть.
+    pub(crate) fn set_next(&mut self, next: Value) {
+        self.next = Some(next);
+    }
+
+    pub(crate) fn next(&self) -> Option<&Value> {
+        self.next.as_ref()
     }
 }
 
@@ -352,10 +365,14 @@ fn cursor_error(error: ViewCursorError) -> ViewError {
 }
 
 fn error_result(at: Option<String>, error: ViewError) -> DomainResult {
-    match error.detail {
+    let mut result = match error.detail {
         Some(detail) => DomainResult::canonical_rejection_detailed(at, detail, error.message),
         None => DomainResult::canonical_rejection(at, error.code, error.message),
+    };
+    if let Some(next) = error.next {
+        result.next.push(next);
     }
+    result
 }
 
 fn canonical_value(value: Value) -> Value {

@@ -103,6 +103,9 @@ pub(crate) enum CheckStep {
     Native(CheckValidator),
     /// The typed metadata validator of one object descriptor.
     Meta,
+    /// Диагностика BSL провайдером анализа. Отдельный шаг, а не «родной»
+    /// валидатор: он поднимает внешний инструмент, и это надо видеть в плане.
+    Bsl,
 }
 
 impl CheckStep {
@@ -110,6 +113,7 @@ impl CheckStep {
         match self {
             Self::Native(validator) => validator.name(),
             Self::Meta => "meta",
+            Self::Bsl => "bsl",
         }
     }
 }
@@ -135,6 +139,10 @@ pub(crate) fn plan_for_node(kind: &str, facts: NodeFacts) -> Vec<CheckStep> {
         "Role" => vec![CheckStep::Native(CheckValidator::Role)],
         "Subsystem" => vec![CheckStep::Native(CheckValidator::Subsystem)],
         "Interface" | "CommandInterface" => vec![CheckStep::Native(CheckValidator::Interface)],
+        // Узел с кодом проверяется анализатором BSL. Прежде план у него был
+        // пуст, и `check` отвечал «читается» — то есть молчал о находках,
+        // ради которых его и зовут.
+        "Module" | "Body" => vec![CheckStep::Bsl],
         other if crate::domain::metadata::MetadataKind::parse(other).is_ok() => {
             vec![CheckStep::Meta]
         }
@@ -388,7 +396,13 @@ mod tests {
             [CheckStep::Native(CheckValidator::Interface)]
         );
         assert_eq!(plan_for_node("Catalog", plain), [CheckStep::Meta]);
-        assert!(plan_for_node("Module", plain).is_empty());
+        // Узел с кодом owns анализатор BSL. Прежде план у него был пуст, и
+        // `check` отвечал «читается», молча пропуская находки, ради которых
+        // его и зовут.
+        assert_eq!(plan_for_node("Module", plain), [CheckStep::Bsl]);
+        assert_eq!(plan_for_node("Body", plain), [CheckStep::Bsl]);
+        // Метод разбирается не отдельно: анализатор читает модуль целиком, и
+        // отдельный шаг на методе поднимал бы инструмент дважды на один файл.
         assert!(plan_for_node("Method", plain).is_empty());
     }
 

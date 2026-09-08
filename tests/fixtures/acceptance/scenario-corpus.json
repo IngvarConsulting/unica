@@ -6227,10 +6227,9 @@
       "at": "main:CommonModule.GoogleПереводчик"
      },
      "expect": [
-      "ok"
-     ],
-     "status": "readable",
-     "validators": []
+      "ok",
+      "provider"
+     ]
     }
    ],
    "id": "S231"

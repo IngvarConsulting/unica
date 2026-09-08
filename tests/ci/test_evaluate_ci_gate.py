@@ -309,7 +309,8 @@ class EvaluateCiGateTests(unittest.TestCase):
 class BranchPushGateTests(unittest.TestCase):
     """Push в main — ворота линии: все тесты, без упаковки; отсюда отчёт сайта."""
 
-    def test_branch_push_runs_every_test_and_no_package_pipeline(self) -> None:
+    def test_release_line_push_runs_every_test_and_no_package_pipeline(self) -> None:
+        """Релизная линия вливается без очереди: push в неё — ворота линии."""
         module = load_gate_module()
         outputs = classification(**{name: True for name in OUTPUT_NAMES})
         results = {
@@ -317,12 +318,47 @@ class BranchPushGateTests(unittest.TestCase):
             "test-rust-platforms": "success",
         }
 
-        evaluation = module.evaluate_gate("push", "refs/heads/main", outputs, results)
+        evaluation = module.evaluate_gate("push", "refs/heads/release-v0.13", outputs, results)
 
         self.assertTrue(evaluation.ok)
         self.assertEqual("branch", evaluation.contour)
         for job in (*PACKAGE_SUCCESS, *ASSESSMENT_SUCCESS, *P0_SUCCESS, "probe-thin-bootstrap"):
             self.assertEqual("skipped", evaluation.expected[job], job)
+
+    def test_main_push_after_the_queue_runs_no_tests(self) -> None:
+        """Дерево `main` проверила очередь; push сюда ничего не решает и тестов не гоняет."""
+        module = load_gate_module()
+        outputs = classification(rust_changed=True, release_required=True)
+        results = {**source_results(), "test-python": "skipped"}
+
+        evaluation = module.evaluate_gate("push", "refs/heads/main", outputs, results)
+
+        self.assertTrue(evaluation.ok, evaluation.unexpected)
+        self.assertEqual("cache", evaluation.contour)
+        self.assertEqual("skipped", evaluation.expected["test-python"])
+        self.assertEqual("skipped", evaluation.expected["test-rust-platforms"])
+        # Тесты, всё же прошедшие на push в `main`, — расхождение с воротами, а не бонус.
+        ran_anyway = module.evaluate_gate("push", "refs/heads/main", outputs, source_results())
+        self.assertFalse(ran_anyway.ok)
+        self.assertIn("test-python", ran_anyway.unexpected)
+
+    def test_main_push_rebuilds_the_dependency_cache_when_its_key_changes(self) -> None:
+        """Смена toolchain или конвейера поднимает Rust-джобу на push в `main` ради кэша."""
+        module = load_gate_module()
+        for name in ("toolchain_changed", "ci_changed"):
+            with self.subTest(flag=name):
+                enabled = {name: True}
+                if name == "toolchain_changed":
+                    enabled.update(rust_changed=True, package_changed=True, release_required=True)
+                outputs = classification(**enabled)
+                results = {**source_results(), "test-python": "skipped", "test-rust-platforms": "success"}
+
+                evaluation = module.evaluate_gate("push", "refs/heads/main", outputs, results)
+
+                self.assertTrue(evaluation.ok, evaluation.unexpected)
+                self.assertEqual("cache", evaluation.contour)
+                self.assertEqual("success", evaluation.expected["test-rust-platforms"])
+                self.assertEqual("skipped", evaluation.expected["test-python"])
 
     def test_merge_group_is_the_queue_gate_full_tests_no_package_pipeline(self) -> None:
         """Очередь слияния гоняет всё, как push в ветку; упаковка остаётся тегу."""
