@@ -3861,6 +3861,53 @@ struct ActorLogicalReadLease {"#,
                 .contains("<Comment>Preview</Comment>"),
             "dryRun must use the real planner without publishing its postimage"
         );
+        // Второй свод того же вопроса: имена и синонимы метаданных. Ответ
+        // несёт `at`, `kind`, `title` — доказательство совпадения по имени, —
+        // и по-прежнему ни одного пути.
+        let by_name = call(
+            ToolIdentity::Search,
+            serde_json::json!({"query": "Items", "corpus": "names"}),
+        );
+        assert!(by_name.ok, "{by_name:?}");
+        let named = &by_name.data.as_ref().unwrap()["matches"][0];
+        assert_eq!(named["at"], "main:Catalog.Items");
+        assert!(named.get("kind").is_some(), "{named}");
+        assert!(
+            named.get("path").is_none() && named.get("file").is_none(),
+            "путь в частом ответе зовёт обойти адресное пространство: {named}"
+        );
+        assert_eq!(
+            by_name.data.as_ref().unwrap()["approximate"],
+            serde_json::json!(false),
+            "точное совпадение догадкой не является: {by_name:?}"
+        );
+
+        // Терпимость к опечатке переехала сюда из локатора и названа явно:
+        // читатель обязан отличать «нашлось» от «похоже на».
+        let mistyped = call(
+            ToolIdentity::Search,
+            serde_json::json!({"query": "Itmes", "corpus": "names"}),
+        );
+        assert!(mistyped.ok, "{mistyped:?}");
+        assert_eq!(
+            mistyped.data.as_ref().unwrap()["approximate"],
+            serde_json::json!(true),
+            "совпадение по близости обязано называться догадкой: {mistyped:?}"
+        );
+
+        let unknown_corpus = call(
+            ToolIdentity::Search,
+            serde_json::json!({"query": "Items", "corpus": "paths"}),
+        );
+        assert_eq!(unknown_corpus.diagnostics[0]["code"], "bad_value");
+        assert!(
+            unknown_corpus
+                .next
+                .iter()
+                .any(|entry| entry["args"]["corpus"] == "names"),
+            "отказ обязан назвать доступный свод: {unknown_corpus:?}"
+        );
+
         let published_apply = call(
             ToolIdentity::Apply,
             serde_json::json!({

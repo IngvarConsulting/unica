@@ -32,6 +32,12 @@ use std::sync::Arc;
 pub(crate) struct CanonicalV13ReadService {
     cursors: Arc<ViewCursorStore>,
     find_builder: WorkspaceFindDirectoryBuilder,
+    /// Порты приложения живут столько же, сколько служба, а не сколько вызов.
+    /// Внутри них стол доставок: он принадлежит серверу и переживает вызов,
+    /// который доставку начал, чтобы её получил следующий. Порты на каждый
+    /// вызов означали бы стол на каждый вызов — и доставки перестали бы
+    /// делиться.
+    ports: Arc<crate::infrastructure::application_ports::InfrastructureApplicationPorts>,
 }
 
 impl Default for CanonicalV13ReadService {
@@ -39,6 +45,9 @@ impl Default for CanonicalV13ReadService {
         Self {
             cursors: Arc::new(ViewCursorStore::default()),
             find_builder: WorkspaceFindDirectoryBuilder::default(),
+            ports: Arc::new(
+                crate::infrastructure::application_ports::InfrastructureApplicationPorts::new(),
+            ),
         }
     }
 }
@@ -414,6 +423,52 @@ impl CanonicalV13ReadService {
                 "search query must not be blank",
             );
         }
+        // Корпус выбирает, где искать, а не как: имена метаданных и текст
+        // BSL — это один вопрос над разными сводами. Умолчание оставлено
+        // текстовым, потому что таким `search` был до появления второго
+        // корпуса.
+        let corpus = match arguments.get("corpus") {
+            None | Some(Value::String(_)) => match arguments
+                .get("corpus")
+                .and_then(Value::as_str)
+                .unwrap_or("text")
+            {
+                "text" => SearchCorpus::Text,
+                "names" => SearchCorpus::Names,
+                other => {
+                    let mut refusal = error_result(
+                        None,
+                        RefusalCode::BadValue,
+                        format!("search corpus `{other}` is unknown; use `text` or `names`"),
+                    );
+                    refusal.next.push(serde_json::json!({
+                        "tool": "unica.search",
+                        "args": {"query": query, "corpus": "names"},
+                        "reason": "поиск по именам и синонимам метаданных",
+                    }));
+                    return refusal;
+                }
+            },
+            Some(_) => {
+                return error_result(
+                    None,
+                    RefusalCode::BadValue,
+                    "search corpus must be a string",
+                )
+            }
+        };
+        if corpus == SearchCorpus::Names {
+            return self.execute_search_names(invocation, query, arguments, cancellation);
+        }
+        // Роль выбирает, чем искать по тексту: точным совпадением своими
+        // силами или провайдером — символьным индексом, смысловым поиском.
+        // Без роли поиск остаётся буквальным, каким был.
+        if let Some(role) = arguments.get("role") {
+            let Some(role) = role.as_str() else {
+                return error_result(None, RefusalCode::BadValue, "search role must be a string");
+            };
+            return self.execute_search_role(invocation, query, role, arguments, cancellation);
+        }
         let (matcher, mode) = match arguments.get("regex") {
             None | Some(Value::Bool(false)) => (
                 super::v13_read_modes::SearchMatcher::Literal(query.to_string()),
@@ -550,6 +605,241 @@ impl CanonicalV13ReadService {
         result
     }
 
+    /// Поиск по именам и синонимам метаданных.
+    ///
+    /// Свод берётся из того же справочника, что обслуживает разрешение
+    /// локатора, — он уже держит имена, синонимы и адреса. Наружу отдаётся
+    /// доказательство совпадения по имени: `at`, `kind`, `title` и `reason`.
+    /// Пути тут нет намеренно: `search` — частый ответ, а путь в частом
+    /// ответе зовёт читать файл мимо адреса.
+    /// Поиск по тексту силами провайдера выбранной роли.
+    ///
+    /// `lexical` — буквальное совпадение, `symbol` — символьный индекс,
+    /// `semantic` — смысловая близость. Роли и провайдеры под ними построены
+    /// давно; недоставало провода от канонической службы, потому что до
+    /// провайдеров ходил лишь legacy-диспетчер, которого на проводе нет.
+    fn execute_search_role(
+        &self,
+        invocation: &ActorBoundExecution,
+        query: &str,
+        role: &str,
+        arguments: &Map<String, Value>,
+        cancellation: &CancellationToken,
+    ) -> DomainResult {
+        use crate::application::code_intelligence::CodeSearchCoordinator;
+        use crate::application::ports::ApplicationPorts;
+        use crate::domain::code_intelligence::{ProviderRole, SearchRequest};
+
+        let Some(role) = ProviderRole::ALL
+            .into_iter()
+            .find(|candidate| candidate.as_str() == role)
+        else {
+            let mut refusal = error_result(
+                None,
+                RefusalCode::BadValue,
+                format!(
+                    "search role `{role}` is unknown; use one of {}",
+                    ProviderRole::ALL
+                        .iter()
+                        .map(|role| format!("`{}`", role.as_str()))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            );
+            refusal.next.push(serde_json::json!({
+                "tool": "unica.search",
+                "args": {"query": query},
+                "reason": "буквальный поиск без роли",
+            }));
+            return refusal;
+        };
+
+        let context = invocation.workspace_context();
+        // Канонический вход — логический адрес; порт разрешения контекста
+        // говорит словарём v0.12. Перевод делается здесь и только здесь.
+        let mut selector = Map::new();
+        match arguments.get("scope").and_then(Value::as_str) {
+            Some(scope) => match QualifiedAddress::parse(scope) {
+                Ok(address) => {
+                    selector.insert(
+                        "sourceSet".to_string(),
+                        Value::String(address.source_set().to_string()),
+                    );
+                    let owner = address
+                        .segments()
+                        .iter()
+                        .take_while(|segment| segment.name().is_some())
+                        .map(|segment| {
+                            format!(
+                                "{}.{}",
+                                segment.kind().as_str(),
+                                segment.name().unwrap_or("")
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(".");
+                    if !owner.is_empty() {
+                        selector.insert("metadataPath".to_string(), Value::String(owner));
+                    }
+                }
+                Err(error) => {
+                    return error_result(
+                        Some(scope.to_string()),
+                        RefusalCode::BadValue,
+                        error.to_string(),
+                    )
+                }
+            },
+            None => match invocation.admitted_source_set_names().first() {
+                Some(name) => {
+                    selector.insert("sourceSet".to_string(), Value::String((*name).to_string()));
+                }
+                None => {
+                    return error_result(
+                        None,
+                        RefusalCode::ProviderUnavailable,
+                        "no admitted source set is available for a role search",
+                    )
+                }
+            },
+        }
+
+        let (search_context, _scope) =
+            match self.ports.resolve_code_search_context(context, &selector) {
+                Ok(resolved) => resolved,
+                Err(error) => return error_result(None, RefusalCode::ProviderUnavailable, error),
+            };
+        let registry = match self.ports.code_intelligence_registry() {
+            Ok(registry) => registry,
+            Err(error) => return error_result(None, RefusalCode::ProviderUnavailable, error),
+        };
+        // Срок берётся из настройки пользователя, а не подменяется умолчанием:
+        // человек настроил срок и должен узнать, что настройка не читается.
+        let operational = match crate::infrastructure::operational_config::load_operational_config(
+            &context.workspace_root,
+        ) {
+            Ok(config) => config,
+            Err(diagnostic) => {
+                return error_result(
+                    None,
+                    RefusalCode::InvalidState,
+                    format!("operational config is unreadable: {diagnostic}"),
+                )
+            }
+        };
+        let limit = arguments
+            .get("limit")
+            .and_then(bounded_usize)
+            .filter(|limit| *limit <= 200)
+            .unwrap_or(20);
+        let request = SearchRequest {
+            query: query.to_string(),
+            limit,
+        };
+        let execution =
+            match CodeSearchCoordinator::with_deadlines(registry, operational.code_intelligence())
+                .search_observed(
+                    &request,
+                    &search_context,
+                    cancellation,
+                    &crate::domain::progress::NoopProgressSink,
+                ) {
+                Ok(execution) => execution,
+                Err(error) => return error_result(None, RefusalCode::ProviderUnavailable, error),
+            };
+        // Провайдер, который не отработал, ничего не доказывает: пустой ответ
+        // при неудачном прогоне выглядел бы как «искали и не нашли».
+        if !execution.ok {
+            return error_result(
+                None,
+                RefusalCode::ProviderUnavailable,
+                format!("`{}` search did not complete", role.as_str()),
+            );
+        }
+        let mut result = DomainResult::success(format!("{} search completed", role.as_str()));
+        result.data = Some(serde_json::json!({
+            "mode": role.as_str(),
+            "matches": execution.result.sections,
+        }));
+        result
+    }
+
+    fn execute_search_names(
+        &self,
+        invocation: &ActorBoundExecution,
+        query: &str,
+        arguments: &Map<String, Value>,
+        cancellation: &CancellationToken,
+    ) -> DomainResult {
+        let mut request = match FindRequest::new(query) {
+            Ok(request) => request,
+            Err(error) => return error_result(None, error.code(), error.to_string()),
+        };
+        if let Some(kind) = arguments.get("kind") {
+            let Some(kind) = kind.as_str() else {
+                return error_result(None, RefusalCode::BadValue, "search kind must be a string");
+            };
+            request = match request.with_kind(kind) {
+                Ok(request) => request,
+                Err(error) => return error_result(None, error.code(), error.to_string()),
+            };
+        }
+        if let Some(limit) = arguments.get("limit") {
+            let Some(limit) = bounded_usize(limit) else {
+                return error_result(
+                    None,
+                    RefusalCode::BadValue,
+                    "search limit must be a positive integer",
+                );
+            };
+            request = match request.with_limit(limit) {
+                Ok(request) => request,
+                Err(error) => return error_result(None, error.code(), error.to_string()),
+            };
+        }
+        let sources = match invocation.layout_sources() {
+            Ok(sources) => sources,
+            Err(error) => return error_result(None, RefusalCode::ProviderUnavailable, error),
+        };
+        let Some(deadline) = sources.first().map(|source| source.deadline()) else {
+            return error_result(
+                None,
+                RefusalCode::ProviderUnavailable,
+                "no admitted source set is available for a name search",
+            );
+        };
+        let layout = sources
+            .iter()
+            .map(|source| LayoutFindSource::new(source.name(), source.kind(), source.root()))
+            .collect::<Vec<_>>();
+        let directory = match self.find_builder.build(&layout, deadline, cancellation) {
+            Ok(directory) => directory,
+            Err(error) => return error_result(None, error.code(), error.to_string()),
+        };
+        let found = directory.find(request);
+        let matches: Vec<Value> = found
+            .candidates()
+            .iter()
+            .map(|candidate| {
+                serde_json::json!({
+                    "at": candidate.at(),
+                    "kind": candidate.kind(),
+                    "title": candidate.title(),
+                    "reason": candidate.reason(),
+                })
+            })
+            .collect();
+        let mut result = DomainResult::success("name search completed");
+        result.data = Some(serde_json::json!({
+            "mode": "names",
+            "matches": matches,
+            // Совпадение по близости — догадка, и она названа: читатель
+            // обязан отличать «нашлось» от «похоже на».
+            "approximate": found.is_nearest(),
+        }));
+        result
+    }
+
     fn execute_check(
         &self,
         invocation: &ActorBoundExecution,
@@ -583,8 +873,14 @@ impl CanonicalV13ReadService {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string();
-            let mut result =
-                run_node_checks(invocation, at, &kind, viewed.data.as_ref(), cancellation);
+            let mut result = run_node_checks(
+                &self.ports,
+                invocation,
+                at,
+                &kind,
+                viewed.data.as_ref(),
+                cancellation,
+            );
             if result.ok {
                 result.rev = viewed.rev;
             }
@@ -940,7 +1236,129 @@ fn bounded_usize(value: &Value) -> Option<usize> {
 /// truth; the plan follows from the node kind and the facts the projection
 /// states, never from a caller choice. A node without validators reports
 /// readability only.
+/// Диагностика BSL через провайдер анализа.
+///
+/// Провайдеры собраны в продуктовом реестре давно, но канонический провод до
+/// них не доходил: `check` отвечал «читается» и молчал о находках, ради
+/// которых его и зовут. Порты здесь строятся свои — путь диагностик стола
+/// доставок не трогает, бинарь анализатора берётся из поставляемых
+/// инструментов, — и потому общий стол сервера не нужен.
+fn run_bsl_diagnostics(
+    ports: &crate::infrastructure::application_ports::InfrastructureApplicationPorts,
+    address: &QualifiedAddress,
+    context: &crate::domain::workspace::WorkspaceContext,
+    cancellation: &CancellationToken,
+) -> Result<(bool, Vec<Value>), Box<DomainResult>> {
+    use crate::application::diagnostics::DiagnosticCoordinator;
+    use crate::application::ports::ApplicationPorts;
+    use crate::domain::diagnostics::{
+        DiagnosticAction, DiagnosticFilter, DiagnosticRequest, DiagnosticResultState,
+    };
+
+    let registry = match ports.diagnostic_provider_registry() {
+        Ok(registry) => registry,
+        Err(error) => {
+            return Err(Box::new(error_result(
+                Some(address.to_string()),
+                RefusalCode::ProviderUnavailable,
+                error,
+            )))
+        }
+    };
+    // Сужение обязательно: `metadata_path: None` означает анализ всего набора
+    // исходников, и на боевой конфигурации это минуты работы и диагностики
+    // чужих файлов, приписанные спрошенному узлу. Неразобранный адрес — отказ,
+    // а не молчаливое расширение области.
+    let owner = address
+        .segments()
+        .iter()
+        .take_while(|segment| segment.name().is_some())
+        .map(|segment| {
+            let name = segment.name().unwrap_or_default();
+            format!("{}.{name}", segment.kind().as_str())
+        })
+        .collect::<Vec<_>>()
+        .join(".");
+    let metadata_path = match crate::domain::source_target::MetadataAddress::parse(
+        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+        &owner,
+    ) {
+        Ok(path) => Some(path),
+        Err(error) => {
+            return Err(Box::new(error_result(
+                Some(address.to_string()),
+                RefusalCode::BadValue,
+                format!("BSL diagnostics cannot narrow to `{owner}`: {error}"),
+            )))
+        }
+    };
+    let request = DiagnosticRequest {
+        action: DiagnosticAction::Analyze,
+        source_set: address.source_set().to_string(),
+        metadata_path,
+        filter: DiagnosticFilter::default(),
+        range: None,
+        limit: 200,
+        // Срок берётся из настройки пользователя. Подменять его выдуманным
+        // умолчанием нельзя: человек настроил срок и не узнал бы, что
+        // настройка не читается.
+        timeout: Some(
+            match crate::infrastructure::operational_config::load_operational_config(
+                &context.workspace_root,
+            ) {
+                Ok(config) => config.code_diagnostics().analyze_timeout(),
+                Err(diagnostic) => {
+                    return Err(Box::new(error_result(
+                        Some(address.to_string()),
+                        RefusalCode::InvalidState,
+                        format!("operational config is unreadable: {diagnostic}"),
+                    )))
+                }
+            },
+        ),
+    };
+    match DiagnosticCoordinator::new(registry, ports).execute(&request, context, cancellation) {
+        Ok(result) => {
+            // Провайдер, который не отработал, не доказывает чистоту кода.
+            // Пустой список находок при незавершённом прогоне выглядел бы как
+            // «проверено и чисто» — худшее направление ошибки для инструмента
+            // проверки.
+            if !result.ok || result.state != DiagnosticResultState::Completed {
+                return Err(Box::new(error_result(
+                    Some(address.to_string()),
+                    RefusalCode::ProviderUnavailable,
+                    "BSL analysis did not complete, so the module is unproven",
+                )));
+            }
+            let findings: Vec<Value> = result
+                .items
+                .iter()
+                .filter_map(|item| serde_json::to_value(item).ok())
+                .collect();
+            // Провалом считается ошибка, а не всякая пометка: подсказка по
+            // стилю не ломает модуль, и остальные валидаторы поверхности
+            // судят так же.
+            let passed = !result.items.iter().any(|item| {
+                matches!(
+                    item,
+                    crate::domain::diagnostics::DiagnosticItem::Diagnostic {
+                        severity: crate::domain::diagnostics::DiagnosticSeverity::Error,
+                        ..
+                    } | crate::domain::diagnostics::DiagnosticItem::ResourceFailure { .. }
+                )
+            });
+            Ok((passed, findings))
+        }
+        Err(error) => Err(Box::new(error_result(
+            Some(address.to_string()),
+            RefusalCode::ProviderUnavailable,
+            format!("{}: {}", error.code, error.message),
+        ))),
+    }
+}
+
 fn run_node_checks(
+    ports: &crate::infrastructure::application_ports::InfrastructureApplicationPorts,
     invocation: &ActorBoundExecution,
     at: &str,
     kind: &str,
@@ -983,6 +1401,7 @@ fn run_node_checks(
                 run_native_validator(&address, kind, validator, context)
             }
             CheckStep::Meta => run_meta_validator(&address, at, context, cancellation),
+            CheckStep::Bsl => run_bsl_diagnostics(ports, &address, context, cancellation),
         };
         match verdict {
             Err(refusal) => return *refusal,
@@ -1204,6 +1623,19 @@ fn with_node_dictionary(mut result: DomainResult, at: &str) -> DomainResult {
     result
 }
 
+/// Свод, по которому идёт поиск.
+///
+/// Имя метаданного объекта и текст модуля — один вопрос «что нашлось и где»,
+/// различается доказательство совпадения: у имени это `at`, `kind`, `title`,
+/// у текста — `scope`, `line`, `column`, `snippet`. Физического пути нет ни у
+/// того, ни у другого: путь в частом ответе приглашает обойти адресное
+/// пространство, ради которого логический слой и существует.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SearchCorpus {
+    Text,
+    Names,
+}
+
 fn error_result(at: Option<String>, code: RefusalCode, message: impl Into<String>) -> DomainResult {
     DomainResult::canonical_rejection(at, code, message)
 }
@@ -1215,10 +1647,17 @@ fn view_error_result(
     at: Option<String>,
     error: crate::application::v13::view::ViewError,
 ) -> DomainResult {
-    match error.detail() {
+    let mut result = match error.detail() {
         Some(detail) => DomainResult::canonical_rejection_detailed(at, detail, error.to_string()),
         None => DomainResult::canonical_rejection(at, error.code(), error.to_string()),
+    };
+    // Маршрут переносится вместе с кодом и уточнением: иначе два пути наружу
+    // расходятся, и отказ теряет альтернативу в зависимости от того, каким
+    // из них он вышел.
+    if let Some(next) = error.next() {
+        result.next.push(next.clone());
     }
+    result
 }
 
 #[cfg(test)]

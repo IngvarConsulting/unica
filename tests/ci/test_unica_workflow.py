@@ -364,12 +364,39 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertNotIn("github.event_name == 'pull_request'", probe)
         self.assertIn("startsWith(github.ref, 'refs/tags/')", publish)
 
-    def test_branch_push_is_the_gate_the_site_reports_from(self) -> None:
-        """Push в main и релизную линию гоняет все тесты: отсюда сайт берёт отчёт."""
+    def test_release_line_push_is_the_gate_the_site_reports_from(self) -> None:
+        """Push в релизную линию гоняет все тесты: очереди там нет, отсюда сайт берёт отчёт линии."""
         push = triggers(self.release)["push"]
 
         self.assertEqual(push["branches"], ["main", "release-v*"])
         self.assertEqual(push["tags"], ["v*"])
+
+    def test_main_push_after_the_queue_only_refreshes_the_dependency_cache(self) -> None:
+        """Дерево `main` проверила очередь: push в него тестов не гоняет.
+
+        Rust-джоба на нём поднимается только ради кэша зависимостей, который
+        pull request читают лишь с ветки по умолчанию, и только когда сменился
+        его ключ (toolchain) или сам конвейер. Наборы Python кэша не пишут и
+        на push в `main` не идут. Диапазон push классифицируется по прежней
+        вершине, а не силой полного контура.
+        """
+        main_push = "(github.event_name == 'push' && github.ref == 'refs/heads/main')"
+        python = job(self.release, "test-python")
+        platforms = job(self.release, "test-rust-platforms")
+        classify = job(self.release, "classify-changes")
+
+        self.assertEqual(normalized(python["if"]), "${{ !" + main_push + " }}")
+        rust = normalized(condition(platforms))
+        self.assertIn(main_push + " && ( needs.classify-changes.outputs.toolchain_changed == 'true' || needs.classify-changes.outputs.ci_changed == 'true' )", rust)
+        self.assertIn("!" + main_push + " && ( needs.classify-changes.outputs.rust_changed == 'true'", rust)
+
+        scope = next(step for step in steps(classify) if step.get("id") == "scope")
+        self.assertEqual(normalized(scope["env"]["MAIN_PUSH"]), "${{ " + main_push.strip("()") + " }}")
+        self.assertEqual(scope["env"]["PUSH_BEFORE"], "${{ github.event.before }}")
+        self.assertIn("!" + main_push, scope["env"]["FORCE_FULL"])
+        self.assertIn('git diff --name-only "$PUSH_BEFORE" "$GITHUB_SHA"', scope["run"])
+        # Прежней вершины может не быть: тогда полный контур, а не пустой диапазон.
+        self.assertIn('git cat-file -e "$PUSH_BEFORE^{commit}"', scope["run"])
 
     def test_release_assessment_uses_affected_mechanism_contour(self) -> None:
         assessment = job(self.release, "release-assessment")
@@ -589,16 +616,29 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertEqual(normalized(platforms["continue-on-error"]), "${{ matrix.runner == 'windows-latest' }}")
         self.assertFalse((WORKFLOWS_DIR / "unica-large.yml").exists())
 
-    def test_pages_take_results_from_red_runs_and_from_the_nightly(self) -> None:
-        """Красный прогон — тоже результат; ночь и тег — тоже источники."""
+    def test_pages_take_results_from_the_queue_red_runs_and_the_nightly(self) -> None:
+        """Отчёт `main` приходит с очереди; красный прогон — тоже результат; ночь и тег — тоже источники."""
         on = triggers(self.pages)
         build = job(self.pages, "build")
 
         self.assertEqual(on["workflow_run"]["workflows"], ["Build Unica Codex Plugin", "Unica Nightly"])
-        self.assertEqual(on["workflow_run"]["branches"], ["main", "release-v*", "v*"])
+        self.assertEqual(on["workflow_run"]["branches"], ["main", "gh-readonly-queue/main/*", "release-v*", "v*"])
         self.assertIn("github.event.workflow_run.conclusion == 'failure'", condition(build))
+        self.assertIn("github.event.workflow_run.event == 'merge_group'", condition(build))
+        # Push в `main` тестов не гоняет и источником не бывает; push в релизную линию и тег — бывают.
+        self.assertIn("(github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch != 'main')", normalized(condition(build)))
         self.assertIn("github.event.workflow_run.event == 'schedule'", condition(build))
         self.assertIn("github.event.workflow_run.head_repository.full_name == github.repository", condition(build))
+        # Критерии конвейера сайт больше не считает: страница снята 08.09.2026.
+        self.assertNotIn("--metrics", script(build))
+        self.assertFalse((REPO_ROOT / "docs" / "pages" / "pipeline.html").exists())
+        # Очередь даёт по прогону на каждый pull request партии, и деплои идут
+        # друг за другом: неудачный деплой повторяется один раз после паузы.
+        deploy = job(self.pages, "deploy")
+        attempts = steps_using(deploy, "actions/deploy-pages")
+        self.assertEqual(len(attempts), 2)
+        self.assertTrue(attempts[0].get("continue-on-error"))
+        self.assertEqual(normalized(attempts[1]["if"]), "steps.deployment.outcome == 'failure'")
         # Прямой триггер push снят: в очереди без отмены он заменял бы ожидающий
         # прогон с результатами, и они не доехали бы до сайта.
         self.assertNotIn("push", on)

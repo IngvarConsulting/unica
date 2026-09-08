@@ -19,7 +19,8 @@ use crate::infrastructure::logical_event_source::{
     module_relative as shared_module_relative,
 };
 use crate::infrastructure::native_operations::cf::{
-    cf_home_page_item_data, parse_cf_home_page_xml_strict, parse_cf_info_xml, CfHomePageData,
+    cf_home_page_item_data, parse_cf_command_interface_xml, parse_cf_home_page_xml_strict,
+    parse_cf_info_xml, CfHomePageData, CfInterfaceData,
 };
 use crate::infrastructure::native_operations::common::{
     parse_subsystem_info_xml, parse_support_state_strict_bytes, support_root_uuid_from_bytes,
@@ -257,7 +258,24 @@ impl ProviderReadAuthority {
         ) {
             return self.external_inventory_payload(checkpoint);
         }
-        let bytes = self.read_relative(Path::new("Configuration.xml"), MAX_CONFIGURATION_BYTES)?;
+        // Объявленный, но пустой набор — законное состояние, а не сбой. Без
+        // этой ветки отсутствие выгрузки протекало наружу текстом `strerror`
+        // («No such file or directory»), то есть файловый слой попадал в
+        // логический ответ и ничего не говорил о том, что делать дальше.
+        let Some(bytes) =
+            self.read_optional_relative(Path::new("Configuration.xml"), MAX_CONFIGURATION_BYTES)?
+        else {
+            let mut refusal = ViewError::new(
+                RefusalCode::InvalidState,
+                "source set is declared but its directory holds no configuration export;                  fill it with a scaffold before reading",
+            );
+            refusal.set_next(serde_json::json!({
+                "tool": "unica.check",
+                "args": {},
+                "reason": "вердикт по набору и совет, чем его наполнить",
+            }));
+            return Err(refusal);
+        };
         checkpoint()?;
         let text = std::str::from_utf8(&bytes).map_err(|_| {
             ViewError::detailed(
@@ -265,8 +283,13 @@ impl ProviderReadAuthority {
                 "Configuration.xml is not UTF-8",
             )
         })?;
-        let parsed = parse_cf_info_xml(text, self.configuration_support()?, self.home_page()?)
-            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error))?;
+        let parsed = parse_cf_info_xml(
+            text,
+            self.configuration_support()?,
+            self.home_page()?,
+            self.command_interface()?,
+        )
+        .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error))?;
         let owner = prove_already_read_source_set_owner(
             Path::new("Configuration.xml"),
             &bytes,
@@ -860,6 +883,28 @@ impl ProviderReadAuthority {
             .map(Arc::new);
         *memo = Some(state.clone());
         Ok(state)
+    }
+
+    /// Командный интерфейс конфигурации читается так же, как домашняя
+    /// страница: отдельным документом рядом с `Configuration.xml`, и ложится
+    /// свойством корня. Отсутствие документа — законное состояние, а не отказ.
+    fn command_interface(&self) -> Result<Option<CfInterfaceData>, ViewError> {
+        let Some(bytes) = self.read_optional_relative(
+            Path::new("Ext/CommandInterface.xml"),
+            MAX_CONFIGURATION_BYTES,
+        )?
+        else {
+            return Ok(None);
+        };
+        let text = std::str::from_utf8(&bytes).map_err(|_| {
+            ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
+                "CommandInterface.xml is not UTF-8",
+            )
+        })?;
+        parse_cf_command_interface_xml(text)
+            .map(Some)
+            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error))
     }
 
     fn home_page(&self) -> Result<Option<CfHomePageData>, ViewError> {

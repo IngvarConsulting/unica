@@ -18,10 +18,12 @@ on:
   # Здесь ловится то, что отбор по размеру на pull request пропускает.
   merge_group:
     types: [checks_requested]
-  # Push в main и релизную линию — ворота линии: полный набор тестов без
-  # отбора по файлам и без упаковки. Отсюда сайт собирает опубликованный
-  # отчёт (`workflow_run` в unica-pages.yml). Упаковка, холодный старт и
-  # оценка остаются у тега и ручного запуска.
+  # Push в релизную линию — ворота линии: очереди там нет, поэтому полный
+  # набор тестов без отбора по файлам и без упаковки; отсюда сайт собирает
+  # отчёт линии (`workflow_run` в unica-pages.yml). Push в `main` приходит из
+  # очереди, и его дерево уже проверено: тестов здесь нет, Rust-джоба идёт
+  # только ради записи кэша зависимостей, когда сменился его ключ или сам
+  # конвейер. Упаковка, холодный старт и оценка остаются у тега и кнопки.
   push:
     branches: [main, "release-v*"]
     tags:
@@ -94,19 +96,37 @@ jobs:
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
         run: echo "line=$(python scripts/ci/resolve-line.py --ref-type "$REF_TYPE" --ref-name "$REF_NAME" --sha "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
+      # Отбор по файлам знают два события. Pull request — разница с базой.
+      # Push в `main` — разница с прежней вершиной: очередь уже проверила это
+      # дерево, и классификация здесь решает одно — менялся ли ключ кэша
+      # зависимостей. Остальные события (очередь, релизная линия, тег, кнопка)
+      # идут полным контуром.
       - id: scope
         shell: bash
         env:
-          FORCE_FULL: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
+          MAIN_PUSH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          FORCE_FULL: ${{ (github.event_name != 'pull_request' && !(github.event_name == 'push' && github.ref == 'refs/heads/main')) || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
           # A branch name reaches the shell as data, never as script text. Git
           # ref rules allow `;`, `$`, backticks and parentheses, so `${{ }}`
           # pasted straight into `run:` would be a command-injection sink the
           # day someone pushes a branch named for one.
           BASE_REF: ${{ github.base_ref }}
+          PUSH_BEFORE: ${{ github.event.before }}
         run: |
           set -euo pipefail
           if [ "$FORCE_FULL" = "true" ]; then
             python scripts/ci/classify-workflow-changes.py --force-full </dev/null >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$MAIN_PUSH" = "true" ]; then
+            # Прежней вершины может не быть (первый push, принудительный
+            # push): тогда диапазон неизвестен, и честный ответ — полный контур.
+            if [ -z "$PUSH_BEFORE" ] || ! git cat-file -e "$PUSH_BEFORE^{commit}" 2>/dev/null; then
+              python scripts/ci/classify-workflow-changes.py --force-full </dev/null >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            git diff --name-only "$PUSH_BEFORE" "$GITHUB_SHA" |
+              python scripts/ci/classify-workflow-changes.py >> "$GITHUB_OUTPUT"
             exit 0
           fi
           git fetch --no-tags origin "$BASE_REF"
@@ -182,6 +202,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     needs: [classify-changes, guards]
+    # Push в `main` тестов не гоняет: дерево проверила очередь, а кэша наборы
+    # Python не пишут. Релизные линии вливаются без очереди и идут полностью.
+    if: ${{ !(github.event_name == 'push' && github.ref == 'refs/heads/main') }}
     # Наборы идут параллельными джобами, по одной на набор, а `tests/ci` —
     # по полосам размера: одним процессом он шёл в очереди шесть с половиной
     # минут, из них четыре — несколько `medium`-тестов. Матрицу считает шов
@@ -251,12 +274,22 @@ jobs:
     # `classify-changes`: pull request — ubuntu, очередь, push и кнопка — обе
     # платформы. Класс дефектов `#[cfg]` один раннер не видит, его ловит
     # очередь над тем же деревом, что ляжет в `main`.
+    # Push в `main` — исключение: дерево уже проверено очередью, и джоба
+    # нужна одному кэшу зависимостей. Он читается pull request только с
+    # ветки по умолчанию, а ключ его меняют toolchain и конвейер, поэтому
+    # правка исходников джобу здесь не поднимает.
     if: >-
       ${{
-        needs.classify-changes.outputs.rust_changed == 'true' ||
-        needs.classify-changes.outputs.platform_changed == 'true' ||
-        needs.classify-changes.outputs.toolchain_changed == 'true' ||
-        needs.classify-changes.outputs.ci_changed == 'true'
+        (github.event_name == 'push' && github.ref == 'refs/heads/main') && (
+          needs.classify-changes.outputs.toolchain_changed == 'true' ||
+          needs.classify-changes.outputs.ci_changed == 'true'
+        ) ||
+        !(github.event_name == 'push' && github.ref == 'refs/heads/main') && (
+          needs.classify-changes.outputs.rust_changed == 'true' ||
+          needs.classify-changes.outputs.platform_changed == 'true' ||
+          needs.classify-changes.outputs.toolchain_changed == 'true' ||
+          needs.classify-changes.outputs.ci_changed == 'true'
+        )
       }}
     strategy:
       fail-fast: false

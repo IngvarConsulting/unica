@@ -16,12 +16,15 @@ name: Unica Pages
 # его модели такое событие, `push` — нет. Пересобрать сайт руками можно
 # перезапуском любого прошлого прогона.
 on:
-  workflow_run: # zizmor: ignore[dangerous-triggers] условие джобы build принимает только push, расписание и ручной запуск этого же репозитория
+  workflow_run: # zizmor: ignore[dangerous-triggers] условие джобы build принимает только очередь, push в релизную линию или тег, расписание и ручной запуск этого же репозитория
     workflows: ["Build Unica Codex Plugin", "Unica Nightly"]
     types: [completed]
-    # Фильтр смотрит на `head_branch` прогона-источника: у push в ветку это
-    # ветка, у тега — имя тега, у ночного прогона — всегда `main`.
-    branches: [main, "release-v*", "v*"]
+    # Фильтр смотрит на `head_branch` прогона-источника: у очереди слияния это
+    # временная ветка `gh-readonly-queue/main/pr-N-<sha>`, у push в релизную
+    # линию — линия, у тега — имя тега, у ночного и ручного прогона — `main`.
+    # Отчёт `main` приходит с очереди: она проверяет ровно то дерево, что
+    # ляжет в `main`, а push в `main` после неё тестов не гоняет.
+    branches: [main, "gh-readonly-queue/main/*", "release-v*", "v*"]
 
 # Право писать на Pages нужно одной джобе — той, что публикует. Сборка только
 # читает дерево и складывает артефакт, поэтому шире её права не бывают.
@@ -38,13 +41,17 @@ jobs:
     # У `workflow_run` нет своей опоры на доверие: фильтр `branches` смотрит на
     # имя ветки прогона-источника, а его выбирает автор PR — форк с веткой `main`
     # прошёл бы через фильтр, и мы опубликовали бы его содержимое у себя. Поэтому
-    # источник обязан быть прогоном этого же репозитория по push, расписанию
-    # или ручному запуску: у форка ни расписания, ни push сюда нет.
+    # источник обязан быть прогоном этого же репозитория по очереди слияния,
+    # push, расписанию или ручному запуску: у форка ни очереди, ни расписания,
+    # ни push сюда нет. Push в `main` источником не бывает: его дерево уже
+    # отчиталось прогоном очереди, а сам он тестов не гоняет.
     # Красный прогон — тоже результат, и страница обязана его показать; не
     # источник только отменённый.
     if: >-
       (github.event.workflow_run.conclusion == 'success' || github.event.workflow_run.conclusion == 'failure') &&
-      (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'schedule' || github.event.workflow_run.event == 'workflow_dispatch') &&
+      (github.event.workflow_run.event == 'merge_group' ||
+       (github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch != 'main') ||
+       github.event.workflow_run.event == 'schedule' || github.event.workflow_run.event == 'workflow_dispatch') &&
       github.event.workflow_run.head_repository.full_name == github.repository
     # Артефакты прогона-источника читаются по `actions: read`; права джобы
     # заменяют права workflow целиком, поэтому `contents: read` повторён.
@@ -81,10 +88,11 @@ jobs:
       # остальные пересобираются из того, что хранит сайт, и сохраняют подпись
       # своего прогона: иначе вчерашние счётчики выдавались бы за сегодняшние.
       # Свежие результаты приходят только с прогона-источника. Артефакт кладёт
-      # тот, чей прогон его оставил, — потому джоба admits лишь push-прогон
-      # этого репозитория (см. `if:` выше). План выгружен до тестов: тест из
-      # плана без результата дописывается `skipped` с причиной «раннер не
-      # дошёл» и не исчезает из истории.
+      # тот, чей прогон его оставил, — потому джоба принимает лишь прогон
+      # этого репозитория (см. `if:` выше). Линию несёт подпись результатов:
+      # прогон очереди подписан линией базы, а не временной веткой. План
+      # выгружен до тестов: тест из плана без результата дописывается
+      # `skipped` с причиной «раннер не дошёл» и не исчезает из истории.
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           run-id: ${{ github.event.workflow_run.id }}
@@ -145,18 +153,14 @@ jobs:
           RUN_SHA: ${{ github.event.workflow_run.head_sha }}
           RUN_URL: ${{ github.event.workflow_run.html_url }}
           RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
-          SITE: https://ingvarconsulting.github.io/unica
         run: |
           set -eu
-          # Критерии конвейера считаются здесь, в итоговом статусе, по прогонам
-          # за окно и трендам отчёта на сайте.
           python scripts/ci/site-status.py \
             --repo "$GITHUB_REPOSITORY" \
             --branch "$RUN_BRANCH" \
             --sha "$RUN_SHA" \
             --run-url "$RUN_URL" \
             --summaries .build/site/data \
-            --site "$SITE" --metrics \
             --out .build/status.json
           python scripts/ci/build-site.py --pages-only --status .build/status.json --out .build/site
 
@@ -174,7 +178,19 @@ jobs:
     timeout-minutes: 10
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      url: ${{ steps.deployment.outputs.page_url || steps.redeployment.outputs.page_url }}
     steps:
+      # Pages принимает один деплой за раз: пока выкладывается предыдущий,
+      # следующий получает 400 «in progress deployment». Группа concurrency
+      # разводит прогоны, но не сам деплой, а очередь слияния даёт по прогону
+      # на каждый pull request партии — они и приходят друг за другом. Поэтому
+      # неудачный деплой повторяется один раз после паузы; упавший второй раз
+      # — уже поломка, не гонка.
       - id: deployment
+        continue-on-error: true
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+      - if: steps.deployment.outcome == 'failure'
+        run: sleep 90
+      - id: redeployment
+        if: steps.deployment.outcome == 'failure'
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

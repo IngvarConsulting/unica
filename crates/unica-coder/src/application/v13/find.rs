@@ -174,6 +174,10 @@ impl FindCandidate {
         &self.kind
     }
 
+    pub(crate) fn title(&self) -> &str {
+        &self.title
+    }
+
     pub(crate) fn reason(&self) -> &str {
         &self.reason
     }
