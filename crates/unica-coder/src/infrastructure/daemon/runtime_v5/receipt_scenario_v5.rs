@@ -1640,29 +1640,24 @@ impl ReceiptScenarioControl {
     }
 }
 
-pub(crate) fn run_supported_receipt_scenario_for_test(
-    request: &str,
-) -> Result<Option<String>, String> {
-    if !has_supported_shape(request)? {
-        return Ok(None);
-    }
+fn unsupported_shape(shape: &str) -> String {
+    format!("protocol-v5 receipt scenario shape is not supported: {shape}")
+}
+
+pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<String, String> {
     let scenario = match serde_json::from_str::<ReceiptScenario>(request) {
         Ok(scenario) => scenario,
-        Err(error) => {
-            return Err(format!(
-                "decode supported protocol-v5 receipt scenario: {error}"
-            ))
-        }
+        Err(error) => return Err(format!("decode protocol-v5 receipt scenario: {error}")),
     };
-    if scenario.actions.iter().any(|action| !action.is_supported()) {
-        return Ok(None);
+    if scenario.actions.is_empty() {
+        return Err("protocol-v5 receipt scenario has no actions".to_owned());
     }
     if scenario
         .actions
         .iter()
         .all(|action| matches!(action, ReceiptScenarioAction::ProbeProtocol { .. }))
     {
-        return run_protocol_probe_scenario(scenario).map(Some);
+        return run_protocol_probe_scenario(scenario);
     }
     let mut state = ScenarioStateRoot::new()?;
     let workspace = ScenarioWorkspace::new()?;
@@ -1807,7 +1802,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                         _ => !cancel_requested && staged_terminal.is_none(),
                     };
                     if !valid {
-                        return Ok(None);
+                        return Err(unsupported_shape("seed_receipt fixture combination"));
                     }
                     deferred_task_bound = Some(seed_state);
                 } else {
@@ -1820,7 +1815,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                         cancel_requested,
                         staged_terminal,
                     )? {
-                        return Ok(None);
+                        return Err(unsupported_shape("seed_receipt fixture state"));
                     }
                 }
                 push_known_key(&mut known_keys, exact_key.clone());
@@ -2093,7 +2088,9 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                 label,
             } => {
                 if !matches!(key, ScenarioKey::Exact) || operations.contains_key(&label) {
-                    return Ok(None);
+                    return Err(unsupported_shape(
+                        "spawn_cancel needs an exact key and a fresh label",
+                    ));
                 }
                 if pending_submit.is_some() || live_daemon.is_some() {
                     let worker_label = label.clone();
@@ -2145,7 +2142,9 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
             }
             ReceiptScenarioAction::SpawnMarkReservedBegun { proof, label } => {
                 if !matches!(proof, ScenarioActorProof::Exact) || operations.contains_key(&label) {
-                    return Ok(None);
+                    return Err(unsupported_shape(
+                        "spawn_mark_reserved_begun needs an exact actor proof and a fresh label",
+                    ));
                 }
                 let runtime = match &operation_runtime {
                     Some(runtime) => Arc::clone(runtime),
@@ -2177,7 +2176,9 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
             }
             ReceiptScenarioAction::SpawnTaskStoreCreateAndBindUnderGate { label } => {
                 if operations.contains_key(&label) {
-                    return Ok(None);
+                    return Err(unsupported_shape(
+                        "spawn_task_store_create_and_bind_under_gate label is already in use",
+                    ));
                 }
                 let runtime = match &operation_runtime {
                     Some(runtime) => Arc::clone(runtime),
@@ -2209,7 +2210,9 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
             }
             ReceiptScenarioAction::SpawnStageBoundHandoffTerminal { terminal, label } => {
                 if operations.contains_key(&label) {
-                    return Ok(None);
+                    return Err(unsupported_shape(
+                        "spawn_stage_bound_handoff_terminal label is already in use",
+                    ));
                 }
                 control.arm_skip_next_startup_reconciliation();
                 let daemon_state = DaemonStateDirectory::open(state.path(), &identity)?;
@@ -2271,7 +2274,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                     ScenarioKey::Mismatch(ScenarioIdentityField::NormalizedArgumentsHash) => {
                         mismatched_arguments_key.clone()
                     }
-                    _ => return Ok(None),
+                    _ => return Err(unsupported_shape("cancel key shape")),
                 };
                 if pending_submit.is_none() && live_daemon.is_none() {
                     control.arm_skip_next_startup_reconciliation();
@@ -2437,7 +2440,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
             ReceiptScenarioAction::CancelTask {
                 api,
                 task,
-                lazy_session: _,
+                _lazy_session: _,
                 label,
             } => {
                 let task_id = match task {
@@ -2503,7 +2506,9 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                     || spawned_submit_clients.contains_key(&label)
                     || spawn_submit_labels.contains(&label)
                 {
-                    return Ok(None);
+                    return Err(unsupported_shape(
+                        "spawn_submit needs disconnect=never and a fresh label",
+                    ));
                 }
                 let submit_key = match request {
                     ScenarioRequest::Fresh(sequence) => {
@@ -2511,7 +2516,9 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                         fresh_key_for_workspace(&identity, &arguments, &workspace_hint)?
                     }
                     ScenarioRequest::Canonical | ScenarioRequest::SameIdentity => exact_key.clone(),
-                    ScenarioRequest::Mismatch(_) => return Ok(None),
+                    ScenarioRequest::Mismatch(_) => {
+                        return Err(unsupported_shape("spawn_submit with a mismatched request"))
+                    }
                 };
                 if pending_submit.is_none() && known_keys.is_empty() {
                     invocation_id = submit_key.invocation_id();
@@ -2783,10 +2790,14 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                     }),
                 );
             }
-            ReceiptScenarioAction::ProbeProtocol { .. } => return Ok(None),
+            ReceiptScenarioAction::ProbeProtocol { .. } => {
+                return Err(unsupported_shape(
+                    "probe_protocol mixed with receipt actions",
+                ))
+            }
             ReceiptScenarioAction::Recover { key, label } => {
                 let ScenarioKey::Exact = key else {
-                    return Ok(None);
+                    return Err(unsupported_shape("recover needs the exact key"));
                 };
                 let response = exchange_once(
                     state.path(),
@@ -2859,7 +2870,9 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                             format!("acknowledgement references unknown submit {submit_label}")
                         })?
                     }
-                    ScenarioKey::Unknown | ScenarioKey::Mismatch(_) => return Ok(None),
+                    ScenarioKey::Unknown | ScenarioKey::Mismatch(_) => {
+                        return Err(unsupported_shape("acknowledge key shape"))
+                    }
                 };
                 let terminal_digest = match digest {
                     ScenarioDigest::ExactTerminal => match &live_actor {
@@ -3075,7 +3088,9 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                 telemetry.record_forced_process_exit();
                 control.record_process_exit(1);
             }
-            ReceiptScenarioAction::InvalidateActorProof { .. } => return Ok(None),
+            ReceiptScenarioAction::InvalidateActorProof { .. } => {
+                return Err(unsupported_shape("invalidate_actor_proof"))
+            }
             ReceiptScenarioAction::AdvanceEpoch { millis } => {
                 clock.advance(millis)?;
             }
@@ -3562,7 +3577,9 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                             Some(None),
                         )?);
                 } else if pending_submit.is_some() {
-                    return Ok(None);
+                    return Err(unsupported_shape(
+                        "fail-stop with a live submit at this step",
+                    ));
                 }
             }
             ReceiptScenarioAction::Restart => {
@@ -3988,7 +4005,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
                         | ScenarioSeedReceiptState::ReservedUnbound
                         | ScenarioSeedReceiptState::TaskTerminalReceiptBacked
                 ) {
-                    return Ok(None);
+                    return Err(unsupported_shape("fill_receipt_pool state"));
                 }
                 let daemon_state = DaemonStateDirectory::open(state.path(), &identity)?;
                 let config =
@@ -4679,7 +4696,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(
     );
     report.gate_events = control.gate_events();
     report.operation_events = control.operation_events();
-    let encoded = report.encode(telemetry.snapshot().events).map(Some);
+    let encoded = report.encode(telemetry.snapshot().events);
     drop(live_actor.take());
     let cleanup = match live_daemon.take() {
         Some(daemon) => daemon.stop_and_join(
@@ -6947,82 +6964,6 @@ fn merge_unique_values(target: &mut Vec<Value>, values: Vec<Value>) {
             target.push(value);
         }
     }
-}
-
-fn has_supported_shape(request: &str) -> Result<bool, String> {
-    let value: Value = serde_json::from_str(request)
-        .map_err(|error| format!("decode receipt scenario shape: {error}"))?;
-    if !matches!(
-        value.get("clock").and_then(Value::as_str),
-        Some("fake" | "wall")
-    ) {
-        return Ok(false);
-    }
-    let Some(actions) = value.get("actions").and_then(Value::as_array) else {
-        return Ok(false);
-    };
-    Ok(!actions.is_empty()
-        && actions.iter().all(|action| {
-            matches!(
-                action.get("action").and_then(Value::as_str),
-                Some(
-                    "configure_validation"
-                        | "configure_provider"
-                        | "configure_admission"
-                        | "configure_prepare"
-                        | "cancel"
-                        | "cancel_task"
-                        | "spawn_cancel"
-                        | "spawn_mark_reserved_begun"
-                        | "spawn_task_store_create_and_bind_under_gate"
-                        | "spawn_stage_bound_handoff_terminal"
-                        | "wait_for_operation"
-                        | "wait_for_event_count"
-                        | "submit"
-                        | "spawn_submit"
-                        | "send_outer_envelope"
-                        | "probe_protocol"
-                        | "recover"
-                        | "acknowledge"
-                        | "seed_receipt"
-                        | "seed_task"
-                        | "seed_task_link_reservation"
-                        | "attempt_staged_terminal_against_provisional"
-                        | "inject_persisted_identity_collision"
-                        | "inject_store_fault"
-                        | "open_task_store_inspect_only"
-                        | "reconcile_startup"
-                        | "publish_listener"
-                        | "read_task"
-                        | "attempt_bound_task_start"
-                        | "invalidate_actor_proof"
-                        | "advance_epoch"
-                        | "advance_monotonic"
-                        | "crash"
-                        | "restart"
-                        | "checkpoint"
-                        | "reset"
-                        | "fill_receipt_pool"
-                        | "fill_task_links"
-                        | "fill_task_links_leaving_one_reservation_slot"
-                        | "fill_tombstones"
-                        | "inject_task_store_capacity_invariant_violation_once"
-                        | "attempt_task_store_bind_under_gate"
-                        | "continue_receipt_owned_attempt"
-                        | "run_cross_store_crash_workload"
-                        | "run_task_retirement_workload"
-                        | "run_direct_load"
-                        | "run_lazy_cancel_storm"
-                        | "rotate_receipt_segments"
-                        | "reclaim_expired_evidence"
-                        | "join_operation"
-                        | "install_barrier"
-                        | "wait_for_event"
-                        | "release_barrier"
-                        | "compare_client_server_identity"
-                )
-            )
-        }))
 }
 
 struct ScenarioInvocationService {
@@ -11769,13 +11710,15 @@ enum ReceiptScenarioAction {
     },
     Cancel {
         key: ScenarioKey,
-        lazy_session: bool,
+        #[serde(rename = "lazy_session")]
+        _lazy_session: bool,
         label: String,
     },
     CancelTask {
         api: ScenarioTaskCancelApi,
         task: ScenarioTaskSelector,
-        lazy_session: bool,
+        #[serde(rename = "lazy_session")]
+        _lazy_session: bool,
         label: String,
     },
     SpawnCancel {
@@ -11941,216 +11884,6 @@ enum ReceiptScenarioAction {
         point: ScenarioBarrierPoint,
     },
     CompareClientServerIdentity,
-}
-
-impl ReceiptScenarioAction {
-    fn is_supported(&self) -> bool {
-        match self {
-            Self::ConfigureValidation { .. }
-            | Self::ConfigureAdmission { .. }
-            | Self::ConfigurePrepare { .. } => true,
-            Self::ConfigureProvider {
-                execution_class, ..
-            } => {
-                matches!(
-                    execution_class,
-                    ScenarioExecutionClass::Direct | ScenarioExecutionClass::KnownLong
-                )
-            }
-            Self::Cancel {
-                key, lazy_session, ..
-            } => {
-                let _ = lazy_session;
-                matches!(
-                    key,
-                    ScenarioKey::Exact
-                        | ScenarioKey::Unknown
-                        | ScenarioKey::Mismatch(ScenarioIdentityField::NormalizedArgumentsHash)
-                )
-            }
-            Self::CancelTask {
-                api,
-                task,
-                lazy_session,
-                ..
-            } => {
-                let _ = (api, lazy_session);
-                matches!(
-                    task,
-                    ScenarioTaskSelector::ExactProjected | ScenarioTaskSelector::ForReadLabel(_)
-                )
-            }
-            Self::SpawnCancel { key, .. } => matches!(key, ScenarioKey::Exact),
-            Self::SpawnMarkReservedBegun { proof, .. } => {
-                matches!(proof, ScenarioActorProof::Exact)
-            }
-            Self::SpawnTaskStoreCreateAndBindUnderGate { .. }
-            | Self::WaitForOperation { .. }
-            | Self::WaitForEventCount { .. } => true,
-            Self::SpawnStageBoundHandoffTerminal { terminal, .. } => {
-                matches!(terminal, ScenarioTerminalFixture::Success { .. })
-            }
-            Self::Submit {
-                request,
-                disconnect,
-                ..
-            }
-            | Self::SpawnSubmit {
-                request,
-                disconnect,
-                ..
-            } => {
-                matches!(
-                    request,
-                    ScenarioRequest::Canonical
-                        | ScenarioRequest::Fresh(_)
-                        | ScenarioRequest::SameIdentity
-                        | ScenarioRequest::Mismatch(_)
-                ) && matches!(
-                    disconnect,
-                    ScenarioDisconnect::Never
-                        | ScenarioDisconnect::AfterSubmitWrite
-                        | ScenarioDisconnect::AfterTerminalCommit
-                )
-            }
-            Self::SendOuterEnvelope { .. } => true,
-            Self::ProbeProtocol {
-                client,
-                server,
-                message,
-                ..
-            } => protocol_probe_is_supported(*client, *server, message),
-            Self::Recover { key, .. } => matches!(key, ScenarioKey::Exact),
-            Self::Acknowledge {
-                key, disconnect, ..
-            } => {
-                matches!(key, ScenarioKey::Exact | ScenarioKey::ForSubmitLabel(_))
-                    && matches!(
-                        disconnect,
-                        ScenarioAckDisconnect::Never | ScenarioAckDisconnect::AfterTombstoneCommit
-                    )
-            }
-            Self::SeedReceipt {
-                state,
-                staged_terminal,
-                cancel_requested,
-            } => match state {
-                ScenarioSeedReceiptState::TaskTerminalReceiptBacked => {
-                    staged_terminal.as_ref().is_some_and(|terminal| {
-                        matches!(terminal, ScenarioTerminalFixture::Success { .. })
-                    })
-                }
-                ScenarioSeedReceiptState::CancelReserved
-                | ScenarioSeedReceiptState::ReservedUnbound
-                | ScenarioSeedReceiptState::ReservedActorBound
-                | ScenarioSeedReceiptState::ReservedBegun
-                | ScenarioSeedReceiptState::TaskPromisedUnbound
-                | ScenarioSeedReceiptState::TaskPromisedActorBound
-                | ScenarioSeedReceiptState::TaskReceiptOwnedActorBound => {
-                    staged_terminal.is_none()
-                        && (!*cancel_requested
-                            || matches!(
-                                state,
-                                ScenarioSeedReceiptState::CancelReserved
-                                    | ScenarioSeedReceiptState::ReservedUnbound
-                                    | ScenarioSeedReceiptState::ReservedActorBound
-                                    | ScenarioSeedReceiptState::ReservedBegun
-                                    | ScenarioSeedReceiptState::TaskPromisedUnbound
-                                    | ScenarioSeedReceiptState::TaskPromisedActorBound
-                                    | ScenarioSeedReceiptState::TaskReceiptOwnedActorBound
-                            ))
-                }
-                ScenarioSeedReceiptState::TaskHandoffActorBoundNotBegun
-                | ScenarioSeedReceiptState::TaskHandoffActorBoundBegun => {
-                    staged_terminal.is_none()
-                        || staged_terminal.as_ref().is_some_and(|terminal| {
-                            matches!(terminal, ScenarioTerminalFixture::Success { .. })
-                        })
-                }
-                ScenarioSeedReceiptState::DirectTerminalUnacked
-                | ScenarioSeedReceiptState::AcknowledgedTombstone => {
-                    staged_terminal.as_ref().is_some_and(|terminal| {
-                        matches!(terminal, ScenarioTerminalFixture::Success { .. })
-                    })
-                }
-                ScenarioSeedReceiptState::TaskBoundNotBegun
-                | ScenarioSeedReceiptState::TaskBoundBegun => staged_terminal.is_none(),
-                ScenarioSeedReceiptState::TaskTerminalBound => {
-                    !*cancel_requested
-                        && staged_terminal.as_ref().is_some_and(|terminal| {
-                            matches!(terminal, ScenarioTerminalFixture::Success { .. })
-                        })
-                }
-            },
-            Self::SeedTask { version, .. } => *version > 0,
-            Self::SeedTaskLinkReservation { .. }
-            | Self::AttemptStagedTerminalAgainstProvisional { .. }
-            | Self::InjectPersistedIdentityCollision { .. }
-            | Self::InjectStoreFault { .. }
-            | Self::OpenTaskStoreInspectOnly
-            | Self::ReconcileStartup
-            | Self::PublishListener => true,
-            Self::ReadTask { .. } => true,
-            Self::AttemptBoundTaskStart { proof, .. } => {
-                !matches!(proof, ScenarioActorProof::Exact)
-            }
-            Self::InvalidateActorProof { proof, point, .. } => {
-                matches!(proof, ScenarioActorProof::Stale)
-                    && matches!(point, ScenarioBarrierPoint::AfterWorkingReadback)
-            }
-            Self::AdvanceEpoch { .. }
-            | Self::AdvanceMonotonic { .. }
-            | Self::Restart
-            | Self::Checkpoint { .. }
-            | Self::Reset
-            | Self::InstallBarrier { .. }
-            | Self::WaitForEvent { .. }
-            | Self::ReleaseBarrier { .. }
-            | Self::CompareClientServerIdentity => true,
-            Self::Crash { point } => matches!(
-                point,
-                ScenarioCrashPoint::ReservedUnbound
-                    | ScenarioCrashPoint::ReservedBegun
-                    | ScenarioCrashPoint::TaskPromisedUnbound
-                    | ScenarioCrashPoint::AfterSideEffectBeforeTerminal
-                    | ScenarioCrashPoint::BeforeTaskStoreCreate
-                    | ScenarioCrashPoint::AfterCancelFlagBeforeTaskCreate
-                    | ScenarioCrashPoint::AfterWorkingReadbackBeforeReceiptBegun
-                    | ScenarioCrashPoint::AfterReceiptBegunBeforePrepare
-                    | ScenarioCrashPoint::AfterTaskStoreTerminalBeforeLifecycleLinkTerminal
-            ),
-            Self::FillReceiptPool { state, .. } => matches!(
-                state,
-                ScenarioSeedReceiptState::CancelReserved
-                    | ScenarioSeedReceiptState::ReservedUnbound
-                    | ScenarioSeedReceiptState::TaskTerminalReceiptBacked
-            ),
-            Self::FillTaskLinks
-            | Self::FillTaskLinksLeavingOneReservationSlot
-            | Self::FillTombstones
-            | Self::InjectTaskStoreCapacityInvariantViolationOnce
-            | Self::AttemptTaskStoreBindUnderGate { .. }
-            | Self::ContinueReceiptOwnedAttempt { .. }
-            | Self::RunCrossStoreCrashWorkload { .. }
-            | Self::RunTaskRetirementWorkload { .. }
-            | Self::RunLazyCancelStorm { .. }
-            | Self::RunDirectLoad { .. }
-            | Self::RotateReceiptSegments
-            | Self::ReclaimExpiredEvidence
-            | Self::JoinOperation { .. } => true,
-        }
-    }
-}
-
-fn protocol_probe_is_supported(
-    _client: ScenarioProtocolVersion,
-    server: ScenarioProtocolVersion,
-    _message: &ScenarioProtocolMessage,
-) -> bool {
-    match server {
-        ScenarioProtocolVersion::V4 => false,
-        ScenarioProtocolVersion::V5 | ScenarioProtocolVersion::V3 => true,
-    }
 }
 
 #[derive(Clone, Deserialize)]
@@ -12874,8 +12607,7 @@ mod tests {
             ]
         });
         let encoded = run_supported_receipt_scenario_for_test(&request.to_string())
-            .expect("run TaskBound checkpoint scenario")
-            .expect("TaskBound checkpoint scenario is supported");
+            .expect("run TaskBound checkpoint scenario");
         let report: Value = serde_json::from_str(&encoded).expect("decode scenario report");
         let snapshot = &report["payload"]["checkpoints"]["bound"];
         assert_eq!(snapshot["receipts"].as_array().map(Vec::len), Some(0));
@@ -12905,105 +12637,6 @@ mod tests {
             Some(1)
         );
     }
-
-    #[test]
-    fn support_filter_tracks_every_interpreter_path() {
-        let action = ReceiptScenarioAction::Submit {
-            request: ScenarioRequest::Canonical,
-            response_budget_ms: 7_000,
-            disconnect: ScenarioDisconnect::AfterSubmitWrite,
-            label: "supported-disconnect".to_owned(),
-        };
-        assert!(action.is_supported());
-
-        let unsupported = ReceiptScenarioAction::ProbeProtocol {
-            client: ScenarioProtocolVersion::V5,
-            server: ScenarioProtocolVersion::V4,
-            message: ScenarioProtocolMessage::Ping,
-            label: "unsupported-server".to_owned(),
-        };
-        assert!(!unsupported.is_supported());
-
-        for action in [
-            ReceiptScenarioAction::ProbeProtocol {
-                client: ScenarioProtocolVersion::V3,
-                server: ScenarioProtocolVersion::V3,
-                message: ScenarioProtocolMessage::RecoverReceipt,
-                label: "unsupported-v3-request".to_owned(),
-            },
-            ReceiptScenarioAction::ProbeProtocol {
-                client: ScenarioProtocolVersion::V5,
-                server: ScenarioProtocolVersion::V5,
-                message: ScenarioProtocolMessage::StoredInvocationRecord {
-                    schema_version: 1,
-                    reason: ScenarioFailureProbeReason::InvocationFailed,
-                },
-                label: "unsupported-v5-request".to_owned(),
-            },
-            ReceiptScenarioAction::ProbeProtocol {
-                client: ScenarioProtocolVersion::V5,
-                server: ScenarioProtocolVersion::V5,
-                message: ScenarioProtocolMessage::TaskOutcome,
-                label: "unsupported-v5-response-fixture".to_owned(),
-            },
-            ReceiptScenarioAction::ProbeProtocol {
-                client: ScenarioProtocolVersion::V3,
-                server: ScenarioProtocolVersion::V3,
-                message: ScenarioProtocolMessage::DirectFailureTerminal {
-                    reason: ScenarioFailureProbeReason::InvocationFailed,
-                },
-                label: "unsupported-v3-response-fixture".to_owned(),
-            },
-            ReceiptScenarioAction::ProbeProtocol {
-                client: ScenarioProtocolVersion::V5,
-                server: ScenarioProtocolVersion::V5,
-                message: ScenarioProtocolMessage::MalformedV5Schema {
-                    target: ScenarioStrictSchemaTarget::ResponseUnknownField,
-                },
-                label: "unsupported-response-schema-mutation".to_owned(),
-            },
-        ] {
-            assert!(action.is_supported());
-        }
-
-        assert!(ReceiptScenarioAction::AdvanceMonotonic { millis: 1 }.is_supported());
-        assert!(build_v3_probe_request_frame(
-            ScenarioProtocolVersion::V3,
-            &ScenarioProtocolMessage::RecoverReceipt,
-        )
-        .is_ok());
-        assert!(build_v5_probe_request_frame(
-            Path::new("unused-for-rejected-message"),
-            &CoreIdentity::production_v5(),
-            &ScenarioProtocolMessage::StoredInvocationRecord {
-                schema_version: 1,
-                reason: ScenarioFailureProbeReason::InvocationFailed,
-            },
-        )
-        .is_ok());
-        assert!(build_v5_probe_request_frame(
-            Path::new("unused-for-rejected-message"),
-            &CoreIdentity::production_v5(),
-            &ScenarioProtocolMessage::TaskOutcome,
-        )
-        .is_ok());
-        assert!(build_v3_probe_request_frame(
-            ScenarioProtocolVersion::V3,
-            &ScenarioProtocolMessage::DirectFailureTerminal {
-                reason: ScenarioFailureProbeReason::InvocationFailed,
-            },
-        )
-        .is_ok());
-        assert!(build_v5_probe_request_frame(
-            Path::new("unused-for-rejected-message"),
-            &CoreIdentity::production_v5(),
-            &ScenarioProtocolMessage::MalformedV5Schema {
-                target: ScenarioStrictSchemaTarget::ResponseUnknownField,
-            },
-        )
-        .is_ok());
-    }
-
     #[test]
     fn receipt_pending_observation_distinguishes_cancel_reservation_phase() {
         let identity = CoreIdentity::production_v5();
@@ -13067,8 +12700,7 @@ mod tests {
         });
 
         let encoded = run_supported_receipt_scenario_for_test(&request.to_string())
-            .expect("run production receipt-owned Task cancellation")
-            .expect("receipt-owned Task cancellation scenario is supported");
+            .expect("run production receipt-owned Task cancellation");
         let report: Value = serde_json::from_str(&encoded).expect("decode scenario report");
         let payload = &report["payload"];
         assert_eq!(payload["responses"]["cancel"]["kind"], "task");
@@ -13171,8 +12803,7 @@ mod tests {
         });
 
         let encoded = run_supported_receipt_scenario_for_test(&request.to_string())
-            .expect("run protocol-v5 acknowledgement scenario")
-            .expect("acknowledgement scenario is supported");
+            .expect("run protocol-v5 acknowledgement scenario");
         let report: Value = serde_json::from_str(&encoded).expect("decode scenario report");
         let payload = &report["payload"];
         let tombstones = payload["checkpoints"]["after-lost"]["tombstones"]
