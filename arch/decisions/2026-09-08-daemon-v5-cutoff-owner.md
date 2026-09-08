@@ -1,10 +1,10 @@
 ---
 id: DEC.2026-09-08.DAEMON-V5-CUTOFF-OWNER
-status: active
+status: superseded
 governs: product
 realized: crates/unica-coder/src/interfaces/daemon_router.rs::live_daemon_hands_inline_work_over_the_cutoff_to_a_task_the_same_attempt_completes
 supersedes: []
-superseded-by: null
+superseded-by: DEC.2026-09-08.DAEMON-V5-DEADLINE-OWNER
 establishes: [INV.APP.DAEMON-INVOCATION-HANDOFF]
 design: docs/design/2026-09-07-daemon-v5-production-cutover-design.md
 ---

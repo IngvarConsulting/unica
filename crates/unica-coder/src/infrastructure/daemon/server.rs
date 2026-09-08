@@ -25,7 +25,7 @@ use crate::infrastructure::runtime_jobs::RuntimeJobService;
 use crate::infrastructure::runtime_jobs::RuntimeResourceOwner;
 use crate::infrastructure::workspace_actor::WorkspaceActorRegistry;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub(crate) const MAX_HANDSHAKES: usize = 8;
 pub(crate) const MAX_OWNER_SESSIONS: usize = 64;
@@ -258,12 +258,40 @@ impl V5CanonicalInvocationRuntime {
         InvocationResponseDeadline::capture(Arc::clone(&self.clock))
     }
 
+    /// The one daemon-side deadline of a request: captured on this runtime's
+    /// clock before strict validation and narrowed to the frontend budget.
+    pub(super) fn capture_response_deadline(
+        &self,
+        response_budget_ms: u64,
+    ) -> InvocationResponseDeadline {
+        InvocationResponseDeadline::capture(Arc::clone(&self.clock))
+            .restrict_to_frontend_budget(Duration::from_millis(response_budget_ms))
+    }
+
+    /// The instant this runtime's clock reads now; fail-stop watchdogs are
+    /// armed and read on it.
+    pub(super) fn now(&self) -> Instant {
+        self.clock.now()
+    }
+
+    /// Bind under a deadline captured here and now: the direct path tests
+    /// take, production captures at the reservation and binds with it.
+    #[cfg(test)]
     pub(super) fn bind(
         &self,
         request: InvocationRequest,
     ) -> Result<V5ActorBoundCanonicalInvocation, V5CanonicalPrepareError> {
-        let response_deadline = InvocationResponseDeadline::capture(Arc::clone(&self.clock))
-            .restrict_to_frontend_budget(Duration::from_millis(request.response_budget_ms()));
+        let response_deadline = self.capture_response_deadline(request.response_budget_ms());
+        self.bind_with_deadline(request, response_deadline)
+    }
+
+    /// Binds under a deadline the caller captured earlier: the same clock and
+    /// the same handoff moment every later stage measures against.
+    pub(super) fn bind_with_deadline(
+        &self,
+        request: InvocationRequest,
+        response_deadline: InvocationResponseDeadline,
+    ) -> Result<V5ActorBoundCanonicalInvocation, V5CanonicalPrepareError> {
         if let Err(summary) = validate_hidden_v13_request(&request) {
             return Err(V5CanonicalPrepareError::Rejected(Box::new(
                 DomainResult::canonical_rejection(None, RefusalCode::BadValue, summary),

@@ -26,7 +26,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::any::Any;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -695,69 +695,6 @@ pub(super) fn seed_receipt_tombstones_for_scenario(
     Ok((ReceiptLedgerActor::spawn(store), seeded))
 }
 
-#[derive(Clone, Copy)]
-pub(super) struct ScenarioTaskTiming {
-    created_at_epoch_ms: u64,
-    ttl_ms: u64,
-    poll_interval_ms: u64,
-}
-
-impl ScenarioTaskTiming {
-    pub(super) fn new(created_at_epoch_ms: u64, ttl_ms: u64, poll_interval_ms: u64) -> Self {
-        Self {
-            created_at_epoch_ms,
-            ttl_ms,
-            poll_interval_ms,
-        }
-    }
-}
-
-pub(super) fn promise_task_unbound_for_scenario(
-    actor: &ReceiptLedgerActor,
-    key: ReceiptKey,
-    expected_version: crate::application::receipt_ledger::ReceiptVersion,
-    timing: ScenarioTaskTiming,
-    deadline: Instant,
-    telemetry: &V5ReceiptRuntimeTelemetry,
-) -> Result<TaskPromisedUnboundReceipt, ReceiptLedgerError> {
-    let promised = actor.promise_task_unbound(
-        key,
-        expected_version,
-        timing.created_at_epoch_ms,
-        timing.ttl_ms,
-        timing.poll_interval_ms,
-        deadline,
-    )?;
-    telemetry.record_event(
-        V5ReceiptRuntimeEventKind::UnboundPromiseCommitted,
-        timing.created_at_epoch_ms,
-    );
-    Ok(promised)
-}
-
-pub(super) fn begin_bound_task_handoff_for_scenario(
-    actor: &ReceiptLedgerActor,
-    key: ReceiptKey,
-    expected_version: crate::application::receipt_ledger::ReceiptVersion,
-    timing: ScenarioTaskTiming,
-    deadline: Instant,
-    telemetry: &V5ReceiptRuntimeTelemetry,
-) -> Result<TaskHandoffActorBoundReceipt, ReceiptLedgerError> {
-    let handoff = actor.begin_bound_task_handoff(
-        key,
-        expected_version,
-        timing.created_at_epoch_ms,
-        timing.ttl_ms,
-        timing.poll_interval_ms,
-        deadline,
-    )?;
-    telemetry.record_event(
-        V5ReceiptRuntimeEventKind::BoundHandoffCommitted,
-        timing.created_at_epoch_ms,
-    );
-    Ok(handoff)
-}
-
 pub(super) fn publish_direct_terminal_for_scenario(
     actor: &ReceiptLedgerActor,
     key: ReceiptKey,
@@ -904,8 +841,11 @@ impl V5RuntimeHooks for ScenarioHooks {
         self.telemetry.record_restart_requested();
     }
 
-    fn forced_process_exit(&self) {
+    fn forced_process_exit(&self, grace: Option<Duration>) {
         self.telemetry.record_forced_process_exit();
+        if let (Some(grace), Some(control)) = (grace, &self.control) {
+            control.record_process_exit(u64::try_from(grace.as_millis()).unwrap_or(u64::MAX));
+        }
     }
 
     fn listener_lease(&self) -> Option<Box<dyn Any + Send>> {
@@ -1161,10 +1101,6 @@ impl V5RuntimeHooks for ScenarioHooks {
             .as_ref()
             .filter(|control| control.has_precomputed_terminal())
             .map(|_| Self::bulk_deadline())
-    }
-
-    fn owns_cutoff(&self) -> bool {
-        self.control.is_none()
     }
 
     fn staged_handoff(&self) -> Option<TaskHandoffActorBoundReceipt> {

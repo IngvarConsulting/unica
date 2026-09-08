@@ -178,17 +178,18 @@ daemon; терминал упавшей квитанции ставит прее
 - **F3 — владелец срока.** Срок захватывается при резервировании и
   передаётся в bind; `drive_reserved_invocation` со слотом по фазам; сторож
   grace; staging на `Begun`; бегунок перестаёт продвигать квитанцию на
-  `AdvanceMonotonic`. Решение `DEC.2026-09-09.DAEMON-V5-DEADLINE-OWNER`
+  `AdvanceMonotonic`. Решение `DEC.2026-09-08.DAEMON-V5-DEADLINE-OWNER`
   замещает `DEC.2026-09-08.DAEMON-V5-CUTOFF-OWNER`, принимает
-  `INV.APP.DAEMON-INVOCATION-HANDOFF` и `INV.APP.DAEMON-STORE-FAIL-STOP`;
-  свидетельство — тест на живом рантайме без признака: admission дольше
-  семи секунд отдаёт Task на седьмой, попытка завершается в него один раз.
+  `INV.APP.DAEMON-INVOCATION-HANDOFF` (переход владельца обязателен: старое
+  решение стало superseded); `INV.APP.DAEMON-STORE-FAIL-STOP` остаётся за
+  cutover до F4. Свидетельство — тест на живом рантайме без признака: занятый
+  вызов отдаёт Task на седьмой секунде, попытка завершается в него один раз.
 - **F4 — бегунок-наблюдатель.** Снять писателей `*_for_scenario`,
   `materialize_cutoff_handoff_for_test`, `staged_handoff`, `bound_task`,
   `configured_precomputed_terminal`, `arm_fail_stop_deadline`,
   `skip_next_startup_reconciliation`, `acknowledge_without_startup`; страж
   `tests/ci/test_receipt_harness_boundary.py`. Решение
-  `DEC.2026-09-09.LEDGER-HARNESS-OBSERVES-ONLY`, правило
+  `DEC.2026-09-08.LEDGER-HARNESS-OBSERVES-ONLY`, правило
   `INV.TEST.LEDGER-HARNESS-OBSERVES`.
 - **F5 — разрез файлов.** Без решения.
 
@@ -217,8 +218,8 @@ push.
 | --- | --- | --- | --- |
 | F1 | нет | нет | — |
 | F2 | `DEC.2026-09-08.V5-RUNTIME-HOOKS` | `INV.TEST.LEDGER-SUPPORT-GATES-ITEMS` (новое) | `tests/ci/test_receipt_ledger_test_support_boundary.py` |
-| F3 | `DEC.2026-09-09.DAEMON-V5-DEADLINE-OWNER`, замещает `DEC.2026-09-08.DAEMON-V5-CUTOFF-OWNER` | `INV.APP.DAEMON-INVOCATION-HANDOFF`, `INV.APP.DAEMON-STORE-FAIL-STOP` (переходят к новому решению, получают production-проверки) | тест владельца на живом рантайме без признака |
-| F4 | `DEC.2026-09-09.LEDGER-HARNESS-OBSERVES-ONLY` | `INV.TEST.LEDGER-HARNESS-OBSERVES` (новое) | `tests/ci/test_receipt_harness_boundary.py` |
+| F3 | `DEC.2026-09-08.DAEMON-V5-DEADLINE-OWNER`, замещает `DEC.2026-09-08.DAEMON-V5-CUTOFF-OWNER` | `INV.APP.DAEMON-INVOCATION-HANDOFF` (переходит к новому решению, получает production-проверку) | тест владельца на живом рантайме без признака |
+| F4 | `DEC.2026-09-08.LEDGER-HARNESS-OBSERVES-ONLY` | `INV.TEST.LEDGER-HARNESS-OBSERVES` (новое) | `tests/ci/test_receipt_harness_boundary.py` |
 | F5 | нет | нет | — |
 
 Даты решений — по дню их появления в дереве; в записке они названы
@@ -286,6 +287,34 @@ push.
 элементах, `not(feature)` запрещён; решение
 `DEC.2026-09-08.V5-RUNTIME-HOOKS`, правило
 `INV.TEST.LEDGER-SUPPORT-GATES-ITEMS`.
+
+**Шаг F3 — владелец срока.** Поток сессии владеет ответом и cutoff; рабочий
+поток `unica-v5-invocation-pipeline` гонит конвейер (`execute_reserved_invocation`
+запускает воркер и слушает его отчёт через `PipelineSlot`). До `Begun` владелец
+на седьмой секунде продвигает квитанцию в `promote_at_cutoff` по фазе: `Unbound`
+в обещанный Task с заряженным сторожем `FailStopWatchdogs`, `ActorBound` в
+handoff, `Begun` в handoff и — если наблюдатель не держит `BeforeTaskStoreCreate`
+— материализует Task тут же и кладёт `(record, bound)` в слот. Воркер,
+проигравший гонку, перечитывает квитанцию и продолжает единственную попытку
+через `continue_promised`/`continue_handoff`/`continue_into_bound_task`/
+`continue_promoted_begun_handoff`; на паузе `PrepareEntered` он забирает
+материализованный Task из слота и исполняет его через `drive_prepared_bound_task`
+(выделен из хвоста `continue_into_bound_task`; known-long уходит в поток
+исполнения, direct продолжается на этом же потоке). Сторожа проверяет
+accept-loop на часах канонического рантайма; fail-stop, освобождающий authority,
+сперва `join_task_executions()`, чтобы отсоединённое продолжение не удержало
+receipt-authority живой. Обвязка больше не продвигает: `PendingSubmit::await_response`
+и `await_handoff_intent` ждут ответ рантайма, `quiesce_promoted_continuation`
+(в Checkpoint/WaitForEvent/финале) ждёт, пока продолжение осядет (по счётчику
+`promoted_continuations`), и после fail-stop освобождает застрявший endpoint —
+иначе `connect_or_spawn` спавнит настоящий процесс. Решение
+`DEC.2026-09-08.DAEMON-V5-DEADLINE-OWNER` замещает
+`DEC.2026-09-08.DAEMON-V5-CUTOFF-OWNER` и принимает
+`INV.APP.DAEMON-INVOCATION-HANDOFF`; проверка — `owner_promotes_a_slow_inline_attempt_to_a_task_at_the_cutoff`,
+живой рантайм без признака. Все 56 тестов контракта зелёные; два теста lib под
+признаком (`scenario_owner_helpers_cannot_bypass_the_actor_store_boundary`,
+`late_cancel_preserves_the_committed_actor_bound_task_terminal`) остаются
+красными до F4.
 
 ## Открытые вопросы
 
