@@ -1,4 +1,5 @@
 use super::super::protocol::InvocationRequest;
+use super::super::v13_workspace_bootstrap::project_config_present;
 use crate::application::invocation::InvocationResponseDeadline;
 use crate::application::operation_descriptors::ExecutionClass;
 use crate::application::shared_work::{
@@ -10,7 +11,9 @@ use crate::domain::apply::ApplyRequest;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::invocation::{DomainResult, InvocationFailure, SafeIdentityHash};
-use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind};
+use crate::domain::project_sources::{
+    ProjectSourceSet, SourceFormat, SourceProfile, SourceSetKind,
+};
 use crate::domain::refusal::RefusalCode;
 use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
 use crate::infrastructure::runtime_jobs::{RuntimeJobService, RuntimeResourceOwner};
@@ -1020,26 +1023,52 @@ fn bind_workspace_invocation_controlled(
     after_actor_admission: impl FnOnce(&mut [DiscoveredActorSource]),
 ) -> Result<ActorBoundInvocation, WorkspaceAdmissionError> {
     let context = discover_workspace(Some(std::path::PathBuf::from(request.workspace_hint())))
-        .map_err(|_| WorkspaceAdmissionError::Invalid)?;
+        .map_err(|reason| WorkspaceAdmissionError::WorkspaceUndiscoverable { reason })?;
+    let unadmitted = |cause| WorkspaceAdmissionError::Unadmitted {
+        workspace_root: context.workspace_root.clone(),
+        cause,
+    };
+    // Истёкший срок обрывает обход той же ошибкой, что и сорванный обход, и
+    // отличить их может только сам чекпоинт. Разница не косметическая: срок
+    // повторяют тем же вызовом, а сорванный обход — нет.
+    let admission_deadline_elapsed = std::cell::Cell::new(false);
     let mut checkpoint = || {
         response_deadline
             .checkpoint_actor_admission()
-            .map_err(str::to_string)
+            .map_err(|error| {
+                admission_deadline_elapsed.set(true);
+                error.to_string()
+            })
     };
     let source_admission =
-        discover_project_source_admission(&context.workspace_root, &mut checkpoint)
-            .map_err(|_| WorkspaceAdmissionError::Invalid)?;
-    let mut admitted_sources = source_admission
-        .map()
-        .source_sets
+        discover_project_source_admission(&context.workspace_root, &mut checkpoint).map_err(
+            |reason| {
+                if admission_deadline_elapsed.get() {
+                    unadmitted(UnadmittedCause::AdmissionDeadline)
+                } else if project_config_present(&context.workspace_root) {
+                    unadmitted(UnadmittedCause::ProjectConfigInvalid(reason))
+                } else {
+                    unadmitted(UnadmittedCause::SourceDiscoveryFailed(reason))
+                }
+            },
+        )?;
+    let declared_sources = &source_admission.map().source_sets;
+    let mut admitted_sources = declared_sources
         .iter()
         .filter(|source| source.source_format == SourceFormat::PlatformXml)
         .map(|source| {
+            let unreadable = |reason| {
+                unadmitted(UnadmittedCause::SourceRootUnreadable {
+                    source_set: source.name.clone(),
+                    path: source.path.clone(),
+                    reason,
+                })
+            };
             let relative = closed_daemon_source_relative_path(&source.path)
-                .map_err(|_| WorkspaceAdmissionError::Invalid)?;
+                .map_err(|_| unreadable("its declared path leaves the workspace root"))?;
             let retained_identity = source_admission
                 .source_root_identity(&relative)
-                .ok_or(WorkspaceAdmissionError::Invalid)?;
+                .ok_or_else(|| unreadable("its declared root is absent or cannot be retained"))?;
             let root = context.workspace_root.join(&relative);
             Ok(DiscoveredActorSource {
                 name: source.name.clone(),
@@ -1052,7 +1081,11 @@ fn bind_workspace_invocation_controlled(
         })
         .collect::<Result<Vec<_>, WorkspaceAdmissionError>>()?;
     if admitted_sources.is_empty() {
-        return Err(WorkspaceAdmissionError::Invalid);
+        return Err(unadmitted(if declared_sources.is_empty() {
+            UnadmittedCause::Uninitialized
+        } else {
+            UnadmittedCause::NoPlatformXmlSourceSet(declared_sources.clone())
+        }));
     }
     admitted_sources.sort_by(|left, right| left.name.cmp(&right.name));
     let actor = actors
@@ -1071,7 +1104,11 @@ fn bind_workspace_invocation_controlled(
         )
         .map_err(|error| match error {
             WorkspaceActorRegistryError::Capacity { .. } => WorkspaceAdmissionError::Capacity,
-            WorkspaceActorRegistryError::InvalidIdentity(_) => WorkspaceAdmissionError::Invalid,
+            WorkspaceActorRegistryError::InvalidIdentity(_) => {
+                unadmitted(UnadmittedCause::ActorBindingFailed {
+                    stage: "the actor registry rejected the workspace identity",
+                })
+            }
             WorkspaceActorRegistryError::Poisoned => WorkspaceAdmissionError::RegistryFailed,
         })?;
     after_actor_admission(&mut admitted_sources);
@@ -1087,7 +1124,11 @@ fn bind_workspace_invocation_controlled(
                     }
                     Ok(ActorReadSourceBinding { binding })
                 })
-                .map_err(|_| WorkspaceAdmissionError::Invalid)
+                .map_err(|_| {
+                    unadmitted(UnadmittedCause::ActorBindingFailed {
+                        stage: "an admitted source root changed while the actor was binding it",
+                    })
+                })
         })
         .collect::<Result<Vec<_>, _>>()?;
     let provider_root = read_sources
@@ -1095,10 +1136,16 @@ fn bind_workspace_invocation_controlled(
         .find(|source| source.binding.source_set_name() == "main")
         .or_else(|| read_sources.first())
         .map(|source| source.binding.clone())
-        .ok_or(WorkspaceAdmissionError::Invalid)?;
-    let workspace_identity_hash = actor
-        .safe_identity_hash()
-        .map_err(|_| WorkspaceAdmissionError::Invalid)?;
+        .ok_or_else(|| {
+            unadmitted(UnadmittedCause::ActorBindingFailed {
+                stage: "no admitted source set could serve as the provider root",
+            })
+        })?;
+    let workspace_identity_hash = actor.safe_identity_hash().map_err(|_| {
+        unadmitted(UnadmittedCause::ActorBindingFailed {
+            stage: "the workspace identity hash could not be computed",
+        })
+    })?;
     Ok(ActorBoundInvocation {
         tool: request.tool(),
         arguments: request.arguments().clone(),
@@ -1130,9 +1177,47 @@ fn closed_daemon_source_relative_path(path: &str) -> Result<std::path::PathBuf, 
     Ok(relative)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Почему допуск наборов не состоялся.
+///
+/// Причина известна ровно в точке отказа: снаружи её пришлось бы
+/// восстанавливать вторым обходом рабочего пространства, а он увидит уже
+/// другое дерево. Слова для провода выбирает `server`, не эта служба — здесь
+/// называется причина, а не ответ.
+#[derive(Debug)]
 pub(super) enum WorkspaceAdmissionError {
+    /// Мест под рабочие пространства больше нет.
     Capacity,
+    /// Реестр акторов отравлен и до перезапуска не допустит ничего.
     RegistryFailed,
-    Invalid,
+    /// Корень рабочего пространства не определён — искать наборы негде.
+    WorkspaceUndiscoverable { reason: String },
+    /// Корень известен, а допущенного набора PlatformXml в нём нет.
+    Unadmitted {
+        workspace_root: std::path::PathBuf,
+        cause: UnadmittedCause,
+    },
+}
+
+/// Отчего в известном корне не оказалось допущенного набора PlatformXml.
+#[derive(Debug)]
+pub(super) enum UnadmittedCause {
+    /// Рабочая область не заведена: ни `v8project.yaml`, ни автоопределяемых
+    /// корней 1С.
+    Uninitialized,
+    /// `v8project.yaml` на месте, но прочитать его нельзя.
+    ProjectConfigInvalid(String),
+    /// Обход наборов не завершился, и не по сроку.
+    SourceDiscoveryFailed(String),
+    /// Срок допуска истёк раньше, чем завершился обход.
+    AdmissionDeadline,
+    /// Наборы объявлены, но ни один не в формате выгрузки конфигуратора.
+    NoPlatformXmlSourceSet(Vec<ProjectSourceSet>),
+    /// Набор PlatformXml объявлен, но его корень не читается.
+    SourceRootUnreadable {
+        source_set: String,
+        path: String,
+        reason: &'static str,
+    },
+    /// Наборы отобраны, но актор их не связал.
+    ActorBindingFailed { stage: &'static str },
 }

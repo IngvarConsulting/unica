@@ -115,9 +115,9 @@ def classify(response, context):
 
 
 FORMAT_WORKSPACE = "tests/fixtures/acceptance/workspace-format"
-# A directory that is not a 1C workspace at all: no v8project.yaml and no
-# source roots. The surface reachable before a workspace exists is frozen
-# on it, because in the fixture workspace that road is never walked.
+# A directory that is not a 1C workspace at all: no v8project.yaml, no
+# autodetected source roots.  Scenarios there freeze what the surface
+# answers before any source set is admitted.
 BARE_WORKSPACE = "tests/fixtures/acceptance/workspace-bare"
 
 
@@ -315,12 +315,12 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
 
     def test_corpus_holds_the_run_free_scenario_set_uniquely_numbered(self) -> None:
         scenarios = self.corpus["scenarios"]
-        self.assertEqual(len(scenarios), 309)
-        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 341,
-            "a wire step went missing: the corpus freezes 341 steps",
+        self.assertEqual(len(scenarios), 311)
+        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 347,
+            "a wire step went missing: the corpus freezes 347 steps",
         )
         identifiers = [scenario["id"] for scenario in scenarios]
-        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 310)])
+        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 312)])
 
     def test_the_run_half_of_the_surface_stays_out_of_this_corpus(self) -> None:
         for scenario in self.corpus["scenarios"]:
