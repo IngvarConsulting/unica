@@ -414,6 +414,43 @@ impl CanonicalV13ReadService {
                 "search query must not be blank",
             );
         }
+        // Корпус выбирает, где искать, а не как: имена метаданных и текст
+        // BSL — это один вопрос над разными сводами. Умолчание оставлено
+        // текстовым, потому что таким `search` был до появления второго
+        // корпуса.
+        let corpus = match arguments.get("corpus") {
+            None | Some(Value::String(_)) => match arguments
+                .get("corpus")
+                .and_then(Value::as_str)
+                .unwrap_or("text")
+            {
+                "text" => SearchCorpus::Text,
+                "names" => SearchCorpus::Names,
+                other => {
+                    let mut refusal = error_result(
+                        None,
+                        RefusalCode::BadValue,
+                        format!("search corpus `{other}` is unknown; use `text` or `names`"),
+                    );
+                    refusal.next.push(serde_json::json!({
+                        "tool": "unica.search",
+                        "args": {"query": query, "corpus": "names"},
+                        "reason": "поиск по именам и синонимам метаданных",
+                    }));
+                    return refusal;
+                }
+            },
+            Some(_) => {
+                return error_result(
+                    None,
+                    RefusalCode::BadValue,
+                    "search corpus must be a string",
+                )
+            }
+        };
+        if corpus == SearchCorpus::Names {
+            return self.execute_search_names(invocation, query, arguments, cancellation);
+        }
         let (matcher, mode) = match arguments.get("regex") {
             None | Some(Value::Bool(false)) => (
                 super::v13_read_modes::SearchMatcher::Literal(query.to_string()),
@@ -547,6 +584,89 @@ impl CanonicalV13ReadService {
             "matches": matches,
         }));
         result.rev = combined_revision(&revisions);
+        result
+    }
+
+    /// Поиск по именам и синонимам метаданных.
+    ///
+    /// Свод берётся из того же справочника, что обслуживает разрешение
+    /// локатора, — он уже держит имена, синонимы и адреса. Наружу отдаётся
+    /// доказательство совпадения по имени: `at`, `kind`, `title` и `reason`.
+    /// Пути тут нет намеренно: `search` — частый ответ, а путь в частом
+    /// ответе зовёт читать файл мимо адреса.
+    fn execute_search_names(
+        &self,
+        invocation: &ActorBoundExecution,
+        query: &str,
+        arguments: &Map<String, Value>,
+        cancellation: &CancellationToken,
+    ) -> DomainResult {
+        let mut request = match FindRequest::new(query) {
+            Ok(request) => request,
+            Err(error) => return error_result(None, error.code(), error.to_string()),
+        };
+        if let Some(kind) = arguments.get("kind") {
+            let Some(kind) = kind.as_str() else {
+                return error_result(None, RefusalCode::BadValue, "search kind must be a string");
+            };
+            request = match request.with_kind(kind) {
+                Ok(request) => request,
+                Err(error) => return error_result(None, error.code(), error.to_string()),
+            };
+        }
+        if let Some(limit) = arguments.get("limit") {
+            let Some(limit) = bounded_usize(limit) else {
+                return error_result(
+                    None,
+                    RefusalCode::BadValue,
+                    "search limit must be a positive integer",
+                );
+            };
+            request = match request.with_limit(limit) {
+                Ok(request) => request,
+                Err(error) => return error_result(None, error.code(), error.to_string()),
+            };
+        }
+        let sources = match invocation.layout_sources() {
+            Ok(sources) => sources,
+            Err(error) => return error_result(None, RefusalCode::ProviderUnavailable, error),
+        };
+        let Some(deadline) = sources.first().map(|source| source.deadline()) else {
+            return error_result(
+                None,
+                RefusalCode::ProviderUnavailable,
+                "no admitted source set is available for a name search",
+            );
+        };
+        let layout = sources
+            .iter()
+            .map(|source| LayoutFindSource::new(source.name(), source.kind(), source.root()))
+            .collect::<Vec<_>>();
+        let directory = match self.find_builder.build(&layout, deadline, cancellation) {
+            Ok(directory) => directory,
+            Err(error) => return error_result(None, error.code(), error.to_string()),
+        };
+        let found = directory.find(request);
+        let matches: Vec<Value> = found
+            .candidates()
+            .iter()
+            .map(|candidate| {
+                serde_json::json!({
+                    "at": candidate.at(),
+                    "kind": candidate.kind(),
+                    "title": candidate.title(),
+                    "reason": candidate.reason(),
+                })
+            })
+            .collect();
+        let mut result = DomainResult::success("name search completed");
+        result.data = Some(serde_json::json!({
+            "mode": "names",
+            "matches": matches,
+            // Совпадение по близости — догадка, и она названа: читатель
+            // обязан отличать «нашлось» от «похоже на».
+            "approximate": found.is_nearest(),
+        }));
         result
     }
 
@@ -1202,6 +1322,19 @@ fn with_node_dictionary(mut result: DomainResult, at: &str) -> DomainResult {
         "reason": "какие операции применимы к этому узлу",
     }));
     result
+}
+
+/// Свод, по которому идёт поиск.
+///
+/// Имя метаданного объекта и текст модуля — один вопрос «что нашлось и где»,
+/// различается доказательство совпадения: у имени это `at`, `kind`, `title`,
+/// у текста — `scope`, `line`, `column`, `snippet`. Физического пути нет ни у
+/// того, ни у другого: путь в частом ответе приглашает обойти адресное
+/// пространство, ради которого логический слой и существует.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SearchCorpus {
+    Text,
+    Names,
 }
 
 fn error_result(at: Option<String>, code: RefusalCode, message: impl Into<String>) -> DomainResult {

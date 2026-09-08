@@ -233,10 +233,12 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                 },
                 V13ToolContract {
                     name: "search",
-                    description: "Search BSL content or symbols, optionally under one logical subtree.",
+                    description: "Search one corpus for a query: BSL module text, or the names and synonyms of metadata objects. Optionally under one logical subtree.",
                     input_schema: schema(
                         json!({
-                            "query": {"type": "string", "description": "Literal BSL text or symbol to search for."},
+                            "query": {"type": "string", "description": "Literal BSL text, symbol, or metadata name to search for."},
+                            "corpus": {"type": "string", "enum": ["text", "names"], "description": "Where to search: `text` matches BSL module content and answers scope, line, column and snippet; `names` matches metadata names and synonyms and answers at, kind and title. Defaults to `text`.", "default": "text"},
+                            "kind": {"type": "string", "description": "`names` corpus only: narrow the search to one logical node kind."},
                             "scope": logical_subtree_address(),
                             "regex": {"type": "boolean", "description": "Request regex matching; currently only false is implemented.", "default": false},
                             "limit": limit("Maximum matches to return."),
@@ -524,7 +526,7 @@ mod tests {
             &catalog.tools,
             "search",
             json!(["query"]),
-            &["query", "scope", "regex", "limit"],
+            &["query", "corpus", "kind", "scope", "regex", "limit"],
         );
         assert_schema(&catalog.tools, "check", json!([]), &["at"]);
         assert_schema(
