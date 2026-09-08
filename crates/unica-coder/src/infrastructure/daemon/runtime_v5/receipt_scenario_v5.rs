@@ -2046,12 +2046,10 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                     &control,
                     &known_keys,
                 )?;
-                let daemon_state = DaemonStateDirectory::open(state.path(), &identity)?;
-                let receipts = daemon_state.create_private_retained_subdirectory("receipts")?;
-                inject_receipt_identity_collision_for_scenario(
-                    receipts,
+                corrupt_receipt_identity_index(
+                    state.path(),
+                    &identity,
                     matches!(index, ScenarioIdentityIndex::InvocationId),
-                    Instant::now() + SCENARIO_OPERATION_TIMEOUT,
                 )?;
                 corrupted_identity_snapshot = Some(snapshot);
             }
@@ -2934,21 +2932,13 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                                 acknowledge_key.clone(),
                                 terminal_digest,
                             )?,
-                            Some(actor) => match acknowledge_direct_for_scenario(
+                            Some(actor) => acknowledge_on_retained_actor(
                                 actor,
                                 acknowledge_key.clone(),
                                 terminal_digest,
                                 clock.now_epoch_millis(),
-                                Instant::now() + SCENARIO_OPERATION_TIMEOUT,
                                 &telemetry,
-                            ) {
-                                Ok(receipt) => V5ServerResponse::InvocationAcknowledged {
-                                    acknowledgement: V5AcknowledgedReceipt::from_receipt(&receipt),
-                                },
-                                Err(error) => V5ServerResponse::Error {
-                                    code: daemon_error_code(&error),
-                                },
-                            },
+                            ),
                             None => {
                                 // Production acknowledges against a daemon that is
                                 // already up; the scenario has to start one for the
@@ -3198,24 +3188,14 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                             )?,
                         );
                         pending.response_projected = true;
-                        // A terminal staged onto the handoff while its owner is
-                        // parked between commit and store create is another owner's
-                        // write, not this attempt's: the scenario plays that owner.
                         if let Some(handoff) = held_handoff {
-                            if control.has_precomputed_terminal() {
-                                let configured_terminal =
-                                    control.configured_precomputed_terminal()?;
-                                let staged = stage_bound_handoff_terminal_for_scenario(
-                                    &pending.actor,
-                                    handoff,
-                                    clock.now_epoch_millis(),
-                                    configured_terminal,
-                                    Instant::now() + SCENARIO_BULK_SNAPSHOT_TIMEOUT,
-                                    &telemetry,
-                                )
-                                .map_err(|error| format!("stage cutoff Task terminal: {error}"))?;
-                                control.record_staged_terminal_preparation(&staged)?;
-                            }
+                            stage_terminal_as_second_owner(
+                                &pending.actor,
+                                handoff,
+                                clock.now_epoch_millis(),
+                                &control,
+                                &telemetry,
+                            )?;
                         }
                     }
                 }
@@ -4096,17 +4076,12 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                 }
             }
             ReceiptScenarioAction::RotateReceiptSegments => {
-                let deadline = Instant::now() + SCENARIO_BULK_OPERATION_TIMEOUT;
-                match &live_actor {
-                    Some(actor) => {
-                        actor
-                            .rotate_generation_for_test(deadline)
-                            .map_err(|error| {
-                                format!("rotate receipt retention generation: {error}")
-                            })?;
-                    }
-                    None => rotate_receipt_generation(state.path(), &identity, deadline)?,
-                }
+                rotate_receipt_generation(
+                    state.path(),
+                    &identity,
+                    live_actor.as_ref(),
+                    Instant::now() + SCENARIO_BULK_OPERATION_TIMEOUT,
+                )?;
             }
             ReceiptScenarioAction::JoinOperation { label } => {
                 if spawn_submit_labels.remove(&label) {
@@ -5426,15 +5401,98 @@ fn staged_terminal_publication(
     })
 }
 
-fn rotate_receipt_generation(
+/// Stages a terminal onto a handoff whose owner is parked between the handoff
+/// commit and the Task store create. This is a *second* owner's write — the
+/// interleaving the fixture exists to produce — not a transition performed on
+/// behalf of the attempt under observation. A no-op unless the provider fixture
+/// carries a precomputed terminal.
+fn stage_terminal_as_second_owner(
+    actor: &ReceiptLedgerActor,
+    handoff: TaskHandoffActorBoundReceipt,
+    epoch_ms: u64,
+    control: &ReceiptScenarioControl,
+    telemetry: &V5ReceiptRuntimeTelemetry,
+) -> Result<(), String> {
+    if !control.has_precomputed_terminal() {
+        return Ok(());
+    }
+    let terminal = control.configured_precomputed_terminal()?;
+    let staged = stage_bound_handoff_terminal_for_scenario(
+        actor,
+        handoff,
+        epoch_ms,
+        terminal,
+        Instant::now() + SCENARIO_BULK_SNAPSHOT_TIMEOUT,
+        telemetry,
+    )
+    .map_err(|error| format!("stage cutoff Task terminal: {error}"))?;
+    control.record_staged_terminal_preparation(&staged)
+}
+
+/// Acknowledges on the retained actor the scenario itself holds. No listener can
+/// exist while the harness owns the sole writer, so this actor is the only owner
+/// there is; the reply mirrors what the daemon's handler would have sent.
+fn acknowledge_on_retained_actor(
+    actor: &ReceiptLedgerActor,
+    key: ReceiptKey,
+    terminal_digest: TerminalDigest,
+    epoch_ms: u64,
+    telemetry: &V5ReceiptRuntimeTelemetry,
+) -> V5ServerResponse {
+    match acknowledge_direct_for_scenario(
+        actor,
+        key,
+        terminal_digest,
+        epoch_ms,
+        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+        telemetry,
+    ) {
+        Ok(receipt) => V5ServerResponse::InvocationAcknowledged {
+            acknowledgement: V5AcknowledgedReceipt::from_receipt(&receipt),
+        },
+        Err(error) => V5ServerResponse::Error {
+            code: daemon_error_code(&error),
+        },
+    }
+}
+
+/// Corrupts a durable identity index behind the daemon's back — damage no owner
+/// of a healthy store would write, which is the point of the fixture.
+fn corrupt_receipt_identity_index(
     state_root: &Path,
     identity: &CoreIdentity,
-    deadline: Instant,
+    collide_invocation_id: bool,
 ) -> Result<(), String> {
     let state = DaemonStateDirectory::open(state_root, identity)?;
     let receipts = state.create_private_retained_subdirectory("receipts")?;
-    let actor =
-        open_receipt_actor_for_scenario(receipts, "open receipt retention generation owner")?;
+    inject_receipt_identity_collision_for_scenario(
+        receipts,
+        collide_invocation_id,
+        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+    )
+}
+
+/// Rotates the retained receipt generation as the store's owner: the live actor
+/// when the scenario holds one, otherwise an owner opened for this rotation.
+fn rotate_receipt_generation(
+    state_root: &Path,
+    identity: &CoreIdentity,
+    live_actor: Option<&ReceiptLedgerActor>,
+    deadline: Instant,
+) -> Result<(), String> {
+    let opened;
+    let actor = match live_actor {
+        Some(actor) => actor,
+        None => {
+            let state = DaemonStateDirectory::open(state_root, identity)?;
+            let receipts = state.create_private_retained_subdirectory("receipts")?;
+            opened = open_receipt_actor_for_scenario(
+                receipts,
+                "open receipt retention generation owner",
+            )?;
+            &opened
+        }
+    };
     actor
         .rotate_generation_for_test(deadline)
         .map(|_| ())
