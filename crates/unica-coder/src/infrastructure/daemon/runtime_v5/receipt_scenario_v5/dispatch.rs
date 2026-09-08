@@ -372,21 +372,12 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                 drop(projection);
             }
             ReceiptScenarioAction::InjectPersistedIdentityCollision { index } => {
-                let daemon_state = DaemonStateDirectory::open(state.path(), &identity)?;
-                let receipts = daemon_state.create_private_retained_subdirectory("receipts")?;
-                let actor = open_receipt_actor_for_scenario(
-                    receipts,
-                    "open identity-collision fixture store",
+                seed_identity_collision_receipt(
+                    state.path(),
+                    &identity,
+                    exact_key.clone(),
+                    clock.now_epoch_millis(),
                 )?;
-                actor
-                    .reserve(
-                        exact_key.clone(),
-                        OriginalCutoffDescriptor::new(clock.now_epoch_millis(), 7_000)
-                            .map_err(|error| format!("construct collision cutoff: {error}"))?,
-                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
-                    )
-                    .map_err(|error| format!("seed identity-collision receipt: {error}"))?;
-                drop(actor);
                 push_known_key(&mut known_keys, exact_key.clone());
                 let snapshot = snapshot_from_state(
                     state.path(),
@@ -958,16 +949,13 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                 if let ScenarioRequest::Mismatch(field) = request {
                     let mismatch_key =
                         scenario_mismatch_key(&exact_key, field, &mismatched_arguments_key)?;
-                    let receipts = DaemonStateDirectory::open(state.path(), &identity)?
-                        .create_private_retained_subdirectory("receipts")?;
-                    let actor =
-                        open_receipt_actor_for_scenario(receipts, "open mismatch receipt owner")?;
-                    let outcome = actor.reserve(
+                    let outcome = attempt_mismatched_reserve(
+                        state.path(),
+                        &identity,
                         mismatch_key,
-                        OriginalCutoffDescriptor::new(clock.now_epoch_millis(), response_budget_ms)
-                            .map_err(|error| format!("construct mismatch cutoff: {error}"))?,
-                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
-                    );
+                        clock.now_epoch_millis(),
+                        response_budget_ms,
+                    )?;
                     let response = match outcome {
                         Err(error) => V5ServerResponse::Error {
                             code: daemon_error_code(&error),

@@ -25,7 +25,7 @@ use crate::application::receipt_ledger::{
     AcknowledgedTombstoneReceipt, CoreIdentityDigest, HandoffTerminalStage,
     OriginalCutoffDescriptor, ProvenTaskLinkCapacity, ReceiptKey, ReceiptKeyDigest,
     ReceiptLedgerError, ReceiptState, ReceiptTaskProjection, ReceiptTerminalOutcome,
-    RequestIdentity, ReservedPhase, TaskBoundReceipt, TaskHandoffActorBoundReceipt,
+    RequestIdentity, ReserveOutcome, ReservedPhase, TaskBoundReceipt, TaskHandoffActorBoundReceipt,
     TaskLinkIdentity, TaskLinkReference, TaskRetirementPendingReceipt, TaskTerminalBoundReceipt,
     TaskTerminalReceiptBackedReceipt, TerminalDigest, V5CanonicalTerminal, V5ToolIdentity,
     DIRECT_TERMINAL_RETENTION_MS,
@@ -1049,6 +1049,53 @@ fn acknowledge_on_retained_actor(
             code: daemon_error_code(&error),
         },
     }
+}
+
+/// Seeds the reservation whose identity index the collision fixture then
+/// corrupts. A fixture owner: it opens its own actor, writes, and releases the
+/// store before the scenario's daemon needs it.
+fn seed_identity_collision_receipt(
+    state_root: &Path,
+    identity: &CoreIdentity,
+    key: ReceiptKey,
+    epoch_ms: u64,
+) -> Result<(), String> {
+    let state = DaemonStateDirectory::open(state_root, identity)?;
+    let receipts = state.create_private_retained_subdirectory("receipts")?;
+    let actor = open_receipt_actor_for_scenario(receipts, "open identity-collision fixture store")?;
+    let outcome = actor.reserve(
+        key,
+        OriginalCutoffDescriptor::new(epoch_ms, 7_000)
+            .map_err(|error| format!("construct collision cutoff: {error}"))?,
+        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+    );
+    drop(actor);
+    outcome
+        .map(|_| ())
+        .map_err(|error| format!("seed identity-collision receipt: {error}"))
+}
+
+/// Offers a mismatched identity to the ledger and hands back what it answered.
+/// The point of the call is that the write is refused: a key that is not the
+/// exact one must not mutate anything, and the caller asserts exactly that.
+fn attempt_mismatched_reserve(
+    state_root: &Path,
+    identity: &CoreIdentity,
+    key: ReceiptKey,
+    epoch_ms: u64,
+    response_budget_ms: u64,
+) -> Result<Result<ReserveOutcome, ReceiptLedgerError>, String> {
+    let state = DaemonStateDirectory::open(state_root, identity)?;
+    let receipts = state.create_private_retained_subdirectory("receipts")?;
+    let actor = open_receipt_actor_for_scenario(receipts, "open mismatch receipt owner")?;
+    let outcome = actor.reserve(
+        key,
+        OriginalCutoffDescriptor::new(epoch_ms, response_budget_ms)
+            .map_err(|error| format!("construct mismatch cutoff: {error}"))?,
+        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+    );
+    drop(actor);
+    Ok(outcome)
 }
 
 /// Corrupts a durable identity index behind the daemon's back — damage no owner

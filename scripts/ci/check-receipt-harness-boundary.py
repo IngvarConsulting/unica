@@ -1,27 +1,31 @@
 #!/usr/bin/env python3
 """Бегунок контракта ReceiptLedger наблюдает, а не продвигает.
 
-Сценарный бегунок (`receipt_scenario_v5.rs`) — обвязка контракта, а не второй
-рантайм. Диспетчер действий обязан только наблюдать: durable-переходы
-квитанции делает production-рантайм, к которому бегунок обращается по проводу.
+Сценарный бегунок — обвязка контракта, а не второй рантайм. Диспетчер действий
+обязан только наблюдать: durable-переходы квитанции делает production-рантайм,
+к которому бегунок обращается по проводу.
 
 Писать бегунку разрешено там, где он играет **отдельного владельца**: засев
-состояния перед операцией, генератор нагрузки, порча индекса, поворот
-поколения, постановка терминала вторым владельцем поверх припаркованной
-попытки. Каждый такой писатель живёт в отдельной функции, чьё имя называет
-эту роль, и перечислен в описи ниже. Ни один переход не делается «за» ту
-попытку, которую тест наблюдает.
+состояния перед операцией, генератор нагрузки, воротные пробы на живом
+рантайме, порча индекса, поворот поколения, постановка терминала вторым
+владельцем поверх припаркованной попытки. Каждый такой писатель живёт в
+отдельной функции, чьё имя называет эту роль, и перечислен в описи ниже. Ни
+один переход не делается «за» ту попытку, которую тест наблюдает.
 
-Страж проверяет три вещи:
+Страж проверяет:
 
 1. в теле диспетчера действий нет ни одного писателя;
-2. писатели встречаются только у функций из описи;
+2. писатели встречаются только у функций из описи «владелец → переход»;
 3. бегунок не называет `ReceiptLedgerStore` и `ReceiptLedgerPort` — дверь к
-   хранилищу одна, актор.
+   хранилищу одна, актор;
+4. каждый `.rs` обвязки назван: он либо читается, либо освобождён с причиной.
+   Незнакомый файл роняет стража — классифицировать его должен человек.
 
-Обвязка разложена по файлам, и каждый `.rs` рядом с ней обязан быть назван:
-либо это файл-водитель (проверяется), либо явно освобождённый слой с причиной.
-Незнакомый файл роняет стража — классифицировать его должен человек.
+Владельца определяет **лексическая область**, а не отступ: методы внутри
+`impl` считаются своими именами, иначе метод унаследовал бы владельца от
+предыдущей функции верхнего уровня и пронёс бы запись мимо описи. Объявление
+`fn имя(` вызовом не считается — иначе определение обёртки-писателя падало бы
+как её вызов.
 """
 
 from __future__ import annotations
@@ -37,31 +41,42 @@ HARNESS_ROOT = Path(
 HARNESS_DIR = Path(
     "crates/unica-coder/src/infrastructure/daemon/runtime_v5/receipt_scenario_v5"
 )
-# Файлы-водители: их и проверяем. Новый водитель добавляется сюда осознанно.
-DRIVER_FILES = ("control.rs", "dispatch.rs", "wire.rs")
-# Освобождённые слои — с причиной, а не молча.
-EXEMPT_FILES = {
-    "scenario_hooks.rs": "слой крючков: здесь и живут обёртки-писатели и дверь к актору",
-    "scenario_probes.rs": "пробы рантайма, а не действия сценария",
-    "tests.rs": "юнит-тесты хранилища, а не обвязка",
-}
+# Читаемые файлы обвязки. Новый файл добавляется сюда осознанно.
+SCANNED_FILES = (
+    "control.rs",
+    "dispatch.rs",
+    "scenario_hooks.rs",
+    "scenario_probes.rs",
+    "wire.rs",
+)
+# Освобождённые файлы — с причиной, а не молча.
+EXEMPT_FILES = {"tests.rs": "юнит-тесты хранилища, а не обвязка"}
 DISPATCHER = "run_supported_receipt_scenario_for_test"
 
-# Durable-переходы квитанции: команды актора и обёртки бегунка над ними.
+# Durable-переходы квитанции: пишущая поверхность актора ledger (одиночная и
+# пакетная) и обёртки бегунка над ней. Список закрытый: неизвестное имя не
+# «разрешено по умолчанию», оно просто не считается записью, поэтому добавлять
+# сюда новую команду актора обязан тот, кто её заводит. Пропущенная команда
+# уже стоила стражу дыры — `reserve` не был назван, и диспетчер писал мимо.
 WRITERS = (
     "acknowledge_direct",
     "acknowledge_direct_batch",
     "acknowledge_direct_for_scenario",
     "begin_bound_task_handoff",
     "begin_bound_task_handoff_for_scenario",
+    "bind_reserved_actor_batch",
     "inject_receipt_identity_collision_for_scenario",
+    "mark_reserved_begun_batch",
     "promise_task_unbound",
     "promise_task_unbound_for_scenario",
     "publish_direct_terminal",
+    "publish_direct_terminal_batch",
     "publish_direct_terminal_for_scenario",
     "publish_receipt_backed_task_terminal",
     "publish_receipt_backed_task_terminal_for_scenario",
     "request_cancel_or_reserve",
+    "reserve",
+    "reserve_batch",
     "rotate_generation_for_test",
     "stage_bound_handoff_terminal_for_scenario",
     "stage_bound_task_handoff_terminal",
@@ -72,8 +87,8 @@ WRITERS = (
 # запись здесь — это заявление «бегунок играет такого-то владельца», и она
 # должна пройти ревью, а не появиться незаметно внутри диспетчера.
 OWNERS: dict[str, frozenset[str]] = {
-    # Засев durable-состояния перед операцией: живой рантайм доводит квитанцию
-    # до нужной фазы, потом отпускает хранилище владельцу операции.
+    # --- засев durable-состояния перед операцией: живой рантайм доводит
+    # квитанцию до нужной фазы, потом отпускает хранилище владельцу операции.
     "seed_receipt_state": frozenset(
         {
             "acknowledge_direct",
@@ -81,48 +96,105 @@ OWNERS: dict[str, frozenset[str]] = {
             "promise_task_unbound",
             "publish_direct_terminal",
             "request_cancel_or_reserve",
+            "reserve",
             "stage_bound_handoff_terminal_for_scenario",
         }
     ),
-    "seed_staged_cross_store_terminal": frozenset({"begin_bound_task_handoff"}),
-    "seed_direct_probe_terminal": frozenset({"publish_direct_terminal"}),
-    # Генератор нагрузки: тысячи вызовов через пакетные входы живого рантайма.
-    "run_direct_load": frozenset(
-        {"acknowledge_direct_batch", "submit_direct_batch_for_load"}
+    "seed_staged_cross_store_terminal": frozenset({"begin_bound_task_handoff", "reserve"}),
+    "seed_direct_probe_terminal": frozenset({"publish_direct_terminal", "reserve"}),
+    "seed_identity_collision_receipt": frozenset({"reserve"}),
+    # Запись, которую ledger обязан отвергнуть: ключ не тот, и вызов есть
+    # доказательство отказа.
+    "attempt_mismatched_reserve": frozenset({"reserve"}),
+    # --- генератор нагрузки: тысячи вызовов через пакетные входы рантайма.
+    "run_direct_load": frozenset({"acknowledge_direct_batch", "submit_direct_batch_for_load"}),
+    "submit_direct_batch_for_load": frozenset(
+        {
+            "bind_reserved_actor_batch",
+            "mark_reserved_begun_batch",
+            "publish_direct_terminal_batch",
+            "reserve_batch",
+        }
     ),
-    # Ретенированный актор без демона: слушателя нет, владелец один.
+    # --- воротные пробы на живом рантайме: операция под воротами доводит
+    # собственную попытку, а не чужую.
+    "attempt_task_store_bind_under_gate_for_test": frozenset(
+        {"begin_bound_task_handoff", "publish_receipt_backed_task_terminal"}
+    ),
+    "bind_task_under_gate_for_test": frozenset({"begin_bound_task_handoff"}),
+    "cancel_under_gate_for_test": frozenset({"publish_direct_terminal"}),
+    "continue_receipt_owned_attempt_for_test": frozenset(
+        {"publish_receipt_backed_task_terminal"}
+    ),
+    "stage_bound_handoff_terminal_for_test": frozenset({"stage_bound_task_handoff_terminal"}),
+    # --- засев пулов ёмкости: тысячи строк мимо провода, но своим рантаймом.
+    "seed_cancel_reserved_pool_entry_for_test": frozenset({"request_cancel_or_reserve"}),
+    "seed_reserved_pool_entry_for_test": frozenset({"reserve"}),
+    "seed_receipt_backed_terminal_pool_entry_for_test": frozenset(
+        {"promise_task_unbound", "publish_receipt_backed_task_terminal", "reserve"}
+    ),
+    # --- обёртки слоя крючков: единственная дверь бегунка к командам актора.
+    "acknowledge_direct_for_scenario": frozenset({"acknowledge_direct"}),
+    "stage_bound_handoff_terminal_for_scenario": frozenset(
+        {"stage_bound_task_handoff_terminal"}
+    ),
+    # --- прочие владельцы.
     "acknowledge_on_retained_actor": frozenset({"acknowledge_direct_for_scenario"}),
-    # Порча индекса — то, чего не пишет ни один здоровый владелец.
     "corrupt_receipt_identity_index": frozenset(
         {"inject_receipt_identity_collision_for_scenario"}
     ),
     "rotate_receipt_generation": frozenset({"rotate_generation_for_test"}),
     # Второй владелец поверх попытки, припаркованной между коммитом handoff и
     # созданием Task: именно это чередование и воспроизводит фикстура.
-    "stage_terminal_as_second_owner": frozenset(
-        {"stage_bound_handoff_terminal_for_scenario"}
-    ),
+    "stage_terminal_as_second_owner": frozenset({"stage_bound_handoff_terminal_for_scenario"}),
 }
 
 FORBIDDEN_TYPES = ("ReceiptLedgerStore", "ReceiptLedgerPort")
 
-TOP_LEVEL_FN = re.compile(
-    r"^(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z0-9_]+)"
+# Дверь к хранилищу мимо актора — тоже опись, а не освобождённый файл. Эти
+# фикстуры открывают store до того, как актор существует: одна поднимает
+# самого актора, три сеют пулы и порчу пакетами, которых у актора нет.
+STORE_OPENERS = frozenset(
+    {
+        "open_receipt_actor_for_scenario",
+        "inject_receipt_identity_collision_for_scenario",
+        "seed_receipt_backed_task_terminal_for_scenario",
+        "seed_receipt_tombstones_for_scenario",
+    }
 )
-WRITER_CALL = re.compile(
-    r"\b(" + "|".join(sorted(WRITERS, key=len, reverse=True)) + r")\s*\("
+
+DECLARATION = re.compile(
+    r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:(?:async|const|unsafe|extern)\s+)*"
+    r"fn\s+([A-Za-z0-9_]+)"
 )
+WRITER_CALL = re.compile(r"\b(" + "|".join(sorted(WRITERS, key=len, reverse=True)) + r")\s*\(")
 FORBIDDEN_TYPE = re.compile(r"\b(" + "|".join(FORBIDDEN_TYPES) + r")\b")
 
 
 def offenders(path: Path, source: str) -> list[str]:
+    """Владельцы записей в одном файле обвязки.
+
+    Область функции держится стеком «имя → глубина фигурных скобок на момент
+    объявления». Так метод внутри `impl` отвечает за себя, а не наследует
+    владельца от предыдущей функции верхнего уровня.
+    """
     found: list[str] = []
-    enclosing = "<file>"
+    scopes: list[tuple[str, int]] = []
+    pending: tuple[str, int] | None = None
+    depth = 0
+    in_use = False
+
     for index, line in enumerate(source.split("\n"), start=1):
-        match = TOP_LEVEL_FN.match(line)
-        if match:
-            enclosing = match.group(1)
+        declaration = DECLARATION.match(line)
+        declared = declaration.group(1) if declaration else None
+        enclosing = scopes[-1][0] if scopes else "<file>"
+        if re.match(r"^\s*(?:pub(?:\([^)]*\))?\s+)?use\s", line):
+            in_use = True
+
         for writer in WRITER_CALL.findall(line):
+            # Объявление функции — не её вызов.
+            if writer == declared:
+                continue
             if enclosing == DISPATCHER:
                 found.append(
                     f"{path.as_posix()}:{index}: the action dispatcher writes "
@@ -133,32 +205,43 @@ def offenders(path: Path, source: str) -> list[str]:
                     f"{path.as_posix()}:{index}: `{enclosing}` writes `{writer}`, "
                     f"which the owner inventory does not allow"
                 )
-        for forbidden in FORBIDDEN_TYPE.findall(line):
-            found.append(
-                f"{path.as_posix()}:{index}: `{forbidden}` bypasses the actor"
-            )
+        # Имя в `use` ничего не обходит: важны места, где store открывают.
+        if not in_use and enclosing not in STORE_OPENERS:
+            for forbidden in FORBIDDEN_TYPE.findall(line):
+                found.append(f"{path.as_posix()}:{index}: `{forbidden}` bypasses the actor")
+
+        if in_use and ";" in line:
+            in_use = False
+        if declared is not None:
+            pending = (declared, depth)
+        depth += line.count("{") - line.count("}")
+        if pending is not None and depth > pending[1]:
+            scopes.append(pending)
+            pending = None
+        while scopes and depth <= scopes[-1][1]:
+            scopes.pop()
+
     return found
 
 
 def scan(root: Path) -> list[str]:
-    drivers = [HARNESS_ROOT] + [HARNESS_DIR / name for name in DRIVER_FILES]
+    sources = [HARNESS_ROOT] + [HARNESS_DIR / name for name in SCANNED_FILES]
     found: list[str] = []
-    for driver in drivers:
-        path = root / driver
+    for source in sources:
+        path = root / source
         if not path.is_file():
-            found.append(f"{driver.as_posix()}: harness source is missing")
+            found.append(f"{source.as_posix()}: harness source is missing")
             continue
-        found.extend(offenders(driver, path.read_text(encoding="utf-8")))
+        found.extend(offenders(source, path.read_text(encoding="utf-8")))
 
-    # Каждый файл обвязки обязан быть назван: водитель или освобождённый слой.
     directory = root / HARNESS_DIR
     if directory.is_dir():
-        known = set(DRIVER_FILES) | set(EXEMPT_FILES)
+        known = set(SCANNED_FILES) | set(EXEMPT_FILES)
         for path in sorted(directory.glob("*.rs")):
             if path.name not in known:
                 found.append(
                     f"{(HARNESS_DIR / path.name).as_posix()}: unclassified harness file; "
-                    f"name it a driver or an exempt layer in the guard"
+                    f"name it a scanned source or an exempt file in the guard"
                 )
     return found
 

@@ -2,9 +2,9 @@
 
 Правило `INV.TEST.LEDGER-HARNESS-OBSERVES`: диспетчер действий сценария не
 делает durable-переходов квитанции, писатели живут только у перечисленных
-помощников-владельцев, а `ReceiptLedgerStore`/`ReceiptLedgerPort` бегунок не
-называет вовсе. Проверяется и на живом дереве, и на синтетических исходниках,
-чтобы страж падал ровно на том, что запрещено.
+помощников-владельцев, а `ReceiptLedgerStore`/`ReceiptLedgerPort` открывают
+лишь названные фикстуры. Проверяется и на живом дереве, и на синтетических
+исходниках, чтобы страж падал ровно на том, что запрещено.
 """
 
 from __future__ import annotations
@@ -23,18 +23,24 @@ HARNESS_ROOT = Path(
 HARNESS_DIR = Path(
     "crates/unica-coder/src/infrastructure/daemon/runtime_v5/receipt_scenario_v5"
 )
-DRIVER_FILES = ("control.rs", "dispatch.rs", "wire.rs")
+SCANNED_FILES = (
+    "control.rs",
+    "dispatch.rs",
+    "scenario_hooks.rs",
+    "scenario_probes.rs",
+    "wire.rs",
+)
 
 
-def write_harness(root: Path, source: str, drivers: dict[str, str] | None = None) -> None:
-    """Кладёт корень обвязки и её водителей: страж требует их все."""
+def write_harness(root: Path, source: str = "", scanned: dict[str, str] | None = None) -> None:
+    """Кладёт корень обвязки и все читаемые файлы: страж требует их все."""
     path = root / HARNESS_ROOT
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(source, encoding="utf-8")
     directory = root / HARNESS_DIR
     directory.mkdir(parents=True, exist_ok=True)
-    for name in DRIVER_FILES:
-        (directory / name).write_text((drivers or {}).get(name, ""), encoding="utf-8")
+    for name in SCANNED_FILES:
+        (directory / name).write_text((scanned or {}).get(name, ""), encoding="utf-8")
 
 
 def run_guard(root: Path) -> subprocess.CompletedProcess[str]:
@@ -63,10 +69,12 @@ class ReceiptHarnessBoundaryTests(unittest.TestCase):
                 "}\n"
                 "fn run_direct_load() {\n"
                 "    runtime.submit_direct_batch_for_load(work, deadline)?;\n"
-                "}\n"
-                "fn run_supported_receipt_scenario_for_test() {\n"
-                "    let observed = actor.recover(key, deadline)?;\n"
                 "}\n",
+                {
+                    "dispatch.rs": "fn run_supported_receipt_scenario_for_test() {\n"
+                    "    let observed = actor.recover(key, deadline)?;\n"
+                    "}\n"
+                },
             )
             result = run_guard(root)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -77,8 +85,7 @@ class ReceiptHarnessBoundaryTests(unittest.TestCase):
             root = Path(directory)
             write_harness(
                 root,
-                "",
-                {
+                scanned={
                     "dispatch.rs": "fn run_supported_receipt_scenario_for_test() {\n"
                     "    actor.promise_task_unbound(key, epoch_ms, deadline)?;\n"
                     "}\n"
@@ -87,6 +94,104 @@ class ReceiptHarnessBoundaryTests(unittest.TestCase):
             result = run_guard(root)
             self.assertEqual(result.returncode, 1, result.stdout)
             self.assertIn("the action dispatcher writes", result.stdout)
+
+    def test_a_batch_writer_in_the_dispatcher_fails(self) -> None:
+        """Пакетные команды актора — тоже записи.
+
+        Это была настоящая дыра: `reserve` и пакетные команды не значились
+        писателями, и диспетчер писал мимо описи.
+        """
+        for writer in (
+            "reserve",
+            "reserve_batch",
+            "bind_reserved_actor_batch",
+            "mark_reserved_begun_batch",
+            "publish_direct_terminal_batch",
+        ):
+            with self.subTest(writer=writer), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                write_harness(
+                    root,
+                    scanned={
+                        "dispatch.rs": "fn run_supported_receipt_scenario_for_test() {\n"
+                        f"    actor.{writer}(key, deadline)?;\n"
+                        "}\n"
+                    },
+                )
+                result = run_guard(root)
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn("the action dispatcher writes", result.stdout)
+
+    def test_an_indented_method_does_not_inherit_the_previous_owner(self) -> None:
+        """Метод в `impl` отвечает за себя, а не за соседа сверху."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_harness(
+                root,
+                "fn seed_receipt_state() {\n"
+                "    actor.promise_task_unbound(key, deadline)?;\n"
+                "}\n"
+                "impl Runtime {\n"
+                "    fn quietly_advances(&self) {\n"
+                "        self.receipt_ledger.promise_task_unbound(key, deadline)?;\n"
+                "    }\n"
+                "}\n",
+            )
+            result = run_guard(root)
+            self.assertEqual(result.returncode, 1, result.stdout)
+            self.assertIn("`quietly_advances` writes", result.stdout)
+
+    def test_a_named_probe_method_may_write_what_it_owns(self) -> None:
+        """Воротная проба на живом рантайме — владелец из описи."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_harness(
+                root,
+                scanned={
+                    "scenario_probes.rs": "impl V5ReceiptRuntime {\n"
+                    "    fn bind_task_under_gate_for_test(&self) {\n"
+                    "        self.receipt_ledger.begin_bound_task_handoff(key, deadline)?;\n"
+                    "    }\n"
+                    "}\n"
+                },
+            )
+            result = run_guard(root)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_a_sibling_module_write_is_not_missed(self) -> None:
+        """Записи в соседнем модуле проходят ту же опись, что и корень."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_harness(
+                root,
+                scanned={
+                    "scenario_probes.rs": "impl V5ReceiptRuntime {\n"
+                    "    fn unnamed_probe(&self) {\n"
+                    "        self.receipt_ledger.reserve_batch(work, deadline)?;\n"
+                    "    }\n"
+                    "}\n"
+                },
+            )
+            result = run_guard(root)
+            self.assertEqual(result.returncode, 1, result.stdout)
+            self.assertIn("`unnamed_probe` writes", result.stdout)
+
+    def test_declaring_a_writer_is_not_calling_it(self) -> None:
+        """Определение обёртки-писателя — не её вызов."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_harness(
+                root,
+                scanned={
+                    "scenario_hooks.rs": "pub(super) fn publish_direct_terminal_for_scenario(\n"
+                    "    actor: &ReceiptLedgerActor,\n"
+                    ") -> Result<(), String> {\n"
+                    "    Ok(())\n"
+                    "}\n"
+                },
+            )
+            result = run_guard(root)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_a_writer_outside_the_inventory_fails(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -115,7 +220,7 @@ class ReceiptHarnessBoundaryTests(unittest.TestCase):
             self.assertEqual(result.returncode, 1, result.stdout)
             self.assertIn("the owner inventory does not allow", result.stdout)
 
-    def test_naming_the_store_or_port_fails(self) -> None:
+    def test_only_named_fixtures_may_open_the_store(self) -> None:
         for forbidden in ("ReceiptLedgerStore", "ReceiptLedgerPort"):
             with self.subTest(kind=forbidden), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
@@ -129,29 +234,45 @@ class ReceiptHarnessBoundaryTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 1, result.stdout)
                 self.assertIn("bypasses the actor", result.stdout)
 
-    def test_exempt_layers_are_not_the_harness(self) -> None:
-        """Юнит-тесты и слой крючков освобождены: им актор не предписан."""
+    def test_a_named_store_opener_may_open_it(self) -> None:
+        """Актора кто-то должен поднять — эта фикстура и есть дверь."""
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            write_harness(root, "")
-            exempt = {
-                "tests.rs": "fn store_unit_test() {\n"
+            write_harness(
+                root,
+                scanned={
+                    "scenario_hooks.rs": "use crate::infrastructure::receipt_ledger::{\n"
+                    "    ReceiptLedgerStore,\n"
+                    "};\n"
+                    "pub(super) fn open_receipt_actor_for_scenario() {\n"
+                    "    let store = ReceiptLedgerStore::open_retained_directory(receipts)?;\n"
+                    "    Ok(ReceiptLedgerActor::spawn(store))\n"
+                    "}\n"
+                },
+            )
+            result = run_guard(root)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_the_exempt_unit_tests_are_not_the_harness(self) -> None:
+        """Юнит-тесты хранилища освобождены: им актор не предписан."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_harness(root)
+            (root / HARNESS_DIR / "tests.rs").write_text(
+                "fn store_unit_test() {\n"
                 "    let store = ReceiptLedgerStore::open(directory)?;\n"
                 "    store.promise_task_unbound(key, epoch_ms, deadline)?;\n"
                 "}\n",
-                "scenario_hooks.rs": "pub(super) fn publish_direct_terminal_for_scenario() {}\n",
-                "scenario_probes.rs": "",
-            }
-            for name, source in exempt.items():
-                (root / HARNESS_DIR / name).write_text(source, encoding="utf-8")
+                encoding="utf-8",
+            )
             result = run_guard(root)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_an_unclassified_harness_file_fails(self) -> None:
-        """Новый файл обвязки обязан быть назван — водителем или освобождённым."""
+        """Новый файл обвязки обязан быть назван — читаемым или освобождённым."""
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            write_harness(root, "")
+            write_harness(root)
             (root / HARNESS_DIR / "seeds.rs").write_text("fn seed() {}\n", encoding="utf-8")
             result = run_guard(root)
             self.assertEqual(result.returncode, 1, result.stdout)
