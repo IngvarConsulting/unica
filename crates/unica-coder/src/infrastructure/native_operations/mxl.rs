@@ -70,15 +70,19 @@ pub(crate) struct MxlAreaInfo {
     pub(crate) area: MxlNamedArea,
     pub(crate) params: Vec<String>,
     pub(crate) details: Vec<String>,
-    pub(crate) texts: Vec<String>,
-    pub(crate) templates: Vec<String>,
+    pub(crate) content_count: usize,
+    pub(crate) content: Vec<MxlContentData>,
 }
 
 pub(crate) enum MxlCellData {
     Parameter(String, Option<String>),
     TemplateParam(String),
-    Text(String),
-    Template(String),
+    /// Непустое содержимое ячейки. Считается всегда, текст несёт только
+    /// когда его попросили: счёт нужен ветви, текст — чтению ветви.
+    Content {
+        template: bool,
+        text: Option<String>,
+    },
 }
 
 pub(crate) struct MxlValidationReporter {
@@ -217,10 +221,22 @@ pub(crate) struct MxlAreaData {
     pub(crate) drawing_id: Option<String>,
     pub(crate) params: Vec<String>,
     pub(crate) details: Vec<String>,
+    /// How many non-empty cells the area holds. Always counted, so a branch
+    /// can advertise its length without carrying the text.
+    pub(crate) content_count: usize,
     /// `null` unless `WithText` asked for cell content, which stays a genuine
-    /// content selector rather than a print-size lever.
-    pub(crate) texts: Option<Vec<String>>,
-    pub(crate) templates: Option<Vec<String>>,
+    /// content selector rather than a print-size lever. Cells keep their
+    /// reading order: for a print form the order is the meaning.
+    pub(crate) content: Option<Vec<MxlContentData>>,
+}
+
+/// One non-empty cell. `template` marks content that carries `[parameter]`
+/// placeholders, which the area also lists under `params`.
+#[derive(serde::Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MxlContentData {
+    pub(crate) template: bool,
+    pub(crate) text: String,
 }
 
 #[derive(serde::Serialize)]
@@ -228,8 +244,8 @@ pub(crate) struct MxlAreaData {
 pub(crate) struct MxlOutsideData {
     pub(crate) params: Vec<String>,
     pub(crate) details: Vec<String>,
-    pub(crate) texts: Option<Vec<String>>,
-    pub(crate) templates: Option<Vec<String>>,
+    pub(crate) content_count: usize,
+    pub(crate) content: Option<Vec<MxlContentData>>,
 }
 
 pub(crate) struct MxlInfoExecution {
@@ -323,7 +339,7 @@ pub(crate) fn parse_mxl_info_xml(
     let mut area_data = Vec::<MxlAreaInfo>::new();
     let mut covered_rows = Vec::<i64>::new();
     for area in &named_areas {
-        let (params, details, texts, templates) =
+        let (params, details, content_count, content) =
             mxl_area_cell_data(area, &row_map, doc_height, include_text);
         if area.begin_row != -1 && area.end_row != -1 {
             for row in area.begin_row..=area.end_row {
@@ -336,15 +352,15 @@ pub(crate) fn parse_mxl_info_xml(
             area: area.clone(),
             params,
             details,
-            texts,
-            templates,
+            content_count,
+            content,
         });
     }
 
     let mut outside_params = Vec::<String>::new();
     let mut outside_details = Vec::<String>::new();
-    let mut outside_texts = Vec::<String>::new();
-    let mut outside_templates = Vec::<String>::new();
+    let mut outside_content_count = 0usize;
+    let mut outside_content = Vec::<MxlContentData>::new();
     row_map.sort_by_key(|(index, _)| *index);
     for (row_index, row_node) in &row_map {
         if covered_rows.contains(row_index) {
@@ -359,8 +375,12 @@ pub(crate) fn parse_mxl_info_xml(
                     outside_params.push(value);
                 }
                 MxlCellData::TemplateParam(value) => outside_params.push(format!("{value} [tpl]")),
-                MxlCellData::Text(value) => outside_texts.push(value),
-                MxlCellData::Template(value) => outside_templates.push(value),
+                MxlCellData::Content { template, text } => {
+                    outside_content_count += 1;
+                    if let Some(text) = text {
+                        outside_content.push(MxlContentData { template, text });
+                    }
+                }
             }
         }
     }
@@ -388,8 +408,8 @@ pub(crate) fn parse_mxl_info_xml(
             drawing_id: None,
             params: item.params.clone(),
             details: item.details.clone(),
-            texts: include_text.then(|| item.texts.clone()),
-            templates: include_text.then(|| item.templates.clone()),
+            content_count: item.content_count,
+            content: include_text.then(|| item.content.clone()),
         })
         .chain(named_drawings.iter().map(|(name, drawing_id)| MxlAreaData {
             name: name.clone(),
@@ -402,8 +422,8 @@ pub(crate) fn parse_mxl_info_xml(
             drawing_id: Some(drawing_id.clone()),
             params: Vec::new(),
             details: Vec::new(),
-            texts: include_text.then(Vec::new),
-            templates: include_text.then(Vec::new),
+            content_count: 0,
+            content: include_text.then(Vec::new),
         }))
         .collect::<Vec<_>>();
 
@@ -423,8 +443,8 @@ pub(crate) fn parse_mxl_info_xml(
         outside: MxlOutsideData {
             params: outside_params,
             details: outside_details,
-            texts: include_text.then_some(outside_texts),
-            templates: include_text.then_some(outside_templates),
+            content_count: outside_content_count,
+            content: include_text.then_some(outside_content),
         },
         merge_count,
         drawing_count,
@@ -2179,11 +2199,11 @@ pub(crate) fn mxl_area_cell_data(
     row_map: &[(i64, roxmltree::Node<'_, '_>)],
     doc_height: i64,
     include_text: bool,
-) -> (Vec<String>, Vec<String>, Vec<String>, Vec<String>) {
+) -> (Vec<String>, Vec<String>, usize, Vec<MxlContentData>) {
     let mut params = Vec::new();
     let mut details = Vec::new();
-    let mut texts = Vec::new();
-    let mut templates = Vec::new();
+    let mut content_count = 0usize;
+    let mut content = Vec::new();
     let start_row = if area.begin_row == -1 {
         0
     } else {
@@ -2205,13 +2225,17 @@ pub(crate) fn mxl_area_cell_data(
                         params.push(value);
                     }
                     MxlCellData::TemplateParam(value) => params.push(format!("{value} [tpl]")),
-                    MxlCellData::Text(value) => texts.push(value),
-                    MxlCellData::Template(value) => templates.push(value),
+                    MxlCellData::Content { template, text } => {
+                        content_count += 1;
+                        if let Some(text) = text {
+                            content.push(MxlContentData { template, text });
+                        }
+                    }
                 }
             }
         }
     }
-    (params, details, texts, templates)
+    (params, details, content_count, content)
 }
 
 pub(crate) fn mxl_cell_data(
@@ -2254,16 +2278,14 @@ pub(crate) fn mxl_cell_data(
                 .unwrap_or("");
             if !content.is_empty() {
                 let placeholders = mxl_template_placeholders(content);
-                if !placeholders.is_empty() {
-                    for placeholder in placeholders {
-                        result.push(MxlCellData::TemplateParam(placeholder));
-                    }
-                    if include_text {
-                        result.push(MxlCellData::Template(content.to_string()));
-                    }
-                } else if include_text {
-                    result.push(MxlCellData::Text(content.to_string()));
+                let template = !placeholders.is_empty();
+                for placeholder in placeholders {
+                    result.push(MxlCellData::TemplateParam(placeholder));
                 }
+                result.push(MxlCellData::Content {
+                    template,
+                    text: include_text.then(|| content.to_string()),
+                });
             }
         }
     }
@@ -3338,7 +3360,7 @@ pub(crate) mod tests {
         assert_eq!(value["name"], "Печать");
         assert_eq!(value["support"], serde_json::to_value(support).unwrap());
         assert_eq!(value["rows"], 0);
-        assert!(value["outside"]["texts"].is_null());
+        assert!(value["outside"]["content"].is_null());
     }
 
     #[test]
