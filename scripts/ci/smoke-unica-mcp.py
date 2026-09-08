@@ -48,7 +48,7 @@ SOURCE_TOOL_NAMES = {
 V13_COMPATIBILITY_TOOL_NAMES = {
     "unica.view",
     "unica.apply",
-    "unica.find",
+    "unica.resolve",
     "unica.search",
     "unica.check",
     "unica.diff",

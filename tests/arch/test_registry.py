@@ -790,7 +790,7 @@ class RecordShapeTests(unittest.TestCase):
             )
         )
 
-    def test_decision_changes_names_existing_contracts_as_a_list(self) -> None:
+    def test_decision_changes_names_existing_rules_as_a_list(self) -> None:
         scalar = self.active_decision(changes="CTR.WIRE.EXAMPLE")
         missing = self.active_decision(changes=["CTR.WIRE.MISSING"])
 
@@ -802,7 +802,7 @@ class RecordShapeTests(unittest.TestCase):
             scalar_errors,
         )
         self.assertTrue(
-            any("changes cites missing contract" in error for error in missing_errors),
+            any("changes cites missing rule" in error for error in missing_errors),
             missing_errors,
         )
 

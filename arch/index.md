@@ -13,7 +13,7 @@
 | `CTR.SOURCE.REVISION-ARTIFACT-PROFILE` | контракт · product | active |  | Профиль артефактов ревизии actor-owned source set | [contracts/CTR.SOURCE.REVISION-ARTIFACT-PROFILE.md](contracts/CTR.SOURCE.REVISION-ARTIFACT-PROFILE.md) |
 | `CTR.WIRE.COMPATIBILITY-TASK-TOOLS` | контракт · product | active |  | Три compatibility-инструмента durable Task | [contracts/CTR.WIRE.COMPATIBILITY-TASK-TOOLS.md](contracts/CTR.WIRE.COMPATIBILITY-TASK-TOOLS.md) |
 | `CTR.WIRE.DAEMON-INVOCATION-PROTOCOL` | контракт · product | active |  | Внутренний daemon protocol canonical Invocation | [contracts/CTR.WIRE.DAEMON-INVOCATION-PROTOCOL.md](contracts/CTR.WIRE.DAEMON-INVOCATION-PROTOCOL.md) |
-| `CTR.WIRE.FIND-CANDIDATE-SHAPE` | контракт · product | active |  | Кандидат find несёт адрес и место объекта в раскладке, но не ревизию | [contracts/CTR.WIRE.FIND-CANDIDATE-SHAPE.md](contracts/CTR.WIRE.FIND-CANDIDATE-SHAPE.md) |
+| `CTR.WIRE.FIND-CANDIDATE-SHAPE` | контракт · product | superseded |  | Кандидат find несёт адрес и место объекта в раскладке, но не ревизию | [contracts/CTR.WIRE.FIND-CANDIDATE-SHAPE.md](contracts/CTR.WIRE.FIND-CANDIDATE-SHAPE.md) |
 | `CTR.WIRE.LIST-CACHE-FIELDS` | контракт · product | active |  | Современный list несёт cache-поля, legacy сохраняет прежнюю форму | [contracts/CTR.WIRE.LIST-CACHE-FIELDS.md](contracts/CTR.WIRE.LIST-CACHE-FIELDS.md) |
 | `CTR.WIRE.NATIVE-TASK-PROJECTION` | контракт · product | active |  | SEP-2663 projection скрытого V13 | [contracts/CTR.WIRE.NATIVE-TASK-PROJECTION.md](contracts/CTR.WIRE.NATIVE-TASK-PROJECTION.md) |
 | `CTR.WIRE.TOOL-SURFACE` | контракт · product | active |  | Package-selected поверхность содержит восемь или одиннадцать описанных инструментов | [contracts/CTR.WIRE.TOOL-SURFACE.md](contracts/CTR.WIRE.TOOL-SURFACE.md) |
@@ -105,6 +105,7 @@
 | `DEC.2026-09-08.DAEMON-V3-RETIREMENT` | решение · product | active | да | Протокол v3 снят: у daemon одна wire identity и один рантайм | [decisions/2026-09-08-daemon-v3-retirement.md](decisions/2026-09-08-daemon-v3-retirement.md) |
 | `DEC.2026-09-08.DAEMON-V5-CUTOFF-OWNER` | решение · product | superseded | да | Production-рантайм v5 сам владеет cutoff inline-исполнения | [decisions/2026-09-08-daemon-v5-cutoff-owner.md](decisions/2026-09-08-daemon-v5-cutoff-owner.md) |
 | `DEC.2026-09-08.DAEMON-V5-DEADLINE-OWNER` | решение · product | active | да | Production-рантайм v5 сам владеет cutoff на всех фазах до Begun | [decisions/2026-09-08-daemon-v5-deadline-owner.md](decisions/2026-09-08-daemon-v5-deadline-owner.md) |
+| `DEC.2026-09-08.RESOLVE-REPLACES-FIND` | решение · product | active | да | `find` снимается, приходит аварийный `resolve` | [decisions/2026-09-08-resolve-replaces-find.md](decisions/2026-09-08-resolve-replaces-find.md) |
 | `DEC.2026-09-08.ROOT-VERDICT-IN-CHECK` | решение · product | active | да | Корень отвечает так же, как узел: факты в `view`, вердикт в `check` | [decisions/2026-09-08-root-verdict-in-check.md](decisions/2026-09-08-root-verdict-in-check.md) |
 | `DEC.2026-09-08.SEARCH-NAME-CORPUS` | решение · product | active | да | Поиск выбирает свод, а не инструмент | [decisions/2026-09-08-search-name-corpus.md](decisions/2026-09-08-search-name-corpus.md) |
 | `DEC.2026-09-08.SEARCH-PROVIDER-ROLES` | решение · product | active | да | Роль называет, чем искать, и без роли поиск остаётся своим | [decisions/2026-09-08-search-provider-roles.md](decisions/2026-09-08-search-provider-roles.md) |
@@ -290,7 +291,7 @@
 | `INV.SOURCE.EXACT-ROOT-VERSIONLESS` | инвариант · product | active |  | Версионно независимые цели не получают владельца формата | [invariants/INV.SOURCE.EXACT-ROOT-VERSIONLESS.md](invariants/INV.SOURCE.EXACT-ROOT-VERSIONLESS.md) |
 | `INV.SOURCE.EXACT-VERSION` | инвариант · product | active |  | Версия самой цели старше версии окружающего набора | [invariants/INV.SOURCE.EXACT-VERSION.md](invariants/INV.SOURCE.EXACT-VERSION.md) |
 | `INV.SOURCE.EXACT-VERSION-LITERAL` | инвариант · product | active |  | Поддерживаемая версия — точный литерал | [invariants/INV.SOURCE.EXACT-VERSION-LITERAL.md](invariants/INV.SOURCE.EXACT-VERSION-LITERAL.md) |
-| `INV.SOURCE.FIND-IDENTITY-ONLY` | инвариант · product | active |  | Find — двусторонний словарь адреса и файла | [invariants/INV.SOURCE.FIND-IDENTITY-ONLY.md](invariants/INV.SOURCE.FIND-IDENTITY-ONLY.md) |
+| `INV.SOURCE.FIND-IDENTITY-ONLY` | инвариант · product | superseded |  | Find — двусторонний словарь адреса и файла | [invariants/INV.SOURCE.FIND-IDENTITY-ONLY.md](invariants/INV.SOURCE.FIND-IDENTITY-ONLY.md) |
 | `INV.SOURCE.FORMAT-PER-SET` | инвариант · product | active |  | Кодовая мутация соблюдает формат своего набора исходников | [invariants/INV.SOURCE.FORMAT-PER-SET.md](invariants/INV.SOURCE.FORMAT-PER-SET.md) |
 | `INV.SOURCE.IDEMPOTENT-ATTEMPT-METADATA` | инвариант · product | active |  | Неизменная публикация может сохранить квитанцию о попытке | [invariants/INV.SOURCE.IDEMPOTENT-ATTEMPT-METADATA.md](invariants/INV.SOURCE.IDEMPOTENT-ATTEMPT-METADATA.md) |
 | `INV.SOURCE.IDEMPOTENT-CONSUMED-SELECTOR` | инвариант · product | active |  | Поглощённый селектор закрывает повторную запись | [invariants/INV.SOURCE.IDEMPOTENT-CONSUMED-SELECTOR.md](invariants/INV.SOURCE.IDEMPOTENT-CONSUMED-SELECTOR.md) |
@@ -386,6 +387,7 @@
 | `INV.WIRE.ONE-SERVER` | инвариант · product | active |  | Плагин объявляет один публичный MCP-сервер | [invariants/INV.WIRE.ONE-SERVER.md](invariants/INV.WIRE.ONE-SERVER.md) |
 | `INV.WIRE.PINNED-FALLBACK-VERSION` | инвариант · product | active |  | Legacy fallback закреплён на 2025-11-25 | [invariants/INV.WIRE.PINNED-FALLBACK-VERSION.md](invariants/INV.WIRE.PINNED-FALLBACK-VERSION.md) |
 | `INV.WIRE.PREVIEW-IS-MUTATION-ONLY` | инвариант · product | active |  | Предпросмотр принадлежит мутации | [invariants/INV.WIRE.PREVIEW-IS-MUTATION-ONLY.md](invariants/INV.WIRE.PREVIEW-IS-MUTATION-ONLY.md) |
+| `INV.WIRE.RESOLVE-EXACT-BRIDGE` | инвариант · product | active |  | Путь живёт в одном инструменте и отвечает точно | [invariants/INV.WIRE.RESOLVE-EXACT-BRIDGE.md](invariants/INV.WIRE.RESOLVE-EXACT-BRIDGE.md) |
 | `INV.WIRE.ROOT-FACTS-AND-VERDICT` | инвариант · product | active |  | Корень не смешивает факты с вердиктом | [invariants/INV.WIRE.ROOT-FACTS-AND-VERDICT.md](invariants/INV.WIRE.ROOT-FACTS-AND-VERDICT.md) |
 | `INV.WIRE.SDK-DEPENDENCY` | инвариант · process | active |  | Зависимость от SDK принадлежит только транспортному package | [invariants/INV.WIRE.SDK-DEPENDENCY.md](invariants/INV.WIRE.SDK-DEPENDENCY.md) |
 | `INV.WIRE.SDK-INITIALIZE` | инвариант · product | active |  | Legacy initialize публикует имя, версию сборки и согласованный протокол | [invariants/INV.WIRE.SDK-INITIALIZE.md](invariants/INV.WIRE.SDK-INITIALIZE.md) |

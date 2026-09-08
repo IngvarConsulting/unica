@@ -1,9 +1,9 @@
 ---
 id: CTR.WIRE.FIND-CANDIDATE-SHAPE
-status: active
+status: superseded
 governs: product
 version: 1
-decision: DEC.2026-09-03.FIND-ADDRESS-PATH-DIRECTORY
+decision: DEC.2026-09-08.RESOLVE-REPLACES-FIND
 producer: crates/unica-coder/src/application/v13/find.rs
 consumers: [host]
 check:
@@ -21,6 +21,11 @@ scope: [wire]
 ---
 
 # Кандидат find несёт адрес и место объекта в раскладке, но не ревизию
+
+**Снят.** Инструмент `find` снят решением `DEC.2026-09-08.RESOLVE-REPLACES-FIND`:
+ранжированная половина ушла в `search`, детерминированная — в `resolve`. Форму
+ответа моста описывает `INV.WIRE.RESOLVE-EXACT-BRIDGE`. Ниже — форма, которая
+действовала до снятия.
 
 `data.candidates` содержит объекты с полями `at`, `kind`, `title`, `reason` и
 `path`. `path` — место объекта в раскладке source set относительно его корня:

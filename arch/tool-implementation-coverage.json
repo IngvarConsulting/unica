@@ -51,9 +51,9 @@
         "test": "published_replacement_of_a_retained_source_map_file_passes_the_final_gate"
       }]
     },
-    "unica.find": {
+    "unica.resolve": {
       "status": "partial",
-      "reason": "Qualified logical address candidates are implemented, while additional closed find kinds remain incomplete.",
+      "reason": "Both directions of the bridge answer exactly, and a line-based source also answers its line range; a tree-based source names the absence instead of guessing, so a caller who needs a position inside XML still searches the file itself.",
       "evidence": []
     },
     "unica.search": {

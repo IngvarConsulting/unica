@@ -1258,7 +1258,7 @@ mod tests {
             [
                 "unica.view",
                 "unica.apply",
-                "unica.find",
+                "unica.resolve",
                 "unica.search",
                 "unica.check",
                 "unica.diff",
@@ -1277,7 +1277,7 @@ mod tests {
             [
                 "unica.view",
                 "unica.apply",
-                "unica.find",
+                "unica.resolve",
                 "unica.search",
                 "unica.check",
                 "unica.diff",
@@ -2229,7 +2229,7 @@ mod tests {
         let mut expected = vec![
             "unica.view",
             "unica.apply",
-            "unica.find",
+            "unica.resolve",
             "unica.search",
             "unica.check",
             "unica.diff",

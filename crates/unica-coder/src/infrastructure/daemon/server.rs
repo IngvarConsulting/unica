@@ -686,7 +686,7 @@ pub(crate) mod actor_capacity_tests {
         match tool {
             ToolIdentity::View => V5ToolIdentity::View,
             ToolIdentity::Apply => V5ToolIdentity::Apply,
-            ToolIdentity::Find => V5ToolIdentity::Find,
+            ToolIdentity::Resolve => V5ToolIdentity::Resolve,
             ToolIdentity::Search => V5ToolIdentity::Search,
             ToolIdentity::Check => V5ToolIdentity::Check,
             ToolIdentity::Diff => V5ToolIdentity::Diff,
@@ -2296,9 +2296,21 @@ pub(crate) mod actor_capacity_tests {
             (
                 "source_kind",
                 (
-                    false,
+                    true,
                     "const fn source_kind(&self) -> SourceSetKind",
                     "self.binding.source_kind()",
+                ),
+            ),
+            // Аварийный мост строит справочник раскладки на том же корне, что
+            // читает `view`, поэтому корень стал видим соседям вместе с видом
+            // набора. Ни то, ни другое не даёт обойти учёт: это те же
+            // доказанные допуском значения.
+            (
+                "retained_root",
+                (
+                    true,
+                    "fn retained_root(&self,) -> Arc<RetainedDirectoryCapability>",
+                    "self.binding.retained_root()",
                 ),
             ),
             (
@@ -3816,9 +3828,9 @@ struct ActorLogicalReadLease {"#,
                 "props",
             ),
             (
-                ToolIdentity::Find,
-                serde_json::json!({"query": "Items"}),
-                "candidates",
+                ToolIdentity::Resolve,
+                serde_json::json!({"at": "main:Catalog.Items"}),
+                "path",
             ),
             (
                 ToolIdentity::Search,
@@ -4555,7 +4567,10 @@ struct ActorLogicalReadLease {"#,
             ToolIdentity::View,
             serde_json::json!({"at": "main:Catalog.Items"}),
         );
-        let find_request = request(ToolIdentity::Find, serde_json::json!({"query": "Items"}));
+        let find_request = request(
+            ToolIdentity::Resolve,
+            serde_json::json!({"path": "src/Catalogs/Items.xml"}),
+        );
         let view = bind(&view_request);
         let find = bind(&find_request);
         assert!(Arc::ptr_eq(view.actor_for_test(), find.actor_for_test()));
@@ -5328,8 +5343,8 @@ struct ActorLogicalReadLease {"#,
         );
 
         let find_request = InvocationRequest::new(
-            ToolIdentity::Find,
-            serde_json::json!({"query": "Items"}),
+            ToolIdentity::Resolve,
+            serde_json::json!({"path": "src/Catalogs/Items.xml"}),
             std::fs::canonicalize(workspace.path())
                 .unwrap()
                 .to_string_lossy(),

@@ -216,17 +216,22 @@ def validation_errors(found: list[Record]) -> list[str]:
                         f"{record.relative}: `changes` must be a list and not empty"
                     )
                 else:
-                    for contract_id in changed_contracts:
-                        contract = by_id.get(contract_id)
-                        if contract is None:
+                    # `changes` называет опубликованное правило, которое это
+                    # решение меняет. Правилом бывает и контракт, и инвариант:
+                    # инвариант перечисляет имена поверхности не реже, чем
+                    # контракт, и запрет ссылаться на него оставлял такую
+                    # правку без объявленной причины.
+                    for rule_id in changed_contracts:
+                        rule = by_id.get(rule_id)
+                        if rule is None:
                             errors.append(
-                                f"{record.relative}: changes cites missing contract "
-                                f"{contract_id}"
+                                f"{record.relative}: changes cites missing rule "
+                                f"{rule_id}"
                             )
-                        elif contract.kind != "contract":
+                        elif rule.kind not in ("contract", "invariant"):
                             errors.append(
-                                f"{record.relative}: changes cites non-contract "
-                                f"{contract_id}"
+                                f"{record.relative}: changes cites a non-rule "
+                                f"{rule_id}"
                             )
             # `establishes` is historical on an immutable decision. A later
             # decision may become the current owner of the same mutable rule;

@@ -45,7 +45,7 @@ fn verify_requires_each_lifecycle_to_expose_each_public_tool() {
     const REQUIRED: [&str; 11] = [
         "unica.view",
         "unica.apply",
-        "unica.find",
+        "unica.resolve",
         "unica.search",
         "unica.check",
         "unica.diff",
@@ -222,7 +222,7 @@ fn tools_list_response(missing: Option<&str>, extra_tools: &[&str]) -> String {
     let tools = [
         "unica.view",
         "unica.apply",
-        "unica.find",
+        "unica.resolve",
         "unica.search",
         "unica.check",
         "unica.diff",
