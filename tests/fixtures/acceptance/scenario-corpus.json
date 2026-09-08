@@ -6229,8 +6229,10 @@
      "expect": [
       "ok"
      ],
-     "status": "readable",
-     "validators": []
+     "status": "passed",
+     "validators": [
+      "bsl"
+     ]
     }
    ],
    "id": "S231"
