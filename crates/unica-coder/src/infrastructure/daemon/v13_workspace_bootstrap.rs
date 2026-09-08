@@ -83,11 +83,7 @@ pub(super) fn execute_view_bootstrap(
             ))
         }
     };
-    let config = context.workspace_root.join("v8project.yaml");
-    let config_present = match std::fs::symlink_metadata(&config) {
-        Ok(_) => true,
-        Err(error) => error.kind() != std::io::ErrorKind::NotFound,
-    };
+    let config_present = project_config_present(&context.workspace_root);
     let mut checkpoint = || deadline.checkpoint_handoff().map_err(str::to_string);
     let source_map =
         match discover_project_source_map_controlled(&context.workspace_root, &mut checkpoint) {
@@ -595,7 +591,20 @@ fn value<T: Serialize>(value: T) -> Value {
     serde_json::to_value(value).expect("workspace bootstrap value serializes")
 }
 
-fn next_action(tool: &str, args: Value, reason: &str) -> Value {
+/// Лежит ли `v8project.yaml` в корне.
+///
+/// Существующий, но нечитаемый файл — тоже «лежит»: иначе битую настройку
+/// объявили бы отсутствующей и предложили завести пространство заново.
+/// Предикат один на корень и на допуск: разойдясь, они назвали бы одному
+/// каталогу две разные причины.
+pub(super) fn project_config_present(workspace_root: &std::path::Path) -> bool {
+    match std::fs::symlink_metadata(workspace_root.join("v8project.yaml")) {
+        Ok(_) => true,
+        Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+    }
+}
+
+pub(super) fn next_action(tool: &str, args: Value, reason: &str) -> Value {
     object([
         ("tool", Value::String(tool.to_string())),
         ("args", args),

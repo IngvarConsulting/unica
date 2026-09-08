@@ -8,7 +8,9 @@ use self::invocation_service::{
     bind_workspace_invocation_with_source_override_for_test, ActorInvocationResourcesForTest,
     ActorReadSourceCapability,
 };
-use self::invocation_service::{bind_workspace_invocation, WorkspaceAdmissionError};
+use self::invocation_service::{
+    bind_workspace_invocation, UnadmittedCause, WorkspaceAdmissionError,
+};
 pub(crate) use self::invocation_service::{
     ActorBoundExecution, ActorBoundInvocation, CanonicalInvocationService,
 };
@@ -30,10 +32,174 @@ use std::time::{Duration, Instant};
 pub(crate) const MAX_HANDSHAKES: usize = 8;
 pub(crate) const MAX_OWNER_SESSIONS: usize = 64;
 
+/// Безымянный неуспех — только для стенда.
+///
+/// На проводе такого ответа нет: у отказа канонической поверхности есть код из
+/// закрытого словаря, исход и продолжение, см. [`reject_workspace_admission`].
+#[cfg(test)]
 fn failed_domain_result(summary: &str) -> DomainResult {
     let mut result = DomainResult::success(summary);
     result.ok = false;
     result
+}
+
+/// Отказ допуска словами: код из закрытого словаря, названная причина и
+/// маршрут дальше.
+///
+/// Из того же каталога `unica.view {}` отвечает фактами и рецептом
+/// `v8project.yaml`, `unica.check {}` — вердиктом, `unica.run {}` — словарём
+/// инициализации. Всем трём набор исходников не нужен, поэтому отказ ведёт
+/// туда, а не в тупик.
+fn reject_workspace_admission(
+    request: &InvocationRequest,
+    error: WorkspaceAdmissionError,
+) -> V5CanonicalPrepareError {
+    // Ёмкость и отравленный реестр — состояния демона, а не рабочего
+    // пространства: у них свой маршрут, и объяснений про наборы они не ждут.
+    let daemon_state = matches!(
+        error,
+        WorkspaceAdmissionError::Capacity | WorkspaceAdmissionError::RegistryFailed
+    );
+    if !daemon_state {
+        // Недоступная операция `run` объясняется своим словарём: спрашивали не
+        // о наборах, и рассказ о них увёл бы в сторону.
+        if let Some(result) =
+            super::v13_run_dictionary::reject_unavailable_run_before_admission(request)
+        {
+            return V5CanonicalPrepareError::Direct(Box::new(result));
+        }
+    }
+    let (workspace_root, cause) = match error {
+        WorkspaceAdmissionError::Capacity => return V5CanonicalPrepareError::WorkspaceCapacity,
+        WorkspaceAdmissionError::RegistryFailed => {
+            return V5CanonicalPrepareError::WorkspaceRegistryFailed
+        }
+        // Корня нет — фактов о нём тоже нет, и звать за ними некуда.
+        WorkspaceAdmissionError::WorkspaceUndiscoverable { reason } => {
+            return V5CanonicalPrepareError::Rejected(Box::new(DomainResult::canonical_rejection(
+                None,
+                RefusalCode::ProviderUnavailable,
+                format!("workspace discovery failed: {reason}"),
+            )))
+        }
+        WorkspaceAdmissionError::Unadmitted {
+            workspace_root,
+            cause,
+        } => (workspace_root, cause),
+    };
+
+    let facts = || {
+        super::v13_workspace_bootstrap::next_action(
+            "unica.view",
+            serde_json::Value::Object(serde_json::Map::new()),
+            "source sets, infobase target, and the recommended v8project.yaml content",
+        )
+    };
+    let verdict = || {
+        super::v13_workspace_bootstrap::next_action(
+            "unica.check",
+            serde_json::Value::Object(serde_json::Map::new()),
+            "the workspace readiness verdict with its diagnostics",
+        )
+    };
+    let initialization = || {
+        super::v13_workspace_bootstrap::next_action(
+            "unica.run",
+            serde_json::Value::Object(serde_json::Map::new()),
+            "the initialization dictionary: source, CF/DT, and existing-infobase routes",
+        )
+    };
+
+    let mut payload = serde_json::Map::new();
+    payload.insert(
+        "workspaceRoot".to_string(),
+        serde_json::Value::String(workspace_root.to_string_lossy().into_owned()),
+    );
+    let (code, summary, next) = match cause {
+        UnadmittedCause::Uninitialized => (
+            RefusalCode::InvalidState,
+            "no PlatformXml source set is admitted: workspace is uninitialized; no v8project.yaml or 1C source roots were found"
+                .to_string(),
+            vec![facts(), verdict(), initialization()],
+        ),
+        UnadmittedCause::NoPlatformXmlSourceSet(declared) => {
+            let declared = serde_json::to_value(declared).expect("project source sets serialize");
+            let formats = declared
+                .as_array()
+                .map(|sets| {
+                    let mut formats = sets
+                        .iter()
+                        .filter_map(|source| source["sourceFormat"].as_str())
+                        .collect::<Vec<_>>();
+                    formats.sort_unstable();
+                    formats.dedup();
+                    formats.join(", ")
+                })
+                .unwrap_or_default();
+            let count = declared.as_array().map_or(0, Vec::len);
+            payload.insert("sourceSets".to_string(), declared);
+            (
+                RefusalCode::InvalidSource,
+                format!(
+                    "no PlatformXml source set is admitted: all {count} declared source sets are in a format this surface does not read ({formats})"
+                ),
+                vec![facts(), verdict(), initialization()],
+            )
+        }
+        UnadmittedCause::SourceRootUnreadable {
+            source_set,
+            path,
+            reason,
+        } => {
+            payload.insert(
+                "sourceSet".to_string(),
+                serde_json::Value::String(source_set.clone()),
+            );
+            payload.insert("path".to_string(), serde_json::Value::String(path.clone()));
+            (
+                RefusalCode::InvalidSource,
+                format!(
+                    "no PlatformXml source set is admitted: source set `{source_set}` declares `{path}`, and {reason}"
+                ),
+                vec![facts(), verdict()],
+            )
+        }
+        // Те же слова, что у корня: причина одна, и разойтись им нельзя.
+        UnadmittedCause::ProjectConfigInvalid(reason) => {
+            payload.insert(
+                "config".to_string(),
+                serde_json::json!({"state": "invalid", "path": "v8project.yaml"}),
+            );
+            (
+                RefusalCode::InvalidState,
+                format!("v8project.yaml is present but invalid: {reason}"),
+                vec![facts(), verdict()],
+            )
+        }
+        UnadmittedCause::SourceDiscoveryFailed(reason) => (
+            RefusalCode::ProviderUnavailable,
+            format!("workspace source discovery failed: {reason}"),
+            vec![verdict()],
+        ),
+        // Повторяют тем же вызовом, поэтому продолжения нет: маршрут в обход
+        // рабочего пространства стоил бы того же срока.
+        UnadmittedCause::AdmissionDeadline => (
+            RefusalCode::DeadlineExceeded,
+            "workspace source discovery did not finish within the actor admission deadline"
+                .to_string(),
+            Vec::new(),
+        ),
+        UnadmittedCause::ActorBindingFailed { stage } => (
+            RefusalCode::InvalidState,
+            format!("workspace actor admission failed: {stage}"),
+            vec![facts(), verdict()],
+        ),
+    };
+
+    let mut result = DomainResult::canonical_rejection(None, code, summary);
+    result.data = Some(serde_json::Value::Object(payload));
+    result.next = next;
+    V5CanonicalPrepareError::Rejected(Box::new(result))
 }
 
 fn validate_hidden_v13_request(request: &InvocationRequest) -> Result<(), String> {
@@ -331,23 +497,7 @@ impl V5CanonicalInvocationRuntime {
             runtime_service,
             response_deadline,
         )
-        .map_err(|error| match error {
-            WorkspaceAdmissionError::Capacity => V5CanonicalPrepareError::WorkspaceCapacity,
-            WorkspaceAdmissionError::RegistryFailed => {
-                V5CanonicalPrepareError::WorkspaceRegistryFailed
-            }
-            WorkspaceAdmissionError::Invalid => {
-                if let Some(result) =
-                    super::v13_run_dictionary::reject_unavailable_run_before_admission(&request)
-                {
-                    V5CanonicalPrepareError::Direct(Box::new(result))
-                } else {
-                    V5CanonicalPrepareError::Rejected(Box::new(failed_domain_result(
-                        "workspace actor admission failed",
-                    )))
-                }
-            }
-        })?;
+        .map_err(|error| reject_workspace_admission(&request, error))?;
         Ok(V5ActorBoundCanonicalInvocation::Workspace {
             invocation: Box::new(invocation),
             service: Arc::clone(&self.service),
@@ -641,7 +791,7 @@ pub(crate) mod actor_capacity_tests {
         workspace: &std::path::Path,
         arguments: serde_json::Value,
     ) -> DomainResult {
-        submit_root(runtime, workspace, ToolIdentity::View, arguments)
+        submit_canonical(runtime, workspace, ToolIdentity::View, arguments)
     }
 
     /// Вердикт по корню: `check {}` отвечает до допуска наборов.
@@ -649,7 +799,7 @@ pub(crate) mod actor_capacity_tests {
         runtime: &V5CanonicalInvocationRuntime,
         workspace: &std::path::Path,
     ) -> DomainResult {
-        submit_root(
+        submit_canonical(
             runtime,
             workspace,
             ToolIdentity::Check,
@@ -657,7 +807,7 @@ pub(crate) mod actor_capacity_tests {
         )
     }
 
-    fn submit_root(
+    fn submit_canonical(
         runtime: &V5CanonicalInvocationRuntime,
         workspace: &std::path::Path,
         tool: ToolIdentity,
@@ -670,7 +820,7 @@ pub(crate) mod actor_capacity_tests {
             7_000,
         )
         .unwrap();
-        direct_v5(runtime, request).expect("workspace bootstrap must finish directly")
+        direct_v5(runtime, request).expect("a pre-admission answer must finish directly")
     }
 
     const LIVE_V5_IDLE_GRACE: Duration = Duration::from_millis(400);
@@ -1128,6 +1278,142 @@ pub(crate) mod actor_capacity_tests {
         // предлагать нечего, EDT в допуск не входит.
         assert_eq!(result.next.len(), 1, "{result:?}");
         assert_eq!(result.next[0]["tool"], "unica.check", "{result:?}");
+    }
+
+    /// Отказ допуска называет причину и следующий шаг.
+    ///
+    /// Из каталога без набора исходников `unica.view {}` отвечает фактами и
+    /// маршрутом, а актор-связанные инструменты отвечали безымянным
+    /// `workspace actor admission failed`: ни кода из закрытого словаря, ни
+    /// причины, ни продолжения. Причина известна ровно в точке отказа — вторым
+    /// обходом снаружи её пришлось бы восстанавливать по уже другому дереву.
+    #[test]
+    pub(crate) fn canonical_admission_names_why_no_source_set_was_admitted() {
+        fn routes(result: &DomainResult) -> Vec<&str> {
+            result
+                .next
+                .iter()
+                .map(|action| action["tool"].as_str().expect("next names a tool"))
+                .collect()
+        }
+
+        let runtime = bootstrap_runtime();
+
+        // Рабочая область не заведена: ни `v8project.yaml`, ни автоопределяемых
+        // корней 1С. Среду правит человек, поэтому исход — `needsHuman`.
+        let bare = tempfile::tempdir().unwrap();
+        let uninitialized = submit_canonical(
+            &runtime,
+            bare.path(),
+            ToolIdentity::Search,
+            serde_json::json!({"query": "Справочник"}),
+        );
+
+        assert!(!uninitialized.ok, "{uninitialized:?}");
+        assert_eq!(uninitialized.diagnostics.len(), 1, "{uninitialized:?}");
+        assert_eq!(
+            uninitialized.diagnostics[0]["code"], "invalid_state",
+            "{uninitialized:?}"
+        );
+        assert_eq!(
+            uninitialized.diagnostics[0]["outcome"], "needsHuman",
+            "{uninitialized:?}"
+        );
+        assert!(
+            uninitialized.summary.contains("workspace is uninitialized"),
+            "{uninitialized:?}"
+        );
+        assert_eq!(
+            routes(&uninitialized),
+            vec!["unica.view", "unica.check", "unica.run"],
+            "{uninitialized:?}"
+        );
+        assert_eq!(
+            uninitialized.data.as_ref().expect("refusal data")["workspaceRoot"],
+            serde_json::Value::String(
+                std::fs::canonicalize(bare.path())
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            ),
+            "{uninitialized:?}"
+        );
+
+        // Наборы объявлены, но ни один не в формате выгрузки конфигуратора:
+        // менять надо исходники, а не вызов.
+        let edt = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(edt.path().join("src/Configuration")).unwrap();
+        std::fs::write(
+            edt.path().join("v8project.yaml"),
+            "format: EDT\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(edt.path().join("src/.project"), "<projectDescription/>").unwrap();
+        std::fs::write(
+            edt.path().join("src/Configuration/Configuration.mdo"),
+            "<mdclass:Configuration/>",
+        )
+        .unwrap();
+        let unreadable_format = submit_canonical(
+            &runtime,
+            edt.path(),
+            ToolIdentity::Resolve,
+            serde_json::json!({"at": "main:Configuration"}),
+        );
+
+        assert!(!unreadable_format.ok, "{unreadable_format:?}");
+        assert_eq!(
+            unreadable_format.diagnostics[0]["code"], "invalid_source",
+            "{unreadable_format:?}"
+        );
+        assert_eq!(
+            unreadable_format.diagnostics[0]["outcome"], "fixSource",
+            "{unreadable_format:?}"
+        );
+        let declared = unreadable_format.data.as_ref().expect("refusal data");
+        assert_eq!(declared["sourceSets"][0]["name"], "main", "{declared}");
+        assert_eq!(
+            declared["sourceSets"][0]["sourceFormat"], "edt",
+            "{declared}"
+        );
+        assert_eq!(
+            routes(&unreadable_format),
+            vec!["unica.view", "unica.check", "unica.run"],
+            "{unreadable_format:?}"
+        );
+
+        // Настройка на месте, но её нельзя прочитать. Допуск отвечает теми же
+        // словами, что `unica.view {}`: причина одна, и разойтись им нельзя.
+        let broken = tempfile::tempdir().unwrap();
+        std::fs::write(broken.path().join("v8project.yaml"), "format: [DESIGNER\n").unwrap();
+        let invalid_config = submit_canonical(
+            &runtime,
+            broken.path(),
+            ToolIdentity::Diff,
+            serde_json::json!({"left": "main:Configuration", "right": "main:Configuration"}),
+        );
+
+        assert!(!invalid_config.ok, "{invalid_config:?}");
+        assert_eq!(
+            invalid_config.diagnostics[0]["code"], "invalid_state",
+            "{invalid_config:?}"
+        );
+        assert!(
+            invalid_config
+                .summary
+                .starts_with("v8project.yaml is present but invalid: "),
+            "{invalid_config:?}"
+        );
+        assert_eq!(
+            submit_bootstrap(&runtime, broken.path(), serde_json::json!({})).summary,
+            invalid_config.summary,
+            "the root and the admission name one cause with one sentence"
+        );
+        assert_eq!(
+            routes(&invalid_config),
+            vec!["unica.view", "unica.check"],
+            "{invalid_config:?}"
+        );
     }
 
     #[test]

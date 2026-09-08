@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import shutil
@@ -73,7 +74,65 @@ def carry_history(results: Path, site: str | None, line: str) -> int:
     for name in HISTORY_FILES:
         if fetch(f"{site}/allure/{line}/history/{name}", target / name):
             carried += 1
+    migrate_history_keys(results)
     return carried
+
+
+def history_key(full_name: str, parameters: list[dict]) -> str:
+    """Ключ истории Allure: `md5(fullName)` и `md5` параметров через точку.
+
+    Считается так же, как считает CLI 2.46: параметры сводятся в
+    отсортированный список `имя:значение` через запятую, пустой список даёт
+    `md5("")`. Наш `historyId` в ключ не входит — CLI читает его только затем,
+    чтобы найти историю, записанную прежней версией.
+    """
+    digest = hashlib.md5(full_name.encode("utf-8")).hexdigest()
+    joined = ",".join(sorted(f"{one['name']}:{one['value']}" for one in parameters))
+    return f"{digest}.{hashlib.md5(joined.encode('utf-8')).hexdigest()}"
+
+
+def migrate_history_keys(results: Path) -> int:
+    """Переложить перенесённую историю с ключей Allure 2.35 на ключи 2.46.
+
+    2.35 ключевал историю нашим `historyId`, 2.46 считает ключ сам, и прежний
+    ключ он читать умеет: историю теста он находит и без переклейки. Но
+    прочитанную запись он оставляет в файле под старым ключом рядом со своей, и
+    файл удваивается навсегда — замер на опубликованной истории из 15 284
+    ключей: 62,5 МБ до сборки, 123,6 МБ после. Переклейка снимает удвоение:
+    видимая история после неё та же самая, размер прежний.
+
+    Соответствие берётся из результатов этого же прогона: в них лежит и старый
+    ключ (`historyId`), и то, из чего считается новый. Прогон публикует
+    результат каждого известного теста, поэтому старый ключ без пары — это
+    тест, которого больше нет; такие записи отбрасываются, иначе они остались
+    бы в истории навсегда. Голых ключей после переклейки не остаётся, и на
+    следующем прогоне работа не повторяется.
+    """
+    path = results / "history" / "history.json"
+    if not path.is_file():
+        return 0
+    history = json.loads(path.read_text(encoding="utf-8"))
+    legacy = [key for key in history if "." not in key]
+    if not legacy:
+        return 0
+    renamed = {}
+    for result in results.glob("*-result.json"):
+        entry = json.loads(result.read_text(encoding="utf-8"))
+        old = entry.get("historyId")
+        if old:
+            renamed[old] = history_key(entry.get("fullName", ""), entry.get("parameters", []))
+    # Сначала то, что уже в новом ключе: переклеенная запись не вытесняет
+    # свежую, если обе указывают на один тест.
+    migrated = {key: entry for key, entry in history.items() if "." in key}
+    moved = 0
+    for key in legacy:
+        new = renamed.get(key)
+        if new is None or new in migrated:
+            continue
+        migrated[new] = history[key]
+        moved += 1
+    path.write_text(json.dumps(migrated, ensure_ascii=False), encoding="utf-8")
+    return moved
 
 
 TREND_FILES = tuple(name for name in HISTORY_FILES if name != "history.json")

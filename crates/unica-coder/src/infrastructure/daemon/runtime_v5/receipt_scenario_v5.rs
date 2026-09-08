@@ -3,11 +3,9 @@ pub(super) mod scenario_probes;
 
 use self::scenario_hooks::{
     acknowledge_direct_for_scenario, inject_receipt_identity_collision_for_scenario,
-    open_receipt_actor_for_scenario, publish_direct_terminal_for_scenario,
-    publish_receipt_backed_task_terminal_for_scenario,
-    seed_receipt_backed_task_terminal_for_scenario, seed_receipt_tombstones_for_scenario,
-    stage_bound_handoff_terminal_for_scenario, ScenarioHooks, V5ReceiptRuntimeEvent,
-    V5ReceiptRuntimeListenerState, V5ReceiptRuntimeTelemetry,
+    open_receipt_actor_for_scenario, seed_receipt_backed_task_terminal_for_scenario,
+    seed_receipt_tombstones_for_scenario, stage_bound_handoff_terminal_for_scenario, ScenarioHooks,
+    V5ReceiptRuntimeEvent, V5ReceiptRuntimeListenerState, V5ReceiptRuntimeTelemetry,
 };
 use super::hooks::{
     V5AdmissionRejection, V5PausePoint, V5ReceiptRuntimeEventKind, V5StoreFaultPoint,
@@ -27,10 +25,10 @@ use crate::application::receipt_ledger::{
     AcknowledgedTombstoneReceipt, CoreIdentityDigest, HandoffTerminalStage,
     OriginalCutoffDescriptor, ProvenTaskLinkCapacity, ReceiptKey, ReceiptKeyDigest,
     ReceiptLedgerError, ReceiptState, ReceiptTaskProjection, ReceiptTerminalOutcome,
-    RequestIdentity, ReservedPhase, TaskBoundReceipt, TaskCancellationReceipt,
-    TaskHandoffActorBoundReceipt, TaskLinkIdentity, TaskLinkReference,
-    TaskRetirementPendingReceipt, TaskTerminalBoundReceipt, TaskTerminalReceiptBackedReceipt,
-    TerminalDigest, V5CanonicalTerminal, V5ToolIdentity, DIRECT_TERMINAL_RETENTION_MS,
+    RequestIdentity, ReservedPhase, TaskBoundReceipt, TaskHandoffActorBoundReceipt,
+    TaskLinkIdentity, TaskLinkReference, TaskRetirementPendingReceipt, TaskTerminalBoundReceipt,
+    TaskTerminalReceiptBackedReceipt, TerminalDigest, V5CanonicalTerminal, V5ToolIdentity,
+    DIRECT_TERMINAL_RETENTION_MS,
 };
 use crate::application::receipt_ledger_actor::ReceiptLedgerActor;
 use crate::domain::cancellation::CancellationToken;
@@ -86,6 +84,10 @@ pub(super) struct ReceiptScenarioControl {
     changed: Condvar,
     lifecycle_gate_changed: Condvar,
     operation_changed: Condvar,
+    /// Presents a seeded mid-flight fixture to one gated operation: that
+    /// operation's runtime skips startup reconciliation, so the fixture it was
+    /// given is the state it observes. Never armed on a production path.
+    skip_next_startup_reconciliation: AtomicBool,
     gate_cancel_requested: Mutex<bool>,
     gate_cancel_changed: Condvar,
     /// Whether the runtime is currently blocked waiting for a gate cancel:
@@ -94,7 +96,6 @@ pub(super) struct ReceiptScenarioControl {
     gate_cancel_waiting: AtomicBool,
     drop_ack_response_after_commit: AtomicBool,
     drop_submit_response_after_commit: AtomicBool,
-    skip_next_startup_reconciliation: AtomicBool,
     /// Whether the fail-stop of the current process life was already cleaned up.
     /// `restart_requested` is never cleared, so without this latch every later
     /// quiesce would spend both deadlines again on an already-handled exit.
@@ -118,7 +119,6 @@ pub(super) struct ReceiptScenarioControl {
     trace_sequence: AtomicU64,
     gate_events: Mutex<Vec<Value>>,
     operation_events: Mutex<Vec<Value>>,
-    staged_handoff: Mutex<Option<TaskHandoffActorBoundReceipt>>,
     staged_terminal_preparations: Mutex<Vec<Value>>,
     staged_terminal_publications: Mutex<Vec<Value>>,
     runtime: Mutex<Option<Weak<V5ReceiptRuntime>>>,
@@ -159,12 +159,12 @@ impl ReceiptScenarioControl {
             changed: Condvar::new(),
             lifecycle_gate_changed: Condvar::new(),
             operation_changed: Condvar::new(),
+            skip_next_startup_reconciliation: AtomicBool::new(false),
             gate_cancel_requested: Mutex::new(false),
             gate_cancel_changed: Condvar::new(),
             gate_cancel_waiting: AtomicBool::new(false),
             drop_ack_response_after_commit: AtomicBool::new(false),
             drop_submit_response_after_commit: AtomicBool::new(false),
-            skip_next_startup_reconciliation: AtomicBool::new(false),
             fail_stop_reclaimed: AtomicBool::new(false),
             validation_reject: AtomicBool::new(false),
             admission_rejection: Mutex::new(None),
@@ -185,7 +185,6 @@ impl ReceiptScenarioControl {
             trace_sequence: AtomicU64::new(1),
             gate_events: Mutex::new(Vec::new()),
             operation_events: Mutex::new(Vec::new()),
-            staged_handoff: Mutex::new(None),
             staged_terminal_preparations: Mutex::new(Vec::new()),
             staged_terminal_publications: Mutex::new(Vec::new()),
             runtime: Mutex::new(None),
@@ -256,11 +255,6 @@ impl ReceiptScenarioControl {
         else {
             return Err("staged terminal preparation requires an exact staged receipt".to_owned());
         };
-        *self
-            .staged_handoff
-            .lock()
-            .map_err(|_| "scenario staged handoff mutex poisoned".to_owned())? =
-            Some(staged.clone());
         let receipt_key = receipt_key_observation(staged.key());
         if self
             .staged_terminal_preparations
@@ -407,13 +401,6 @@ impl ReceiptScenarioControl {
             .map_err(|_| "scenario staged terminal preparation mutex poisoned".to_owned())?
             .push(preparation);
         Ok(())
-    }
-
-    pub(super) fn staged_handoff(&self) -> Option<TaskHandoffActorBoundReceipt> {
-        self.staged_handoff
-            .lock()
-            .expect("scenario staged handoff mutex poisoned")
-            .clone()
     }
 
     pub(super) fn record_staged_terminal_publication(
@@ -1290,10 +1277,6 @@ impl ReceiptScenarioControl {
             .expect("scenario bound Task mutex poisoned");
         tasks.retain(|task| task.record.task_id != record.task_id);
         tasks.push(ScenarioBoundTask { record, bound });
-        *self
-            .staged_handoff
-            .lock()
-            .expect("scenario staged handoff mutex poisoned") = None;
     }
 
     pub(super) fn bound_task(&self) -> Option<ScenarioBoundTask> {
@@ -2063,12 +2046,10 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                     &control,
                     &known_keys,
                 )?;
-                let daemon_state = DaemonStateDirectory::open(state.path(), &identity)?;
-                let receipts = daemon_state.create_private_retained_subdirectory("receipts")?;
-                inject_receipt_identity_collision_for_scenario(
-                    receipts,
+                corrupt_receipt_identity_index(
+                    state.path(),
+                    &identity,
                     matches!(index, ScenarioIdentityIndex::InvocationId),
-                    Instant::now() + SCENARIO_OPERATION_TIMEOUT,
                 )?;
                 corrupted_identity_snapshot = Some(snapshot);
             }
@@ -2247,12 +2228,12 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                 operations.insert(label, operation);
             }
             ReceiptScenarioAction::SpawnStageBoundHandoffTerminal { terminal, label } => {
+                control.arm_skip_next_startup_reconciliation();
                 if operations.contains_key(&label) {
                     return Err(unsupported_shape(
                         "spawn_stage_bound_handoff_terminal label is already in use",
                     ));
                 }
-                control.arm_skip_next_startup_reconciliation();
                 let daemon_state = DaemonStateDirectory::open(state.path(), &identity)?;
                 let config = scenario_server_config_with_clock(
                     state.path(),
@@ -2304,7 +2285,11 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                     return Err(format!("operation {label} reported completion before exit"));
                 }
             }
-            ReceiptScenarioAction::Cancel { key, label, .. } => {
+            ReceiptScenarioAction::Cancel {
+                key,
+                label,
+                _lazy_session: lazy_session,
+            } => {
                 let is_exact = matches!(&key, ScenarioKey::Exact);
                 let wire_key = match key {
                     ScenarioKey::Exact => exact_key.clone(),
@@ -2316,14 +2301,19 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                     }
                     _ => return Err(unsupported_shape("cancel key shape")),
                 };
-                if pending_submit.is_none() && live_daemon.is_none() {
-                    control.arm_skip_next_startup_reconciliation();
-                }
                 let response = if let Some(pending) = &pending_submit {
                     pending.cancel_additional(state.path(), &identity, wire_key.clone())?
                 } else if live_daemon.is_some() {
                     cancel_on_live_daemon(state.path(), &identity, wire_key.clone())?
                 } else {
+                    // A session that owns the attempt cancels against the
+                    // process holding it: the seeded fixture is handed to that
+                    // one owner, which is why its startup does not reconcile.
+                    // A lazy session owns nothing, so it meets what a successor
+                    // left behind — production reconciles the orphan first.
+                    if !lazy_session {
+                        control.arm_skip_next_startup_reconciliation();
+                    }
                     exchange_once(
                         state.path(),
                         &identity,
@@ -2487,6 +2477,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                             format!("parse Task cancel selector from {read_label}: {error}")
                         })?,
                 };
+                // Cancelling by a projected Task observes the fixture too.
                 control.arm_skip_next_startup_reconciliation();
                 let response = exchange_once(
                     state.path(),
@@ -2931,29 +2922,43 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                 match disconnect {
                     ScenarioAckDisconnect::Never => {
                         let response = match &live_actor {
-                            Some(actor) => match acknowledge_direct_for_scenario(
+                            // A live daemon has a listener: acknowledge over the wire,
+                            // the way production does. Without one the harness itself
+                            // holds the sole writer, so no listener can exist and the
+                            // retained actor is the only owner there is.
+                            Some(_) if live_daemon.is_some() => acknowledge_on_live_daemon(
+                                state.path(),
+                                &identity,
+                                acknowledge_key.clone(),
+                                terminal_digest,
+                            )?,
+                            Some(actor) => acknowledge_on_retained_actor(
                                 actor,
                                 acknowledge_key.clone(),
                                 terminal_digest,
                                 clock.now_epoch_millis(),
-                                Instant::now() + SCENARIO_OPERATION_TIMEOUT,
                                 &telemetry,
-                            ) {
-                                Ok(receipt) => V5ServerResponse::InvocationAcknowledged {
-                                    acknowledgement: V5AcknowledgedReceipt::from_receipt(&receipt),
-                                },
-                                Err(error) => V5ServerResponse::Error {
-                                    code: daemon_error_code(&error),
-                                },
-                            },
-                            None => acknowledge_without_startup(
-                                state.path(),
-                                &identity,
-                                Arc::clone(&clock),
-                                Arc::clone(&telemetry),
-                                acknowledge_key.clone(),
-                                terminal_digest,
-                            )?,
+                            ),
+                            None => {
+                                // Production acknowledges against a daemon that is
+                                // already up; the scenario has to start one for the
+                                // request. That extra startup must not reconcile the
+                                // fixture the acknowledgement is aimed at — it owns it.
+                                control.arm_skip_next_startup_reconciliation();
+                                exchange_once(
+                                    state.path(),
+                                    &identity,
+                                    Arc::clone(&clock),
+                                    Arc::clone(&telemetry),
+                                    Some(Arc::clone(&control)),
+                                    |owner| {
+                                        owner.acknowledge_invocation_receipt(
+                                            acknowledge_key.clone(),
+                                            terminal_digest,
+                                        )
+                                    },
+                                )?
+                            }
                         };
                         report
                             .responses
@@ -3019,6 +3024,8 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                 let response = match available_response {
                     Some(response) => response,
                     None => {
+                        // A read observes the fixture it was given; it does not
+                        // stand in for the successor that would reconcile it.
                         control.arm_skip_next_startup_reconciliation();
                         exchange_once(
                             state.path(),
@@ -3182,20 +3189,13 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                         );
                         pending.response_projected = true;
                         if let Some(handoff) = held_handoff {
-                            if control.has_precomputed_terminal() {
-                                let configured_terminal =
-                                    control.configured_precomputed_terminal()?;
-                                let staged = stage_bound_handoff_terminal_for_scenario(
-                                    &pending.actor,
-                                    handoff,
-                                    clock.now_epoch_millis(),
-                                    configured_terminal,
-                                    Instant::now() + SCENARIO_BULK_SNAPSHOT_TIMEOUT,
-                                    &telemetry,
-                                )
-                                .map_err(|error| format!("stage cutoff Task terminal: {error}"))?;
-                                control.record_staged_terminal_preparation(&staged)?;
-                            }
+                            stage_terminal_as_second_owner(
+                                &pending.actor,
+                                handoff,
+                                clock.now_epoch_millis(),
+                                &control,
+                                &telemetry,
+                            )?;
                         }
                     }
                 }
@@ -3319,72 +3319,33 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                     continue;
                 }
                 if matches!(point, ScenarioCrashPoint::ReservedBegun) {
-                    let pending = pending_submit.as_ref().ok_or_else(|| {
-                        "protocol-v5 ReservedBegun crash has no live submit".to_owned()
-                    })?;
-                    let reserved = match pending.actor.recover(
-                        exact_key.clone(),
-                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
-                    ) {
-                        Ok(ReceiptState::Reserved(reserved))
-                            if matches!(reserved.phase(), ReservedPhase::Begun { .. }) =>
-                        {
-                            reserved
-                        }
-                        Ok(other) => {
-                            return Err(format!(
-                                "protocol-v5 ReservedBegun crash observed {}",
-                                other.kind().diagnostic_name()
-                            ))
-                        }
-                        Err(error) => {
-                            return Err(format!("recover protocol-v5 ReservedBegun crash: {error}"))
-                        }
-                    };
-                    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Failed {
-                        reason: V5SafeFailureReason::OutcomeUncertain,
-                    })
-                    .map_err(|error| format!("encode uncertain crash terminal: {error}"))?;
-                    publish_direct_terminal_for_scenario(
-                        &pending.actor,
-                        exact_key.clone(),
-                        reserved.record_version(),
-                        clock.now_epoch_millis(),
-                        terminal,
-                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
-                        &telemetry,
-                    )
-                    .map_err(|error| format!("terminalize crashed begun receipt: {error}"))?;
+                    // A process that dies with a `Reserved(Begun)` receipt leaves it
+                    // Begun: nobody inside it terminalizes the attempt. The successor's
+                    // startup reconciliation is what turns it into an uncertain outcome.
+                    // Declaring the exit before the release is what makes the crash a
+                    // crash: the released attempt sees a dead process and abandons.
+                    telemetry.record_forced_process_exit();
+                    control.record_process_exit(1);
                     control.release(ScenarioBarrierPoint::BeforePrepare);
                     let pending = pending_submit
                         .take()
                         .expect("crashed begun submit was checked immediately before take");
-                    let (label, accepted, budget, response, actor, _, _, daemon) =
-                        pending.finish()?;
+                    // A crashed process delivers no response: whatever the abandoned
+                    // attempt replied dies with it, so the scenario projects none.
+                    let (_, _, _, _, actor, _, _, daemon) = pending.finish()?;
                     drop(actor);
                     daemon.stop_and_join(
                         "protocol-v5 receipt scenario daemon panicked during begun crash",
                     )?;
-                    report
-                        .responses
-                        .entry(label)
-                        .or_insert(response_observation_with_exact_task(
-                            &response,
-                            Some((accepted, budget)),
-                            &exact_key,
-                            state.path(),
-                            &identity,
-                            Some(None),
-                        )?);
                 } else if matches!(point, ScenarioCrashPoint::TaskPromisedUnbound) {
                     let pending = pending_submit.as_ref().ok_or_else(|| {
                         "protocol-v5 TaskPromisedUnbound crash has no live submit".to_owned()
                     })?;
-                    let promised = match pending.actor.recover(
+                    match pending.actor.recover(
                         exact_key.clone(),
                         Instant::now() + SCENARIO_OPERATION_TIMEOUT,
                     ) {
-                        Ok(ReceiptState::TaskPromisedUnbound(promised)) => promised,
+                        Ok(ReceiptState::TaskPromisedUnbound(_)) => {}
                         Ok(other) => {
                             return Err(format!(
                                 "protocol-v5 TaskPromisedUnbound crash observed {}",
@@ -3396,53 +3357,22 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                                 "recover protocol-v5 TaskPromisedUnbound crash: {error}"
                             ))
                         }
-                    };
-                    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Failed {
-                        reason: V5SafeFailureReason::Interrupted,
-                    })
-                    .map_err(|error| format!("encode interrupted crash terminal: {error}"))?;
-                    let committed = publish_receipt_backed_task_terminal_for_scenario(
-                        &pending.actor,
-                        exact_key.clone(),
-                        TaskCancellationReceipt::PromisedUnbound(promised),
-                        clock.now_epoch_millis(),
-                        terminal,
-                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
-                        &telemetry,
-                    )
-                    .map_err(|error| {
-                        format!("terminalize crashed unbound Task promise: {error}")
-                    })?;
-                    control.record_receipt_backed_terminal(committed)?;
+                    }
+                    // The promise a crashed process left behind is the successor's
+                    // to reconcile; declaring the exit first is what makes the crash
+                    // stop the attempt instead of letting it run on.
+                    telemetry.record_forced_process_exit();
+                    control.record_process_exit(1);
                     control.release_pre_actor_barriers();
                     let pending = pending_submit
                         .take()
                         .expect("crashed pending submit was checked immediately before take");
-                    let (
-                        label,
-                        accepted_epoch_ms,
-                        response_budget_ms,
-                        response,
-                        actor,
-                        _,
-                        _,
-                        daemon,
-                    ) = pending.finish()?;
+                    // A crashed process delivers no response.
+                    let (_, _, _, _, actor, _, _, daemon) = pending.finish()?;
                     drop(actor);
                     daemon.stop_and_join(
                         "protocol-v5 receipt scenario daemon panicked during promised crash",
                     )?;
-                    report
-                        .responses
-                        .entry(label)
-                        .or_insert(response_observation_with_exact_task(
-                            &response,
-                            Some((accepted_epoch_ms, response_budget_ms)),
-                            &exact_key,
-                            state.path(),
-                            &identity,
-                            Some(None),
-                        )?);
                 } else if pending_submit.is_some() {
                     return Err(unsupported_shape(
                         "fail-stop with a live submit at this step",
@@ -3458,38 +3388,9 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                             "protocol-v5 receipt scenario cannot restart a live submit".to_owned()
                         );
                     }
-                    let pending = pending_submit.as_ref().expect("pending submit exists");
-                    match pending.actor.recover(
-                        exact_key.clone(),
-                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
-                    ) {
-                        Ok(ReceiptState::Reserved(reserved))
-                            if matches!(reserved.phase(), ReservedPhase::Begun { .. }) =>
-                        {
-                            let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Failed {
-                                reason: V5SafeFailureReason::OutcomeUncertain,
-                            })
-                            .map_err(|error| {
-                                format!("encode fail-stopped begun terminal: {error}")
-                            })?;
-                            publish_direct_terminal_for_scenario(
-                                &pending.actor,
-                                exact_key.clone(),
-                                reserved.record_version(),
-                                clock.now_epoch_millis(),
-                                terminal,
-                                Instant::now() + SCENARIO_OPERATION_TIMEOUT,
-                                &telemetry,
-                            )
-                            .map_err(|error| {
-                                format!("terminalize fail-stopped begun submit: {error}")
-                            })?;
-                        }
-                        Ok(_) | Err(ReceiptLedgerError::ReceiptNotFound) => {}
-                        Err(error) => {
-                            return Err(format!("recover fail-stopped submit: {error}"));
-                        }
-                    }
+                    // The receipt a fail-stopped process left behind is the
+                    // successor's to reconcile at startup. Terminalizing it here
+                    // would be the harness doing the restart's own work early.
                     control.release_all_barriers();
                     let pending = pending_submit
                         .take()
@@ -4175,17 +4076,12 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                 }
             }
             ReceiptScenarioAction::RotateReceiptSegments => {
-                let deadline = Instant::now() + SCENARIO_BULK_OPERATION_TIMEOUT;
-                match &live_actor {
-                    Some(actor) => {
-                        actor
-                            .rotate_generation_for_test(deadline)
-                            .map_err(|error| {
-                                format!("rotate receipt retention generation: {error}")
-                            })?;
-                    }
-                    None => rotate_receipt_generation(state.path(), &identity, deadline)?,
-                }
+                rotate_receipt_generation(
+                    state.path(),
+                    &identity,
+                    live_actor.as_ref(),
+                    Instant::now() + SCENARIO_BULK_OPERATION_TIMEOUT,
+                )?;
             }
             ReceiptScenarioAction::JoinOperation { label } => {
                 if spawn_submit_labels.remove(&label) {
@@ -5505,18 +5401,99 @@ fn staged_terminal_publication(
     })
 }
 
-fn rotate_receipt_generation(
+/// Stages a terminal onto a handoff whose owner is parked between the handoff
+/// commit and the Task store create. This is a *second* owner's write — the
+/// interleaving the fixture exists to produce — not a transition performed on
+/// behalf of the attempt under observation. A no-op unless the provider fixture
+/// carries a precomputed terminal.
+fn stage_terminal_as_second_owner(
+    actor: &ReceiptLedgerActor,
+    handoff: TaskHandoffActorBoundReceipt,
+    epoch_ms: u64,
+    control: &ReceiptScenarioControl,
+    telemetry: &V5ReceiptRuntimeTelemetry,
+) -> Result<(), String> {
+    if !control.has_precomputed_terminal() {
+        return Ok(());
+    }
+    let terminal = control.configured_precomputed_terminal()?;
+    let staged = stage_bound_handoff_terminal_for_scenario(
+        actor,
+        handoff,
+        epoch_ms,
+        terminal,
+        Instant::now() + SCENARIO_BULK_SNAPSHOT_TIMEOUT,
+        telemetry,
+    )
+    .map_err(|error| format!("stage cutoff Task terminal: {error}"))?;
+    control.record_staged_terminal_preparation(&staged)
+}
+
+/// Acknowledges on the retained actor the scenario itself holds. No listener can
+/// exist while the harness owns the sole writer, so this actor is the only owner
+/// there is; the reply mirrors what the daemon's handler would have sent.
+fn acknowledge_on_retained_actor(
+    actor: &ReceiptLedgerActor,
+    key: ReceiptKey,
+    terminal_digest: TerminalDigest,
+    epoch_ms: u64,
+    telemetry: &V5ReceiptRuntimeTelemetry,
+) -> V5ServerResponse {
+    match acknowledge_direct_for_scenario(
+        actor,
+        key,
+        terminal_digest,
+        epoch_ms,
+        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+        telemetry,
+    ) {
+        Ok(receipt) => V5ServerResponse::InvocationAcknowledged {
+            acknowledgement: V5AcknowledgedReceipt::from_receipt(&receipt),
+        },
+        Err(error) => V5ServerResponse::Error {
+            code: daemon_error_code(&error),
+        },
+    }
+}
+
+/// Corrupts a durable identity index behind the daemon's back — damage no owner
+/// of a healthy store would write, which is the point of the fixture.
+fn corrupt_receipt_identity_index(
     state_root: &Path,
     identity: &CoreIdentity,
-    deadline: Instant,
+    collide_invocation_id: bool,
 ) -> Result<(), String> {
     let state = DaemonStateDirectory::open(state_root, identity)?;
     let receipts = state.create_private_retained_subdirectory("receipts")?;
-    let store = crate::infrastructure::receipt_ledger::ReceiptLedgerStore::open_retained_directory(
+    inject_receipt_identity_collision_for_scenario(
         receipts,
+        collide_invocation_id,
+        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
     )
-    .map_err(|error| format!("open receipt retention generation owner: {error}"))?;
-    store
+}
+
+/// Rotates the retained receipt generation as the store's owner: the live actor
+/// when the scenario holds one, otherwise an owner opened for this rotation.
+fn rotate_receipt_generation(
+    state_root: &Path,
+    identity: &CoreIdentity,
+    live_actor: Option<&ReceiptLedgerActor>,
+    deadline: Instant,
+) -> Result<(), String> {
+    let opened;
+    let actor = match live_actor {
+        Some(actor) => actor,
+        None => {
+            let state = DaemonStateDirectory::open(state_root, identity)?;
+            let receipts = state.create_private_retained_subdirectory("receipts")?;
+            opened = open_receipt_actor_for_scenario(
+                receipts,
+                "open receipt retention generation owner",
+            )?;
+            &opened
+        }
+    };
+    actor
         .rotate_generation_for_test(deadline)
         .map(|_| ())
         .map_err(|error| format!("rotate receipt retention generation: {error}"))
@@ -6955,38 +6932,6 @@ fn scenario_server_config_with_clock(
     scenario_server_config(state_root, identity, control)
         .with_invocation_clock_for_test(invocation_clock)
         .with_v5_epoch_clock_for_test(epoch_clock)
-}
-
-fn acknowledge_without_startup(
-    state_root: &Path,
-    identity: &CoreIdentity,
-    clock: Arc<ScenarioEpochClock>,
-    telemetry: Arc<V5ReceiptRuntimeTelemetry>,
-    key: ReceiptKey,
-    terminal_digest: TerminalDigest,
-) -> Result<V5ServerResponse, String> {
-    let state = DaemonStateDirectory::open(state_root, identity)?;
-    let receipts = state.create_private_retained_subdirectory("receipts")?;
-    let actor = open_receipt_actor_for_scenario(receipts, "open protocol-v5 receipt ACK owner")?;
-    let epoch_ms = clock.now_epoch_millis();
-    let result = acknowledge_direct_for_scenario(
-        &actor,
-        key,
-        terminal_digest,
-        epoch_ms,
-        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
-        &telemetry,
-    );
-    let response = match result {
-        Ok(receipt) => V5ServerResponse::InvocationAcknowledged {
-            acknowledgement: V5AcknowledgedReceipt::from_receipt(&receipt),
-        },
-        Err(error) => V5ServerResponse::Error {
-            code: daemon_error_code(&error),
-        },
-    };
-    drop(actor);
-    Ok(response)
 }
 
 /// Waits for a promoted attempt the runtime finished off the reply thread to
@@ -9388,8 +9333,10 @@ fn open_scenario_operation_runtime(
         &HashMap::new(),
     )?;
     let task_store_create_attempts = telemetry.snapshot().task_store_create_attempts;
-    control.arm_skip_next_startup_reconciliation();
     let daemon_state = DaemonStateDirectory::open(state_root, identity)?;
+    // A gated operation observes the seeded fixture it was handed, not what a
+    // successor would reconcile it into.
+    control.arm_skip_next_startup_reconciliation();
     let config = scenario_server_config_with_clock(state_root, identity, Some(control), clock);
     let runtime = V5ReceiptRuntime::open_with_epoch_clock(&daemon_state, &config, clock.clone())?
         .with_hooks_for_test(ScenarioHooks::install(
@@ -9630,6 +9577,21 @@ fn spawn_additional_submit_client(
     }
 }
 
+fn acknowledge_on_live_daemon(
+    state_root: &Path,
+    identity: &CoreIdentity,
+    key: ReceiptKey,
+    terminal_digest: TerminalDigest,
+) -> Result<V5ServerResponse, String> {
+    let mut owner = V5DaemonProcessOwner::connect_or_spawn(
+        state_root,
+        identity.clone(),
+        std::path::PathBuf::from("unused-existing-v5-scenario-endpoint"),
+        SCENARIO_IDLE_GRACE,
+    )?;
+    owner.acknowledge_invocation_receipt(key, terminal_digest)
+}
+
 fn cancel_on_live_daemon(
     state_root: &Path,
     identity: &CoreIdentity,
@@ -9666,6 +9628,8 @@ fn start_blocked_submit(
         &HashMap::new(),
     )?;
     let task_store_create_attempts = telemetry.snapshot().task_store_create_attempts;
+    // The submitting process owns the attempt it is about to run, and any
+    // fixture the scenario seeded for it.
     control.arm_skip_next_startup_reconciliation();
     let config = scenario_server_config_with_clock(state_root, identity, Some(&control), &clock);
     let (actor_tx, actor_rx) = mpsc::sync_channel(1);
