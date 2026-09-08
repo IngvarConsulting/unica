@@ -199,6 +199,11 @@ pub(super) enum V5ActorBoundCanonicalInvocation {
         export: Arc<super::v13_infobase_exports::PreparedInfobaseExport>,
         workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
     },
+    Documentation {
+        search: Arc<super::v13_documentation::PreparedDocumentationSearch>,
+        workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
+        response_deadline: InvocationResponseDeadline,
+    },
 }
 
 pub(super) enum V5PreparedCanonicalInvocation {
@@ -209,6 +214,9 @@ pub(super) enum V5PreparedCanonicalInvocation {
     },
     InfobaseExport {
         export: Arc<super::v13_infobase_exports::PreparedInfobaseExport>,
+    },
+    Documentation {
+        search: Arc<super::v13_documentation::PreparedDocumentationSearch>,
     },
 }
 
@@ -321,6 +329,20 @@ impl V5CanonicalInvocationRuntime {
                 });
             }
         }
+        match super::v13_documentation::prepare(&request) {
+            super::v13_documentation::Preparation::NotApplicable => {}
+            super::v13_documentation::Preparation::Rejected(result) => {
+                return Err(V5CanonicalPrepareError::Rejected(result))
+            }
+            super::v13_documentation::Preparation::Ready(search) => {
+                let workspace_identity_hash = search.workspace_identity_hash();
+                return Ok(V5ActorBoundCanonicalInvocation::Documentation {
+                    search,
+                    workspace_identity_hash,
+                    response_deadline,
+                });
+            }
+        }
         #[cfg(test)]
         let runtime_service = self.runtime_service.clone();
         #[cfg(not(test))]
@@ -368,6 +390,12 @@ impl V5ActorBoundCanonicalInvocation {
         match self {
             Self::Workspace { invocation, .. } => Some(invocation.response_deadline().clone()),
             Self::InfobaseExport { .. } => None,
+            // Справка не известна длинной: локальное попадание отвечает
+            // сразу, сетевое доходит до седьмой секунды. Значит у неё тот же
+            // cutoff, что у чтений, — захваченный при bind.
+            Self::Documentation {
+                response_deadline, ..
+            } => Some(response_deadline.clone()),
         }
     }
 
@@ -375,6 +403,10 @@ impl V5ActorBoundCanonicalInvocation {
         match self {
             Self::Workspace { invocation, .. } => invocation.workspace_identity_hash(),
             Self::InfobaseExport {
+                workspace_identity_hash,
+                ..
+            }
+            | Self::Documentation {
                 workspace_identity_hash,
                 ..
             } => workspace_identity_hash,
@@ -397,6 +429,9 @@ impl V5ActorBoundCanonicalInvocation {
             Self::InfobaseExport { export, .. } => {
                 Ok(V5PreparedCanonicalInvocation::InfobaseExport { export })
             }
+            Self::Documentation { search, .. } => {
+                Ok(V5PreparedCanonicalInvocation::Documentation { search })
+            }
         }
     }
 }
@@ -408,6 +443,7 @@ impl V5PreparedCanonicalInvocation {
         match self {
             Self::Workspace { class, .. } => class,
             Self::InfobaseExport { .. } => &INFOBASE_EXPORT_CLASS,
+            Self::Documentation { .. } => &ExecutionClass::InlineCandidate,
         }
     }
 
@@ -436,6 +472,7 @@ impl V5PreparedCanonicalInvocation {
                 })?
             }
             Self::InfobaseExport { export } => Ok(export.execute(cancellation)),
+            Self::Documentation { search } => Ok(search.execute(cancellation)),
         }
     }
 }
@@ -6101,6 +6138,58 @@ struct ActorLogicalReadLease {"#,
             preparations.load(Ordering::SeqCst),
             0,
             "infobase exports must not enter the PlatformXml service"
+        );
+    }
+
+    #[test]
+    fn v5_documentation_answers_before_source_admission_without_an_actor_lease() {
+        // Каталог без `v8project.yaml` и без корней 1С — тот, из которого
+        // новичок и спрашивает, как рабочее пространство завести.
+        let workspace = tempfile::tempdir().expect("temporary bare workspace");
+        std::fs::write(workspace.path().join("README.md"), "not a 1C workspace\n")
+            .expect("write a file that is not a 1C source root");
+        let preparations = Arc::new(AtomicUsize::new(0));
+        let runtime = V5CanonicalInvocationRuntime::new(
+            Arc::new(CountingPrepareService {
+                preparations: Arc::clone(&preparations),
+            }),
+            Arc::new(TokioClock),
+        );
+        let request = |arguments: serde_json::Value| {
+            InvocationRequest::new(
+                ToolIdentity::Docs,
+                arguments,
+                std::fs::canonicalize(workspace.path())
+                    .expect("canonical workspace")
+                    .to_string_lossy(),
+                7_000,
+            )
+            .expect("valid docs request")
+        };
+
+        let prepared = runtime
+            .bind(request(serde_json::json!({
+                "query": "как завести рабочее пространство",
+                "source": "configuration-documentation"
+            })))
+            .expect("docs binds without a PlatformXml source set")
+            .prepare()
+            .expect("docs preparation");
+        // Справка не длинная по построению: локальное попадание отвечает
+        // сразу, а сетевое уходит в Task на общем cutoff.
+        assert_eq!(prepared.execution_class(), &ExecutionClass::InlineCandidate);
+
+        // Единственный свод, которому рабочее пространство нужно, отвечает
+        // своим типизированным отказом, а не общим отказом допуска.
+        let result = prepared
+            .execute(CancellationToken::new())
+            .expect("docs executes without an actor");
+        assert!(!result.ok, "docs must refuse the workspace corpus honestly");
+        assert_eq!(result.diagnostics[0]["code"], "unsupported_source");
+        assert_eq!(
+            preparations.load(Ordering::SeqCst),
+            0,
+            "docs must not enter the PlatformXml service"
         );
     }
 

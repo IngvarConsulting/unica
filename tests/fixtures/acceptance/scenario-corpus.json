@@ -7977,6 +7977,36 @@
     }
    ],
    "id": "S308"
+  },
+  {
+   "area": "Документация и стандарты",
+   "task": "Спросить документацию из каталога, который ещё не рабочая область",
+   "workspace": "tests/fixtures/acceptance/workspace-bare",
+   "wire": [
+    {
+     "tool": "unica.docs",
+     "args": {
+      "query": "как устроена конфигурация 1С",
+      "source": "platform-help"
+     },
+     "expect": [
+      "ok",
+      "provider",
+      "task"
+     ]
+    },
+    {
+     "tool": "unica.docs",
+     "args": {
+      "query": "как ведётся справочник валют",
+      "source": "configuration-documentation"
+     },
+     "expect": [
+      "unsupported"
+     ]
+    }
+   ],
+   "id": "S309"
   }
  ]
 }

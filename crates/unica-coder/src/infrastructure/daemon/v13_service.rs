@@ -76,35 +76,15 @@ impl CanonicalInvocationService for CanonicalV13ReadService {
             ToolIdentity::Check => Ok(self.execute_check(invocation, &cancellation)),
             ToolIdentity::Diff => Ok(self.execute_diff(invocation, &cancellation)),
             ToolIdentity::Run => Ok(self.execute_run(invocation, &cancellation)),
-            ToolIdentity::Docs => {
-                let arguments = invocation.arguments();
-                let Some(query) = arguments.get("query").and_then(Value::as_str) else {
-                    return Ok(error_result(
-                        None,
-                        RefusalCode::BadValue,
-                        "docs requires string argument `query`",
-                    ));
-                };
-                let source = match arguments.get("source") {
-                    None => None,
-                    Some(Value::String(source)) => Some(source.as_str()),
-                    Some(_) => {
-                        return Ok(error_result(
-                            None,
-                            RefusalCode::BadValue,
-                            "docs source must be a string",
-                        ))
-                    }
-                };
-                Ok(
-                    crate::infrastructure::application_ports::canonical_v13_docs_search(
-                        invocation.workspace_context(),
-                        query,
-                        source,
-                        &cancellation,
-                    ),
-                )
-            }
+            // Справка отвечает до допуска рабочей области: сюда вызов не
+            // приходит, и второго её исполнения тут нет. Ветка закрыта
+            // отказом, а не паникой: неверная маршрутизация обязана быть
+            // видна вызывающему, а не ронять рабочий поток демона.
+            ToolIdentity::Docs => Ok(error_result(
+                None,
+                RefusalCode::InvalidState,
+                "docs is answered before workspace admission and does not reach the actor-bound read service",
+            )),
         }
     }
 }

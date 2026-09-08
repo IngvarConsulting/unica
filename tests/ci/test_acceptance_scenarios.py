@@ -115,6 +115,10 @@ def classify(response, context):
 
 
 FORMAT_WORKSPACE = "tests/fixtures/acceptance/workspace-format"
+# A directory that is not a 1C workspace at all: no v8project.yaml and no
+# source roots. The surface reachable before a workspace exists is frozen
+# on it, because in the fixture workspace that road is never walked.
+BARE_WORKSPACE = "tests/fixtures/acceptance/workspace-bare"
 
 
 def derive_source_sets(source: Path, workspace: Path) -> None:
@@ -311,12 +315,12 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
 
     def test_corpus_holds_the_run_free_scenario_set_uniquely_numbered(self) -> None:
         scenarios = self.corpus["scenarios"]
-        self.assertEqual(len(scenarios), 308)
-        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 339,
-            "a wire step went missing: the corpus freezes 339 steps",
+        self.assertEqual(len(scenarios), 309)
+        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 341,
+            "a wire step went missing: the corpus freezes 341 steps",
         )
         identifiers = [scenario["id"] for scenario in scenarios]
-        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 309)])
+        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 310)])
 
     def test_the_run_half_of_the_surface_stays_out_of_this_corpus(self) -> None:
         for scenario in self.corpus["scenarios"]:
@@ -332,8 +336,8 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
             workspace = scenario.get("workspace", self.corpus["workspace"])
             self.assertIn(
                 workspace,
-                {self.corpus["workspace"], FORMAT_WORKSPACE},
-                f"{scenario['id']}: a scenario runs on one of the two fixture workspaces",
+                {self.corpus["workspace"], FORMAT_WORKSPACE, BARE_WORKSPACE},
+                f"{scenario['id']}: a scenario runs on one of the three fixture workspaces",
             )
             for index, step in enumerate(scenario["wire"]):
                 with self.subTest(scenario=scenario["id"], step=index):

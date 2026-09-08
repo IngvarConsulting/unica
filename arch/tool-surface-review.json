@@ -92,12 +92,13 @@
   "unica.docs": {
     "result": {
       "contract": "typed",
-      "now": "Поиск по platform-help и development-standard возвращает `data.sections`; configuration-documentation отвечает `unsupported_source` до actor-safe reader",
+      "now": "Отвечает до допуска рабочей области; поиск по platform-help и development-standard возвращает `data.sections`; configuration-documentation отвечает `unsupported_source` до actor-safe reader",
       "target": "Добавить actor-owned nofollow/cancellation reader для документации конфигурации, адресное получение документа, locale и version"
     },
     "scenarios": [
       "Искать по справке платформы или стандартам",
-      "Получить typed unsupported для документации конфигурации без обхода actor boundary"
+      "Получить typed unsupported для документации конфигурации без обхода actor boundary",
+      "Спросить справку из каталога, который ещё не рабочая область"
     ],
     "scope": "in"
   },
