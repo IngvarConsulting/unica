@@ -276,9 +276,18 @@ impl<'a> LogicalViewReadAuthority<'a> {
                     },
                     reader: route.reader(),
                     target: target.as_str().to_string(),
-                    detail: (route.reader() == LogicalReader::Xdto)
-                        .then(|| named_segment(route.at(), NodeKind::Type).map(str::to_string))
-                        .flatten(),
+                    // Кэш ключуется адресом предмета, а содержимое ячеек
+                    // читается тем же предметом другим разбором. Без этого
+                    // различия на запрос с текстом вернулась бы нагрузка
+                    // без текста, отложенная структурным чтением.
+                    detail: match route.reader() {
+                        LogicalReader::Xdto => {
+                            named_segment(route.at(), NodeKind::Type).map(str::to_string)
+                        }
+                        LogicalReader::Mxl => mxl_content_requested(route)
+                            .then(|| NodeKind::Body.as_str().to_string()),
+                        _ => None,
+                    },
                 };
                 let mut cache = self.typed_payloads.lock().map_err(|_| {
                     ViewError::detailed(
@@ -354,14 +363,15 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 })?);
         }
         if route.reader() == LogicalReader::Mxl {
-            return self
-                .read
-                .mxl_payload(route.reader_metadata_path().ok_or_else(|| {
+            return self.read.mxl_payload(
+                route.reader_metadata_path().ok_or_else(|| {
                     ViewError::new(
                         RefusalCode::ProviderUnavailable,
                         "MXL route has no typed target",
                     )
-                })?);
+                })?,
+                mxl_content_requested(route),
+            );
         }
         if route.reader() == LogicalReader::Xdto {
             return self.read.xdto_payload(
@@ -1298,7 +1308,7 @@ impl LogicalViewReadAuthority<'_> {
                 )]
             }
             Ok(MetadataChildProfile::Template(MetadataTemplateType::SpreadsheetDocument)) => {
-                let payload = self.read.mxl_payload(child)?;
+                let payload = self.read.mxl_payload(child, false)?;
                 vec![(
                     NodeKind::Area,
                     payload
@@ -1499,6 +1509,23 @@ pub(crate) fn project_module_branch(
         ),
         items,
     )))
+}
+
+/// Текст ячеек области — отдельный адрес `…Area.<Имя>.Body`, а не признак в
+/// фильтре: `props` держат только скаляры, значит содержимое обязано быть
+/// коллекцией, а коллекция обязана быть адресуемой. Структурное чтение области
+/// за текст не платит.
+fn mxl_content_requested(route: &LogicalTreeRoute) -> bool {
+    if route.reader() != LogicalReader::Mxl {
+        return false;
+    }
+    let [.., area, body] = route.at().segments() else {
+        return false;
+    };
+    area.kind() == NodeKind::Area
+        && area.name().is_some()
+        && body.kind() == NodeKind::Body
+        && body.name().is_none()
 }
 
 fn validate_view_filter(

@@ -2659,7 +2659,10 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             self.assertIn(token, joined)
         self.assertIn("does not mean Unica is unusable without Git", normalized)
         self.assertIn("never execute them automatically", normalized)
-        self.assertIn("call `unica.view {}` again", normalized)
+        # Вердикт по корню отвечает `unica.check {}`, факты — `unica.view {}`
+        # (DEC.2026-09-08.ROOT-VERDICT-IN-CHECK). Ссылка обязана вести за
+        # готовностью туда, где она живёт.
+        self.assertIn("call `unica.check {}` again", normalized)
         self.assertNotIn("it does not inspect repository health", joined)
 
     def test_references_do_not_contain_stale_upstream_instructions(self) -> None:

@@ -931,6 +931,64 @@ fn documentation_registry(
 /// wire contract.  Legacy locale, platform-version and result-limit knobs are
 /// not accepted here; the application request uses the canonical defaults and
 /// the workspace-selected platform context.
+/// Узнаёт ссылочный путь страницы среди свободных формулировок.
+///
+/// Поставщики выдают идентификатор со схемой — `configuration-help:<набор>:<путь>`
+/// — или ссылкой. Ни имя метода, ни фраза на языке такой формы не имеют,
+/// поэтому разделение детерминированно и не гадает.
+fn documentation_locator(query: &str) -> Option<&str> {
+    let trimmed = query.trim();
+    if trimmed.contains(char::is_whitespace) {
+        return None;
+    }
+    let looks_like_reference = trimmed.starts_with("http://")
+        || trimmed.starts_with("https://")
+        || trimmed
+            .split_once(':')
+            .is_some_and(|(scheme, rest)| !scheme.is_empty() && !rest.is_empty());
+    looks_like_reference.then_some(trimmed)
+}
+
+/// Открывает страницу по её пути. Ответ точный или `not_found`: локатор,
+/// который начал бы предлагать похожее, перестал бы быть локатором — этот
+/// самый дефект и развёл `find` на точный и ранжированный.
+fn open_documentation_page(
+    workspace: &WorkspaceContext,
+    document_id: &str,
+    cancellation: &CancellationToken,
+) -> crate::domain::invocation::DomainResult {
+    let opened = (|| {
+        let registry = documentation_registry(workspace, cancellation)?;
+        let context = documentation_context(
+            &crate::infrastructure::platform::full_dump_publication::default_platform_roots(),
+            None,
+            workspace,
+        );
+        crate::application::documentation::get(&registry, document_id, "ru", &context)
+    })();
+    match opened {
+        Ok(data) => {
+            let mut result =
+                crate::domain::invocation::DomainResult::success("unica.docs opened the page");
+            result.data = Some(data);
+            result
+        }
+        Err(error) => {
+            let mut refusal = crate::domain::invocation::DomainResult::canonical_rejection(
+                None,
+                RefusalCode::NotFound,
+                format!("documentation page `{document_id}` was not found: {error}"),
+            );
+            refusal.next.push(serde_json::json!({
+                "tool": "unica.docs",
+                "args": {"query": "<формулировка вопроса>"},
+                "reason": "спросить формулировкой, если точного пути страницы нет",
+            }));
+            refusal
+        }
+    }
+}
+
 pub(crate) fn canonical_v13_docs_search(
     workspace: &WorkspaceContext,
     query: &str,
@@ -970,6 +1028,12 @@ pub(crate) fn canonical_v13_docs_search(
         );
     }
 
+    // Локатор или вопрос — развилка по виду входа, та же, что развела поиск
+    // на точный и ранжированный. У страницы есть собственный ссылочный путь,
+    // и второго входа для него не нужно: `docs` смотрит, что подали.
+    if let Some(document_id) = documentation_locator(query) {
+        return open_documentation_page(workspace, document_id, cancellation);
+    }
     let request = crate::domain::documentation::DocumentationSearchRequest {
         query: query.to_string(),
         source_kinds,
@@ -2717,6 +2781,35 @@ mod tests {
         super::DOCUMENTATION_REGISTRY_STAND_IN_SERIAL
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Развилка обязана быть детерминированной: ни имя метода, ни фраза на
+    /// языке не должны приниматься за путь страницы, иначе `docs` начнёт
+    /// открывать не то, что просили.
+    #[test]
+    fn a_page_reference_is_told_apart_from_a_question_without_guessing() {
+        for locator in [
+            "configuration-help:main:catalogs/valuty.html",
+            "https://its.1c.ru/db/v8std/content/456/hdoc",
+        ] {
+            assert_eq!(
+                super::documentation_locator(locator),
+                Some(locator),
+                "ссылочный путь обязан узнаваться"
+            );
+        }
+        for question in [
+            "СтрНайти",
+            "как удалить элемент массива",
+            "РегистрыСведений СрезПоследних",
+            "",
+        ] {
+            assert_eq!(
+                super::documentation_locator(question),
+                None,
+                "`{question}` — это вопрос, а не путь страницы"
+            );
+        }
     }
 
     #[test]

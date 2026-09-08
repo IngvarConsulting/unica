@@ -875,10 +875,22 @@ def validate_v13_scenario(
         fail_v13_scenario(scenario, "canonical v0.13 result does not contain object data")
         return
     scenario_id = scenario["id"]
-    if scenario_id == "workspace-check":
-        sources = data.get("sources")
-        if data.get("status") != "admitted" or not isinstance(sources, list) or "main" not in sources:
-            fail_v13_scenario(scenario, "check did not admit the BSP main source set")
+    if scenario_id == "workspace-facts":
+        sets = data.get("sourceSets")
+        if not isinstance(sets, list) or not any(
+            isinstance(entry, dict) and entry.get("name") == "main" for entry in sets
+        ):
+            fail_v13_scenario(scenario, "view did not discover the BSP main source set")
+    elif scenario_id == "workspace-check":
+        # Вердикт говорит словарём вердикта и не несёт перечня наборов:
+        # это факт, и он остаётся в `unica.view {}`
+        # (DEC.2026-09-08.ROOT-VERDICT-IN-CHECK).
+        if data.get("status") not in {"passed", "failed"}:
+            fail_v13_scenario(scenario, "check did not answer the workspace verdict")
+        elif not isinstance(data.get("ready"), bool):
+            fail_v13_scenario(scenario, "workspace verdict carries no readiness")
+        elif "sources" in data:
+            fail_v13_scenario(scenario, "workspace verdict still carries the source-set list")
     elif scenario_id == "configuration-view":
         if data.get("kind") != "Configuration" or not isinstance(data.get("branches"), list):
             fail_v13_scenario(scenario, "view did not return the BSP Configuration projection")
@@ -1367,8 +1379,15 @@ def build_assessment_report(
     scenarios.append(run_tools_list_scenario(run_unica, bsp_root, cache_dir, timeout_seconds))
     v13_scenarios = [
         (
+            "workspace-facts",
+            "Discover the BSP workspace",
+            "unica.view",
+            {},
+            True,
+        ),
+        (
             "workspace-check",
-            "Admit the BSP workspace",
+            "Judge the BSP workspace",
             "unica.check",
             {},
             True,
