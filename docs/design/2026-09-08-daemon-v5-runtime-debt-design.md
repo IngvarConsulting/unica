@@ -313,8 +313,52 @@ receipt-authority живой. Обвязка больше не продвига�
 `INV.APP.DAEMON-INVOCATION-HANDOFF`; проверка — `owner_promotes_a_slow_inline_attempt_to_a_task_at_the_cutoff`,
 живой рантайм без признака. Все 56 тестов контракта зелёные; два теста lib под
 признаком (`scenario_owner_helpers_cannot_bypass_the_actor_store_boundary`,
-`late_cancel_preserves_the_committed_actor_bound_task_terminal`) остаются
-красными до F4.
+`late_cancel_preserves_the_committed_actor_bound_task_terminal`) на этом шаге
+ещё красные — их закрывает F4.
+
+**Шаг F4 — бегунок-наблюдатель.** Диспетчер действий
+`run_supported_receipt_scenario_for_test` больше не делает ни одного
+durable-перехода. Сняты: подтверждение мимо демона
+(`acknowledge_without_startup` — теперь `exchange_once` по проводу, а при живом
+демоне `acknowledge_on_live_daemon`), терминализация за упавший процесс на трёх
+путях (`Restart`, крэши `ReservedBegun` и `TaskPromisedUnbound` — крэш объявляет
+выход процесса, как соседние точки, и квитанцию сверяет старт преемника; ответа
+упавший submit не отдаёт), крючок `bound_task_override` (его работу делает
+`PipelineSlot::take_owner_materialized` из F3) и крючок `staged_handoff` (рантайм
+перечитывает устаревшую за паузу квитанцию сам —
+`reread_handoff_after_pause`). `rotate_receipt_generation` ходит через актора, а
+не открывает `ReceiptLedgerStore`.
+
+Оставшиеся записи вынесены в помощников, чьё имя называет владельца:
+`seed_receipt_state`, `seed_staged_cross_store_terminal`,
+`seed_direct_probe_terminal` (засев живым рантаймом — решение пользователя
+08.09.2026 «живой владелец для посева»), `run_direct_load` (нагрузка),
+`acknowledge_on_retained_actor` (слушателя нет, актор — единственный владелец),
+`corrupt_receipt_identity_index`, `rotate_receipt_generation` и
+`stage_terminal_as_second_owner`. Последний — единственная запись, которую
+пробовали снять и вернули: терминал ставится поверх попытки, припаркованной на
+`BeforeTaskStoreCreate`, то есть это чередование **второго** владельца, а не
+переход за наблюдаемую попытку; без него
+`oversized_result_and_uncertain_store_commit_fail_closed` не доходит до
+`BoundHandoffTerminalStaged`. Отсюда и формулировка правила: бегунок не пишет за
+наблюдаемую попытку, но играет других владельцев по описи.
+
+`skip_next_startup_reconciliation` осталась фикстурой ровно там, где обвязка
+поднимает своего демона под один запрос, которого в production уже поднят
+(воротные операции, отмена, чтение Task, `start_blocked_submit`,
+подтверждение); разводит её `lazy_session`, который бегунок раньше
+игнорировал: сессия, владеющая попыткой, получает посев, ленивая встречает
+терминал преемника. После этого
+`late_cancel_preserves_the_committed_actor_bound_task_terminal` зелёный.
+
+Страж `scripts/ci/check-receipt-harness-boundary.py` с
+`tests/ci/test_receipt_harness_boundary.py` держит опись «владелец → переход»,
+запрет записи в диспетчере и запрет имён `ReceiptLedgerStore`/`ReceiptLedgerPort`.
+Страж на `syn` `scenario_owner_helpers_cannot_bypass_the_actor_store_boundary`
+снят — он проверял часть того же и жил в полосе, которую не гоняет ни один ярус.
+Решение `DEC.2026-09-08.LEDGER-HARNESS-OBSERVES-ONLY`, правило
+`INV.TEST.LEDGER-HARNESS-OBSERVES`. Контракт 56/56, полоса lib под признаком
+зелёная, `tests/ci` — 866, `tests/arch` — 127.
 
 ## Открытые вопросы
 
