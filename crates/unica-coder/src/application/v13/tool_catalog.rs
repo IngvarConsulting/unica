@@ -484,6 +484,18 @@ mod tests {
         );
     }
 
+    /// Свод объявлен закрытым набором и по умолчанию текстовый: третий свод
+    /// нельзя добавить молча, а существующий вызов без `corpus` обязан
+    /// остаться текстовым поиском, каким он был.
+    #[test]
+    fn search_publishes_exactly_two_corpora_and_defaults_to_text() {
+        let catalog = catalog_for(SurfaceRelease::V13).expect("canonical catalog");
+        let corpus = input_field(&catalog.tools, "search", "corpus");
+        assert_eq!(corpus["type"], "string");
+        assert_eq!(corpus["enum"], serde_json::json!(["text", "names"]));
+        assert_eq!(corpus["default"], "text");
+    }
+
     #[test]
     fn v13_catalog_locks_the_eight_domain_contracts_without_publishing_them() {
         let catalog =
