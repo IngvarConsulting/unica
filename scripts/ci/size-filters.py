@@ -11,7 +11,8 @@
 `--write` переписывает выражение в `.config/nextest.toml` между метками, беря
 имена тестов из `cargo nextest list --message-format json` (нужен `cargo`);
 страж размера в `tests/ci` читает то же выражение без `cargo` и проверяет, что
-каждый файл с процессом или сокетом в нём назван.
+каждый файл с процессом или сокетом в нём назван, а внутри терма названы все
+встроенные модули тестов этого файла.
 """
 
 from __future__ import annotations
@@ -68,15 +69,19 @@ def declared(module: tuple[str, ...], sources: dict[tuple[str, ...], tuple[bool,
     return any(pattern.search(path.read_text(encoding="utf-8", errors="replace")) for _, path in sources.values())
 
 
-def flagged_modules(root: Path) -> list[tuple[str, str]]:
-    """(крейт, модуль) файлов дерева с процессом или сокетом, в которых есть тесты."""
+def flagged_modules(root: Path) -> list[tuple[str, str, Path]]:
+    """(крейт, модуль, файл) файлов дерева с процессом или сокетом, в которых есть тесты.
+
+    Файл отдаётся вместе с модулем: страж размера разбирает его исходник, чтобы
+    сверить с термом встроенные модули тестов.
+    """
     flagged = []
     for crate, modules in source_modules(root).items():
         for module, (marked, path) in modules.items():
             text = path.read_text(encoding="utf-8", errors="replace")
             # Тест — атрибут в начале строки; упоминание в строке или комментарии не в счёт.
             if marked and re.search(r"^\s*#\[test\]", text, re.M) and declared(module, modules):
-                flagged.append((crate, "::".join(module)))
+                flagged.append((crate, "::".join(module), path))
     return flagged
 
 
