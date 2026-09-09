@@ -14,10 +14,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import queue
 import subprocess
 import sys
-import threading
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
