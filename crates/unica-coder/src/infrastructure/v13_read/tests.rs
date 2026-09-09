@@ -1773,6 +1773,89 @@ fn refusal_codes(result: &crate::domain::invocation::DomainResult) -> Vec<&str> 
         .collect()
 }
 
+/// Порядок команд, групп и дочерних подсистем — три из пяти секций
+/// командного интерфейса. Две из них наружу не выходили вовсе, а писать то,
+/// чего инструмент не показывает, нельзя: предпросмотр правки нечем
+/// подтвердить, а забор ревизии по прочитанному над невидимым фактом
+/// несостоятелен.
+#[test]
+fn the_command_interface_shows_every_order_it_holds() {
+    let fixture = RealReaderFixture::new();
+    write(
+        &fixture
+            .source
+            .join("Subsystems/Sales/Ext/CommandInterface.xml"),
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<CommandInterface xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20">
+	<CommandsOrder>
+		<Command name="Catalog.Items.StandardCommand.OpenList">
+			<CommandGroup>NavigationPanelImportant</CommandGroup>
+		</Command>
+	</CommandsOrder>
+	<SubsystemsOrder>
+		<Subsystem>Subsystem.Sales</Subsystem>
+	</SubsystemsOrder>
+	<GroupsOrder>
+		<Group>NavigationPanelImportant</Group>
+		<Group>NavigationPanelSeeAlso</Group>
+	</GroupsOrder>
+</CommandInterface>
+"#,
+    );
+    let service = fixture.view_service();
+    let at = "main:Subsystem.Sales.Interface";
+
+    let node = service.view(ViewRequest::new(at).unwrap());
+    assert!(node.ok, "{:?}", refusal_codes(&node));
+    let branches = node.data.as_ref().unwrap()["branches"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let branch = |kind: &str| {
+        branches
+            .iter()
+            .find(|branch| branch["at"] == format!("{at}.{kind}"))
+            .cloned()
+    };
+    assert_eq!(branch("Group").unwrap()["count"], 2, "{branches:?}");
+    assert_eq!(branch("Subsystem").unwrap()["count"], 1, "{branches:?}");
+
+    // Группы идут в объявленном порядке, и пустая группа остаётся видимой:
+    // порядок объявляется отдельно от наполнения.
+    let groups = service.view(ViewRequest::new(&format!("{at}.Group")).unwrap());
+    assert!(groups.ok, "{:?}", refusal_codes(&groups));
+    let items = groups.data.as_ref().unwrap()["items"].as_array().unwrap();
+    assert_eq!(items[0]["title"], "NavigationPanelImportant");
+    assert_eq!(items[0]["commands"], 1);
+    assert_eq!(items[1]["title"], "NavigationPanelSeeAlso");
+    assert_eq!(items[1]["commands"], 0);
+
+    // Внутри группы — её команды в порядке `CommandsOrder`.
+    let one =
+        service.view(ViewRequest::new(&format!("{at}.Group.NavigationPanelImportant")).unwrap());
+    assert!(one.ok, "{:?}", refusal_codes(&one));
+    let ordered = one.data.as_ref().unwrap()["items"].as_array().unwrap();
+    assert_eq!(ordered.len(), 1);
+    assert_eq!(ordered[0]["order"], 1);
+    assert_eq!(
+        ordered[0]["command"],
+        "Catalog.Items.StandardCommand.OpenList"
+    );
+
+    // Ссылка платформы дополняется до адреса, по которому можно спуститься.
+    let children = service.view(ViewRequest::new(&format!("{at}.Subsystem")).unwrap());
+    assert!(children.ok, "{:?}", refusal_codes(&children));
+    assert_eq!(
+        children.data.as_ref().unwrap()["items"][0]["at"],
+        "main:Subsystem.Sales"
+    );
+
+    // Группы, которой в порядке нет, не существует и для чтения.
+    let missing = service.view(ViewRequest::new(&format!("{at}.Group.Нет")).unwrap());
+    assert!(!missing.ok);
+    assert_eq!(missing.diagnostics[0]["code"], "not_found");
+}
+
 #[test]
 fn template_area_cell_content_is_a_branch_read_only_when_its_address_is_asked() {
     let fixture = RealReaderFixture::new();
