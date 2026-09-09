@@ -31,8 +31,9 @@ import tree_sitter_rust
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 NEXTEST_TOML = REPO_ROOT / ".config" / "nextest.toml"
-# `#[test]` и `#[tokio::test]` дают тест-кейс; `#[cfg(test)]` — нет: у него скобки.
-TEST_ATTRIBUTE = re.compile(r"#\[(?:[A-Za-z0-9_]+::)*test\]")
+# Тест-кейс дают `#[test]`, `#[tokio::test]` и они же со списком аргументов.
+# `#[cfg(test)]` — не тест: `test` там аргумент, а не хвост пути атрибута.
+TEST_ATTRIBUTE = re.compile(r"#\[(?:[A-Za-z0-9_]+::)*test(?:\(.*\))?\]")
 # Терм перечисления: `test(/^модуль::(a|b)::/)`. Второй вид — тесты на верхнем
 # уровне файла: `test(/^модуль::[^:]+$/)`.
 ENUMERATED_TERM = re.compile(r"test\(/\^([A-Za-z0-9_:]+)::\(([^)]*)\)::/\)")
@@ -93,11 +94,19 @@ class InlineTestModuleReadingTests(unittest.TestCase):
         cases = {
             "встроенный модуль с тестами": (b"mod a_tests { #[test] fn t() {} }", ({"a_tests"}, False)),
             "тесты tokio внутри модуля": (b"mod b_tests { #[tokio::test] async fn t() {} }", ({"b_tests"}, False)),
+            "тесты tokio с аргументами": (
+                b'mod f_tests { #[tokio::test(flavor = "multi_thread")] async fn t() {} }',
+                ({"f_tests"}, False),
+            ),
             "cfg(test) сам по себе не тест": (b"#[cfg(test)] mod c { fn helper() {} }", (set(), False)),
             "модуль-файл без тела": (b"mod d;", (set(), False)),
             "модуль без тестов": (b"mod e { fn helper() {} }", (set(), False)),
             "тест на верхнем уровне": (b"#[test]\nfn t() {}", (set(), True)),
             "тест tokio на верхнем уровне": (b"#[tokio::test]\nasync fn t() {}", (set(), True)),
+            "тест tokio с аргументами на верхнем уровне": (
+                b'#[tokio::test(flavor = "multi_thread")]\nasync fn t() {}',
+                (set(), True),
+            ),
             "тест за чужим атрибутом": (b'#[cfg(feature="x")]\n#[test]\nfn t() {}', (set(), True)),
             "вложенный модуль засчитан внешнему": (b"mod outer { mod inner { #[test] fn t() {} } }", ({"outer"}, False)),
             "функция без атрибута": (b"fn plain() {}", (set(), False)),
