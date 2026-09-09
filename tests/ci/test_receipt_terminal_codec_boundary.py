@@ -638,6 +638,103 @@ class ReceiptTerminalCodecBoundaryTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
 
+    def test_the_store_is_a_directory_not_one_file(self) -> None:
+        """Хранилище разложено по файлам: правила пути держатся на всём модуле."""
+        store_child = Path(
+            "crates/unica-coder/src/infrastructure/receipt_ledger/records.rs"
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            write_tree(
+                root,
+                {
+                    STORE_PATH: "mod records;\nfn publish() {\n"
+                    "    let _slot = DirectReceiptWriteSlot::new(key);\n}\n",
+                    # Ребёнок хранилища — тоже хранилище: слот ему разрешён,
+                    # а переканонизация Direct-терминала запрещена, как корню.
+                    store_child: "fn build() {\n"
+                    "    let _slot = DirectReceiptWriteSlot::new(key);\n"
+                    "    let _ = canonical_v5_terminal(outcome);\n}\n",
+                },
+            )
+
+            result = run_guard(root)
+
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("receipt_ledger/records.rs", result.stdout)
+        self.assertIn("must not canonicalize a Direct terminal", result.stdout)
+        self.assertNotIn("DirectReceiptWriteSlot::new is owned", result.stdout)
+
+    def test_a_test_module_in_its_own_file_is_test_code(self) -> None:
+        """`#[cfg(test)] mod tests;` — файл целиком тестовый, как и блок."""
+        store_tests = Path(
+            "crates/unica-coder/src/infrastructure/receipt_ledger/tests.rs"
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            write_tree(
+                root,
+                {
+                    STORE_PATH: "fn publish() {\n"
+                    "    let _slot = DirectReceiptWriteSlot::new(key);\n}\n"
+                    "#[cfg(test)]\nmod tests;\n",
+                    store_tests: "fn fixture() {\n"
+                    "    let _ = canonical_v5_terminal(outcome);\n"
+                    "    let _ = serde_json::to_vec(&record);\n}\n",
+                },
+            )
+
+            result = run_guard(root)
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_a_plain_file_module_is_not_test_code(self) -> None:
+        """Без `#[cfg(test)]` соседний файл — обычное production-хранилище."""
+        store_child = Path(
+            "crates/unica-coder/src/infrastructure/receipt_ledger/encoding.rs"
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            write_tree(
+                root,
+                {
+                    STORE_PATH: "mod encoding;\n",
+                    store_child: "fn encode() {\n"
+                    "    let _ = canonical_v5_terminal(outcome);\n}\n",
+                },
+            )
+
+            result = run_guard(root)
+
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("must not canonicalize a Direct terminal", result.stdout)
+
+    def test_a_commented_test_module_cannot_hide_a_store_child(self) -> None:
+        """`#[cfg(test)] mod records;` в комментарии не делает файл тестовым."""
+        store_child = Path(
+            "crates/unica-coder/src/infrastructure/receipt_ledger/records.rs"
+        )
+        for disguise in (
+            "// #[cfg(test)]\n// mod records;\n",
+            '/*\n#[cfg(test)]\nmod records;\n*/\n',
+            'const SAMPLE: &str = r#"\n#[cfg(test)]\nmod records;\n"#;\n',
+        ):
+            with self.subTest(disguise=disguise.split("\n")[0]), tempfile.TemporaryDirectory() as temporary_directory:
+                root = Path(temporary_directory)
+                write_tree(
+                    root,
+                    {
+                        STORE_PATH: disguise + "mod records;\n",
+                        store_child: "fn build() {\n"
+                        "    let _ = canonical_v5_terminal(outcome);\n}\n",
+                    },
+                )
+
+                result = run_guard(root)
+
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn("must not canonicalize a Direct terminal", result.stdout)
+
     def test_current_repository_complies_with_terminal_codec_boundary(self) -> None:
         result = run_guard(REPO_ROOT)
 
