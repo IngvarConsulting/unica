@@ -6,6 +6,7 @@ pub(crate) mod protocol_v5;
 pub(crate) mod runtime_v5;
 pub(crate) mod server;
 pub(crate) mod terminal_codec_v5;
+mod v13_documentation;
 mod v13_infobase_exports;
 mod v13_read_modes;
 mod v13_run_dictionary;
