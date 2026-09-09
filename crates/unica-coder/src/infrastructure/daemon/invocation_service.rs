@@ -479,12 +479,14 @@ impl ActorBoundInvocation {
                         .collect(),
                 })
             }
+            // `Docs` в этом перечне нет: справка отвечает до допуска и
+            // аренды исходников не просит — свод, который читал бы рабочее
+            // пространство, до actor-owned читателя отвечает отказом.
             crate::application::invocation_store::ToolIdentity::View
             | crate::application::invocation_store::ToolIdentity::Resolve
             | crate::application::invocation_store::ToolIdentity::Search
             | crate::application::invocation_store::ToolIdentity::Check
-            | crate::application::invocation_store::ToolIdentity::Diff
-            | crate::application::invocation_store::ToolIdentity::Docs => {
+            | crate::application::invocation_store::ToolIdentity::Diff => {
                 let (selected, route) = match self.tool {
                     crate::application::invocation_store::ToolIdentity::View
                     | crate::application::invocation_store::ToolIdentity::Resolve => {

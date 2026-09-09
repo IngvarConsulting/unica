@@ -94,7 +94,7 @@ Search bundled Unica and safe 1C documentation by topic.
 | `query` | string | да | Documentation question or search phrase. |
 | `source` | string | нет | Optional documented source kind, not a provider identity. |
 
-**Результат сейчас:** Поиск по platform-help и development-standard возвращает `data.sections`; configuration-documentation отвечает `unsupported_source` до actor-safe reader (отвечают типизированным `data`)
+**Результат сейчас:** Отвечает до допуска рабочей области; поиск по platform-help и development-standard возвращает `data.sections`; configuration-documentation отвечает `unsupported_source` до actor-safe reader (отвечают типизированным `data`)
 
 **Целевой контракт:** Добавить actor-owned nofollow/cancellation reader для документации конфигурации, адресное получение документа, locale и version
 
@@ -102,6 +102,7 @@ Search bundled Unica and safe 1C documentation by topic.
 
 - Искать по справке платформы или стандартам
 - Получить typed unsupported для документации конфигурации без обхода actor boundary
+- Спросить справку из каталога, который ещё не рабочая область
 
 ## resolve
 
