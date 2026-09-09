@@ -10,6 +10,11 @@
 Open `index.html` directly. No network connection is required.
 The production plugin icon is not changed by this package.
 
+The link cards of the published site are not here. Each page carries its own,
+set from that page's own heading, under `docs/pages/og/`; they are drawn by
+`scripts/dev/render-social-cards.py`. The `ads/` banner is not the card to
+point `og:image` at — it is 1200×628 and speaks for every page at once.
+
 ## Palette
 
 | Token | Value | Use |
