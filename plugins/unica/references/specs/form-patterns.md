@@ -148,7 +148,7 @@
 
 ## UX-правила для элементов и компоновки форм
 
-Краткая адаптация [1C Design Guide](https://github.com/Oxotka/1CDesignGuide/tree/edc05eaf5c191250a184b0e185006bf4b412f7a5): применяйте её вместе с поддерживаемым DSL `unica.form.compile`, а не как описание неподдерживаемых элементов платформы.
+Краткая адаптация [1C Design Guide](https://github.com/Oxotka/1CDesignGuide/tree/edc05eaf5c191250a184b0e185006bf4b412f7a5): применяйте её вместе с тем, что принимают операции `form.create` и `element.add`, а не как описание неподдерживаемых элементов платформы.
 
 ### Элементы
 
