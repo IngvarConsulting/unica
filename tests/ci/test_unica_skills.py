@@ -367,7 +367,7 @@ IN_SCOPE_TOOLS = {
     "mxl-compile": "unica.mxl.compile",
     "mxl-decompile": "unica.mxl.decompile",
     "mxl-info": "unica.view",
-    "role-compile": "unica.role.compile",
+    "role-compile": "unica.apply",
     "role-edit": "unica.apply",
 }
 
@@ -796,7 +796,7 @@ TASK_EXAMPLE_ARGUMENT_KEYS = {
     "mxl-decompile": ["TemplatePath"],
     # Читающий макет адресуется логически: файлового селектора у `view` нет.
     "mxl-info": ["at"],
-    "role-compile": ["JsonPath", "OutputDir"],
+    "role-compile": ["at", "ops"],
     "role-edit": ["at", "ops"],
 }
 
@@ -817,7 +817,7 @@ SCENARIO_PRESERVING_MIN_MCP_CALLS = {
     "mxl-info": 3,
     "role-edit": 1,
     "dcs-edit": 4,
-    "role-compile": 3,
+    "role-compile": 4,
 }
 
 ALLOWED_ADDITIONAL_MCP_TOOL_NAMES = {
@@ -934,9 +934,14 @@ SCENARIO_PRESERVING_TOKENS = {
         '"op": "childSubsystem.add"',
         '"op": "props.set"',
     ],
+    # Пресет разворачивает скилл: инструмент принимает одно право за
+    # операцию, и предпросмотр показывает их поимённо, а не имя пресета.
     "role-compile": [
+        '"op": "role.create"',
+        '"op": "right.set"',
         '"name": "unica.check"',
         '"name": "unica.view"',
+        "Шаблоны RLS",
     ],
     "dcs-compile": [
         '"DefinitionFile": "<json>"',

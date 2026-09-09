@@ -169,6 +169,197 @@ fn required_string<'a>(
         })
 }
 
+/// Разбор операций командного интерфейса.
+///
+/// Адрес несёт интерфейс, а команда лежит в аргументах — тот же приём, что у
+/// `right.set`: предмет операции — пара «интерфейс и ссылка на команду», а
+/// адрес может нести только одно. Приписать факт подсистемы адресу команды,
+/// живущей в другом месте, было бы неверно.
+fn parse_command_interface_operation(
+    section: &str,
+    target: &QualifiedAddress,
+    args: &Map<String, Value>,
+    op_index: usize,
+    binding: &ProviderRootBinding,
+) -> Result<FormResourcePlanKind, ApplyPlanError> {
+    let segments = target.segments();
+    let (address, relative) = match segments {
+        // Порядок подсистем верхнего уровня живёт в корневом документе.
+        [root] if root.kind() == NodeKind::Configuration => {
+            if section != "subsystemOrder" {
+                return Err(bad(
+                    op_index,
+                    "at",
+                    format!("`{section}.set` targets a subsystem command interface: `Subsystem.Name.Interface`"),
+                ));
+            }
+            (
+                target.to_string(),
+                PathBuf::from("Ext").join("CommandInterface.xml"),
+            )
+        }
+        [.., owner, facet]
+            if facet.kind() == NodeKind::Interface && owner.kind() == NodeKind::Subsystem =>
+        {
+            let owner_name = owner
+                .name()
+                .ok_or_else(|| bad(op_index, "at", "the subsystem must be named"))?;
+            let owner_address = MetadataAddress::parse(
+                PLATFORM_XML_8_3_27_FORMAT_2_20,
+                &format!("Subsystem.{owner_name}"),
+            )
+            .map_err(|error| bad(op_index, "at", error.to_string()))?;
+            let relative = attached_resource_relative(
+                &owner_address,
+                "CommandInterface.xml",
+                binding.source_kind(),
+            )
+            .map_err(|error| bad(op_index, "at", error))?;
+            (target.to_string(), relative)
+        }
+        _ => {
+            return Err(bad(
+                op_index,
+                "at",
+                "a command-interface operation targets `Subsystem.Name.Interface`",
+            ))
+        }
+    };
+    let edit = match section {
+        "commandVisibility" => {
+            let items = interface_items(args, op_index)?;
+            let mut values = Vec::with_capacity(items.len());
+            for (index, item) in items.iter().enumerate() {
+                let item = item.as_object().ok_or_else(|| {
+                    bad(
+                        op_index,
+                        &format!("items[{index}]"),
+                        "each item is an object",
+                    )
+                })?;
+                let command =
+                    required_string(item, "command", op_index, &format!("items[{index}]"))?;
+                let visible = match item.get("visible") {
+                    Some(Value::Bool(visible)) => visible,
+                    _ => {
+                        return Err(bad(
+                            op_index,
+                            &format!("items[{index}].visible"),
+                            "`visible` must be a boolean",
+                        ))
+                    }
+                };
+                values.push((command.to_string(), *visible));
+            }
+            InterfaceEdit::Visibility(values)
+        }
+        "commandPlacement" => {
+            let items = interface_items(args, op_index)?;
+            let mut values = Vec::with_capacity(items.len());
+            for (index, item) in items.iter().enumerate() {
+                let item = item.as_object().ok_or_else(|| {
+                    bad(
+                        op_index,
+                        &format!("items[{index}]"),
+                        "each item is an object",
+                    )
+                })?;
+                let command =
+                    required_string(item, "command", op_index, &format!("items[{index}]"))?;
+                let group = item
+                    .get("group")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                let placement = item
+                    .get("placement")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                if group.is_none() && placement.is_none() {
+                    return Err(bad(
+                        op_index,
+                        &format!("items[{index}]"),
+                        "placement needs `group` and/or `placement`",
+                    ));
+                }
+                values.push((command.to_string(), group, placement));
+            }
+            InterfaceEdit::Placement(values)
+        }
+        "commandOrder" => {
+            let values = required_values(args, op_index, &["group", "commands"])?;
+            InterfaceEdit::CommandOrder {
+                group: values
+                    .get("group")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                commands: listed_strings(values, "commands", op_index)?,
+            }
+        }
+        "groupOrder" => {
+            let values = required_values(args, op_index, &["groups"])?;
+            InterfaceEdit::GroupOrder(listed_strings(values, "groups", op_index)?)
+        }
+        _ => {
+            let values = required_values(args, op_index, &["subsystems"])?;
+            InterfaceEdit::SubsystemOrder(listed_strings(values, "subsystems", op_index)?)
+        }
+    };
+    Ok(FormResourcePlanKind::CommandInterface {
+        address,
+        relative,
+        edit,
+    })
+}
+
+fn interface_items(
+    args: &Map<String, Value>,
+    op_index: usize,
+) -> Result<&Vec<Value>, ApplyPlanError> {
+    args.get("items")
+        .and_then(Value::as_array)
+        .filter(|items| !items.is_empty())
+        .ok_or_else(|| bad(op_index, "items", "`items` must be a non-empty array"))
+}
+
+/// Полная последовательность, а не добавка: порядок — отношение между всеми
+/// элементами, и частичный список некуда вставить.
+fn listed_strings(
+    values: &Map<String, Value>,
+    key: &str,
+    op_index: usize,
+) -> Result<Vec<String>, ApplyPlanError> {
+    let array = values.get(key).and_then(Value::as_array).ok_or_else(|| {
+        bad(
+            op_index,
+            &format!("values.{key}"),
+            format!("`{key}` must be an array"),
+        )
+    })?;
+    let mut names = Vec::with_capacity(array.len());
+    for (index, item) in array.iter().enumerate() {
+        let name = item
+            .as_str()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| {
+                bad(
+                    op_index,
+                    &format!("values.{key}[{index}]"),
+                    "each entry is a non-empty name",
+                )
+            })?;
+        names.push(name.to_string());
+    }
+    if names.is_empty() {
+        return Err(bad(
+            op_index,
+            &format!("values.{key}"),
+            "the order is a complete sequence and cannot be empty",
+        ));
+    }
+    Ok(names)
+}
+
 /// Names listed in `items` (objects with `key`, or bare strings), or a single
 /// `values.<key>`; the closed argument shapes for list-like operations.
 
