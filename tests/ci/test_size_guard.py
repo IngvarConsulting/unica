@@ -9,6 +9,10 @@ Cargo. Выражение объявлено в `.config/nextest.toml` дваж�
 `mod *_tests` в уже помеченном файле меняет вывод генератора, и без второй
 проверки его тесты молча остаются в воротах `pr`.
 
+Что считать тестом, решает разбор ниже — один раз на обе глубины. Второй
+копии этого правила нет нигде: `flagged_modules` отдаёт все файлы с процессом
+или сокетом, а те, где тестов не нашлось, отсеиваются здесь.
+
 Вторая проверка читает исходники, а не `cargo`, поэтому тестов, порождённых
 макросом, она не видит — это та же цена, что страж уже платит за отказ от
 `cargo`; недосмотр безопасен, страж лишь недосчитается модуля. Обратная
@@ -23,6 +27,7 @@ import importlib.util
 import re
 import tomllib
 import unittest
+from functools import cache
 from pathlib import Path
 
 from tree_sitter import Language, Parser
@@ -87,6 +92,23 @@ def inline_test_modules(source: bytes) -> tuple[set[str], bool]:
     return modules, top_level
 
 
+@cache
+def flagged_sources() -> tuple[tuple[str, str, frozenset[str], bool], ...]:
+    """Помеченные файлы, в которых нашлись тесты: (крейт, модуль, модули, верхний уровень).
+
+    Файл без тестов пропускается: генератор не выпишет ему терм, объявлять
+    нечего. Разбор идёт один раз на обе проверки — их у стража две, а дерево
+    одно.
+    """
+    module = load_size_filters()
+    found = []
+    for crate, path, source in module.flagged_modules(REPO_ROOT):
+        modules, top_level = inline_test_modules(source.read_bytes())
+        if modules or top_level:
+            found.append((crate, path, frozenset(modules), top_level))
+    return tuple(found)
+
+
 class InlineTestModuleReadingTests(unittest.TestCase):
     """Разбор исходника закреплён: молча ослепший разбор снова обнулил бы стража."""
 
@@ -132,24 +154,21 @@ class SizeGuardTests(unittest.TestCase):
 
     def test_every_module_with_a_process_or_socket_is_declared_medium(self) -> None:
         """Файл с `std::process` или `std::net` не бывает `small` молча."""
-        module = load_size_filters()
         declared = set(re.findall(r"test\(/\^([A-Za-z0-9_:]+)::", self.medium))
 
-        for crate, path, _ in module.flagged_modules(REPO_ROOT):
+        for crate, path, _, _ in flagged_sources():
             with self.subTest(module=f"{crate}::{path}"):
                 self.assertIn(path, declared)
 
     def test_every_inline_test_module_is_named_in_its_term(self) -> None:
         """Новый `mod *_tests` в помеченном файле не уезжает в ворота `pr` молча."""
-        module = load_size_filters()
         enumerated: dict[str, set[str]] = {}
         for match in ENUMERATED_TERM.finditer(self.medium):
             enumerated.setdefault(match.group(1), set()).update(match.group(2).split("|"))
         direct = set(DIRECT_TERM.findall(self.medium))
         remedy = "перезапустите `python3 scripts/ci/size-filters.py --write`"
 
-        for crate, path, source in module.flagged_modules(REPO_ROOT):
-            modules, top_level = inline_test_modules(source.read_bytes())
+        for crate, path, modules, top_level in flagged_sources():
             with self.subTest(module=f"{crate}::{path}"):
                 self.assertEqual(
                     sorted(modules - enumerated.get(path, set())),

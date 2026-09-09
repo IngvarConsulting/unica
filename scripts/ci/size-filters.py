@@ -12,7 +12,8 @@
 имена тестов из `cargo nextest list --message-format json` (нужен `cargo`);
 страж размера в `tests/ci` читает то же выражение без `cargo` и проверяет, что
 каждый файл с процессом или сокетом в нём назван, а внутри терма названы все
-встроенные модули тестов этого файла.
+встроенные модули тестов этого файла. Что считать тестом, решает разбор в
+страже — здесь второго ответа на этот вопрос нет.
 """
 
 from __future__ import annotations
@@ -70,17 +71,17 @@ def declared(module: tuple[str, ...], sources: dict[tuple[str, ...], tuple[bool,
 
 
 def flagged_modules(root: Path) -> list[tuple[str, str, Path]]:
-    """(крейт, модуль, файл) файлов дерева с процессом или сокетом, в которых есть тесты.
+    """(крейт, модуль, файл) файлов дерева с процессом или сокетом.
 
-    Файл отдаётся вместе с модулем: страж размера разбирает его исходник, чтобы
-    сверить с термом встроенные модули тестов.
+    Есть ли в файле тесты, здесь не решается: файл отдаётся вместе с путём, а
+    ответ страж берёт из своего разбора. Регулярка на этом месте была второй
+    копией правила «что считать тестом» и расходилась со стражем — она не видела
+    `#[tokio::test]`, и такой файл выпадал из проверки целиком.
     """
     flagged = []
     for crate, modules in source_modules(root).items():
         for module, (marked, path) in modules.items():
-            text = path.read_text(encoding="utf-8", errors="replace")
-            # Тест — атрибут в начале строки; упоминание в строке или комментарии не в счёт.
-            if marked and re.search(r"^\s*#\[test\]", text, re.M) and declared(module, modules):
+            if marked and declared(module, modules):
                 flagged.append((crate, "::".join(module), path))
     return flagged
 
