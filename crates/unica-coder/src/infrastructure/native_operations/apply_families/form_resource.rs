@@ -169,9 +169,6 @@ fn required_string<'a>(
         })
 }
 
-/// Names listed in `items` (objects with `key`, or bare strings), or a single
-/// `values.<key>`; the closed argument shapes for list-like operations.
-
 /// Разбор операций командного интерфейса.
 ///
 /// Адрес несёт интерфейс, а команда лежит в аргументах — тот же приём, что у
@@ -314,10 +311,10 @@ fn parse_command_interface_operation(
     })
 }
 
-fn interface_items<'a>(
-    args: &'a Map<String, Value>,
+fn interface_items(
+    args: &Map<String, Value>,
     op_index: usize,
-) -> Result<&'a Vec<Value>, ApplyPlanError> {
+) -> Result<&Vec<Value>, ApplyPlanError> {
     args.get("items")
         .and_then(Value::as_array)
         .filter(|items| !items.is_empty())
@@ -363,6 +360,8 @@ fn listed_strings(
     Ok(names)
 }
 
+/// Names listed in `items` (objects with `key`, or bare strings), or a single
+/// `values.<key>`; the closed argument shapes for list-like operations.
 fn listed_names(
     args: &Map<String, Value>,
     key: &str,
