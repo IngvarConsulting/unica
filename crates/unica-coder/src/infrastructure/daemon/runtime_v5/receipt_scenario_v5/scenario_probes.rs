@@ -159,6 +159,45 @@ impl V5TaskProjection {
 }
 
 impl V5ReceiptRuntime {
+    /// Публикация терминала поверх точного provisional и ретирование
+    /// собственной квитанции — та же пара, что делает боевой
+    /// `publish_staged_handoff_terminal_reply`. Владелец один: попытка,
+    /// которую проба и доводит; `Ok(None)` — отказ проекции, его наблюдает
+    /// диспетчер.
+    pub(super) fn publish_staged_terminal_against_provisional_for_test(
+        &self,
+        staged: &TaskHandoffActorBoundReceipt,
+        reservation: &TaskLinkReservation,
+        expected: &V5StoredInvocationRecord,
+        expected_link_digest: &crate::application::receipt_ledger::TaskLinkDigest,
+        deadline: Instant,
+    ) -> Result<Option<(V5StoredInvocationRecord, TaskTerminalBoundReceipt)>, String> {
+        let (terminal_record, terminal_link) = match self
+            .task_projection
+            .publish_staged_terminal_against_exact_provisional(
+                staged,
+                reservation,
+                expected,
+                expected_link_digest,
+                deadline,
+            ) {
+            Ok(committed) => committed,
+            Err(failure) => {
+                let _ = self.project_task_failure(failure);
+                return Ok(None);
+            }
+        };
+        self.receipt_ledger
+            .complete_staged_task_handoff(
+                staged.key().clone(),
+                staged.record_version(),
+                terminal_link.clone(),
+                deadline,
+            )
+            .map_err(|error| format!("complete exact provisional staged transfer: {error}"))?;
+        Ok(Some((terminal_record, terminal_link)))
+    }
+
     pub(super) fn attempt_task_store_bind_under_gate_for_test(
         &self,
         key: &ReceiptKey,
