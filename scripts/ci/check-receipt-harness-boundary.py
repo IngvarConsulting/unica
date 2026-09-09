@@ -129,9 +129,12 @@ OWNERS: dict[str, frozenset[str]] = {
     ),
     "seed_direct_probe_terminal": frozenset({"publish_direct_terminal", "reserve"}),
     "seed_identity_collision_receipt": frozenset({"reserve"}),
-    # Запись, которую ledger обязан отвергнуть: ключ не тот, и вызов есть
-    # доказательство отказа.
+    # Запись, которую ledger обязан отвергнуть: ключ не тот или предшественник
+    # уже несёт заверенный staged-терминал, и вызов есть доказательство отказа.
     "attempt_mismatched_reserve": frozenset({"reserve"}),
+    "attempt_unstaged_task_bind_against_staged_terminal_for_test": frozenset(
+        {"complete_bound_task_handoff"}
+    ),
     # --- генератор нагрузки: тысячи вызовов через пакетные входы рантайма.
     "run_direct_load": frozenset({"acknowledge_direct_batch", "submit_direct_batch_for_load"}),
     "run_lazy_cancel_storm": frozenset({"publish_cancelled_direct_batch"}),
