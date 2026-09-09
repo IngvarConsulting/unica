@@ -360,7 +360,7 @@ IN_SCOPE_TOOLS = {
     "form-compile": "unica.form.compile",
     "form-edit": "unica.form.edit",
     "interface-edit": "unica.interface.edit",
-    "subsystem-compile": "unica.subsystem.compile",
+    "subsystem-compile": "unica.apply",
     "subsystem-edit": "unica.apply",
     "dcs-compile": "unica.dcs.compile",
     "dcs-edit": "unica.dcs.edit",
@@ -788,7 +788,7 @@ TASK_EXAMPLE_ARGUMENT_KEYS = {
     "form-compile": ["JsonPath", "OutputPath"],
     "form-edit": ["FormPath", "JsonPath"],
     "interface-edit": ["CIPath", "Operation", "Value"],
-    "subsystem-compile": ["Value", "OutputDir"],
+    "subsystem-compile": ["at", "ops"],
     "subsystem-edit": ["at", "ops"],
     "dcs-compile": ["DefinitionFile", "OutputPath"],
     "dcs-edit": ["TemplatePath", "Operation", "Value"],
@@ -811,7 +811,7 @@ SCENARIO_PRESERVING_MIN_MCP_CALLS = {
     "meta-info": 6,
     "form-compile": 4,
     "interface-edit": 8,
-    "subsystem-compile": 4,
+    "subsystem-compile": 3,
     "subsystem-edit": 2,
     "dcs-compile": 5,
     "mxl-info": 3,
@@ -918,10 +918,12 @@ SCENARIO_PRESERVING_TOKENS = {
         '"CreateIfMissing": true',
         '"name": "unica.check"',
     ],
+    # Определение стало типизированными операциями, а родитель — адресом:
+    # JSON-строки внутри JSON и путей к XML на канонической поверхности нет.
     "subsystem-compile": [
-        '"Value": "{\\"name\\":\\"Тест\\"}"',
+        '"op": "subsystem.create"',
         'CommonPicture.Продажи',
-        '"Parent": "config/Subsystems/Продажи.xml"',
+        '"at": "main:Subsystem.Продажи"',
     ],
     # Операция стала именем операции, а не значением поля `Operation`.
     "subsystem-edit": [
