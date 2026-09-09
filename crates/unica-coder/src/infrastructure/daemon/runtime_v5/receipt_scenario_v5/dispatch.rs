@@ -2227,6 +2227,29 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                 )?);
                 bulk_receipt_catalog = Some(catalog);
             }
+            ReceiptScenarioAction::AttemptUnstagedTaskBindAgainstStagedTerminal { label } => {
+                control.arm_skip_next_startup_reconciliation();
+                let daemon_state = DaemonStateDirectory::open(state.path(), &identity)?;
+                let config = scenario_server_config_with_clock(
+                    state.path(),
+                    &identity,
+                    Some(&control),
+                    &clock,
+                );
+                let runtime =
+                    V5ReceiptRuntime::open_with_epoch_clock(&daemon_state, &config, clock.clone())?
+                        .with_hooks_for_test(ScenarioHooks::install(
+                            Arc::clone(&telemetry),
+                            Some(Arc::clone(&control)),
+                        ));
+                control.record_operation_event(&label, "spawned");
+                let refused = runtime.attempt_unstaged_task_bind_against_staged_terminal_for_test(
+                    &exact_key,
+                    Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                )?;
+                control
+                    .record_operation_event(&label, if refused { "refused" } else { "completed" });
+            }
             ReceiptScenarioAction::AttemptTaskStoreBindUnderGate { label } => {
                 control.arm_skip_next_startup_reconciliation();
                 let daemon_state = DaemonStateDirectory::open(state.path(), &identity)?;

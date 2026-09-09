@@ -233,6 +233,9 @@ enum Action {
     AttemptTaskStoreBindUnderGate {
         label: String,
     },
+    AttemptUnstagedTaskBindAgainstStagedTerminal {
+        label: String,
+    },
     ContinueReceiptOwnedAttempt {
         terminal: TerminalFixture,
         label: String,
@@ -1695,6 +1698,7 @@ enum OperationEventState {
     Spawned,
     Blocked,
     Completed,
+    Refused,
     Joined,
 }
 
@@ -3974,6 +3978,7 @@ fn assert_report_raw_bounds(report: &ScenarioReport) {
             OperationEventState::Spawned
             | OperationEventState::Blocked
             | OperationEventState::Completed
+            | OperationEventState::Refused
             | OperationEventState::Joined => {}
         }
     }
@@ -11975,6 +11980,54 @@ fn link_capacity_before_begun_terminalizes_receipt_backed_without_callback() {
     assert_eq!(
         count_event(&report, EventKind::TaskLinkReservationReleased),
         0
+    );
+}
+
+#[test]
+fn unstaged_task_bind_is_refused_against_a_staged_handoff_predecessor() {
+    let report = execute(Scenario::fake(vec![
+        Action::SeedReceipt {
+            state: SeedReceiptState::TaskHandoffActorBoundBegun,
+            cancel_requested: false,
+            staged_terminal: Some(success_payload()),
+        },
+        checkpoint_action("staged"),
+        Action::AttemptUnstagedTaskBindAgainstStagedTerminal {
+            label: "unstaged-bind".to_string(),
+        },
+        checkpoint_action("after-unstaged-bind"),
+    ]));
+
+    let staged = checkpoint(&report, "staged");
+    let staged_receipt = only_receipt(staged);
+    let staged_terminal = staged_receipt
+        .staged_terminal
+        .as_ref()
+        .expect("the fixture must stage a certified terminal on the handoff");
+    assert!(completed_result(staged_terminal).ok);
+
+    // The unstaged witness carries no staged evidence: retiring a staged predecessor
+    // through it would drop the certified terminal, so the ledger must refuse and leave
+    // the receipt for the staged completion.
+    assert_operation_trace(
+        &report,
+        "unstaged-bind",
+        &[OperationEventState::Spawned, OperationEventState::Refused],
+    );
+
+    let after = checkpoint(&report, "after-unstaged-bind");
+    let retained = only_receipt(after);
+    assert_eq!(retained.key, staged_receipt.key);
+    assert_eq!(
+        retained.state,
+        SeedReceiptState::TaskHandoffActorBoundBegun,
+        "a refused bind must not retire the receipt into a deletion witness"
+    );
+    assert_eq!(retained.staged_terminal.as_ref(), Some(staged_terminal));
+    assert_eq!(retained.version, staged_receipt.version);
+    assert_eq!(
+        after.receipt_store_mutations, staged.receipt_store_mutations,
+        "a refused bind must not mutate the durable receipt store"
     );
 }
 

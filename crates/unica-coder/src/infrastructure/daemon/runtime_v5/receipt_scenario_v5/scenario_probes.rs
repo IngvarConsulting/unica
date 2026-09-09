@@ -400,6 +400,50 @@ impl V5ReceiptRuntime {
         Ok(())
     }
 
+    /// Drives the unstaged completed-handoff bind against a predecessor that already
+    /// carries a certified staged terminal — the shape every caller that routes on the
+    /// `ReceiptState` variant alone produces. Reports whether the ledger refused it.
+    pub(super) fn attempt_unstaged_task_bind_against_staged_terminal_for_test(
+        &self,
+        key: &ReceiptKey,
+        deadline: Instant,
+    ) -> Result<bool, String> {
+        let handoff = match self
+            .receipt_ledger
+            .recover(key.clone(), deadline)
+            .map_err(|error| format!("recover staged handoff before unstaged bind: {error}"))?
+        {
+            ReceiptState::TaskHandoffActorBound(handoff)
+                if matches!(
+                    handoff.terminal_stage(),
+                    HandoffTerminalStage::Staged { .. }
+                ) =>
+            {
+                handoff
+            }
+            other => {
+                return Err(format!(
+                    "unstaged bind attempt requires a staged Task handoff, found {}",
+                    other.kind().diagnostic_name()
+                ))
+            }
+        };
+        let (_, bound) = self
+            .task_projection
+            .materialize_bound_handoff(&handoff, self.epoch_ms(), deadline, self.hooks.as_ref())
+            .map_err(|failure| format!("materialize unstaged bound Task: {}", failure.error))?;
+        match self.receipt_ledger.complete_bound_task_handoff(
+            handoff.key().clone(),
+            handoff.record_version(),
+            bound,
+            deadline,
+        ) {
+            Ok(_) => Ok(false),
+            Err(ReceiptLedgerError::ReceiptRowPresentUnsupported) => Ok(true),
+            Err(error) => Err(format!("attempt unstaged Task handoff completion: {error}")),
+        }
+    }
+
     pub(super) fn inject_task_store_capacity_invariant_for_test(
         &self,
         key: &ReceiptKey,
