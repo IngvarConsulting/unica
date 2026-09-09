@@ -229,6 +229,9 @@ pub(crate) enum OperationFamily {
     Mxl,
     Xdto,
     Subsystem,
+    /// Командный интерфейс: видимость, размещение и порядок. Предмет не сам
+    /// объект, а место, которое подсистема ему отводит.
+    Interface,
     Support,
     Code,
     Event,
@@ -256,6 +259,8 @@ enum OperationApplicability {
     Mxl,
     Xdto,
     Subsystem,
+    Interface,
+    InterfaceOrRoot,
     Support,
     Code,
     Event,
@@ -309,6 +314,11 @@ impl OperationApplicability {
                 NodeKind::XdtoPackage | NodeKind::Namespace | NodeKind::Type | NodeKind::Property
             ),
             Self::Subsystem => matches!(kind, NodeKind::Configuration | NodeKind::Subsystem),
+            Self::Interface => kind == NodeKind::Interface,
+            // Порядок подсистем верхнего уровня живёт в корневом документе, а
+            // маршрута `main:Interface` намеренно нет: корень описывается
+            // свойством, а не узлом.
+            Self::InterfaceOrRoot => matches!(kind, NodeKind::Interface | NodeKind::Configuration),
             Self::Support => metadata || kind == NodeKind::Subsystem,
             // A common module is its own module terminal: the read projection
             // already shows it as kind `Module`, and the code planner writes it
@@ -387,6 +397,11 @@ impl OperationSkeleton {
 /// The `can` dictionary prints this as `implemented`, mirroring the honesty
 /// rule of the Run dictionary: a name in the registry is not support.
 pub(crate) const IMPLEMENTED_APPLY_OPERATIONS: &[&str] = &[
+    "commandVisibility.set",
+    "commandPlacement.set",
+    "commandOrder.set",
+    "groupOrder.set",
+    "subsystemOrder.set",
     "mxl.set",
     "event.implement",
     "form.add",
@@ -652,6 +667,11 @@ operation_descriptors!(
     ("childSubsystem.remove", Subsystem, Subsystem, Target),
     ("supportCapability.set", Support, Support, Values),
     ("supportRule.set", Support, Support, Values),
+    ("commandVisibility.set", Interface, Interface, Items),
+    ("commandPlacement.set", Interface, Interface, Items),
+    ("commandOrder.set", Interface, Interface, Values),
+    ("groupOrder.set", Interface, Interface, Values),
+    ("subsystemOrder.set", Interface, InterfaceOrRoot, Values),
     ("code.insert", Code, Code, Text),
     ("code.replace", Code, Code, Text),
     ("event.implement", Event, Event, Target),
@@ -901,12 +921,17 @@ mod tests {
             "childSubsystem.remove",
             "supportCapability.set",
             "supportRule.set",
+            "commandVisibility.set",
+            "commandPlacement.set",
+            "commandOrder.set",
+            "groupOrder.set",
+            "subsystemOrder.set",
             "code.insert",
             "code.replace",
             "event.implement",
         ];
         let registry = OperationRegistry::closed();
-        assert_eq!(expected.len(), 96);
+        assert_eq!(expected.len(), 101);
         assert_eq!(registry.names(), expected);
         let mut unique = registry.names().to_vec();
         unique.sort_unstable();

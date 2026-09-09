@@ -460,9 +460,13 @@ pub(crate) fn plan_hidden_v13_apply(
                     )?;
                     ParsedApplyOperation::Metadata(IndexedPlanOperation::new(op_index, parsed))
                 }
+                // Командный интерфейс — присоединённый ресурс подсистемы,
+                // как `Rights.xml` у роли: тот же планировщик, тот же способ
+                // стадирования.
                 OperationFamily::Form
                 | OperationFamily::Role
                 | OperationFamily::Subsystem
+                | OperationFamily::Interface
                 | OperationFamily::Support => {
                     let parsed = form_resource::parse_form_resource_plan_operation(
                         operation.name(),
