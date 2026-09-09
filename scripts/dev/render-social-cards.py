@@ -54,6 +54,11 @@ PLACEHOLDER = re.compile(r"\{\{([a-z]+)\}\}")
 # В заголовке разрешён ровно один тег — `<span>` вокруг акцентного слова.
 # Всё остальное на карточке отрисовалось бы разметкой, поэтому это отказ.
 HEADING_MARKUP = re.compile(r"</?(?!span\b)[a-z]")
+# Единственное поле-разметка. Остальные поля карточки — текст: со страницы они
+# снимаются распакованными (`&amp;` → `&`) и в шаблон входят экранированными
+# обратно. Без второго шага описание, где автор страницы написал `&lt;b&gt;`,
+# стало бы на карточке настоящим тегом: слово пропало бы, а вёрстка поехала.
+MARKUP_FIELDS = frozenset({"heading"})
 
 CHROME_ENV = "CHROME"
 CHROME_PATHS = (
@@ -128,7 +133,7 @@ def card_fields(page_path: Path) -> dict[str, str]:
     lede = collapse(one(DESCRIPTION, page, name, 'meta name="description"'))
     return {
         "title": title,
-        "eyebrow": collapse(one(EYEBROW, page, name, 'class="eyebrow"')),
+        "eyebrow": html.unescape(collapse(one(EYEBROW, page, name, 'class="eyebrow"'))),
         "heading": heading,
         "lede": without_heading(html.unescape(lede), title),
     }
@@ -145,7 +150,12 @@ def render_html(template: str, fields: dict[str, str]) -> str:
         if unused:
             problem.append("карточка не показывает " + ", ".join(unused))
         raise SystemExit(f"{TEMPLATE.name}: " + "; ".join(problem))
-    return PLACEHOLDER.sub(lambda m: fields[m.group(1)], template)
+
+    def value(match: re.Match[str]) -> str:
+        name = match.group(1)
+        return fields[name] if name in MARKUP_FIELDS else html.escape(fields[name])
+
+    return PLACEHOLDER.sub(value, template)
 
 
 def complete_png(path: Path) -> bool:

@@ -24,6 +24,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 PAGES = REPO_ROOT / "docs" / "pages"
 CARDS = PAGES / "og"
 RENDER_PAGES = REPO_ROOT / "scripts" / "ci" / "render-pages.py"
+RENDER_CARDS = REPO_ROOT / "scripts" / "dev" / "render-social-cards.py"
 
 # Пропорция 1.91:1, которую ждут Telegram, X, VK и LinkedIn. Меньшая сторона
 # у всех четырёх обрезается по-своему, поэтому размер один и он здесь.
@@ -32,11 +33,15 @@ CARD_SIZE = (1200, 630)
 META = re.compile(r'<meta property="(?P<key>og:[a-z:]+)" content="(?P<value>[^"]*)">')
 
 
-def load_render_pages():
-    spec = importlib.util.spec_from_file_location("render_pages", RENDER_PAGES)
+def load(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def load_render_pages():
+    return load("render_pages", RENDER_PAGES)
 
 
 def og(page: Path) -> dict[str, str]:
@@ -104,6 +109,82 @@ class SocialCardTests(unittest.TestCase):
         """Карточка страницы, которой больше нет, уезжает на сайт мусором."""
         stems = {f"og-{page.stem}.png" for page in self.pages}
         self.assertEqual({card.name for card in CARDS.glob("*.png")}, stems)
+
+
+class CardCopyTests(unittest.TestCase):
+    """Текст со страницы попадает на карточку текстом, а не разметкой.
+
+    Из страницы читаются четыре поля, и только одно из них — разметка:
+    заголовок вместе с акцентным `<span>`. Остальные три — текст, и в шаблон
+    они обязаны входить экранированными. Иначе описание, в котором автор
+    страницы написал `&lt;b&gt;`, станет на карточке настоящим тегом: текст
+    пропадёт, а вёрстка поедет.
+    """
+
+    def setUp(self) -> None:
+        self.module = load("render_social_cards", RENDER_CARDS)
+        self.template = self.module.TEMPLATE.read_text(encoding="utf-8")
+
+    def page(self, *, eyebrow: str, heading: str, description: str) -> Path:
+        body = (
+            '<!doctype html>\n<html lang="ru">\n<head>\n'
+            f'<meta name="description" content="{description}">\n'
+            "</head>\n<body>\n"
+            f'<p class="eyebrow">{eyebrow}</p>\n<h1>{heading}</h1>\n'
+            "</body>\n</html>\n"
+        )
+        path = Path(self.enterContext(tempfile.TemporaryDirectory())) / "sample.html"
+        path.write_text(body, encoding="utf-8")
+        return path
+
+    def card(self, **page) -> str:
+        return self.module.render_html(self.template, self.module.card_fields(self.page(**page)))
+
+    def test_markup_written_in_the_description_stays_text(self) -> None:
+        card = self.card(
+            eyebrow="Каталог задач",
+            heading="Что Unica уже <span>умеет</span>",
+            description="Формы, роли и &lt;b&gt;СКД&lt;/b&gt;",
+        )
+
+        self.assertNotIn("<b>", card)
+        self.assertIn("&lt;b&gt;", card)
+
+    def test_ampersand_in_the_eyebrow_is_neither_raw_nor_doubled(self) -> None:
+        """Шапка читается из разметки, где `&` уже записан как `&amp;`.
+
+        Экранировать её ещё раз нельзя: на карточке появилось бы `&amp;`
+        буквами. Не экранировать тоже нельзя: тогда амперсанд уйдёт в шаблон
+        голым. Поле обязано пройти оба преобразования и вернуться к себе.
+        """
+        card = self.card(
+            eyebrow="Codex &amp; Claude Code",
+            heading="Что Unica уже <span>умеет</span>",
+            description="Формы и роли.",
+        )
+
+        self.assertIn("<p class=\"eyebrow\">Codex &amp; Claude Code</p>", card)
+        self.assertNotIn("&amp;amp;", card)
+
+    def test_the_title_tag_carries_the_heading_as_text(self) -> None:
+        """Заголовок страницы уходит в `<title>` без тегов и экранированным."""
+        card = self.card(
+            eyebrow="Каталог задач",
+            heading="Формы &amp; <span>роли</span>",
+            description="Формы и роли.",
+        )
+
+        self.assertIn("<title>Формы &amp; роли</title>", card)
+
+    def test_the_heading_keeps_its_accent_span(self) -> None:
+        """Заголовок — единственное поле-разметка: экранировать его нельзя."""
+        card = self.card(
+            eyebrow="Каталог задач",
+            heading="Что Unica уже <span>умеет</span>",
+            description="Формы и роли.",
+        )
+
+        self.assertIn("<h1>Что Unica уже <span>умеет</span></h1>", card)
 
 
 if __name__ == "__main__":
