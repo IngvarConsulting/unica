@@ -278,6 +278,24 @@ class ReceiptHarnessBoundaryTests(unittest.TestCase):
             self.assertEqual(result.returncode, 1, result.stdout)
             self.assertIn("unclassified harness file", result.stdout)
 
+    def test_a_nested_harness_module_is_not_missed(self) -> None:
+        """`mod rogue;` грузит `rogue/mod.rs` — вложенный каталог тоже назван."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_harness(root)
+            nested = root / HARNESS_DIR / "rogue"
+            nested.mkdir(parents=True, exist_ok=True)
+            (nested / "mod.rs").write_text(
+                "fn quietly_advances() {\n"
+                "    actor.promise_task_unbound(key, deadline)?;\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            result = run_guard(root)
+            self.assertEqual(result.returncode, 1, result.stdout)
+            self.assertIn("unclassified harness file", result.stdout)
+            self.assertIn("rogue/mod.rs", result.stdout)
+
     def test_a_missing_harness_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             result = run_guard(Path(directory))

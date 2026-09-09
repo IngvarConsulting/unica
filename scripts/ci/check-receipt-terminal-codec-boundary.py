@@ -544,14 +544,17 @@ def collect_sources(root: Path) -> dict[PurePosixPath, str]:
 
 def check_root(root: Path) -> list[str]:
     sources = collect_sources(root)
+    # Классификация идёт по замаскированному тексту: `#[cfg(test)] mod records;`
+    # внутри комментария или строкового литерала не должен объявлять
+    # производственный файл тестовым и снимать с него проверки хранилища.
+    masked_sources = {path: _mask_non_code(source) for path, source in sources.items()}
     _TEST_ONLY_FILES.clear()
-    _TEST_ONLY_FILES.update(_collect_test_only_files(sources))
+    _TEST_ONLY_FILES.update(_collect_test_only_files(masked_sources))
     diagnostics: list[str] = []
     for required_path in REQUIRED_PATHS:
         if required_path not in sources:
             diagnostics.append(f"{required_path.as_posix()}:1: required source file is missing")
 
-    masked_sources = {path: _mask_non_code(source) for path, source in sources.items()}
     for path in sorted(sources, key=PurePosixPath.as_posix):
         diagnostics.extend(
             _source_diagnostics(path, sources[path], masked_sources[path])

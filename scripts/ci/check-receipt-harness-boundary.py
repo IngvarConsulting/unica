@@ -237,10 +237,13 @@ def scan(root: Path) -> list[str]:
     directory = root / HARNESS_DIR
     if directory.is_dir():
         known = set(SCANNED_FILES) | set(EXEMPT_FILES)
-        for path in sorted(directory.glob("*.rs")):
-            if path.name not in known:
+        # `rglob`, а не `glob`: `mod rogue;` грузит `rogue/mod.rs`, и вложенный
+        # каталог иначе прошёл бы мимо и чтения, и проверки на неназванный файл.
+        for path in sorted(directory.rglob("*.rs")):
+            relative = path.relative_to(directory).as_posix()
+            if relative not in known:
                 found.append(
-                    f"{(HARNESS_DIR / path.name).as_posix()}: unclassified harness file; "
+                    f"{(HARNESS_DIR / relative).as_posix()}: unclassified harness file; "
                     f"name it a scanned source or an exempt file in the guard"
                 )
     return found

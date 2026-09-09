@@ -249,6 +249,16 @@ def _is_evidence_repoint(repo: Path, base_ref: str, before: str, after: str) -> 
     return True
 
 
+def _declares(target: Path, name: str) -> bool:
+    """Объявлено ли имя в этом файле — на любом из двух языков свидетельств."""
+    if not target.is_file():
+        return False
+    source = target.read_text(encoding="utf-8")
+    if target.suffix == ".py":
+        return _python_defines(source, name)
+    return _declaration_in(source, name)
+
+
 def _is_evidence_relocation(repo: Path, before: str, after: str) -> bool:
     """Правка сводится к переезду свидетельства: имя то же, файл другой.
 
@@ -281,16 +291,13 @@ def _is_evidence_relocation(repo: Path, before: str, after: str) -> bool:
                 return False
             if old_path == new_path:
                 return False
-            target = repo / new_path
-            if not target.is_file() or not _declaration_in(
-                target.read_text(encoding="utf-8"), new_declaration
-            ):
+            # По новому адресу обязан стоять настоящий тест, а не просто
+            # функция с тем же именем: иначе переезд стал бы лазейкой, через
+            # которую правило переезжает на несуществующее доказательство.
+            if not _evidence_resolves(repo, new_reference):
                 return False
             # Переезд, а не второй дом: по старому адресу объявления больше нет.
-            source = repo / old_path
-            if source.is_file() and _declaration_in(
-                source.read_text(encoding="utf-8"), old_declaration
-            ):
+            if _declares(repo / old_path, old_declaration):
                 return False
     return True
 

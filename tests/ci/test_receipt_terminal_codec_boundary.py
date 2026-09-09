@@ -709,6 +709,32 @@ class ReceiptTerminalCodecBoundaryTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn("must not canonicalize a Direct terminal", result.stdout)
 
+    def test_a_commented_test_module_cannot_hide_a_store_child(self) -> None:
+        """`#[cfg(test)] mod records;` в комментарии не делает файл тестовым."""
+        store_child = Path(
+            "crates/unica-coder/src/infrastructure/receipt_ledger/records.rs"
+        )
+        for disguise in (
+            "// #[cfg(test)]\n// mod records;\n",
+            '/*\n#[cfg(test)]\nmod records;\n*/\n',
+            'const SAMPLE: &str = r#"\n#[cfg(test)]\nmod records;\n"#;\n',
+        ):
+            with self.subTest(disguise=disguise.split("\n")[0]), tempfile.TemporaryDirectory() as temporary_directory:
+                root = Path(temporary_directory)
+                write_tree(
+                    root,
+                    {
+                        STORE_PATH: disguise + "mod records;\n",
+                        store_child: "fn build() {\n"
+                        "    let _ = canonical_v5_terminal(outcome);\n}\n",
+                    },
+                )
+
+                result = run_guard(root)
+
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn("must not canonicalize a Direct terminal", result.stdout)
+
     def test_current_repository_complies_with_terminal_codec_boundary(self) -> None:
         result = run_guard(REPO_ROOT)
 

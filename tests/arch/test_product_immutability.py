@@ -379,6 +379,17 @@ class ProductImmutabilityTests(unittest.TestCase):
         self.assertEqual(len(verdict.offenders), 1)
         self.assertIn("без нового решения", verdict.offenders[0])
 
+    def test_a_move_to_a_function_without_a_test_attribute_is_caught(self) -> None:
+        """Одноимённая функция без `#[test]` — не свидетельство, а тёзка."""
+        self.base_rule_on_rust_evidence()
+        self.write("crates/evidence/moved.rs", "fn test_rust_reason() {}\n")
+        self.write("crates/evidence.rs", "const LABEL: &str = \"evidence\";\n")
+
+        verdict = self.relocate_check_to("crates/evidence/moved.rs::test_rust_reason")
+
+        self.assertEqual(len(verdict.offenders), 1)
+        self.assertIn("без нового решения", verdict.offenders[0])
+
     def test_a_move_to_a_file_that_does_not_declare_it_is_caught(self) -> None:
         """Переезд в файл без объявления — обещание без держателя."""
         self.base_rule_on_rust_evidence()
