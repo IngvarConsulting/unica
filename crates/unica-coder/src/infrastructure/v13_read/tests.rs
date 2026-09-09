@@ -1773,6 +1773,60 @@ fn refusal_codes(result: &crate::domain::invocation::DomainResult) -> Vec<&str> 
         .collect()
 }
 
+/// Видимость команды в интерфейсе — это не одно значение. Замер на боевой
+/// конфигурации: 99 блоков видимости из 1050 несут переопределения по ролям,
+/// то есть каждая одиннадцатая команда. Отдать `visible` за всю правду
+/// значило бы читать девять процентов команд неверно.
+#[test]
+fn command_visibility_says_when_roles_override_it() {
+    let fixture = RealReaderFixture::new();
+    write(
+        &fixture
+            .source
+            .join("Subsystems/Sales/Ext/CommandInterface.xml"),
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<CommandInterface xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20">
+	<CommandsVisibility>
+		<Command name="Catalog.Items.Command.Refresh">
+			<Visibility>
+				<xr:Common>true</xr:Common>
+				<xr:Value name="Role.Кладовщик">false</xr:Value>
+				<xr:Value name="Role.ПолныеПрава">true</xr:Value>
+			</Visibility>
+		</Command>
+		<Command name="CommonCommand.ОткрытьНастройки">
+			<Visibility>
+				<xr:Common>false</xr:Common>
+			</Visibility>
+		</Command>
+	</CommandsVisibility>
+</CommandInterface>
+"#,
+    );
+    let service = fixture.view_service();
+
+    let commands =
+        service.view(ViewRequest::new("main:Subsystem.Sales.Interface.Command").unwrap());
+
+    assert!(commands.ok, "{:?}", refusal_codes(&commands));
+    let items = commands.data.as_ref().unwrap()["items"].as_array().unwrap();
+    let props = |title: &str| {
+        items
+            .iter()
+            .find(|item| item["title"] == title)
+            .unwrap_or_else(|| panic!("{title} among {items:?}"))["props"]
+            .clone()
+    };
+    let overridden = props("Catalog.Items.Command.Refresh");
+    assert_eq!(overridden["visible"], true);
+    assert_eq!(overridden["roleOverrides"], 2);
+    // Ноль говорит «переопределений нет», а не «не смотрели»: отсутствие поля
+    // читатель не отличил бы от несчитанного.
+    let plain = props("CommonCommand.ОткрытьНастройки");
+    assert_eq!(plain["visible"], false);
+    assert_eq!(plain["roleOverrides"], 0);
+}
+
 /// Порядок команд, групп и дочерних подсистем — три из пяти секций
 /// командного интерфейса. Две из них наружу не выходили вовсе, а писать то,
 /// чего инструмент не показывает, нельзя: предпросмотр правки нечем

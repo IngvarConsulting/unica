@@ -1431,6 +1431,13 @@ fn interface_commands(interface: &Value) -> Vec<Value> {
                 "visible".to_string(),
                 item.get("visible").cloned().unwrap_or(Value::Null),
             );
+            // Закрытый признак вместо умолчания: ноль говорит «переопределений
+            // нет», а не «не смотрели». Без него `visible` читался бы как вся
+            // правда о видимости команды.
+            entry.insert(
+                "roleOverrides".to_string(),
+                item.get("roleOverrides").cloned().unwrap_or(json!(0)),
+            );
         }
     }
     for item in interface
@@ -1710,7 +1717,9 @@ fn reader_node_props(reader: LogicalReader, kind: NodeKind, value: &Value) -> Ma
             "includeInCommandInterface",
             "useOneCommand",
         ],
-        (LogicalReader::Interface, NodeKind::Command) => &["visible", "group", "placement"],
+        (LogicalReader::Interface, NodeKind::Command) => {
+            &["visible", "roleOverrides", "group", "placement"]
+        }
         (LogicalReader::Xdto, NodeKind::Type) => &["kind", "abstract", "mixed"],
         (LogicalReader::Xdto, NodeKind::Property) => {
             &["type", "minOccurs", "maxOccurs", "nillable"]
