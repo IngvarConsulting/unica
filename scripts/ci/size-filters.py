@@ -38,8 +38,16 @@ TERM = re.compile(r"test\(/\^([A-Za-z0-9_:]+)::")
 
 
 def module_of(path: Path, src: Path) -> tuple[str, ...]:
+    """Модуль файла в дереве библиотеки; пустой кортеж — корень, и он за `lib.rs`.
+
+    `main.rs` — корень другой цели, двоичной, и делить пустой кортеж с `lib.rs`
+    ему нельзя: словарь модулей один на крейт, а `main.rs` идёт по сортировке
+    позже и затирал бы `lib.rs` со всеми объявлениями `mod ...;` в нём. Со своим
+    ключом файл остаётся виден `declared`, но термов не получает: `mod main;`
+    никто не объявляет, а размер считается только по целям `kind == "lib"`.
+    """
     parts = list(path.relative_to(src).with_suffix("").parts)
-    if parts[-1] in ("mod", "lib", "main"):
+    if parts[-1] in ("mod", "lib"):
         parts = parts[:-1]
     return tuple(parts)
 

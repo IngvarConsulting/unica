@@ -152,6 +152,24 @@ class SizeGuardTests(unittest.TestCase):
         self.assertEqual(self.deadline["slow-timeout"], {"period": "300s", "terminate-after": 2})
         self.assertTrue(self.medium.startswith("kind(test)"))
 
+    def test_crate_root_belongs_to_lib_and_main_is_not_lost(self) -> None:
+        """Корень крейта — за `lib.rs`, и `main.rs` не пропадает из разбора.
+
+        Один ключ на оба корня стоил бы `declared` всех объявлений `mod ...;`,
+        живущих в `lib.rs`, а стражу — модулей, объявленных только там.
+        """
+        module = load_size_filters()
+
+        for crate, modules in module.source_modules(REPO_ROOT).items():
+            src = REPO_ROOT / "crates" / crate / "src"
+            paths = {path for _, path in modules.values()}
+            if (src / "lib.rs").exists():
+                with self.subTest(crate=crate, root="lib.rs"):
+                    self.assertEqual(modules[()][1], src / "lib.rs")
+            if (src / "main.rs").exists():
+                with self.subTest(crate=crate, root="main.rs"):
+                    self.assertIn(src / "main.rs", paths)
+
     def test_every_module_with_a_process_or_socket_is_declared_medium(self) -> None:
         """Файл с `std::process` или `std::net` не бывает `small` молча."""
         declared = set(re.findall(r"test\(/\^([A-Za-z0-9_:]+)::", self.medium))
