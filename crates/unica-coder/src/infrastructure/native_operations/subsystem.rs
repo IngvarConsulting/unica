@@ -2680,6 +2680,11 @@ pub(crate) struct SubsystemCommandInterfaceData {
 pub(crate) struct SubsystemCommandVisibilityData {
     pub(crate) command: String,
     pub(crate) visible: bool,
+    /// Сколько ролей переопределяют общее значение. Замер на боевой
+    /// конфигурации: 99 блоков видимости из 1050 несут такие значения, то
+    /// есть каждая одиннадцатая команда. Умолчать о них значило бы отдать
+    /// `visible` за всю правду.
+    pub(crate) role_overrides: usize,
 }
 
 #[derive(serde::Serialize)]
@@ -2961,9 +2966,15 @@ pub(crate) fn parse_subsystem_command_interface_data(
                 .descendants()
                 .find(|node| role_info_element(*node, "Common", None))
                 .and_then(|node| node.text());
+            let role_overrides = cmd
+                .descendants()
+                .filter(|node| role_info_element(*node, "Value", None))
+                .filter(|node| node.attribute("name").is_some_and(|name| !name.is_empty()))
+                .count();
             visibility.push(SubsystemCommandVisibilityData {
                 command: cmd.attribute("name").unwrap_or("").to_string(),
                 visible: common != Some("false"),
+                role_overrides,
             });
         }
     }
