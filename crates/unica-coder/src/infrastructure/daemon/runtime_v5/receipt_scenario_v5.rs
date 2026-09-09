@@ -1141,6 +1141,34 @@ fn rotate_receipt_generation(
         .map_err(|error| format!("rotate receipt retention generation: {error}"))
 }
 
+/// Сбор просроченных улик: владелец здесь — удержание, а не та попытка, за
+/// которой сценарий наблюдает. Ретенция сама открывает актора, когда живого
+/// нет, ровно как поворот поколения по соседству.
+fn reclaim_expired_receipt_evidence(
+    state_root: &Path,
+    identity: &CoreIdentity,
+    live_actor: Option<&ReceiptLedgerActor>,
+    observed_at_epoch_ms: u64,
+    deadline: Instant,
+) -> Result<usize, String> {
+    let opened;
+    let actor = match live_actor {
+        Some(actor) => actor,
+        None => {
+            let state = DaemonStateDirectory::open(state_root, identity)?;
+            let receipts = state.create_private_retained_subdirectory("receipts")?;
+            opened = open_receipt_actor_for_scenario(
+                receipts,
+                "open explicit receipt retention coordinator",
+            )?;
+            &opened
+        }
+    };
+    actor
+        .reclaim_expired_tombstones(observed_at_epoch_ms, deadline)
+        .map_err(|error| format!("reclaim explicit receipt evidence: {error}"))
+}
+
 struct DirectLoadSubmitResult {
     key: ReceiptKey,
     accepted_epoch_ms: u64,

@@ -298,36 +298,22 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                     None => {}
                 }
                 let provisional = expected.clone();
-                let publication = runtime
-                    .task_projection
-                    .publish_staged_terminal_against_exact_provisional(
-                        &staged,
-                        &reservation,
-                        &expected,
-                        &expected_link_digest,
-                        deadline,
-                    );
+                let publication = runtime.publish_staged_terminal_against_provisional_for_test(
+                    &staged,
+                    &reservation,
+                    &expected,
+                    &expected_link_digest,
+                    deadline,
+                )?;
                 let (terminal_record, terminal_link) = match publication {
-                    Ok(committed) => committed,
-                    Err(failure) => {
-                        let _ = runtime.project_task_failure(failure);
+                    Some(committed) => committed,
+                    None => {
                         control.record_operation_event(&label, "completed");
                         telemetry.record_forced_process_exit();
                         drop(runtime);
                         continue;
                     }
                 };
-                runtime
-                    .receipt_ledger
-                    .complete_staged_task_handoff(
-                        staged.key().clone(),
-                        staged.record_version(),
-                        terminal_link.clone(),
-                        deadline,
-                    )
-                    .map_err(|error| {
-                        format!("complete exact provisional staged transfer: {error}")
-                    })?;
                 control.record_staged_terminal_publication(
                     &staged,
                     &provisional,
@@ -2407,27 +2393,13 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
             }
             ReceiptScenarioAction::ReclaimExpiredEvidence => {
                 let observed_at_epoch_ms = clock.now_epoch_millis();
-                let reclaim = |actor: &ReceiptLedgerActor| {
-                    actor
-                        .reclaim_expired_tombstones(
-                            observed_at_epoch_ms,
-                            Instant::now() + SCENARIO_BULK_OPERATION_TIMEOUT,
-                        )
-                        .map_err(|error| format!("reclaim explicit receipt evidence: {error}"))
-                };
-                let reclaimed = match &live_actor {
-                    Some(actor) => reclaim(actor)?,
-                    None => {
-                        let daemon_state = DaemonStateDirectory::open(state.path(), &identity)?;
-                        let receipts =
-                            daemon_state.create_private_retained_subdirectory("receipts")?;
-                        let actor = open_receipt_actor_for_scenario(
-                            receipts,
-                            "open explicit receipt retention coordinator",
-                        )?;
-                        reclaim(&actor)?
-                    }
-                };
+                let reclaimed = reclaim_expired_receipt_evidence(
+                    state.path(),
+                    &identity,
+                    live_actor.as_ref(),
+                    observed_at_epoch_ms,
+                    Instant::now() + SCENARIO_BULK_OPERATION_TIMEOUT,
+                )?;
                 if let Some(catalog) = &mut bulk_receipt_catalog {
                     let removed = catalog.retain_unexpired(observed_at_epoch_ms)?;
                     if removed > reclaimed {
