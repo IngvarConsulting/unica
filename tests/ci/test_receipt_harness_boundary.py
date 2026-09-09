@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import importlib.util
+import re
 import subprocess
 import tempfile
 import unittest
@@ -30,6 +32,22 @@ SCANNED_FILES = (
     "scenario_probes.rs",
     "wire.rs",
 )
+PORT_PATH = Path("crates/unica-coder/src/infrastructure/receipt_ledger/port.rs")
+# Чтения порта: не переходы, поэтому их нет в описи писателей. Список закрытый —
+# новый метод порта обязан быть назван либо здесь, либо писателем.
+PORT_READS = frozenset(
+    {"generation", "recover", "recover_at", "resolve_task", "snapshot_catalog"}
+)
+
+
+def load_guard():
+    """Страж как модуль: имя файла с дефисами обычным import не берётся."""
+    spec = importlib.util.spec_from_file_location("receipt_harness_boundary", SCRIPT_PATH)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"failed to load {SCRIPT_PATH}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def write_harness(root: Path, source: str = "", scanned: dict[str, str] | None = None) -> None:
@@ -98,8 +116,10 @@ class ReceiptHarnessBoundaryTests(unittest.TestCase):
     def test_a_batch_writer_in_the_dispatcher_fails(self) -> None:
         """Пакетные команды актора — тоже записи.
 
-        Это была настоящая дыра: `reserve` и пакетные команды не значились
-        писателями, и диспетчер писал мимо описи.
+        Это была настоящая дыра, и дважды: сперва `reserve` и пакетные команды
+        не значились писателями, потом разрез файлов оставил без имени ещё
+        девять команд порта — и диспетчер писал мимо описи через
+        `complete_staged_task_handoff` и `reclaim_expired_tombstones`.
         """
         for writer in (
             "reserve",
@@ -107,6 +127,16 @@ class ReceiptHarnessBoundaryTests(unittest.TestCase):
             "bind_reserved_actor_batch",
             "mark_reserved_begun_batch",
             "publish_direct_terminal_batch",
+            "bind_promised_task_actor",
+            "bind_reserved_actor",
+            "complete_bound_task_handoff",
+            "complete_staged_task_handoff",
+            "expire_cancel_reserved",
+            "mark_reserved_begun",
+            "publish_cancelled_direct_batch",
+            "reclaim_expired_tombstones",
+            "request_task_cancel",
+            "retain_begun_task_after_link_capacity",
         ):
             with self.subTest(writer=writer), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
@@ -121,6 +151,28 @@ class ReceiptHarnessBoundaryTests(unittest.TestCase):
                 result = run_guard(root)
                 self.assertEqual(result.returncode, 1, result.stdout)
                 self.assertIn("the action dispatcher writes", result.stdout)
+
+    def test_the_writer_list_covers_the_ledger_port(self) -> None:
+        """Опись переходов повторяет пишущую поверхность порта целиком.
+
+        Страж не видит того, чего не назвали: неполный список писателей тихо
+        разрешает запись. Поэтому каждый метод `ReceiptLedgerPort` обязан быть
+        либо чтением, либо переходом из описи.
+        """
+        guard = load_guard()
+        source = (REPO_ROOT / PORT_PATH).read_text(encoding="utf-8")
+        surface = set(re.findall(r"^    fn ([a-z0-9_]+)\(", source, re.MULTILINE))
+        self.assertTrue(surface, "поверхность порта не разобралась")
+        self.assertEqual(
+            sorted(surface - PORT_READS - set(guard.WRITERS)),
+            [],
+            "команда порта пишет, но не названа переходом",
+        )
+        self.assertEqual(
+            sorted(PORT_READS - surface),
+            [],
+            "названное чтение с порта исчезло — опись устарела",
+        )
 
     def test_an_indented_method_does_not_inherit_the_previous_owner(self) -> None:
         """Метод в `impl` отвечает за себя, а не за соседа сверху."""

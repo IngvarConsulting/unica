@@ -7,10 +7,11 @@
 
 Писать бегунку разрешено там, где он играет **отдельного владельца**: засев
 состояния перед операцией, генератор нагрузки, воротные пробы на живом
-рантайме, порча индекса, поворот поколения, постановка терминала вторым
-владельцем поверх припаркованной попытки. Каждый такой писатель живёт в
-отдельной функции, чьё имя называет эту роль, и перечислен в описи ниже. Ни
-один переход не делается «за» ту попытку, которую тест наблюдает.
+рантайме, порча индекса, поворот поколения, удержание улик, постановка
+терминала вторым владельцем поверх припаркованной попытки. Каждый такой
+писатель живёт в отдельной функции, чьё имя называет эту роль, и перечислен в
+описи ниже. Ни один переход не делается «за» ту попытку, которую тест
+наблюдает.
 
 Страж проверяет:
 
@@ -57,26 +58,39 @@ DISPATCHER = "run_supported_receipt_scenario_for_test"
 # пакетная) и обёртки бегунка над ней. Список закрытый: неизвестное имя не
 # «разрешено по умолчанию», оно просто не считается записью, поэтому добавлять
 # сюда новую команду актора обязан тот, кто её заводит. Пропущенная команда
-# уже стоила стражу дыры — `reserve` не был назван, и диспетчер писал мимо.
+# уже дважды стоила стражу дыры: сперва не был назван `reserve`, потом —
+# девять команд разом, включая `complete_bound_task_handoff` и парный
+# `complete_staged_task_handoff`, и диспетчер писал мимо обоих раз. Опись
+# сверяется с `ReceiptLedgerPort`: всё, что там не чтение, стоит здесь.
 WRITERS = (
     "acknowledge_direct",
     "acknowledge_direct_batch",
     "acknowledge_direct_for_scenario",
     "begin_bound_task_handoff",
     "begin_bound_task_handoff_for_scenario",
+    "bind_promised_task_actor",
+    "bind_reserved_actor",
     "bind_reserved_actor_batch",
+    "complete_bound_task_handoff",
+    "complete_staged_task_handoff",
+    "expire_cancel_reserved",
     "inject_receipt_identity_collision_for_scenario",
+    "mark_reserved_begun",
     "mark_reserved_begun_batch",
     "promise_task_unbound",
     "promise_task_unbound_for_scenario",
+    "publish_cancelled_direct_batch",
     "publish_direct_terminal",
     "publish_direct_terminal_batch",
     "publish_direct_terminal_for_scenario",
     "publish_receipt_backed_task_terminal",
     "publish_receipt_backed_task_terminal_for_scenario",
+    "reclaim_expired_tombstones",
     "request_cancel_or_reserve",
+    "request_task_cancel",
     "reserve",
     "reserve_batch",
+    "retain_begun_task_after_link_capacity",
     "rotate_generation_for_test",
     "stage_bound_handoff_terminal_for_scenario",
     "stage_bound_task_handoff_terminal",
@@ -93,21 +107,37 @@ OWNERS: dict[str, frozenset[str]] = {
         {
             "acknowledge_direct",
             "begin_bound_task_handoff",
+            "bind_promised_task_actor",
+            "bind_reserved_actor",
+            "complete_bound_task_handoff",
+            "mark_reserved_begun",
             "promise_task_unbound",
             "publish_direct_terminal",
             "request_cancel_or_reserve",
             "reserve",
+            "retain_begun_task_after_link_capacity",
             "stage_bound_handoff_terminal_for_scenario",
         }
     ),
-    "seed_staged_cross_store_terminal": frozenset({"begin_bound_task_handoff", "reserve"}),
+    "seed_staged_cross_store_terminal": frozenset(
+        {
+            "begin_bound_task_handoff",
+            "bind_reserved_actor",
+            "mark_reserved_begun",
+            "reserve",
+        }
+    ),
     "seed_direct_probe_terminal": frozenset({"publish_direct_terminal", "reserve"}),
     "seed_identity_collision_receipt": frozenset({"reserve"}),
-    # Запись, которую ledger обязан отвергнуть: ключ не тот, и вызов есть
-    # доказательство отказа.
+    # Запись, которую ledger обязан отвергнуть: ключ не тот или предшественник
+    # уже несёт заверенный staged-терминал, и вызов есть доказательство отказа.
     "attempt_mismatched_reserve": frozenset({"reserve"}),
+    "attempt_unstaged_task_bind_against_staged_terminal_for_test": frozenset(
+        {"complete_bound_task_handoff"}
+    ),
     # --- генератор нагрузки: тысячи вызовов через пакетные входы рантайма.
     "run_direct_load": frozenset({"acknowledge_direct_batch", "submit_direct_batch_for_load"}),
+    "run_lazy_cancel_storm": frozenset({"publish_cancelled_direct_batch"}),
     "submit_direct_batch_for_load": frozenset(
         {
             "bind_reserved_actor_batch",
@@ -119,12 +149,25 @@ OWNERS: dict[str, frozenset[str]] = {
     # --- воротные пробы на живом рантайме: операция под воротами доводит
     # собственную попытку, а не чужую.
     "attempt_task_store_bind_under_gate_for_test": frozenset(
-        {"begin_bound_task_handoff", "publish_receipt_backed_task_terminal"}
+        {
+            "begin_bound_task_handoff",
+            "publish_receipt_backed_task_terminal",
+            "retain_begun_task_after_link_capacity",
+        }
     ),
-    "bind_task_under_gate_for_test": frozenset({"begin_bound_task_handoff"}),
+    "bind_task_under_gate_for_test": frozenset(
+        {"begin_bound_task_handoff", "complete_bound_task_handoff"}
+    ),
     "cancel_under_gate_for_test": frozenset({"publish_direct_terminal"}),
     "continue_receipt_owned_attempt_for_test": frozenset(
         {"publish_receipt_backed_task_terminal"}
+    ),
+    "mark_reserved_begun_under_gate_for_test": frozenset({"mark_reserved_begun"}),
+    # Пара «публикация терминала + ретирование квитанции», которую боевой
+    # рантайм делает в `publish_staged_handoff_terminal_reply`: проба доводит
+    # собственную попытку, отказ проекции отдаёт диспетчеру на наблюдение.
+    "publish_staged_terminal_against_provisional_for_test": frozenset(
+        {"complete_staged_task_handoff"}
     ),
     "stage_bound_handoff_terminal_for_test": frozenset({"stage_bound_task_handoff_terminal"}),
     # --- засев пулов ёмкости: тысячи строк мимо провода, но своим рантаймом.
@@ -144,6 +187,11 @@ OWNERS: dict[str, frozenset[str]] = {
         {"inject_receipt_identity_collision_for_scenario"}
     ),
     "rotate_receipt_generation": frozenset({"rotate_generation_for_test"}),
+    # --- удержание улик: сбор просроченных надгробий — не переход наблюдаемой
+    # попытки. Снимок собирает мусор перед чтением, иначе каталог живых строк
+    # не сходится с числом ключей.
+    "reclaim_expired_receipt_evidence": frozenset({"reclaim_expired_tombstones"}),
+    "snapshot_with_actor": frozenset({"reclaim_expired_tombstones"}),
     # Второй владелец поверх попытки, припаркованной между коммитом handoff и
     # созданием Task: именно это чередование и воспроизводит фикстура.
     "stage_terminal_as_second_owner": frozenset({"stage_bound_handoff_terminal_for_scenario"}),
