@@ -173,6 +173,9 @@ pub(super) enum ReceiptScenarioAction {
     AttemptTaskStoreBindUnderGate {
         label: String,
     },
+    AttemptUnstagedTaskBindAgainstStagedTerminal {
+        label: String,
+    },
     ContinueReceiptOwnedAttempt {
         terminal: ScenarioTerminalFixture,
         label: String,

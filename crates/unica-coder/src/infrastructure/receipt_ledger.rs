@@ -3618,12 +3618,23 @@ impl ReceiptLedgerStore {
                     AttemptPhase::NotBegun,
                     promised.cancel_requested(),
                 ),
-                Ok(ReceiptState::TaskHandoffActorBound(handoff)) => (
-                    handoff.link().clone(),
-                    handoff.task().clone(),
-                    handoff.phase(),
-                    handoff.cancel_requested(),
-                ),
+                Ok(ReceiptState::TaskHandoffActorBound(handoff)) => {
+                    // A staged predecessor already owns a certified terminal. Completing it
+                    // here would retire the receipt through the unstaged witness and drop
+                    // that evidence, so refuse and leave it to complete_staged_task_handoff.
+                    if matches!(
+                        handoff.terminal_stage(),
+                        HandoffTerminalStage::Staged { .. }
+                    ) {
+                        return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported);
+                    }
+                    (
+                        handoff.link().clone(),
+                        handoff.task().clone(),
+                        handoff.phase(),
+                        handoff.cancel_requested(),
+                    )
+                }
                 Ok(_) => return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported),
                 Err(error) => return latch_catalog_error(&mut catalog, error),
             };

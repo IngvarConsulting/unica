@@ -311,6 +311,7 @@ pub(super) fn build_completed_task_handoff_deletion_record(
             workspace_identity_hash,
             task_link_digest,
             phase,
+            terminal_stage: StoredHandoffTerminalStageV1::NoTerminal,
             ..
         } => (
             *created_at_epoch_ms,
@@ -319,11 +320,9 @@ pub(super) fn build_completed_task_handoff_deletion_record(
             task_link_digest.clone(),
             *phase,
         ),
-        _ => {
-            return Err(ReceiptLedgerError::Corrupt(
-                "completed handoff deletion witness requires an actor-bound Task predecessor",
-            ))
-        }
+        _ => return Err(ReceiptLedgerError::Corrupt(
+            "completed handoff deletion witness requires an unstaged actor-bound Task predecessor",
+        )),
     };
     let record_version =
         expected
