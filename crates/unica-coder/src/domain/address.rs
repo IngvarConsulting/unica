@@ -74,6 +74,10 @@ pub(crate) enum NodeKind {
     Calculation,
     Setting,
     Area,
+    /// Группа командного интерфейса: место, куда платформа кладёт команду.
+    /// Не путать с `CommandGroup` — тот объект метаданных, а это ссылка на
+    /// группу панели, стандартную либо заведённую таким объектом.
+    Group,
     Module,
     Method,
     Body,
@@ -177,6 +181,7 @@ const V13_KIND_SPELLINGS: &[V13KindSpelling] = &[
     spelling(NodeKind::Body, &["Тело"]),
     spelling(NodeKind::Region, &["ОбластьКода"]),
     spelling(NodeKind::Interface, &["Интерфейс"]),
+    spelling(NodeKind::Group, &["Группа"]),
     spelling(NodeKind::Event, &["Событие"]),
     spelling(NodeKind::Compilation, &["Компиляция"]),
     spelling(NodeKind::UrlTemplate, &["ШаблонURL"]),
@@ -302,6 +307,7 @@ impl NodeKind {
             Self::Calculation => "Calculation",
             Self::Setting => "Setting",
             Self::Area => "Area",
+            Self::Group => "Group",
             Self::Module => "Module",
             Self::Method => "Method",
             Self::Body => "Body",

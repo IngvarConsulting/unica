@@ -1205,7 +1205,27 @@ fn project_subsystem_interface(
             "subsystem interface projection did not consume the complete suffix",
         ));
     }
+    // Порядок — это последовательность, а не скаляр, поэтому он живёт
+    // ветвями, а не свойствами: `props` держат только ограниченные скаляры.
+    let groups = interface_listed(interface, "groupsOrder");
+    let subsystems = interface_listed(interface, "subsystemOrder");
     if suffix.len() == 1 {
+        let mut branches = Vec::new();
+        if !addressable.is_empty() {
+            branches.push(BranchRef::new(
+                format!("{}.Command", address),
+                addressable.len(),
+            ));
+        }
+        if !groups.is_empty() {
+            branches.push(BranchRef::new(format!("{}.Group", address), groups.len()));
+        }
+        if !subsystems.is_empty() {
+            branches.push(BranchRef::new(
+                format!("{}.Subsystem", address),
+                subsystems.len(),
+            ));
+        }
         return Ok(NodeViewData::Node(
             NodeView::new(
                 address.to_string(),
@@ -1213,16 +1233,37 @@ fn project_subsystem_interface(
                 "Command interface",
                 Map::new(),
             )
-            .with_branches(
-                (!addressable.is_empty())
-                    .then(|| BranchRef::new(format!("{}.Command", address), addressable.len()))
-                    .into_iter()
-                    .collect(),
-            )
+            .with_branches(branches)
             .with_limits(dangling_limits(&dangling)),
         ));
     }
     let command = &suffix[1];
+    if command.kind() == NodeKind::Group {
+        return project_interface_groups(address, interface, &groups, command.name());
+    }
+    if command.kind() == NodeKind::Subsystem {
+        if command.name().is_some() {
+            return Err(ViewError::new(
+                RefusalCode::NotFound,
+                "the interface lists child subsystems in order; read the subsystem at its own address",
+            ));
+        }
+        return Ok(NodeViewData::Collection(CollectionView::new(
+            NodeView::new(address.to_string(), "Subsystem", "Subsystems", Map::new()),
+            subsystems
+                .iter()
+                .enumerate()
+                .map(|(index, reference)| {
+                    json!({
+                        "order": index + 1,
+                        // Ссылка платформы дополняется до адреса: читателю
+                        // нужен адрес, по которому можно спуститься.
+                        "at": format!("{}:{reference}", address.source_set()),
+                    })
+                })
+                .collect(),
+        )));
+    }
     match (command.kind(), command.name()) {
         (NodeKind::Command, None) => Ok(NodeViewData::Collection(CollectionView::new(
             NodeView::new(address.to_string(), "Command", "Commands", Map::new())
@@ -1304,6 +1345,75 @@ fn dangling_limits(dangling: &[String]) -> Vec<String> {
         dangling.len(),
         dangling.join(", ")
     )]
+}
+
+fn interface_listed(interface: &Value, key: &str) -> Vec<String> {
+    interface
+        .get(key)
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect()
+}
+
+/// Группы панели в объявленном порядке, а внутри группы — её команды в том
+/// порядке, который задаёт `CommandsOrder`. Группа без единой команды законна
+/// и остаётся видимой: порядок объявляется отдельно от наполнения.
+fn project_interface_groups(
+    address: &QualifiedAddress,
+    interface: &Value,
+    groups: &[String],
+    requested: Option<&str>,
+) -> Result<NodeViewData, ViewError> {
+    let commands_of = |group: &str| -> Vec<String> {
+        interface
+            .get("order")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|entry| entry.get("name").and_then(Value::as_str) == Some(group))
+            .and_then(|entry| entry.get("items"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect()
+    };
+    let Some(name) = requested else {
+        return Ok(NodeViewData::Collection(CollectionView::new(
+            NodeView::new(address.to_string(), "Group", "Groups", Map::new()),
+            groups
+                .iter()
+                .enumerate()
+                .map(|(index, group)| {
+                    json!({
+                        "at": format!("{address}.{group}"),
+                        "kind": "Group",
+                        "title": group,
+                        "order": index + 1,
+                        "commands": commands_of(group).len(),
+                    })
+                })
+                .collect(),
+        )));
+    };
+    if !groups.iter().any(|group| group == name) {
+        return Err(ViewError::new(
+            RefusalCode::NotFound,
+            format!("the command interface declares no group `{name}`"),
+        ));
+    }
+    Ok(NodeViewData::Collection(CollectionView::new(
+        NodeView::new(address.to_string(), "Group", name, Map::new()),
+        commands_of(name)
+            .into_iter()
+            .enumerate()
+            .map(|(index, command)| json!({"order": index + 1, "command": command}))
+            .collect(),
+    )))
 }
 
 fn interface_commands(interface: &Value) -> Vec<Value> {
