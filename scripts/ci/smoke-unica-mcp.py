@@ -8,9 +8,9 @@ import contextlib
 import importlib.util
 import json
 import os
-import queue
+import queue  # шов подмены: tests/ci/test_smoke_unica_mcp.py
 import socket
-import subprocess
+import subprocess  # шов подмены: tests/ci/test_smoke_unica_mcp.py
 import tempfile
 import threading
 import time
@@ -2179,7 +2179,7 @@ def smoke(
                     deadline,
                 )
                 next_id = _exercise_reader_bridge(session, next_id, workspace)
-                success = _meta_payload(
+                _meta_payload(
                     session.request(
                         {
                             "jsonrpc": "2.0",
