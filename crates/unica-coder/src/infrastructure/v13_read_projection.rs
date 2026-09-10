@@ -959,6 +959,7 @@ fn project_metadata(
     if suffix.is_empty() {
         let mut props = selected_scalar_props(payload, &["kind", "synonym", "support"]);
         props.extend(metadata_property_props(payload));
+        props.extend(metadata_detail_props(payload));
         let branches = metadata_branch_kinds()
             .iter()
             .filter_map(|kind| {
@@ -1119,12 +1120,11 @@ fn metadata_item_node(address: &QualifiedAddress, kind: NodeKind, item: &Value) 
             "incomplete",
         ],
     );
-    if let Some(value) = item.get("type") {
-        if let Ok(rendered) = serde_json::to_string(value) {
-            if rendered.len() <= MAX_COMPACT_PROP_BYTES {
-                props.insert("type".to_string(), Value::String(rendered));
-            }
-        }
+    if let Some(value) = item
+        .get("type")
+        .and_then(|value| bounded_prop("type", value))
+    {
+        props.insert("type".to_string(), value);
     }
     let mut branches = item
         .get("attributes")
@@ -1598,6 +1598,73 @@ fn project_xdto(
 /// словаря `META_INFO_PROPERTY_NAMES`, а профиль вида уже решил, что из него
 /// наблюдаемо. Развернуть список — значит снять обёртку, а не открыть дверь
 /// произвольным ключам.
+/// Значение, годное в `props`: скаляр как есть, составное — компактной
+/// строкой.
+///
+/// Механизм один на всю проекцию: так уже отвечал тип реквизита, и второго
+/// заводить не за чем. Граница у обоих путей общая — `MAX_COMPACT_PROP_BYTES`.
+fn bounded_prop(key: &str, value: &Value) -> Option<Value> {
+    match value {
+        Value::Object(_) | Value::Array(_) => {
+            let rendered = serde_json::to_string(value).ok()?;
+            (rendered.len() <= MAX_COMPACT_PROP_BYTES).then_some(Value::String(rendered))
+        }
+        scalar => safe_prop(key, scalar).then(|| scalar.clone()),
+    }
+}
+
+/// Пофактовая часть вида раскладывается в `props` по ролям.
+///
+/// Составное значение из двух-трёх полей не помещается в `props` объектом и
+/// не заслуживает ветви: адресовать внутри него нечего. Роль каждого поля
+/// называет ключ, и родительный падеж уходит в имя: `handlerModule`, а не
+/// `method.metadataPath`.
+fn metadata_detail_props(payload: &Value) -> Map<String, Value> {
+    let mut props = Map::new();
+    let Some(details) = payload
+        .get("details")
+        .and_then(|adjacent| adjacent.get("details"))
+    else {
+        return props;
+    };
+    for (source, roles) in [
+        (
+            "method",
+            &[
+                ("metadataPath", "handlerModule"),
+                ("method", "handlerMethod"),
+            ][..],
+        ),
+        (
+            "schedule",
+            &[
+                ("register", "scheduleRegister"),
+                ("valueField", "scheduleValueField"),
+                ("dateField", "scheduleDateField"),
+            ][..],
+        ),
+    ] {
+        let Some(composite) = details.get(source) else {
+            continue;
+        };
+        for (field, role) in roles {
+            if let Some(value) = composite
+                .get(field)
+                .and_then(|value| bounded_prop(role, value))
+            {
+                props.insert((*role).to_string(), value);
+            }
+        }
+    }
+    if let Some(value) = details
+        .get("type")
+        .and_then(|value| bounded_prop("type", value))
+    {
+        props.insert("type".to_string(), value);
+    }
+    props
+}
+
 fn metadata_property_props(payload: &Value) -> Map<String, Value> {
     payload
         .get("properties")
@@ -1610,16 +1677,7 @@ fn metadata_property_props(payload: &Value) -> Map<String, Value> {
             if key == "Synonym" {
                 return None;
             }
-            let value = property.get("value")?;
-            let value = match value {
-                Value::Object(_) | Value::Array(_) => {
-                    // Структурное значение рендерится компактной строкой — так
-                    // же, как тип реквизита, и вторым механизмом это не станет.
-                    let rendered = serde_json::to_string(value).ok()?;
-                    (rendered.len() <= MAX_COMPACT_PROP_BYTES).then_some(Value::String(rendered))?
-                }
-                scalar => safe_prop(key, scalar).then(|| scalar.clone())?,
-            };
+            let value = bounded_prop(key, property.get("value")?)?;
             Some((key.to_string(), value))
         })
         .collect()

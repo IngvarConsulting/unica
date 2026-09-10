@@ -768,6 +768,45 @@ fn metadata_node_props_carry_the_observed_object_properties() {
 }
 
 #[test]
+fn metadata_node_props_lay_out_the_per_kind_facts_by_role() {
+    let fixture = RealReaderFixture::new();
+    let service = fixture.view_service();
+
+    // Обработчик регламентного задания: два поля, две роли.
+    let job = service.view(ViewRequest::new("main:ScheduledJob.MonthClose").unwrap());
+    assert!(job.ok, "{:?}", refusal_codes(&job));
+    let props = &job.data.as_ref().unwrap()["props"];
+    assert_eq!(props["handlerModule"], json!("CommonModule.MonthClose"));
+    assert_eq!(props["handlerMethod"], json!("RunScheduled"));
+
+    // Расписание регистра расчёта: три поля, три роли.
+    let register = service.view(ViewRequest::new("main:CalculationRegister.Payroll").unwrap());
+    assert!(register.ok, "{:?}", refusal_codes(&register));
+    let props = &register.data.as_ref().unwrap()["props"];
+    assert_eq!(
+        props["scheduleRegister"],
+        json!("InformationRegister.WorkSchedules")
+    );
+    assert_eq!(
+        props["scheduleValueField"],
+        json!("InformationRegister.WorkSchedules.Resource.DayValue")
+    );
+    assert_eq!(
+        props["scheduleDateField"],
+        json!("InformationRegister.WorkSchedules.Dimension.Date")
+    );
+
+    // Тип константы: одно составное значение, компактной строкой — тем же
+    // механизмом, каким отвечает тип реквизита.
+    let constant = service.view(ViewRequest::new("main:Constant.MainCurrency").unwrap());
+    assert!(constant.ok, "{:?}", refusal_codes(&constant));
+    let rendered = constant.data.as_ref().unwrap()["props"]["type"]
+        .as_str()
+        .expect("constant type renders compactly");
+    assert!(rendered.contains("string"), "{rendered}");
+}
+
+#[test]
 fn metadata_tabular_section_attribute_consumes_the_complete_suffix() {
     let fixture = RealReaderFixture::new();
     let service = fixture.view_service();
@@ -3183,7 +3222,7 @@ impl RealReaderFixture {
                 source.join("Configuration.xml"),
                 replace_child_objects(
                     &config,
-                    "\n\t\t\t<Catalog>Items</Catalog>\n\t\t\t<Report>ParityReport</Report>\n\t\t\t<Role>SalesReader</Role>\n\t\t\t<Subsystem>Sales</Subsystem>\n\t\t\t<XDTOPackage>EnterpriseData_1_17_3</XDTOPackage>\n\t\t\t<CommonModule>РеактивныйСервер</CommonModule>\n\t\t",
+                    "\n\t\t\t<Constant>MainCurrency</Constant>\n\t\t\t<Catalog>Items</Catalog>\n\t\t\t<CalculationRegister>Payroll</CalculationRegister>\n\t\t\t<Report>ParityReport</Report>\n\t\t\t<Role>SalesReader</Role>\n\t\t\t<Subsystem>Sales</Subsystem>\n\t\t\t<XDTOPackage>EnterpriseData_1_17_3</XDTOPackage>\n\t\t\t<CommonModule>РеактивныйСервер</CommonModule>\n\t\t\t<ScheduledJob>MonthClose</ScheduledJob>\n\t\t",
                 ),
             )
             .unwrap();
@@ -3200,6 +3239,22 @@ impl RealReaderFixture {
             "<Properties><Name>Items</Name><Hierarchical>true</Hierarchical><CodeLength>11</CodeLength></Properties>",
         );
         write(&source.join("Catalogs/Items.xml"), &catalog);
+        // Три вида с собственными данными: обработчик, расписание и тип.
+        for (relative, fixture) in [
+            ("Constants/MainCurrency.xml", "constant-type.xml"),
+            (
+                "CalculationRegisters/Payroll.xml",
+                "calculation-register.xml",
+            ),
+            ("ScheduledJobs/MonthClose.xml", "scheduled-job.xml"),
+        ] {
+            write(
+                &source.join(relative),
+                &with_root_version(&fixture_text(&format!(
+                    "platform_8_3_27/meta_info/edge/{fixture}"
+                ))),
+            );
+        }
         write(
             &source.join("Catalogs/Items/Forms/ItemForm.xml"),
             r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form uuid="10000000-0000-4000-8000-000000000031"><Properties><Name>ItemForm</Name><FormType>Managed</FormType></Properties></Form></MetaDataObject>"#,
