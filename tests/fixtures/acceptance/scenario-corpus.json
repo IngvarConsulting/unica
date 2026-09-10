@@ -691,7 +691,29 @@
          }
         }
        }
-      ]
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Comment": "Приёмочный прогон"
+         }
+        }
+       }
+      ],
+      "dryRun": false,
+      "ifRev": "$rev"
      },
      "expect": [
       "ok"
@@ -1379,7 +1401,40 @@
          ]
         }
        }
-      ]
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+      "ops": [
+       {
+        "op": "attribute.add",
+        "args": {
+         "items": [
+          {
+           "name": "ПризнакПриемки",
+           "type": {
+            "variants": [
+             {
+              "kind": "string",
+              "length": 10,
+              "allowedLength": "variable"
+             }
+            ]
+           }
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": false,
+      "ifRev": "$rev"
      },
      "expect": [
       "ok"
@@ -2624,7 +2679,29 @@
          }
         }
        }
-      ]
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Comment": "Обратимость"
+         }
+        }
+       }
+      ],
+      "dryRun": false,
+      "ifRev": "$rev"
      },
      "expect": [
       "ok"
@@ -2643,7 +2720,29 @@
          }
         }
        }
-      ]
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Comment": ""
+         }
+        }
+       }
+      ],
+      "dryRun": false,
+      "ifRev": "$rev"
      },
      "expect": [
       "ok"
@@ -3098,7 +3197,30 @@
          }
         }
        }
-      ]
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Configuration",
+      "ops": [
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "Catalog",
+          "name": "Контрагенты"
+         }
+        }
+       }
+      ],
+      "dryRun": false,
+      "ifRev": "$rev"
      },
      "expect": [
       "ok"
@@ -3128,7 +3250,40 @@
          ]
         }
        }
-      ]
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Контрагенты",
+      "ops": [
+       {
+        "op": "attribute.add",
+        "args": {
+         "items": [
+          {
+           "name": "ИНН",
+           "type": {
+            "variants": [
+             {
+              "kind": "string",
+              "length": 12,
+              "allowedLength": "variable"
+             }
+            ]
+           }
+          }
+         ]
+        }
+       }
+      ],
+      "dryRun": false,
+      "ifRev": "$rev"
      },
      "expect": [
       "ok"
@@ -6151,7 +6306,29 @@
          }
         }
        }
-      ]
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Enum.ВажностьПроблемыУчета",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Comment": "для сравнения"
+         }
+        }
+       }
+      ],
+      "dryRun": false,
+      "ifRev": "$rev"
      },
      "expect": [
       "ok"
@@ -6716,7 +6893,29 @@
          }
         }
        }
-      ]
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Comment": "Отчёт проверен приёмкой"
+         }
+        }
+       }
+      ],
+      "dryRun": false,
+      "ifRev": "$rev"
      },
      "expect": [
       "ok"
@@ -6742,7 +6941,29 @@
          }
         }
        }
-      ]
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:CommonModule.GoogleПереводчик",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Comment": "Модуль внешнего перевода"
+         }
+        }
+       }
+      ],
+      "dryRun": false,
+      "ifRev": "$rev"
      },
      "expect": [
       "ok"
@@ -6768,7 +6989,29 @@
          }
         }
        }
-      ]
+      ],
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Comment": "Документ под наблюдением"
+         }
+        }
+       }
+      ],
+      "dryRun": false,
+      "ifRev": "$rev"
      },
      "expect": [
       "ok"
@@ -7519,7 +7762,28 @@
         }
        }
       ],
-      "dryRun": false
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Enum.НастройкиПоставщика",
+      "ops": [
+       {
+        "op": "supportRule.set",
+        "args": {
+         "values": {
+          "rule": "editable"
+         }
+        }
+       }
+      ],
+      "dryRun": false,
+      "ifRev": "$rev"
      },
      "expect": [
       "ok"
@@ -7566,7 +7830,28 @@
         }
        }
       ],
-      "dryRun": false
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "supportCapability.set",
+        "args": {
+         "values": {
+          "enabled": false
+         }
+        }
+       }
+      ],
+      "dryRun": false,
+      "ifRev": "$rev"
      },
      "expect": [
       "ok"
@@ -7751,7 +8036,24 @@
         "args": {}
        }
       ],
-      "dryRun": false
+      "dryRun": true
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Enum.LanguageAware",
+      "ops": [
+       {
+        "op": "object.remove",
+        "args": {}
+       }
+      ],
+      "dryRun": false,
+      "ifRev": "$rev"
      },
      "expect": [
       "ok"
