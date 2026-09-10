@@ -12,8 +12,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 MIN_RUNTIME_GUIDANCE_DOCS = 31
 # The retired v8-runner skill carried eleven duplicate examples. Remaining
 # examples belong to subject skills and shared references until their v0.13
-# operation is implemented and migrated to unica.run.
-MIN_RUNTIME_EXECUTE_EXAMPLES = 9
+# operation is implemented and migrated to unica.run. The `config-init` example
+# left the floor when the project file lost its writer: no tool creates it, so
+# there is no applied contract left to state (DEC.2026-09-09.PROJECT-CONFIG-IS-HANDWRITTEN).
+MIN_RUNTIME_EXECUTE_EXAMPLES = 8
 
 
 # Both ways a document points at another one: a backticked path, where the

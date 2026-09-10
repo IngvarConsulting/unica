@@ -954,7 +954,7 @@ class V013ParityInventoryTest(unittest.TestCase):
                 "legacyTool": "unica.runtime.execute",
                 "variants": [
                     {
-                        "legacyVariant": "operation=config-init;sourceSet=external",
+                        "legacyVariant": "operation=init;sourceSet=external",
                         "disposition": "mapped",
                         "successor": {
                             "entry": "run",
