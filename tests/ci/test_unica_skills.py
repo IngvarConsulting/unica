@@ -749,7 +749,7 @@ SCENARIO_REQUIRED_TOKENS = {
     "source-access": [
         "предметн",
         "dryRun",
-        "unica.code.patch",
+        "unica.apply",
         "unica.resolve",
         "invalid_cursor",
     ],
@@ -2943,18 +2943,19 @@ Use `.claude/commands/xdto.md` as the execution route.
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, text)
 
-    def test_source_access_skill_routes_reads_and_sends_writes_to_code_patch(
+    def test_source_access_skill_routes_reads_and_sends_writes_to_apply(
         self,
     ) -> None:
         path = self.skill_root() / "source-access" / "SKILL.md"
         text = path.read_text(encoding="utf-8")
-        writer = text.index("unica.code.patch")
+        writer = text.index("unica.apply")
         reader = text.index("unica.view")
 
         self.assertLess(reader, writer, "reading comes before the writer")
-        # The canonical read surface never mutates, so the skill must not
-        # promise a write through it and must send edits to unica.code.patch.
+        # Канонический читатель не меняет исходников, поэтому скилл не обещает
+        # правку через него и отправляет её в `unica.apply`.
         self.assertNotIn("unica.source.apply", text)
+        self.assertNotIn("unica.code.patch", text)
         self.assertRegex(text, r"(?s)dryRun.{0,80}true.{0,400}dryRun.{0,80}false")
         self.assertIn("Чтение не меняет исходники", text)
         self.assertIn("unica.resolve", text)

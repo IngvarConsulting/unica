@@ -16,9 +16,9 @@ allowed-tools:
   `unica.diff` сравнивает два узла, `unica.check` отвечает о готовности набора.
 - Не вызывай внутренние MCP/CLI-адаптеры и не подменяй логическую цель
   физическим путём.
-- Чтение не меняет исходники. Правка BSL — `unica.code.patch`, правка
-  предметных описаний — соответствующий `unica.*.edit` либо `unica.*.compile`,
-  оба сначала с `dryRun: true`.
+- Чтение не меняет исходники. Правка идёт одним `unica.apply`: BSL —
+  операциями `code.insert` и `code.replace`, предметные описания — операциями
+  своего семейства. Всегда сначала `dryRun: true`.
 
 ## Адрес
 
@@ -153,30 +153,38 @@ allowed-tools:
 
 ## Правка
 
-Чтение и правка разделены. Изменение BSL вносит `unica.code.patch`:
-`operation: "insert"` добавляет текст у селектора, `operation: "replace"`
-переписывает выбранный метод либо вхождение якоря. Он правит выбранный участок,
-а не переписывает модуль целиком, поэтому годится и для модулей, которые не
-поместились бы в один запрос.
+Чтение и правка разделены. Изменения вносит `unica.apply`; для BSL это
+операции `code.insert` и `code.replace`.
+
+**Селектор — это адрес.** Отдельного поля с методом или якорем нет: что
+править, называет `args.at`. Узел метода — `…Module.<Роль>.Method.<Имя>`,
+тело модуля целиком — `…Module.<Роль>.Body`. Правится выбранный участок, а не
+модуль целиком, поэтому подход годится и для модулей, которые не поместились
+бы в один запрос.
 
 ```json
 {
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.code.patch",
+    "name": "unica.apply",
     "arguments": {
-      "cwd": "<workspace>",
-      "sourceSet": "main",
-      "metadataPath": "CommonModule.SourceAccessExample.Module",
-      "operation": "replace",
-      "selector": { "method": "BeforeReplacement" },
-      "content": "Procedure BeforeReplacement()\n\t// новое тело\nEndProcedure",
+      "at": "main:CommonModule.SourceAccessExample",
+      "ops": [
+        {
+          "op": "code.replace",
+          "args": {
+            "at": "main:CommonModule.SourceAccessExample.Module.Manager.Method.BeforeReplacement.Body",
+            "text": "\t// новое тело"
+          }
+        }
+      ],
       "dryRun": true
     }
   }
 }
 ```
 
-После подтверждения повтори те же аргументы с `dryRun: false`; изменение
-селектора или содержимого требует нового предпросмотра.
+Предпросмотр возвращает план и `ifRev`. Применение — тот же вызов с
+`dryRun: false` и этим забором; смена адреса или содержимого требует нового
+предпросмотра.
