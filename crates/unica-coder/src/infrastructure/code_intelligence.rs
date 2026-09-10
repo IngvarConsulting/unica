@@ -189,9 +189,14 @@ impl CodeIntelligenceProvider for GitGrepProvider<'_> {
     }
 }
 
-/// Канал к MCP анализатора. Имя инструмента — параметр: поиск и граф идут
-/// одним и тем же маршрутом, и второго канала под граф заводить не за чем.
-trait BslSearchClient: Send + Sync {
+/// Канал к MCP анализатора.
+///
+/// Имя инструмента — параметр, а не часть имени метода: профиль `workspace`
+/// публикует девять инструментов, и поиск с графом идут одним маршрутом.
+/// Метод на каждый инструмент отличался бы от соседа одним литералом, а шов
+/// для подмены в проверках нужен один — иначе запрос графа не перехватить, не
+/// поднимая движок.
+trait BslToolClient: Send + Sync {
     fn call(
         &self,
         tool: &'static str,
@@ -202,9 +207,9 @@ trait BslSearchClient: Send + Sync {
     ) -> Result<WorkspaceServiceBslOutput, String>;
 }
 
-struct WorkspaceBslSearchClient;
+struct WorkspaceBslToolClient;
 
-impl BslSearchClient for WorkspaceBslSearchClient {
+impl BslToolClient for WorkspaceBslToolClient {
     fn call(
         &self,
         tool: &'static str,
@@ -222,23 +227,23 @@ impl BslSearchClient for WorkspaceBslSearchClient {
     }
 }
 
-static WORKSPACE_BSL_SEARCH_CLIENT: WorkspaceBslSearchClient = WorkspaceBslSearchClient;
+static WORKSPACE_BSL_TOOL_CLIENT: WorkspaceBslToolClient = WorkspaceBslToolClient;
 
 pub(crate) struct BslAnalyzerProvider<'a> {
-    client: &'a (dyn BslSearchClient + Send + Sync),
+    client: &'a (dyn BslToolClient + Send + Sync),
 }
 
 impl BslAnalyzerProvider<'static> {
     pub(crate) fn new() -> Self {
         Self {
-            client: &WORKSPACE_BSL_SEARCH_CLIENT,
+            client: &WORKSPACE_BSL_TOOL_CLIENT,
         }
     }
 }
 
 impl<'a> BslAnalyzerProvider<'a> {
     #[cfg(test)]
-    fn with_client(client: &'a (dyn BslSearchClient + Send + Sync)) -> Self {
+    fn with_client(client: &'a (dyn BslToolClient + Send + Sync)) -> Self {
         Self { client }
     }
 
@@ -1470,15 +1475,15 @@ pub(crate) fn parse_call_graph_answer(
 mod tests {
     use super::{
         location_path, parse_call_graph_answer, rlm_search_unready_error, BslAnalyzerProvider,
-        BslSearchClient, GitGrepProvider, RlmProvider, RlmSearchAttempt, RlmSearchClient,
+        BslToolClient, GitGrepProvider, RlmProvider, RlmSearchAttempt, RlmSearchClient,
     };
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::cancellation::CANCELLED_PREFIX;
     use crate::domain::code_intelligence::{
         CallEdgeProvenance, CallGraphDirection, CallGraphState, CodeIntelligenceContext,
-        CodeIntelligenceProvider, CodeIntelligenceReadData, CodeIntelligenceReadRequest, CodeIntelligenceRegistry,
-        CodeSearchScope, ProviderCapability, ProviderDeadline, ProviderId, ProviderSectionStatus,
-        RelativeSearchFilter, SearchRequest,
+        CodeIntelligenceProvider, CodeIntelligenceReadData, CodeIntelligenceReadRequest,
+        CodeIntelligenceRegistry, CodeSearchScope, ProviderCapability, ProviderDeadline,
+        ProviderId, ProviderSectionStatus, RelativeSearchFilter, SearchRequest,
     };
     use crate::domain::source_location::SourceLocation;
     use crate::domain::source_roots::ResolvedSourceRoot;
@@ -2300,7 +2305,7 @@ mod tests {
         error: String,
     }
 
-    impl BslSearchClient for FailingBslClient {
+    impl BslToolClient for FailingBslClient {
         fn call(
             &self,
             _tool: &'static str,
@@ -2334,7 +2339,7 @@ mod tests {
         assert_eq!(section.diagnostics, vec![client.error]);
     }
 
-    impl BslSearchClient for FakeBslClient {
+    impl BslToolClient for FakeBslClient {
         fn call(
             &self,
             _tool: &'static str,
