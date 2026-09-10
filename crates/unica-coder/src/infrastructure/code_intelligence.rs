@@ -1,5 +1,6 @@
 use crate::domain::cancellation::{cancelled_error, CancellationToken, CANCELLED_PREFIX};
 use crate::domain::code_intelligence::{
+    CallEdgeProvenance, CallGraphDirection, CallGraphEdge, CallGraphResult, CallGraphState,
     CodeIntelligenceContext, CodeIntelligenceProvider, CodeIntelligenceReadData,
     CodeIntelligenceReadRequest, ProviderCapability, ProviderDeadline, ProviderId,
     ProviderProgressUpdate, ProviderReadOutcome, ProviderSearchHit, ProviderSearchSection,
@@ -1280,15 +1281,16 @@ fn location_path(location: &SourceLocation) -> &str {
 #[cfg(test)]
 mod tests {
     use super::{
-        location_path, rlm_search_unready_error, BslAnalyzerProvider, BslSearchClient,
-        GitGrepProvider, RlmProvider, RlmSearchAttempt, RlmSearchClient,
+        location_path, parse_call_graph_answer, rlm_search_unready_error, BslAnalyzerProvider,
+        BslSearchClient, GitGrepProvider, RlmProvider, RlmSearchAttempt, RlmSearchClient,
     };
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::cancellation::CANCELLED_PREFIX;
     use crate::domain::code_intelligence::{
-        CodeIntelligenceContext, CodeIntelligenceProvider, CodeIntelligenceReadRequest,
-        CodeIntelligenceRegistry, CodeSearchScope, ProviderCapability, ProviderDeadline,
-        ProviderId, ProviderSectionStatus, RelativeSearchFilter, SearchRequest,
+        CallEdgeProvenance, CallGraphDirection, CallGraphState, CodeIntelligenceContext,
+        CodeIntelligenceProvider, CodeIntelligenceReadRequest, CodeIntelligenceRegistry,
+        CodeSearchScope, ProviderCapability, ProviderDeadline, ProviderId, ProviderSectionStatus,
+        RelativeSearchFilter, SearchRequest,
     };
     use crate::domain::source_location::SourceLocation;
     use crate::domain::source_roots::ResolvedSourceRoot;
@@ -1297,6 +1299,66 @@ mod tests {
     use crate::infrastructure::workspace_index::IndexReadiness;
     use crate::infrastructure::workspace_services::WorkspaceServiceBslOutput;
     use serde_json::{json, Value};
+
+    /// Замеренные ответы анализатора, а не придуманные.
+    ///
+    /// Фикстура снята с живого `bsl-analyzer 0.2.67`, доставленного из
+    /// `tools.lock.json` с проверенной sha256. Каждое утверждение здесь — факт
+    /// замера: счёт берётся из поля анализатора, незавершённый индекс назван
+    /// состоянием, происхождение ребра сохранено, неизвестный узел отказывает.
+    #[test]
+    fn the_call_graph_answer_is_read_as_the_analyzer_writes_it() {
+        let payloads: Value = serde_json::from_str(include_str!(
+            "../../../../tests/fixtures/bsl_analyzer/graph-0.2.67.json"
+        ))
+        .expect("измеренные ответы анализатора");
+
+        let callers = parse_call_graph_answer(&payloads["callers"], CallGraphDirection::Callers)
+            .expect("входящие рёбра разобраны");
+        assert_eq!(callers.state, CallGraphState::Ready);
+        // Счёт пришёл из `inTotal`, а не из длины страницы.
+        assert_eq!(callers.total, Some(1));
+        assert_eq!(callers.edges.len(), 1);
+        assert_eq!(callers.edges[0].id, "method/common/Вызывающий/Источник");
+        assert_eq!(callers.edges[0].provenance, CallEdgeProvenance::Resolved);
+        assert_eq!(callers.revision, Some(1));
+        assert_eq!(callers.stale, Some(false));
+
+        // У исходящего ребра соседа называет другой конец, и счёт лежит в
+        // другом поле: направление — не признак, а разная форма ответа.
+        let callees = parse_call_graph_answer(&payloads["callees"], CallGraphDirection::Callees)
+            .expect("исходящие рёбра разобраны");
+        assert_eq!(callees.total, Some(1));
+        assert_eq!(callees.edges[0].id, "method/common/Вызываемый/Цель");
+
+        // Перепутанное направление не выдаёт пустой ответ за правду: поля
+        // счёта нет, и разбор отказывает.
+        assert!(
+            parse_call_graph_answer(&payloads["callers"], CallGraphDirection::Callees).is_err(),
+            "счёт исходящих рёбер во входящем ответе не живёт"
+        );
+
+        // Индекс ещё строится: состояние названо, счёт не напечатан.
+        let indexing = parse_call_graph_answer(&payloads["loading"], CallGraphDirection::Callers)
+            .expect("незавершённый индекс — состояние, а не ошибка");
+        assert_eq!(indexing.state, CallGraphState::Indexing);
+        assert_eq!(indexing.total, None);
+        assert!(indexing.edges.is_empty());
+
+        // Неизвестный узел назван в теле ответа, и это отказ, а не пустота.
+        let error = parse_call_graph_answer(&payloads["not_found"], CallGraphDirection::Callers)
+            .expect_err("неизвестный узел отказывает");
+        assert_eq!(error, "not_found");
+
+        // Незнакомое происхождение не приравнивается к разрешённому.
+        let mut forged = payloads["callers"].clone();
+        forged["result"]["edges"][0]["provenance"] = json!("guessed");
+        assert!(
+            parse_call_graph_answer(&forged, CallGraphDirection::Callers)
+                .expect_err("словарь происхождения закрыт")
+                .contains("unknown provenance"),
+        );
+    }
     use std::cell::RefCell;
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
@@ -2915,4 +2977,88 @@ mod tests {
         assert!(!section.diagnostics.join(" ").contains("top-secret"));
         assert_eq!(client.calls.lock().unwrap().len(), 1);
     }
+}
+
+/// Разбор ответа анализатора о графе вызовов.
+///
+/// Форма снята с живого `bsl-analyzer 0.2.67` (профиль MCP `workspace`,
+/// инструмент `graph`, contract 1.4) и закреплена фикстурой
+/// `tests/fixtures/bsl_analyzer/graph-0.2.67.json`. Замер изменил три решения
+/// проекта, и разбор их держит:
+///
+/// * счёт берётся из `inTotal`/`outTotal` анализатора, а не из длины страницы,
+///   поэтому он верен и при урезанной странице;
+/// * незавершённый индекс — названное состояние `loading`, а не ошибка и не
+///   отсутствие счёта: иначе «не посчитано» не отличить от «вызовов нет»;
+/// * происхождение ребра сохраняется: выведенное ребро не выдаётся за
+///   разрешённое.
+pub(crate) fn parse_call_graph_answer(
+    value: &Value,
+    direction: CallGraphDirection,
+) -> Result<CallGraphResult, String> {
+    // Индекс ещё строится. Анализатор говорит это явно и при `isError: false`,
+    // поэтому состояние переносится, а не превращается в отказ.
+    if value.get("status").and_then(Value::as_str) == Some("loading") {
+        return Ok(CallGraphResult {
+            state: CallGraphState::Indexing,
+            total: None,
+            edges: Vec::new(),
+            revision: None,
+            stale: None,
+        });
+    }
+    let revision = value.get("revision").and_then(Value::as_u64);
+    let stale = value.get("stale").and_then(Value::as_bool);
+    let result = value
+        .get("result")
+        .ok_or_else(|| "call graph answer has no result".to_string())?;
+    // Неизвестный узел анализатор называет в теле ответа, а не протоколом.
+    if let Some(error) = result.get("error").and_then(Value::as_str) {
+        return Err(error.to_string());
+    }
+    let total = result
+        .get(direction.total_field())
+        .and_then(Value::as_u64)
+        .ok_or_else(|| format!("call graph answer has no {} count", direction.total_field()))?;
+    let mut edges = Vec::new();
+    for edge in result
+        .get("edges")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        // Направление решает, какой конец ребра называет соседа: у входящего
+        // это `from`, у исходящего `to`.
+        let peer = match direction {
+            CallGraphDirection::Callers => edge.get("from"),
+            CallGraphDirection::Callees => edge.get("to"),
+        }
+        .and_then(Value::as_str);
+        let Some(peer) = peer else {
+            return Err("call graph edge names no peer".to_string());
+        };
+        let provenance = match edge.get("provenance").and_then(Value::as_str) {
+            Some("resolved") => CallEdgeProvenance::Resolved,
+            Some("inferred") => CallEdgeProvenance::Inferred,
+            // Неизвестное происхождение не приравнивается к разрешённому:
+            // словарь закрыт, и незнакомое значение — повод отказать.
+            other => {
+                return Err(format!(
+                    "call graph edge has an unknown provenance: {}",
+                    other.unwrap_or("none")
+                ))
+            }
+        };
+        edges.push(CallGraphEdge {
+            id: peer.to_string(),
+            provenance,
+        });
+    }
+    Ok(CallGraphResult {
+        state: CallGraphState::Ready,
+        total: Some(total),
+        edges,
+        revision,
+        stale,
+    })
 }
