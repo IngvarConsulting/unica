@@ -707,7 +707,7 @@ fn capability_bound_configuration_reader_preserves_complete_cf_info_semantics() 
         "ManagedApplication"
     );
     assert_eq!(payload["support"]["state"], "notSupported");
-    assert_eq!(payload["totalObjects"], 6);
+    assert_eq!(payload["totalObjects"], 11);
     assert_eq!(
         payload["childObjects"]
             .as_array()
@@ -715,9 +715,9 @@ fn capability_bound_configuration_reader_preserves_complete_cf_info_semantics() 
             .iter()
             .map(|entry| entry["count"].as_u64().unwrap())
             .sum::<u64>(),
-        6,
+        11,
     );
-    assert_eq!(payload["registeredObjects"].as_array().unwrap().len(), 6);
+    assert_eq!(payload["registeredObjects"].as_array().unwrap().len(), 11);
 }
 
 #[test]
@@ -804,6 +804,74 @@ fn metadata_node_props_lay_out_the_per_kind_facts_by_role() {
         .as_str()
         .expect("constant type renders compactly");
     assert!(rendered.contains("string"), "{rendered}");
+}
+
+#[test]
+fn declared_service_kinds_finally_get_their_subject() {
+    let fixture = RealReaderFixture::new();
+    let service = fixture.view_service();
+
+    // Виды `URLTemplate` и `Operation` были объявлены в грамматике и не
+    // подключены ни к чему; здесь у них появляется предмет.
+    let http = service.view(ViewRequest::new("main:HTTPService.ExternalAPI").unwrap());
+    assert!(http.ok, "{:?}", refusal_codes(&http));
+    let branches = http.data.as_ref().unwrap()["branches"].as_array().unwrap();
+    assert!(
+        branches.contains(&json!({
+            "at": "main:HTTPService.ExternalAPI.URLTemplate",
+            "count": 1
+        })),
+        "{branches:#?}"
+    );
+
+    let template =
+        service.view(ViewRequest::new("main:HTTPService.ExternalAPI.URLTemplate.Metrics").unwrap());
+    assert!(template.ok, "{:?}", refusal_codes(&template));
+    let template = template.data.as_ref().unwrap();
+    assert_eq!(template["props"]["template"], json!("/v1/kpi/"));
+    // Последовательность методов — ветвь, а не строка в `props`: коллекция
+    // обязана быть адресуемой.
+    assert_eq!(
+        template["branches"],
+        json!([{
+            "at": "main:HTTPService.ExternalAPI.URLTemplate.Metrics.Method",
+            "count": 1
+        }]),
+    );
+
+    let method = service.view(
+        ViewRequest::new("main:HTTPService.ExternalAPI.URLTemplate.Metrics.Method.Get").unwrap(),
+    );
+    assert!(method.ok, "{:?}", refusal_codes(&method));
+    let method = method.data.as_ref().unwrap();
+    assert_eq!(method["props"]["httpMethod"], json!("GET"));
+    assert_eq!(method["props"]["handler"], json!("MetricsGet"));
+
+    let operation =
+        service.view(ViewRequest::new("main:WebService.Exchange.Operation.Send").unwrap());
+    assert!(operation.ok, "{:?}", refusal_codes(&operation));
+    let operation = operation.data.as_ref().unwrap();
+    assert_eq!(operation["props"]["procedure"], json!("SendData"));
+    assert_eq!(operation["props"]["transactioned"], json!(true));
+    assert!(
+        operation["props"]["returnType"]
+            .as_str()
+            .is_some_and(|rendered| rendered.contains("boolean")),
+        "{operation:#}"
+    );
+    assert_eq!(
+        operation["branches"],
+        json!([{"at": "main:WebService.Exchange.Operation.Send.Parameter", "count": 1}]),
+    );
+
+    let parameter = service.view(
+        ViewRequest::new("main:WebService.Exchange.Operation.Send.Parameter.Payload").unwrap(),
+    );
+    assert!(parameter.ok, "{:?}", refusal_codes(&parameter));
+    assert_eq!(
+        parameter.data.as_ref().unwrap()["props"]["direction"],
+        json!("in")
+    );
 }
 
 #[test]
@@ -3222,7 +3290,7 @@ impl RealReaderFixture {
                 source.join("Configuration.xml"),
                 replace_child_objects(
                     &config,
-                    "\n\t\t\t<Constant>MainCurrency</Constant>\n\t\t\t<Catalog>Items</Catalog>\n\t\t\t<CalculationRegister>Payroll</CalculationRegister>\n\t\t\t<Report>ParityReport</Report>\n\t\t\t<Role>SalesReader</Role>\n\t\t\t<Subsystem>Sales</Subsystem>\n\t\t\t<XDTOPackage>EnterpriseData_1_17_3</XDTOPackage>\n\t\t\t<CommonModule>РеактивныйСервер</CommonModule>\n\t\t\t<ScheduledJob>MonthClose</ScheduledJob>\n\t\t",
+                    "\n\t\t\t<Constant>MainCurrency</Constant>\n\t\t\t<Catalog>Items</Catalog>\n\t\t\t<CalculationRegister>Payroll</CalculationRegister>\n\t\t\t<Report>ParityReport</Report>\n\t\t\t<Role>SalesReader</Role>\n\t\t\t<Subsystem>Sales</Subsystem>\n\t\t\t<XDTOPackage>EnterpriseData_1_17_3</XDTOPackage>\n\t\t\t<CommonModule>РеактивныйСервер</CommonModule>\n\t\t\t<ScheduledJob>MonthClose</ScheduledJob>\n\t\t\t<HTTPService>ExternalAPI</HTTPService>\n\t\t\t<WebService>Exchange</WebService>\n\t\t",
                 ),
             )
             .unwrap();
@@ -3247,6 +3315,8 @@ impl RealReaderFixture {
                 "calculation-register.xml",
             ),
             ("ScheduledJobs/MonthClose.xml", "scheduled-job.xml"),
+            ("HTTPServices/ExternalAPI.xml", "http-service.xml"),
+            ("WebServices/Exchange.xml", "web-service.xml"),
         ] {
             write(
                 &source.join(relative),

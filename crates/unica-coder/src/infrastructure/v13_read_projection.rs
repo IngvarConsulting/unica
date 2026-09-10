@@ -1027,10 +1027,11 @@ fn project_metadata(
     let mut kind = first.kind();
     for segment in &suffix[1..] {
         kind = segment.kind();
-        let next = if matches!(kind, NodeKind::Attribute | NodeKind::Column) {
-            item.get("attributes")
-        } else {
-            None
+        let next = match kind {
+            NodeKind::Attribute | NodeKind::Column => item.get("attributes"),
+            NodeKind::Method => item.get("methods"),
+            NodeKind::Parameter => item.get("parameters"),
+            _ => None,
         }
         .ok_or_else(|| {
             ViewError::new(
@@ -1073,6 +1074,8 @@ fn metadata_branch_kinds() -> &'static [NodeKind] {
         NodeKind::Form,
         NodeKind::Template,
         NodeKind::Command,
+        NodeKind::UrlTemplate,
+        NodeKind::Operation,
     ]
 }
 
@@ -1091,8 +1094,19 @@ fn metadata_collection(payload: &Value, kind: NodeKind) -> Option<&Value> {
         NodeKind::Form => collections.get("forms"),
         NodeKind::Template => collections.get("templates"),
         NodeKind::Command => collections.get("commands"),
+        // Последовательности пофактовой части вида: платформа держит их не в
+        // `collections`, но для читателя это такая же адресуемая коллекция.
+        NodeKind::UrlTemplate => metadata_details(payload)?.get("urlTemplates"),
+        NodeKind::Operation => metadata_details(payload)?.get("operations"),
         _ => None,
     }
+}
+
+/// Пофактовая часть вида: `details` приходит соседним тегом `{kind, details}`.
+fn metadata_details(payload: &Value) -> Option<&Value> {
+    payload
+        .get("details")
+        .and_then(|adjacent| adjacent.get("details"))
 }
 
 fn metadata_items(address: &QualifiedAddress, kind: NodeKind, value: &Value) -> Vec<Value> {
@@ -1118,25 +1132,39 @@ fn metadata_item_node(address: &QualifiedAddress, kind: NodeKind, item: &Value) 
             "fillValue",
             "addressingDimension",
             "incomplete",
+            "template",
+            "httpMethod",
+            "handler",
+            "procedure",
+            "nillable",
+            "transactioned",
+            "direction",
         ],
     );
+    if let Some(value) = item
+        .get("returnType")
+        .and_then(|value| bounded_prop("returnType", value))
+    {
+        props.insert("returnType".to_string(), value);
+    }
     if let Some(value) = item
         .get("type")
         .and_then(|value| bounded_prop("type", value))
     {
         props.insert("type".to_string(), value);
     }
-    let mut branches = item
-        .get("attributes")
-        .and_then(Value::as_array)
-        .filter(|items| !items.is_empty())
-        .map(|items| {
-            vec![BranchRef::new(
-                format!("{}.Attribute", address),
-                items.len(),
-            )]
-        })
-        .unwrap_or_default();
+    let mut branches = [
+        ("attributes", NodeKind::Attribute),
+        ("methods", NodeKind::Method),
+        ("parameters", NodeKind::Parameter),
+    ]
+    .into_iter()
+    .filter_map(|(field, kind)| {
+        let items = item.get(field)?.as_array()?;
+        (!items.is_empty())
+            .then(|| BranchRef::new(format!("{}.{}", address, kind.as_str()), items.len()))
+    })
+    .collect::<Vec<_>>();
     branches.extend(
         item.get("logicalBranches")
             .and_then(Value::as_array)
