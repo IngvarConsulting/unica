@@ -5,6 +5,7 @@ from __future__ import annotations
 import collections
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 import unittest
@@ -17,6 +18,25 @@ REVIEW = REPO_ROOT / "arch/tool-surface-review.json"
 RESULT_CONTRACT_INVARIANT = (
     REPO_ROOT / "arch/invariants/INV.SURFACE.RESULT-CONTRACTS-MATCH-REVIEW.md"
 )
+RUN_COVERAGE = REPO_ROOT / "arch/tool-implementation-coverage.json"
+# A run operation name on the wire: two or more dotted lowercase segments.
+# Tool names share the shape and are told apart by their `unica.` head.
+OPERATION_TOKEN = re.compile(r"\b[a-z][a-z0-9]*(?:\.[a-z][a-z0-9]*)+\b")
+# Счёт в плане написан словом, и сравнивать его надо словом же. Таблица
+# закрыта размером словаря: больше его операций не бывает.
+RUSSIAN_NUMERALS = {
+    0: "ноль",
+    1: "одну",
+    2: "две",
+    3: "три",
+    4: "четыре",
+    5: "пять",
+    6: "шесть",
+    7: "семь",
+    8: "восемь",
+    9: "девять",
+    10: "десять",
+}
 BINARY = REPO_ROOT / "target/debug/unica"
 
 NATIVE_V13 = [
@@ -232,6 +252,36 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
                 self.assertTrue(entry["result"]["target"].strip())
                 self.assertGreaterEqual(len(entry["scenarios"]), 1)
                 self.assertTrue(all(scenario.strip() for scenario in entry["scenarios"]))
+
+    def test_the_published_run_prose_counts_the_dictionary_it_describes(self) -> None:
+        """Счёт в прозе поверхности держится на словаре, а не на памяти.
+
+        Имя операции в `now`, `target` и сценариях читают как адрес вызова:
+        назвать операцию вне словаря — отправить читателя в отказ. Счёт
+        нереализованных операций в плане устаревает так же молча, как счёт в
+        прозе правила (#798), и его надо считать, а не помнить. Словарь ведёт
+        `arch/tool-implementation-coverage.json`.
+        """
+        operations = json.loads(RUN_COVERAGE.read_text(encoding="utf-8"))[
+            "runOperations"
+        ]
+        entry = self.review["unica.run"]
+        prose = [entry["result"]["now"], entry["result"]["target"], *entry["scenarios"]]
+        for text in prose:
+            for token in OPERATION_TOKEN.findall(text):
+                if token.startswith("unica."):
+                    continue
+                with self.subTest(token=token):
+                    self.assertIn(token, operations)
+
+        unimplemented = sum(
+            1 for entry in operations.values() if entry["status"] != "supported"
+        )
+        self.assertIn(
+            RUSSIAN_NUMERALS[unimplemented],
+            entry["result"]["target"],
+            "план называет счёт нереализованных операций словом",
+        )
 
     def test_ledger_matches_the_live_registry(self) -> None:
         result = subprocess.run(
