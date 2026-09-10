@@ -28,8 +28,11 @@ use std::time::Duration;
 const SEARCH_CAPABILITIES: &[ProviderCapability] = &[ProviderCapability::Search];
 /// ADR-0020: the outline is built from the current BSL file by the pinned
 /// `bsl-parser`, so it belongs to this provider and not to the index.
-const BSL_ANALYZER_CAPABILITIES: &[ProviderCapability] =
-    &[ProviderCapability::Search, ProviderCapability::Outline];
+const BSL_ANALYZER_CAPABILITIES: &[ProviderCapability] = &[
+    ProviderCapability::Search,
+    ProviderCapability::Outline,
+    ProviderCapability::CallGraph,
+];
 const RLM_CAPABILITIES: &[ProviderCapability] = &[
     ProviderCapability::Search,
     ProviderCapability::Definition,
@@ -186,9 +189,12 @@ impl CodeIntelligenceProvider for GitGrepProvider<'_> {
     }
 }
 
+/// Канал к MCP анализатора. Имя инструмента — параметр: поиск и граф идут
+/// одним и тем же маршрутом, и второго канала под граф заводить не за чем.
 trait BslSearchClient: Send + Sync {
-    fn search(
+    fn call(
         &self,
+        tool: &'static str,
         context: &CodeIntelligenceContext,
         arguments: Value,
         timeout: Duration,
@@ -199,8 +205,9 @@ trait BslSearchClient: Send + Sync {
 struct WorkspaceBslSearchClient;
 
 impl BslSearchClient for WorkspaceBslSearchClient {
-    fn search(
+    fn call(
         &self,
+        tool: &'static str,
         context: &CodeIntelligenceContext,
         arguments: Value,
         timeout: Duration,
@@ -209,7 +216,7 @@ impl BslSearchClient for WorkspaceBslSearchClient {
         WorkspaceServiceManager::new().call_bsl_mcp_cancellable_with_budget(
             &context.workspace,
             &context.source_root.path,
-            WorkspaceServiceBslCall::new("search", arguments, timeout, timeout),
+            WorkspaceServiceBslCall::new(tool, arguments, timeout, timeout),
             cancellation,
         )
     }
@@ -234,6 +241,95 @@ impl<'a> BslAnalyzerProvider<'a> {
     fn with_client(client: &'a (dyn BslSearchClient + Send + Sync)) -> Self {
         Self { client }
     }
+
+    /// Спросить у анализатора рёбра вызовов одного направления.
+    ///
+    /// Канал тот же, которым идёт поиск: инструмент `graph` живёт в том же
+    /// профиле MCP, и второго маршрута под граф не заводится.
+    fn read_call_graph(
+        &self,
+        direction: CallGraphDirection,
+        id: &str,
+        limit: usize,
+        context: &CodeIntelligenceContext,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<ProviderReadOutcome, String> {
+        let arguments = json!({
+            "action": direction.analyzer_action(),
+            "id": id,
+            "max_nodes": limit,
+        });
+        let mut outcome = ProviderReadOutcome {
+            provider: ProviderId::BslAnalyzer.identity(),
+            ok: true,
+            summary: String::new(),
+            warnings: Vec::new(),
+            errors: Vec::new(),
+            artifacts: Vec::new(),
+            stdout: None,
+            stderr: None,
+            data: None,
+        };
+        let output = match self.client.call(
+            "graph",
+            context,
+            arguments,
+            deadline.remaining(),
+            cancellation,
+        ) {
+            Ok(output) => output,
+            // Движок не поставлен или не ответил. Это названное состояние, а не
+            // нулевой счёт: читателю важно знать, что графа нет, а не что
+            // вызовов нет.
+            Err(error) => {
+                outcome.ok = false;
+                outcome.summary = format!(
+                    "{} could not reach the call graph",
+                    ProviderId::BslAnalyzer.as_str()
+                );
+                outcome.errors = vec![error];
+                outcome.data = Some(CodeIntelligenceReadData::CallGraph(CallGraphResult {
+                    state: CallGraphState::Unavailable,
+                    total: None,
+                    edges: Vec::new(),
+                    revision: None,
+                    stale: None,
+                }));
+                return Ok(outcome);
+            }
+        };
+        let value: Value = serde_json::from_str(output.result_text.trim())
+            .map_err(|error| format!("invalid call graph answer from the analyzer: {error}"))?;
+        match parse_call_graph_answer(&value, direction) {
+            Ok(result) => {
+                outcome.summary = match result.total {
+                    Some(total) => format!(
+                        "{} answered {total} {} edge(s)",
+                        ProviderId::BslAnalyzer.as_str(),
+                        direction.analyzer_action()
+                    ),
+                    None => format!(
+                        "{} is still indexing the call graph",
+                        ProviderId::BslAnalyzer.as_str()
+                    ),
+                };
+                outcome.data = Some(CodeIntelligenceReadData::CallGraph(result));
+            }
+            // Неизвестный узел и прочие названные отказы анализатора остаются
+            // отказами: подставить за них пустую страницу значило бы сказать
+            // «вызовов нет» там, где метода нет вовсе.
+            Err(error) => {
+                outcome.ok = false;
+                outcome.summary = format!(
+                    "{} refused the call graph request",
+                    ProviderId::BslAnalyzer.as_str()
+                );
+                outcome.errors = vec![error];
+            }
+        }
+        Ok(outcome)
+    }
 }
 
 impl CodeIntelligenceProvider for BslAnalyzerProvider<'_> {
@@ -252,6 +348,14 @@ impl CodeIntelligenceProvider for BslAnalyzerProvider<'_> {
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> Result<ProviderReadOutcome, String> {
+        if let CodeIntelligenceReadRequest::CallGraph {
+            id,
+            direction,
+            limit,
+        } = request
+        {
+            return self.read_call_graph(*direction, id, *limit, context, deadline, cancellation);
+        }
         let CodeIntelligenceReadRequest::Outline {
             path,
             include_methods,
@@ -331,7 +435,7 @@ impl CodeIntelligenceProvider for BslAnalyzerProvider<'_> {
         });
         match self
             .client
-            .search(context, arguments, timeout, cancellation)
+            .call("search", context, arguments, timeout, cancellation)
         {
             Ok(output) => {
                 let mut section =
@@ -1278,6 +1382,90 @@ fn location_path(location: &SourceLocation) -> &str {
     }
 }
 
+/// Разбор ответа анализатора о графе вызовов.
+///
+/// Форма снята с живого `bsl-analyzer 0.2.67` (профиль MCP `workspace`,
+/// инструмент `graph`, contract 1.4) и закреплена фикстурой
+/// `tests/fixtures/bsl_analyzer/graph-0.2.67.json`. Замер изменил три решения
+/// проекта, и разбор их держит:
+///
+/// * счёт берётся из `inTotal`/`outTotal` анализатора, а не из длины страницы,
+///   поэтому он верен и при урезанной странице;
+/// * незавершённый индекс — названное состояние `loading`, а не ошибка и не
+///   отсутствие счёта: иначе «не посчитано» не отличить от «вызовов нет»;
+/// * происхождение ребра сохраняется: выведенное ребро не выдаётся за
+///   разрешённое.
+pub(crate) fn parse_call_graph_answer(
+    value: &Value,
+    direction: CallGraphDirection,
+) -> Result<CallGraphResult, String> {
+    // Индекс ещё строится. Анализатор говорит это явно и при `isError: false`,
+    // поэтому состояние переносится, а не превращается в отказ.
+    if value.get("status").and_then(Value::as_str) == Some("loading") {
+        return Ok(CallGraphResult {
+            state: CallGraphState::Indexing,
+            total: None,
+            edges: Vec::new(),
+            revision: None,
+            stale: None,
+        });
+    }
+    let revision = value.get("revision").and_then(Value::as_u64);
+    let stale = value.get("stale").and_then(Value::as_bool);
+    let result = value
+        .get("result")
+        .ok_or_else(|| "call graph answer has no result".to_string())?;
+    // Неизвестный узел анализатор называет в теле ответа, а не протоколом.
+    if let Some(error) = result.get("error").and_then(Value::as_str) {
+        return Err(error.to_string());
+    }
+    let total = result
+        .get(direction.total_field())
+        .and_then(Value::as_u64)
+        .ok_or_else(|| format!("call graph answer has no {} count", direction.total_field()))?;
+    let mut edges = Vec::new();
+    for edge in result
+        .get("edges")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        // Направление решает, какой конец ребра называет соседа: у входящего
+        // это `from`, у исходящего `to`.
+        let peer = match direction {
+            CallGraphDirection::Callers => edge.get("from"),
+            CallGraphDirection::Callees => edge.get("to"),
+        }
+        .and_then(Value::as_str);
+        let Some(peer) = peer else {
+            return Err("call graph edge names no peer".to_string());
+        };
+        let provenance = match edge.get("provenance").and_then(Value::as_str) {
+            Some("resolved") => CallEdgeProvenance::Resolved,
+            Some("inferred") => CallEdgeProvenance::Inferred,
+            // Неизвестное происхождение не приравнивается к разрешённому:
+            // словарь закрыт, и незнакомое значение — повод отказать.
+            other => {
+                return Err(format!(
+                    "call graph edge has an unknown provenance: {}",
+                    other.unwrap_or("none")
+                ))
+            }
+        };
+        edges.push(CallGraphEdge {
+            id: peer.to_string(),
+            provenance,
+        });
+    }
+    Ok(CallGraphResult {
+        state: CallGraphState::Ready,
+        total: Some(total),
+        edges,
+        revision,
+        stale,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1288,7 +1476,7 @@ mod tests {
     use crate::domain::cancellation::CANCELLED_PREFIX;
     use crate::domain::code_intelligence::{
         CallEdgeProvenance, CallGraphDirection, CallGraphState, CodeIntelligenceContext,
-        CodeIntelligenceProvider, CodeIntelligenceReadRequest, CodeIntelligenceRegistry,
+        CodeIntelligenceProvider, CodeIntelligenceReadData, CodeIntelligenceReadRequest, CodeIntelligenceRegistry,
         CodeSearchScope, ProviderCapability, ProviderDeadline, ProviderId, ProviderSectionStatus,
         RelativeSearchFilter, SearchRequest,
     };
@@ -2113,8 +2301,9 @@ mod tests {
     }
 
     impl BslSearchClient for FailingBslClient {
-        fn search(
+        fn call(
             &self,
+            _tool: &'static str,
             _context: &CodeIntelligenceContext,
             _arguments: Value,
             _timeout: Duration,
@@ -2146,8 +2335,9 @@ mod tests {
     }
 
     impl BslSearchClient for FakeBslClient {
-        fn search(
+        fn call(
             &self,
+            _tool: &'static str,
             context: &CodeIntelligenceContext,
             arguments: Value,
             timeout: Duration,
@@ -2161,6 +2351,75 @@ mod tests {
         }
     }
 
+    /// Порт отвечает графом, а не только объявляет возможность.
+    ///
+    /// Канал подменён двойником, который отдаёт замеренный ответ анализатора:
+    /// так проверяется путь целиком — аргументы запроса, разбор, состояние и
+    /// перенос отказа, — не поднимая движок.
+    #[test]
+    fn the_call_graph_capability_answers_through_the_analyzer_channel() {
+        let payloads: Value = serde_json::from_str(include_str!(
+            "../../../../tests/fixtures/bsl_analyzer/graph-0.2.67.json"
+        ))
+        .expect("измеренные ответы анализатора");
+        let client = FakeBslClient {
+            calls: Mutex::new(Vec::new()),
+            output: WorkspaceServiceBslOutput {
+                result_text: payloads["callers"].to_string(),
+                stderr: String::new(),
+            },
+        };
+        let outcome = BslAnalyzerProvider::with_client(&client)
+            .read(
+                &CodeIntelligenceReadRequest::CallGraph {
+                    id: "method/common/Вызываемый/Цель".to_string(),
+                    direction: CallGraphDirection::Callers,
+                    limit: 20,
+                },
+                &context(),
+                ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
+                &CancellationToken::new(),
+            )
+            .expect("порт отвечает");
+
+        assert!(outcome.ok, "{outcome:?}");
+        // Запрос называет действие анализатора и границу страницы.
+        let calls = client.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].1["action"], "callers");
+        assert_eq!(calls[0].1["id"], "method/common/Вызываемый/Цель");
+        assert_eq!(calls[0].1["max_nodes"], 20);
+        let Some(CodeIntelligenceReadData::CallGraph(graph)) = outcome.data else {
+            panic!("порт отдаёт типизированный граф: {:?}", outcome.data);
+        };
+        assert_eq!(graph.state, CallGraphState::Ready);
+        assert_eq!(graph.total, Some(1));
+        assert_eq!(graph.edges[0].provenance, CallEdgeProvenance::Resolved);
+
+        // Недостижимый движок — названное состояние, а не нулевой счёт:
+        // «графа нет» и «вызовов нет» — разные ответы.
+        let failing = FailingBslClient {
+            error: "bundled bsl-analyzer is not installed".to_string(),
+        };
+        let refused = BslAnalyzerProvider::with_client(&failing)
+            .read(
+                &CodeIntelligenceReadRequest::CallGraph {
+                    id: "method/common/Вызываемый/Цель".to_string(),
+                    direction: CallGraphDirection::Callees,
+                    limit: 20,
+                },
+                &context(),
+                ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
+                &CancellationToken::new(),
+            )
+            .expect("недостижимый движок — ответ, а не паника");
+        assert!(!refused.ok);
+        let Some(CodeIntelligenceReadData::CallGraph(graph)) = refused.data else {
+            panic!("состояние названо даже при отказе: {:?}", refused.data);
+        };
+        assert_eq!(graph.state, CallGraphState::Unavailable);
+        assert_eq!(graph.total, None);
+    }
     #[test]
     fn bsl_analyzer_provider_uses_persistent_search_tool_with_resolved_context() {
         let client = FakeBslClient {
@@ -2977,88 +3236,4 @@ mod tests {
         assert!(!section.diagnostics.join(" ").contains("top-secret"));
         assert_eq!(client.calls.lock().unwrap().len(), 1);
     }
-}
-
-/// Разбор ответа анализатора о графе вызовов.
-///
-/// Форма снята с живого `bsl-analyzer 0.2.67` (профиль MCP `workspace`,
-/// инструмент `graph`, contract 1.4) и закреплена фикстурой
-/// `tests/fixtures/bsl_analyzer/graph-0.2.67.json`. Замер изменил три решения
-/// проекта, и разбор их держит:
-///
-/// * счёт берётся из `inTotal`/`outTotal` анализатора, а не из длины страницы,
-///   поэтому он верен и при урезанной странице;
-/// * незавершённый индекс — названное состояние `loading`, а не ошибка и не
-///   отсутствие счёта: иначе «не посчитано» не отличить от «вызовов нет»;
-/// * происхождение ребра сохраняется: выведенное ребро не выдаётся за
-///   разрешённое.
-pub(crate) fn parse_call_graph_answer(
-    value: &Value,
-    direction: CallGraphDirection,
-) -> Result<CallGraphResult, String> {
-    // Индекс ещё строится. Анализатор говорит это явно и при `isError: false`,
-    // поэтому состояние переносится, а не превращается в отказ.
-    if value.get("status").and_then(Value::as_str) == Some("loading") {
-        return Ok(CallGraphResult {
-            state: CallGraphState::Indexing,
-            total: None,
-            edges: Vec::new(),
-            revision: None,
-            stale: None,
-        });
-    }
-    let revision = value.get("revision").and_then(Value::as_u64);
-    let stale = value.get("stale").and_then(Value::as_bool);
-    let result = value
-        .get("result")
-        .ok_or_else(|| "call graph answer has no result".to_string())?;
-    // Неизвестный узел анализатор называет в теле ответа, а не протоколом.
-    if let Some(error) = result.get("error").and_then(Value::as_str) {
-        return Err(error.to_string());
-    }
-    let total = result
-        .get(direction.total_field())
-        .and_then(Value::as_u64)
-        .ok_or_else(|| format!("call graph answer has no {} count", direction.total_field()))?;
-    let mut edges = Vec::new();
-    for edge in result
-        .get("edges")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        // Направление решает, какой конец ребра называет соседа: у входящего
-        // это `from`, у исходящего `to`.
-        let peer = match direction {
-            CallGraphDirection::Callers => edge.get("from"),
-            CallGraphDirection::Callees => edge.get("to"),
-        }
-        .and_then(Value::as_str);
-        let Some(peer) = peer else {
-            return Err("call graph edge names no peer".to_string());
-        };
-        let provenance = match edge.get("provenance").and_then(Value::as_str) {
-            Some("resolved") => CallEdgeProvenance::Resolved,
-            Some("inferred") => CallEdgeProvenance::Inferred,
-            // Неизвестное происхождение не приравнивается к разрешённому:
-            // словарь закрыт, и незнакомое значение — повод отказать.
-            other => {
-                return Err(format!(
-                    "call graph edge has an unknown provenance: {}",
-                    other.unwrap_or("none")
-                ))
-            }
-        };
-        edges.push(CallGraphEdge {
-            id: peer.to_string(),
-            provenance,
-        });
-    }
-    Ok(CallGraphResult {
-        state: CallGraphState::Ready,
-        total: Some(total),
-        edges,
-        revision,
-        stale,
-    })
 }
