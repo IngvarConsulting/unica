@@ -740,14 +740,21 @@ fn metadata_kind_branch_lists_registered_objects_with_canonical_addresses() {
     let service = ViewService::new(authority, ViewCursorStore::default());
 
     let branch = service.view(ViewRequest::new("main:Catalog").unwrap());
-    assert!(branch.ok, "{} {:?}", branch.summary, branch.diagnostics);
+    assert!(branch.ok, "{:?}", refusal_codes(&branch));
     assert_eq!(
         branch.data.as_ref().unwrap()["items"],
-        json!([{
-            "at": "main:Catalog.Items",
-            "kind": "Catalog",
-            "title": "Items"
-        }]),
+        json!([
+            {
+                "at": "main:Catalog.Items",
+                "kind": "Catalog",
+                "title": "Items"
+            },
+            {
+                "at": "main:Catalog.Владельцы",
+                "kind": "Catalog",
+                "title": "Владельцы"
+            }
+        ]),
     );
 }
 
