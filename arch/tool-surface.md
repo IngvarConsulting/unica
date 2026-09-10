@@ -140,12 +140,11 @@ List canonical runtime operations and their invocation contract, or preview/exec
 
 **Результат сейчас:** Вызов без `op` до source admission возвращает закрытый словарь направленных runtime-намерений, каждому из которых нужна платформа или база; `infobase.configuration.export` и `infobase.dump` реализованы; обе выгрузки используют неисполняющий preview v8-runner, revision-fenced apply и независимую квитанцию файла (отвечают типизированным `data`)
 
-**Целевой контракт:** Добавить infobase-only и combined initialization, затем подключать остальные девять направленных операций через preview/apply, capability-specific admission и закрытые terminal/provider-контракты
+**Целевой контракт:** Подключать остальные восемь направленных операций через preview/apply, capability-specific admission и закрытые terminal/provider-контракты
 
 **Сценарии:**
 
 - Получить машинно-читаемый словарь допустимых runtime намерений
-- Предпросмотреть и атомарно инициализировать workspace по autodetected source sets до admission
 - Предпросмотреть и выгрузить main CF, extension CFE или полный DT из существующей ИБ
 - Различить сборку артефакта, экспорт конфигурации и полный снимок ИБ без выбора platform provider моделью
 
