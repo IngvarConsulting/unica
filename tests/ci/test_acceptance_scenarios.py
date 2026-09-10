@@ -316,8 +316,11 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
     def test_corpus_holds_the_run_free_scenario_set_uniquely_numbered(self) -> None:
         scenarios = self.corpus["scenarios"]
         self.assertEqual(len(scenarios), 311)
-        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 347,
-            "a wire step went missing: the corpus freezes 347 steps",
+        # Тринадцать применений стали двухшаговыми: забор ревизии у `apply`
+        # обязателен, и предпросмотр теперь часть сценария, а не дисциплина
+        # читателя (DEC.2026-09-10.APPLY-FENCE-IS-A-CONTRACT).
+        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 360,
+            "a wire step went missing: the corpus freezes 360 steps",
         )
         identifiers = [scenario["id"] for scenario in scenarios]
         self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 312)])

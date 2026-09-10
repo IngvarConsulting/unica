@@ -34,7 +34,8 @@ mod tests {
         let request = parse_request(
             json!({
                 "at": "main:Document.Order",
-                "ops": [{"op": "props.set", "args": {"synonym": "Order"}}]
+                "ops": [{"op": "props.set", "args": {"synonym": "Order"}}],
+                "dryRun": true
             })
             .as_object()
             .unwrap(),

@@ -195,7 +195,7 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                                 },
                             },
                             "dryRun": {"type": "boolean", "description": "Validate and return the plan without publishing when true.", "default": false},
-                            "ifRev": {"type": "string", "description": "Optional revision fence from an earlier read."},
+                            "ifRev": {"type": "string", "description": "Revision returned by a prior dryRun preview; required when dryRun is false."},
                         }),
                         json!(["at", "ops"]),
                     ),
