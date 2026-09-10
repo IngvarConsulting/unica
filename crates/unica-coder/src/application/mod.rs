@@ -3502,6 +3502,12 @@ pub(crate) mod tests {
                         },
                     )
                 }
+                // Этот двойник отвечает за навигацию индекса; граф вызовов —
+                // предмет анализатора BSL, и подставлять за него пустоту
+                // значило бы учить проверку неправде.
+                CodeIntelligenceReadRequest::CallGraph { .. } => {
+                    return Err("the navigation stub answers no call graph".to_string())
+                }
             };
             Ok(crate::domain::code_intelligence::ProviderReadOutcome {
                 provider: crate::domain::code_intelligence::ProviderId::Rlm.identity(),

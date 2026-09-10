@@ -1,3 +1,8 @@
+- Date: `2026-09-10`
+- Status: `draft`
+- Decision: `none` — проект на рассмотрение; решение принимается после него
+- Порядок работ и открытые вопросы держит задача https://github.com/IngvarConsulting/unica/issues/717
+
 # Ветви `Caller` и `Callee`: граф вызовов у узла метода
 
 Пункт 4.2 зонтика #717 и дом снятого `unica.code.graph`.
