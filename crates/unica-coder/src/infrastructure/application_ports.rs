@@ -709,9 +709,7 @@ fn normalize_code_intelligence_read_request(
         CodeIntelligenceReadRequest::Outline { path, .. } => {
             *path = normalize_code_intelligence_path(path, context)?;
         }
-        // Личность узла графа путём не является и нормализации не требует.
-        CodeIntelligenceReadRequest::Definition { .. }
-        | CodeIntelligenceReadRequest::CallGraph { .. } => {}
+        CodeIntelligenceReadRequest::Definition { .. } => {}
     }
     Ok(request)
 }
