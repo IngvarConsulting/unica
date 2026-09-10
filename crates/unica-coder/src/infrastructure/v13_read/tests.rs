@@ -707,7 +707,7 @@ fn capability_bound_configuration_reader_preserves_complete_cf_info_semantics() 
         "ManagedApplication"
     );
     assert_eq!(payload["support"]["state"], "notSupported");
-    assert_eq!(payload["totalObjects"], 13);
+    assert_eq!(payload["totalObjects"], 17);
     assert_eq!(
         payload["childObjects"]
             .as_array()
@@ -715,9 +715,9 @@ fn capability_bound_configuration_reader_preserves_complete_cf_info_semantics() 
             .iter()
             .map(|entry| entry["count"].as_u64().unwrap())
             .sum::<u64>(),
-        13,
+        17,
     );
-    assert_eq!(payload["registeredObjects"].as_array().unwrap().len(), 13);
+    assert_eq!(payload["registeredObjects"].as_array().unwrap().len(), 17);
 }
 
 #[test]
@@ -909,10 +909,70 @@ fn every_reference_of_an_object_answers_in_one_relation_branch() {
         ]),
     );
 
+    // Правило обещает всякую ссылку, поэтому проверяются все её источники, а
+    // не те два, что лежали ближе. `relations` и пофактовая часть вида
+    // приходят из разных мест платформы и должны сойтись в одной ветви.
+    let sources = |at: &str| -> Vec<(String, String)> {
+        let node = service.view(ViewRequest::new(at).unwrap());
+        assert!(node.ok, "{at}: {:?}", refusal_codes(&node));
+        node.data.as_ref().unwrap()["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| {
+                (
+                    item["relation"].as_str().unwrap().to_string(),
+                    item["at"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect()
+    };
+    assert_eq!(
+        sources("main:Catalog.Items.Relation"),
+        [
+            ("owner".to_string(), "main:Catalog.Владельцы".to_string()),
+            (
+                "inputByString".to_string(),
+                "main:Catalog.Items.Attribute.Code".to_string()
+            ),
+            (
+                "dataLockField".to_string(),
+                "main:Catalog.Items.Attribute.Code".to_string()
+            ),
+        ]
+    );
+    assert_eq!(
+        sources("main:DocumentJournal.Журнал.Relation"),
+        [(
+            "registeredDocument".to_string(),
+            "main:Document.Order".to_string()
+        )]
+    );
+    assert_eq!(
+        sources("main:ChartOfCalculationTypes.ВидыРасчета.Relation"),
+        [(
+            "baseCalculationType".to_string(),
+            "main:ChartOfCalculationTypes.ВидыРасчета".to_string()
+        )]
+    );
+    assert_eq!(
+        sources("main:EventSubscription.ПриЗаписи.Relation"),
+        [("source".to_string(), "main:Catalog.Items".to_string())]
+    );
+    // Пакет XDTO бывает ссылкой и бывает пространством имён; в ветвь попадает
+    // только адресуемый вариант, и это названная граница, а не потеря.
+    assert_eq!(
+        sources("main:WebService.Exchange.Relation"),
+        [(
+            "xdtoPackage".to_string(),
+            "main:XDTOPackage.Exchange".to_string()
+        )]
+    );
+
     // Элемент ветви показывает наружу, поэтому спускаться в него нельзя:
     // цель читается по своему адресу.
     let inward = service.view(ViewRequest::new("main:Document.Order.Relation.Items").unwrap());
-    assert!(!inward.ok, "{inward:#?}");
+    assert!(!inward.ok, "{:?}", refusal_codes(&inward));
     assert_eq!(refusal_codes(&inward), ["not_found"]);
 }
 
@@ -963,7 +1023,7 @@ fn root_declarations_get_branches_and_only_the_named_one_is_addressable() {
     assert_eq!(items[0]["values"]["source"], "Catalog.Items");
 
     let named = service.view(ViewRequest::new("main:Catalog.Items.Characteristic.Any").unwrap());
-    assert!(!named.ok, "{named:#?}");
+    assert!(!named.ok, "{:?}", refusal_codes(&named));
     assert_eq!(refusal_codes(&named), ["not_found"]);
 }
 
@@ -3383,7 +3443,7 @@ impl RealReaderFixture {
                 source.join("Configuration.xml"),
                 replace_child_objects(
                     &config,
-                    "\n\t\t\t<Constant>MainCurrency</Constant>\n\t\t\t<Catalog>Items</Catalog>\n\t\t\t<Document>Order</Document>\n\t\t\t<ChartOfAccounts>Accounts</ChartOfAccounts>\n\t\t\t<CalculationRegister>Payroll</CalculationRegister>\n\t\t\t<Report>ParityReport</Report>\n\t\t\t<Role>SalesReader</Role>\n\t\t\t<Subsystem>Sales</Subsystem>\n\t\t\t<XDTOPackage>EnterpriseData_1_17_3</XDTOPackage>\n\t\t\t<CommonModule>РеактивныйСервер</CommonModule>\n\t\t\t<ScheduledJob>MonthClose</ScheduledJob>\n\t\t\t<HTTPService>ExternalAPI</HTTPService>\n\t\t\t<WebService>Exchange</WebService>\n\t\t",
+                    "\n\t\t\t<Constant>MainCurrency</Constant>\n\t\t\t<Catalog>Items</Catalog>\n\t\t\t<Document>Order</Document>\n\t\t\t<ChartOfAccounts>Accounts</ChartOfAccounts>\n\t\t\t<Catalog>Владельцы</Catalog>\n\t\t\t<DocumentJournal>Журнал</DocumentJournal>\n\t\t\t<ChartOfCalculationTypes>ВидыРасчета</ChartOfCalculationTypes>\n\t\t\t<EventSubscription>ПриЗаписи</EventSubscription>\n\t\t\t<CalculationRegister>Payroll</CalculationRegister>\n\t\t\t<Report>ParityReport</Report>\n\t\t\t<Role>SalesReader</Role>\n\t\t\t<Subsystem>Sales</Subsystem>\n\t\t\t<XDTOPackage>EnterpriseData_1_17_3</XDTOPackage>\n\t\t\t<CommonModule>РеактивныйСервер</CommonModule>\n\t\t\t<ScheduledJob>MonthClose</ScheduledJob>\n\t\t\t<HTTPService>ExternalAPI</HTTPService>\n\t\t\t<WebService>Exchange</WebService>\n\t\t",
                 ),
             )
             .unwrap();
@@ -3398,10 +3458,16 @@ impl RealReaderFixture {
         .replace(
             "<Properties><Name>Items</Name></Properties>",
             concat!(
-                "<Properties><Name>Items</Name><Hierarchical>true</Hierarchical>",
+                "<Properties xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\"",
+                " xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"",
+                " xmlns:xs=\"http://www.w3.org/2001/XMLSchema\">",
+                "<Name>Items</Name><Hierarchical>true</Hierarchical>",
                 "<CodeLength>11</CodeLength>",
+                "<Owners><xr:Item xsi:type=\"xr:MDObjectRef\">Catalog.Владельцы</xr:Item></Owners>",
+                "<InputByString><xr:Field>Catalog.Items.Attribute.Code</xr:Field></InputByString>",
+                "<DataLockFields><xr:Field>Catalog.Items.Attribute.Code</xr:Field></DataLockFields>",
                 // Характеристика названа парой источников, а не именем.
-                "<Characteristics xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\">",
+                "<Characteristics>",
                 "<xr:Characteristic>",
                 "<xr:CharacteristicTypes from=\"Catalog.Items.TabularSection.Lines.Attribute.Quantity\">",
                 "<xr:KeyField>Catalog.Items.Attribute.Code</xr:KeyField>",
@@ -3421,6 +3487,44 @@ impl RealReaderFixture {
             ),
         );
         write(&source.join("Catalogs/Items.xml"), &catalog);
+        // Остальные источники ссылок: владелец, журнал, базовые виды расчёта и
+        // источник события подписки. Правило обещает всякую ссылку, и проверить
+        // его можно только всеми её источниками.
+        for (relative, body) in [
+            (
+                "Catalogs/Владельцы.xml",
+                r#"<Catalog uuid="99999999-9999-4999-8999-999999999991"><Properties><Name>Владельцы</Name></Properties><ChildObjects/></Catalog>"#,
+            ),
+            (
+                "DocumentJournals/Журнал.xml",
+                r#"<DocumentJournal uuid="99999999-9999-4999-8999-999999999992"><Properties><Name>Журнал</Name><RegisteredDocuments><xr:Item xsi:type="xr:MDObjectRef">Document.Order</xr:Item></RegisteredDocuments></Properties><ChildObjects/></DocumentJournal>"#,
+            ),
+            (
+                "ChartsOfCalculationTypes/ВидыРасчета.xml",
+                r#"<ChartOfCalculationTypes uuid="99999999-9999-4999-8999-999999999993"><Properties><Name>ВидыРасчета</Name><BaseCalculationTypes><xr:Item xsi:type="xr:MDObjectRef">ChartOfCalculationTypes.ВидыРасчета</xr:Item></BaseCalculationTypes></Properties><ChildObjects/></ChartOfCalculationTypes>"#,
+            ),
+            (
+                "EventSubscriptions/ПриЗаписи.xml",
+                r#"<EventSubscription uuid="99999999-9999-4999-8999-999999999994"><Properties><Name>ПриЗаписи</Name><Source><v8:Type>cfg:CatalogObject.Items</v8:Type></Source><Event>BeforeWrite</Event><Handler>CommonModule.РеактивныйСервер.ПриЗаписи</Handler></Properties></EventSubscription>"#,
+            ),
+        ] {
+            write(
+                &source.join(relative),
+                &format!(
+                    concat!(
+                        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+                        "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\"",
+                        " xmlns:v8=\"http://v8.1c.ru/8.1/data/core\"",
+                        " xmlns:cfg=\"http://v8.1c.ru/8.1/data/enterprise/current-config\"",
+                        " xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\"",
+                        " xmlns:xs=\"http://www.w3.org/2001/XMLSchema\"",
+                        " xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"",
+                        " version=\"2.20\">{}</MetaDataObject>"
+                    ),
+                    body
+                ),
+            );
+        }
         // План счетов со стандартной табличной частью: у неё есть имя, и она
         // адресуется, а внутри — своя последовательность.
         write(
