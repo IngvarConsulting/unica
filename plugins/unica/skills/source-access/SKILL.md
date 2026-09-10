@@ -174,7 +174,7 @@ allowed-tools:
         {
           "op": "code.replace",
           "args": {
-            "at": "main:CommonModule.SourceAccessExample.Module.Manager.Method.BeforeReplacement.Body",
+            "at": "main:CommonModule.SourceAccessExample.Method.BeforeReplacement.Body",
             "text": "\t// новое тело"
           }
         }

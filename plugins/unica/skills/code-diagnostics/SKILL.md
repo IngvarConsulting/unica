@@ -89,7 +89,7 @@ This verification gate is mandatory:
   "method": "tools/call",
   "params": {
     "name": "unica.check",
-    "arguments": { "at": "main:CommonModule.Продажи.Module.Manager" }
+    "arguments": { "at": "main:CommonModule.Продажи" }
   }
 }
 ```
