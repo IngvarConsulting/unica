@@ -177,7 +177,7 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                 V13ToolContract {
                     name: "apply",
                     description: "Preview or atomically apply typed edits to one logically addressed 1C node.",
-                    input_schema: schema(
+                    input_schema: schema_requiring_the_fence(
                         json!({
                             "at": logical_address(),
                             "ops": {
@@ -195,7 +195,7 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                                 },
                             },
                             "dryRun": {"type": "boolean", "description": "Validate and return the plan without publishing when true.", "default": false},
-                            "ifRev": {"type": "string", "description": "Optional revision fence from an earlier read."},
+                            "ifRev": {"type": "string", "description": "Revision returned by a prior dryRun preview; required when dryRun is false."},
                         }),
                         json!(["at", "ops"]),
                     ),
@@ -294,6 +294,25 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
             result_envelope_schema: result_envelope_schema(),
         }),
     }
+}
+
+/// Схема `apply`: забор обязателен, когда это применение, а не предпросмотр.
+///
+/// Условие объявлено структурно, а не только словами в описании поля: иначе
+/// хост, собирающий вызов по схеме, сгенерирует применение без забора, которое
+/// разборщик затем отвергнет. Опущенный `dryRun` равен `false`, и отсутствие
+/// поля условие покрывает тем же `const`: пустая ветвь `if` проходит.
+fn schema_requiring_the_fence(properties: Value, required: Value) -> Value {
+    let mut schema = schema(properties, required);
+    let object = schema
+        .as_object_mut()
+        .expect("the schema builder returns an object");
+    object.insert(
+        "if".to_string(),
+        json!({"properties": {"dryRun": {"const": false}}}),
+    );
+    object.insert("then".to_string(), json!({"required": ["ifRev"]}));
+    schema
 }
 
 fn schema(properties: Value, required: Value) -> Value {
