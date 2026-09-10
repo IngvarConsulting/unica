@@ -958,19 +958,7 @@ fn project_metadata(
 ) -> Result<NodeViewData, ViewError> {
     if suffix.is_empty() {
         let mut props = selected_scalar_props(payload, &["kind", "synonym", "support"]);
-        if let Some(details) = payload.get("details") {
-            props.extend(selected_scalar_props(
-                details,
-                &[
-                    "hierarchical",
-                    "codeLength",
-                    "descriptionLength",
-                    "numberLength",
-                    "periodicity",
-                    "registerRecords",
-                ],
-            ));
-        }
+        props.extend(metadata_property_props(payload));
         let branches = metadata_branch_kinds()
             .iter()
             .filter_map(|kind| {
@@ -1602,6 +1590,39 @@ fn project_xdto(
         property_name,
         reader_node_props(LogicalReader::Xdto, NodeKind::Property, property),
     )))
+}
+
+/// Свойства объекта метаданных — это `props` его узла.
+///
+/// Читатель отдаёт их списком пар `{key, value}`, где ключ взят из закрытого
+/// словаря `META_INFO_PROPERTY_NAMES`, а профиль вида уже решил, что из него
+/// наблюдаемо. Развернуть список — значит снять обёртку, а не открыть дверь
+/// произвольным ключам.
+fn metadata_property_props(payload: &Value) -> Map<String, Value> {
+    payload
+        .get("properties")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|property| {
+            let key = property.get("key")?.as_str()?;
+            // Синоним узел уже назвал сам — заголовком и собственным `props`.
+            if key == "Synonym" {
+                return None;
+            }
+            let value = property.get("value")?;
+            let value = match value {
+                Value::Object(_) | Value::Array(_) => {
+                    // Структурное значение рендерится компактной строкой — так
+                    // же, как тип реквизита, и вторым механизмом это не станет.
+                    let rendered = serde_json::to_string(value).ok()?;
+                    (rendered.len() <= MAX_COMPACT_PROP_BYTES).then_some(Value::String(rendered))?
+                }
+                scalar => safe_prop(key, scalar).then(|| scalar.clone())?,
+            };
+            Some((key.to_string(), value))
+        })
+        .collect()
 }
 
 fn selected_scalar_props(value: &Value, keys: &[&str]) -> Map<String, Value> {

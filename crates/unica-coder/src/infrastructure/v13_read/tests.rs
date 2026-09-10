@@ -752,6 +752,22 @@ fn metadata_kind_branch_lists_registered_objects_with_canonical_addresses() {
 }
 
 #[test]
+fn metadata_node_props_carry_the_observed_object_properties() {
+    let fixture = RealReaderFixture::new();
+    let service = fixture.view_service();
+
+    let result = service.view(ViewRequest::new("main:Catalog.Items").unwrap());
+
+    assert!(result.ok, "{} {:?}", result.summary, result.diagnostics);
+    let props = &result.data.as_ref().unwrap()["props"];
+    // Свойства объекта отвечают на узле объекта: раньше проекция искала шесть
+    // скаляров в `details`, где их нет ни у одного вида, и узел молчал.
+    assert_eq!(props["Hierarchical"], json!(true));
+    assert_eq!(props["CodeLength"], json!(11));
+    assert_eq!(props["kind"], json!("Catalog"));
+}
+
+#[test]
 fn metadata_tabular_section_attribute_consumes_the_complete_suffix() {
     let fixture = RealReaderFixture::new();
     let service = fixture.view_service();
@@ -3177,6 +3193,11 @@ impl RealReaderFixture {
         .replace(
             "<TabularSection><Properties><Name>Lines</Name></Properties><ChildObjects/></TabularSection>",
             "<TabularSection><Properties><Name>Lines</Name></Properties><ChildObjects><Attribute><Properties><Name>Quantity</Name><Type><v8:Type>xs:decimal</v8:Type></Type></Properties></Attribute></ChildObjects></TabularSection>",
+        )
+        // Свойства корня каталога: без них узел метаданных нечем проверить.
+        .replace(
+            "<Properties><Name>Items</Name></Properties>",
+            "<Properties><Name>Items</Name><Hierarchical>true</Hierarchical><CodeLength>11</CodeLength></Properties>",
         );
         write(&source.join("Catalogs/Items.xml"), &catalog);
         write(
