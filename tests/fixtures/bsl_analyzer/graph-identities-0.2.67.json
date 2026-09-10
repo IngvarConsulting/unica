@@ -1,0 +1,119 @@
+{
+  "_note": "Три формы личности узла у bsl-analyzer 0.2.67: общий модуль, модуль объекта и модуль, привязанный к файлу. Снято 10.09.2026.",
+  "resolve_common": {
+    "reload": "none",
+    "result": {
+      "candidates": [
+        {
+          "id": "method/common/Общий/Утилита",
+          "kind": "method",
+          "match": "name"
+        }
+      ],
+      "query": "Утилита",
+      "total": 1
+    },
+    "revision": 1,
+    "stale": false
+  },
+  "resolve_object": {
+    "reload": "none",
+    "result": {
+      "candidates": [
+        {
+          "id": "method/object/Catalog/Валюты/ПриЗаписи",
+          "kind": "method",
+          "match": "name"
+        }
+      ],
+      "query": "ПриЗаписи",
+      "total": 1
+    },
+    "revision": 1,
+    "stale": false
+  },
+  "resolve_file": {
+    "reload": "none",
+    "result": {
+      "candidates": [
+        {
+          "id": "method/file/Catalogs/Валюты/Forms/Форма/Ext/Form/Module.bsl::ПриОткрытии",
+          "kind": "method",
+          "match": "name"
+        }
+      ],
+      "query": "ПриОткрытии",
+      "total": 1
+    },
+    "revision": 1,
+    "stale": false
+  },
+  "callers_mixed": {
+    "reload": "none",
+    "result": {
+      "by_kind": {
+        "call": 2
+      },
+      "by_provenance": {
+        "resolved": 2
+      },
+      "confidence": "resolved_only",
+      "connectors_dropped": false,
+      "dropped_count": 0,
+      "edges": [
+        {
+          "crosses_client_to_server": true,
+          "from": "method/object/Catalog/Валюты/ПриЗаписи",
+          "kind": "call",
+          "provenance": "resolved"
+        },
+        {
+          "crosses_client_to_server": true,
+          "from": "method/file/Catalogs/Валюты/Forms/Форма/Ext/Form/Module.bsl::ПриОткрытии",
+          "kind": "call",
+          "provenance": "resolved"
+        }
+      ],
+      "in_total": 2,
+      "nodes": [
+        {
+          "dispatch": [
+            "client"
+          ],
+          "id": "method/file/Catalogs/Валюты/Forms/Форма/Ext/Form/Module.bsl::ПриОткрытии",
+          "is_export": false,
+          "kind": "method",
+          "module": "Catalogs/Валюты/Forms/Форма/Ext/Form/Module.bsl",
+          "name": "ПриОткрытии",
+          "signature": "Процедура ПриОткрытии(Отказ)"
+        },
+        {
+          "dispatch": [
+            "client"
+          ],
+          "id": "method/object/Catalog/Валюты/ПриЗаписи",
+          "is_export": true,
+          "kind": "method",
+          "module": "Справочник.Валюты.МодульОбъекта",
+          "name": "ПриЗаписи",
+          "signature": "Процедура ПриЗаписи(Отказ) Экспорт"
+        }
+      ],
+      "returned": 2,
+      "root": {
+        "dispatch": [
+          "server"
+        ],
+        "id": "method/common/Общий/Утилита",
+        "is_export": true,
+        "kind": "method",
+        "module": "ОбщийМодуль.Общий",
+        "name": "Утилита",
+        "signature": "Процедура Утилита() Экспорт"
+      },
+      "total": 2
+    },
+    "revision": 1,
+    "stale": false
+  }
+}
