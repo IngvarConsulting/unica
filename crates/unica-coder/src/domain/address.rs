@@ -105,6 +105,9 @@ pub(crate) enum NodeKind {
     Caller,
     /// Метод, которого зовёт этот метод.
     Callee,
+    /// Предопределённый элемент объекта: носит имя и идентификатор, поэтому
+    /// адресуется — в отличие от характеристики, названной парой источников.
+    PredefinedItem,
 }
 
 const LEGACY_METADATA_KINDS: &[NodeKind] = &[
@@ -212,6 +215,7 @@ const V13_KIND_SPELLINGS: &[V13KindSpelling] = &[
     ),
     spelling(NodeKind::Caller, &["Вызывающий"]),
     spelling(NodeKind::Callee, &["Вызываемый"]),
+    spelling(NodeKind::PredefinedItem, &["ПредопределённыйЭлемент"]),
 ];
 
 const fn spelling(kind: NodeKind, aliases: &'static [&'static str]) -> V13KindSpelling {
@@ -348,6 +352,7 @@ impl NodeKind {
             Self::StandardTabularSection => "StandardTabularSection",
             Self::Caller => "Caller",
             Self::Callee => "Callee",
+            Self::PredefinedItem => "PredefinedItem",
         }
     }
 

@@ -131,6 +131,7 @@ pub(crate) use info::{
     with_subsystem_evidence_processing_hook, RegistrarProcessingPhase,
     SubsystemEvidenceProcessingPhase,
 };
+pub(crate) use predefined::{read_predefined_items_for_code_type, PredefinedCodeType};
 pub(crate) use publisher::{fresh_metadata_uuid, prepare_meta_add};
 #[cfg(test)]
 pub(crate) use publisher::{

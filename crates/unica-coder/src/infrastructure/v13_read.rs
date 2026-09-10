@@ -487,6 +487,17 @@ impl<'a> LogicalViewReadAuthority<'a> {
         let collections = serde_json::to_value(&local.collections)
             .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))?;
         payload.insert("collections".to_string(), collections);
+        // Предопределённые элементы — содержимое самого объекта, и писатель у
+        // них есть. Без читателя агент, добавивший элемент, не может
+        // подтвердить результат: ни счёта, ни списка, ни адреса.
+        if let Some(predefined) = self.read.predefined_items(
+            target,
+            local.kind,
+            local.predefined_code_type.as_deref(),
+            PREDEFINED_ITEM_PAGE_LIMIT,
+        )? {
+            insert_serialized(&mut payload, "predefinedItems", &predefined)?;
+        }
         Ok(Value::Object(payload))
     }
 
@@ -2142,6 +2153,9 @@ fn named_segment(address: &QualifiedAddress, kind: NodeKind) -> Option<&str> {
 #[cfg(test)]
 use crate::infrastructure::v13_read_projection::project_known_suffix;
 use crate::infrastructure::v13_read_projection::project_typed_payload;
+
+/// Страница предопределённых элементов: объявленный максимум поверхности.
+const PREDEFINED_ITEM_PAGE_LIMIT: usize = 50;
 
 #[cfg(test)]
 pub(crate) mod tests;

@@ -761,6 +761,7 @@ fn validate_reader_payload(reader: LogicalReader, payload: &Value) -> Result<(),
             "declarations",
             "relations",
             "collections",
+            "predefinedItems",
         ],
         LogicalReader::Form => &[
             "name",
@@ -960,11 +961,23 @@ fn project_metadata(
         let mut props = selected_scalar_props(payload, &["kind", "synonym", "support"]);
         props.extend(metadata_property_props(payload));
         props.extend(metadata_detail_props(payload));
+        // Счёт предопределённых элементов берётся из ответа читателя, а не из
+        // длины страницы: при урезанной странице они расходятся, и ветвь
+        // обещала бы меньше, чем есть.
+        let predefined_total = payload
+            .get("predefinedItems")
+            .and_then(|predefined| predefined.get("total"))
+            .and_then(Value::as_u64);
         let mut branches = metadata_branch_kinds()
             .iter()
             .filter_map(|kind| {
                 let value = metadata_collection(payload, *kind)?;
-                let count = value.as_array().map_or(0, Vec::len);
+                let count = match (kind, predefined_total) {
+                    (NodeKind::PredefinedItem, Some(total)) => {
+                        usize::try_from(total).unwrap_or(usize::MAX)
+                    }
+                    _ => value.as_array().map_or(0, Vec::len),
+                };
                 (count > 0).then(|| BranchRef::new(format!("{}.{}", address, kind.as_str()), count))
             })
             .collect::<Vec<_>>();
@@ -1123,6 +1136,7 @@ fn metadata_branch_kinds() -> &'static [NodeKind] {
         NodeKind::Operation,
         NodeKind::Characteristic,
         NodeKind::StandardTabularSection,
+        NodeKind::PredefinedItem,
     ]
 }
 
@@ -1134,6 +1148,9 @@ fn metadata_collection(payload: &Value, kind: NodeKind) -> Option<&Value> {
         NodeKind::StandardAttribute => declarations?.get("standardAttributes"),
         NodeKind::Characteristic => declarations?.get("characteristics"),
         NodeKind::StandardTabularSection => declarations?.get("standardTabularSections"),
+        // Страница элементов лежит в `items`, а правдивый счёт — в `total`
+        // рядом: при урезанной странице длина массива соврала бы.
+        NodeKind::PredefinedItem => payload.get("predefinedItems")?.get("items"),
         NodeKind::TabularSection => collections.get("tabularSections"),
         NodeKind::Dimension => collections.get("dimensions"),
         NodeKind::Resource => collections.get("resources"),
@@ -1254,8 +1271,25 @@ fn metadata_item_node(address: &QualifiedAddress, kind: NodeKind, item: &Value) 
             "nillable",
             "transactioned",
             "direction",
+            // Предопределённый элемент: собственные скаляры и поля по виду
+            // владельца. Без них ветвь отвечала бы одним заголовком, то есть
+            // домом без содержимого.
+            "id",
+            "parentId",
+            "code",
+            "description",
+            "isFolder",
+            "accountType",
+            "offBalance",
+            "order",
+            "actionPeriodIsBase",
         ],
     );
+    for key in ["accountingFlags", "extDimensionTypes"] {
+        if let Some(value) = item.get(key).and_then(|value| bounded_prop(key, value)) {
+            props.insert(key.to_string(), value);
+        }
+    }
     if let Some(value) = item
         .get("returnType")
         .and_then(|value| bounded_prop("returnType", value))

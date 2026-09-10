@@ -182,7 +182,7 @@ pub(super) struct PlannedPredefinedResource {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum PredefinedCodeType {
+pub(crate) enum PredefinedCodeType {
     String,
     Number,
 }
@@ -553,7 +553,7 @@ pub(crate) fn read_predefined_items(
     read_predefined_items_with_code_type(bytes, kind, None, limit)
 }
 
-pub(super) fn read_predefined_items_for_code_type(
+pub(crate) fn read_predefined_items_for_code_type(
     bytes: &[u8],
     kind: MetadataKind,
     code_type: PredefinedCodeType,
