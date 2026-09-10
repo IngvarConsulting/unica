@@ -356,9 +356,9 @@ IN_SCOPE_TOOLS = {
     "cfe-patch-method": "unica.cfe.patch_method",
     "epf-init": "unica.epf.init",
     "erf-init": "unica.erf.init",
-    "meta-add": "unica.meta.add",
-    "meta-edit": "unica.meta.edit",
-    "meta-info": "unica.meta.info",
+    "meta-add": "unica.apply",
+    "meta-edit": "unica.apply",
+    "meta-info": "unica.view",
     "form-compile": "unica.form.compile",
     "form-edit": "unica.form.edit",
     "interface-edit": "unica.apply",
@@ -784,9 +784,9 @@ TASK_EXAMPLE_ARGUMENT_KEYS = {
     "cfe-patch-method": ["ExtensionPath", "ModulePath", "MethodName"],
     "epf-init": ["Name", "OutputDir", "FormName"],
     "erf-init": ["Name", "OutputDir", "FormName"],
-    "meta-add": ["sourceSet", "kind", "name"],
-    "meta-edit": ["sourceSet", "metadataPath", "operations"],
-    "meta-info": ["sourceSet", "metadataPath"],
+    "meta-add": ["at", "ops"],
+    "meta-edit": ["at", "ops"],
+    "meta-info": ["at"],
     "form-compile": ["JsonPath", "OutputPath"],
     "form-edit": ["FormPath", "JsonPath"],
     "interface-edit": ["at", "ops"],
@@ -809,8 +809,8 @@ SCENARIO_PRESERVING_MIN_MCP_CALLS = {
     "cfe-init": 6,
     "cfe-patch-method": 4,
     "meta-add": 2,
-    "meta-edit": 3,
-    "meta-info": 6,
+    "meta-edit": 4,
+    "meta-info": 3,
     "form-compile": 4,
     "interface-edit": 3,
     "subsystem-compile": 3,
@@ -832,6 +832,7 @@ ALLOWED_ADDITIONAL_MCP_TOOL_NAMES = {
     "role-compile": {"unica.view", "unica.check"},
     "dcs-compile": {"unica.view", "unica.check"},
     "dcs-edit": {"unica.view", "unica.check"},
+    "meta-info": {"unica.check"},
 }
 
 SCENARIO_PRESERVING_TOKENS = {
@@ -882,29 +883,27 @@ SCENARIO_PRESERVING_TOKENS = {
         '"relation": "source"',
         '"dryRun": true',
     ],
+    # Режим операции стал её именем: `editRelations` с `mode: "replace"`
+    # свёлся к `relation.replace`, а коллекция — к префиксу имени.
     "meta-edit": [
-        '"op": "setProperties"',
-        '"op": "add"',
-        '"collection": "attributes"',
-        '"allowedLength": "variable"',
-        '"op": "editRelations"',
-        '"relation": "basedOn"',
+        '"op": "props.set"',
+        '"op": "attribute.set"',
+        '"op": "attribute.remove"',
+        '"op": "predefinedItem.add"',
+        '"op": "relation.replace"',
         '"relation": "source"',
         '"kind": "recordSet"',
         '"metadataPath": "InformationRegister.ИсторияИзменений"',
-        '"mode": "replace"',
         '"targets": [',
     ],
     # `Name` and `Mode` were report selectors. The typed answer carries the
     # whole object, so the scenarios are preserved by the addresses they read,
     # not by the drill-down argument that no longer exists (ADR-0023).
+    # Путь метаданных стал логическим адресом, а вердикт ушёл в свой вход.
     "meta-info": [
-        '"metadataPath": "Catalog.Валюты"',
-        '"metadataPath": "Document.АвансовыйОтчет"',
-        '"metadataPath": "HTTPService.ExternalAPI"',
-        '"metadataPath": "WebService.EnterpriseDataUpload_1_0_1_1"',
-        '"metadataPath": "DefinedType.GLN"',
-        '"metadataPath": "EventSubscription.ОбработкаИзменений"',
+        '"at": "main:Catalog.Валюты"',
+        '"at": "main:Document.Заказ.Relation"',
+        '"name": "unica.check"',
     ],
     "form-compile": [
         '"OutputPath": "<.../TypePlural/ObjectName/Forms/FormName/Ext/Form.xml>"',
@@ -973,8 +972,14 @@ SCENARIO_PRESERVING_TOKENS = {
 # must not keep advertising them: the server would answer such a call with
 # "does not accept argument", so a leftover example is a broken instruction.
 SCENARIO_RETIRED_TOKENS = {
-    "meta-add": ['"JsonPath"', '"OutputDir"', '"DefinitionFile"'],
-    "meta-edit": ['"ObjectPath"', '"Operation"', '"Value"', '"DefinitionFile"'],
+    "meta-add": ['"JsonPath"', '"OutputDir"', '"DefinitionFile"', '"sourceSet"'],
+    "meta-edit": [
+        '"ObjectPath"',
+        '"Operation"',
+        '"Value"',
+        '"DefinitionFile"',
+        '"sourceSet"',
+    ],
     "mxl-info": [
         '"Format"',
         '"MaxParams"',
@@ -983,8 +988,31 @@ SCENARIO_RETIRED_TOKENS = {
         '"TemplatePath"',
         '"WithText"',
     ],
-    "meta-info": ['"ObjectPath"', '"objectPath"', '"Detailed"', '"detailed"'],
+    "meta-info": [
+        '"ObjectPath"',
+        '"objectPath"',
+        '"Detailed"',
+        '"detailed"',
+        '"sourceSet"',
+        '"metadataPath"',
+    ],
 }
+
+
+def implemented_apply_operations(repo_root: Path) -> set[str]:
+    """Имена, которые `unica.apply` действительно исполняет.
+
+    Список живёт в Rust и меняется вместе с продуктом; переписать его здесь
+    значило бы держать второй реестр, который устаревает молча. Пример скилла,
+    назвавший имя вне этого списка, учит вызову, отвечающему отказом.
+    """
+    source = (
+        repo_root / "crates/unica-coder/src/domain/apply.rs"
+    ).read_text(encoding="utf-8")
+    marker = "pub(crate) const IMPLEMENTED_APPLY_OPERATIONS: &[&str] = &["
+    start = source.index(marker) + len(marker)
+    body = source[start : source.index("];", start)]
+    return set(re.findall(r'"([^"]+)"', body))
 
 
 def markdown_routing_units(text: str) -> list[str]:
@@ -1240,11 +1268,11 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             / "unica_reference_models"
         )
 
-    def test_meta_skill_surface_is_exactly_three_typed_operations(self) -> None:
+    def test_meta_skill_surface_is_exactly_three_canonical_entries(self) -> None:
         expected = {
-            "meta-info": "unica.meta.info",
-            "meta-add": "unica.meta.add",
-            "meta-edit": "unica.meta.edit",
+            "meta-info": "unica.view",
+            "meta-add": "unica.apply",
+            "meta-edit": "unica.apply",
         }
         actual = {
             path.name
@@ -1261,8 +1289,12 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                 self.assertIn("## MCP routing", text)
                 self.assertIn("MCP `unica`", text)
                 self.assertIn(tool, text)
+                # Снятые имена не должны остаться ни в одном маршруте: сервер
+                # ответит на них `unknown unica tool`.
+                for retired in ("unica.meta.info", "unica.meta.add", "unica.meta.edit"):
+                    self.assertNotIn(retired, text)
 
-    def test_meta_examples_follow_final_typed_contracts(self) -> None:
+    def test_meta_examples_follow_the_canonical_contracts(self) -> None:
         documents = {
             skill: (self.skill_root() / skill / "SKILL.md").read_text(
                 encoding="utf-8"
@@ -1278,192 +1310,94 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             for skill, text in documents.items()
         }
 
-        self.assertTrue(calls["meta-add"])
-        for call in calls["meta-add"]:
+        # Читатель называет адрес и ничего больше: набора исходников и пути
+        # метаданных во входе канонического `view` нет.
+        self.assertTrue(calls["meta-info"])
+        for call in calls["meta-info"]:
             arguments = call["params"]["arguments"]
-            self.assertEqual(call["params"]["name"], "unica.meta.add")
-            self.assertTrue({"sourceSet", "kind", "name"}.issubset(arguments))
-            self.assertLessEqual(
-                set(arguments),
-                {"cwd", "sourceSet", "kind", "name", "operations", "dryRun"},
-            )
-            if "operations" in arguments:
-                self.assertIsInstance(arguments["operations"], list)
-                self.assertTrue(arguments["operations"])
-                self.assertTrue(
-                    all(
-                        isinstance(operation, dict)
-                        for operation in arguments["operations"]
-                    )
-                )
-
-        self.assertTrue(calls["meta-edit"])
-        edit_operations = []
-        for call in calls["meta-edit"]:
-            arguments = call["params"]["arguments"]
-            self.assertEqual(call["params"]["name"], "unica.meta.edit")
-            self.assertEqual(
-                set(arguments)
-                - {"cwd", "sourceSet", "metadataPath", "operations", "dryRun"},
-                set(),
-            )
-            self.assertIsInstance(arguments["operations"], list)
-            self.assertTrue(arguments["operations"])
-            self.assertTrue(
-                all(isinstance(operation, dict) for operation in arguments["operations"])
-            )
-            edit_operations.extend(arguments["operations"])
-
-        self.assertEqual(
-            {operation.get("op") for operation in edit_operations},
-            {"setProperties", "add", "update", "remove", "editRelations"},
-        )
-        for operation in edit_operations:
-            with self.subTest(edit_operation=operation.get("op")):
-                if operation.get("collection") == "predefinedItems":
-                    allowed_fields = {
-                        "add": {"op", "collection", "elements"},
-                        "update": {"op", "collection", "elements"},
-                        "remove": {"op", "collection", "ids"},
-                    }[operation["op"]]
-                else:
-                    allowed_fields = {
-                        "setProperties": {"op", "values"},
-                        "add": {"op", "collection", "scope", "elements"},
-                        "update": {"op", "collection", "scope", "elements"},
-                        "remove": {"op", "collection", "scope", "names"},
-                        "editRelations": {"op", "relation", "mode", "targets"},
-                    }[operation["op"]]
-                self.assertLessEqual(set(operation), allowed_fields)
-
-        predefined_operations = [
-            operation
-            for operation in edit_operations
-            if operation.get("collection") == "predefinedItems"
-        ]
-        self.assertEqual(
-            {operation["op"] for operation in predefined_operations},
-            {"add", "update", "remove"},
-        )
-        for operation in predefined_operations:
-            with self.subTest(predefined_operation=operation["op"]):
-                self.assertNotIn("scope", operation)
-                self.assertNotIn("names", operation)
-                if operation["op"] == "remove":
-                    self.assertEqual(set(operation), {"op", "collection", "ids"})
-                    self.assertTrue(operation["ids"])
-                else:
-                    self.assertEqual(
-                        set(operation), {"op", "collection", "elements"}
-                    )
-                    self.assertTrue(operation["elements"])
-
-        for scoped_operation in ("update", "remove"):
-            matching = [
-                operation
-                for operation in edit_operations
-                if operation.get("op") == scoped_operation
-            ]
-            self.assertTrue(matching)
-            self.assertTrue(
-                any(
-                    set(operation.get("scope", {})) == {"tabularSection"}
-                    and bool(operation["scope"]["tabularSection"])
-                    for operation in matching
-                )
-            )
-
-        source_operations = [
-            operation
-            for operation in edit_operations
-            if operation.get("relation") == "source"
-        ]
-        self.assertTrue(source_operations)
-        for operation in source_operations:
-            self.assertEqual(operation["op"], "editRelations")
-            self.assertEqual(operation["mode"], "replace")
-            self.assertIsInstance(operation["targets"], list)
-            for target in operation["targets"]:
-                self.assertIn(
-                    target.get("kind"),
-                    {
-                        "string",
-                        "number",
-                        "boolean",
-                        "date",
-                        "valueStorage",
-                        "object",
-                        "reference",
-                        "recordSet",
-                        "definedType",
-                    },
-                )
+            self.assertIn(call["params"]["name"], {"unica.view", "unica.check"})
+            self.assertLessEqual(set(arguments), {"at", "filter", "limit", "cursor"})
+            self.assertTrue(arguments["at"].startswith("main:"))
         self.assertTrue(
-            any(
-                target.get("kind") == "recordSet"
-                and target.get("metadataPath")
-                == "InformationRegister.ИсторияИзменений"
-                for operation in source_operations
-                for target in operation["targets"]
-            )
+            any(call["params"]["name"] == "unica.check" for call in calls["meta-info"]),
+            "вердикт об объекте спрашивает свой вход",
         )
+
+        written = []
+        for skill in ("meta-add", "meta-edit"):
+            self.assertTrue(calls[skill], skill)
+            for call in calls[skill]:
+                arguments = call["params"]["arguments"]
+                self.assertEqual(call["params"]["name"], "unica.apply")
+                self.assertLessEqual(
+                    set(arguments), {"at", "ops", "dryRun", "ifRev"}
+                )
+                self.assertTrue(arguments["ops"])
+                for operation in arguments["ops"]:
+                    self.assertLessEqual(set(operation), {"op", "args"})
+                    self.assertTrue(operation["args"]["at"].startswith("main:"))
+                    written.append((skill, operation["op"]))
+                # Применение без забора ревизии не бывает: предпросмотр и
+                # применение связывает `ifRev`.
+                if arguments.get("dryRun") is False:
+                    self.assertIn("ifRev", arguments)
+
+        names = {op for _skill, op in written}
+        self.assertIn("object.create", names)
+        self.assertTrue(
+            names >= {"props.set", "attribute.add"},
+            f"создание настраивает объект теми же операциями: {sorted(names)}",
+        )
+        self.assertTrue(
+            names >= {"attribute.set", "attribute.remove", "predefinedItem.add"},
+            f"правка адресует элемент коллекции: {sorted(names)}",
+        )
+        self.assertIn("relation.replace", names)
+
+        # Каждое имя операции примера должно быть реализованным именем реестра,
+        # иначе пример учит вызову, который отвечает отказом.
+        implemented = implemented_apply_operations(self.repo_root())
+        for skill, op in written:
+            with self.subTest(skill=skill, op=op):
+                self.assertIn(op, implemented)
+
+        # Источник подписки остаётся закрытым объединением целей.
+        for skill in ("meta-add", "meta-edit"):
+            for call in calls[skill]:
+                for operation in call["params"]["arguments"]["ops"]:
+                    values = operation["args"].get("values", {})
+                    if values.get("relation") != "source":
+                        continue
+                    self.assertEqual(operation["op"], "relation.replace")
+                    for target in values["targets"]:
+                        self.assertIn(
+                            target.get("kind"),
+                            {
+                                "object",
+                                "manager",
+                                "recordSet",
+                                "definedType",
+                                "family",
+                            },
+                        )
+
         self.assertIn("wire-массив набора", documents["meta-edit"])
         self.assertIn(
             "порядок его членов семантически незначим", documents["meta-edit"]
         )
         self.assertIn("exact-byte no-op", documents["meta-edit"])
-
-        add_operations = [
-            operation
-            for call in calls["meta-add"]
-            for operation in call["params"]["arguments"].get("operations", [])
-        ]
-        self.assertTrue(
-            any(
-                operation.get("op") == "editRelations"
-                and operation.get("relation") == "source"
-                and operation.get("mode") == "replace"
-                for operation in add_operations
-            )
-        )
-
-        info = documents["meta-info"]
-        # `meta.info` no longer consults an index, so the fields that only made
-        # sense for a possibly-stale provider are gone from the answer and must
-        # not be promised by the prose either.
-        for token in ("`validation`", "status", "diagnostics", "usage", "predefinedItems"):
-            with self.subTest(info_token=token):
-                self.assertIn(token, info)
-        for retired in ("freshness", "completeness", "soft-fail", "related"):
-            with self.subTest(info_retired=retired):
-                self.assertNotIn(retired, info)
-        self.assertNotIn("`total`, `limit`", info)
-        self.assertTrue(
-            any("sections" not in call["params"]["arguments"] for call in calls["meta-info"])
-        )
-        self.assertTrue(
-            any(
-                call["params"]["arguments"].get("sections")
-                and 1 <= call["params"]["arguments"].get("limit", 0) <= 50
-                for call in calls["meta-info"]
-            )
-        )
-
-        for skill in ("meta-add", "meta-edit", "meta-info"):
-            with self.subTest(skill=skill, contract="structured result"):
-                text = documents[skill]
-                self.assertIn("structuredContent", text)
-                self.assertIn("isError == !structuredContent.ok", text)
-                self.assertIn(
-                    "не является вторым контрактом", " ".join(text.split())
-                )
-
         self.assertNotIn("upsert-predefined", documents["meta-edit"])
+
+        # Названный пробел важнее гладкой прозы: читателя у предопределённых
+        # элементов на канонической поверхности нет, и оба скилла это говорят.
+        for skill in ("meta-info", "meta-edit"):
+            with self.subTest(skill=skill, gap="predefined items have no reader"):
+                self.assertIn("предопределённых элементов", documents[skill])
 
         for skill in ("meta-add", "meta-edit"):
             with self.subTest(skill=skill, contract="preview effects"):
                 text = documents[skill]
-                self.assertIn("data.effects", text)
+                self.assertIn("`effects`", text)
                 self.assertIn("полный XML", text)
 
     def test_role_edit_skill_uses_only_the_logical_typed_contract(self) -> None:
@@ -2550,7 +2484,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         meta_info = (self.skill_root() / "meta-info" / "SKILL.md").read_text(encoding="utf-8")
 
         self.assertIn("MCP `unica`", meta_info)
-        self.assertIn("unica.meta.info", meta_info)
+        self.assertIn("unica.view", meta_info)
         self.assertIn("Представление типа", meta_info)
         self.assertIn("Представление объекта", meta_info)
         self.assertNotIn("CLAUDE_SKILL_DIR", meta_info)
@@ -2567,7 +2501,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn("MCP `unica`", meta_add)
-        self.assertIn("unica.meta.add", meta_add)
+        self.assertIn("unica.apply", meta_add)
         self.assertNotIn("unica.meta.compile", meta_add)
         self.assertNotIn('"JsonPath"', meta_add)
         self.assertIn("ChoiceHistoryOnInput", format_facts)
