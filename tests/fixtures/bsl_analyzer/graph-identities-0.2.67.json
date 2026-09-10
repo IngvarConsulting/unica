@@ -1,5 +1,5 @@
 {
-  "_note": "Три формы личности узла у bsl-analyzer 0.2.67: общий модуль, модуль объекта и модуль, привязанный к файлу. Снято 10.09.2026.",
+  "_note": "Четыре формы личности узла у bsl-analyzer 0.2.67: общий модуль, модуль объекта, модуль менеджера и модуль, привязанный к файлу. Вторым сегментом идёт роль модуля в нижнем регистре. Снято 10.09.2026 движком из tools.lock.json с проверенной sha256.",
   "resolve_common": {
     "reload": "none",
     "result": {
@@ -115,5 +115,26 @@
     },
     "revision": 1,
     "stale": false
+  },
+  "measured_identities": {
+    "main:CommonModule.Общий.Method.Утилита": "method/common/Общий/Утилита",
+    "main:Catalog.Валюты.Module.Object.Method.ПриЗаписи": "method/object/Catalog/Валюты/ПриЗаписи",
+    "main:Catalog.Валюты.Module.Manager.Method.Одноимённый": "method/manager/Catalog/Валюты/Одноимённый",
+    "main:Catalog.Валюты.Form.Форма.Module.Form.Method.ПриОткрытии": "method/file/Catalogs/Валюты/Forms/Форма/Ext/Form/Module.bsl::ПриОткрытии"
+  },
+  "resolve_same_name_two_roles": {
+    "query": "Одноимённый",
+    "candidates": [
+      {
+        "id": "method/manager/Catalog/Валюты/Одноимённый",
+        "kind": "method",
+        "match": "name"
+      },
+      {
+        "id": "method/object/Catalog/Валюты/Одноимённый",
+        "kind": "method",
+        "match": "name"
+      }
+    ]
   }
 }
