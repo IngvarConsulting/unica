@@ -1,4 +1,11 @@
 use super::server::{ActorBoundExecution, ActorBoundInvocation, CanonicalInvocationService};
+/// Потолок страницы ветви графа: объявленный максимум поверхности.
+const CALL_GRAPH_PAGE_LIMIT: usize = 50;
+
+use super::v13_call_graph::{
+    branch_collection, branch_direction, branch_owner, extend_method_node, fetch_summary,
+    CallGraphSummary, CALL_GRAPH_SECTION,
+};
 use super::v13_read_modes::{filter_diff_data, project_view_sections, search_scope_prefix};
 use crate::application::invocation_store::ToolIdentity;
 use crate::application::operation_descriptors::ExecutionClass;
@@ -11,6 +18,7 @@ use crate::application::v13::tool_catalog::catalog_for;
 use crate::application::v13::view::{ViewRequest, ViewService};
 use crate::domain::address::{NodeKind, QualifiedAddress};
 use crate::domain::apply::OperationRegistry;
+use crate::domain::call_graph_identity::{CallGraphIdentity, CallGraphIdentityError};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::invocation::{DomainResult, InvocationFailure};
 use crate::domain::refusal::RefusalCode;
@@ -22,7 +30,7 @@ use crate::infrastructure::v13_find::{LayoutFindSource, WorkspaceFindDirectoryBu
 use crate::infrastructure::workspace_actor::{
     ApplyAdmissionError, ApplyEffectDisposition, ApplyPublicationErrorKind,
 };
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -365,12 +373,85 @@ impl CanonicalV13ReadService {
                 )
             }
         };
+        // Ветвь графа вызовов не живёт в дереве исходников, поэтому читатель о
+        // ней не знает: страницу собирает служба, а существование владельца
+        // доказывает тот же читатель обычным чтением узла метода.
+        if let Some(direction) = branch_direction(&address) {
+            let Some(owner) = branch_owner(&address) else {
+                return error_result(
+                    Some(at.to_string()),
+                    RefusalCode::NotFound,
+                    "call graph branch has no owning method",
+                );
+            };
+            let owner_result =
+                ViewService::with_shared_cursors(authority, Arc::clone(&self.cursors)).view(
+                    match ViewRequest::new(&owner.to_string()) {
+                        Ok(request) => request,
+                        Err(error) => return view_error_result(Some(owner.to_string()), error),
+                    },
+                );
+            if !owner_result.ok {
+                return owner_result;
+            }
+            return match self.call_graph_summary(invocation, &owner, cancellation) {
+                Ok(summary) => {
+                    let mut answer = owner_result;
+                    if let Some(reason) = summary.reason.clone() {
+                        answer.warnings.push(json!({"callGraph": reason}));
+                    }
+                    answer.data = Some(branch_collection(
+                        &address,
+                        direction,
+                        &summary,
+                        // Резолвер адреса по пути к ветви не подключён: сосед,
+                        // названный файлом, попадёт в `limits`, а не в ответ
+                        // внутренним именем анализатора.
+                        |_| None,
+                    ));
+                    answer.cursor = None;
+                    answer
+                }
+                Err(refusal) => *refusal,
+            };
+        }
         let mut result =
             ViewService::with_shared_cursors(authority, Arc::clone(&self.cursors)).view(request);
         let sections = arguments
             .get("filter")
             .and_then(Value::as_object)
             .and_then(|filter| filter.get("sections"));
+        let call_graph_requested = sections.and_then(Value::as_array).is_some_and(|sections| {
+            sections
+                .iter()
+                .any(|section| section.as_str() == Some(CALL_GRAPH_SECTION))
+        });
+        if call_graph_requested && result.ok {
+            let is_method = result
+                .data
+                .as_ref()
+                .and_then(|data| data.get("kind"))
+                .and_then(Value::as_str)
+                == Some(NodeKind::Method.as_str());
+            if !is_method {
+                return error_result(
+                    Some(at.to_string()),
+                    RefusalCode::UnsupportedSection,
+                    "view section `callGraph` is computed for a method node only",
+                );
+            }
+            match self.call_graph_summary(invocation, &address, cancellation) {
+                Ok(summary) => {
+                    if let Some(reason) = summary.reason.clone() {
+                        result.warnings.push(json!({"callGraph": reason}));
+                    }
+                    if let Some(data) = result.data.as_mut().and_then(Value::as_object_mut) {
+                        extend_method_node(data, &address, &summary);
+                    }
+                }
+                Err(refusal) => return *refusal,
+            }
+        }
         if result.ok {
             if let (Some(data), Some(sections)) = (result.data.as_ref(), sections) {
                 match project_view_sections(data, sections) {
@@ -382,6 +463,70 @@ impl CanonicalV13ReadService {
             }
         }
         result
+    }
+
+    /// Сводка графа вызовов для одного метода.
+    ///
+    /// Личность узла строится из адреса; модуль, который анализатор называет
+    /// файлом, требует разрешённого пути, и пока резолвер к этому маршруту не
+    /// подключён, такой адрес отказывает названным случаем, а не отвечает
+    /// пустым графом.
+    fn call_graph_summary(
+        &self,
+        invocation: &ActorBoundExecution,
+        method_at: &QualifiedAddress,
+        cancellation: &CancellationToken,
+    ) -> Result<CallGraphSummary, Box<DomainResult>> {
+        let identity = CallGraphIdentity::from_address(method_at, None).map_err(|error| {
+            Box::new(error_result(
+                Some(method_at.to_string()),
+                match error {
+                    CallGraphIdentityError::PathRequired => RefusalCode::UnsupportedSection,
+                    _ => RefusalCode::BadValue,
+                },
+                match error {
+                    CallGraphIdentityError::PathRequired => {
+                        "the analyzer names this module by file, and the call graph route does not resolve the path yet".to_string()
+                    }
+                    CallGraphIdentityError::UnsupportedRole(role) => {
+                        format!("call graph does not cover module role `{role}` yet")
+                    }
+                    CallGraphIdentityError::NotAMethod => {
+                        "call graph answers for a method node only".to_string()
+                    }
+                    CallGraphIdentityError::Malformed(detail) => detail,
+                },
+            ))
+        })?;
+        let workspace = invocation.workspace_context();
+        let operational = crate::infrastructure::operational_config::load_operational_config(
+            &workspace.workspace_root,
+        )
+        .map_err(|diagnostic| {
+            Box::new(error_result(
+                Some(method_at.to_string()),
+                RefusalCode::InvalidState,
+                format!("operational config is unreadable: {diagnostic}"),
+            ))
+        })?;
+        fetch_summary(
+            self.ports.as_ref(),
+            workspace,
+            method_at.source_set(),
+            &identity,
+            // Тот же потолок страницы, что у навигации: 50 — объявленный
+            // максимум поверхности, и второго числа здесь не заводится.
+            CALL_GRAPH_PAGE_LIMIT,
+            operational.code_intelligence().provider_read_timeout(),
+            cancellation,
+        )
+        .map_err(|error| {
+            Box::new(error_result(
+                Some(method_at.to_string()),
+                RefusalCode::ProviderUnavailable,
+                error,
+            ))
+        })
     }
 
     fn execute_search(
