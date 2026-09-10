@@ -377,3 +377,103 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod skill_address_guard {
+    use super::route_logical_address;
+    use crate::domain::address::QualifiedAddress;
+    use crate::domain::platform_profile::PlatformProfile;
+    use std::path::{Path, PathBuf};
+
+    fn repo_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("корень репозитория")
+            .to_path_buf()
+    }
+
+    /// Всякий логический адрес из примера скилла разбирается и маршрутизируется.
+    ///
+    /// Проверки скиллов сверяли имена инструментов и токены прозы, но адреса
+    /// жили как текст: четыре примера учили адресу общего модуля с сегментом
+    /// роли — `CommonModule.X.Module.Manager.…`, — который читатель отвергает
+    /// `not_found`. Модель, следующая такому примеру, получает отказ и идёт
+    /// угадывать. Грамматика живёт здесь, поэтому и страж здесь: второй список
+    /// адресов в другом языке расходился бы с ней молча.
+    #[test]
+    fn every_skill_example_address_is_routable() {
+        let skills = repo_root().join("plugins/unica/skills");
+        let profile = PlatformProfile::v8_3_27();
+        let mut checked = 0usize;
+        let mut offenders = Vec::new();
+        let mut entries = std::fs::read_dir(&skills)
+            .expect("каталог скиллов читается")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .collect::<Vec<_>>();
+        entries.sort();
+        for skill in entries {
+            let document = skill.join("SKILL.md");
+            if !document.is_file() {
+                continue;
+            }
+            let text = std::fs::read_to_string(&document).expect("скилл читается");
+            for raw in logical_addresses(&text) {
+                checked += 1;
+                let address = match QualifiedAddress::parse(&raw) {
+                    Ok(address) => address,
+                    Err(error) => {
+                        offenders.push(format!(
+                            "{}: `{raw}` не разбирается: {error}",
+                            skill.display()
+                        ));
+                        continue;
+                    }
+                };
+                if route_logical_address(&address, profile).is_err() {
+                    offenders.push(format!(
+                        "{}: `{raw}` не маршрутизируется профилем платформы",
+                        skill.display()
+                    ));
+                }
+            }
+        }
+        assert!(
+            checked > 0,
+            "в примерах скиллов не нашлось ни одного адреса"
+        );
+        assert_eq!(offenders, Vec::<String>::new());
+    }
+
+    /// Адреса из примеров: значения адресных ключей канонической поверхности.
+    ///
+    /// Берутся только `at`, `left` и `right` — ключи, куда поверхность принимает
+    /// логический адрес. Проза и XML сюда не попадают намеренно: форма
+    /// `префикс:Имя` совпадает с QName платформы (`v8:ValueTable`), и страж,
+    /// разбирающий всё подряд, ловил бы их вместо адресов.
+    fn logical_addresses(text: &str) -> Vec<String> {
+        let mut found = Vec::new();
+        for key in ["\"at\"", "\"left\"", "\"right\""] {
+            let mut rest = text;
+            while let Some(position) = rest.find(key) {
+                rest = &rest[position + key.len()..];
+                let Some(colon) = rest.find(':') else { break };
+                let tail = rest[colon + 1..].trim_start();
+                let Some(value) = tail.strip_prefix('"') else {
+                    continue;
+                };
+                let Some(end) = value.find('"') else { break };
+                let candidate = &value[..end];
+                // Заглушка адресом не является и проверке не подлежит.
+                if candidate.contains(['<', '>']) || !candidate.contains(':') {
+                    continue;
+                }
+                if !found.contains(&candidate.to_string()) {
+                    found.push(candidate.to_string());
+                }
+            }
+        }
+        found
+    }
+}
