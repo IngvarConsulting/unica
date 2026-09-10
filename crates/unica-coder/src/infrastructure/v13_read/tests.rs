@@ -758,7 +758,7 @@ fn metadata_node_props_carry_the_observed_object_properties() {
 
     let result = service.view(ViewRequest::new("main:Catalog.Items").unwrap());
 
-    assert!(result.ok, "{} {:?}", result.summary, result.diagnostics);
+    assert!(result.ok, "{:?}", refusal_codes(&result));
     let props = &result.data.as_ref().unwrap()["props"];
     // Свойства объекта отвечают на узле объекта: раньше проекция искала шесть
     // скаляров в `details`, где их нет ни у одного вида, и узел молчал.
