@@ -6,7 +6,7 @@ realized: crates/unica-coder/src/application/v13/tool_catalog.rs::v13_run_dictio
 supersedes: []
 superseded-by: null
 establishes: [INV.WIRE.RUN-NEEDS-THE-PLATFORM]
-changes: [CTR.WIRE.TOOL-SURFACE]
+changes: [CTR.WIRE.TOOL-SURFACE, INV.SURFACE.WORKSPACE-INITIALIZE, INV.SURFACE.SOURCE-ATTACH]
 design: docs/plans/2026-09-04-run-operations-requirements.md
 ---
 
@@ -38,3 +38,11 @@ design: docs/plans/2026-09-04-run-operations-requirements.md
 с двенадцати операций до десяти, а число реализованных — с трёх до двух: это
 честнее прежнего счёта, где реализованной числилась операция, которой не
 будет.
+
+**Что снято в реестре.** `INV.SURFACE.WORKSPACE-INITIALIZE` переходит в
+`superseded`: его предмета на проводе больше нет. Проверки этого правила,
+снятого `INV.SURFACE.SOURCE-ATTACH` и решения
+`DEC.2026-09-02.RUN-INITIALIZATION-CONTRACT` указывали на живые тесты
+снятой операции; они переписаны на доказательство снятия — тот же живой
+процесс отвечает содержимым в `setup` и отказом `unsupported_operation` на
+операцию. Правило без существующей проверки — не правило, а история без улики.

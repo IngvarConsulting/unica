@@ -300,13 +300,12 @@ fn canonical_stdio_bootstraps_an_empty_workspace_before_address_discovery() {
     mcp.finish();
 }
 
-// Исключение из отключённого яруса: на этот тест ссылается реестр
-// `arch/tool-implementation-coverage.json` как на доказательство того, что
-// `workspace.initialize` поддержана. Отключить его — значит оставить
-// заявку без доказательства; внутрипроцессной замены ему нет.
+// Исключение из отключённого яруса: живой процесс — единственное место, где
+// видно, что снятая операция снята и на проводе. Внутрипроцессной замены
+// этому доказательству нет.
 #[test]
-fn canonical_stdio_previews_and_applies_workspace_initialization_before_admission() {
-    let root = tempfile::tempdir().expect("source attach integration root");
+fn canonical_stdio_hands_the_project_file_recipe_without_an_initialize_operation() {
+    let root = tempfile::tempdir().expect("workspace recipe integration root");
     let workspace = root.path().join("workspace");
     let state = root.path().join("state");
     std::fs::create_dir_all(workspace.join("src/cf")).unwrap();
@@ -325,7 +324,7 @@ fn canonical_stdio_previews_and_applies_workspace_initialization_before_admissio
         "params": {
             "protocolVersion": "2025-11-25",
             "capabilities": {},
-            "clientInfo": {"name": "v13-source-attach-ci", "version": "1"}
+            "clientInfo": {"name": "v13-workspace-recipe-ci", "version": "1"}
         }
     }));
     assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
@@ -343,147 +342,66 @@ fn canonical_stdio_previews_and_applies_workspace_initialization_before_admissio
     }));
     let bootstrap_result = &bootstrap["result"]["structuredContent"];
     assert_eq!(bootstrap_result["data"]["config"]["state"], "autodetected");
-    assert!(bootstrap_result["next"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|next| {
-            next["tool"] == "unica.run"
-                && next["args"]["op"] == "workspace.initialize"
-                && next["args"]["dryRun"] == true
+
+    // Всё, что делала снятая операция, читатель ответа делает сам: содержимое
+    // файла уже в ответе, и создаёт файл он своими файловыми средствами.
+    let setup = &bootstrap_result["data"]["setup"];
+    assert_eq!(setup["path"], "v8project.yaml", "{bootstrap_result:#}");
+    let content = setup["content"]
+        .as_str()
+        .unwrap_or_else(|| panic!("recommended project file content: {bootstrap_result:#}"));
+    assert!(content.contains("format: DESIGNER"), "{content}");
+    assert!(content.contains("path: src/cf"), "{content}");
+
+    // Подсказка-действие ушла вместе с операцией: ответ больше не называет
+    // вызова, которым файл появится.
+    assert!(
+        !bootstrap_result["next"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|next| next["args"]["op"] == "workspace.initialize"),
+        "{bootstrap_result:#}"
+    );
+
+    for arguments in [
+        json!({"op": "workspace.initialize", "args": {}}),
+        json!({"op": "workspace.initialize", "args": {}, "dryRun": true}),
+    ] {
+        let retired = mcp.exchange(json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {"name": "unica.run", "arguments": arguments}
         }));
-
-    let missing_mode = mcp.exchange(json!({
-        "jsonrpc": "2.0",
-        "id": 8,
-        "method": "tools/call",
-        "params": {
-            "name": "unica.run",
-            "arguments": {"op": "workspace.initialize", "args": {}}
-        }
-    }));
-    assert_eq!(missing_mode["result"]["structuredContent"]["ok"], false);
-    assert_eq!(
-        missing_mode["result"]["structuredContent"]["diagnostics"][0]["code"],
-        "bad_value"
-    );
-
-    let preview = mcp.exchange(json!({
-        "jsonrpc": "2.0",
-        "id": 3,
-        "method": "tools/call",
-        "params": {
-            "name": "unica.run",
-            "arguments": {"op": "workspace.initialize", "args": {}, "dryRun": true}
-        }
-    }));
-    let preview_result = &preview["result"]["structuredContent"];
-    assert_eq!(preview_result["ok"], true, "{preview:#}");
-    assert_eq!(preview_result["data"]["op"], "workspace.initialize");
-    assert_eq!(preview_result["data"]["dryRun"], true);
-    assert_eq!(preview_result["data"]["target"], "v8project.yaml");
+        let retired_result = &retired["result"]["structuredContent"];
+        assert_eq!(retired_result["ok"], false, "{retired:#}");
+        assert_eq!(
+            retired_result["diagnostics"][0]["code"], "unsupported_operation",
+            "{retired:#}"
+        );
+    }
     assert!(!workspace.join("v8project.yaml").exists());
-    let rev = preview_result["rev"]
-        .as_str()
-        .expect("source attachment preview revision")
-        .to_string();
-
-    std::fs::create_dir_all(workspace.join("src/cfe/Late")).unwrap();
-    std::fs::write(
-        workspace.join("src/cfe/Late/Configuration.xml"),
-        "<MetaDataObject/>",
-    )
-    .unwrap();
-
-    let stale = mcp.exchange(json!({
-        "jsonrpc": "2.0",
-        "id": 4,
-        "method": "tools/call",
-        "params": {
-            "name": "unica.run",
-            "arguments": {
-                "op": "workspace.initialize",
-                "args": {},
-                "dryRun": false,
-                "ifRev": rev
-            }
-        }
-    }));
-    let stale_result = &stale["result"]["structuredContent"];
-    assert_eq!(stale_result["ok"], false, "{stale:#}");
-    assert_eq!(stale_result["diagnostics"][0]["code"], "revision_mismatch");
-    assert!(!workspace.join("v8project.yaml").exists());
-
-    let refreshed = mcp.exchange(json!({
-        "jsonrpc": "2.0",
-        "id": 5,
-        "method": "tools/call",
-        "params": {
-            "name": "unica.run",
-            "arguments": {"op": "workspace.initialize", "args": {}, "dryRun": true}
-        }
-    }));
-    let rev = refreshed["result"]["structuredContent"]["rev"]
-        .as_str()
-        .expect("refreshed source attachment revision")
-        .to_string();
-
-    let applied = mcp.exchange(json!({
-        "jsonrpc": "2.0",
-        "id": 6,
-        "method": "tools/call",
-        "params": {
-            "name": "unica.run",
-            "arguments": {
-                "op": "workspace.initialize",
-                "args": {},
-                "dryRun": false,
-                "ifRev": rev
-            }
-        }
-    }));
-    let applied_result = &applied["result"]["structuredContent"];
-    assert_eq!(applied_result["ok"], true, "{applied:#}");
-    assert_eq!(applied_result["data"]["dryRun"], false);
-    assert_eq!(applied_result["changed"][0]["path"], "v8project.yaml");
-    assert_eq!(applied_result["changed"][0]["kind"], "created");
-    let config = std::fs::read_to_string(workspace.join("v8project.yaml")).unwrap();
-    assert!(config.contains("format: DESIGNER"), "{config}");
-    assert!(config.contains("path: src/cf"), "{config}");
-    assert!(config.contains("path: src/cfe/Late"), "{config}");
-
-    let overwrite = mcp.exchange(json!({
-        "jsonrpc": "2.0",
-        "id": 7,
-        "method": "tools/call",
-        "params": {
-            "name": "unica.run",
-            "arguments": {"op": "workspace.initialize", "args": {}, "dryRun": true}
-        }
-    }));
-    assert_eq!(overwrite["result"]["structuredContent"]["ok"], false);
-    assert_eq!(
-        overwrite["result"]["structuredContent"]["diagnostics"][0]["code"],
-        "invalid_state"
-    );
 
     mcp.finish();
 }
 
+// Снятый контракт `source.attach` назван в реестре этим именем, и
+// `DEC.2026-09-02.RUN-INITIALIZATION-CONTRACT` ссылается на него как на свою
+// улику. Продуктовое решение не правят, а заменяют, поэтому имя остаётся, а
+// уликой под ним служит доказательство того, что предмета контракта больше
+// нет.
 #[test]
 #[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn canonical_stdio_previews_and_applies_autodetected_source_attachment_before_admission() {
-    // Historical evidence retained for the superseded source.attach contract.
-    canonical_stdio_previews_and_applies_workspace_initialization_before_admission();
+    canonical_stdio_hands_the_project_file_recipe_without_an_initialize_operation();
 }
 
-// Исключение из отключённого яруса: на этот тест ссылается реестр
-// `arch/tool-implementation-coverage.json` как на доказательство того, что
-// `workspace.initialize` поддержана. Отключить его — значит оставить
-// заявку без доказательства; внутрипроцессной замены ему нет.
+// Исключение из отключённого яруса: живой процесс — единственное место, где
+// видно, как рекомендация ведёт себя на смешанных форматах.
 #[test]
-fn canonical_workspace_initialization_refuses_mixed_designer_and_edt_discovery() {
-    let root = tempfile::tempdir().expect("mixed source attach integration root");
+fn canonical_stdio_names_mixed_source_formats_instead_of_recommending_a_project_file() {
+    let root = tempfile::tempdir().expect("mixed source recipe integration root");
     let workspace = root.path().join("workspace");
     let state = root.path().join("state");
     std::fs::create_dir_all(workspace.join("src/cf")).unwrap();
@@ -508,7 +426,7 @@ fn canonical_workspace_initialization_refuses_mixed_designer_and_edt_discovery()
         "params": {
             "protocolVersion": "2025-11-25",
             "capabilities": {},
-            "clientInfo": {"name": "v13-mixed-attach-ci", "version": "1"}
+            "clientInfo": {"name": "v13-mixed-recipe-ci", "version": "1"}
         }
     }));
     mcp.notify(json!({
@@ -517,18 +435,19 @@ fn canonical_workspace_initialization_refuses_mixed_designer_and_edt_discovery()
         "params": {}
     }));
 
-    let preview = mcp.exchange(json!({
+    let bootstrap = mcp.exchange(json!({
         "jsonrpc": "2.0",
         "id": 2,
         "method": "tools/call",
-        "params": {
-            "name": "unica.run",
-            "arguments": {"op": "workspace.initialize", "args": {}, "dryRun": true}
-        }
+        "params": {"name": "unica.view", "arguments": {}}
     }));
-    let result = &preview["result"]["structuredContent"];
-    assert_eq!(result["ok"], false, "{preview:#}");
-    assert_eq!(result["diagnostics"][0]["code"], "ambiguous_source_format");
+    let setup = &bootstrap["result"]["structuredContent"]["data"]["setup"];
+    // Один формат на смешанных наборах выбрать нельзя, и ответ говорит об
+    // этом словами, а не молчанием: содержимого нет, причина названа.
+    assert_eq!(setup["path"], "v8project.yaml", "{bootstrap:#}");
+    assert_eq!(setup["content"], serde_json::Value::Null, "{bootstrap:#}");
+    let reason = setup["reason"].as_str().unwrap_or_default();
+    assert!(reason.contains("known format"), "{bootstrap:#}");
     assert!(!workspace.join("v8project.yaml").exists());
 
     mcp.finish();

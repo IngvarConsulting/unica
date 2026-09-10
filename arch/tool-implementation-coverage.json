@@ -82,7 +82,7 @@
     },
     "unica.run": {
       "status": "partial",
-      "reason": "The closed directional twelve-operation dictionary, workspace.initialize, configuration-package export, and DT export are implemented through non-executing preview and revision-fenced apply; the other nine run operations remain unsupported.",
+      "reason": "The closed directional ten-operation dictionary, configuration-package export, and DT export are implemented through non-executing preview and revision-fenced apply; the other eight run operations remain unsupported.",
       "evidence": [{
         "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
         "test": "production_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"
