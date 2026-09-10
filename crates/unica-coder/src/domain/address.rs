@@ -91,6 +91,15 @@ pub(crate) enum NodeKind {
     Namespace,
     Type,
     Property,
+    /// Ссылка объекта метаданных наружу: владелец, движение, основание,
+    /// источник события. Элемент этой ветви адресует чужой объект, а не
+    /// потомка.
+    Relation,
+    /// Характеристика плана видов характеристик: пара источников типов и
+    /// значений. Прикладного имени у неё нет, поэтому элементы этой ветви
+    /// остаются строками данных.
+    Characteristic,
+    StandardTabularSection,
 }
 
 const LEGACY_METADATA_KINDS: &[NodeKind] = &[
@@ -190,6 +199,12 @@ const V13_KIND_SPELLINGS: &[V13KindSpelling] = &[
     spelling(NodeKind::Namespace, &["ПространствоИмен"]),
     spelling(NodeKind::Type, &["Тип"]),
     spelling(NodeKind::Property, &["Свойство"]),
+    spelling(NodeKind::Relation, &["Связь"]),
+    spelling(NodeKind::Characteristic, &["Характеристика"]),
+    spelling(
+        NodeKind::StandardTabularSection,
+        &["СтандартнаяТабличнаяЧасть"],
+    ),
 ];
 
 const fn spelling(kind: NodeKind, aliases: &'static [&'static str]) -> V13KindSpelling {
@@ -321,6 +336,9 @@ impl NodeKind {
             Self::Namespace => "Namespace",
             Self::Type => "Type",
             Self::Property => "Property",
+            Self::Relation => "Relation",
+            Self::Characteristic => "Characteristic",
+            Self::StandardTabularSection => "StandardTabularSection",
         }
     }
 

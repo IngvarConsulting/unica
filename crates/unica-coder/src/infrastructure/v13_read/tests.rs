@@ -707,7 +707,7 @@ fn capability_bound_configuration_reader_preserves_complete_cf_info_semantics() 
         "ManagedApplication"
     );
     assert_eq!(payload["support"]["state"], "notSupported");
-    assert_eq!(payload["totalObjects"], 6);
+    assert_eq!(payload["totalObjects"], 17);
     assert_eq!(
         payload["childObjects"]
             .as_array()
@@ -715,9 +715,9 @@ fn capability_bound_configuration_reader_preserves_complete_cf_info_semantics() 
             .iter()
             .map(|entry| entry["count"].as_u64().unwrap())
             .sum::<u64>(),
-        6,
+        17,
     );
-    assert_eq!(payload["registeredObjects"].as_array().unwrap().len(), 6);
+    assert_eq!(payload["registeredObjects"].as_array().unwrap().len(), 17);
 }
 
 #[test]
@@ -740,14 +740,21 @@ fn metadata_kind_branch_lists_registered_objects_with_canonical_addresses() {
     let service = ViewService::new(authority, ViewCursorStore::default());
 
     let branch = service.view(ViewRequest::new("main:Catalog").unwrap());
-    assert!(branch.ok, "{} {:?}", branch.summary, branch.diagnostics);
+    assert!(branch.ok, "{:?}", refusal_codes(&branch));
     assert_eq!(
         branch.data.as_ref().unwrap()["items"],
-        json!([{
-            "at": "main:Catalog.Items",
-            "kind": "Catalog",
-            "title": "Items"
-        }]),
+        json!([
+            {
+                "at": "main:Catalog.Items",
+                "kind": "Catalog",
+                "title": "Items"
+            },
+            {
+                "at": "main:Catalog.Владельцы",
+                "kind": "Catalog",
+                "title": "Владельцы"
+            }
+        ]),
     );
 }
 
@@ -765,6 +772,266 @@ fn metadata_node_props_carry_the_observed_object_properties() {
     assert_eq!(props["Hierarchical"], json!(true));
     assert_eq!(props["CodeLength"], json!(11));
     assert_eq!(props["kind"], json!("Catalog"));
+}
+
+#[test]
+fn metadata_node_props_lay_out_the_per_kind_facts_by_role() {
+    let fixture = RealReaderFixture::new();
+    let service = fixture.view_service();
+
+    // Обработчик регламентного задания: два поля, две роли.
+    let job = service.view(ViewRequest::new("main:ScheduledJob.MonthClose").unwrap());
+    assert!(job.ok, "{:?}", refusal_codes(&job));
+    let props = &job.data.as_ref().unwrap()["props"];
+    assert_eq!(props["handlerModule"], json!("CommonModule.MonthClose"));
+    assert_eq!(props["handlerMethod"], json!("RunScheduled"));
+
+    // Расписание регистра расчёта: три поля, три роли.
+    let register = service.view(ViewRequest::new("main:CalculationRegister.Payroll").unwrap());
+    assert!(register.ok, "{:?}", refusal_codes(&register));
+    let props = &register.data.as_ref().unwrap()["props"];
+    assert_eq!(
+        props["scheduleRegister"],
+        json!("InformationRegister.WorkSchedules")
+    );
+    assert_eq!(
+        props["scheduleValueField"],
+        json!("InformationRegister.WorkSchedules.Resource.DayValue")
+    );
+    assert_eq!(
+        props["scheduleDateField"],
+        json!("InformationRegister.WorkSchedules.Dimension.Date")
+    );
+
+    // Тип константы: одно составное значение, компактной строкой — тем же
+    // механизмом, каким отвечает тип реквизита.
+    let constant = service.view(ViewRequest::new("main:Constant.MainCurrency").unwrap());
+    assert!(constant.ok, "{:?}", refusal_codes(&constant));
+    let rendered = constant.data.as_ref().unwrap()["props"]["type"]
+        .as_str()
+        .expect("constant type renders compactly");
+    assert!(rendered.contains("string"), "{rendered}");
+}
+
+#[test]
+fn declared_service_kinds_finally_get_their_subject() {
+    let fixture = RealReaderFixture::new();
+    let service = fixture.view_service();
+
+    // Виды `URLTemplate` и `Operation` были объявлены в грамматике и не
+    // подключены ни к чему; здесь у них появляется предмет.
+    let http = service.view(ViewRequest::new("main:HTTPService.ExternalAPI").unwrap());
+    assert!(http.ok, "{:?}", refusal_codes(&http));
+    let branches = http.data.as_ref().unwrap()["branches"].as_array().unwrap();
+    assert!(
+        branches.contains(&json!({
+            "at": "main:HTTPService.ExternalAPI.URLTemplate",
+            "count": 1
+        })),
+        "{branches:#?}"
+    );
+
+    let template =
+        service.view(ViewRequest::new("main:HTTPService.ExternalAPI.URLTemplate.Metrics").unwrap());
+    assert!(template.ok, "{:?}", refusal_codes(&template));
+    let template = template.data.as_ref().unwrap();
+    assert_eq!(template["props"]["template"], json!("/v1/kpi/"));
+    // Последовательность методов — ветвь, а не строка в `props`: коллекция
+    // обязана быть адресуемой.
+    assert_eq!(
+        template["branches"],
+        json!([{
+            "at": "main:HTTPService.ExternalAPI.URLTemplate.Metrics.Method",
+            "count": 1
+        }]),
+    );
+
+    let method = service.view(
+        ViewRequest::new("main:HTTPService.ExternalAPI.URLTemplate.Metrics.Method.Get").unwrap(),
+    );
+    assert!(method.ok, "{:?}", refusal_codes(&method));
+    let method = method.data.as_ref().unwrap();
+    assert_eq!(method["props"]["httpMethod"], json!("GET"));
+    assert_eq!(method["props"]["handler"], json!("MetricsGet"));
+
+    let operation =
+        service.view(ViewRequest::new("main:WebService.Exchange.Operation.Send").unwrap());
+    assert!(operation.ok, "{:?}", refusal_codes(&operation));
+    let operation = operation.data.as_ref().unwrap();
+    assert_eq!(operation["props"]["procedure"], json!("SendData"));
+    assert_eq!(operation["props"]["transactioned"], json!(true));
+    assert!(
+        operation["props"]["returnType"]
+            .as_str()
+            .is_some_and(|rendered| rendered.contains("boolean")),
+        "{operation:#}"
+    );
+    assert_eq!(
+        operation["branches"],
+        json!([{"at": "main:WebService.Exchange.Operation.Send.Parameter", "count": 1}]),
+    );
+
+    let parameter = service.view(
+        ViewRequest::new("main:WebService.Exchange.Operation.Send.Parameter.Payload").unwrap(),
+    );
+    assert!(parameter.ok, "{:?}", refusal_codes(&parameter));
+    assert_eq!(
+        parameter.data.as_ref().unwrap()["props"]["direction"],
+        json!("in")
+    );
+}
+
+#[test]
+fn every_reference_of_an_object_answers_in_one_relation_branch() {
+    let fixture = RealReaderFixture::new();
+    let service = fixture.view_service();
+
+    let document = service.view(ViewRequest::new("main:Document.Order").unwrap());
+    assert!(document.ok, "{:?}", refusal_codes(&document));
+    let branches = document.data.as_ref().unwrap()["branches"]
+        .as_array()
+        .unwrap();
+    // Платформа держит движение и основание в разных местах, но вопрос один:
+    // на что объект показывает. Одна ветвь, имя связи — поле элемента.
+    assert!(
+        branches.contains(&json!({"at": "main:Document.Order.Relation", "count": 2})),
+        "{branches:#?}"
+    );
+
+    let relations = service.view(ViewRequest::new("main:Document.Order.Relation").unwrap());
+    assert!(relations.ok, "{:?}", refusal_codes(&relations));
+    assert_eq!(
+        relations.data.as_ref().unwrap()["items"],
+        json!([
+            {
+                "relation": "registerRecord",
+                "at": "main:CalculationRegister.Payroll",
+                "kind": "CalculationRegister"
+            },
+            {
+                "relation": "basedOn",
+                "at": "main:Catalog.Items",
+                "kind": "Catalog"
+            }
+        ]),
+    );
+
+    // Правило обещает всякую ссылку, поэтому проверяются все её источники, а
+    // не те два, что лежали ближе. `relations` и пофактовая часть вида
+    // приходят из разных мест платформы и должны сойтись в одной ветви.
+    let sources = |at: &str| -> Vec<(String, String)> {
+        let node = service.view(ViewRequest::new(at).unwrap());
+        assert!(node.ok, "{at}: {:?}", refusal_codes(&node));
+        node.data.as_ref().unwrap()["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| {
+                (
+                    item["relation"].as_str().unwrap().to_string(),
+                    item["at"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect()
+    };
+    assert_eq!(
+        sources("main:Catalog.Items.Relation"),
+        [
+            ("owner".to_string(), "main:Catalog.Владельцы".to_string()),
+            (
+                "inputByString".to_string(),
+                "main:Catalog.Items.Attribute.Code".to_string()
+            ),
+            (
+                "dataLockField".to_string(),
+                "main:Catalog.Items.Attribute.Code".to_string()
+            ),
+        ]
+    );
+    assert_eq!(
+        sources("main:DocumentJournal.Журнал.Relation"),
+        [(
+            "registeredDocument".to_string(),
+            "main:Document.Order".to_string()
+        )]
+    );
+    assert_eq!(
+        sources("main:ChartOfCalculationTypes.ВидыРасчета.Relation"),
+        [(
+            "baseCalculationType".to_string(),
+            "main:ChartOfCalculationTypes.ВидыРасчета".to_string()
+        )]
+    );
+    assert_eq!(
+        sources("main:EventSubscription.ПриЗаписи.Relation"),
+        [("source".to_string(), "main:Catalog.Items".to_string())]
+    );
+    // Пакет XDTO бывает ссылкой и бывает пространством имён; в ветвь попадает
+    // только адресуемый вариант, и это названная граница, а не потеря.
+    assert_eq!(
+        sources("main:WebService.Exchange.Relation"),
+        [(
+            "xdtoPackage".to_string(),
+            "main:XDTOPackage.Exchange".to_string()
+        )]
+    );
+
+    // Элемент ветви показывает наружу, поэтому спускаться в него нельзя:
+    // цель читается по своему адресу.
+    let inward = service.view(ViewRequest::new("main:Document.Order.Relation.Items").unwrap());
+    assert!(!inward.ok, "{:?}", refusal_codes(&inward));
+    assert_eq!(refusal_codes(&inward), ["not_found"]);
+}
+
+#[test]
+fn root_declarations_get_branches_and_only_the_named_one_is_addressable() {
+    let fixture = RealReaderFixture::new();
+    let service = fixture.view_service();
+
+    // Стандартная табличная часть носит имя, поэтому адресуется, а её
+    // собственная последовательность становится вложенной ветвью.
+    let section = service.view(
+        ViewRequest::new("main:ChartOfAccounts.Accounts.StandardTabularSection.ExtDimensionTypes")
+            .unwrap(),
+    );
+    assert!(section.ok, "{:?}", refusal_codes(&section));
+    let section = section.data.as_ref().unwrap();
+    assert_eq!(section["kind"], "StandardTabularSection");
+    assert_eq!(
+        section["branches"],
+        json!([{
+            "at": "main:ChartOfAccounts.Accounts.StandardTabularSection.ExtDimensionTypes.StandardAttribute",
+            "count": 1
+        }]),
+    );
+
+    let attribute = service.view(
+        ViewRequest::new(
+            "main:ChartOfAccounts.Accounts.StandardTabularSection.ExtDimensionTypes.StandardAttribute.ExtDimensionType",
+        )
+        .unwrap(),
+    );
+    assert!(attribute.ok, "{:?}", refusal_codes(&attribute));
+    assert_eq!(
+        attribute.data.as_ref().unwrap()["title"],
+        "ExtDimensionType"
+    );
+
+    // Характеристика имени не носит: ветвь адресуема, а её элементы —
+    // строки данных, и адреса у них нет.
+    let characteristics =
+        service.view(ViewRequest::new("main:Catalog.Items.Characteristic").unwrap());
+    assert!(characteristics.ok, "{:?}", refusal_codes(&characteristics));
+    let items = characteristics.data.as_ref().unwrap()["items"]
+        .as_array()
+        .unwrap();
+    assert_eq!(items.len(), 1);
+    assert!(items[0].get("at").is_none(), "{items:#?}");
+    assert_eq!(items[0]["values"]["source"], "Catalog.Items");
+
+    let named = service.view(ViewRequest::new("main:Catalog.Items.Characteristic.Any").unwrap());
+    assert!(!named.ok, "{:?}", refusal_codes(&named));
+    assert_eq!(refusal_codes(&named), ["not_found"]);
 }
 
 #[test]
@@ -3183,7 +3450,7 @@ impl RealReaderFixture {
                 source.join("Configuration.xml"),
                 replace_child_objects(
                     &config,
-                    "\n\t\t\t<Catalog>Items</Catalog>\n\t\t\t<Report>ParityReport</Report>\n\t\t\t<Role>SalesReader</Role>\n\t\t\t<Subsystem>Sales</Subsystem>\n\t\t\t<XDTOPackage>EnterpriseData_1_17_3</XDTOPackage>\n\t\t\t<CommonModule>РеактивныйСервер</CommonModule>\n\t\t",
+                    "\n\t\t\t<Constant>MainCurrency</Constant>\n\t\t\t<Catalog>Items</Catalog>\n\t\t\t<Document>Order</Document>\n\t\t\t<ChartOfAccounts>Accounts</ChartOfAccounts>\n\t\t\t<Catalog>Владельцы</Catalog>\n\t\t\t<DocumentJournal>Журнал</DocumentJournal>\n\t\t\t<ChartOfCalculationTypes>ВидыРасчета</ChartOfCalculationTypes>\n\t\t\t<EventSubscription>ПриЗаписи</EventSubscription>\n\t\t\t<CalculationRegister>Payroll</CalculationRegister>\n\t\t\t<Report>ParityReport</Report>\n\t\t\t<Role>SalesReader</Role>\n\t\t\t<Subsystem>Sales</Subsystem>\n\t\t\t<XDTOPackage>EnterpriseData_1_17_3</XDTOPackage>\n\t\t\t<CommonModule>РеактивныйСервер</CommonModule>\n\t\t\t<ScheduledJob>MonthClose</ScheduledJob>\n\t\t\t<HTTPService>ExternalAPI</HTTPService>\n\t\t\t<WebService>Exchange</WebService>\n\t\t",
                 ),
             )
             .unwrap();
@@ -3197,9 +3464,134 @@ impl RealReaderFixture {
         // Свойства корня каталога: без них узел метаданных нечем проверить.
         .replace(
             "<Properties><Name>Items</Name></Properties>",
-            "<Properties><Name>Items</Name><Hierarchical>true</Hierarchical><CodeLength>11</CodeLength></Properties>",
+            concat!(
+                "<Properties xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\"",
+                " xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"",
+                " xmlns:xs=\"http://www.w3.org/2001/XMLSchema\">",
+                "<Name>Items</Name><Hierarchical>true</Hierarchical>",
+                "<CodeLength>11</CodeLength>",
+                "<Owners><xr:Item xsi:type=\"xr:MDObjectRef\">Catalog.Владельцы</xr:Item></Owners>",
+                "<InputByString><xr:Field>Catalog.Items.Attribute.Code</xr:Field></InputByString>",
+                "<DataLockFields><xr:Field>Catalog.Items.Attribute.Code</xr:Field></DataLockFields>",
+                // Характеристика названа парой источников, а не именем.
+                "<Characteristics>",
+                "<xr:Characteristic>",
+                "<xr:CharacteristicTypes from=\"Catalog.Items.TabularSection.Lines.Attribute.Quantity\">",
+                "<xr:KeyField>Catalog.Items.Attribute.Code</xr:KeyField>",
+                "<xr:TypesFilterField>Catalog.Items.Attribute.Code</xr:TypesFilterField>",
+                "<xr:TypesFilterValue xsi:type=\"xs:string\">Catalog_Items</xr:TypesFilterValue>",
+                "<xr:DataPathField>-1</xr:DataPathField>",
+                "<xr:MultipleValuesUseField>-1</xr:MultipleValuesUseField>",
+                "</xr:CharacteristicTypes>",
+                "<xr:CharacteristicValues from=\"Catalog.Items\">",
+                "<xr:ObjectField>Catalog.Items.Attribute.Code</xr:ObjectField>",
+                "<xr:TypeField>Catalog.Items.Attribute.Code</xr:TypeField>",
+                "<xr:ValueField>Catalog.Items.Attribute.Code</xr:ValueField>",
+                "<xr:MultipleValuesKeyField>-1</xr:MultipleValuesKeyField>",
+                "<xr:MultipleValuesOrderField>-1</xr:MultipleValuesOrderField>",
+                "</xr:CharacteristicValues>",
+                "</xr:Characteristic></Characteristics></Properties>",
+            ),
         );
         write(&source.join("Catalogs/Items.xml"), &catalog);
+        // Остальные источники ссылок: владелец, журнал, базовые виды расчёта и
+        // источник события подписки. Правило обещает всякую ссылку, и проверить
+        // его можно только всеми её источниками.
+        for (relative, body) in [
+            (
+                "Catalogs/Владельцы.xml",
+                r#"<Catalog uuid="99999999-9999-4999-8999-999999999991"><Properties><Name>Владельцы</Name></Properties><ChildObjects/></Catalog>"#,
+            ),
+            (
+                "DocumentJournals/Журнал.xml",
+                r#"<DocumentJournal uuid="99999999-9999-4999-8999-999999999992"><Properties><Name>Журнал</Name><RegisteredDocuments><xr:Item xsi:type="xr:MDObjectRef">Document.Order</xr:Item></RegisteredDocuments></Properties><ChildObjects/></DocumentJournal>"#,
+            ),
+            (
+                "ChartsOfCalculationTypes/ВидыРасчета.xml",
+                r#"<ChartOfCalculationTypes uuid="99999999-9999-4999-8999-999999999993"><Properties><Name>ВидыРасчета</Name><BaseCalculationTypes><xr:Item xsi:type="xr:MDObjectRef">ChartOfCalculationTypes.ВидыРасчета</xr:Item></BaseCalculationTypes></Properties><ChildObjects/></ChartOfCalculationTypes>"#,
+            ),
+            (
+                "EventSubscriptions/ПриЗаписи.xml",
+                r#"<EventSubscription uuid="99999999-9999-4999-8999-999999999994"><Properties><Name>ПриЗаписи</Name><Source><v8:Type>cfg:CatalogObject.Items</v8:Type></Source><Event>BeforeWrite</Event><Handler>CommonModule.РеактивныйСервер.ПриЗаписи</Handler></Properties></EventSubscription>"#,
+            ),
+        ] {
+            write(
+                &source.join(relative),
+                &format!(
+                    concat!(
+                        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+                        "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\"",
+                        " xmlns:v8=\"http://v8.1c.ru/8.1/data/core\"",
+                        " xmlns:cfg=\"http://v8.1c.ru/8.1/data/enterprise/current-config\"",
+                        " xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\"",
+                        " xmlns:xs=\"http://www.w3.org/2001/XMLSchema\"",
+                        " xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"",
+                        " version=\"2.20\">{}</MetaDataObject>"
+                    ),
+                    body
+                ),
+            );
+        }
+        // План счетов со стандартной табличной частью: у неё есть имя, и она
+        // адресуется, а внутри — своя последовательность.
+        write(
+            &source.join("ChartsOfAccounts/Accounts.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20">
+  <ChartOfAccounts uuid="77777777-7777-4777-8777-777777777778">
+    <Properties>
+      <Name>Accounts</Name>
+      <StandardTabularSections>
+        <xr:StandardTabularSection name="ExtDimensionTypes">
+          <xr:Synonym/><xr:Comment/><xr:ToolTip/>
+          <xr:FillChecking>DontCheck</xr:FillChecking>
+          <xr:StandardAttributes>
+            <xr:StandardAttribute name="ExtDimensionType"/>
+          </xr:StandardAttributes>
+        </xr:StandardTabularSection>
+      </StandardTabularSections>
+    </Properties>
+    <ChildObjects/>
+  </ChartOfAccounts>
+</MetaDataObject>"#,
+        );
+        // Документ со ссылками наружу: движение по регистру и основание.
+        write(
+            &source.join("Documents/Order.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+  <Document uuid="88888888-8888-4888-8888-888888888888">
+    <Properties>
+      <Name>Order</Name>
+      <RegisterRecords>
+        <xr:Item xsi:type="xr:MDObjectRef">CalculationRegister.Payroll</xr:Item>
+      </RegisterRecords>
+      <BasedOn>
+        <xr:Item xsi:type="xr:MDObjectRef">Catalog.Items</xr:Item>
+      </BasedOn>
+    </Properties>
+    <ChildObjects/>
+  </Document>
+</MetaDataObject>"#,
+        );
+        // Три вида с собственными данными: обработчик, расписание и тип.
+        for (relative, fixture) in [
+            ("Constants/MainCurrency.xml", "constant-type.xml"),
+            (
+                "CalculationRegisters/Payroll.xml",
+                "calculation-register.xml",
+            ),
+            ("ScheduledJobs/MonthClose.xml", "scheduled-job.xml"),
+            ("HTTPServices/ExternalAPI.xml", "http-service.xml"),
+            ("WebServices/Exchange.xml", "web-service.xml"),
+        ] {
+            write(
+                &source.join(relative),
+                &with_root_version(&fixture_text(&format!(
+                    "platform_8_3_27/meta_info/edge/{fixture}"
+                ))),
+            );
+        }
         write(
             &source.join("Catalogs/Items/Forms/ItemForm.xml"),
             r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form uuid="10000000-0000-4000-8000-000000000031"><Properties><Name>ItemForm</Name><FormType>Managed</FormType></Properties></Form></MetaDataObject>"#,
