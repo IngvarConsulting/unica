@@ -5,9 +5,6 @@ pub(crate) mod address;
 #[allow(dead_code)]
 pub(crate) mod apply;
 pub mod cache;
-// Перевод личности узла графа вызовов ждёт ветвей `Caller`/`Callee`: разбор и
-// сборка готовы, потребителя на проводе ещё нет.
-#[allow(dead_code)]
 pub(crate) mod call_graph_identity;
 pub mod cancellation;
 pub mod code_intelligence;

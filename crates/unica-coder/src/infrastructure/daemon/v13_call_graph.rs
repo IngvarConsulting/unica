@@ -20,6 +20,12 @@ pub(super) const CALL_GRAPH_SECTION: &str = "callGraph";
 pub(super) struct CallGraphSummary {
     pub(super) callers: CallGraphResult,
     pub(super) callees: CallGraphResult,
+    /// Почему граф недоступен, если он недоступен.
+    ///
+    /// Состояние `unavailable` без причины прячет её: читатель видит, что
+    /// графа нет, и не знает, движок не поставлен или запрос не дошёл. Причина
+    /// идёт предупреждением ответа, а не подменяет состояние.
+    pub(super) reason: Option<String>,
 }
 
 impl CallGraphSummary {
@@ -192,6 +198,95 @@ pub(super) fn branch_owner(at: &QualifiedAddress) -> Option<QualifiedAddress> {
     QualifiedAddress::parse(owner).ok()
 }
 
+/// Спросить у анализатора оба направления для одного метода.
+///
+/// Провайдер выбирается по возможности, а не по имени: `CallGraph` объявлен
+/// только у анализатора BSL, и если его в поставке нет, состояние называется
+/// `unavailable`, а не превращается в нулевой счёт.
+pub(super) fn fetch_summary(
+    ports: &dyn crate::application::ports::ApplicationPorts,
+    workspace: &crate::domain::workspace::WorkspaceContext,
+    source_set: &str,
+    identity: &CallGraphIdentity,
+    limit: usize,
+    budget: std::time::Duration,
+    cancellation: &crate::domain::cancellation::CancellationToken,
+) -> Result<CallGraphSummary, String> {
+    let mut args = Map::new();
+    args.insert("sourceSet".to_string(), json!(source_set));
+    let (context, _scope) = ports.resolve_code_search_context(workspace, &args)?;
+    let registry = ports.code_intelligence_registry()?;
+    let id = identity.to_analyzer_id();
+    let mut answers = Vec::with_capacity(2);
+    let mut reason = None;
+    for direction in [CallGraphDirection::Callers, CallGraphDirection::Callees] {
+        let Some(provider) =
+            registry.provider_for(crate::domain::code_intelligence::ProviderCapability::CallGraph)
+        else {
+            return Ok(CallGraphSummary {
+                callers: unavailable(),
+                callees: unavailable(),
+                reason: Some("no code intelligence provider implements the call graph".to_string()),
+            });
+        };
+        let outcome = crate::application::code_intelligence::execute_provider_read(
+            provider,
+            crate::domain::code_intelligence::CodeIntelligenceReadRequest::CallGraph {
+                id: id.clone(),
+                direction,
+                limit,
+            },
+            context.clone(),
+            budget,
+            cancellation,
+        );
+        answers.push(match outcome {
+            Ok(outcome) => match outcome.data {
+                Some(crate::domain::code_intelligence::CodeIntelligenceReadData::CallGraph(
+                    result,
+                )) => {
+                    if result.state == CallGraphState::Unavailable && reason.is_none() {
+                        reason = outcome.errors.first().cloned();
+                    }
+                    result
+                }
+                // Провайдер ответил, но не графом: это дефект провода, и он
+                // назван недоступностью, а не нулём.
+                _ => {
+                    reason = Some(format!(
+                        "{} answered without a call graph",
+                        outcome.provider.provider
+                    ));
+                    unavailable()
+                }
+            },
+            Err(error) => {
+                if reason.is_none() {
+                    reason = Some(error);
+                }
+                unavailable()
+            }
+        });
+    }
+    let callees = answers.pop().expect("два направления");
+    let callers = answers.pop().expect("два направления");
+    Ok(CallGraphSummary {
+        callers,
+        callees,
+        reason,
+    })
+}
+
+fn unavailable() -> CallGraphResult {
+    CallGraphResult {
+        state: CallGraphState::Unavailable,
+        total: None,
+        edges: Vec::new(),
+        revision: None,
+        stale: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -229,6 +324,7 @@ mod tests {
     fn the_method_node_carries_the_count_and_names_the_state() {
         let at = address("main:CommonModule.Общий.Method.Утилита");
         let summary = CallGraphSummary {
+            reason: None,
             callers: ready(
                 2,
                 vec![edge(
@@ -268,6 +364,7 @@ mod tests {
             stale: None,
         };
         let summary = CallGraphSummary {
+            reason: None,
             callers: indexing.clone(),
             callees: indexing,
         };
@@ -285,6 +382,7 @@ mod tests {
     fn one_unready_direction_decides_the_whole_state() {
         let at = address("main:CommonModule.Общий.Method.Утилита");
         let summary = CallGraphSummary {
+            reason: None,
             callers: ready(1, Vec::new()),
             callees: CallGraphResult {
                 state: CallGraphState::Unavailable,
@@ -318,6 +416,7 @@ mod tests {
         );
 
         let summary = CallGraphSummary {
+            reason: None,
             callers: ready(
                 3,
                 vec![
