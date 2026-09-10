@@ -9,10 +9,10 @@ pub(crate) mod terminal_codec_v5;
 mod v13_documentation;
 mod v13_infobase_exports;
 mod v13_read_modes;
+mod v13_run_dictionary;
 #[allow(dead_code)]
 mod v13_service;
 mod v13_workspace_bootstrap;
-mod v13_workspace_initialize;
 
 use identity::CoreIdentity;
 use std::path::Path;

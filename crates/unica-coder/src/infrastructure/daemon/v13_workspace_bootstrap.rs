@@ -445,17 +445,10 @@ fn bootstrap_result(
             Value::Object(Map::new()),
             "inspect the implemented and planned workspace initialization routes",
         ));
-    } else if config_state == "autodetected" && project_config_recipe(&source_map).is_some() {
-        result.next.push(next_action(
-            "unica.run",
-            object([
-                ("op", Value::String("workspace.initialize".to_string())),
-                ("args", Value::Object(Map::new())),
-                ("dryRun", Value::Bool(true)),
-            ]),
-            "preview creation of v8project.yaml from the autodetected source sets",
-        ));
     }
+    // Подсказка-действие ушла вместе с операцией: проектный файл заводит тот,
+    // кто читает ответ, своими файловыми средствами. На её месте — само
+    // рекомендуемое содержимое в `setup`, а вопрос в `next` остаётся вопросом.
     if infobase.configured && source_map.source_sets.is_empty() {
         result.next.push(next_action(
             "unica.run",

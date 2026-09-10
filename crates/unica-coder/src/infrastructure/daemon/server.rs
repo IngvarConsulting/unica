@@ -64,7 +64,7 @@ fn reject_workspace_admission(
         // Недоступная операция `run` объясняется своим словарём: спрашивали не
         // о наборах, и рассказ о них увёл бы в сторону.
         if let Some(result) =
-            super::v13_workspace_initialize::reject_unavailable_run_before_admission(request)
+            super::v13_run_dictionary::reject_unavailable_run_before_admission(request)
         {
             return V5CanonicalPrepareError::Direct(Box::new(result));
         }
@@ -476,10 +476,7 @@ impl V5CanonicalInvocationRuntime {
         {
             return Err(V5CanonicalPrepareError::Direct(Box::new(result)));
         }
-        if let Some(result) = super::v13_workspace_initialize::execute_workspace_initialize(
-            &request,
-            &response_deadline,
-        ) {
+        if let Some(result) = super::v13_run_dictionary::execute_run_dictionary(&request) {
             return Err(V5CanonicalPrepareError::Direct(Box::new(result)));
         }
         match super::v13_infobase_exports::prepare(&request) {
@@ -4230,17 +4227,18 @@ struct ActorLogicalReadLease {"#,
             .and_then(|data| data.get("operations"))
             .and_then(serde_json::Value::as_array)
             .expect("run dictionary has operations");
-        assert_eq!(
+        // Проектный файл заводит человек, поэтому операции с таким именем в
+        // словаре нет вовсе — ни реализованной, ни объявленной.
+        assert!(
             operations
                 .iter()
-                .find(|operation| operation["op"] == "workspace.initialize")
-                .and_then(|operation| operation["implemented"].as_bool()),
-            Some(true)
+                .all(|operation| operation["op"] != "workspace.initialize"),
+            "{operations:?}"
         );
         assert!(
             operations.iter().all(|operation| !matches!(
                 operation["op"].as_str(),
-                Some("syntax.check" | "test.run" | "query.execute")
+                Some("syntax.check" | "test.run" | "query.execute" | "source.create")
             )),
             "v0.13 Run discovery must omit deferred check/test/query execution: {operations:?}"
         );

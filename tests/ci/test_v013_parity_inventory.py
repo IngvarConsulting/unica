@@ -135,11 +135,9 @@ TOP_LEVEL_KEYS = {
     "cases",
     "newCapabilities",
 }
-NATIVE_ENTRIES = {"view", "apply", "find", "search", "check", "diff", "run", "docs"}
+NATIVE_ENTRIES = {"view", "apply", "resolve", "search", "check", "diff", "run", "docs"}
 OPERATION_ENTRIES = {"apply", "run"}
 RUN_OPERATIONS = {
-    "workspace.initialize",
-    "source.create",
     "infobase.create",
     "infobase.build",
     "source.dump",
@@ -582,7 +580,7 @@ def validate_inventory(
             raise InventoryError("complete inventory must cover all eight native entries")
         if run_case_operations != RUN_OPERATIONS:
             raise InventoryError(
-                "complete inventory must cover all twelve run operations"
+                "complete inventory must cover every run operation"
             )
         unowned_cases = set(case_identities) - set(case_references)
         if unowned_cases:
@@ -669,8 +667,6 @@ class V013ParityInventoryTest(unittest.TestCase):
         cases: list[dict[str, object]] = []
         mappable_index = 0
         mapped_legacy_run_variants = (
-            ("operation=config-init", "source.create"),
-            ("operation=config-init;sourceSet=external", "workspace.initialize"),
             ("operation=init", "infobase.create"),
             ("operation=build", "infobase.build"),
             ("operation=dump", "source.dump"),
@@ -679,6 +675,12 @@ class V013ParityInventoryTest(unittest.TestCase):
             ("operation=launch", "client.run"),
         )
         removed_legacy_run_variants = (
+            (
+                "operation=config-init",
+                "v0.13 run dictionary publishes no successor: the project file is "
+                "written by hand and creating a source set writes files, so it "
+                "belongs to apply",
+            ),
             (
                 "operation=load",
                 "generic legacy load does not identify configuration CF/CFE load "
@@ -706,7 +708,7 @@ class V013ParityInventoryTest(unittest.TestCase):
             "infobase.dump",
             "infobase.restore",
         )
-        non_run_entries = ("view", "apply", "find", "search", "check", "diff", "docs")
+        non_run_entries = ("view", "apply", "resolve", "search", "check", "diff", "docs")
         for index, legacy_tool in enumerate(IMMUTABLE_BASELINE_NAMES):
             if legacy_tool == "unica.runtime.job.status":
                 rows.append(
@@ -840,14 +842,14 @@ class V013ParityInventoryTest(unittest.TestCase):
         }
 
         self.assertEqual(
-            variants["operation=config-init;sourceSet=external"]["successor"],
-            {"entry": "run", "operation": "workspace.initialize"},
-        )
-        self.assertEqual(
             variants["operation=make"]["successor"],
             {"entry": "run", "operation": "artifact.build"},
         )
+        # `config-init` наследника в `run` не имеет: проектный файл заводит
+        # человек, а создание набора исходников пишет файлы и принадлежит
+        # `apply` (DEC.2026-09-09.PROJECT-CONFIG-IS-HANDWRITTEN).
         for legacy_variant in (
+            "operation=config-init",
             "operation=load",
             "operation=syntax",
             "operation=test",
@@ -956,9 +958,9 @@ class V013ParityInventoryTest(unittest.TestCase):
                         "disposition": "mapped",
                         "successor": {
                             "entry": "run",
-                            "operation": "workspace.initialize",
+                            "operation": "infobase.create",
                         },
-                        "caseIds": ["runtime-workspace-initialize"],
+                        "caseIds": ["runtime-infobase-create"],
                     },
                     {
                         "legacyVariant": "operation=syntax",
@@ -970,9 +972,9 @@ class V013ParityInventoryTest(unittest.TestCase):
         ]
         documents[EXPECTED_SHARDS[0]]["cases"] = [
             {
-                "caseId": "runtime-workspace-initialize",
+                "caseId": "runtime-infobase-create",
                 "entry": "run",
-                "operation": "workspace.initialize",
+                "operation": "infobase.create",
                 "mode": "direct",
                 "fixture": self.fixture,
                 "expected": {"outcome": "ok"},
@@ -1296,19 +1298,17 @@ class V013ParityInventoryTest(unittest.TestCase):
         row = self._one_mapped_row()
         self._first_variant(row)["successor"] = {
             "entry": "run",
-            "operation": "source.create",
+            "operation": "infobase.create",
         }
         case = self._one_case()
         case["entry"] = "run"
-        case["operation"] = "source.create"
+        case["operation"] = "infobase.create"
         self._set_first_row(row)
         self._set_first_case(case)
         self._validate()
 
-    def test_all_twelve_run_operations_are_the_literal_test_oracle(self) -> None:
+    def test_every_run_operation_is_the_literal_test_oracle(self) -> None:
         expected = (
-            "workspace.initialize",
-            "source.create",
             "infobase.create",
             "infobase.build",
             "source.dump",
@@ -1370,7 +1370,7 @@ class V013ParityInventoryTest(unittest.TestCase):
 
         for entry, operation in (
             ("apply", "object.create"),
-            ("run", "source.create"),
+            ("run", "infobase.create"),
         ):
             case = self._one_case()
             case["entry"] = entry
@@ -1638,7 +1638,7 @@ class V013ParityInventoryTest(unittest.TestCase):
         with self.assertRaisesRegex(InventoryError, "all eight native entries"):
             self._validate(documents)
 
-    def test_all_true_requires_executable_coverage_of_all_twelve_run_operations(
+    def test_all_true_requires_executable_coverage_of_every_run_operation(
         self,
     ) -> None:
         documents = self._complete_documents()
@@ -1647,7 +1647,7 @@ class V013ParityInventoryTest(unittest.TestCase):
             for case in documents[EXPECTED_SHARDS[1]]["cases"]
             if case.get("operation") == "client.run"
         )
-        case["operation"] = "source.create"
+        case["operation"] = "infobase.create"
         owning_variant = next(
             variant
             for row in documents[EXPECTED_SHARDS[0]]["baselineDispositions"]
@@ -1656,9 +1656,9 @@ class V013ParityInventoryTest(unittest.TestCase):
         )
         owning_variant["successor"] = {
             "entry": "run",
-            "operation": "source.create",
+            "operation": "infobase.create",
         }
-        with self.assertRaisesRegex(InventoryError, "all twelve run operations"):
+        with self.assertRaisesRegex(InventoryError, "every run operation"):
             self._validate(documents)
 
     def test_all_true_cross_links_exact_successor_operation_to_a_case(self) -> None:
@@ -1669,7 +1669,7 @@ class V013ParityInventoryTest(unittest.TestCase):
             for variant in row["variants"]
             if variant["disposition"] == "absorbed"
         )
-        variant["successor"] = {"entry": "run", "operation": "source.create"}
+        variant["successor"] = {"entry": "run", "operation": "infobase.create"}
         with self.assertRaisesRegex(
             InventoryError, "successor identity"
         ):

@@ -82,7 +82,7 @@
     },
     "unica.run": {
       "status": "partial",
-      "reason": "The closed directional twelve-operation dictionary, workspace.initialize, configuration-package export, and DT export are implemented through non-executing preview and revision-fenced apply; the other nine run operations remain unsupported.",
+      "reason": "The closed directional ten-operation dictionary, configuration-package export, and DT export are implemented through non-executing preview and revision-fenced apply; the other eight run operations remain unsupported.",
       "evidence": [{
         "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
         "test": "production_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"
@@ -95,22 +95,6 @@
     }
   },
   "runOperations": {
-    "workspace.initialize": {
-      "status": "supported",
-      "reason": "Autodetected uniform-format source sets can be previewed without writes and initialized through create-only v8project.yaml publication guarded by the preview revision; infobase-only and mixed-format initialization remain refused.",
-      "evidence": [{
-        "file": "crates/unica-coder/tests/v13_workspace_bootstrap.rs",
-        "test": "canonical_stdio_previews_and_applies_workspace_initialization_before_admission"
-      }, {
-        "file": "crates/unica-coder/tests/v13_workspace_bootstrap.rs",
-        "test": "canonical_workspace_initialization_refuses_mixed_designer_and_edt_discovery"
-      }]
-    },
-    "source.create": {
-      "status": "unsupported",
-      "reason": "Source creation execution has not been connected to the v0.13 run adapter.",
-      "evidence": []
-    },
     "infobase.create": {
       "status": "unsupported",
       "reason": "Infobase creation execution has not been connected to the v0.13 run adapter.",
