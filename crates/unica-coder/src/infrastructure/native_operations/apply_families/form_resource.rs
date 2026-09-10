@@ -12,9 +12,14 @@ use crate::infrastructure::native_operations::apply::{
 use crate::infrastructure::native_operations::apply_families::request::{
     IndexedPlanOperation, ProvisionalApplyEffect,
 };
+use crate::infrastructure::native_operations::interface::{
+    interface_text_do_group_order, interface_text_do_hide, interface_text_do_order,
+    interface_text_do_place, interface_text_do_show, interface_text_do_subsystem_order,
+    InterfaceEditCounters,
+};
 use crate::infrastructure::native_operations::support::{SupportCapability, SupportObjectRule};
 use crate::infrastructure::workspace_actor::{FormResourceApplyAuthority, ProviderRootBinding};
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 use std::path::PathBuf;
 
 const UTF8_BOM: &[u8] = b"\xef\xbb\xbf";
@@ -25,6 +30,21 @@ enum SubsystemEdit {
     ContentRemove(Vec<String>),
     ChildAdd(Vec<String>),
     ChildRemove(Vec<String>),
+}
+
+/// Что именно правится в командном интерфейсе. Каждый вариант — одна секция
+/// файла: писатель не трогает соседние и тем сохраняет то, чего читатель не
+/// показывает, — в первую очередь значения видимости по ролям.
+#[derive(Debug, Clone)]
+enum InterfaceEdit {
+    Visibility(Vec<(String, bool)>),
+    Placement(Vec<(String, Option<String>, Option<String>)>),
+    CommandOrder {
+        group: Option<String>,
+        commands: Vec<String>,
+    },
+    GroupOrder(Vec<String>),
+    SubsystemOrder(Vec<String>),
 }
 
 #[derive(Debug, Clone)]
@@ -48,6 +68,12 @@ enum FormResourcePlanKind {
         address: String,
         relative: PathBuf,
         edit: SubsystemEdit,
+    },
+    /// Правка `CommandInterface.xml`: видимость, размещение и три порядка.
+    CommandInterface {
+        address: String,
+        relative: PathBuf,
+        edit: InterfaceEdit,
     },
     SupportCapability(SupportCapability),
     SupportRule {
@@ -141,6 +167,197 @@ fn required_string<'a>(
                 format!("`{field}` is required and must be a non-empty string"),
             )
         })
+}
+
+/// Разбор операций командного интерфейса.
+///
+/// Адрес несёт интерфейс, а команда лежит в аргументах — тот же приём, что у
+/// `right.set`: предмет операции — пара «интерфейс и ссылка на команду», а
+/// адрес может нести только одно. Приписать факт подсистемы адресу команды,
+/// живущей в другом месте, было бы неверно.
+fn parse_command_interface_operation(
+    section: &str,
+    target: &QualifiedAddress,
+    args: &Map<String, Value>,
+    op_index: usize,
+    binding: &ProviderRootBinding,
+) -> Result<FormResourcePlanKind, ApplyPlanError> {
+    let segments = target.segments();
+    let (address, relative) = match segments {
+        // Порядок подсистем верхнего уровня живёт в корневом документе.
+        [root] if root.kind() == NodeKind::Configuration => {
+            if section != "subsystemOrder" {
+                return Err(bad(
+                    op_index,
+                    "at",
+                    format!("`{section}.set` targets a subsystem command interface: `Subsystem.Name.Interface`"),
+                ));
+            }
+            (
+                target.to_string(),
+                PathBuf::from("Ext").join("CommandInterface.xml"),
+            )
+        }
+        [.., owner, facet]
+            if facet.kind() == NodeKind::Interface && owner.kind() == NodeKind::Subsystem =>
+        {
+            let owner_name = owner
+                .name()
+                .ok_or_else(|| bad(op_index, "at", "the subsystem must be named"))?;
+            let owner_address = MetadataAddress::parse(
+                PLATFORM_XML_8_3_27_FORMAT_2_20,
+                &format!("Subsystem.{owner_name}"),
+            )
+            .map_err(|error| bad(op_index, "at", error.to_string()))?;
+            let relative = attached_resource_relative(
+                &owner_address,
+                "CommandInterface.xml",
+                binding.source_kind(),
+            )
+            .map_err(|error| bad(op_index, "at", error))?;
+            (target.to_string(), relative)
+        }
+        _ => {
+            return Err(bad(
+                op_index,
+                "at",
+                "a command-interface operation targets `Subsystem.Name.Interface`",
+            ))
+        }
+    };
+    let edit = match section {
+        "commandVisibility" => {
+            let items = interface_items(args, op_index)?;
+            let mut values = Vec::with_capacity(items.len());
+            for (index, item) in items.iter().enumerate() {
+                let item = item.as_object().ok_or_else(|| {
+                    bad(
+                        op_index,
+                        &format!("items[{index}]"),
+                        "each item is an object",
+                    )
+                })?;
+                let command =
+                    required_string(item, "command", op_index, &format!("items[{index}]"))?;
+                let visible = match item.get("visible") {
+                    Some(Value::Bool(visible)) => visible,
+                    _ => {
+                        return Err(bad(
+                            op_index,
+                            &format!("items[{index}].visible"),
+                            "`visible` must be a boolean",
+                        ))
+                    }
+                };
+                values.push((command.to_string(), *visible));
+            }
+            InterfaceEdit::Visibility(values)
+        }
+        "commandPlacement" => {
+            let items = interface_items(args, op_index)?;
+            let mut values = Vec::with_capacity(items.len());
+            for (index, item) in items.iter().enumerate() {
+                let item = item.as_object().ok_or_else(|| {
+                    bad(
+                        op_index,
+                        &format!("items[{index}]"),
+                        "each item is an object",
+                    )
+                })?;
+                let command =
+                    required_string(item, "command", op_index, &format!("items[{index}]"))?;
+                let group = item
+                    .get("group")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                let placement = item
+                    .get("placement")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                if group.is_none() && placement.is_none() {
+                    return Err(bad(
+                        op_index,
+                        &format!("items[{index}]"),
+                        "placement needs `group` and/or `placement`",
+                    ));
+                }
+                values.push((command.to_string(), group, placement));
+            }
+            InterfaceEdit::Placement(values)
+        }
+        "commandOrder" => {
+            let values = required_values(args, op_index, &["group", "commands"])?;
+            InterfaceEdit::CommandOrder {
+                group: values
+                    .get("group")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                commands: listed_strings(values, "commands", op_index)?,
+            }
+        }
+        "groupOrder" => {
+            let values = required_values(args, op_index, &["groups"])?;
+            InterfaceEdit::GroupOrder(listed_strings(values, "groups", op_index)?)
+        }
+        _ => {
+            let values = required_values(args, op_index, &["subsystems"])?;
+            InterfaceEdit::SubsystemOrder(listed_strings(values, "subsystems", op_index)?)
+        }
+    };
+    Ok(FormResourcePlanKind::CommandInterface {
+        address,
+        relative,
+        edit,
+    })
+}
+
+fn interface_items(
+    args: &Map<String, Value>,
+    op_index: usize,
+) -> Result<&Vec<Value>, ApplyPlanError> {
+    args.get("items")
+        .and_then(Value::as_array)
+        .filter(|items| !items.is_empty())
+        .ok_or_else(|| bad(op_index, "items", "`items` must be a non-empty array"))
+}
+
+/// Полная последовательность, а не добавка: порядок — отношение между всеми
+/// элементами, и частичный список некуда вставить.
+fn listed_strings(
+    values: &Map<String, Value>,
+    key: &str,
+    op_index: usize,
+) -> Result<Vec<String>, ApplyPlanError> {
+    let array = values.get(key).and_then(Value::as_array).ok_or_else(|| {
+        bad(
+            op_index,
+            &format!("values.{key}"),
+            format!("`{key}` must be an array"),
+        )
+    })?;
+    let mut names = Vec::with_capacity(array.len());
+    for (index, item) in array.iter().enumerate() {
+        let name = item
+            .as_str()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| {
+                bad(
+                    op_index,
+                    &format!("values.{key}[{index}]"),
+                    "each entry is a non-empty name",
+                )
+            })?;
+        names.push(name.to_string());
+    }
+    if names.is_empty() {
+        return Err(bad(
+            op_index,
+            &format!("values.{key}"),
+            "the order is a complete sequence and cannot be empty",
+        ));
+    }
+    Ok(names)
 }
 
 /// Names listed in `items` (objects with `key`, or bare strings), or a single
@@ -282,6 +499,9 @@ pub(crate) fn parse_form_resource_plan_operation(
         Some(OperationFamily::Subsystem) => {
             parse_subsystem_operation(operation, object, op_index, binding)?
         }
+        Some(OperationFamily::Interface) => {
+            parse_subsystem_operation(operation, object, op_index, binding)?
+        }
         Some(OperationFamily::Support) => {
             parse_support_operation(operation, object, op_index, binding)?
         }
@@ -377,6 +597,14 @@ fn parse_subsystem_operation(
     binding: &ProviderRootBinding,
 ) -> Result<FormResourcePlanKind, ApplyPlanError> {
     let target = qualified_target(args, op_index, binding)?;
+    if let Some(section) = operation.strip_suffix(".set").filter(|section| {
+        matches!(
+            *section,
+            "commandVisibility" | "commandPlacement" | "commandOrder" | "groupOrder"
+        ) || (*section == "subsystemOrder")
+    }) {
+        return parse_command_interface_operation(section, &target, args, op_index, binding);
+    }
     if operation == "subsystem.create" {
         let values = required_values(args, op_index, &["name"])?;
         let name = creation_name(&target, NodeKind::Subsystem, values, op_index)?;
@@ -1879,6 +2107,122 @@ pub(crate) fn plan_form_resource_batch(
                     op_index,
                 ));
             }
+            FormResourcePlanKind::CommandInterface {
+                address,
+                relative,
+                edit,
+            } => {
+                let at_path = format!("ops[{op_index}].args.at");
+                let preimage = staged
+                    .read(relative)
+                    .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+                    .ok_or_else(|| {
+                        ApplyPlanError::new(
+                            ApplyPlanErrorKind::NotFound,
+                            "the command interface document was not found",
+                        )
+                        .at_path(at_path.clone())
+                    })?;
+                let mut text = String::from_utf8(preimage.clone()).map_err(|_| {
+                    ApplyPlanError::new(
+                        ApplyPlanErrorKind::InvalidSource,
+                        "the command interface document is not UTF-8",
+                    )
+                    .at_path(at_path.clone())
+                })?;
+                let mut counters = InterfaceEditCounters::default();
+                let mut log = String::new();
+                let fail = |message: String| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                        .at_path(at_path.clone())
+                };
+                match edit {
+                    InterfaceEdit::Visibility(values) => {
+                        // Правится только `Common`; значения по ролям —
+                        // соседние элементы того же блока — остаются как были.
+                        let (shown, hidden): (Vec<_>, Vec<_>) =
+                            values.iter().partition(|(_, visible)| *visible);
+                        let names = |group: Vec<&(String, bool)>| {
+                            group
+                                .into_iter()
+                                .map(|(command, _)| command.clone())
+                                .collect::<Vec<_>>()
+                        };
+                        let hidden = names(hidden);
+                        if !hidden.is_empty() {
+                            interface_text_do_hide(&mut text, hidden, &mut counters, &mut log)
+                                .map_err(fail)?;
+                        }
+                        let shown = names(shown);
+                        if !shown.is_empty() {
+                            interface_text_do_show(&mut text, shown, &mut counters, &mut log)
+                                .map_err(fail)?;
+                        }
+                    }
+                    InterfaceEdit::Placement(values) => {
+                        for (command, group, placement) in values {
+                            let mut request = Map::new();
+                            request.insert("command".to_string(), json!(command));
+                            if let Some(group) = group {
+                                request.insert("group".to_string(), json!(group));
+                            }
+                            if let Some(placement) = placement {
+                                request.insert("placement".to_string(), json!(placement));
+                            }
+                            interface_text_do_place(
+                                &mut text,
+                                &Value::Object(request),
+                                &mut counters,
+                                &mut log,
+                            )
+                            .map_err(&fail)?;
+                        }
+                    }
+                    InterfaceEdit::CommandOrder { group, commands } => {
+                        let mut request = Map::new();
+                        if let Some(group) = group {
+                            request.insert("group".to_string(), json!(group));
+                        }
+                        request.insert("commands".to_string(), json!(commands));
+                        interface_text_do_order(
+                            &mut text,
+                            &Value::Object(request),
+                            &mut counters,
+                            &mut log,
+                        )
+                        .map_err(&fail)?;
+                    }
+                    InterfaceEdit::GroupOrder(groups) => {
+                        interface_text_do_group_order(
+                            &mut text,
+                            &json!(groups),
+                            &mut counters,
+                            &mut log,
+                        )
+                        .map_err(&fail)?;
+                    }
+                    InterfaceEdit::SubsystemOrder(subsystems) => {
+                        interface_text_do_subsystem_order(
+                            &mut text,
+                            &json!(subsystems),
+                            &mut counters,
+                            &mut log,
+                        )
+                        .map_err(&fail)?;
+                    }
+                }
+                let postimage = text.into_bytes();
+                if postimage != preimage {
+                    staged
+                        .replace(relative, &preimage, postimage)
+                        .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
+                    provisional.push(ProvisionalApplyEffect::spanning(
+                        vec![relative.clone()],
+                        DomainEvent::new(DomainEventKind::SubsystemChanged, address.clone()),
+                        op_index,
+                    ));
+                }
+            }
             FormResourcePlanKind::Subsystem {
                 address,
                 relative,
@@ -2290,6 +2634,89 @@ mod tests {
                     == Path::new("Documents/First/Forms/ФормаДокумента/Ext/Form/Module.bsl")),
             "the form module is staged"
         );
+    }
+
+    /// Главное обещание семейства: писатель правит только `Common`, а
+    /// значения видимости по ролям — соседние элементы того же блока —
+    /// остаются как были. Читатель их не показывает, поэтому наивный писатель,
+    /// переписывающий блок по прочитанному, снёс бы их молча.
+    #[test]
+    fn command_visibility_edits_common_and_leaves_role_values_alone() {
+        let fixture = ApplySeamFixture::new();
+        let interface_dir = fixture.source_dir().join("Subsystems/Sales/Ext");
+        std::fs::create_dir_all(&interface_dir).unwrap();
+        std::fs::write(
+            fixture.source_dir().join("Subsystems/Sales.xml"),
+            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><Subsystem uuid=\"44444444-4444-4444-8444-444444444444\"><Properties><Name>Sales</Name></Properties><ChildObjects/></Subsystem></MetaDataObject>",
+        )
+        .unwrap();
+        std::fs::write(
+            interface_dir.join("CommandInterface.xml"),
+            concat!(
+                "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n",
+                "<CommandInterface xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" version=\"2.20\">\n",
+                "\t<CommandsVisibility>\n",
+                "\t\t<Command name=\"Catalog.First.Command.Open\">\n",
+                "\t\t\t<Visibility>\n",
+                "\t\t\t\t<xr:Common>true</xr:Common>\n",
+                "\t\t\t\t<xr:Value name=\"Role.Кладовщик\">false</xr:Value>\n",
+                "\t\t\t</Visibility>\n",
+                "\t\t</Command>\n",
+                "\t</CommandsVisibility>\n",
+                "\t<GroupsOrder>\n",
+                "\t\t<Group>NavigationPanelImportant</Group>\n",
+                "\t</GroupsOrder>\n",
+                "</CommandInterface>\n"
+            ),
+        )
+        .unwrap();
+        let admission = fixture.admission();
+        let staged = admission.staged_state().unwrap();
+        let authority = admission
+            .form_resource_planning_authority(&fixture.binding)
+            .unwrap();
+        let parse = |op: &str, args: serde_json::Value, index: usize| {
+            IndexedPlanOperation::new(
+                index,
+                parse_form_resource_plan_operation(op, &args, index, &fixture.binding).unwrap(),
+            )
+        };
+        let operations = [
+            parse(
+                "commandVisibility.set",
+                json!({
+                    "at": "main:Subsystem.Sales.Interface",
+                    "items": [{"command": "Catalog.First.Command.Open", "visible": false}]
+                }),
+                0,
+            ),
+            parse(
+                "groupOrder.set",
+                json!({
+                    "at": "main:Subsystem.Sales.Interface",
+                    "values": {"groups": ["NavigationPanelSeeAlso", "NavigationPanelImportant"]}
+                }),
+                1,
+            ),
+        ];
+
+        let (staged, effects) = plan_form_resource_batch(staged, authority, &operations)
+            .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
+
+        assert_eq!(effects.len(), 2);
+        let text = staged_text(&staged, "Subsystems/Sales/Ext/CommandInterface.xml");
+        assert!(text.contains("<xr:Common>false</xr:Common>"), "{text}");
+        // Роль на месте — и это единственная причина, по которой правка
+        // общего значения вообще безопасна.
+        assert!(
+            text.contains("<xr:Value name=\"Role.Кладовщик\">false</xr:Value>"),
+            "{text}"
+        );
+        let seen = text.find("NavigationPanelSeeAlso").expect("group order");
+        let important = text
+            .find("<Group>NavigationPanelImportant</Group>")
+            .expect("group");
+        assert!(seen < important, "порядок групп задаётся целиком: {text}");
     }
 
     #[test]

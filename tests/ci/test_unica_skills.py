@@ -359,15 +359,15 @@ IN_SCOPE_TOOLS = {
     "meta-info": "unica.meta.info",
     "form-compile": "unica.form.compile",
     "form-edit": "unica.form.edit",
-    "interface-edit": "unica.interface.edit",
-    "subsystem-compile": "unica.subsystem.compile",
-    "subsystem-edit": "unica.subsystem.edit",
+    "interface-edit": "unica.apply",
+    "subsystem-compile": "unica.apply",
+    "subsystem-edit": "unica.apply",
     "dcs-compile": "unica.dcs.compile",
     "dcs-edit": "unica.dcs.edit",
     "mxl-compile": "unica.mxl.compile",
     "mxl-decompile": "unica.mxl.decompile",
     "mxl-info": "unica.view",
-    "role-compile": "unica.role.compile",
+    "role-compile": "unica.apply",
     "role-edit": "unica.apply",
 }
 
@@ -749,7 +749,7 @@ SCENARIO_REQUIRED_TOKENS = {
     "source-access": [
         "предметн",
         "dryRun",
-        "unica.code.patch",
+        "unica.apply",
         "unica.resolve",
         "invalid_cursor",
     ],
@@ -787,16 +787,16 @@ TASK_EXAMPLE_ARGUMENT_KEYS = {
     "meta-info": ["sourceSet", "metadataPath"],
     "form-compile": ["JsonPath", "OutputPath"],
     "form-edit": ["FormPath", "JsonPath"],
-    "interface-edit": ["CIPath", "Operation", "Value"],
-    "subsystem-compile": ["Value", "OutputDir"],
-    "subsystem-edit": ["SubsystemPath", "Operation", "Value"],
+    "interface-edit": ["at", "ops"],
+    "subsystem-compile": ["at", "ops"],
+    "subsystem-edit": ["at", "ops"],
     "dcs-compile": ["DefinitionFile", "OutputPath"],
     "dcs-edit": ["TemplatePath", "Operation", "Value"],
     "mxl-compile": ["JsonPath", "OutputPath"],
     "mxl-decompile": ["TemplatePath"],
     # Читающий макет адресуется логически: файлового селектора у `view` нет.
     "mxl-info": ["at"],
-    "role-compile": ["JsonPath", "OutputDir"],
+    "role-compile": ["at", "ops"],
     "role-edit": ["at", "ops"],
 }
 
@@ -810,14 +810,14 @@ SCENARIO_PRESERVING_MIN_MCP_CALLS = {
     "meta-edit": 3,
     "meta-info": 6,
     "form-compile": 4,
-    "interface-edit": 8,
-    "subsystem-compile": 4,
-    "subsystem-edit": 6,
+    "interface-edit": 3,
+    "subsystem-compile": 3,
+    "subsystem-edit": 2,
     "dcs-compile": 5,
     "mxl-info": 3,
     "role-edit": 1,
     "dcs-edit": 4,
-    "role-compile": 3,
+    "role-compile": 4,
 }
 
 ALLOWED_ADDITIONAL_MCP_TOOL_NAMES = {
@@ -827,7 +827,6 @@ ALLOWED_ADDITIONAL_MCP_TOOL_NAMES = {
     "epf-init": {"unica.runtime.execute"},
     "erf-init": {"unica.runtime.execute"},
     "form-compile": {"unica.view", "unica.check"},
-    "interface-edit": {"unica.check"},
     "role-compile": {"unica.view", "unica.check"},
     "dcs-compile": {"unica.view", "unica.check"},
     "dcs-edit": {"unica.view", "unica.check"},
@@ -910,28 +909,39 @@ SCENARIO_PRESERVING_TOKENS = {
         '"name": "unica.check"',
         '"name": "unica.view"',
     ],
+    # Действие стало именем операции. `hide` и `show` свелись к одному
+    # `commandVisibility.set` с булевым значением: платформа хранит одно поле,
+    # и двух операций для него не нужно.
     "interface-edit": [
-        '"Operation": "hide"',
-        '"Operation": "show"',
-        '"Operation": "place"',
-        '"Operation": "subsystem-order"',
-        '"CreateIfMissing": true',
-        '"name": "unica.check"',
+        '"op": "commandVisibility.set"',
+        '"op": "commandPlacement.set"',
+        '"op": "commandOrder.set"',
+        '"op": "subsystemOrder.set"',
+        '"visible": false',
+        '"visible": true',
     ],
+    # Определение стало типизированными операциями, а родитель — адресом:
+    # JSON-строки внутри JSON и путей к XML на канонической поверхности нет.
     "subsystem-compile": [
-        '"Value": "{\\"name\\":\\"Тест\\"}"',
+        '"op": "subsystem.create"',
         'CommonPicture.Продажи',
-        '"Parent": "config/Subsystems/Продажи.xml"',
+        '"at": "main:Subsystem.Продажи"',
     ],
+    # Операция стала именем операции, а не значением поля `Operation`.
     "subsystem-edit": [
-        '"Operation": "add-content"',
-        '"Operation": "remove-content"',
-        '"Operation": "add-child"',
-        '"Operation": "set-property"',
+        '"op": "content.add"',
+        '"op": "content.remove"',
+        '"op": "childSubsystem.add"',
+        '"op": "props.set"',
     ],
+    # Пресет разворачивает скилл: инструмент принимает одно право за
+    # операцию, и предпросмотр показывает их поимённо, а не имя пресета.
     "role-compile": [
+        '"op": "role.create"',
+        '"op": "right.set"',
         '"name": "unica.check"',
         '"name": "unica.view"',
+        "Шаблоны RLS",
     ],
     "dcs-compile": [
         '"DefinitionFile": "<json>"',
@@ -2933,18 +2943,19 @@ Use `.claude/commands/xdto.md` as the execution route.
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, text)
 
-    def test_source_access_skill_routes_reads_and_sends_writes_to_code_patch(
+    def test_source_access_skill_routes_reads_and_sends_writes_to_apply(
         self,
     ) -> None:
         path = self.skill_root() / "source-access" / "SKILL.md"
         text = path.read_text(encoding="utf-8")
-        writer = text.index("unica.code.patch")
+        writer = text.index("unica.apply")
         reader = text.index("unica.view")
 
         self.assertLess(reader, writer, "reading comes before the writer")
-        # The canonical read surface never mutates, so the skill must not
-        # promise a write through it and must send edits to unica.code.patch.
+        # Канонический читатель не меняет исходников, поэтому скилл не обещает
+        # правку через него и отправляет её в `unica.apply`.
         self.assertNotIn("unica.source.apply", text)
+        self.assertNotIn("unica.code.patch", text)
         self.assertRegex(text, r"(?s)dryRun.{0,80}true.{0,400}dryRun.{0,80}false")
         self.assertIn("Чтение не меняет исходники", text)
         self.assertIn("unica.resolve", text)

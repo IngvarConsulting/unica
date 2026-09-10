@@ -14,6 +14,13 @@ APPLICATION_PATH = PurePosixPath(
     "crates/unica-coder/src/application/receipt_ledger.rs"
 )
 STORE_PATH = PurePosixPath("crates/unica-coder/src/infrastructure/receipt_ledger.rs")
+# The store is a module directory, not one file: its root plus every file under
+# it is "the receipt ledger store" for every path-conditional rule below.
+STORE_DIR = PurePosixPath("crates/unica-coder/src/infrastructure/receipt_ledger")
+
+
+def _is_store(path: PurePosixPath) -> bool:
+    return path == STORE_PATH or path.is_relative_to(STORE_DIR)
 CODEC_PATH = PurePosixPath(
     "crates/unica-coder/src/infrastructure/daemon/terminal_codec_v5.rs"
 )
@@ -220,7 +227,35 @@ def _delimiter_range(masked: str, opening: int) -> tuple[int, int]:
     return opening, len(masked)
 
 
-def _test_module_ranges(masked: str) -> list[tuple[int, int]]:
+TEST_FILE_MODULE = re.compile(
+    rf"(?m)^[ \t]*#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\][ \t]*\r?\n"
+    rf"[ \t]*(?:pub(?:\s*\([^)]*\))?[ \t]+)?mod[ \t]+({RUST_IDENTIFIER})[ \t]*;"
+)
+
+# Files whose whole content is test code. A `#[cfg(test)] mod name;` puts the
+# module in a sibling file, and nothing in that file is production — the same
+# exemption an inline `#[cfg(test)] mod name { ... }` already gets.
+_TEST_ONLY_FILES: set[PurePosixPath] = set()
+
+
+def _child_module_path(parent: PurePosixPath, name: str) -> PurePosixPath:
+    directory = parent.parent if parent.name in ("mod.rs", "lib.rs", "main.rs") else parent.with_suffix("")
+    return directory / f"{name}.rs"
+
+
+def _collect_test_only_files(sources: dict[PurePosixPath, str]) -> set[PurePosixPath]:
+    found: set[PurePosixPath] = set()
+    for path, source in sources.items():
+        for match in TEST_FILE_MODULE.finditer(source):
+            child = _child_module_path(path, match.group(1))
+            if child in sources:
+                found.add(child)
+    return found
+
+
+def _test_module_ranges(masked: str, path: PurePosixPath | None = None) -> list[tuple[int, int]]:
+    if path is not None and path in _TEST_ONLY_FILES:
+        return [(0, len(masked))]
     ranges: list[tuple[int, int]] = []
     for match in TEST_MODULE.finditer(masked):
         opening_brace = masked.rfind("{", match.start(), match.end())
@@ -259,7 +294,7 @@ def _source_diagnostics(
     path: PurePosixPath, source: str, masked: str
 ) -> list[str]:
     diagnostics: list[str] = []
-    test_ranges = _test_module_ranges(masked)
+    test_ranges = _test_module_ranges(masked, path)
     for type_name in PREPARED_CONSTRUCTORS:
         if path == CODEC_PATH:
             continue
@@ -308,7 +343,7 @@ def _source_diagnostics(
                 )
 
     slot_calls = list(_constructor_pattern(DIRECT_SLOT).finditer(masked))
-    if path == STORE_PATH:
+    if _is_store(path):
         slot_calls = []
     elif path == CODEC_PATH:
         slot_calls = [
@@ -336,15 +371,17 @@ def _source_diagnostics(
     return diagnostics
 
 
-def _store_diagnostics(source: str, masked: str) -> list[str]:
+def _store_diagnostics(
+    path: PurePosixPath, source: str, masked: str
+) -> list[str]:
     diagnostics: list[str] = []
-    test_ranges = _test_module_ranges(masked)
+    test_ranges = _test_module_ranges(masked, path)
     for match in re.finditer(r"\bcanonical_v5_terminal\s*\(", masked):
         if _inside_ranges(match.start(), test_ranges):
             continue
         diagnostics.append(
             _diagnostic(
-                STORE_PATH,
+                path,
                 source,
                 match.start(),
                 "receipt ledger production must not canonicalize a Direct terminal",
@@ -363,7 +400,7 @@ def _store_diagnostics(source: str, masked: str) -> list[str]:
             continue
         diagnostics.append(
             _diagnostic(
-                STORE_PATH,
+                path,
                 source,
                 match.start(),
                 "receipt ledger production must not reserialize an active receipt record",
@@ -379,7 +416,7 @@ def _direct_literal_diagnostics(
         return []
 
     diagnostics: list[str] = []
-    test_ranges = _test_module_ranges(masked)
+    test_ranges = _test_module_ranges(masked, path)
     manual_markers = (
         (
             '"resultType":"direct"',
@@ -390,7 +427,7 @@ def _direct_literal_diagnostics(
             "production must not handwrite Direct record JSON outside terminal_codec_v5",
         ),
     )
-    if path == STORE_PATH:
+    if _is_store(path):
         manual_markers = (
             (
                 '"resultType":"direct"',
@@ -507,12 +544,17 @@ def collect_sources(root: Path) -> dict[PurePosixPath, str]:
 
 def check_root(root: Path) -> list[str]:
     sources = collect_sources(root)
+    # Классификация идёт по замаскированному тексту: `#[cfg(test)] mod records;`
+    # внутри комментария или строкового литерала не должен объявлять
+    # производственный файл тестовым и снимать с него проверки хранилища.
+    masked_sources = {path: _mask_non_code(source) for path, source in sources.items()}
+    _TEST_ONLY_FILES.clear()
+    _TEST_ONLY_FILES.update(_collect_test_only_files(masked_sources))
     diagnostics: list[str] = []
     for required_path in REQUIRED_PATHS:
         if required_path not in sources:
             diagnostics.append(f"{required_path.as_posix()}:1: required source file is missing")
 
-    masked_sources = {path: _mask_non_code(source) for path, source in sources.items()}
     for path in sorted(sources, key=PurePosixPath.as_posix):
         diagnostics.extend(
             _source_diagnostics(path, sources[path], masked_sources[path])
@@ -527,8 +569,11 @@ def check_root(root: Path) -> list[str]:
                 path, sources[path], masked_sources[path]
             )
         )
-    if STORE_PATH in sources:
-        diagnostics.extend(_store_diagnostics(sources[STORE_PATH], masked_sources[STORE_PATH]))
+    for path in sorted(sources, key=PurePosixPath.as_posix):
+        if _is_store(path):
+            diagnostics.extend(
+                _store_diagnostics(path, sources[path], masked_sources[path])
+            )
     if DAEMON_MOD_PATH in sources:
         diagnostics.extend(
             _module_diagnostics(sources[DAEMON_MOD_PATH], masked_sources[DAEMON_MOD_PATH])

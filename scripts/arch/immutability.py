@@ -249,6 +249,59 @@ def _is_evidence_repoint(repo: Path, base_ref: str, before: str, after: str) -> 
     return True
 
 
+def _declares(target: Path, name: str) -> bool:
+    """Объявлено ли имя в этом файле — на любом из двух языков свидетельств."""
+    if not target.is_file():
+        return False
+    source = target.read_text(encoding="utf-8")
+    if target.suffix == ".py":
+        return _python_defines(source, name)
+    return _declaration_in(source, name)
+
+
+def _is_evidence_relocation(repo: Path, before: str, after: str) -> bool:
+    """Правка сводится к переезду свидетельства: имя то же, файл другой.
+
+    Разрез файла не меняет обещания правила — та же функция под тем же именем
+    держит его из соседнего модуля. Исключение узкое и проверяемое: тело и
+    набор пропов совпадают, меняются только адреса свидетельств, каждый адрес
+    сохраняет своё объявление, новый файл его действительно объявляет, а
+    старый — уже нет. Дописать свидетельство или сменить имя так нельзя.
+    """
+    old_props, old_body = _split(before)
+    new_props, new_body = _split(after)
+    if old_body != new_body or set(old_props) != set(new_props):
+        return False
+    changed = {key for key in old_props if old_props[key] != new_props[key]}
+    if not changed or any(key not in EVIDENCE_FIELDS for key in changed):
+        return False
+
+    for key in changed:
+        old_names = _REGISTRY.evidence_names(old_props[key])
+        new_names = _REGISTRY.evidence_names(new_props[key])
+        if len(old_names) != len(new_names):
+            return False
+        for old_reference, new_reference in zip(old_names, new_names):
+            if old_reference == new_reference:
+                continue
+            old_path, _, old_declaration = old_reference.partition("::")
+            new_path, _, new_declaration = new_reference.partition("::")
+            # Имя обязано остаться тем же: смена имени — это другое обещание.
+            if not old_declaration or old_declaration != new_declaration:
+                return False
+            if old_path == new_path:
+                return False
+            # По новому адресу обязан стоять настоящий тест, а не просто
+            # функция с тем же именем: иначе переезд стал бы лазейкой, через
+            # которую правило переезжает на несуществующее доказательство.
+            if not _evidence_resolves(repo, new_reference):
+                return False
+            # Переезд, а не второй дом: по старому адресу объявления больше нет.
+            if _declares(repo / old_path, old_declaration):
+                return False
+    return True
+
+
 def _is_recordable_only(before: str, after: str) -> bool:
     """Правка сводится к простановке отметки и ничему больше."""
     old_props, old_body = _split(before)
@@ -492,8 +545,10 @@ def inspect(repo: Path, base_ref: str) -> Verdict:
             continue
 
         if path.startswith("arch/decisions/"):
-            if not _is_recordable_only(before, after) and not _is_evidence_repoint(
-                repo, base_ref, before, after
+            if (
+                not _is_recordable_only(before, after)
+                and not _is_evidence_repoint(repo, base_ref, before, after)
+                and not _is_evidence_relocation(repo, before, after)
             ):
                 offenders.append(f"{path}: продуктовое решение отредактировано, а не заменено")
             continue
@@ -502,6 +557,9 @@ def inspect(repo: Path, base_ref: str) -> Verdict:
         # решение, на которое запись теперь и ссылается. Существующее основание
         # не годится — оно писалось раньше и этой перемены не предвидело.
         if _is_evidence_repoint(repo, base_ref, before, after):
+            continue
+
+        if _is_evidence_relocation(repo, before, after):
             continue
 
         # Либо правило переадресовано на заведённое здесь же решение, либо

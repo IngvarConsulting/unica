@@ -11,7 +11,9 @@
 `--write` переписывает выражение в `.config/nextest.toml` между метками, беря
 имена тестов из `cargo nextest list --message-format json` (нужен `cargo`);
 страж размера в `tests/ci` читает то же выражение без `cargo` и проверяет, что
-каждый файл с процессом или сокетом в нём назван.
+каждый файл с процессом или сокетом в нём назван, а внутри терма названы все
+встроенные модули тестов этого файла. Что считать тестом, решает разбор в
+страже — здесь второго ответа на этот вопрос нет.
 """
 
 from __future__ import annotations
@@ -36,8 +38,16 @@ TERM = re.compile(r"test\(/\^([A-Za-z0-9_:]+)::")
 
 
 def module_of(path: Path, src: Path) -> tuple[str, ...]:
+    """Модуль файла в дереве библиотеки; пустой кортеж — корень, и он за `lib.rs`.
+
+    `main.rs` — корень другой цели, двоичной, и делить пустой кортеж с `lib.rs`
+    ему нельзя: словарь модулей один на крейт, а `main.rs` идёт по сортировке
+    позже и затирал бы `lib.rs` со всеми объявлениями `mod ...;` в нём. Со своим
+    ключом файл остаётся виден `declared`, но термов не получает: `mod main;`
+    никто не объявляет, а размер считается только по целям `kind == "lib"`.
+    """
     parts = list(path.relative_to(src).with_suffix("").parts)
-    if parts[-1] in ("mod", "lib", "main"):
+    if parts[-1] in ("mod", "lib"):
         parts = parts[:-1]
     return tuple(parts)
 
@@ -68,15 +78,19 @@ def declared(module: tuple[str, ...], sources: dict[tuple[str, ...], tuple[bool,
     return any(pattern.search(path.read_text(encoding="utf-8", errors="replace")) for _, path in sources.values())
 
 
-def flagged_modules(root: Path) -> list[tuple[str, str]]:
-    """(крейт, модуль) файлов дерева с процессом или сокетом, в которых есть тесты."""
+def flagged_modules(root: Path) -> list[tuple[str, str, Path]]:
+    """(крейт, модуль, файл) файлов дерева с процессом или сокетом.
+
+    Есть ли в файле тесты, здесь не решается: файл отдаётся вместе с путём, а
+    ответ страж берёт из своего разбора. Регулярка на этом месте была второй
+    копией правила «что считать тестом» и расходилась со стражем — она не видела
+    `#[tokio::test]`, и такой файл выпадал из проверки целиком.
+    """
     flagged = []
     for crate, modules in source_modules(root).items():
         for module, (marked, path) in modules.items():
-            text = path.read_text(encoding="utf-8", errors="replace")
-            # Тест — атрибут в начале строки; упоминание в строке или комментарии не в счёт.
-            if marked and re.search(r"^\s*#\[test\]", text, re.M) and declared(module, modules):
-                flagged.append((crate, "::".join(module)))
+            if marked and declared(module, modules):
+                flagged.append((crate, "::".join(module), path))
     return flagged
 
 

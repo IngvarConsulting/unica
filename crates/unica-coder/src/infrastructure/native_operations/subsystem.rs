@@ -2666,6 +2666,13 @@ pub(crate) struct SubsystemCommandInterfaceData {
     pub(crate) visibility: Vec<SubsystemCommandVisibilityData>,
     pub(crate) placement: Vec<SubsystemCommandPlacementData>,
     pub(crate) order: Vec<SubsystemGroupData>,
+    /// Порядок групп панели. Отдельная секция, а не порядок ключей в
+    /// `order`: группа может быть объявлена в порядке и не иметь ни одной
+    /// команды.
+    pub(crate) groups_order: Vec<String>,
+    /// Порядок дочерних подсистем. У документа подсистемы эта секция своя и
+    /// говорит о её детях, а не о корне конфигурации.
+    pub(crate) subsystem_order: Vec<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -2673,6 +2680,11 @@ pub(crate) struct SubsystemCommandInterfaceData {
 pub(crate) struct SubsystemCommandVisibilityData {
     pub(crate) command: String,
     pub(crate) visible: bool,
+    /// Сколько ролей переопределяют общее значение. Замер на боевой
+    /// конфигурации: 99 блоков видимости из 1050 несут такие значения, то
+    /// есть каждая одиннадцатая команда. Умолчать о них значило бы отдать
+    /// `visible` за всю правду.
+    pub(crate) role_overrides: usize,
 }
 
 #[derive(serde::Serialize)]
@@ -2954,9 +2966,15 @@ pub(crate) fn parse_subsystem_command_interface_data(
                 .descendants()
                 .find(|node| role_info_element(*node, "Common", None))
                 .and_then(|node| node.text());
+            let role_overrides = cmd
+                .descendants()
+                .filter(|node| role_info_element(*node, "Value", None))
+                .filter(|node| node.attribute("name").is_some_and(|name| !name.is_empty()))
+                .count();
             visibility.push(SubsystemCommandVisibilityData {
                 command: cmd.attribute("name").unwrap_or("").to_string(),
                 visible: common != Some("false"),
+                role_overrides,
             });
         }
     }
@@ -2996,6 +3014,18 @@ pub(crate) fn parse_subsystem_command_interface_data(
         }
     }
 
+    let listed = |section: &str, item: &str| -> Vec<String> {
+        root.children()
+            .find(|node| role_info_element(*node, section, Some(CI_NS)))
+            .into_iter()
+            .flat_map(|section| section.children())
+            .filter(|node| role_info_element(*node, item, Some(CI_NS)))
+            .filter_map(|node| node.text())
+            .map(|text| text.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .collect()
+    };
+
     Ok(SubsystemCommandInterfaceData {
         visibility,
         placement,
@@ -3003,6 +3033,8 @@ pub(crate) fn parse_subsystem_command_interface_data(
             .into_iter()
             .map(|(name, items)| SubsystemGroupData { name, items })
             .collect(),
+        groups_order: listed("GroupsOrder", "Group"),
+        subsystem_order: listed("SubsystemsOrder", "Subsystem"),
     })
 }
 

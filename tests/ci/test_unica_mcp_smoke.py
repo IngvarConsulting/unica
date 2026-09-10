@@ -5,7 +5,6 @@ import json
 import os
 import queue
 import subprocess
-import tempfile
 import threading
 import time
 import unittest

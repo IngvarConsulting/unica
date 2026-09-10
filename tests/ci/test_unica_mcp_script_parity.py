@@ -1922,7 +1922,6 @@ EndProcedure
     )
     register_configuration_child(source_roots["main"] / "Configuration.xml", "CommonModule", "ParitySearch")
 
-    interface_fixture = "interface-validate/Sales/Ext/CommandInterface.xml"
     role_rights_fixture = BSP_ROLE_ADMIN_RIGHTS_FIXTURE
     materialise_logical_reader_target(source_roots["main"])
 
