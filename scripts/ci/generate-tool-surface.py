@@ -206,6 +206,23 @@ def discriminated_object_surface(
     return properties, required, conditional, branch_only
 
 
+def conditionally_required(schema: dict) -> set[str]:
+    """Аргументы, которые обязательны по условию на значение другого аргумента.
+
+    `if`/`then` — единственная форма, которой можно потребовать поле, ничего не
+    запретив: `oneOf` отверг бы законный предпросмотр с забором, совпавший с
+    обеими ветвями. Ведомость обязана назвать такое поле обязательным, иначе
+    читатель прочитает его как свободно необязательное.
+    """
+    consequence = schema.get("then")
+    if not isinstance(schema.get("if"), dict) or not isinstance(consequence, dict):
+        return set()
+    required = consequence.get("required")
+    if not isinstance(required, list):
+        return set()
+    return {str(name) for name in required}
+
+
 def render_arguments(tool: dict) -> list[str]:
     schema = tool.get("inputSchema", {})
     variant_surface = discriminated_object_surface(schema)
@@ -231,10 +248,13 @@ def render_arguments(tool: dict) -> list[str]:
             for name in branch["forbids"]
             if name not in conditional
         }
+    # Обязательность по значению другого аргумента и обязательность по ветви —
+    # разные вещи, и ведомость называет их разными словами.
+    by_value = conditionally_required(schema) - set(required)
     lines: list[str] = []
     shared = len(properties) > SHARED_ARGUMENT_THRESHOLD
     shown = (
-        sorted(set(required) | set(conditional) | branch_only)
+        sorted(set(required) | set(conditional) | by_value | branch_only)
         if shared
         else sorted(properties)
     )
@@ -246,6 +266,8 @@ def render_arguments(tool: dict) -> list[str]:
             description = escape_cell(entry.get("description", "—"))
             if name in required:
                 obligation = "да"
+            elif name in by_value:
+                obligation = "по условию"
             elif name in conditional:
                 obligation = "по ветви"
             elif name in branch_only:

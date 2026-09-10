@@ -28,7 +28,7 @@ Preview or atomically apply typed edits to one logically addressed 1C node.
 | --- | --- | --- | --- |
 | `at` | string | да | Qualified logical address: <sourceSet>:<Kind>[.<Name>...]. Omit only for workspace bootstrap where allowed. |
 | `dryRun` | boolean | нет | Validate and return the plan without publishing when true. |
-| `ifRev` | string | нет | Optional revision fence from an earlier read. |
+| `ifRev` | string | по условию | Revision returned by a prior dryRun preview; required when dryRun is false. |
 | `ops` | array | да | Ordered operations advertised by the target node's can data. |
 
 **Результат сейчас:** Для `props.set` и `attribute.add/set/remove` доказаны общий ordered staged planner, одинаковый postimage/effect plan hash в dry-run/real и атомарная retained-публикация (отвечают типизированным `data`)
