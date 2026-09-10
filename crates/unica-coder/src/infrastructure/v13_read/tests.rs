@@ -707,7 +707,7 @@ fn capability_bound_configuration_reader_preserves_complete_cf_info_semantics() 
         "ManagedApplication"
     );
     assert_eq!(payload["support"]["state"], "notSupported");
-    assert_eq!(payload["totalObjects"], 11);
+    assert_eq!(payload["totalObjects"], 13);
     assert_eq!(
         payload["childObjects"]
             .as_array()
@@ -715,9 +715,9 @@ fn capability_bound_configuration_reader_preserves_complete_cf_info_semantics() 
             .iter()
             .map(|entry| entry["count"].as_u64().unwrap())
             .sum::<u64>(),
-        11,
+        13,
     );
-    assert_eq!(payload["registeredObjects"].as_array().unwrap().len(), 11);
+    assert_eq!(payload["registeredObjects"].as_array().unwrap().len(), 13);
 }
 
 #[test]
@@ -872,6 +872,99 @@ fn declared_service_kinds_finally_get_their_subject() {
         parameter.data.as_ref().unwrap()["props"]["direction"],
         json!("in")
     );
+}
+
+#[test]
+fn every_reference_of_an_object_answers_in_one_relation_branch() {
+    let fixture = RealReaderFixture::new();
+    let service = fixture.view_service();
+
+    let document = service.view(ViewRequest::new("main:Document.Order").unwrap());
+    assert!(document.ok, "{:?}", refusal_codes(&document));
+    let branches = document.data.as_ref().unwrap()["branches"]
+        .as_array()
+        .unwrap();
+    // Платформа держит движение и основание в разных местах, но вопрос один:
+    // на что объект показывает. Одна ветвь, имя связи — поле элемента.
+    assert!(
+        branches.contains(&json!({"at": "main:Document.Order.Relation", "count": 2})),
+        "{branches:#?}"
+    );
+
+    let relations = service.view(ViewRequest::new("main:Document.Order.Relation").unwrap());
+    assert!(relations.ok, "{:?}", refusal_codes(&relations));
+    assert_eq!(
+        relations.data.as_ref().unwrap()["items"],
+        json!([
+            {
+                "relation": "registerRecord",
+                "at": "main:CalculationRegister.Payroll",
+                "kind": "CalculationRegister"
+            },
+            {
+                "relation": "basedOn",
+                "at": "main:Catalog.Items",
+                "kind": "Catalog"
+            }
+        ]),
+    );
+
+    // Элемент ветви показывает наружу, поэтому спускаться в него нельзя:
+    // цель читается по своему адресу.
+    let inward = service.view(ViewRequest::new("main:Document.Order.Relation.Items").unwrap());
+    assert!(!inward.ok, "{inward:#?}");
+    assert_eq!(refusal_codes(&inward), ["not_found"]);
+}
+
+#[test]
+fn root_declarations_get_branches_and_only_the_named_one_is_addressable() {
+    let fixture = RealReaderFixture::new();
+    let service = fixture.view_service();
+
+    // Стандартная табличная часть носит имя, поэтому адресуется, а её
+    // собственная последовательность становится вложенной ветвью.
+    let section = service.view(
+        ViewRequest::new("main:ChartOfAccounts.Accounts.StandardTabularSection.ExtDimensionTypes")
+            .unwrap(),
+    );
+    assert!(section.ok, "{:?}", refusal_codes(&section));
+    let section = section.data.as_ref().unwrap();
+    assert_eq!(section["kind"], "StandardTabularSection");
+    assert_eq!(
+        section["branches"],
+        json!([{
+            "at": "main:ChartOfAccounts.Accounts.StandardTabularSection.ExtDimensionTypes.StandardAttribute",
+            "count": 1
+        }]),
+    );
+
+    let attribute = service.view(
+        ViewRequest::new(
+            "main:ChartOfAccounts.Accounts.StandardTabularSection.ExtDimensionTypes.StandardAttribute.ExtDimensionType",
+        )
+        .unwrap(),
+    );
+    assert!(attribute.ok, "{:?}", refusal_codes(&attribute));
+    assert_eq!(
+        attribute.data.as_ref().unwrap()["title"],
+        "ExtDimensionType"
+    );
+
+    // Характеристика имени не носит: ветвь адресуема, а её элементы —
+    // строки данных, и адреса у них нет.
+    let characteristics =
+        service.view(ViewRequest::new("main:Catalog.Items.Characteristic").unwrap());
+    assert!(characteristics.ok, "{:?}", refusal_codes(&characteristics));
+    let items = characteristics.data.as_ref().unwrap()["items"]
+        .as_array()
+        .unwrap();
+    assert_eq!(items.len(), 1);
+    assert!(items[0].get("at").is_none(), "{items:#?}");
+    assert_eq!(items[0]["values"]["source"], "Catalog.Items");
+
+    let named = service.view(ViewRequest::new("main:Catalog.Items.Characteristic.Any").unwrap());
+    assert!(!named.ok, "{named:#?}");
+    assert_eq!(refusal_codes(&named), ["not_found"]);
 }
 
 #[test]
@@ -3290,7 +3383,7 @@ impl RealReaderFixture {
                 source.join("Configuration.xml"),
                 replace_child_objects(
                     &config,
-                    "\n\t\t\t<Constant>MainCurrency</Constant>\n\t\t\t<Catalog>Items</Catalog>\n\t\t\t<CalculationRegister>Payroll</CalculationRegister>\n\t\t\t<Report>ParityReport</Report>\n\t\t\t<Role>SalesReader</Role>\n\t\t\t<Subsystem>Sales</Subsystem>\n\t\t\t<XDTOPackage>EnterpriseData_1_17_3</XDTOPackage>\n\t\t\t<CommonModule>РеактивныйСервер</CommonModule>\n\t\t\t<ScheduledJob>MonthClose</ScheduledJob>\n\t\t\t<HTTPService>ExternalAPI</HTTPService>\n\t\t\t<WebService>Exchange</WebService>\n\t\t",
+                    "\n\t\t\t<Constant>MainCurrency</Constant>\n\t\t\t<Catalog>Items</Catalog>\n\t\t\t<Document>Order</Document>\n\t\t\t<ChartOfAccounts>Accounts</ChartOfAccounts>\n\t\t\t<CalculationRegister>Payroll</CalculationRegister>\n\t\t\t<Report>ParityReport</Report>\n\t\t\t<Role>SalesReader</Role>\n\t\t\t<Subsystem>Sales</Subsystem>\n\t\t\t<XDTOPackage>EnterpriseData_1_17_3</XDTOPackage>\n\t\t\t<CommonModule>РеактивныйСервер</CommonModule>\n\t\t\t<ScheduledJob>MonthClose</ScheduledJob>\n\t\t\t<HTTPService>ExternalAPI</HTTPService>\n\t\t\t<WebService>Exchange</WebService>\n\t\t",
                 ),
             )
             .unwrap();
@@ -3304,9 +3397,72 @@ impl RealReaderFixture {
         // Свойства корня каталога: без них узел метаданных нечем проверить.
         .replace(
             "<Properties><Name>Items</Name></Properties>",
-            "<Properties><Name>Items</Name><Hierarchical>true</Hierarchical><CodeLength>11</CodeLength></Properties>",
+            concat!(
+                "<Properties><Name>Items</Name><Hierarchical>true</Hierarchical>",
+                "<CodeLength>11</CodeLength>",
+                // Характеристика названа парой источников, а не именем.
+                "<Characteristics xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\">",
+                "<xr:Characteristic>",
+                "<xr:CharacteristicTypes from=\"Catalog.Items.TabularSection.Lines.Attribute.Quantity\">",
+                "<xr:KeyField>Catalog.Items.Attribute.Code</xr:KeyField>",
+                "<xr:TypesFilterField>Catalog.Items.Attribute.Code</xr:TypesFilterField>",
+                "<xr:TypesFilterValue xsi:type=\"xs:string\">Catalog_Items</xr:TypesFilterValue>",
+                "<xr:DataPathField>-1</xr:DataPathField>",
+                "<xr:MultipleValuesUseField>-1</xr:MultipleValuesUseField>",
+                "</xr:CharacteristicTypes>",
+                "<xr:CharacteristicValues from=\"Catalog.Items\">",
+                "<xr:ObjectField>Catalog.Items.Attribute.Code</xr:ObjectField>",
+                "<xr:TypeField>Catalog.Items.Attribute.Code</xr:TypeField>",
+                "<xr:ValueField>Catalog.Items.Attribute.Code</xr:ValueField>",
+                "<xr:MultipleValuesKeyField>-1</xr:MultipleValuesKeyField>",
+                "<xr:MultipleValuesOrderField>-1</xr:MultipleValuesOrderField>",
+                "</xr:CharacteristicValues>",
+                "</xr:Characteristic></Characteristics></Properties>",
+            ),
         );
         write(&source.join("Catalogs/Items.xml"), &catalog);
+        // План счетов со стандартной табличной частью: у неё есть имя, и она
+        // адресуется, а внутри — своя последовательность.
+        write(
+            &source.join("ChartsOfAccounts/Accounts.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20">
+  <ChartOfAccounts uuid="77777777-7777-4777-8777-777777777778">
+    <Properties>
+      <Name>Accounts</Name>
+      <StandardTabularSections>
+        <xr:StandardTabularSection name="ExtDimensionTypes">
+          <xr:Synonym/><xr:Comment/><xr:ToolTip/>
+          <xr:FillChecking>DontCheck</xr:FillChecking>
+          <xr:StandardAttributes>
+            <xr:StandardAttribute name="ExtDimensionType"/>
+          </xr:StandardAttributes>
+        </xr:StandardTabularSection>
+      </StandardTabularSections>
+    </Properties>
+    <ChildObjects/>
+  </ChartOfAccounts>
+</MetaDataObject>"#,
+        );
+        // Документ со ссылками наружу: движение по регистру и основание.
+        write(
+            &source.join("Documents/Order.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+  <Document uuid="88888888-8888-4888-8888-888888888888">
+    <Properties>
+      <Name>Order</Name>
+      <RegisterRecords>
+        <xr:Item xsi:type="xr:MDObjectRef">CalculationRegister.Payroll</xr:Item>
+      </RegisterRecords>
+      <BasedOn>
+        <xr:Item xsi:type="xr:MDObjectRef">Catalog.Items</xr:Item>
+      </BasedOn>
+    </Properties>
+    <ChildObjects/>
+  </Document>
+</MetaDataObject>"#,
+        );
         // Три вида с собственными данными: обработчик, расписание и тип.
         for (relative, fixture) in [
             ("Constants/MainCurrency.xml", "constant-type.xml"),

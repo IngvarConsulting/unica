@@ -960,7 +960,7 @@ fn project_metadata(
         let mut props = selected_scalar_props(payload, &["kind", "synonym", "support"]);
         props.extend(metadata_property_props(payload));
         props.extend(metadata_detail_props(payload));
-        let branches = metadata_branch_kinds()
+        let mut branches = metadata_branch_kinds()
             .iter()
             .filter_map(|kind| {
                 let value = metadata_collection(payload, *kind)?;
@@ -968,6 +968,13 @@ fn project_metadata(
                 (count > 0).then(|| BranchRef::new(format!("{}.{}", address, kind.as_str()), count))
             })
             .collect::<Vec<_>>();
+        let relations = metadata_relations(address, payload);
+        if !relations.is_empty() {
+            branches.push(BranchRef::new(
+                format!("{}.{}", address, NodeKind::Relation.as_str()),
+                relations.len(),
+            ));
+        }
         let title = payload
             .get("synonym")
             .and_then(Value::as_str)
@@ -995,12 +1002,49 @@ fn project_metadata(
         ));
     }
     let first = &suffix[0];
+    if first.kind() == NodeKind::Relation {
+        if suffix.len() > 1 || first.name().is_some() {
+            return Err(ViewError::new(
+                RefusalCode::NotFound,
+                "the relation branch lists targets; read the target at its own address",
+            ));
+        }
+        return Ok(NodeViewData::Collection(CollectionView::new(
+            NodeView::new(
+                address.to_string(),
+                NodeKind::Relation.as_str(),
+                "Relations",
+                Map::new(),
+            ),
+            metadata_relations(address, payload),
+        )));
+    }
     let collection = metadata_collection(payload, first.kind()).ok_or_else(|| {
         ViewError::new(
             RefusalCode::NotFound,
             format!("metadata has no {} collection", first.kind().as_str()),
         )
     })?;
+    if first.kind() == NodeKind::Characteristic {
+        // Прикладного имени у характеристики нет: она названа парой источников,
+        // а не словом. Адресовать в ней нечего, поэтому элементы остаются
+        // строками данных — как строки макета и строки исходника.
+        if first.name().is_some() || suffix.len() > 1 {
+            return Err(ViewError::new(
+                RefusalCode::NotFound,
+                "a characteristic carries no applied name; the branch lists them as rows",
+            ));
+        }
+        return Ok(NodeViewData::Collection(CollectionView::new(
+            NodeView::new(
+                address.to_string(),
+                NodeKind::Characteristic.as_str(),
+                "Characteristics",
+                Map::new(),
+            ),
+            collection.as_array().cloned().unwrap_or_default(),
+        )));
+    }
     if first.name().is_none() && suffix.len() == 1 {
         return Ok(NodeViewData::Collection(CollectionView::new(
             NodeView::new(
@@ -1031,6 +1075,7 @@ fn project_metadata(
             NodeKind::Attribute | NodeKind::Column => item.get("attributes"),
             NodeKind::Method => item.get("methods"),
             NodeKind::Parameter => item.get("parameters"),
+            NodeKind::StandardAttribute => item.get("standardAttributes"),
             _ => None,
         }
         .ok_or_else(|| {
@@ -1076,6 +1121,8 @@ fn metadata_branch_kinds() -> &'static [NodeKind] {
         NodeKind::Command,
         NodeKind::UrlTemplate,
         NodeKind::Operation,
+        NodeKind::Characteristic,
+        NodeKind::StandardTabularSection,
     ]
 }
 
@@ -1085,6 +1132,8 @@ fn metadata_collection(payload: &Value, kind: NodeKind) -> Option<&Value> {
     match kind {
         NodeKind::Attribute => collections.get("attributes"),
         NodeKind::StandardAttribute => declarations?.get("standardAttributes"),
+        NodeKind::Characteristic => declarations?.get("characteristics"),
+        NodeKind::StandardTabularSection => declarations?.get("standardTabularSections"),
         NodeKind::TabularSection => collections.get("tabularSections"),
         NodeKind::Dimension => collections.get("dimensions"),
         NodeKind::Resource => collections.get("resources"),
@@ -1100,6 +1149,72 @@ fn metadata_collection(payload: &Value, kind: NodeKind) -> Option<&Value> {
         NodeKind::Operation => metadata_details(payload)?.get("operations"),
         _ => None,
     }
+}
+
+/// Все ссылки объекта наружу — одной ветвью.
+///
+/// Платформа держит их в разных местах: владельцы и движения — в `relations`,
+/// зарегистрированные документы журнала и базовые виды расчёта — в пофактовой
+/// части вида. Вопрос при этом один: на что этот объект показывает и почему.
+/// Поэтому имя связи становится полем элемента, а не отдельной ветвью на
+/// каждое имя: девять ветвей ради девяти имён — это девять новых видов узлов
+/// там, где хватает поля.
+fn metadata_relations(address: &QualifiedAddress, payload: &Value) -> Vec<Value> {
+    let mut items = Vec::new();
+    let mut push = |relation: &str, target: &str| {
+        let Ok(at) = QualifiedAddress::parse(&format!("{}:{target}", address.source_set())) else {
+            return;
+        };
+        let Some(kind) = at.segments().last().map(AddressSegment::kind) else {
+            return;
+        };
+        items.push(json!({
+            "relation": relation,
+            "at": at.to_string(),
+            "kind": kind.as_str(),
+        }));
+    };
+    let relations = payload.get("relations");
+    for (field, relation) in [
+        ("owners", "owner"),
+        ("registerRecords", "registerRecord"),
+        ("basedOn", "basedOn"),
+        ("inputByString", "inputByString"),
+        ("dataLockFields", "dataLockField"),
+    ] {
+        let targets = relations
+            .and_then(|relations| relations.get(field))
+            .and_then(Value::as_array);
+        for target in targets.into_iter().flatten() {
+            if let Some(value) = target.get("value").and_then(Value::as_str) {
+                push(relation, value);
+            }
+        }
+    }
+    // Источник события и пакеты XDTO названы платформой по-своему, но
+    // показывают ровно наружу и ложатся сюда же. Вариант без адреса —
+    // `family` у источника, пространство имён у пакета — сюда не попадает:
+    // ветвь адресует объекты, а не строки.
+    let details = metadata_details(payload);
+    for (holder, field, relation) in [
+        (relations, "source", "source"),
+        (details, "registeredDocuments", "registeredDocument"),
+        (details, "baseCalculationTypes", "baseCalculationType"),
+        (details, "xdtoPackages", "xdtoPackage"),
+    ] {
+        let entries = holder
+            .and_then(|holder| holder.get(field))
+            .and_then(Value::as_array);
+        for entry in entries.into_iter().flatten() {
+            let target = entry
+                .as_str()
+                .or_else(|| entry.get("metadataPath").and_then(Value::as_str));
+            if let Some(target) = target {
+                push(relation, target);
+            }
+        }
+    }
+    items
 }
 
 /// Пофактовая часть вида: `details` приходит соседним тегом `{kind, details}`.
@@ -1157,6 +1272,7 @@ fn metadata_item_node(address: &QualifiedAddress, kind: NodeKind, item: &Value) 
         ("attributes", NodeKind::Attribute),
         ("methods", NodeKind::Method),
         ("parameters", NodeKind::Parameter),
+        ("standardAttributes", NodeKind::StandardAttribute),
     ]
     .into_iter()
     .filter_map(|(field, kind)| {
