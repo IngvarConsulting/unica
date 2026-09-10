@@ -201,6 +201,11 @@ impl<'a> RlmNavigationAdapter<'a> {
             CodeIntelligenceReadRequest::Outline { .. } => {
                 return Err("code outline is not an index navigation capability".to_string())
             }
+            // Граф вызовов строит анализатор BSL, а не индекс RLM: рёбра
+            // вызовов — предмет разбора исходника, а не свода имён.
+            CodeIntelligenceReadRequest::CallGraph { .. } => {
+                return Err("call graph is not an index navigation capability".to_string())
+            }
         }
         outcome.artifacts = vec![
             context.source_root.path.display().to_string(),
@@ -248,7 +253,8 @@ fn operation_for_request(
             module_hint: module_hint.clone(),
             limit: *limit,
         },
-        CodeIntelligenceReadRequest::Outline { .. } => {
+        CodeIntelligenceReadRequest::Outline { .. }
+        | CodeIntelligenceReadRequest::CallGraph { .. } => {
             return Err(format!(
                 "{} is built from the current BSL source and has no RLM operation",
                 request.operation_name()
