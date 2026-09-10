@@ -6,6 +6,10 @@ pub(crate) mod protocol_v5;
 pub(crate) mod runtime_v5;
 pub(crate) mod server;
 pub(crate) mod terminal_codec_v5;
+// Ветви графа вызовов ждут провода к анализатору в `execute_view`: чистая часть
+// готова и проверена, вызывающий появится следующим шагом.
+#[allow(dead_code)]
+mod v13_call_graph;
 mod v13_documentation;
 mod v13_infobase_exports;
 mod v13_read_modes;

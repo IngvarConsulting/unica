@@ -100,6 +100,11 @@ pub(crate) enum NodeKind {
     /// остаются строками данных.
     Characteristic,
     StandardTabularSection,
+    /// Метод, который зовёт этот метод. Элемент этой ветви адресует чужой
+    /// метод, а не потомка: граф вызовов показывает наружу.
+    Caller,
+    /// Метод, которого зовёт этот метод.
+    Callee,
 }
 
 const LEGACY_METADATA_KINDS: &[NodeKind] = &[
@@ -205,6 +210,8 @@ const V13_KIND_SPELLINGS: &[V13KindSpelling] = &[
         NodeKind::StandardTabularSection,
         &["СтандартнаяТабличнаяЧасть"],
     ),
+    spelling(NodeKind::Caller, &["Вызывающий"]),
+    spelling(NodeKind::Callee, &["Вызываемый"]),
 ];
 
 const fn spelling(kind: NodeKind, aliases: &'static [&'static str]) -> V13KindSpelling {
@@ -339,6 +346,8 @@ impl NodeKind {
             Self::Relation => "Relation",
             Self::Characteristic => "Characteristic",
             Self::StandardTabularSection => "StandardTabularSection",
+            Self::Caller => "Caller",
+            Self::Callee => "Callee",
         }
     }
 
