@@ -1,7 +1,7 @@
 ---
 name: meta-add
-description: Создать и при необходимости сразу настроить один объект метаданных 1С через атомарную типизированную операцию.
-argument-hint: <sourceSet> <kind> <name> [operations] [dryRun]
+description: Создать объект метаданных 1С и при необходимости настроить его в том же вызове одной транзакцией.
+argument-hint: <at> <operations>
 allowed-tools:
   - Read
   - Glob
@@ -11,62 +11,94 @@ allowed-tools:
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tool `unica.meta.add`.
-- Передайте логический набор исходников `sourceSet`, поддерживаемый вид `kind`,
-  имя `name`, при необходимости непустой массив `operations` и `dryRun`.
-- Вызов по умолчанию строит preview. Передавайте `dryRun: false` только когда
-  пользователь явно попросил применить изменение.
-- Когда объект должен быть настроен уже при создании, передайте `operations`
-  того же закрытого типизированного контракта, что у `unica.meta.edit`. Шаблон,
-  операции, дочерние ресурсы и регистрация публикуются одной транзакцией.
-- Источник `EventSubscription` задаётся при создании тем же вариантом
-  `editRelations`, что и при последующем редактировании: `relation: "source"`,
-  `mode: "replace"` и типизированный массив `targets`. Отдельного шестого
-  значения `op` для источника нет. Передайте `Event` и `Handler` через
-  `setProperties` в том же вызове, если итоговой связке не подходит выбранный
-  минимальным шаблоном обработчик. Явный `Handler` не требует наличия отдельной
-  двухпараметрической процедуры-заглушки.
-- Для изменений уже существующего объекта используйте `unica.meta.edit`.
-- Успешный и предметно неуспешный `tools/call` возвращает `structuredContent`;
-  `isError == !structuredContent.ok`. Читайте проверку из
-  `structuredContent.data.validation`; `content[0].text` не является вторым
-  контрактом результата.
-- Preview описывает изменение семантическими
-  `structuredContent.data.effects`, а не возвращает полный XML объекта.
-- `sourceSet` — это имя набора исходников из `v8project.yaml`, а не
-  константа. Получите его через `unica.view {}`; `"main"` в примерах
-  ниже — иллюстрация, а не значение по умолчанию.
+- Preferred path: use MCP `unica` tool `unica.apply` с операцией
+  `object.create`.
+- `object.create` адресуется корнем конфигурации — `<набор>:Configuration`, —
+  а вид и имя нового объекта передаются в `values`. Следующие операции того же
+  вызова адресуются уже самим объектом. Физическое расположение XML внутри
+  выгрузки — внутренняя деталь; наружу путь отдаёт только аварийный
+  `unica.resolve`.
+- Имя набора даёт `unica.view {}`. `"main"` ниже только пример.
+- Всегда сначала `dryRun: true`. Применяй `dryRun: false` только когда
+  пользователь явно попросил внести именно эту правку, и только с `ifRev` из
+  предпросмотра.
+- Настройка при создании — это следующие операции того же вызова: они видят
+  результат предыдущих и публикуются одной транзакцией, либо все, либо ни
+  одной.
+- Читай из ответа `changed`, `effects` по порядку операций и диагностики.
+  Ответ описывает правку семантическими `effects`, а не возвращает
+  полный XML созданного объекта.
+- Один вызов создаёт один объект. Несколько объектов — несколько вызовов.
+
+## Операции создания и настройки
+
+| Операция | Что делает |
+|---|---|
+| `object.create` | Создаёт объект метаданных по адресу |
+| `props.set` | Задаёт свойства объекта именами платформы |
+| `attribute.add`, `tabularSection.add`, `dimension.add`, `resource.add`, `enumValue.add`, `column.add` | Добавляют элементы коллекции; `at` — сам объект, элементы идут в `items` |
+| `template.add`, `command.add` | Регистрируют макет и команду |
+| `predefinedItem.add` | Добавляет предопределённый элемент |
+| `relation.add`, `relation.replace`, `relation.remove` | Задают ссылки объекта наружу |
+| `help.create` | Заводит встроенную справку владельца |
+
+Виды, свойства, коллекции и варианты типов берутся из опубликованной схемы
+операции: схема является контрактом, поэтому перечень здесь не дублируется.
+Общие прикладные правила — в
+[соглашениях по метаданным](../../references/platform/metadata-conventions.md).
+
+Источник подписки на событие задаётся `relation.replace` со связью `source`;
+отдельной операции под источник нет. `Event` и `Handler` передавай через
+`props.set` в том же вызове, если выбранный шаблоном обработчик итоговой
+связке не подходит.
+
+Тип уникального идентификатора задаётся закрытым вариантом `{"kind": "uuid"}`.
+Свойство наблюдения `mutationCapability` из ответа читателя во вход писателя
+не передаётся, и неизвестный QName нельзя копировать из XML в аргументы.
+
+Если схема не представляет сценарий, остановись и скажи прямо, что оставшийся
+шаг выполняется в Конфигураторе. Не подставляй составное значение строкой и не
+заводи временный файл определения.
+
+## MCP examples
+
+### Создать и настроить одним вызовом
 
 ```json
 {
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.meta.add",
+    "name": "unica.apply",
     "arguments": {
-      "cwd": "<workspace>",
-      "sourceSet": "main",
-      "kind": "Catalog",
-      "name": "НовыйСправочник",
-      "operations": [
+      "at": "main:Configuration",
+      "ops": [
         {
-          "op": "setProperties",
-          "values": {"Comment": "Создан и настроен одним вызовом"}
+          "op": "object.create",
+          "args": {
+            "at": "main:Configuration",
+            "values": {"kind": "Catalog", "name": "НовыйСправочник"}
+          }
         },
         {
-          "op": "add",
-          "collection": "attributes",
-          "elements": [
-            {
-              "name": "ВнешнийИдентификатор",
-              "type": {
-                "variants": [
-                  {"kind": "uuid"}
-                ]
-              },
-              "required": true
-            }
-          ]
+          "op": "props.set",
+          "args": {
+            "at": "main:Catalog.НовыйСправочник",
+            "values": {"Comment": "Создан и настроен одним вызовом"}
+          }
+        },
+        {
+          "op": "attribute.add",
+          "args": {
+            "at": "main:Catalog.НовыйСправочник",
+            "items": [
+              {
+                "name": "ВнешнийИдентификатор",
+                "type": {"variants": [{"kind": "uuid"}]},
+                "required": true
+              }
+            ]
+          }
         }
       ],
       "dryRun": true
@@ -82,29 +114,40 @@ allowed-tools:
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.meta.add",
+    "name": "unica.apply",
     "arguments": {
-      "cwd": "<workspace>",
-      "sourceSet": "main",
-      "kind": "EventSubscription",
-      "name": "ПередЗаписьюНоменклатуры",
-      "operations": [
+      "at": "main:Configuration",
+      "ops": [
         {
-          "op": "editRelations",
-          "relation": "source",
-          "mode": "replace",
-          "targets": [
-            {
-              "kind": "object",
-              "metadataPath": "Catalog.Номенклатура"
+          "op": "object.create",
+          "args": {
+            "at": "main:Configuration",
+            "values": {
+              "kind": "EventSubscription",
+              "name": "ПередЗаписьюНоменклатуры"
             }
-          ]
+          }
         },
         {
-          "op": "setProperties",
-          "values": {
-            "Event": "BeforeWrite",
-            "Handler": "CommonModule.ОбработчикиПодписок.ПередЗаписьюНоменклатуры"
+          "op": "relation.replace",
+          "args": {
+            "at": "main:EventSubscription.ПередЗаписьюНоменклатуры",
+            "values": {
+              "relation": "source",
+              "targets": [
+                {"kind": "object", "metadataPath": "Catalog.Номенклатура"}
+              ]
+            }
+          }
+        },
+        {
+          "op": "props.set",
+          "args": {
+            "at": "main:EventSubscription.ПередЗаписьюНоменклатуры",
+            "values": {
+              "Event": "BeforeWrite",
+              "Handler": "CommonModule.ОбработчикиПодписок.ПередЗаписьюНоменклатуры"
+            }
           }
         }
       ],
@@ -118,8 +161,3 @@ allowed-tools:
 должен быть экспортной процедурой `(Source, Cancel)` в общем модуле с явными
 `Global=false`, `Server=true`. Пустой итоговый `Source`, примитивы, ссылки,
 неизвестное событие или несовместимая сигнатура отклоняются до публикации.
-
-Имена, синонимы, представления и правила заполнения сверяйте с
-[общими соглашениями Unica](../../references/platform/metadata-conventions.md).
-Полный список `kind` берите из опубликованной схемы `unica.meta.add`: схема
-является контрактом, поэтому перечень не дублируется в скилле.
