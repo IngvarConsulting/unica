@@ -41,6 +41,24 @@ description: "Оптимизация запросов 1С и СКД. Испол�
 - For virtual tables, prefer precise parameters over broad reads followed by post-filtering.
 - For блокировки, connect lock holder, waiter, transaction, module path, and user/API scenario before proposing a rewrite.
 
+## Query syntax guards
+
+- Do not generate `ПЕРВЫЕ &Количество` or any parameter immediately after `ПЕРВЫЕ`: the 1C query parser expects a numeric constant there and reports `Ожидается константа`.
+- For a dynamic row limit, keep the stored query constructor-safe, for example `ВЫБРАТЬ ПЕРВЫЕ 1`. Before execution, include the following line break in the sentinel so that it cannot match the prefix of `ПЕРВЫЕ 10`, and require exactly one occurrence before replacing it with a normalized number:
+
+```bsl
+МаркерОграничения = "ПЕРВЫЕ 1" + Символы.ПС;
+
+Если СтрЧислоВхождений(Запрос.Текст, МаркерОграничения) <> 1 Тогда
+	ВызватьИсключение "В тексте запроса ожидается один маркер ограничения";
+КонецЕсли;
+
+Запрос.Текст = СтрЗаменить(
+	Запрос.Текст,
+	МаркерОграничения,
+	"ПЕРВЫЕ " + Формат(Количество, "ЧГ=0") + Символы.ПС);
+```
+
 ## Review checklist
 
 - Virtual tables receive parameters instead of broad post-filtering.
@@ -48,6 +66,7 @@ description: "Оптимизация запросов 1С и СКД. Испол�
 - Repeated subqueries and query-in-loop patterns are removed or justified.
 - Joins do not multiply rows silently; totals and grouping match business meaning.
 - Date and organization filters are applied as early as the platform query allows.
+- `ПЕРВЫЕ` uses a numeric constant in the query text, not a query parameter.
 - Query changes preserve rights semantics and do not replace `РАЗРЕШЕННЫЕ` blindly.
 
 ## MCP examples
