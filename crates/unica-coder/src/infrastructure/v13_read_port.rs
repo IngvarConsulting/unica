@@ -3,7 +3,7 @@ use crate::application::v13::view::ViewError;
 use crate::domain::address::NodeKind;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
-use crate::domain::metadata::MetaSupportStatus;
+use crate::domain::metadata::{MetaPredefinedItemsData, MetaSupportStatus, MetadataKind};
 use crate::domain::project_sources::{
     classify_already_read_config_dump_info_xml, ConfigDumpInfoXmlKind, SourceSetKind,
 };
@@ -520,6 +520,57 @@ impl ProviderReadAuthority {
                 .unwrap_or_else(|_| "metadata reader failed".to_string());
             ViewError::new(RefusalCode::ProviderUnavailable, message)
         })
+    }
+
+    /// Предопределённые элементы объекта.
+    ///
+    /// `None` — вид владельца этой коллекции не имеет, и ветви у него не будет.
+    /// `Some` с нулём — файла предопределённых нет, и это доказанная пустота, а
+    /// не незнание: платформа не пишет `Predefined.xml`, когда элементов нет.
+    ///
+    /// Разбор берётся у того же читателя, которым пользовался `meta.info`:
+    /// второй разборщик того же файла расходился бы с ним молча.
+    pub(crate) fn predefined_items(
+        &self,
+        target: &MetadataAddress,
+        kind: MetadataKind,
+        code_type: Option<&str>,
+        limit: usize,
+    ) -> Result<Option<MetaPredefinedItemsData>, ViewError> {
+        if !crate::domain::metadata::metadata_kind_collections(kind)
+            .contains(&crate::domain::metadata::MetaCollection::PredefinedItems)
+        {
+            return Ok(None);
+        }
+        let name = target.as_str().split('.').nth(1).unwrap_or_default();
+        let relative =
+            Path::new(crate::infrastructure::metadata_kinds::metadata_layout(kind).directory)
+                .join(name)
+                .join("Ext")
+                .join("Predefined.xml");
+        let Some(bytes) = self.read_optional_relative(&relative, MAX_CONFIGURATION_BYTES)? else {
+            return Ok(Some(MetaPredefinedItemsData {
+                total: 0,
+                returned: 0,
+                truncated: false,
+                items: Vec::new(),
+            }));
+        };
+        let code_type = match code_type.unwrap_or("String") {
+            "String" => crate::infrastructure::native_operations::meta::PredefinedCodeType::String,
+            "Number" => crate::infrastructure::native_operations::meta::PredefinedCodeType::Number,
+            other => {
+                return Err(ViewError::new(
+                    RefusalCode::ProviderUnavailable,
+                    format!("predefined owner CodeType `{other}` is unsupported"),
+                ))
+            }
+        };
+        crate::infrastructure::native_operations::meta::read_predefined_items_for_code_type(
+            &bytes, kind, code_type, limit,
+        )
+        .map(Some)
+        .map_err(|message| ViewError::new(RefusalCode::ProviderUnavailable, message))
     }
 
     pub(crate) fn external_metadata_payload(

@@ -1035,6 +1035,54 @@ fn root_declarations_get_branches_and_only_the_named_one_is_addressable() {
 }
 
 #[test]
+fn predefined_items_answer_by_address_with_the_count_from_the_reader() {
+    let fixture = RealReaderFixture::new();
+    let service = fixture.view_service();
+
+    let node = service.view(ViewRequest::new("main:Catalog.Items").unwrap());
+    assert!(node.ok, "{:?}", refusal_codes(&node));
+    let branches = node.data.as_ref().unwrap()["branches"].as_array().unwrap();
+    // Счёт пришёл из ответа читателя, а не из длины страницы.
+    assert!(
+        branches.contains(&json!({"at": "main:Catalog.Items.PredefinedItem", "count": 1})),
+        "{branches:#?}"
+    );
+
+    let page = service.view(ViewRequest::new("main:Catalog.Items.PredefinedItem").unwrap());
+    assert!(page.ok, "{:?}", refusal_codes(&page));
+    let items = page.data.as_ref().unwrap()["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["at"], "main:Catalog.Items.PredefinedItem.Основной");
+    assert_eq!(items[0]["kind"], "PredefinedItem");
+
+    let item =
+        service.view(ViewRequest::new("main:Catalog.Items.PredefinedItem.Основной").unwrap());
+    assert!(item.ok, "{:?}", refusal_codes(&item));
+    let item = item.data.as_ref().unwrap();
+    // Заголовок называет элемент его именем; представление — отдельный факт.
+    assert_eq!(item["title"], "Основной");
+    assert_eq!(item["props"]["description"], "Основной элемент");
+    assert_eq!(item["props"]["id"], "c7d2e6fc-3824-4b56-b4be-ae6be4944c0e");
+
+    // Вид без этой коллекции ветви не получает: неприменимое не отвечает
+    // пустотой, его просто нет.
+    let document = service.view(ViewRequest::new("main:Document.Order").unwrap());
+    assert!(document.ok, "{:?}", refusal_codes(&document));
+    let branch_addresses: Vec<&str> = document.data.as_ref().unwrap()["branches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|branch| branch["at"].as_str())
+        .collect();
+    assert!(
+        !branch_addresses
+            .iter()
+            .any(|at| at.ends_with(".PredefinedItem")),
+        "{branch_addresses:?}"
+    );
+}
+
+#[test]
 fn metadata_tabular_section_attribute_consumes_the_complete_suffix() {
     let fixture = RealReaderFixture::new();
     let service = fixture.view_service();
@@ -3554,6 +3602,20 @@ impl RealReaderFixture {
     <ChildObjects/>
   </ChartOfAccounts>
 </MetaDataObject>"#,
+        );
+        // Предопределённые элементы справочника: писатель у них есть, и теперь
+        // есть читатель.
+        write(
+            &source.join("Catalogs/Items/Ext/Predefined.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="CatalogPredefinedItems" version="2.20">
+  <Item id="c7d2e6fc-3824-4b56-b4be-ae6be4944c0e">
+    <Name>Основной</Name>
+    <Code/>
+    <Description>Основной элемент</Description>
+    <IsFolder>false</IsFolder>
+  </Item>
+</PredefinedData>"#,
         );
         // Документ со ссылками наружу: движение по регистру и основание.
         write(
