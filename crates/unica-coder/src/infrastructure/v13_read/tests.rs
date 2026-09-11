@@ -1068,15 +1068,17 @@ fn predefined_items_answer_by_address_with_the_count_from_the_reader() {
     // пустотой, его просто нет.
     let document = service.view(ViewRequest::new("main:Document.Order").unwrap());
     assert!(document.ok, "{:?}", refusal_codes(&document));
+    let branch_addresses: Vec<&str> = document.data.as_ref().unwrap()["branches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|branch| branch["at"].as_str())
+        .collect();
     assert!(
-        !document.data.as_ref().unwrap()["branches"]
-            .as_array()
-            .unwrap()
+        !branch_addresses
             .iter()
-            .any(|branch| branch["at"]
-                .as_str()
-                .is_some_and(|at| at.ends_with(".PredefinedItem"))),
-        "{document:#?}"
+            .any(|at| at.ends_with(".PredefinedItem")),
+        "{branch_addresses:?}"
     );
 }
 
