@@ -93,7 +93,7 @@ impl RunOperation {
                 "Export the complete infobase to a DT transfer file; this is not a backup."
             }
             RunIntent::InfobaseRestore => {
-                "Create or replace an infobase from a DT transfer file."
+                "Load an infobase from a DT transfer file; the mode states whether an absent infobase is created or the data of an existing one is discarded."
             }
             RunIntent::ClientRun => "Launch an interactive 1C client session.",
         }
@@ -139,6 +139,19 @@ impl RunOperation {
                     "output": {"type": "string", "description": "Workspace-relative .dt output path."}
                 },
                 "required": ["output"]
+            })),
+            RunIntent::InfobaseRestore => Some(json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "input": {"type": "string", "description": "Workspace-relative .dt transfer file to load."},
+                    "mode": {
+                        "type": "string",
+                        "enum": ["create", "replace"],
+                        "description": "Which irreversible change is allowed: create an absent infobase, or replace the data of an existing one. A mode that does not match the observed target is refused."
+                    }
+                },
+                "required": ["input", "mode"]
             })),
             _ => None,
         }
@@ -367,7 +380,9 @@ fn run_dictionary() -> Vec<RunOperation> {
         rejects_sessions: intent == RunIntent::ClientRun,
         implemented: matches!(
             intent,
-            RunIntent::InfobaseConfigurationExport | RunIntent::InfobaseDump
+            RunIntent::InfobaseConfigurationExport
+                | RunIntent::InfobaseDump
+                | RunIntent::InfobaseRestore
         ),
         intent,
     })
@@ -758,8 +773,12 @@ mod tests {
                 .filter(|operation| operation.implemented)
                 .map(|operation| operation.name())
                 .collect::<Vec<_>>(),
-            ["infobase.configuration.export", "infobase.dump"],
-            "реализованы обе вертикали выгрузки; проектный файл в словаре не числится вовсе"
+            [
+                "infobase.configuration.export",
+                "infobase.dump",
+                "infobase.restore"
+            ],
+            "реализованы обе вертикали выгрузки и парная к ним загрузка; проектный файл в словаре не числится вовсе"
         );
 
         let output = &catalog.result_envelope_schema;
@@ -880,8 +899,12 @@ mod tests {
                 .filter(|operation| operation.implemented)
                 .map(|operation| operation.name())
                 .collect::<Vec<_>>(),
-            ["infobase.configuration.export", "infobase.dump"],
-            "реализованы обе вертикали выгрузки; проектный файл в словаре не числится вовсе"
+            [
+                "infobase.configuration.export",
+                "infobase.dump",
+                "infobase.restore"
+            ],
+            "реализованы обе вертикали выгрузки и парная к ним загрузка; проектный файл в словаре не числится вовсе"
         );
     }
 

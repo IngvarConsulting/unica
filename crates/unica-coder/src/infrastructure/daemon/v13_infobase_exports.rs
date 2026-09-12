@@ -37,6 +37,8 @@ const RUNNER_OUTPUT_LIMIT: usize = 1024 * 1024;
 enum ExportOperation {
     Configuration,
     Infobase,
+    /// Обратная операция: DT из рабочего пространства загружается в базу.
+    Restore,
 }
 
 impl ExportOperation {
@@ -44,6 +46,7 @@ impl ExportOperation {
         match value {
             "infobase.configuration.export" => Some(Self::Configuration),
             "infobase.dump" => Some(Self::Infobase),
+            "infobase.restore" => Some(Self::Restore),
             _ => None,
         }
     }
@@ -52,6 +55,7 @@ impl ExportOperation {
         match self {
             Self::Configuration => "infobase.configuration.export",
             Self::Infobase => "infobase.dump",
+            Self::Restore => "infobase.restore",
         }
     }
 
@@ -59,7 +63,53 @@ impl ExportOperation {
         match (self, extension) {
             (Self::Configuration, Some(_)) => "cfe",
             (Self::Configuration, None) => "cf",
-            (Self::Infobase, _) => "dt",
+            (Self::Infobase | Self::Restore, _) => "dt",
+        }
+    }
+
+    /// Пишет ли операция файл рабочего пространства или читает его.
+    ///
+    /// Различие не косметическое: у выгрузки названный файл — результат, и его
+    /// появление и есть улика; у загрузки он вход, и улику приходится искать в базе.
+    const fn writes_named_file(self) -> bool {
+        match self {
+            Self::Configuration | Self::Infobase => true,
+            Self::Restore => false,
+        }
+    }
+}
+
+/// Какое необратимое изменение базы разрешил вызывающий.
+///
+/// Раннер требует ровно один режим и отказывает, если названный не совпал с
+/// наблюдаемой целью. Unica это не угадывает и не подставляет умолчание: выбор
+/// принадлежит вызывающему, потому что цена ошибки — данные базы.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RestoreMode {
+    Create,
+    Replace,
+}
+
+impl RestoreMode {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "create" => Some(Self::Create),
+            "replace" => Some(Self::Replace),
+            _ => None,
+        }
+    }
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Create => "create",
+            Self::Replace => "replace",
+        }
+    }
+
+    const fn runner_flag(self) -> &'static str {
+        match self {
+            Self::Create => "--create",
+            Self::Replace => "--replace",
         }
     }
 }
@@ -68,8 +118,13 @@ impl ExportOperation {
 struct ExportArguments {
     state: Option<String>,
     extension: Option<String>,
-    output_relative: PathBuf,
-    output: PathBuf,
+    /// Файл рабочего пространства, который операция называет: выход у выгрузки,
+    /// вход у загрузки. Его состояние обязано не меняться между превью и
+    /// применением в обоих случаях, поэтому слот один.
+    named_file_relative: PathBuf,
+    named_file: PathBuf,
+    /// Присутствует только у `infobase.restore`.
+    restore_mode: Option<RestoreMode>,
 }
 
 #[derive(Debug, Clone)]
@@ -202,6 +257,10 @@ fn parse_export_arguments(
     let allowed: &[&str] = match operation {
         ExportOperation::Configuration => &["state", "output", "extension"],
         ExportOperation::Infobase => &["output"],
+        // `connection` словарь не принимает: соединение задаёт `v8project.yaml`, и
+        // подменить его аргументом вызова раннер не умеет. Принять ключ и
+        // проигнорировать значило бы обещать то, чего нет.
+        ExportOperation::Restore => &["input", "mode"],
     };
     if let Some(unknown) = args.keys().find(|key| !allowed.contains(&key.as_str())) {
         return Err(reject(
@@ -221,7 +280,26 @@ fn parse_export_arguments(
                 ))
             }
         },
-        ExportOperation::Infobase => None,
+        ExportOperation::Infobase | ExportOperation::Restore => None,
+    };
+    let restore_mode = match operation {
+        ExportOperation::Restore => {
+            match args
+                .get("mode")
+                .and_then(Value::as_str)
+                .and_then(RestoreMode::parse)
+            {
+                Some(mode) => Some(mode),
+                None => {
+                    return Err(reject(
+                        operation,
+                        RefusalCode::BadValue,
+                        "infobase.restore mode must be `create` for an absent infobase or `replace` to discard the data of an existing one",
+                    ))
+                }
+            }
+        }
+        _ => None,
     };
     let extension = match args.get("extension") {
         None => None,
@@ -234,31 +312,41 @@ fn parse_export_arguments(
             ))
         }
     };
-    let output = args
-        .get("output")
+    // Имя аргумента зависит от направления: выгрузка называет выход, загрузка — вход.
+    let named_key = if operation.writes_named_file() {
+        "output"
+    } else {
+        "input"
+    };
+    let named = args
+        .get(named_key)
         .and_then(Value::as_str)
-        .filter(|output| !output.trim().is_empty())
+        .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| {
             reject(
                 operation,
                 RefusalCode::BadValue,
-                format!("{} output must be non-empty text", operation.name()),
+                format!("{} {named_key} must be non-empty text", operation.name()),
             )
         })?;
-    let output_relative = closed_workspace_relative_path(output).map_err(|message| {
+    let named_file_relative = closed_workspace_relative_path(named).map_err(|message| {
         reject(
             operation,
             RefusalCode::BadValue,
-            format!("{} output {message}", operation.name()),
+            format!("{} {named_key} {message}", operation.name()),
         )
     })?;
     let expected_suffix = operation.artifact_kind(extension.as_deref());
-    if output_relative.extension().and_then(|value| value.to_str()) != Some(expected_suffix) {
+    if named_file_relative
+        .extension()
+        .and_then(|value| value.to_str())
+        != Some(expected_suffix)
+    {
         return Err(reject(
             operation,
             RefusalCode::BadValue,
             format!(
-                "{} output must end in .{expected_suffix}{}",
+                "{} {named_key} must end in .{expected_suffix}{}",
                 operation.name(),
                 if operation == ExportOperation::Configuration {
                     if extension.is_some() {
@@ -278,14 +366,17 @@ fn parse_export_arguments(
         cache_root: context.cache_root.clone(),
         workspace_epoch: context.workspace_epoch,
     };
-    let output = WorkspacePathPolicy::new(&root_context)
-        .resolve_write(&output_relative)
+    // Политика одна и та же: путь обязан оставаться внутри пространства и не уходить
+    // по ссылкам. Для входа это так же важно, как для выхода.
+    let named_file = WorkspacePathPolicy::new(&root_context)
+        .resolve_write(&named_file_relative)
         .map_err(|error| reject(operation, RefusalCode::BadValue, error))?;
     Ok(ExportArguments {
         state,
         extension,
-        output_relative,
-        output,
+        named_file_relative,
+        named_file,
+        restore_mode,
     })
 }
 
@@ -324,8 +415,9 @@ fn valid_1c_identifier(value: &str) -> bool {
 struct StableInputs {
     config_sha256: String,
     local_config_sha256: Option<String>,
-    output_sha256: Option<String>,
-    output_size: Option<u64>,
+    /// Состояние названного файла: выхода у выгрузки, входа у загрузки.
+    named_file_sha256: Option<String>,
+    named_file_size: Option<u64>,
 }
 
 fn capture_inputs(prepared: &PreparedInfobaseExport) -> Result<StableInputs, DomainResult> {
@@ -343,13 +435,13 @@ fn capture_inputs(prepared: &PreparedInfobaseExport) -> Result<StableInputs, Dom
     let local_config_sha256 = digest_optional_workspace_file(root, Path::new(LOCAL_CONFIG_NAME))
         .map_err(|error| reject(prepared.operation, RefusalCode::InvalidState, error))?
         .map(|(digest, _)| digest);
-    let output = digest_optional_workspace_file(root, &prepared.arguments.output_relative)
+    let named = digest_optional_workspace_file(root, &prepared.arguments.named_file_relative)
         .map_err(|error| reject(prepared.operation, RefusalCode::BadValue, error))?;
     Ok(StableInputs {
         config_sha256,
         local_config_sha256,
-        output_sha256: output.as_ref().map(|(digest, _)| digest.clone()),
-        output_size: output.map(|(_, size)| size),
+        named_file_sha256: named.as_ref().map(|(digest, _)| digest.clone()),
+        named_file_size: named.map(|(_, size)| size),
     })
 }
 
@@ -560,25 +652,79 @@ fn execute_with_resolved_runner(
     }
     let (sha256, size) = match digest_optional_workspace_file(
         &prepared.context.workspace_root,
-        &prepared.arguments.output_relative,
+        &prepared.arguments.named_file_relative,
     ) {
         Ok(Some(receipt)) if receipt.1 > 0 => receipt,
         Ok(Some(_)) => {
             return reject(
                 prepared.operation,
                 RefusalCode::InvalidResult,
-                "v8-runner reported publication but the exported file is empty",
+                if prepared.operation.writes_named_file() {
+                    "v8-runner reported publication but the exported file is empty"
+                } else {
+                    "the restored DT is now empty; the provider must not alter its source"
+                },
             )
         }
         Ok(None) => {
             return reject(
                 prepared.operation,
                 RefusalCode::InvalidResult,
-                "v8-runner reported publication but the exported file is missing",
+                if prepared.operation.writes_named_file() {
+                    "v8-runner reported publication but the exported file is missing"
+                } else {
+                    "the restored DT disappeared; the provider must not consume its source"
+                },
             )
         }
         Err(error) => return reject(prepared.operation, RefusalCode::InvalidResult, error),
     };
+    // У загрузки названный файл — вход, и он обязан дойти до конца неизменным: иначе
+    // провайдер тронул источник, а не только базу.
+    if !prepared.operation.writes_named_file()
+        && before.named_file_sha256.as_deref() != Some(sha256.as_str())
+    {
+        return reject(
+            prepared.operation,
+            RefusalCode::InvalidResult,
+            "the restored DT changed during the operation; its source must stay intact",
+        );
+    }
+    if !prepared.operation.writes_named_file() {
+        // **Улику о состоянии базы Unica не подделывает.** Файл проверить можно, базу
+        // без платформы — нет: она живёт за соединением, и её состояние здесь
+        // засвидетельствовано провайдером, а не проверено нами. Поэтому источник
+        // признания назван прямо, а не спрятан за словом «проверено».
+        let mut result = DomainResult::success(format!(
+            "{} loaded the infobase from the named DT; its state is attested by the provider",
+            prepared.operation.name()
+        ));
+        result.data = Some(json!({
+            "op": prepared.operation.name(),
+            "dryRun": false,
+            "provider": plan.provider,
+            "source": {
+                "kind": prepared.operation.artifact_kind(None),
+                "path": path_text(&prepared.arguments.named_file_relative),
+                "size": size,
+                "sha256": sha256,
+            },
+            "mode": prepared
+                .arguments
+                .restore_mode
+                .map(RestoreMode::as_str),
+            "targetState": applied["data"]["target_state"],
+            "targetStateAttestedBy": "provider",
+        }));
+        // Изменилась база, а не файл рабочего пространства: путь сюда не кладётся,
+        // иначе запись читалась бы как «переписали DT».
+        result.changed.push(json!({
+            "infobase": true,
+            "kind": applied["data"]["target_state"],
+        }));
+        result.rev = Some(revision);
+        return result;
+    }
     let mut result = DomainResult::success(format!(
         "{} exported and independently verified",
         prepared.operation.name()
@@ -589,19 +735,19 @@ fn execute_with_resolved_runner(
         "provider": plan.provider,
         "artifact": {
             "kind": prepared.operation.artifact_kind(prepared.arguments.extension.as_deref()),
-            "path": path_text(&prepared.arguments.output_relative),
+            "path": path_text(&prepared.arguments.named_file_relative),
             "size": size,
             "sha256": sha256,
         },
         "targetState": applied["data"]["target_state"],
     }));
     result.changed.push(json!({
-        "path": path_text(&prepared.arguments.output_relative),
+        "path": path_text(&prepared.arguments.named_file_relative),
         "kind": applied["data"]["target_state"],
     }));
     result.artifacts.push(json!({
         "kind": prepared.operation.artifact_kind(prepared.arguments.extension.as_deref()),
-        "path": path_text(&prepared.arguments.output_relative),
+        "path": path_text(&prepared.arguments.named_file_relative),
         "size": size,
         "sha256": sha256,
     }));
@@ -643,11 +789,29 @@ fn invoke_runner(
             }
         }
         ExportOperation::Infobase => args.push("dump".to_string()),
+        ExportOperation::Restore => args.push("restore".to_string()),
     }
-    args.extend([
-        "--output".to_string(),
-        prepared.arguments.output.display().to_string(),
-    ]);
+    if prepared.operation.writes_named_file() {
+        args.extend([
+            "--output".to_string(),
+            prepared.arguments.named_file.display().to_string(),
+        ]);
+    } else {
+        args.extend([
+            "--input".to_string(),
+            prepared.arguments.named_file.display().to_string(),
+        ]);
+        // Режим идёт отдельным флагом, потому что раннер требует ровно один и
+        // сверяет его с наблюдаемой целью. Умолчания здесь нет ни у него, ни у нас.
+        args.push(
+            prepared
+                .arguments
+                .restore_mode
+                .expect("restore mode")
+                .runner_flag()
+                .to_string(),
+        );
+    }
     if dry_run {
         args.push("--dry-run".to_string());
     }
@@ -799,9 +963,16 @@ fn validate_preview(
     let expected_kind = prepared
         .operation
         .artifact_kind(prepared.arguments.extension.as_deref());
+    // Доказательство непустого хода у выгрузки — `published`, у загрузки — `restored`:
+    // поле называет своё действие, и подменять одно другим нельзя.
+    let applied_nothing = if prepared.operation.writes_named_file() {
+        data["published"] == false
+    } else {
+        data["restored"] == false
+    };
     if data["mode"] != "preview"
         || data["provider_dispatched"] != false
-        || data["published"] != false
+        || !applied_nothing
         || data["target_state"] != "unchanged"
         || data["execution"]["status"] != "succeeded"
         || data["artifact_kind"] != expected_kind
@@ -878,13 +1049,18 @@ fn validate_preview(
             "v8-runner preview returned an inconsistent provider selection",
         ));
     }
-    let output = data["plan"]["output"]
+    let plan_path_key = if prepared.operation.writes_named_file() {
+        "output"
+    } else {
+        "input"
+    };
+    let output = data["plan"][plan_path_key]
         .as_str()
         .ok_or_else(|| {
             reject(
                 prepared.operation,
                 RefusalCode::InvalidResult,
-                "v8-runner preview omitted the resolved output",
+                format!("v8-runner preview omitted the resolved {plan_path_key}"),
             )
         })?
         .to_string();
@@ -892,21 +1068,22 @@ fn validate_preview(
         reject(
             prepared.operation,
             RefusalCode::InvalidResult,
-            format!("v8-runner preview returned an invalid output path: {error}"),
+            format!("v8-runner preview returned an invalid {plan_path_key} path: {error}"),
         )
     })?;
-    let expected_output = normalize_path_identity(&prepared.arguments.output).map_err(|error| {
-        reject(
-            prepared.operation,
-            RefusalCode::InvalidResult,
-            format!("failed to resolve planned output: {error}"),
-        )
-    })?;
+    let expected_output =
+        normalize_path_identity(&prepared.arguments.named_file).map_err(|error| {
+            reject(
+                prepared.operation,
+                RefusalCode::InvalidResult,
+                format!("failed to resolve the planned {plan_path_key}: {error}"),
+            )
+        })?;
     if runner_output != expected_output {
         return Err(reject(
             prepared.operation,
             RefusalCode::InvalidResult,
-            "v8-runner preview resolved a different output target",
+            format!("v8-runner preview resolved a different {plan_path_key}"),
         ));
     }
     Ok(PreviewPlan {
@@ -933,8 +1110,13 @@ fn validate_apply(
     envelope: &Value,
 ) -> Result<(), DomainResult> {
     let data = &envelope["data"];
+    let applied = if prepared.operation.writes_named_file() {
+        data["published"] == true
+    } else {
+        data["restored"] == true
+    };
     if data["mode"] != "apply"
-        || data["published"] != true
+        || !applied
         || data["execution"]["status"] != "succeeded"
         || data["artifact_kind"]
             != prepared
@@ -950,27 +1132,33 @@ fn validate_apply(
             "v8-runner apply result does not match the previewed export contract",
         ));
     }
-    let Some(output) = data["output"].as_str() else {
+    let applied_path_key = if prepared.operation.writes_named_file() {
+        "output"
+    } else {
+        "input"
+    };
+    let Some(output) = data[applied_path_key].as_str() else {
         return Err(reject(
             prepared.operation,
             RefusalCode::InvalidResult,
-            "v8-runner apply result omitted the published output",
+            format!("v8-runner apply result omitted the {applied_path_key} it acted on"),
         ));
     };
     let applied_output = normalize_path_identity(Path::new(output)).map_err(|error| {
         reject(
             prepared.operation,
             RefusalCode::InvalidResult,
-            format!("v8-runner apply returned an invalid output path: {error}"),
+            format!("v8-runner apply returned an invalid {applied_path_key} path: {error}"),
         )
     })?;
-    let expected_output = normalize_path_identity(&prepared.arguments.output).map_err(|error| {
-        reject(
-            prepared.operation,
-            RefusalCode::InvalidResult,
-            format!("failed to resolve the expected output: {error}"),
-        )
-    })?;
+    let expected_output =
+        normalize_path_identity(&prepared.arguments.named_file).map_err(|error| {
+            reject(
+                prepared.operation,
+                RefusalCode::InvalidResult,
+                format!("failed to resolve the expected output: {error}"),
+            )
+        })?;
     if applied_output != expected_output || output != preview.output {
         return Err(reject(
             prepared.operation,
@@ -995,6 +1183,13 @@ fn runner_subject_matches(prepared: &PreparedInfobaseExport, data: &Value) -> bo
             state_matches && subject_matches
         }
         ExportOperation::Infobase => data["subject"]["kind"] == "infobase",
+        ExportOperation::Restore => {
+            // Раннер называет режим в ответе; несовпадение значит, что применён не тот
+            // план, который одобрили.
+            data["subject"]["kind"] == "infobase"
+                && data["target_mode"].as_str()
+                    == prepared.arguments.restore_mode.map(RestoreMode::as_str)
+        }
     }
 }
 
@@ -1013,8 +1208,8 @@ fn plan_revision(
             "inputs": {
                 "config": inputs.config_sha256,
                 "localConfig": inputs.local_config_sha256,
-                "output": inputs.output_sha256,
-                "outputSize": inputs.output_size,
+                "namedFile": inputs.named_file_sha256,
+                "namedFileSize": inputs.named_file_size,
             },
             "runnerVersion": runner_version,
             "provider": plan.provider,
@@ -1043,15 +1238,33 @@ fn public_plan(prepared: &PreparedInfobaseExport, plan: &PreviewPlan) -> Value {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    json!({
+    let named = json!({
+        "kind": prepared.operation.artifact_kind(prepared.arguments.extension.as_deref()),
+        "path": path_text(&prepared.arguments.named_file_relative),
+    });
+    let mut plan_value = json!({
         "provider": plan.provider,
         "reason": redactor(&plan.reason),
-        "artifact": {
-            "kind": prepared.operation.artifact_kind(prepared.arguments.extension.as_deref()),
-            "path": path_text(&prepared.arguments.output_relative),
-        },
         "candidates": candidates,
-    })
+    });
+    let object = plan_value.as_object_mut().expect("plan object");
+    if prepared.operation.writes_named_file() {
+        object.insert("artifact".to_string(), named);
+    } else {
+        // У загрузки названный файл — источник, и план называет его источником:
+        // слово `artifact` здесь читалось бы как «что мы произведём».
+        object.insert("source".to_string(), named);
+        object.insert(
+            "mode".to_string(),
+            json!(prepared.arguments.restore_mode.map(RestoreMode::as_str)),
+        );
+        // Что превью узнать не может, названо, а не умолчано.
+        object.insert(
+            "targetStateKnownBeforeApply".to_string(),
+            Value::Bool(false),
+        );
+    }
+    plan_value
 }
 
 fn public_arguments(prepared: &PreparedInfobaseExport) -> Value {
@@ -1059,10 +1272,18 @@ fn public_arguments(prepared: &PreparedInfobaseExport) -> Value {
     if let Some(state) = &prepared.arguments.state {
         args.insert("state".to_string(), Value::String(state.clone()));
     }
+    let named_key = if prepared.operation.writes_named_file() {
+        "output"
+    } else {
+        "input"
+    };
     args.insert(
-        "output".to_string(),
-        Value::String(path_text(&prepared.arguments.output_relative)),
+        named_key.to_string(),
+        Value::String(path_text(&prepared.arguments.named_file_relative)),
     );
+    if let Some(mode) = prepared.arguments.restore_mode {
+        args.insert("mode".to_string(), Value::String(mode.as_str().to_string()));
+    }
     if let Some(extension) = &prepared.arguments.extension {
         args.insert("extension".to_string(), Value::String(extension.clone()));
     }
@@ -1234,13 +1455,88 @@ mod tests {
             arguments: ExportArguments {
                 state: Some("working".to_string()),
                 extension: None,
-                output_relative: PathBuf::from("dist/main.cf"),
-                output: root.join("dist/main.cf"),
+                named_file_relative: PathBuf::from("dist/main.cf"),
+                named_file: root.join("dist/main.cf"),
+                restore_mode: None,
             },
             dry_run,
             if_rev,
             context,
         }
+    }
+
+    fn prepared_restore(
+        root: &Path,
+        dry_run: bool,
+        if_rev: Option<String>,
+        mode: RestoreMode,
+    ) -> PreparedInfobaseExport {
+        let context = WorkspaceContext {
+            cwd: root.to_path_buf(),
+            workspace_root: root.to_path_buf(),
+            cache_root: root.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        PreparedInfobaseExport {
+            operation: ExportOperation::Restore,
+            arguments: ExportArguments {
+                state: None,
+                extension: None,
+                named_file_relative: PathBuf::from("transfer/base.dt"),
+                named_file: root.join("transfer/base.dt"),
+                restore_mode: Some(mode),
+            },
+            dry_run,
+            if_rev,
+            context,
+        }
+    }
+
+    /// Конверт превью загрузки: экспортная форма, но признак непустого хода свой —
+    /// `restored`, и план называет вход, а не выход.
+    fn restore_preview_envelope(input: &Path, mode: &str) -> Value {
+        json!({
+            "command": "infobase.restore",
+            "data": {
+                "mode": "preview",
+                "provider_dispatched": false,
+                "subject": {"kind": "infobase"},
+                "target_mode": mode,
+                "selection": {
+                    "provider": "designer-batch",
+                    "reason": "selected ready provider",
+                    "candidates": [{
+                        "provider": "designer-batch",
+                        "implementation": "implemented",
+                        "readiness": "ready",
+                        "evidence": "live_verified",
+                        "reason": "full platform is ready"
+                    }]
+                },
+                "artifact_kind": "dt",
+                "restored": false,
+                "target_state": "unchanged",
+                "plan": {"provider": "designer-batch", "artifact_kind": "dt", "input": input, "target_mode": mode},
+                "execution": {"status": "succeeded"}
+            }
+        })
+    }
+
+    fn restore_apply_envelope(input: &Path, mode: &str, target_state: &str) -> Value {
+        json!({
+            "command": "infobase.restore",
+            "data": {
+                "mode": "apply",
+                "subject": {"kind": "infobase"},
+                "target_mode": mode,
+                "selection": {"provider": "designer-batch", "reason": "selected ready provider"},
+                "artifact_kind": "dt",
+                "restored": true,
+                "target_state": target_state,
+                "input": input,
+                "execution": {"status": "succeeded"}
+            }
+        })
     }
 
     fn preview_envelope(output: &Path) -> Value {
@@ -1321,11 +1617,199 @@ mod tests {
     }
 
     #[test]
+    fn restore_preview_names_the_source_and_the_mode_without_touching_the_infobase() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join(CONFIG_NAME), "format: DESIGNER\n").unwrap();
+        fs::create_dir_all(root.path().join("transfer")).unwrap();
+        fs::write(root.path().join("transfer/base.dt"), b"transfer bytes").unwrap();
+        let prepared = prepared_restore(root.path(), true, None, RestoreMode::Replace);
+        let input = normalize_path_identity(&prepared.arguments.named_file).unwrap();
+        let runner =
+            SequenceRunner::new(vec![process(restore_preview_envelope(&input, "replace"))]);
+        let tool = BundledTool {
+            program: root.path().join("v8-runner"),
+            warnings: Vec::new(),
+            missing: None,
+        };
+
+        let result = execute_with_resolved_runner(
+            &prepared,
+            &runner,
+            CancellationToken::new(),
+            &tool,
+            "0.8.1",
+        );
+
+        assert!(result.ok, "{result:?}");
+        let data = result.data.as_ref().unwrap();
+        // План называет источник, а не артефакт: произвести загрузка ничего не должна.
+        assert_eq!(data["plan"]["source"]["kind"], "dt");
+        assert_eq!(data["plan"]["source"]["path"], "transfer/base.dt");
+        assert_eq!(data["plan"]["mode"], "replace");
+        // Чего превью узнать не может, названо, а не умолчано.
+        assert_eq!(data["plan"]["targetStateKnownBeforeApply"], false);
+        assert!(data.get("artifact").is_none());
+        // Ход к применению несёт тот же режим: одобряют ровно то, что исполнят.
+        let next = &result.next[0]["args"];
+        assert_eq!(next["args"]["input"], "transfer/base.dt");
+        assert_eq!(next["args"]["mode"], "replace");
+        assert_eq!(next["ifRev"], json!(result.rev.clone().unwrap()));
+        let call = &runner.calls.lock().unwrap()[0];
+        assert!(call.args.contains(&"restore".to_string()));
+        assert!(call.args.contains(&"--input".to_string()));
+        assert!(call.args.contains(&"--replace".to_string()));
+        assert!(call.args.contains(&"--dry-run".to_string()));
+    }
+
+    #[test]
+    fn restore_apply_attributes_the_infobase_state_to_the_provider() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join(CONFIG_NAME), "format: DESIGNER\n").unwrap();
+        fs::create_dir_all(root.path().join("transfer")).unwrap();
+        fs::write(root.path().join("transfer/base.dt"), b"transfer bytes").unwrap();
+        let tool = BundledTool {
+            program: root.path().join("v8-runner"),
+            warnings: Vec::new(),
+            missing: None,
+        };
+        let preview = prepared_restore(root.path(), true, None, RestoreMode::Replace);
+        let input = normalize_path_identity(&preview.arguments.named_file).unwrap();
+        let preview_runner =
+            SequenceRunner::new(vec![process(restore_preview_envelope(&input, "replace"))]);
+        let preview_result = execute_with_resolved_runner(
+            &preview,
+            &preview_runner,
+            CancellationToken::new(),
+            &tool,
+            "0.8.1",
+        );
+        let revision = preview_result.rev.clone().unwrap();
+
+        let apply = prepared_restore(root.path(), false, Some(revision), RestoreMode::Replace);
+        let runner = SequenceRunner::new(vec![
+            process(restore_preview_envelope(&input, "replace")),
+            process(restore_apply_envelope(&input, "replace", "replaced")),
+        ]);
+        let result =
+            execute_with_resolved_runner(&apply, &runner, CancellationToken::new(), &tool, "0.8.1");
+
+        assert!(result.ok, "{result:?}");
+        let data = result.data.as_ref().unwrap();
+        assert_eq!(data["targetState"], "replaced");
+        // Состояние базы без платформы не проверяемо, поэтому источник признания назван.
+        assert_eq!(data["targetStateAttestedBy"], "provider");
+        assert_eq!(data["mode"], "replace");
+        assert_eq!(data["source"]["path"], "transfer/base.dt");
+        // Изменилась база, а не файл: путь в `changed` читался бы как «переписали DT».
+        assert_eq!(result.changed[0]["infobase"], true);
+        assert!(result.changed[0].get("path").is_none());
+        assert!(result.artifacts.is_empty());
+        // Превью повторяется перед применением, то есть два вызова раннера.
+        assert_eq!(runner.calls.lock().unwrap().len(), 2);
+        // Источник обязан дойти неизменным.
+        assert_eq!(
+            fs::read(root.path().join("transfer/base.dt")).unwrap(),
+            b"transfer bytes"
+        );
+    }
+
+    #[test]
+    fn restore_apply_refuses_when_the_provider_reports_another_mode() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join(CONFIG_NAME), "format: DESIGNER\n").unwrap();
+        fs::create_dir_all(root.path().join("transfer")).unwrap();
+        fs::write(root.path().join("transfer/base.dt"), b"transfer bytes").unwrap();
+        let tool = BundledTool {
+            program: root.path().join("v8-runner"),
+            warnings: Vec::new(),
+            missing: None,
+        };
+        let prepared = prepared_restore(root.path(), true, None, RestoreMode::Replace);
+        let input = normalize_path_identity(&prepared.arguments.named_file).unwrap();
+        // Раннер отвечает про создание, хотя одобряли замену.
+        let runner = SequenceRunner::new(vec![process(restore_preview_envelope(&input, "create"))]);
+
+        let result = execute_with_resolved_runner(
+            &prepared,
+            &runner,
+            CancellationToken::new(),
+            &tool,
+            "0.8.1",
+        );
+
+        assert!(!result.ok, "{result:?}");
+        assert!(
+            result.diagnostics[0]["code"] == "invalid_result",
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn restore_refuses_a_preview_that_claims_it_already_restored() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join(CONFIG_NAME), "format: DESIGNER\n").unwrap();
+        fs::create_dir_all(root.path().join("transfer")).unwrap();
+        fs::write(root.path().join("transfer/base.dt"), b"transfer bytes").unwrap();
+        let tool = BundledTool {
+            program: root.path().join("v8-runner"),
+            warnings: Vec::new(),
+            missing: None,
+        };
+        let prepared = prepared_restore(root.path(), true, None, RestoreMode::Create);
+        let input = normalize_path_identity(&prepared.arguments.named_file).unwrap();
+        let mut envelope = restore_preview_envelope(&input, "create");
+        envelope["data"]["restored"] = json!(true);
+        let runner = SequenceRunner::new(vec![process(envelope)]);
+
+        let result = execute_with_resolved_runner(
+            &prepared,
+            &runner,
+            CancellationToken::new(),
+            &tool,
+            "0.8.1",
+        );
+
+        assert!(!result.ok, "{result:?}");
+    }
+
+    #[test]
+    fn restore_arguments_require_a_stated_mode_and_a_dt_input() {
+        let root = tempfile::tempdir().unwrap();
+        let context = WorkspaceContext {
+            cwd: root.path().to_path_buf(),
+            workspace_root: root.path().to_path_buf(),
+            cache_root: root.path().join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        let parse = |args: Value| {
+            let map = args.as_object().unwrap().clone();
+            parse_export_arguments(ExportOperation::Restore, &map, &context)
+        };
+
+        // Режим обязателен: умолчания у необратимого действия быть не может.
+        assert!(parse(json!({"input": "transfer/base.dt"})).is_err());
+        assert!(parse(json!({"input": "transfer/base.dt", "mode": "maybe"})).is_err());
+        // Вход обязан быть DT.
+        assert!(parse(json!({"input": "transfer/base.cf", "mode": "replace"})).is_err());
+        // `output` у загрузки не принимается: она ничего не производит.
+        assert!(parse(json!({"output": "transfer/base.dt", "mode": "replace"})).is_err());
+        // `connection` не принимается: соединение задаёт v8project.yaml.
+        assert!(parse(
+            json!({"input": "transfer/base.dt", "mode": "replace", "connection": "File=x"})
+        )
+        .is_err());
+
+        let ok = parse(json!({"input": "transfer/base.dt", "mode": "create"})).unwrap();
+        assert_eq!(ok.restore_mode, Some(RestoreMode::Create));
+        assert_eq!(ok.named_file_relative, PathBuf::from("transfer/base.dt"));
+    }
+
+    #[test]
     fn preview_is_non_mutating_and_returns_an_apply_revision_without_raw_command() {
         let root = tempfile::tempdir().unwrap();
         fs::write(root.path().join(CONFIG_NAME), "format: DESIGNER\n").unwrap();
         let prepared = prepared(root.path(), true, None);
-        let output = normalize_path_identity(&prepared.arguments.output).unwrap();
+        let output = normalize_path_identity(&prepared.arguments.named_file).unwrap();
         let mut envelope = preview_envelope(&output);
         envelope["data"]["selection"]["candidates"][0]["reason"] =
             json!(format!("platform resolved at {}", root.path().display()));
@@ -1360,7 +1844,7 @@ mod tests {
         let encoded = serde_json::to_string(&result).unwrap();
         assert!(!encoded.contains("--config"));
         assert!(!encoded.contains(&root.path().display().to_string()));
-        assert!(!prepared.arguments.output.exists());
+        assert!(!prepared.arguments.named_file.exists());
     }
 
     #[test]
@@ -1368,7 +1852,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         fs::write(root.path().join(CONFIG_NAME), "format: DESIGNER\n").unwrap();
         let preview = prepared(root.path(), true, None);
-        let output = normalize_path_identity(&preview.arguments.output).unwrap();
+        let output = normalize_path_identity(&preview.arguments.named_file).unwrap();
         let tool = BundledTool {
             program: root.path().join("v8-runner"),
             warnings: Vec::new(),
@@ -1418,7 +1902,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         fs::write(root.path().join(CONFIG_NAME), "format: DESIGNER\n").unwrap();
         let apply = prepared(root.path(), false, Some("stale".to_string()));
-        let output = normalize_path_identity(&apply.arguments.output).unwrap();
+        let output = normalize_path_identity(&apply.arguments.named_file).unwrap();
         let tool = BundledTool {
             program: root.path().join("v8-runner"),
             warnings: Vec::new(),
@@ -1432,14 +1916,14 @@ mod tests {
         assert!(!result.ok);
         assert_eq!(result.diagnostics[0]["code"], "revision_mismatch");
         assert_eq!(runner.calls.lock().unwrap().len(), 1);
-        assert!(!apply.arguments.output.exists());
+        assert!(!apply.arguments.named_file.exists());
     }
 
     #[test]
     fn apply_rejects_a_runner_receipt_for_a_different_output() {
         let root = tempfile::tempdir().unwrap();
         let prepared = prepared(root.path(), false, Some("rev".to_string()));
-        let output = normalize_path_identity(&prepared.arguments.output).unwrap();
+        let output = normalize_path_identity(&prepared.arguments.named_file).unwrap();
         let plan = validate_preview(&prepared, &preview_envelope(&output)).unwrap();
         let mut applied = apply_envelope(&output);
         applied["data"]["output"] = json!(root.path().join("dist/other.cf"));
@@ -1453,7 +1937,7 @@ mod tests {
     fn preview_accepts_a_new_bounded_runner_provider_without_mcp_change() {
         let root = tempfile::tempdir().unwrap();
         let prepared = prepared(root.path(), true, None);
-        let output = normalize_path_identity(&prepared.arguments.output).unwrap();
+        let output = normalize_path_identity(&prepared.arguments.named_file).unwrap();
         let mut envelope = preview_envelope(&output);
         envelope["data"]["plan"]["provider"] = json!("ibcmd-rs");
         envelope["data"]["selection"]["provider"] = json!("ibcmd-rs");
@@ -1492,7 +1976,7 @@ mod tests {
             if_rev: None,
             context: context.clone(),
         };
-        let cfe_output = normalize_path_identity(&cfe.arguments.output).unwrap();
+        let cfe_output = normalize_path_identity(&cfe.arguments.named_file).unwrap();
         let cfe_runner = SequenceRunner::new(vec![process(preview_envelope(&cfe_output))]);
         invoke_runner(&cfe, &tool, &cfe_runner, &CancellationToken::new(), true).unwrap();
         assert_eq!(
@@ -1513,7 +1997,7 @@ mod tests {
                 "--extension",
                 "SalesAddon",
                 "--output",
-                cfe.arguments.output.to_str().unwrap(),
+                cfe.arguments.named_file.to_str().unwrap(),
                 "--dry-run"
             ]
             .into_iter()
@@ -1530,7 +2014,7 @@ mod tests {
             if_rev: None,
             context,
         };
-        let dt_output = normalize_path_identity(&dt.arguments.output).unwrap();
+        let dt_output = normalize_path_identity(&dt.arguments.named_file).unwrap();
         let mut dt_envelope = preview_envelope(&dt_output);
         dt_envelope["command"] = json!("infobase.dump");
         dt_envelope["data"]["artifact_kind"] = json!("dt");
@@ -1550,7 +2034,7 @@ mod tests {
                 "infobase",
                 "dump",
                 "--output",
-                dt.arguments.output.to_str().unwrap(),
+                dt.arguments.named_file.to_str().unwrap(),
                 "--dry-run"
             ]
             .into_iter()
@@ -1595,7 +2079,7 @@ mod tests {
         assert!(!result.ok);
         assert_eq!(result.diagnostics.len(), 1);
         assert_eq!(result.diagnostics[0]["code"], "provider_unavailable");
-        assert!(!prepared.arguments.output.exists());
+        assert!(!prepared.arguments.named_file.exists());
         let encoded = serde_json::to_string(&result).unwrap();
         assert!(!encoded.contains("provider details remain private"));
     }
