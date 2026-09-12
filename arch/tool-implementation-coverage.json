@@ -148,9 +148,18 @@
       }]
     },
     "infobase.restore": {
-      "status": "unsupported",
-      "reason": "Full infobase DT restore has not been connected to the v0.13 run adapter.",
-      "evidence": []
+      "status": "supported",
+      "reason": "DT restore states which irreversible change is allowed, uses the same provider selection and revision-fenced apply as the exports, and attributes the resulting infobase state to the provider because it is not verifiable without the platform.",
+      "evidence": [{
+        "file": "crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs",
+        "test": "restore_preview_names_the_source_and_the_mode_without_touching_the_infobase"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs",
+        "test": "restore_apply_attributes_the_infobase_state_to_the_provider"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs",
+        "test": "restore_arguments_require_a_stated_mode_and_a_dt_input"
+      }]
     },
     "client.run": {
       "status": "unsupported",
