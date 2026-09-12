@@ -639,10 +639,10 @@ class SkillProvenanceTests(unittest.TestCase):
 
         self.assertEqual(runtime_source["toolLockRef"], "v8-runner")
         self.assertIn(runtime_source["toolLockRef"], locked_tools)
-        self.assertEqual(locked_tools["v8-runner"]["sourceTag"], "v0.7.1")
+        self.assertEqual(locked_tools["v8-runner"]["sourceTag"], "v0.8.0")
         self.assertEqual(
             locked_tools["v8-runner"]["sourceCommit"],
-            "d081dfcdc10a63dcff4cb6a854e19f7ea22243c4",
+            "2c396444716b590ce59cbbc75a75abfd42772461",
         )
 
     def test_historical_rlm_build_2_review_is_immutable(self) -> None:
