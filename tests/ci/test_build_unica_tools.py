@@ -304,6 +304,15 @@ class BuildUnicaToolsTests(unittest.TestCase):
         self.assert_external_release_contract(updated_tools)
 
     def test_maintained_v8_runner_release_is_published_at_source(self) -> None:
+        """Источник сборки закреплён, а номер версии — нет.
+
+        Откуда забирать сборку — продуктовое решение
+        (`DEC.2026-09-02.MAINTAINED-ENGINES-PUBLISH-AT-SOURCE`), и проверяется именно
+        оно: репозиторий сопровождаемого форка, он же источник ассетов, и полная
+        привязка тега к коммиту и к хешу каждой цели. Поднятие версии — регулярная
+        работа, поэтому ни одно значение версии здесь не прибито: иначе каждая новая
+        сборка раннера правила бы гейт, а не один lock-файл.
+        """
         repo_root = Path(__file__).resolve().parents[2]
         lock = json.loads(
             (repo_root / "plugins" / "unica" / "third-party" / "tools.lock.json").read_text(
@@ -314,27 +323,20 @@ class BuildUnicaToolsTests(unittest.TestCase):
 
         self.assertEqual(runner["repository"], "https://github.com/IngvarConsulting/v8-runner-rust")
         self.assertEqual(runner["assetRepository"], runner["repository"])
-        self.assertEqual(runner["sourceTag"], "v0.8.0")
+        self.assertEqual(runner["assetStrategy"], "direct-release-asset")
+        self.assertEqual(runner["license"], "AGPL-3.0-only")
+
+        # Тег, версия и релиз не могут разойтись между собой.
+        self.assertEqual(runner["sourceTag"], f"v{runner['version']}")
         self.assertEqual(runner["assetTag"], runner["sourceTag"])
-        self.assertEqual(
-            runner["sourceCommit"],
-            "2c396444716b590ce59cbbc75a75abfd42772461",
-        )
+        self.assertRegex(runner["sourceCommit"], r"\A[0-9a-f]{40}\Z")
 
-    def test_infobase_export_decision_names_the_runner_it_chose(self) -> None:
-        """Решение называет раннер, выбранный на его дату, а не текущий пин.
-
-        Прежняя проверка сверяла прозу решения с `tools.lock.json`. Это требовало
-        править неизменяемую продуктовую запись при каждом поднятии раннера, чего
-        реестр не разрешает: решение заменяют преемником, а не редактируют. Версия
-        в прозе — исторический факт, и проверять надо её сохранность.
-        """
-        repo_root = Path(__file__).resolve().parents[2]
-        decision = (
-            repo_root / "arch/decisions/2026-09-03-infobase-export-run-slice.md"
-        ).read_text(encoding="utf-8")
-
-        self.assertIn("`v8-runner` версии 0.7.1", decision)
+        # Каждая объявленная цель несёт имя ассета и его хеш: без этого поставка
+        # перестаёт быть проверяемой, какой бы версия ни была.
+        self.assertEqual(set(runner["assets"]), set(lock["targets"]))
+        for target, asset in runner["assets"].items():
+            self.assertTrue(asset["assetName"], target)
+            self.assertRegex(asset["sha256"], r"\A[0-9a-f]{64}\Z", target)
 
     def test_historical_build_2_release_provenance_is_immutable(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]

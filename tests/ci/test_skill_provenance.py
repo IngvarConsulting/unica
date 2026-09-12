@@ -639,11 +639,13 @@ class SkillProvenanceTests(unittest.TestCase):
 
         self.assertEqual(runtime_source["toolLockRef"], "v8-runner")
         self.assertIn(runtime_source["toolLockRef"], locked_tools)
-        self.assertEqual(locked_tools["v8-runner"]["sourceTag"], "v0.8.0")
-        self.assertEqual(
-            locked_tools["v8-runner"]["sourceCommit"],
-            "2c396444716b590ce59cbbc75a75abfd42772461",
-        )
+
+        # Ссылка обязана разрешаться в запись с полной привязкой, а какая там
+        # версия — дело регулярной работы, и прибивать её здесь нельзя: иначе
+        # каждое поднятие раннера правит гейт вместо одного lock-файла.
+        locked = locked_tools["v8-runner"]
+        self.assertEqual(locked["sourceTag"], f"v{locked['version']}")
+        self.assertRegex(locked["sourceCommit"], r"\A[0-9a-f]{40}\Z")
 
     def test_historical_rlm_build_2_review_is_immutable(self) -> None:
         review = json.loads(
