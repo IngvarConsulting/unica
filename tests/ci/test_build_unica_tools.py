@@ -314,28 +314,27 @@ class BuildUnicaToolsTests(unittest.TestCase):
 
         self.assertEqual(runner["repository"], "https://github.com/IngvarConsulting/v8-runner-rust")
         self.assertEqual(runner["assetRepository"], runner["repository"])
-        self.assertEqual(runner["sourceTag"], "v0.7.1")
+        self.assertEqual(runner["sourceTag"], "v0.8.0")
         self.assertEqual(runner["assetTag"], runner["sourceTag"])
         self.assertEqual(
             runner["sourceCommit"],
-            "d081dfcdc10a63dcff4cb6a854e19f7ea22243c4",
+            "2c396444716b590ce59cbbc75a75abfd42772461",
         )
 
-    def test_infobase_export_decision_names_the_locked_runner_version(self) -> None:
+    def test_infobase_export_decision_names_the_runner_it_chose(self) -> None:
+        """Решение называет раннер, выбранный на его дату, а не текущий пин.
+
+        Прежняя проверка сверяла прозу решения с `tools.lock.json`. Это требовало
+        править неизменяемую продуктовую запись при каждом поднятии раннера, чего
+        реестр не разрешает: решение заменяют преемником, а не редактируют. Версия
+        в прозе — исторический факт, и проверять надо её сохранность.
+        """
         repo_root = Path(__file__).resolve().parents[2]
-        lock = json.loads(
-            (repo_root / "plugins/unica/third-party/tools.lock.json").read_text(
-                encoding="utf-8"
-            )
-        )
-        runner = next(
-            tool for tool in lock["tools"] if tool["name"] == "v8-runner"
-        )
         decision = (
             repo_root / "arch/decisions/2026-09-03-infobase-export-run-slice.md"
         ).read_text(encoding="utf-8")
 
-        self.assertIn(f"`v8-runner` версии {runner['version']}", decision)
+        self.assertIn("`v8-runner` версии 0.7.1", decision)
 
     def test_historical_build_2_release_provenance_is_immutable(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
