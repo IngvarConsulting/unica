@@ -337,7 +337,11 @@ fn parse_export_arguments(
         )
     })?;
     let expected_suffix = operation.artifact_kind(extension.as_deref());
-    if named_file_relative.extension().and_then(|value| value.to_str()) != Some(expected_suffix) {
+    if named_file_relative
+        .extension()
+        .and_then(|value| value.to_str())
+        != Some(expected_suffix)
+    {
         return Err(reject(
             operation,
             RefusalCode::BadValue,
@@ -1067,13 +1071,14 @@ fn validate_preview(
             format!("v8-runner preview returned an invalid {plan_path_key} path: {error}"),
         )
     })?;
-    let expected_output = normalize_path_identity(&prepared.arguments.named_file).map_err(|error| {
-        reject(
-            prepared.operation,
-            RefusalCode::InvalidResult,
-            format!("failed to resolve the planned {plan_path_key}: {error}"),
-        )
-    })?;
+    let expected_output =
+        normalize_path_identity(&prepared.arguments.named_file).map_err(|error| {
+            reject(
+                prepared.operation,
+                RefusalCode::InvalidResult,
+                format!("failed to resolve the planned {plan_path_key}: {error}"),
+            )
+        })?;
     if runner_output != expected_output {
         return Err(reject(
             prepared.operation,
@@ -1146,13 +1151,14 @@ fn validate_apply(
             format!("v8-runner apply returned an invalid {applied_path_key} path: {error}"),
         )
     })?;
-    let expected_output = normalize_path_identity(&prepared.arguments.named_file).map_err(|error| {
-        reject(
-            prepared.operation,
-            RefusalCode::InvalidResult,
-            format!("failed to resolve the expected output: {error}"),
-        )
-    })?;
+    let expected_output =
+        normalize_path_identity(&prepared.arguments.named_file).map_err(|error| {
+            reject(
+                prepared.operation,
+                RefusalCode::InvalidResult,
+                format!("failed to resolve the expected output: {error}"),
+            )
+        })?;
     if applied_output != expected_output || output != preview.output {
         return Err(reject(
             prepared.operation,
@@ -1182,10 +1188,7 @@ fn runner_subject_matches(prepared: &PreparedInfobaseExport, data: &Value) -> bo
             // план, который одобрили.
             data["subject"]["kind"] == "infobase"
                 && data["target_mode"].as_str()
-                    == prepared
-                        .arguments
-                        .restore_mode
-                        .map(RestoreMode::as_str)
+                    == prepared.arguments.restore_mode.map(RestoreMode::as_str)
         }
     }
 }
@@ -1621,7 +1624,8 @@ mod tests {
         fs::write(root.path().join("transfer/base.dt"), b"transfer bytes").unwrap();
         let prepared = prepared_restore(root.path(), true, None, RestoreMode::Replace);
         let input = normalize_path_identity(&prepared.arguments.named_file).unwrap();
-        let runner = SequenceRunner::new(vec![process(restore_preview_envelope(&input, "replace"))]);
+        let runner =
+            SequenceRunner::new(vec![process(restore_preview_envelope(&input, "replace"))]);
         let tool = BundledTool {
             program: root.path().join("v8-runner"),
             warnings: Vec::new(),
@@ -1686,13 +1690,8 @@ mod tests {
             process(restore_preview_envelope(&input, "replace")),
             process(restore_apply_envelope(&input, "replace", "replaced")),
         ]);
-        let result = execute_with_resolved_runner(
-            &apply,
-            &runner,
-            CancellationToken::new(),
-            &tool,
-            "0.8.1",
-        );
+        let result =
+            execute_with_resolved_runner(&apply, &runner, CancellationToken::new(), &tool, "0.8.1");
 
         assert!(result.ok, "{result:?}");
         let data = result.data.as_ref().unwrap();
@@ -1795,10 +1794,10 @@ mod tests {
         // `output` у загрузки не принимается: она ничего не производит.
         assert!(parse(json!({"output": "transfer/base.dt", "mode": "replace"})).is_err());
         // `connection` не принимается: соединение задаёт v8project.yaml.
-        assert!(
-            parse(json!({"input": "transfer/base.dt", "mode": "replace", "connection": "File=x"}))
-                .is_err()
-        );
+        assert!(parse(
+            json!({"input": "transfer/base.dt", "mode": "replace", "connection": "File=x"})
+        )
+        .is_err());
 
         let ok = parse(json!({"input": "transfer/base.dt", "mode": "create"})).unwrap();
         assert_eq!(ok.restore_mode, Some(RestoreMode::Create));
