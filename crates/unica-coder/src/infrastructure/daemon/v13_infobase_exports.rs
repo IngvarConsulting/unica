@@ -737,14 +737,48 @@ fn parse_runner_output(
     Ok(envelope)
 }
 
+/// Полный словарь кодов, которые раннер кладёт в `error.code`.
+///
+/// Он закрытый и короткий: девять значений из `cli_error_contract` раннера, одни и те
+/// же у CLI и у его MCP-поверхности. Набор существует только для стража ниже: в
+/// продуктовом пути отображение обязано иметь запасную ветку на случай кода, которого
+/// мы ещё не знаем, поэтому сам список ему не нужен.
+#[cfg(test)]
+const RUNNER_WIRE_CODES: [&str; 9] = [
+    "capability_unavailable",
+    "cancelled",
+    "environment_unavailable",
+    "invalid_argument",
+    "invalid_output",
+    "platform_failure",
+    "runtime_failure",
+    "timed_out",
+    "workspace_busy",
+];
+
+/// Отображает код раннера в наш отказ, а значит и в исход для агента.
+///
+/// **Платформа отказала — это «нужен человек», и дальше мы не разбираем.** Отказ
+/// авторизации, отсутствие права и отсутствие лицензии приходят от платформы одним
+/// `platform_failure`, и различать их Unica не должна: ни один из трёх не решается
+/// ни повтором, ни правкой вызова — нужен человек. Поэтому прав мы заранее не
+/// проверяем: факта отказа платформы достаточно.
 fn map_runner_code(code: &str) -> RefusalCode {
     match code {
-        "environment_unavailable" | "platform_error" | "provider_unavailable" => {
-            RefusalCode::ProviderUnavailable
-        }
-        "workspace_busy" | "concurrent_change" => RefusalCode::ConcurrentChange,
-        "validation_error" | "invalid_argument" | "invalid_output" => RefusalCode::BadValue,
-        "timeout" | "deadline_exceeded" => RefusalCode::DeadlineExceeded,
+        // Платформа сказала нет: авторизация, права, лицензия, занятая база.
+        "platform_failure" => RefusalCode::ProviderUnavailable,
+        // Бинарник, версия или соединение не готовы.
+        "environment_unavailable" => RefusalCode::ProviderUnavailable,
+        // У раннера нет адаптера под эту операцию: повторять и править вызов незачем.
+        "capability_unavailable" => RefusalCode::UnsupportedOperation,
+        "workspace_busy" => RefusalCode::ConcurrentChange,
+        "invalid_argument" => RefusalCode::BadValue,
+        // Раннер отдал негодный результат: аргументы вызывающего тут не виноваты.
+        "invalid_output" => RefusalCode::InvalidResult,
+        "timed_out" => RefusalCode::DeadlineExceeded,
+        "cancelled" => RefusalCode::Cancelled,
+        // Неклассифицированный сбой самого раннера.
+        "runtime_failure" => RefusalCode::ProviderFailed,
         _ => RefusalCode::ProviderFailed,
     }
 }
@@ -1050,9 +1084,70 @@ fn reject(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::refusal::Outcome;
     use crate::infrastructure::internal_adapters::ProcessOutput;
     use std::fs;
     use std::sync::Mutex;
+
+    /// Страж отображения кодов раннера.
+    ///
+    /// Корень прежнего дефекта: карта перечисляла имена, которых раннер не пишет
+    /// (`platform_error`, `validation_error`, `timeout`), а его настоящие имена
+    /// (`platform_failure`, `timed_out`) в неё не попадали и уходили в запасную ветку.
+    /// Владелец словаря один — [`RUNNER_WIRE_CODES`]; если раннер добавит код, этот
+    /// тест покажет его, а не запасная ветка молча.
+    #[test]
+    fn every_runner_wire_code_maps_away_from_the_fallback() {
+        for code in RUNNER_WIRE_CODES {
+            let mapped = map_runner_code(code);
+            if code == "runtime_failure" {
+                // Единственный код, для которого запасной отказ и есть верный ответ.
+                assert_eq!(mapped, RefusalCode::ProviderFailed, "{code}");
+                continue;
+            }
+            assert_ne!(
+                mapped,
+                RefusalCode::ProviderFailed,
+                "{code} uses the fallback refusal"
+            );
+        }
+    }
+
+    /// Отказ платформы — авторизация, права, лицензия — обязан звать человека.
+    ///
+    /// Исход `DeadEnd` здесь самый дорогой из возможных: агент бросает работу там, где
+    /// хватило бы одной фразы пользователю — дать пароль, выдать право, поставить
+    /// лицензию.
+    #[test]
+    fn a_platform_refusal_asks_for_a_human_rather_than_reporting_a_dead_end() {
+        let mapped = map_runner_code("platform_failure");
+
+        assert_eq!(mapped, RefusalCode::ProviderUnavailable);
+        assert_eq!(mapped.outcome(), Outcome::NeedsHuman);
+    }
+
+    #[test]
+    fn runner_outcomes_follow_the_codes_rather_than_the_fallback() {
+        for (code, expected) in [
+            ("environment_unavailable", Outcome::NeedsHuman),
+            ("capability_unavailable", Outcome::GoElsewhere),
+            ("workspace_busy", Outcome::RetryAsIs),
+            ("timed_out", Outcome::RetryAsIs),
+            ("invalid_argument", Outcome::FixCall),
+            ("invalid_output", Outcome::DeadEnd),
+            ("cancelled", Outcome::DeadEnd),
+        ] {
+            assert_eq!(map_runner_code(code).outcome(), expected, "{code}");
+        }
+    }
+
+    #[test]
+    fn an_unknown_runner_code_stays_on_the_fallback() {
+        assert_eq!(
+            map_runner_code("something-the-runner-never-wrote"),
+            RefusalCode::ProviderFailed
+        );
+    }
 
     struct SequenceRunner {
         outputs: Mutex<Vec<ProcessOutput>>,
