@@ -2384,7 +2384,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             encoding="utf-8"
         )
         common_tokens = [
-            "`unica.form.info`",
+            "`unica.view`",
             "`Команды[ИмяКоманды].Доступность`",
             "Элементы[ИмяЭлемента].Доступность",
             "`CommandName`",
@@ -2399,7 +2399,42 @@ class UnicaSkillRoutingTests(unittest.TestCase):
 
         self.assertIn("все связанные элементы", form_edit)
         self.assertIn("every related item", form_events)
-        self.assertNotRegex(form_edit, r"unica\.form\.info` или\s+Form\.xml")
+        for guidance in (form_edit, form_events):
+            self.assertNotIn("unica.form.info", guidance)
+
+    def test_command_availability_reads_current_view_and_reports_missing_bindings(self) -> None:
+        # Scope the check to this workflow: other sections have their own migration.
+        headings = {
+            "form-edit": "### Доступность команд формы",
+            "form-events": "## Command Availability",
+        }
+        form_at = "main:Catalog.Номенклатура.Form.ФормаЭлемента"
+        for skill, heading in headings.items():
+            with self.subTest(skill=skill):
+                text = (self.skill_root() / skill / "SKILL.md").read_text(encoding="utf-8")
+                section = re.split(r"\n#{1,3} ", text.split(heading, 1)[1], maxsplit=1)[0]
+                # No retired reader or invented replacement may enter the recipe.
+                self.assertEqual(set(re.findall(r"unica\.[a-z.]+", section)), {"unica.view"})
+                calls = [json.loads(block) for block in fenced_json_blocks(section)]
+                self.assertEqual(
+                    calls,
+                    [
+                        {"name": "unica.view", "arguments": {"at": form_at}},
+                        {"name": "unica.view", "arguments": {"at": f"{form_at}.Item"}},
+                    ],
+                )
+                # The node and collection shapes, recursive traversal and pagination
+                # must not imply that a form read returns all command bindings.
+                for token in (
+                    "`props`", "`branches`", "`items`", "`at`", "`Item`", "`cursor`",
+                    "`tag`", "`title`", "`null`", "`visible`", "`enabled`", "`readOnly`",
+                    "`CommandName`", "`binding`", "Unica MCP contract gap",
+                ):
+                    self.assertIn(token, section)
+                self.assertRegex(section, r"вложенн|nested")
+                self.assertRegex(section, r"не публикует|does not expose")
+                self.assertRegex(section, r"Не угадывай|Do not guess")
+                self.assertRegex(section, r"не генерируй BSL|do not generate BSL")
 
     def test_form_patterns_ux_guidance_is_mirrored_and_uses_supported_dsl(self) -> None:
         heading = "## UX-правила для элементов и компоновки форм"
