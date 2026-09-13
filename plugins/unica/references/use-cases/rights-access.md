@@ -24,9 +24,9 @@ evidence; it does not probe the infobase.
 
 Use native role tools through MCP `unica`:
 
-- `unica.role.info`
+- `unica.view` on the role node
 - `unica.role.compile`
-- `unica.role.validate`
+- `unica.check` on the role node (validator `role`)
 
 When code changes require new rights, inspect the touched metadata objects and
 compile focused role definitions rather than broad presets.

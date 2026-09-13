@@ -521,7 +521,7 @@ fn failure_outcome(tool_name: &str, error: String) -> AdapterOutcome {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::application::UnicaApplication;
     use crate::infrastructure::native_operations::compile_transaction::{
@@ -737,7 +737,7 @@ mod tests {
     }
 
     #[test]
-    fn external_init_rejects_invalid_name_and_existing_targets_without_mutation() {
+    pub(crate) fn external_init_rejects_invalid_name_and_existing_targets_without_mutation() {
         let root = temp_root("external-init-collision");
         let output = root.join("external");
         fs::create_dir_all(&output).unwrap();
@@ -904,43 +904,48 @@ mod tests {
     }
 
     #[test]
-    fn external_init_reauthorizes_containing_owner_immediately_before_publication() {
-        let root = temp_root("external-owner-race");
-        fs::create_dir_all(root.join("src")).unwrap();
-        fs::write(
-            root.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .unwrap();
-        let owner = root.join("src/Configuration.xml");
-        fs::write(
-            &owner,
-            br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration/></MetaDataObject>"#,
-        )
-        .unwrap();
-        let context = discover_workspace(Some(root.clone())).unwrap();
-        let args = map(json!({
-            "Name": "ConcurrentOwner",
-            "OutputDir": "src/external"
-        }));
-        let owner_for_hook = owner.clone();
-        let concurrent_owner = br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><Configuration/></MetaDataObject>"#.to_vec();
+    pub(crate) fn external_init_reauthorizes_containing_owner_immediately_before_publication() {
+        for (operation, tool) in [
+            ("epf-init", "unica.epf.init"),
+            ("erf-init", "unica.erf.init"),
+        ] {
+            let root = temp_root(&format!("external-owner-race-{operation}"));
+            fs::create_dir_all(root.join("src")).unwrap();
+            fs::write(
+                root.join("v8project.yaml"),
+                "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+            )
+            .unwrap();
+            let owner = root.join("src/Configuration.xml");
+            fs::write(
+                &owner,
+                br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration/></MetaDataObject>"#,
+            )
+            .unwrap();
+            let context = discover_workspace(Some(root.clone())).unwrap();
+            let args = map(json!({
+                "Name": "ConcurrentOwner",
+                "OutputDir": "src/external"
+            }));
+            let owner_for_hook = owner.clone();
+            let concurrent_owner = br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><Configuration/></MetaDataObject>"#.to_vec();
 
-        let outcome = with_before_commit_hook(
-            move |_| fs::write(&owner_for_hook, &concurrent_owner).unwrap(),
-            || apply("epf-init", "unica.epf.init", &args, &context).unwrap(),
-        );
+            let outcome = with_before_commit_hook(
+                move |_| fs::write(&owner_for_hook, &concurrent_owner).unwrap(),
+                || apply(operation, tool, &args, &context).unwrap(),
+            );
 
-        assert!(!outcome.ok, "{outcome:?}");
-        assert!(
-            outcome.errors.join("\n").contains("changed after planning"),
-            "{outcome:?}"
-        );
-        assert!(fs::read_to_string(&owner)
-            .unwrap()
-            .contains(r#"version="2.21""#));
-        assert!(!root.join("src/external").exists());
-        let _ = fs::remove_dir_all(root);
+            assert!(!outcome.ok, "{operation}: {outcome:?}");
+            assert!(
+                outcome.errors.join("\n").contains("changed after planning"),
+                "{operation}: {outcome:?}"
+            );
+            assert!(fs::read_to_string(&owner)
+                .unwrap()
+                .contains(r#"version="2.21""#));
+            assert!(!root.join("src/external").exists());
+            let _ = fs::remove_dir_all(root);
+        }
     }
 
     #[test]

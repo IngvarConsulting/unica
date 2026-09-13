@@ -1,10 +1,19 @@
 //! Thin facade over family-owned native XML/DSL operations.
+#[allow(dead_code)]
+pub(crate) mod apply;
+#[allow(dead_code)] // hidden V13 seam until W2 closes the real route
+pub(crate) mod apply_families;
 pub(crate) mod cf;
 pub(crate) mod cfe;
+// The pure C1 code planner is intentionally not actor-routed until C13/15D.
+#[allow(dead_code)]
 pub(crate) mod code;
 pub(crate) mod common;
 pub(crate) mod compile_transaction;
 pub(crate) mod dcs;
+// The pure B1b planner is intentionally not actor-routed until B2.
+#[allow(dead_code)]
+pub(crate) mod event;
 pub(crate) mod external;
 pub(crate) mod form;
 pub(crate) mod form_event_registry;
@@ -21,6 +30,12 @@ pub(crate) mod support;
 pub(crate) mod template;
 pub(crate) mod text_snapshot;
 pub(crate) mod typed_result;
+// The A0 validator adapter is consumed by the shared V13 dispatcher in J0.
+// Keep the seam compiled and tested before that wiring lands.
+#[allow(dead_code)]
+pub(crate) mod v13_analysis;
+// The staged B4 XDTO planner/writer remains dormant until its W1B actor route.
+#[allow(dead_code)]
 pub(crate) mod xdto;
 
 use crate::{application::AdapterOutcome, domain::workspace::WorkspaceContext};
@@ -116,5 +131,8 @@ impl NativeOperationAdapter {
         Ok(common::analyze_xml(operation, tool_name, &target, &text))
     }
 }
+
+#[cfg(test)]
+mod source_invariant_tests;
 #[cfg(test)]
 mod tests;

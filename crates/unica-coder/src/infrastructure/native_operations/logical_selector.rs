@@ -6,12 +6,14 @@
 //! that the derived path is still a direct regular file inside the selected
 //! source set — the resolver proves the descriptor, not what hangs off it.
 
+use crate::domain::refusal::RefusalCode;
 use serde_json::{Map, Value};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use crate::application::source_navigation::{LocateRejection, SourceLocateRequest};
+use crate::domain::address::QualifiedAddress;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::project_sources::SourceFormat;
 use crate::domain::source_target::{
@@ -74,16 +76,16 @@ pub(crate) struct ResolvedReadTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LogicalSelectorFailure {
-    code: &'static str,
+    code: RefusalCode,
     reason: &'static str,
 }
 
 impl LogicalSelectorFailure {
-    const fn new(code: &'static str, reason: &'static str) -> Self {
+    const fn new(code: RefusalCode, reason: &'static str) -> Self {
         Self { code, reason }
     }
 
-    pub(crate) const fn code(&self) -> &'static str {
+    pub(crate) const fn code(&self) -> RefusalCode {
         self.code
     }
 }
@@ -114,13 +116,37 @@ pub(crate) fn logical_selection(
     if string_arg(args, &["sourceSet"]).is_none() {
         if args.contains_key("sourceSet") {
             return Some(Err(LogicalSelectorFailure::new(
-                "source_set_unknown",
+                RefusalCode::SourceSetUnknown,
                 "sourceSet must be a non-empty string naming a project source set",
             )));
         }
         return None;
     }
     Some(resolve(args, context, want, accepted_kinds))
+}
+
+/// Projects a v0.13 logical descendant back to the exact v0.12 metadata owner
+/// consumed by an existing typed reader. The reader's accepted-kind registry
+/// and `MetadataAddress` parser remain the authority; no layout is inferred.
+pub(crate) fn typed_reader_metadata_target(
+    address: &QualifiedAddress,
+    accepted_kinds: &[&str],
+) -> Option<MetadataAddress> {
+    let target_end = address
+        .segments()
+        .iter()
+        .position(|segment| accepted_kinds.contains(&segment.kind().as_str()))?;
+    let target_segments = &address.segments()[..=target_end];
+    target_segments.last()?.name()?;
+
+    let mut parts = Vec::with_capacity(target_segments.len() * 2);
+    for segment in target_segments {
+        parts.push(segment.kind().as_str());
+        parts.push(segment.name()?);
+    }
+    let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &parts.join(".")).ok()?;
+    ensure_kind_is_read_by_this_tool(&target, accepted_kinds).ok()?;
+    Some(target)
 }
 
 fn resolve(
@@ -131,7 +157,10 @@ fn resolve(
 ) -> Result<ResolvedReadTarget, LogicalSelectorFailure> {
     let source_set = string_arg(args, &["sourceSet"])
         .ok_or_else(|| {
-            LogicalSelectorFailure::new("source_set_unknown", "sourceSet must name a source set")
+            LogicalSelectorFailure::new(
+                RefusalCode::SourceSetUnknown,
+                "sourceSet must name a source set",
+            )
         })?
         .to_string();
     let metadata_path = match string_arg(args, &["metadataPath"]) {
@@ -152,7 +181,10 @@ fn resolve(
     let resolution = resolve_platform_xml_target(context, &target, TargetKindPolicy::Any)
         .map_err(|error| selector_failure(error.code))?;
     let evidence = platform_xml_resource_evidence(context, &resolution.handle).map_err(|_| {
-        LogicalSelectorFailure::new("provider_unavailable", "the target evidence is unavailable")
+        LogicalSelectorFailure::new(
+            RefusalCode::ProviderUnavailable,
+            "the target evidence is unavailable",
+        )
     })?;
 
     let resource_path =
@@ -177,19 +209,19 @@ pub(crate) fn physical_selection(
         .resolve_write(resource_path.to_path_buf())
         .map_err(|_| {
             LogicalSelectorFailure::new(
-                "containment_denied",
+                RefusalCode::ContainmentDenied,
                 "the physical selector is outside the workspace boundary",
             )
         })?;
     let resource_identity = normalize_path_identity(&lexical_resource).map_err(|_| {
         LogicalSelectorFailure::new(
-            "provider_unavailable",
+            RefusalCode::ProviderUnavailable,
             "the physical selector identity is unavailable",
         )
     })?;
     let source_map = discover_project_source_map(&context.workspace_root).map_err(|_| {
         LogicalSelectorFailure::new(
-            "provider_unavailable",
+            RefusalCode::ProviderUnavailable,
             "the project source map is unavailable",
         )
     })?;
@@ -198,7 +230,7 @@ pub(crate) fn physical_selection(
         let root = normalize_contained_source_root(&context.workspace_root, &source_set.path)
             .map_err(|_| {
                 LogicalSelectorFailure::new(
-                    "provider_unavailable",
+                    RefusalCode::ProviderUnavailable,
                     "a project source root identity is unavailable",
                 )
             })?;
@@ -210,19 +242,19 @@ pub(crate) fn physical_selection(
         select_unique_deepest_source_set_match(&resource_identity, containing)
             .map_err(|_| {
                 LogicalSelectorFailure::new(
-                    "provider_unavailable",
+                    RefusalCode::ProviderUnavailable,
                     "the physical selector has ambiguous source-set ownership",
                 )
             })?
             .ok_or_else(|| {
                 LogicalSelectorFailure::new(
-                    "target_not_found",
+                    RefusalCode::TargetNotFound,
                     "the physical selector is outside every registered source set",
                 )
             })?;
     if source_set.source_format != SourceFormat::PlatformXml {
         return Err(LogicalSelectorFailure::new(
-            "provider_unavailable",
+            RefusalCode::ProviderUnavailable,
             "the selected source format has no physical target locator",
         ));
     }
@@ -230,7 +262,7 @@ pub(crate) fn physical_selection(
         .resolve_write(context.workspace_root.join(&source_set.path))
         .map_err(|_| {
             LogicalSelectorFailure::new(
-                "provider_unavailable",
+                RefusalCode::ProviderUnavailable,
                 "the lexical source root is unavailable",
             )
         })?;
@@ -240,7 +272,7 @@ pub(crate) fn physical_selection(
         &source_root
     } else {
         return Err(LogicalSelectorFailure::new(
-            "containment_denied",
+            RefusalCode::ContainmentDenied,
             "the physical selector escaped the selected source set",
         ));
     };
@@ -250,13 +282,13 @@ pub(crate) fn physical_selection(
         let configuration = normalize_path_identity(&source_root.join("Configuration.xml"))
             .map_err(|_| {
                 LogicalSelectorFailure::new(
-                    "provider_unavailable",
+                    RefusalCode::ProviderUnavailable,
                     "the configuration descriptor identity is unavailable",
                 )
             })?;
         if resource_identity != configuration {
             return Err(LogicalSelectorFailure::new(
-                "target_not_found",
+                RefusalCode::TargetNotFound,
                 "the physical selector is not the source-root descriptor",
             ));
         }
@@ -272,7 +304,7 @@ pub(crate) fn physical_selection(
         )
         .map_err(|_| {
             LogicalSelectorFailure::new(
-                "provider_unavailable",
+                RefusalCode::ProviderUnavailable,
                 "the physical target locator is unavailable",
             )
         })?;
@@ -295,18 +327,21 @@ pub(crate) fn physical_selection(
     let resolution = resolve_platform_xml_target(context, &source_target, TargetKindPolicy::Any)
         .map_err(|error| selector_failure(error.code))?;
     let evidence = platform_xml_resource_evidence(context, &resolution.handle).map_err(|_| {
-        LogicalSelectorFailure::new("provider_unavailable", "the target evidence is unavailable")
+        LogicalSelectorFailure::new(
+            RefusalCode::ProviderUnavailable,
+            "the target evidence is unavailable",
+        )
     })?;
     let proven = resource_for_target(resolution.resolved.target_kind, &evidence, want, context)?;
     let proven_identity = normalize_path_identity(&proven).map_err(|_| {
         LogicalSelectorFailure::new(
-            "provider_unavailable",
+            RefusalCode::ProviderUnavailable,
             "the proven resource identity is unavailable",
         )
     })?;
     if proven_identity != resource_identity {
         return Err(LogicalSelectorFailure::new(
-            "containment_denied",
+            RefusalCode::ContainmentDenied,
             "the physical selector did not reproduce the proven target resource",
         ));
     }
@@ -319,15 +354,15 @@ pub(crate) fn physical_selection(
 fn locate_failure(rejection: Option<LocateRejection>) -> LogicalSelectorFailure {
     match rejection {
         Some(LocateRejection::OutsideSourceSet) => LogicalSelectorFailure::new(
-            "containment_denied",
+            RefusalCode::ContainmentDenied,
             "the physical selector escaped the selected source set",
         ),
         Some(LocateRejection::OwnerUnproven) => LogicalSelectorFailure::new(
-            "target_not_found",
+            RefusalCode::TargetNotFound,
             "the physical selector owner could not be proven",
         ),
         Some(LocateRejection::NotAddressable) | None => LogicalSelectorFailure::new(
-            "target_not_found",
+            RefusalCode::TargetNotFound,
             "the physical selector has no logical owner",
         ),
     }
@@ -354,14 +389,14 @@ fn resource_for_target(
         // `expect` that only the current schema happens to prevent.
         (TargetKind::MetadataObject, AttachedResource::ConfigurationRoot) => {
             return Err(LogicalSelectorFailure::new(
-                "target_kind_unsupported",
+                RefusalCode::TargetKindUnsupported,
                 "metadataPath does not identify what this tool reads",
             ))
         }
         (TargetKind::MetadataObject, resource) => {
             let Some(file_name) = resource.file_name() else {
                 return Err(LogicalSelectorFailure::new(
-                    "target_kind_unsupported",
+                    RefusalCode::TargetKindUnsupported,
                     "metadataPath does not identify what this tool reads",
                 ));
             };
@@ -369,7 +404,7 @@ fn resource_for_target(
         }
         _ => {
             return Err(LogicalSelectorFailure::new(
-                "target_kind_unsupported",
+                RefusalCode::TargetKindUnsupported,
                 "metadataPath does not identify what this tool reads",
             ))
         }
@@ -393,7 +428,7 @@ fn ensure_kind_is_read_by_this_tool(
         return Ok(());
     }
     Err(LogicalSelectorFailure::new(
-        "target_kind_unsupported",
+        RefusalCode::TargetKindUnsupported,
         "metadataPath does not identify what this tool reads",
     ))
 }
@@ -402,29 +437,29 @@ fn selector_failure(code: SourceTargetErrorCode) -> LogicalSelectorFailure {
     match code {
         SourceTargetErrorCode::SourceSetRequired | SourceTargetErrorCode::SourceSetNotFound => {
             LogicalSelectorFailure::new(
-                "source_set_unknown",
+                RefusalCode::SourceSetUnknown,
                 "the requested source set is unavailable",
             )
         }
         SourceTargetErrorCode::MetadataAddressNotFound => LogicalSelectorFailure::new(
-            "target_not_found",
+            RefusalCode::TargetNotFound,
             "the logical target was not found in the selected source set",
         ),
         SourceTargetErrorCode::TargetKindMismatch
         | SourceTargetErrorCode::MetadataAddressInvalid => LogicalSelectorFailure::new(
-            "target_kind_unsupported",
+            RefusalCode::TargetKindUnsupported,
             "metadataPath does not identify what this tool reads",
         ),
         SourceTargetErrorCode::ContainmentDenied => LogicalSelectorFailure::new(
-            "containment_denied",
+            RefusalCode::ContainmentDenied,
             "the logical target failed its containment checks",
         ),
         SourceTargetErrorCode::AddressProfileUnsupported => LogicalSelectorFailure::new(
-            "profile_unsupported",
+            RefusalCode::ProfileUnsupported,
             "the logical address profile is unsupported",
         ),
         SourceTargetErrorCode::SourceRootNotAddressable => LogicalSelectorFailure::new(
-            "provider_unavailable",
+            RefusalCode::ProviderUnavailable,
             "the logical source provider is unavailable",
         ),
     }
@@ -441,11 +476,14 @@ pub(crate) fn prove_attached_resource(
         .file_stem()
         .and_then(|value| value.to_str())
         .ok_or_else(|| {
-            LogicalSelectorFailure::new("provider_unavailable", "the descriptor has no file stem")
+            LogicalSelectorFailure::new(
+                RefusalCode::ProviderUnavailable,
+                "the descriptor has no file stem",
+            )
         })?;
     let parent = evidence.target_path.parent().ok_or_else(|| {
         LogicalSelectorFailure::new(
-            "provider_unavailable",
+            RefusalCode::ProviderUnavailable,
             "the descriptor has no containing directory",
         )
     })?;
@@ -465,32 +503,38 @@ fn prove_regular_file(
         .resolve_write(candidate)
         .map_err(|_| {
             LogicalSelectorFailure::new(
-                "containment_denied",
+                RefusalCode::ContainmentDenied,
                 "the resource is outside the workspace boundary",
             )
         })?;
     ensure_no_link_components(&evidence.source_root, &candidate)?;
     let normalized_root = normalize_path_identity(&evidence.source_root).map_err(|_| {
         LogicalSelectorFailure::new(
-            "provider_unavailable",
+            RefusalCode::ProviderUnavailable,
             "the source root identity is unavailable",
         )
     })?;
     let normalized = normalize_path_identity(&candidate).map_err(|_| {
-        LogicalSelectorFailure::new("resource_absent", "the requested resource is not present")
+        LogicalSelectorFailure::new(
+            RefusalCode::ResourceAbsent,
+            "the requested resource is not present",
+        )
     })?;
     if !path_starts_with_host_root(&normalized, &normalized_root) {
         return Err(LogicalSelectorFailure::new(
-            "containment_denied",
+            RefusalCode::ContainmentDenied,
             "the resource escaped the selected source set",
         ));
     }
     let metadata = fs::symlink_metadata(&candidate).map_err(|_| {
-        LogicalSelectorFailure::new("resource_absent", "the requested resource is not present")
+        LogicalSelectorFailure::new(
+            RefusalCode::ResourceAbsent,
+            "the requested resource is not present",
+        )
     })?;
     if metadata_is_link_or_reparse_point(&metadata) || !metadata.is_file() {
         return Err(LogicalSelectorFailure::new(
-            "containment_denied",
+            RefusalCode::ContainmentDenied,
             "the resource is not a direct regular file",
         ));
     }
@@ -508,7 +552,7 @@ fn ensure_no_link_components(
     let target = strip_windows_extended_length_prefix(target);
     if !path_starts_with_host_root(&target, &source_root) {
         return Err(LogicalSelectorFailure::new(
-            "containment_denied",
+            RefusalCode::ContainmentDenied,
             "the resource escaped the selected source set",
         ));
     }
@@ -518,7 +562,7 @@ fn ensure_no_link_components(
     for component in relative {
         let std::path::Component::Normal(component) = component else {
             return Err(LogicalSelectorFailure::new(
-                "containment_denied",
+                RefusalCode::ContainmentDenied,
                 "the resource contains a non-normal path component",
             ));
         };
@@ -527,20 +571,20 @@ fn ensure_no_link_components(
             Ok(metadata) => metadata,
             Err(error) if error.kind() == ErrorKind::NotFound => {
                 return Err(LogicalSelectorFailure::new(
-                    "resource_absent",
+                    RefusalCode::ResourceAbsent,
                     "the requested resource is not present",
                 ))
             }
             Err(_) => {
                 return Err(LogicalSelectorFailure::new(
-                    "provider_unavailable",
+                    RefusalCode::ProviderUnavailable,
                     "the resource is unreadable",
                 ))
             }
         };
         if metadata_is_link_or_reparse_point(&metadata) {
             return Err(LogicalSelectorFailure::new(
-                "containment_denied",
+                RefusalCode::ContainmentDenied,
                 "the resource path traverses a link",
             ));
         }
@@ -823,7 +867,8 @@ mod tests {
         assert_eq!(
             physical_selection(&unregistered, &context, AttachedResource::Descriptor)
                 .expect_err("a path outside every source set has no logical target")
-                .code(),
+                .code()
+                .as_str(),
             "target_not_found"
         );
 
@@ -836,7 +881,8 @@ mod tests {
         assert_eq!(
             physical_selection(&descriptor, &context, AttachedResource::Descriptor)
                 .expect_err("equally specific source sets cannot choose an identity")
-                .code(),
+                .code()
+                .as_str(),
             "provider_unavailable"
         );
         cleanup(&context);
@@ -934,7 +980,7 @@ mod tests {
         )
         .expect_err("a resource below a reparse-point parent must be refused");
 
-        assert_eq!(failure.code(), "containment_denied");
+        assert_eq!(failure.code().as_str(), "containment_denied");
         remove_dir_symlink_for_test(&linked_parent).unwrap();
         cleanup(&context);
     }
@@ -949,7 +995,7 @@ mod tests {
             &["CommonTemplate"],
         )
         .expect_err("a .bin template has no Template.xml");
-        assert_eq!(failure.code(), "resource_absent");
+        assert_eq!(failure.code().as_str(), "resource_absent");
         cleanup(&context);
     }
 
@@ -967,7 +1013,7 @@ mod tests {
             &[],
         )
         .expect_err("a metadata object is not a configuration root");
-        assert_eq!(failure.code(), "target_kind_unsupported");
+        assert_eq!(failure.code().as_str(), "target_kind_unsupported");
         cleanup(&context);
     }
 
@@ -981,7 +1027,7 @@ mod tests {
             &["Role"],
         )
         .expect_err("a catalog is not a role");
-        assert_eq!(failure.code(), "target_kind_unsupported");
+        assert_eq!(failure.code().as_str(), "target_kind_unsupported");
         cleanup(&context);
     }
 
@@ -1006,7 +1052,7 @@ mod tests {
 
         let failure = selection(&context, "Role.Sales", AttachedResource::Rights, &["Role"])
             .expect_err("a symlinked resource is not a direct regular file");
-        assert_eq!(failure.code(), "containment_denied");
+        assert_eq!(failure.code().as_str(), "containment_denied");
         cleanup(&context);
     }
 
@@ -1021,7 +1067,8 @@ mod tests {
                 &["Role"]
             )
             .expect_err("an absent role is a missing target")
-            .code(),
+            .code()
+            .as_str(),
             "target_not_found"
         );
 
@@ -1036,7 +1083,8 @@ mod tests {
             logical_selection(&args, &context, AttachedResource::Rights, &["Role"])
                 .unwrap()
                 .expect_err("an absent source set is not a missing target")
-                .code(),
+                .code()
+                .as_str(),
             "source_set_unknown"
         );
         cleanup(&context);
@@ -1076,7 +1124,7 @@ mod tests {
             let failure = logical_selection(&args, &context, AttachedResource::Rights, &["Role"])
                 .unwrap_or_else(|| panic!("{value}: an unusable selector is not an absent one"))
                 .expect_err("an unusable source set cannot resolve");
-            assert_eq!(failure.code(), "source_set_unknown", "{value}");
+            assert_eq!(failure.code().as_str(), "source_set_unknown", "{value}");
         }
         cleanup(&context);
     }

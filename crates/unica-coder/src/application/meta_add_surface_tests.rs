@@ -1205,7 +1205,7 @@ fn metadata_operations_address_the_workspace_through_cwd_from_outside() {
         .call_tool(
             "unica.meta.edit",
             &Map::from_iter([
-                ("cwd".to_string(), cwd.clone()),
+                ("cwd".to_string(), cwd),
                 ("sourceSet".to_string(), json!("main")),
                 ("metadataPath".to_string(), target.clone()),
                 (
@@ -1217,17 +1217,4 @@ fn metadata_operations_address_the_workspace_through_cwd_from_outside() {
         )
         .expect("typed meta.edit call");
     assert!(edited.ok, "{:?}", edited.errors);
-
-    let removed = UnicaApplication::new()
-        .call_tool(
-            "unica.meta.remove",
-            &Map::from_iter([
-                ("cwd".to_string(), cwd),
-                ("sourceSet".to_string(), json!("main")),
-                ("metadataPath".to_string(), target),
-                ("dryRun".to_string(), json!(true)),
-            ]),
-        )
-        .expect("typed meta.remove call");
-    assert!(removed.ok, "{:?}", removed.errors);
 }

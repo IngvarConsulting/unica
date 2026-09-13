@@ -27,6 +27,24 @@ def load_package_module():
 
 
 class PackageUnicaPluginTests(unittest.TestCase):
+    def test_package_tree_hash_frames_path_and_content_boundaries(self) -> None:
+        module = load_package_module()
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        first = root / "first"
+        second = root / "second"
+        first.mkdir()
+        second.mkdir()
+        (first / "a").write_bytes(b"x\0y")
+        (first / "z").write_bytes(b"w")
+        (second / "a").write_bytes(b"x\0yz\0w")
+
+        first_digest = module.package_tree_sha256(first)
+        self.assertEqual(
+            first_digest,
+            "5188569041dcc3e6e365f6a5b95d375ba69964b3cd93a8f28c198a521c30bda2",
+        )
+        self.assertNotEqual(first_digest, module.package_tree_sha256(second))
+
     def test_runtime_metadata_asset_must_be_an_object(self) -> None:
         module = load_package_module()
         with tempfile.TemporaryDirectory() as tmp:
@@ -606,12 +624,12 @@ class PackageUnicaPluginTests(unittest.TestCase):
             repo_root / "README.md",
             repo_root / "plugins" / "unica" / "README.md",
             repo_root / "docs" / "internal-package.md",
-            repo_root / "spec" / "acceptance" / "unica-mcp-validation.md",
-            repo_root / "spec" / "architecture" / "runtime.md",
-            repo_root / "spec" / "architecture" / "deployment.md",
-            repo_root / "spec" / "architecture" / "change-checklist.md",
-            repo_root / "spec" / "decisions" / "0001-edinyy-publichnyy-mcp-unica.md",
-            repo_root / "spec" / "decisions" / "0004-legacy-skill-scripts-are-migration-debt.md",
+            repo_root / "docs" / "arch-v1" / "acceptance" / "unica-mcp-validation.md",
+            repo_root / "docs" / "arch-v1" / "architecture" / "runtime.md",
+            repo_root / "docs" / "arch-v1" / "architecture" / "deployment.md",
+            repo_root / "docs" / "arch-v1" / "architecture" / "change-checklist.md",
+            repo_root / "docs" / "arch-v1" / "decisions" / "0001-edinyy-publichnyy-mcp-unica.md",
+            repo_root / "docs" / "arch-v1" / "decisions" / "0004-legacy-skill-scripts-are-migration-debt.md",
         ]
         forbidden = ("run-unica.sh", "run-tool.sh", "run-tool.ps1", "run-bsl-analyzer.sh", "run-v8-runner.sh")
 
@@ -851,7 +869,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
             for link in local_license_links:
                 self.assertTrue((destination / link).is_file(), link)
 
-    def test_documented_resources_are_packaged(self) -> None:
+    def test_all_active_packaged_documentation_links_are_relative_and_resolve(self) -> None:
         module = load_package_module()
         repo_root = Path(__file__).resolve().parents[2]
         plugin_src = repo_root / "plugins" / "unica"
@@ -873,11 +891,17 @@ class PackageUnicaPluginTests(unittest.TestCase):
                 text = doc.read_text(encoding="utf-8")
                 for link in [m for p in patterns for m in p.findall(text)]:
                     checked += 1
+                    self.assertFalse(Path(link).is_absolute(), f"{relative_doc}: {link}")
+                    resolved = (doc.parent / link).resolve()
+                    self.assertTrue(
+                        resolved.is_relative_to(destination.resolve()),
+                        f"{relative_doc}: {link} escapes the package",
+                    )
                     # The package has no repository root and no knowable
                     # plugin root, so a link only survives packaging when it
                     # resolves from the document that carries it.
                     self.assertTrue(
-                        (doc.parent / link).is_file(),
+                        resolved.is_file(),
                         f"{relative_doc}: {link}",
                     )
 
@@ -1269,6 +1293,19 @@ class PackageUnicaPluginTests(unittest.TestCase):
             self.assertNotIn("source\": \"local", json.dumps(catalog))
             self.assertEqual(list(out_dir.glob("*.tar.gz")), [])
             self.assertEqual(list(out_dir.glob("*.zip")), [])
+            package_evidence = json.loads(
+                (out_dir / "p0-package-evidence.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(package_evidence["schemaVersion"], 1)
+            self.assertEqual(
+                package_evidence["packageHashFormat"],
+                "sha256-u64be-path-content-v1",
+            )
+            self.assertEqual(package_evidence["pluginVersion"], version)
+            self.assertEqual(package_evidence["sourceCommit"], "a" * 40)
+            self.assertFalse(package_evidence["versionBumped"])
+            self.assertFalse(package_evidence["published"])
+            self.assertIsNone(package_evidence["tag"])
 
             # Maintainer material stays in the source tree. The donor index and
             # the dated review records answer questions a consumer never asks,

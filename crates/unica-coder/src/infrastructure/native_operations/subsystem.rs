@@ -1493,7 +1493,7 @@ pub(crate) fn validate_subsystem_owner_path(
 }
 
 #[cfg(test)]
-mod subsystem_info_typed_result_tests {
+pub(crate) mod subsystem_info_typed_result_tests {
     use super::*;
     use crate::infrastructure::platform::secure_read::{
         with_secure_tree_test_hook, SecureTreePhase,
@@ -2519,7 +2519,30 @@ fn prepare_subsystem_info_with_checkpoint(
         },
     };
     checkpoint().map_err(subsystem_info_checkpoint_message)?;
-    let result = SubsystemInfoResult {
+    let result = build_subsystem_info_result(data, tree, command_interface, support);
+    let summary = format!(
+        "unica.subsystem.info described {} with {} content item(s)",
+        result.name,
+        result.content.len()
+    );
+    checkpoint().map_err(subsystem_info_checkpoint_message)?;
+    Ok(PreparedSubsystemInfo {
+        execution: subsystem_info_success(
+            SubsystemInfoAnswer::Subsystem(Box::new(result)),
+            xml_path,
+            summary,
+        ),
+        format_documents,
+    })
+}
+
+pub(crate) fn build_subsystem_info_result(
+    data: SubsystemInfoData,
+    tree: Option<Vec<SubsystemTreeNode>>,
+    command_interface: Option<SubsystemCommandInterfaceData>,
+    support: DomainObjectSupportData,
+) -> SubsystemInfoResult {
+    SubsystemInfoResult {
         name: data.name,
         synonym: subsystem_optional(data.synonym),
         comment: subsystem_optional(data.comment),
@@ -2537,21 +2560,7 @@ fn prepare_subsystem_info_with_checkpoint(
         children: data.child_names,
         tree,
         command_interface,
-    };
-    let summary = format!(
-        "unica.subsystem.info described {} with {} content item(s)",
-        result.name,
-        result.content.len()
-    );
-    checkpoint().map_err(subsystem_info_checkpoint_message)?;
-    Ok(PreparedSubsystemInfo {
-        execution: subsystem_info_success(
-            SubsystemInfoAnswer::Subsystem(Box::new(result)),
-            xml_path,
-            summary,
-        ),
-        format_documents,
-    })
+    }
 }
 
 fn subsystem_info_success(
@@ -2703,6 +2712,13 @@ pub(crate) struct SubsystemCommandInterfaceData {
     pub(crate) visibility: Vec<SubsystemCommandVisibilityData>,
     pub(crate) placement: Vec<SubsystemCommandPlacementData>,
     pub(crate) order: Vec<SubsystemGroupData>,
+    /// Порядок групп панели. Отдельная секция, а не порядок ключей в
+    /// `order`: группа может быть объявлена в порядке и не иметь ни одной
+    /// команды.
+    pub(crate) groups_order: Vec<String>,
+    /// Порядок дочерних подсистем. У документа подсистемы эта секция своя и
+    /// говорит о её детях, а не о корне конфигурации.
+    pub(crate) subsystem_order: Vec<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -2710,6 +2726,11 @@ pub(crate) struct SubsystemCommandInterfaceData {
 pub(crate) struct SubsystemCommandVisibilityData {
     pub(crate) command: String,
     pub(crate) visible: bool,
+    /// Сколько ролей переопределяют общее значение. Замер на боевой
+    /// конфигурации: 99 блоков видимости из 1050 несут такие значения, то
+    /// есть каждая одиннадцатая команда. Умолчать о них значило бы отдать
+    /// `visible` за всю правду.
+    pub(crate) role_overrides: usize,
 }
 
 #[derive(serde::Serialize)]
@@ -2969,7 +2990,7 @@ pub(crate) fn subsystem_command_interface_data(
     parse_subsystem_command_interface_data(&ci_path, &text).map(Some)
 }
 
-fn parse_subsystem_command_interface_data(
+pub(crate) fn parse_subsystem_command_interface_data(
     ci_path: &Path,
     text: &str,
 ) -> Result<SubsystemCommandInterfaceData, String> {
@@ -2991,9 +3012,15 @@ fn parse_subsystem_command_interface_data(
                 .descendants()
                 .find(|node| role_info_element(*node, "Common", None))
                 .and_then(|node| node.text());
+            let role_overrides = cmd
+                .descendants()
+                .filter(|node| role_info_element(*node, "Value", None))
+                .filter(|node| node.attribute("name").is_some_and(|name| !name.is_empty()))
+                .count();
             visibility.push(SubsystemCommandVisibilityData {
                 command: cmd.attribute("name").unwrap_or("").to_string(),
                 visible: common != Some("false"),
+                role_overrides,
             });
         }
     }
@@ -3033,6 +3060,18 @@ fn parse_subsystem_command_interface_data(
         }
     }
 
+    let listed = |section: &str, item: &str| -> Vec<String> {
+        root.children()
+            .find(|node| role_info_element(*node, section, Some(CI_NS)))
+            .into_iter()
+            .flat_map(|section| section.children())
+            .filter(|node| role_info_element(*node, item, Some(CI_NS)))
+            .filter_map(|node| node.text())
+            .map(|text| text.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .collect()
+    };
+
     Ok(SubsystemCommandInterfaceData {
         visibility,
         placement,
@@ -3040,6 +3079,8 @@ fn parse_subsystem_command_interface_data(
             .into_iter()
             .map(|(name, items)| SubsystemGroupData { name, items })
             .collect(),
+        groups_order: listed("GroupsOrder", "Group"),
+        subsystem_order: listed("SubsystemsOrder", "Subsystem"),
     })
 }
 
@@ -3958,7 +3999,7 @@ pub(crate) fn invoke_mutation(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::application::UnicaApplication;
     use crate::domain::workspace::WorkspaceContext;
@@ -4171,7 +4212,7 @@ mod tests {
     }
 
     #[test]
-    fn nested_subsystem_compile_rolls_back_if_format_owner_changes_during_publication() {
+    pub(crate) fn nested_subsystem_compile_rolls_back_if_format_owner_changes_during_publication() {
         let context = temp_context("nested-format-owner-race");
         let source = context.cwd.join("src");
         fs::create_dir_all(&source).unwrap();
@@ -4393,7 +4434,7 @@ mod tests {
     }
 
     #[test]
-    fn subsystem_compile_exact_binds_a_reused_existing_child() {
+    pub(crate) fn subsystem_compile_exact_binds_a_reused_existing_child() {
         let context = temp_context("compile-reused-child-race");
         let config_before = write_configuration(&context.cwd);
         let child_path = context
@@ -4435,7 +4476,7 @@ mod tests {
     }
 
     #[test]
-    fn subsystem_edit_exact_binds_a_reused_existing_child() {
+    pub(crate) fn subsystem_edit_exact_binds_a_reused_existing_child() {
         let context = temp_context("edit-reused-child-race");
         let subsystem = create_edit_fixture(&context, "Parent");
         let subsystem_before = fs::read(&subsystem).unwrap();
@@ -5266,7 +5307,9 @@ mod tests {
     }
 
     #[test]
-    fn repeated_subsystem_compile_does_not_overwrite_or_report_changes() {
+    pub(crate) fn repeated_subsystem_compile_preserves_file_identities_and_reports_no_changes() {
+        use crate::infrastructure::platform::testing::file_identity_for_test;
+
         let context = temp_context("repeat-noop");
         let args = compile_args(
             &context.cwd,
@@ -5284,6 +5327,8 @@ mod tests {
             .join("Subsystems/StableArea/Subsystems/StableChild.xml");
         let object_before = fs::read(&object_path).unwrap();
         let child_before = fs::read(&child_path).unwrap();
+        let object_identity = file_identity_for_test(&object_path).unwrap();
+        let child_identity = file_identity_for_test(&child_path).unwrap();
 
         let repeated = compile_subsystem(&args, &context);
 
@@ -5292,6 +5337,11 @@ mod tests {
         assert!(repeated.artifacts.is_empty(), "{:?}", repeated.artifacts);
         assert_eq!(fs::read(&object_path).unwrap(), object_before);
         assert_eq!(fs::read(&child_path).unwrap(), child_before);
+        assert_eq!(
+            file_identity_for_test(&object_path).unwrap(),
+            object_identity
+        );
+        assert_eq!(file_identity_for_test(&child_path).unwrap(), child_identity);
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
@@ -5326,7 +5376,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod subsystem_read_selector_bridge_tests {
+pub(super) mod subsystem_read_selector_bridge_tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -5376,7 +5426,7 @@ mod subsystem_read_selector_bridge_tests {
     }
 
     #[test]
-    fn subsystem_info_answers_identically_for_a_logical_and_a_physical_selector() {
+    pub(crate) fn subsystem_info_answers_identically_for_a_logical_and_a_physical_selector() {
         let context = workspace("info");
 
         let physical = analyze_subsystem_info(
@@ -5510,7 +5560,7 @@ mod subsystem_read_selector_bridge_tests {
     }
 
     #[test]
-    fn subsystem_validate_answers_identically_for_a_logical_and_a_physical_selector() {
+    pub(crate) fn subsystem_validate_answers_identically_for_a_logical_and_a_physical_selector() {
         let context = workspace("validate");
 
         let physical = validate_subsystem(

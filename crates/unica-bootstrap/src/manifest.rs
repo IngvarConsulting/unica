@@ -12,15 +12,14 @@ const SOURCE_REPOSITORY: &str = "https://github.com/IngvarConsulting/unica";
 /// Откуда приезжает ядро: оно собирается здесь и лежит в выпуске плагина.
 const CORE_RELEASE_ORIGIN: &str = "https://github.com/IngvarConsulting/unica/releases/download/";
 
-/// Откуда приезжает всё остальное. Тулчейн публикует поставки по цели, с
-/// суммами и происхождением; копия тех же байтов в выпуске плагина стоила
-/// 439 МБ на выпуск и не давала ничего.
-///
-/// Адресов ровно два, и оба названы. Третий — новая запись реестра, а не
-/// правка этого списка: поартефактная проверка защищает от опечатки ровно
-/// потому, что список закрыт.
+/// Откуда приезжают внешние движки, которые Ingvar Consulting не сопровождает.
 const TOOLCHAIN_RELEASE_ORIGIN: &str =
     "https://github.com/IngvarConsulting/unica-toolchain/releases/download/";
+
+/// Сопровождаемый форк публикует новые сборки сам. Старые выпуски тулчейна
+/// остаются историческими артефактами, но не являются источником новых версий.
+const V8_RUNNER_RELEASE_ORIGIN: &str =
+    "https://github.com/IngvarConsulting/v8-runner-rust/releases/download/";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -33,14 +32,14 @@ pub struct RuntimeManifest {
     pub release: ReleaseIdentity,
     /// Артефакты по отдельности: у каждого своя версия и свой архив на цель.
     /// Ключ установки берётся из версии и суммы архива, поэтому выпуск плагина
-    /// не объявляет холодными неизменившиеся байты, а новый toolchain build с
+    /// не объявляет холодными неизменившиеся байты, а новый release build с
     /// прежней upstream-версией не подменяет старую установку.
     #[serde(default)]
     pub artifacts: BTreeMap<String, Artifact>,
 }
 
 /// Зачем артефакт нужен. Ядро едет в стартовом бюджете хоста, всё прочее —
-/// нет: оно приезжает из тулчейна по требованию.
+/// нет: оно приезжает из своего одобренного release-источника по требованию.
 ///
 /// Перечень закрытый, потому что роль решает, что с байтами делать: движок
 /// запускают, поставку конфигурации отдают платформе. Молча принять незнакомую
@@ -51,17 +50,6 @@ pub struct RuntimeManifest {
 pub enum ArtifactRole {
     Core,
     Engine,
-}
-
-impl ArtifactRole {
-    /// Происхождение решает роль, а не имя: ядро собирается здесь, всё
-    /// остальное приезжает из тулчейна.
-    fn release_origin(self) -> &'static str {
-        match self {
-            Self::Core => CORE_RELEASE_ORIGIN,
-            Self::Engine => TOOLCHAIN_RELEASE_ORIGIN,
-        }
-    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -342,7 +330,7 @@ fn validate_target(
             ));
         }
     } else {
-        validate_toolchain_asset(artifact, role, name, target)?;
+        validate_engine_asset(artifact, role, name, target)?;
     }
     // Ядро несёт бинарь и его окружение: одним файлом оно не бывает.
     let form = match DeliveryForm::of(&target.asset.media_type) {
@@ -423,13 +411,13 @@ fn validate_target(
     Ok(())
 }
 
-/// Поставка приезжает из тулчейна под своим тегом и своим именем.
+/// Поставка приезжает из закрытого источника под своим тегом и своим именем.
 ///
 /// Тег и имя назвал замок инструментов, и выводить их заново значит завести
 /// второй источник правды. Проверяется то, что здесь и вправду известно:
 /// происхождение адреса и то, что он кончается именно этим ассетом. Правило
 /// одно на все виды поставки: расширению и обработке нового не понадобится.
-fn validate_toolchain_asset(
+fn validate_engine_asset(
     artifact: &str,
     role: ArtifactRole,
     name: &str,
@@ -452,10 +440,15 @@ fn validate_toolchain_asset(
             ),
         )
     };
+    let release_origin = match (role, artifact) {
+        (ArtifactRole::Engine, "v8-runner") => V8_RUNNER_RELEASE_ORIGIN,
+        (ArtifactRole::Engine, _) => TOOLCHAIN_RELEASE_ORIGIN,
+        (ArtifactRole::Core, _) => return Err(outside()),
+    };
     let tail = target
         .asset
         .url
-        .strip_prefix(role.release_origin())
+        .strip_prefix(release_origin)
         .ok_or_else(outside)?;
     let tag = tail
         .strip_suffix(&format!("/{}", target.asset.name))

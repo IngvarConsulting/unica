@@ -71,7 +71,7 @@ MAX_TIMEOUT_SECONDS = 86400.0
 DIAGNOSTIC_LIMIT = 4096
 REQUIRED_TOOLS = frozenset(
     {
-        "unica.cf.info",
+        "unica.view",
         "unica.support.edit",
         "unica.meta.edit",
         "unica.code.patch",
@@ -1351,8 +1351,11 @@ def _payload_ok(payload: dict) -> bool:
 
 
 def _support_state_matches(payload: dict, *, editing_enabled: bool) -> bool:
+    # The canonical root view carries the support facts under `props`, in the
+    # shape the retired `unica.cf.info` published at the top of its data.
     data = payload.get("data")
-    support = data.get("support") if isinstance(data, dict) else None
+    props = data.get("props") if isinstance(data, dict) else None
+    support = props.get("support") if isinstance(props, dict) else None
     return (
         isinstance(support, dict)
         and support.get("state") == "supported"
@@ -1460,11 +1463,11 @@ def _run_roundtrip_flow_legacy_for_test(
 
     cf_before = invoke(
         "support-info-before",
-        "unica.cf.info",
-        {"sourceSet": SOURCE_SET},
+        "unica.view",
+        {"at": f"{SOURCE_SET}:Configuration"},
     )
     if not _payload_ok(cf_before):
-        return _finish_flow(report, "failed", 1, redactions, "initial cf.info failed")
+        return _finish_flow(report, "failed", 1, redactions, "initial root view failed")
     if not _support_state_matches(cf_before, editing_enabled=False):
         return _finish_flow(
             report,
@@ -1526,11 +1529,11 @@ def _run_roundtrip_flow_legacy_for_test(
 
     cf_after = invoke(
         "support-info-after",
-        "unica.cf.info",
-        {"sourceSet": SOURCE_SET},
+        "unica.view",
+        {"at": f"{SOURCE_SET}:Configuration"},
     )
     if not _payload_ok(cf_after):
-        return _finish_flow(report, "failed", 1, redactions, "final cf.info failed")
+        return _finish_flow(report, "failed", 1, redactions, "final root view failed")
     if not _support_state_matches(cf_after, editing_enabled=True):
         return _finish_flow(
             report,

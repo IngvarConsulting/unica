@@ -6,6 +6,14 @@
 //! application layer (ADR-0002) and keeps the tool contract data-driven from
 //! operation descriptors (ADR-0001) instead of SDK macros.
 
+use super::daemon_router::{
+    canonical_daemon_router, CanonicalCallOutcome, CanonicalDaemonRouter,
+    FrontendInvocationDeadline, TOOL_EXECUTION_ERROR,
+};
+#[cfg(test)]
+use super::daemon_router::{CanonicalCallHandler, CanonicalTaskHandler, CanonicalTaskWaitHandler};
+use crate::application::receipt_ledger::V5ToolIdentity;
+use crate::application::tool_contracts::{SurfaceRelease, V13TaskProfile};
 use crate::application::{
     code_search_output_schema, input_schema_for_tool, metadata_argument_failure_result,
     operation_result_output_schema, role_edit_argument_failure_result, role_edit_output_schema,
@@ -14,12 +22,14 @@ use crate::application::{
 };
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::progress::{NoopProgressSink, ProgressEvent, ProgressSink};
+use crate::domain::refusal::RefusalDetail;
 use rmcp::model::{
-    CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorCode,
-    ErrorData, Implementation, InitializeResult, ListPromptsResult, ListResourceTemplatesResult,
+    CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, CancelTaskParams,
+    ContentBlock, ErrorCode, ErrorData, GetTaskParams, GetTaskResult, Implementation,
+    InitializeRequestParams, InitializeResult, ListPromptsResult, ListResourceTemplatesResult,
     ListResourcesResult, ListToolsResult, NotificationMetaObject, PaginatedRequestParams,
     ProgressNotificationParam, ProgressToken, ProtocolVersion, RequestMetaObject,
-    ServerCapabilities, ServerInfo, Tool,
+    ServerCapabilities, ServerInfo, Tool, UpdateTaskParams, TASKS_EXTENSION_ID,
 };
 use rmcp::service::{RequestContext, ServerInitializeError};
 use rmcp::{RoleServer, ServerHandler, ServiceExt};
@@ -28,10 +38,12 @@ use std::collections::HashSet;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::infrastructure::daemon::client_v5::{V5DaemonProcessOwner, V5TaskExchangeError};
+use crate::infrastructure::daemon::protocol_v5::{V5DaemonErrorCode, V5DaemonTaskSnapshot};
+
 pub const MCP_MAX_TOOL_WORKERS: usize = 32;
 const EOF_CANCELLATION_GRACE: Duration = Duration::from_secs(2);
 const RUNTIME_SHUTDOWN_GRACE: Duration = Duration::from_millis(250);
-const TOOL_EXECUTION_ERROR: i32 = -32000;
 
 /// Executes one tool call synchronously without leaking SDK types into the application.
 /// Injectable so transport tests can substitute slow or failing tools.
@@ -44,12 +56,50 @@ type ToolCallHandler = dyn Fn(
     + Send
     + Sync;
 
+#[derive(Clone)]
+enum SurfaceToolRouter {
+    #[allow(dead_code)] // constructed only by the explicit legacy test seam
+    LegacyV12(Arc<ToolCallHandler>),
+    CanonicalV13(CanonicalDaemonRouter),
+}
+
+enum SurfaceToolOutcome {
+    Legacy(Box<OperationResult>),
+    /// A compatibility Task tool answered with a canonical result to project.
+    Canonical(crate::domain::invocation::DomainResult),
+    /// An acknowledged Direct terminal, already the final `CallToolResult`.
+    Direct(CallToolResult),
+    Task(V5DaemonTaskSnapshot),
+}
+
 pub fn run_stdio() {
-    let app = Arc::new(UnicaApplication::new());
-    let handler: Arc<ToolCallHandler> = Arc::new(move |name, arguments, cancellation, progress| {
-        call_tool_result_observed(&app, name, arguments, cancellation, progress)
-    });
-    let server = UnicaServer::new(handler);
+    if SurfaceRelease::from_package_version() != SurfaceRelease::V13 {
+        eprintln!("this package does not select the canonical v0.13 MCP surface");
+        return;
+    }
+    let state_root = match crate::interfaces::daemon::default_user_daemon_state_root() {
+        Ok(root) => root,
+        Err(error) => {
+            eprintln!("failed to resolve unica user daemon state: {error}");
+            return;
+        }
+    };
+    let owner = match crate::interfaces::daemon::connect_default_user_daemon(&state_root) {
+        Ok(owner) => owner,
+        Err(error) => {
+            eprintln!("failed to connect to unica user daemon: {error}");
+            return;
+        }
+    };
+    let workspace_hint = match std::env::current_dir() {
+        Ok(path) => path.to_string_lossy().into_owned(),
+        Err(error) => {
+            eprintln!("failed to determine unica MCP workspace: {error}");
+            return;
+        }
+    };
+    let notice = startup_notice_from(std::env::var(STARTUP_NOTICE_ENV).ok());
+    let server = UnicaServer::canonical_v13_daemon(owner, workspace_hint, notice);
     let in_flight = server.in_flight();
 
     let runtime = match tokio::runtime::Builder::new_multi_thread()
@@ -114,13 +164,22 @@ fn drain_mcp_shutdown_with(
 /// рассказать о ней может лишь тот, кого запустили следом.
 const STARTUP_NOTICE_ENV: &str = "UNICA_STARTUP_NOTICE";
 
+const CANONICAL_INSTRUCTIONS: &str = "Start with unica.view using an empty object when the workspace or logical address is unknown. Use returned addresses instead of guessing at. A qualified logical address has the form <sourceSet>:<Kind>[.<Name>...]. Use unica.check to confirm source-set admission or logical-node readability.";
+
 pub struct UnicaServer {
-    handler: Arc<ToolCallHandler>,
+    router: SurfaceToolRouter,
     in_flight: Arc<InFlightRegistry>,
     structured_tools: HashSet<&'static str>,
     /// О чём рассказать вызывающему при рукопожатии. Обычная сессия платит за
     /// это ноль байтов поверхности: рассказывать нечего.
     startup_notice: Option<String>,
+}
+
+#[allow(dead_code)]
+fn assert_unica_server_implements_official_rmcp_server_handler()
+where
+    UnicaServer: ::rmcp::ServerHandler,
+{
 }
 
 /// Пустое значение — это «нечего рассказывать», а не пустой рассказ.
@@ -130,14 +189,19 @@ fn startup_notice_from(value: Option<String>) -> Option<String> {
 }
 
 impl UnicaServer {
-    fn new(handler: Arc<ToolCallHandler>) -> Self {
+    #[cfg(test)]
+    fn legacy_for_test(handler: Arc<ToolCallHandler>) -> Self {
         let notice = startup_notice_from(std::env::var(STARTUP_NOTICE_ENV).ok());
-        Self::with_startup_notice(handler, notice)
+        Self::legacy_with_startup_notice_for_test(handler, notice)
     }
 
-    fn with_startup_notice(handler: Arc<ToolCallHandler>, startup_notice: Option<String>) -> Self {
+    #[cfg(test)]
+    fn legacy_with_startup_notice_for_test(
+        handler: Arc<ToolCallHandler>,
+        startup_notice: Option<String>,
+    ) -> Self {
         Self {
-            handler,
+            router: SurfaceToolRouter::LegacyV12(handler),
             in_flight: Arc::new(InFlightRegistry::default()),
             structured_tools: crate::application::tools()
                 .into_iter()
@@ -147,9 +211,203 @@ impl UnicaServer {
         }
     }
 
+    #[cfg(test)]
+    fn with_canonical_v13(handler: Arc<CanonicalCallHandler>) -> Self {
+        let unavailable: Arc<CanonicalTaskHandler> =
+            Arc::new(|_, _| Err(V5TaskExchangeError::Transport));
+        Self::with_canonical_v13_tasks(handler, Arc::clone(&unavailable), unavailable)
+    }
+
+    #[cfg(test)]
+    fn with_canonical_v13_tasks(
+        call: Arc<CanonicalCallHandler>,
+        get: Arc<CanonicalTaskHandler>,
+        cancel: Arc<CanonicalTaskHandler>,
+    ) -> Self {
+        let wait_get = Arc::clone(&get);
+        let wait: Arc<CanonicalTaskWaitHandler> =
+            Arc::new(move |task_id, _, deadline| wait_get(task_id, deadline));
+        Self::with_canonical_v13_task_handlers(call, get, wait, cancel)
+    }
+
+    #[cfg(test)]
+    fn with_canonical_v13_task_handlers(
+        call: Arc<CanonicalCallHandler>,
+        get: Arc<CanonicalTaskHandler>,
+        wait: Arc<CanonicalTaskWaitHandler>,
+        cancel: Arc<CanonicalTaskHandler>,
+    ) -> Self {
+        Self {
+            router: SurfaceToolRouter::CanonicalV13(CanonicalDaemonRouter {
+                call,
+                get,
+                wait,
+                cancel,
+            }),
+            in_flight: Arc::new(InFlightRegistry::default()),
+            structured_tools: HashSet::new(),
+            startup_notice: None,
+        }
+    }
+
+    fn canonical_v13_daemon(
+        owner: V5DaemonProcessOwner,
+        workspace_hint: String,
+        startup_notice: Option<String>,
+    ) -> Self {
+        let router = canonical_daemon_router(owner, workspace_hint);
+        Self {
+            router: SurfaceToolRouter::CanonicalV13(router),
+            in_flight: Arc::new(InFlightRegistry::default()),
+            structured_tools: HashSet::new(),
+            startup_notice,
+        }
+    }
+
+    #[cfg(test)]
+    fn with_canonical_daemon(owner: V5DaemonProcessOwner, workspace_hint: String) -> Self {
+        Self::canonical_v13_daemon(owner, workspace_hint, None)
+    }
+
     fn in_flight(&self) -> Arc<InFlightRegistry> {
         Arc::clone(&self.in_flight)
     }
+}
+
+fn execute_surface_tool(
+    router: &SurfaceToolRouter,
+    name: &str,
+    arguments: &Map<String, Value>,
+    cancellation: CancellationToken,
+    progress: Arc<dyn ProgressSink>,
+    deadline: FrontendInvocationDeadline,
+    client_supports_tasks: bool,
+) -> Result<SurfaceToolOutcome, ErrorData> {
+    match router {
+        SurfaceToolRouter::LegacyV12(handler) => handler(name, arguments, cancellation, progress)
+            .map(Box::new)
+            .map(SurfaceToolOutcome::Legacy)
+            .map_err(|(code, message)| ErrorData::new(ErrorCode(code), message, None)),
+        SurfaceToolRouter::CanonicalV13(router) => {
+            if let Some(request) =
+                crate::application::v13::task_tools::parse_task_tool_call(name, arguments)
+            {
+                if client_supports_tasks {
+                    return Err(ErrorData::invalid_params(
+                        "compatibility task tools are unavailable when native Tasks is active",
+                        None,
+                    ));
+                }
+                return Ok(SurfaceToolOutcome::Canonical(
+                    execute_compatibility_task_tool(router, request, deadline),
+                ));
+            }
+            let tool = V5ToolIdentity::from_wire_name(name).ok_or_else(|| {
+                ErrorData::invalid_params("tool is not in the canonical v0.13 profile", None)
+            })?;
+            match (router.call)(tool, arguments, deadline, cancellation)? {
+                CanonicalCallOutcome::Direct(result) => Ok(SurfaceToolOutcome::Direct(result)),
+                CanonicalCallOutcome::Task(snapshot) if client_supports_tasks => {
+                    Ok(SurfaceToolOutcome::Task(snapshot))
+                }
+                CanonicalCallOutcome::Task(snapshot) => Ok(SurfaceToolOutcome::Canonical(
+                    project_compatibility_snapshot(&snapshot, CompatibilityProjection::State),
+                )),
+            }
+        }
+    }
+}
+
+use crate::application::v13::task_tools::{
+    CompatibilityProjection, CompatibilityTaskSnapshot, TaskToolAction, TaskToolError,
+};
+
+fn execute_compatibility_task_tool(
+    router: &CanonicalDaemonRouter,
+    request: Result<crate::application::v13::task_tools::TaskToolRequest, TaskToolError>,
+    deadline: FrontendInvocationDeadline,
+) -> crate::domain::invocation::DomainResult {
+    let request = match request {
+        Ok(request) => request,
+        Err(error) => return crate::application::v13::task_tools::task_tool_error_result(error),
+    };
+    let exchange = match request.action {
+        TaskToolAction::Get => (router.get)(request.task_id, deadline),
+        TaskToolAction::Result { wait_ms } => {
+            let bounded = bounded_compatibility_wait_ms(wait_ms, deadline, Instant::now());
+            (router.wait)(request.task_id, bounded, deadline)
+        }
+        TaskToolAction::Cancel => (router.cancel)(request.task_id, deadline),
+    };
+    let snapshot = match exchange {
+        Ok(snapshot) if snapshot.task_id() == request.task_id => snapshot,
+        Ok(_) => {
+            return crate::application::v13::task_tools::task_tool_error_result(
+                TaskToolError::TaskProtocolFailed,
+            )
+        }
+        Err(error) => {
+            return crate::application::v13::task_tools::task_tool_error_result(
+                compatibility_task_exchange_error(error),
+            )
+        }
+    };
+    let projection = match request.action {
+        TaskToolAction::Result { .. } => CompatibilityProjection::TerminalResult,
+        TaskToolAction::Get | TaskToolAction::Cancel => CompatibilityProjection::State,
+    };
+    project_compatibility_snapshot(&snapshot, projection)
+}
+
+fn bounded_compatibility_wait_ms(
+    requested_wait_ms: u64,
+    deadline: FrontendInvocationDeadline,
+    now: Instant,
+) -> u64 {
+    let remaining_ms = deadline
+        .remaining_at(now)
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64;
+    requested_wait_ms.min(remaining_ms)
+}
+
+fn compatibility_task_exchange_error(error: V5TaskExchangeError) -> TaskToolError {
+    match error {
+        V5TaskExchangeError::Protocol(V5DaemonErrorCode::TaskNotFound) => {
+            TaskToolError::TaskNotFound
+        }
+        V5TaskExchangeError::Protocol(V5DaemonErrorCode::TaskExpired) => TaskToolError::TaskExpired,
+        V5TaskExchangeError::Protocol(_) => TaskToolError::TaskBackendFailed,
+        V5TaskExchangeError::Transport => TaskToolError::TaskTransportFailed,
+        V5TaskExchangeError::SessionPoisoned => TaskToolError::TaskSessionClosed,
+        V5TaskExchangeError::UnexpectedResponse => TaskToolError::TaskProtocolFailed,
+    }
+}
+
+/// The compatibility receipt carries the durable state only: the closed v5
+/// snapshot cannot violate the status/result/failure matrix, and a failure
+/// reaches the host as presence, never as text.
+fn project_compatibility_snapshot(
+    snapshot: &V5DaemonTaskSnapshot,
+    projection: CompatibilityProjection,
+) -> crate::domain::invocation::DomainResult {
+    let state = CompatibilityTaskSnapshot::new(
+        snapshot.task_id(),
+        snapshot.status(),
+        snapshot.completed_result().cloned(),
+        snapshot.failure_reason().is_some(),
+        snapshot.created_at_epoch_ms(),
+        snapshot.updated_at_epoch_ms(),
+        snapshot.ttl_ms(),
+        snapshot.poll_interval_ms(),
+    );
+    crate::application::v13::task_tools::project_task_snapshot(&state, projection).unwrap_or_else(
+        |_| {
+            crate::application::v13::task_tools::task_tool_error_result(
+                TaskToolError::ProjectionFailed,
+            )
+        },
+    )
 }
 
 fn structured_output_schema(spec: &ToolSpec) -> Option<Value> {
@@ -166,6 +424,7 @@ fn structured_output_schema(spec: &ToolSpec) -> Option<Value> {
     }
 }
 
+#[allow(dead_code)] // legacy surface test support; production selects canonical V13
 fn has_structured_output(spec: &ToolSpec) -> bool {
     structured_output_schema(spec).is_some()
 }
@@ -194,12 +453,76 @@ fn all_tool_definitions() -> &'static [Tool] {
     ALL.get_or_init(|| tool_definitions(&crate::application::tools()))
 }
 
+fn v13_tool_definitions(profile: V13TaskProfile) -> &'static [Tool] {
+    static NATIVE: std::sync::OnceLock<Vec<Tool>> = std::sync::OnceLock::new();
+    static COMPATIBILITY: std::sync::OnceLock<Vec<Tool>> = std::sync::OnceLock::new();
+    let build = || {
+        let catalog = crate::application::v13::tool_catalog::catalog_for(SurfaceRelease::V13)
+            .expect("canonical v0.13 profile has a catalog");
+        let mut tools = catalog
+            .tools
+            .into_iter()
+            .map(|contract| {
+                v13_tool_definition(
+                    contract.name,
+                    Some(contract.description),
+                    contract.input_schema,
+                )
+            })
+            .collect::<Vec<_>>();
+        if profile == V13TaskProfile::Compatibility {
+            tools.extend(
+                crate::application::v13::task_tools::compatibility_tool_contracts()
+                    .into_iter()
+                    .map(|contract| {
+                        v13_tool_definition(
+                            contract.name,
+                            Some(contract.description),
+                            contract.input_schema,
+                        )
+                    }),
+            );
+        }
+        tools
+    };
+    match profile {
+        V13TaskProfile::Native => NATIVE.get_or_init(build),
+        V13TaskProfile::Compatibility => COMPATIBILITY.get_or_init(build),
+    }
+}
+
+fn v13_tool_definition(name: &str, description: Option<&str>, schema: Value) -> Tool {
+    let schema = match schema {
+        Value::Object(schema) => schema,
+        other => unreachable!("V13 tool unica.{name} produced non-object schema: {other}"),
+    };
+    let mut tool = Tool::new(
+        format!("unica.{name}"),
+        description.unwrap_or_default().to_string(),
+        schema,
+    );
+    if description.is_none() {
+        tool.description = None;
+    }
+    tool
+}
+
 /// SEP-2549 cache fields are required on list results from protocol revision
 /// 2026-07-28; older peers must keep the exact legacy wire shape.
 fn modern_peer(context: &RequestContext<RoleServer>) -> bool {
     context
         .protocol_version()
         .is_some_and(|version| version.as_str() >= ProtocolVersion::V_2026_07_28.as_str())
+}
+
+fn modern_protocol_authority(context: &RequestContext<RoleServer>) -> bool {
+    context
+        .protocol_version()
+        .is_some_and(|version| version == ProtocolVersion::V_2026_07_28)
+        && context
+            .peer
+            .peer_info()
+            .is_none_or(|peer| peer.protocol_version == ProtocolVersion::V_2026_07_28)
 }
 
 /// The served protocol versions are exactly the #490 guaranteed matrix: the
@@ -221,20 +544,50 @@ impl ServerHandler for UnicaServer {
         // #490: the negotiation fallback is pinned, not inherited from the
         // SDK LATEST constant, so an SDK bump cannot move it silently.
         //
-        // Only the implemented surface is declared: tools. Prompts, resources,
-        // completions, logging, tasks and ui are deliberately withheld until a
-        // feature slice implements them — an advertised-but-empty surface
-        // sends capability-gated clients probing dead ends. Each of those
-        // features re-enters here together with its implementation.
-        let info = InitializeResult::new(ServerCapabilities::builder().enable_tools().build())
+        // Only the implemented surface is declared. Prompts, resources,
+        // completions, logging and ui stay withheld. Tasks are advertised only
+        // by the injected V13 router and initialize strips them again unless
+        // the negotiated protocol is 2026-07-28.
+        let capabilities = match &self.router {
+            SurfaceToolRouter::LegacyV12(_) => ServerCapabilities::builder().enable_tools().build(),
+            SurfaceToolRouter::CanonicalV13(_) => ServerCapabilities::builder()
+                .enable_tools()
+                .enable_tasks()
+                .build(),
+        };
+        let info = InitializeResult::new(capabilities)
             .with_protocol_version(ProtocolVersion::V_2025_11_25)
             .with_server_info(Implementation::new("unica", env!("CARGO_PKG_VERSION")));
-        // Что осталось от убитого запуска, уходит обычным ответом: своего
-        // провода у него не было, а этот — первый, который вообще есть.
-        match &self.startup_notice {
-            Some(notice) => info.with_instructions(notice.clone()),
-            None => info,
+        // Что осталось от убитого запуска, дополняет стабильный маршрут первого
+        // вызова: notice не должен стирать инструкцию дискавери и наоборот.
+        let instructions = match &self.startup_notice {
+            Some(notice) => format!("{CANONICAL_INSTRUCTIONS}\n\nStartup notice: {notice}"),
+            None => CANONICAL_INSTRUCTIONS.to_string(),
+        };
+        info.with_instructions(instructions)
+    }
+
+    async fn initialize(
+        &self,
+        request: InitializeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<InitializeResult, ErrorData> {
+        context.peer.set_peer_info(request.clone());
+        let mut info = self.get_info();
+        info.protocol_version = if SUPPORTED_PROTOCOL_VERSIONS.contains(&request.protocol_version) {
+            request.protocol_version
+        } else {
+            info.protocol_version
+        };
+        if info.protocol_version.as_str() < ProtocolVersion::V_2026_07_28.as_str() {
+            if let Some(extensions) = info.capabilities.extensions.as_mut() {
+                extensions.remove(TASKS_EXTENSION_ID);
+                if extensions.is_empty() {
+                    info.capabilities.extensions = None;
+                }
+            }
         }
+        Ok(info)
     }
 
     fn accepted_subscription_filter(
@@ -254,9 +607,22 @@ impl ServerHandler for UnicaServer {
         request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        let all = all_tool_definitions();
+        let (all, modern) = match &self.router {
+            SurfaceToolRouter::LegacyV12(_) => (all_tool_definitions(), modern_peer(&context)),
+            SurfaceToolRouter::CanonicalV13(_) => {
+                let profile = if native_task_capability(&context) {
+                    V13TaskProfile::Native
+                } else {
+                    V13TaskProfile::Compatibility
+                };
+                (
+                    v13_tool_definitions(profile),
+                    modern_protocol_authority(&context),
+                )
+            }
+        };
         let cursor = request.and_then(|request| request.cursor);
-        if !modern_peer(&context) {
+        if !modern {
             // #490: the legacy surface is served whole; no cursor is ever
             // issued there, so a presented cursor is a contract violation.
             if let Some(cursor) = cursor {
@@ -325,6 +691,8 @@ impl ServerHandler for UnicaServer {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
+        let received_at = Instant::now();
+        let client_supports_tasks = native_task_capability(&context);
         let admission = self
             .in_flight
             .admit()
@@ -340,7 +708,7 @@ impl ServerHandler for UnicaServer {
             bridged.cancel();
         });
 
-        let handler = Arc::clone(&self.handler);
+        let router = self.router.clone();
         let name = request.name.to_string();
         let handler_name = name.clone();
         let progress_token = request
@@ -383,7 +751,16 @@ impl ServerHandler for UnicaServer {
             stop: progress_stop,
         } = progress_forwarding;
         let result = tokio::task::spawn_blocking(move || {
-            handler(&handler_name, &arguments, cancellation, progress)
+            let deadline = FrontendInvocationDeadline::new(received_at, None);
+            execute_surface_tool(
+                &router,
+                &handler_name,
+                &arguments,
+                cancellation,
+                progress,
+                deadline,
+                client_supports_tasks,
+            )
         })
         .await;
         if let Some(stop) = progress_stop {
@@ -396,18 +773,209 @@ impl ServerHandler for UnicaServer {
         drop(admission);
 
         let outcome = match result {
-            Ok(Ok(result)) => {
-                render_tool_result(self.structured_tools.contains(name.as_str()), result)
+            Ok(Ok(SurfaceToolOutcome::Legacy(result))) => {
+                render_tool_result(self.structured_tools.contains(name.as_str()), *result)
+                    .map(CallToolResponse::from)
             }
-            Ok(Err((code, message))) => Err(ErrorData::new(ErrorCode(code), message, None)),
+            Ok(Ok(SurfaceToolOutcome::Canonical(result))) => {
+                crate::interfaces::task_projection::call_tool_result(&result)
+                    .map(CallToolResponse::from)
+                    .map_err(crate::interfaces::task_projection::projection_error)
+            }
+            Ok(Ok(SurfaceToolOutcome::Direct(result))) => Ok(CallToolResponse::from(result)),
+            Ok(Ok(SurfaceToolOutcome::Task(snapshot))) => {
+                crate::interfaces::task_projection::create_task_result_v5(&snapshot)
+                    .map(CallToolResponse::from)
+                    .map_err(crate::interfaces::task_projection::projection_error)
+            }
+            Ok(Err(error)) => Err(error),
             Err(join_error) => Err(ErrorData::new(
                 ErrorCode::INTERNAL_ERROR,
                 format!("tool worker failed: {join_error}"),
                 None,
             )),
         };
-        outcome.map(CallToolResponse::from)
+        outcome
     }
+
+    async fn get_task(
+        &self,
+        request: GetTaskParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<GetTaskResult, ErrorData> {
+        let received_at = Instant::now();
+        ensure_native_task_protocol(&context)?;
+        let task_id = parse_task_id(&request.task_id)?;
+        let handler = canonical_task_router(&self.router)?.get;
+        let deadline = FrontendInvocationDeadline::new(received_at, None);
+        let snapshot = tokio::task::spawn_blocking(move || handler(task_id, deadline))
+            .await
+            .map_err(|_| task_internal_error("task_worker_failed"))?
+            .map_err(project_task_exchange_error)?;
+        ensure_task_identity(task_id, &snapshot)?;
+        crate::interfaces::task_projection::detailed_task_v5(&snapshot)
+            .map(GetTaskResult::new)
+            .map_err(crate::interfaces::task_projection::projection_error)
+    }
+
+    async fn update_task(
+        &self,
+        request: UpdateTaskParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<(), ErrorData> {
+        let received_at = Instant::now();
+        ensure_native_task_protocol(&context)?;
+        let task_id = parse_task_id(&request.task_id)?;
+        let handler = canonical_task_router(&self.router)?.get;
+        // v0.13 never enters input_required. Still prove the task is a current
+        // daemon-owned identity before returning the stable unsupported-input
+        // classification; unknown and expired identities retain their codes.
+        let deadline = FrontendInvocationDeadline::new(received_at, None);
+        let snapshot = tokio::task::spawn_blocking(move || handler(task_id, deadline))
+            .await
+            .map_err(|_| task_internal_error("task_worker_failed"))?
+            .map_err(project_task_exchange_error)?;
+        ensure_task_identity(task_id, &snapshot)?;
+        Err(ErrorData::invalid_params(
+            "task_input_not_supported",
+            Some(serde_json::json!({"code": "task_input_not_supported"})),
+        ))
+    }
+
+    async fn cancel_task(
+        &self,
+        request: CancelTaskParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<(), ErrorData> {
+        let received_at = Instant::now();
+        ensure_native_task_protocol(&context)?;
+        let task_id = parse_task_id(&request.task_id)?;
+        let handler = canonical_task_router(&self.router)?.cancel;
+        let deadline = FrontendInvocationDeadline::new(received_at, None);
+        let snapshot = tokio::task::spawn_blocking(move || handler(task_id, deadline))
+            .await
+            .map_err(|_| task_internal_error("task_worker_failed"))?
+            .map_err(project_task_exchange_error)?;
+        ensure_task_identity(task_id, &snapshot)?;
+        Ok(())
+    }
+}
+
+fn native_task_capability(context: &RequestContext<RoleServer>) -> bool {
+    // Request metadata is allowed to shape one response, but it cannot replace
+    // the protocol authority established by initialize. A direct-first request
+    // has no peer_info and therefore carries its own complete authority.
+    modern_protocol_authority(context)
+        && context
+            .client_capabilities()
+            .is_some_and(|capabilities| capabilities.supports_tasks())
+}
+
+fn ensure_native_task_protocol(context: &RequestContext<RoleServer>) -> Result<(), ErrorData> {
+    if native_task_capability(context) {
+        Ok(())
+    } else {
+        Err(ErrorData::new(
+            ErrorCode::METHOD_NOT_FOUND,
+            "tasks_not_available_for_protocol",
+            None,
+        ))
+    }
+}
+
+fn canonical_task_router(router: &SurfaceToolRouter) -> Result<CanonicalDaemonRouter, ErrorData> {
+    match router {
+        SurfaceToolRouter::CanonicalV13(router) => Ok(router.clone()),
+        SurfaceToolRouter::LegacyV12(_) => Err(task_internal_error("task_profile_unavailable")),
+    }
+}
+
+fn parse_task_id(encoded: &str) -> Result<crate::domain::invocation::TaskId, ErrorData> {
+    encoded.parse().map_err(|_| {
+        ErrorData::invalid_params(
+            "invalid_task_id",
+            Some(serde_json::json!({"code": "invalid_task_id"})),
+        )
+    })
+}
+
+fn ensure_task_identity(
+    expected: crate::domain::invocation::TaskId,
+    snapshot: &V5DaemonTaskSnapshot,
+) -> Result<(), ErrorData> {
+    if snapshot.task_id() == expected {
+        Ok(())
+    } else {
+        Err(task_internal_error("task_protocol_failed"))
+    }
+}
+
+/// Сводит код демона к уточнению, а не к одному имени: очередь и ёмкость
+/// проходят с повтора, несовместимость требует человека, а сломанное
+/// хранилище не лечится ни тем, ни другим. Широкая ветка `_` здесь и теряла
+/// различие.
+fn backend_detail(code: V5DaemonErrorCode) -> RefusalDetail {
+    match code {
+        V5DaemonErrorCode::Overloaded
+        | V5DaemonErrorCode::OwnerCapacity
+        | V5DaemonErrorCode::ReceiptCapacity
+        | V5DaemonErrorCode::TombstoneCapacity => RefusalDetail::BackendBusy,
+        V5DaemonErrorCode::ProtocolMismatch
+        | V5DaemonErrorCode::CoreMismatch
+        | V5DaemonErrorCode::Unauthorized
+        | V5DaemonErrorCode::HandshakeRequired => RefusalDetail::BackendIncompatible,
+        V5DaemonErrorCode::InvalidRequest
+        | V5DaemonErrorCode::DuplicateLease
+        | V5DaemonErrorCode::ReceiptNotFound
+        | V5DaemonErrorCode::ReceiptExpired
+        | V5DaemonErrorCode::InvocationIdentityMismatch
+        | V5DaemonErrorCode::TaskNotFound
+        | V5DaemonErrorCode::TaskExpired
+        | V5DaemonErrorCode::StoreFailed
+        | V5DaemonErrorCode::DurabilityUncertain
+        | V5DaemonErrorCode::StoreCommitUncertain => RefusalDetail::BackendBroken,
+    }
+}
+
+fn project_task_exchange_error(error: V5TaskExchangeError) -> ErrorData {
+    match error {
+        V5TaskExchangeError::Protocol(V5DaemonErrorCode::TaskNotFound) => {
+            ErrorData::invalid_params(
+                "task_not_found",
+                Some(serde_json::json!({"code": "task_not_found"})),
+            )
+        }
+        V5TaskExchangeError::Protocol(V5DaemonErrorCode::TaskExpired) => ErrorData::invalid_params(
+            "task_expired",
+            Some(serde_json::json!({"code": "task_expired"})),
+        ),
+        V5TaskExchangeError::Protocol(code) => task_internal_error_detailed(backend_detail(code)),
+        V5TaskExchangeError::Transport => task_internal_error("task_transport_failed"),
+        V5TaskExchangeError::SessionPoisoned => task_internal_error("task_session_closed"),
+        V5TaskExchangeError::UnexpectedResponse => task_internal_error("task_protocol_failed"),
+    }
+}
+
+fn task_internal_error(code: &'static str) -> ErrorData {
+    ErrorData::new(
+        ErrorCode::INTERNAL_ERROR,
+        code,
+        Some(serde_json::json!({"code": code})),
+    )
+}
+
+/// То же, но с уточнением: исход берётся из него, а не из умолчания кода.
+fn task_internal_error_detailed(detail: RefusalDetail) -> ErrorData {
+    let code = detail.code().as_str();
+    ErrorData::new(
+        ErrorCode::INTERNAL_ERROR,
+        code,
+        Some(serde_json::json!({
+            "code": code,
+            "outcome": detail.outcome().as_str(),
+            "detailCode": detail.as_str(),
+        })),
+    )
 }
 
 struct McpProgressForwarding {
@@ -514,6 +1082,7 @@ fn call_tool_result(
     call_tool_result_observed(app, name, args, cancellation, Arc::new(NoopProgressSink))
 }
 
+#[allow(dead_code)] // legacy surface test support; production dispatches through daemon
 fn call_tool_result_observed(
     app: &UnicaApplication,
     name: &str,
@@ -643,37 +1212,247 @@ impl Drop for InFlightGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::invocation::{
+        INVOCATION_HANDOFF_WINDOW, RESPONSE_SERIALIZATION_MARGIN,
+    };
     use crate::application::{ResultContract, ToolExecution};
     use crate::domain::cache::CacheReport;
+    use crate::infrastructure::daemon::protocol_v5::V5ClientRequest;
+    use crate::interfaces::daemon_router::test_support::{
+        FakeDaemon, LiveDaemon, ScriptedService, Step,
+    };
+    use crate::interfaces::daemon_router::{remaining_invocation_budget, wait_transport_cutoff};
     use serde_json::json;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::mpsc;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::time::timeout;
 
     const TEST_STEP: Duration = Duration::from_secs(10);
 
+    #[test]
+    fn unica_server_implements_official_rmcp_server_handler() {
+        super::assert_unica_server_implements_official_rmcp_server_handler();
+    }
+
+    #[test]
+    fn production_mcp_surface_exposes_only_canonical_v13_tools_and_task_compatibility() {
+        let canonical: Arc<CanonicalCallHandler> = Arc::new(|_, _, _, _| {
+            direct_outcome(crate::domain::invocation::DomainResult::success(
+                "canonical",
+            ))
+        });
+        let server = UnicaServer::with_canonical_v13(canonical);
+
+        assert!(
+            matches!(server.router, SurfaceToolRouter::CanonicalV13(_)),
+            "the production MCP constructor must select the canonical v0.13 router"
+        );
+
+        let native = v13_tool_definitions(V13TaskProfile::Native)
+            .iter()
+            .map(|tool| tool.name.as_ref())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            native,
+            [
+                "unica.view",
+                "unica.apply",
+                "unica.resolve",
+                "unica.search",
+                "unica.check",
+                "unica.diff",
+                "unica.run",
+                "unica.docs",
+            ],
+            "the native Tasks-capable profile must expose exactly the eight canonical tools"
+        );
+
+        let compatibility = v13_tool_definitions(V13TaskProfile::Compatibility)
+            .iter()
+            .map(|tool| tool.name.as_ref())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            compatibility,
+            [
+                "unica.view",
+                "unica.apply",
+                "unica.resolve",
+                "unica.search",
+                "unica.check",
+                "unica.diff",
+                "unica.run",
+                "unica.docs",
+                "unica.task.get",
+                "unica.task.result",
+                "unica.task.cancel",
+            ],
+            "the compatibility profile must add only the three task projection tools"
+        );
+    }
+
+    #[test]
+    fn canonical_tools_are_described_within_wire_budget() {
+        let tools = v13_tool_definitions(V13TaskProfile::Compatibility);
+        for tool in tools {
+            let description = tool.description.as_deref().unwrap_or_default();
+            assert!(
+                !description.trim().is_empty(),
+                "{} has no model-facing description",
+                tool.name
+            );
+            assert!(
+                description.len() <= 2 * 1024,
+                "{} description exceeds the 2 KiB client limit",
+                tool.name
+            );
+        }
+        let wire = serde_json::to_vec(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {"tools": tools},
+        }))
+        .expect("tools/list response serializes");
+        assert!(
+            wire.len() <= 16 * 1024,
+            "compatibility tools/list response is {} bytes",
+            wire.len()
+        );
+    }
+
+    #[test]
+    fn surface_release_structurally_gates_v12_legacy_dispatch_from_v13_daemon_dispatch() {
+        use std::sync::atomic::AtomicUsize;
+
+        let legacy_count = Arc::new(AtomicUsize::new(0));
+        let legacy_observed = Arc::clone(&legacy_count);
+        let legacy: Arc<ToolCallHandler> = Arc::new(move |_, _, _, _| {
+            legacy_observed.fetch_add(1, Ordering::SeqCst);
+            Ok(successful_test_result("legacy"))
+        });
+        let v12 = UnicaServer::legacy_for_test(legacy);
+        let received = Instant::now();
+        let deadline = FrontendInvocationDeadline::new(received, None);
+        let result = execute_surface_tool(
+            &v12.router,
+            "unica.check",
+            &Map::new(),
+            CancellationToken::new(),
+            Arc::new(NoopProgressSink),
+            deadline,
+            false,
+        )
+        .unwrap();
+        let SurfaceToolOutcome::Legacy(result) = result else {
+            panic!("v0.12 must retain the legacy result envelope");
+        };
+        assert_eq!(result.summary, "legacy");
+        assert_eq!(legacy_count.load(Ordering::SeqCst), 1);
+
+        let daemon_count = Arc::new(AtomicUsize::new(0));
+        let daemon_observed = Arc::clone(&daemon_count);
+        let canonical: Arc<CanonicalCallHandler> = Arc::new(move |tool, _, deadline, _| {
+            assert_eq!(tool, V5ToolIdentity::Check);
+            assert_eq!(deadline.remaining_at(received), Duration::from_secs(7));
+            daemon_observed.fetch_add(1, Ordering::SeqCst);
+            direct_outcome(crate::domain::invocation::DomainResult::success(
+                "canonical",
+            ))
+        });
+        let v13 = UnicaServer::with_canonical_v13(canonical);
+        let result = execute_surface_tool(
+            &v13.router,
+            "unica.check",
+            &Map::new(),
+            CancellationToken::new(),
+            Arc::new(NoopProgressSink),
+            deadline,
+            true,
+        )
+        .unwrap();
+        let SurfaceToolOutcome::Direct(result) = result else {
+            panic!("v0.13 direct calls must arrive as the acknowledged final result");
+        };
+        assert_eq!(
+            result
+                .structured_content
+                .as_ref()
+                .and_then(|value| value["summary"].as_str()),
+            Some("canonical")
+        );
+        assert_eq!(daemon_count.load(Ordering::SeqCst), 1);
+        assert_eq!(legacy_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn frontend_receipt_deadline_transmits_zero_or_earlier_host_budget_without_reexecution() {
+        let received = Instant::now();
+        let deadline = FrontendInvocationDeadline::new(received, None);
+        assert_eq!(
+            deadline.remaining_at(received + Duration::from_secs(7)),
+            Duration::ZERO,
+            "queueing before daemon submission must not replenish the frontend budget",
+        );
+        assert_eq!(
+            deadline.remaining_transport_at(received + Duration::from_secs(7)),
+            Duration::from_millis(125),
+            "the bounded serialization margin covers connection and submit together",
+        );
+        assert_eq!(
+            remaining_invocation_budget(received, received, None),
+            Duration::from_secs(7)
+        );
+        assert_eq!(
+            remaining_invocation_budget(received, received + Duration::from_secs(7), None,),
+            Duration::ZERO
+        );
+        assert_eq!(
+            remaining_invocation_budget(
+                received,
+                received + Duration::from_millis(250),
+                Some(Duration::from_secs(2)),
+            ),
+            Duration::from_millis(1_625),
+            "host budget reserves the 125 ms response margin after elapsed frontend time",
+        );
+    }
+
     fn object_schema_property_maps(
         schema: &serde_json::Map<String, serde_json::Value>,
     ) -> Vec<&serde_json::Map<String, serde_json::Value>> {
-        if let Some(properties) = schema
-            .get("properties")
-            .and_then(serde_json::Value::as_object)
-        {
-            return vec![properties];
+        fn visit_value<'a>(
+            value: &'a serde_json::Value,
+            property_maps: &mut Vec<&'a serde_json::Map<String, serde_json::Value>>,
+        ) {
+            match value {
+                serde_json::Value::Object(object) => visit_object(object, property_maps),
+                serde_json::Value::Array(items) => {
+                    for item in items {
+                        visit_value(item, property_maps);
+                    }
+                }
+                _ => {}
+            }
         }
-        schema
-            .get("oneOf")
-            .expect("tool schema publishes properties or closed object oneOf branches")
-            .as_array()
-            .expect("tool schema publishes properties or closed object oneOf branches")
-            .iter()
-            .map(|branch| {
-                branch["properties"]
-                    .as_object()
-                    .expect("oneOf branch properties are an object")
-            })
-            .collect()
+
+        fn visit_object<'a>(
+            object: &'a serde_json::Map<String, serde_json::Value>,
+            property_maps: &mut Vec<&'a serde_json::Map<String, serde_json::Value>>,
+        ) {
+            if let Some(properties) = object
+                .get("properties")
+                .and_then(serde_json::Value::as_object)
+            {
+                property_maps.push(properties);
+            }
+            for value in object.values() {
+                visit_value(value, property_maps);
+            }
+        }
+
+        let mut property_maps = Vec::new();
+        visit_object(schema, &mut property_maps);
+        property_maps
     }
 
     fn successful_test_result(summary: &str) -> OperationResult {
@@ -829,8 +1608,11 @@ mod tests {
     }
 
     fn spawn_server(handler: Arc<ToolCallHandler>) -> (McpClient, Arc<InFlightRegistry>) {
+        spawn_unica_server(UnicaServer::legacy_for_test(handler))
+    }
+
+    fn spawn_unica_server(server: UnicaServer) -> (McpClient, Arc<InFlightRegistry>) {
         let (client_io, server_io) = tokio::io::duplex(4 * 1024 * 1024);
-        let server = UnicaServer::new(handler);
         let in_flight = server.in_flight();
         let server = tokio::spawn(async move {
             match server.serve(server_io).await {
@@ -865,18 +1647,24 @@ mod tests {
         // Убитая установка своего провода не имела: её рассказ приходит сюда
         // от загрузчика и уходит вызывающему обычным ответом на `initialize`.
         let notice = "a Unica startup was killed while downloading unica 0.13.0";
-        let server =
-            UnicaServer::with_startup_notice(application_handler(), Some(notice.to_owned()));
+        let server = UnicaServer::legacy_with_startup_notice_for_test(
+            application_handler(),
+            Some(notice.to_owned()),
+        );
 
-        assert_eq!(server.get_info().instructions.as_deref(), Some(notice));
+        let instructions = server.get_info().instructions.expect("instructions");
+        assert!(instructions.contains("unica.view"), "{instructions}");
+        assert!(instructions.contains("sourceSet"), "{instructions}");
+        assert!(instructions.contains(notice), "{instructions}");
     }
 
     #[test]
-    fn a_session_with_nothing_to_report_carries_no_instructions() {
-        // Обычная сессия платит за это ноль байтов поверхности.
-        let server = UnicaServer::with_startup_notice(application_handler(), None);
+    fn a_session_without_notice_still_carries_bootstrap_instructions() {
+        let server = UnicaServer::legacy_with_startup_notice_for_test(application_handler(), None);
 
-        assert_eq!(server.get_info().instructions, None);
+        let instructions = server.get_info().instructions.expect("instructions");
+        assert!(instructions.contains("unica.view"), "{instructions}");
+        assert!(instructions.contains("sourceSet"), "{instructions}");
     }
 
     #[test]
@@ -953,32 +1741,55 @@ mod tests {
         client.shutdown().await;
     }
 
-    #[tokio::test]
-    async fn tools_list_round_trips_the_data_driven_registry() {
-        let (mut client, _) = spawn_server(application_handler());
-        client.initialize().await;
-        client
-            .send(json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} }))
-            .await;
-        let response = client.receive().await;
-        let listed = response["result"]["tools"].as_array().unwrap();
-        assert_eq!(listed[0]["name"], "unica.cf.edit");
-        assert!(listed
-            .iter()
-            .any(|tool| tool["name"] == "unica.project.status"));
-        // This is the actual SDK projection hosts place in model context, not
-        // just the two largest source schemas measured in isolation.
-        let compact_result_bytes = serde_json::to_vec(&response["result"]).unwrap().len();
-        eprintln!("tools/list compact JSON bytes: {compact_result_bytes}");
-        // Release baseline for the typed Meta surface (2026-08-04): 1,275,431
-        // bytes. Keep a narrow ratchet here; the follow-up reduction target is
-        // recorded in the implementation plan instead of silently spending
-        // more model-context budget.
-        assert!(
-            compact_result_bytes < 1_285_000,
-            "tools/list result consumes {compact_result_bytes} compact JSON bytes"
+    #[test]
+    fn application_registry_owns_tool_names_descriptions_and_wire_schemas() {
+        let specs = crate::application::tools();
+        let listed = tool_definitions(&specs);
+
+        assert_eq!(listed.len(), specs.len());
+        let unique_names: HashSet<&str> = specs.iter().map(|spec| spec.name).collect();
+        assert_eq!(
+            unique_names.len(),
+            specs.len(),
+            "ToolSpec names must be unique"
         );
-        client.shutdown().await;
+
+        for (spec, tool) in specs.iter().zip(&listed) {
+            assert_eq!(tool.name, spec.name);
+            assert!(
+                !spec.description.trim().is_empty(),
+                "{} must retain its application-owned description",
+                spec.name
+            );
+            assert_eq!(
+                tool.description, None,
+                "{} must keep application prose off the schema-only wire",
+                spec.name
+            );
+
+            let mut expected_input = input_schema_for_tool(spec);
+            strip_schema_descriptions(&mut expected_input);
+            assert_eq!(
+                Value::Object(tool.input_schema.as_ref().clone()),
+                expected_input,
+                "{} input schema must be projected from the application contract",
+                spec.name
+            );
+
+            let mut expected_output = structured_output_schema(spec);
+            if let Some(schema) = &mut expected_output {
+                strip_schema_descriptions(schema);
+            }
+            let actual_output = tool
+                .output_schema
+                .as_ref()
+                .map(|schema| Value::Object(schema.as_ref().clone()));
+            assert_eq!(
+                actual_output, expected_output,
+                "{} output schema must follow its application handler contract",
+                spec.name
+            );
+        }
     }
 
     #[tokio::test]
@@ -1239,6 +2050,1947 @@ mod tests {
         })
     }
 
+    fn modern_tasks_meta() -> Value {
+        json!({
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities": {
+                "extensions": {"io.modelcontextprotocol/tasks": {}}
+            }
+        })
+    }
+
+    fn canonical_result(summary: &str) -> crate::domain::invocation::DomainResult {
+        crate::domain::invocation::DomainResult {
+            ok: false,
+            at: Some("main:Catalog.Товары".into()),
+            summary: summary.into(),
+            data: Some(json!({"nested": [1, 2, 3]})),
+            changed: vec![json!({"at": "main:Catalog.Товары.Attribute.Код"})],
+            warnings: vec![json!({"code": "warning"})],
+            diagnostics: vec![json!({"code": "bad_value"})],
+            artifacts: vec![json!({"kind": "report"})],
+            next: vec![json!({"op": "view"})],
+            rev: Some("rev-7".into()),
+            cursor: Some("cursor-2".into()),
+        }
+    }
+
+    /// A durable v5 snapshot for the handler fakes: the same identity and
+    /// timing every test expects on the wire, one closed variant per status.
+    fn canonical_snapshot(
+        task_id: crate::domain::invocation::TaskId,
+        status: crate::domain::invocation::InvocationStatus,
+        result: Option<crate::domain::invocation::DomainResult>,
+    ) -> V5DaemonTaskSnapshot {
+        canonical_snapshot_at(
+            task_id,
+            status,
+            result,
+            1_777_012_345_678,
+            1_777_012_346_789,
+        )
+    }
+
+    fn canonical_snapshot_at(
+        task_id: crate::domain::invocation::TaskId,
+        status: crate::domain::invocation::InvocationStatus,
+        result: Option<crate::domain::invocation::DomainResult>,
+        created_at_epoch_ms: u64,
+        updated_at_epoch_ms: u64,
+    ) -> V5DaemonTaskSnapshot {
+        use crate::domain::invocation::InvocationStatus;
+
+        let invocation_id = crate::domain::invocation::InvocationId::new();
+        let receipt_key_digest: crate::application::receipt_ledger::ReceiptKeyDigest =
+            "07".repeat(32).parse().unwrap();
+        let terminal_digest: crate::application::receipt_ledger::TerminalDigest =
+            "09".repeat(32).parse().unwrap();
+        let (ttl_ms, poll_interval_ms, version, cancel_requested) = (3_600_000, 250, 2, false);
+        match status {
+            InvocationStatus::Queued => V5DaemonTaskSnapshot::Queued {
+                task_id,
+                invocation_id,
+                receipt_key_digest,
+                created_at_epoch_ms,
+                updated_at_epoch_ms,
+                ttl_ms,
+                poll_interval_ms,
+                version,
+                cancel_requested,
+            },
+            InvocationStatus::Working => V5DaemonTaskSnapshot::Working {
+                task_id,
+                invocation_id,
+                receipt_key_digest,
+                created_at_epoch_ms,
+                updated_at_epoch_ms,
+                ttl_ms,
+                poll_interval_ms,
+                version,
+                cancel_requested,
+            },
+            InvocationStatus::Completed => V5DaemonTaskSnapshot::Completed {
+                task_id,
+                invocation_id,
+                receipt_key_digest,
+                created_at_epoch_ms,
+                updated_at_epoch_ms,
+                ttl_ms,
+                poll_interval_ms,
+                version,
+                cancel_requested,
+                terminal_epoch_ms: updated_at_epoch_ms,
+                terminal_digest,
+                result: Box::new(result.expect("a completed snapshot carries its result")),
+            },
+            InvocationStatus::Failed => V5DaemonTaskSnapshot::Failed {
+                task_id,
+                invocation_id,
+                receipt_key_digest,
+                created_at_epoch_ms,
+                updated_at_epoch_ms,
+                ttl_ms,
+                poll_interval_ms,
+                version,
+                cancel_requested,
+                terminal_epoch_ms: updated_at_epoch_ms,
+                terminal_digest,
+                reason:
+                    crate::application::invocation_store_v5::V5SafeFailureReason::InvocationFailed,
+            },
+            InvocationStatus::Cancelled => V5DaemonTaskSnapshot::Cancelled {
+                task_id,
+                invocation_id,
+                receipt_key_digest,
+                created_at_epoch_ms,
+                updated_at_epoch_ms,
+                ttl_ms,
+                poll_interval_ms,
+                version,
+                cancel_requested: true,
+                terminal_epoch_ms: updated_at_epoch_ms,
+                terminal_digest,
+            },
+        }
+    }
+
+    /// The handler fakes answer a Direct terminal the way the router does: as
+    /// the final projected `CallToolResult`, or the projection's refusal.
+    fn direct_outcome(
+        result: crate::domain::invocation::DomainResult,
+    ) -> Result<CanonicalCallOutcome, ErrorData> {
+        crate::interfaces::task_projection::call_tool_result(&result)
+            .map(CanonicalCallOutcome::Direct)
+            .map_err(crate::interfaces::task_projection::projection_error)
+    }
+
+    fn canonical_profile_server() -> UnicaServer {
+        let task_id = crate::domain::invocation::TaskId::new();
+        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _| {
+            Ok(CanonicalCallOutcome::Task(canonical_snapshot(
+                task_id,
+                crate::domain::invocation::InvocationStatus::Working,
+                None,
+            )))
+        });
+        let get: Arc<CanonicalTaskHandler> = Arc::new(move |_, _| {
+            Ok(canonical_snapshot(
+                task_id,
+                crate::domain::invocation::InvocationStatus::Working,
+                None,
+            ))
+        });
+        UnicaServer::with_canonical_v13_tasks(call, Arc::clone(&get), get)
+    }
+
+    async fn listed_tool_names(
+        client: &mut McpClient,
+        id: u64,
+        meta: Option<Value>,
+    ) -> Vec<String> {
+        let mut params = json!({});
+        if let Some(meta) = meta {
+            params["_meta"] = meta;
+        }
+        client
+            .send(json!({"jsonrpc":"2.0", "id":id, "method":"tools/list", "params":params}))
+            .await;
+        let response = client.receive().await;
+        assert!(response.get("error").is_none(), "{response}");
+        response["result"]["tools"]
+            .as_array()
+            .expect("tools/list must return tools")
+            .iter()
+            .map(|tool| tool["name"].as_str().expect("tool name").to_string())
+            .collect()
+    }
+
+    fn assert_v13_profile_names(names: &[String], native_tasks: bool) {
+        let mut expected = vec![
+            "unica.view",
+            "unica.apply",
+            "unica.resolve",
+            "unica.search",
+            "unica.check",
+            "unica.diff",
+            "unica.run",
+            "unica.docs",
+        ];
+        if !native_tasks {
+            expected.extend(["unica.task.get", "unica.task.result", "unica.task.cancel"]);
+        }
+        assert_eq!(names, expected, "wrong canonical v0.13 tools/list profile");
+        for forbidden in [
+            "unica.task.list",
+            "unica.task.logs",
+            "unica.runtime.job.start",
+            "unica.runtime.job.status",
+            "unica.runtime.job.wait",
+            "unica.runtime.job.logs",
+            "unica.runtime.job.list",
+            "unica.runtime.job.cancel",
+        ] {
+            assert!(
+                !names.iter().any(|name| name == forbidden),
+                "leaked {forbidden}"
+            );
+        }
+    }
+
+    async fn surface_profiles_case() {
+        // A legacy initialized session stays on the compatibility profile even
+        // when one request carries modern Tasks metadata.
+        let (mut legacy, _) = spawn_unica_server(canonical_profile_server());
+        legacy
+            .send(json!({
+                "jsonrpc":"2.0", "id":0, "method":"initialize",
+                "params":{
+                    "protocolVersion":"2025-11-25",
+                    "capabilities":{},
+                    "clientInfo":{"name":"legacy-profile","version":"1"}
+                }
+            }))
+            .await;
+        assert_eq!(
+            legacy.receive().await["result"]["protocolVersion"],
+            "2025-11-25"
+        );
+        assert_v13_profile_names(&listed_tool_names(&mut legacy, 1, None).await, false);
+        assert_v13_profile_names(
+            &listed_tool_names(&mut legacy, 2, Some(modern_tasks_meta())).await,
+            false,
+        );
+        legacy.shutdown().await;
+
+        // A legitimately negotiated modern session selects from its own
+        // capabilities and never from another client's previous list.
+        let (mut modern_native, _) = spawn_unica_server(canonical_profile_server());
+        modern_native
+            .send(json!({
+                "jsonrpc":"2.0", "id":0, "method":"initialize",
+                "params":{
+                    "protocolVersion":"2026-07-28",
+                    "capabilities":{"extensions":{"io.modelcontextprotocol/tasks":{}}},
+                    "clientInfo":{"name":"modern-native","version":"1"}
+                }
+            }))
+            .await;
+        modern_native.receive().await;
+        assert_v13_profile_names(&listed_tool_names(&mut modern_native, 1, None).await, true);
+        modern_native.shutdown().await;
+
+        let (mut modern_compat, _) = spawn_unica_server(canonical_profile_server());
+        modern_compat
+            .send(json!({
+                "jsonrpc":"2.0", "id":0, "method":"initialize",
+                "params":{
+                    "protocolVersion":"2026-07-28",
+                    "capabilities":{},
+                    "clientInfo":{"name":"modern-compat","version":"1"}
+                }
+            }))
+            .await;
+        modern_compat.receive().await;
+        assert_v13_profile_names(&listed_tool_names(&mut modern_compat, 1, None).await, false);
+        modern_compat.shutdown().await;
+
+        // Direct-first requests select independently per request.
+        let (mut direct, _) = spawn_unica_server(canonical_profile_server());
+        assert_v13_profile_names(
+            &listed_tool_names(&mut direct, 1, Some(modern_tasks_meta())).await,
+            true,
+        );
+        assert_v13_profile_names(
+            &listed_tool_names(&mut direct, 2, Some(modern_meta())).await,
+            false,
+        );
+        direct.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn surface_profiles_publish_eight_native_or_eleven_compatibility_tools_per_client() {
+        surface_profiles_case().await;
+    }
+
+    async fn compatibility_receipts_case() {
+        use crate::domain::invocation::{InvocationStatus, TaskId};
+        use std::sync::atomic::AtomicUsize;
+
+        let task_id = TaskId::new();
+        let executions = Arc::new(AtomicUsize::new(0));
+        let execution_observed = Arc::clone(&executions);
+        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _| {
+            execution_observed.fetch_add(1, Ordering::SeqCst);
+            Ok(CanonicalCallOutcome::Task(canonical_snapshot(
+                task_id,
+                InvocationStatus::Working,
+                None,
+            )))
+        });
+        let gets = Arc::new(AtomicUsize::new(0));
+        let get_observed = Arc::clone(&gets);
+        let get: Arc<CanonicalTaskHandler> = Arc::new(move |_, _| {
+            get_observed.fetch_add(1, Ordering::SeqCst);
+            Ok(canonical_snapshot(task_id, InvocationStatus::Working, None))
+        });
+        let cancellations = Arc::new(AtomicUsize::new(0));
+        let cancel_observed = Arc::clone(&cancellations);
+        let cancel: Arc<CanonicalTaskHandler> = Arc::new(move |_, _| {
+            cancel_observed.fetch_add(1, Ordering::SeqCst);
+            Ok(canonical_snapshot(
+                task_id,
+                InvocationStatus::Cancelled,
+                None,
+            ))
+        });
+        let (mut client, _) =
+            spawn_unica_server(UnicaServer::with_canonical_v13_tasks(call, get, cancel));
+
+        client
+            .send(json!({
+                "jsonrpc":"2.0", "id":1, "method":"tools/call",
+                "params":{
+                    "name":"unica.check", "arguments":{}, "_meta":modern_meta()
+                }
+            }))
+            .await;
+        let initial = client.receive().await;
+        assert_ne!(initial["result"]["resultType"], "task", "{initial}");
+        assert_eq!(initial["result"]["content"], json!([]), "{initial}");
+        assert_eq!(
+            initial["result"]["structuredContent"]["data"]["task"]["taskId"],
+            task_id.to_string(),
+            "{initial}"
+        );
+        assert_eq!(
+            initial["result"]["structuredContent"]["data"]["task"]["status"],
+            "working"
+        );
+        assert!(initial["result"]["structuredContent"].get("work").is_none());
+        assert!(initial["result"]["structuredContent"].get("job").is_none());
+
+        client
+            .send(json!({
+                "jsonrpc":"2.0", "id":2, "method":"tools/call",
+                "params":{
+                    "name":"unica.task.get",
+                    "arguments":{"taskId":task_id.to_string()},
+                    "_meta":modern_meta()
+                }
+            }))
+            .await;
+        let get_result = client.receive().await;
+        assert_eq!(
+            get_result["result"]["structuredContent"]["data"]["task"],
+            initial["result"]["structuredContent"]["data"]["task"]
+        );
+
+        for id in [3, 4] {
+            client
+                .send(json!({
+                    "jsonrpc":"2.0", "id":id, "method":"tools/call",
+                    "params":{
+                        "name":"unica.task.cancel",
+                        "arguments":{"taskId":task_id.to_string()},
+                        "_meta":modern_meta()
+                    }
+                }))
+                .await;
+            let cancelled = client.receive().await;
+            assert_eq!(
+                cancelled["result"]["structuredContent"]["diagnostics"][0]["code"],
+                "task_cancelled",
+                "{cancelled}"
+            );
+        }
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
+        assert_eq!(gets.load(Ordering::SeqCst), 1);
+        assert_eq!(cancellations.load(Ordering::SeqCst), 2);
+        client.shutdown().await;
+    }
+
+    fn compatibility_wait_budget_case() {
+        let received = Instant::now();
+        let deadline = FrontendInvocationDeadline::new(received, None);
+        assert_eq!(
+            bounded_compatibility_wait_ms(0, deadline, received),
+            0,
+            "zero is an immediate probe"
+        );
+        assert_eq!(
+            bounded_compatibility_wait_ms(7_000, deadline, received),
+            7_000
+        );
+        assert_eq!(
+            bounded_compatibility_wait_ms(7_000, deadline, received + Duration::from_millis(6_999),),
+            1,
+            "elapsed frontend time is never replenished"
+        );
+        assert_eq!(
+            bounded_compatibility_wait_ms(7_000, deadline, received + Duration::from_secs(7),),
+            0
+        );
+        assert_eq!(
+            wait_transport_cutoff(0, deadline),
+            received + Duration::from_millis(125)
+        );
+        assert_eq!(
+            wait_transport_cutoff(1, deadline),
+            received + Duration::from_millis(126)
+        );
+        assert_eq!(
+            wait_transport_cutoff(7_000, deadline),
+            received + Duration::from_millis(7_125)
+        );
+        assert_eq!(
+            wait_transport_cutoff(7_000, deadline),
+            received + Duration::from_millis(7_125),
+            "elapsed frontend time is not replenished by the compatibility wait"
+        );
+        assert_eq!(
+            wait_transport_cutoff(
+                7_000,
+                FrontendInvocationDeadline::new(received, Some(Duration::from_millis(80)))
+            ),
+            received + Duration::from_millis(80),
+            "an earlier host deadline is stronger than waitMs plus response margin"
+        );
+    }
+
+    async fn compatibility_terminal_result_case() {
+        use crate::domain::invocation::{InvocationStatus, TaskId};
+        use std::sync::atomic::AtomicUsize;
+
+        let task_id = TaskId::new();
+        let subject = canonical_result("same terminal subject result");
+        let executions = Arc::new(AtomicUsize::new(0));
+        let execution_observed = Arc::clone(&executions);
+        let direct_subject = subject.clone();
+        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, arguments, _, _| {
+            execution_observed.fetch_add(1, Ordering::SeqCst);
+            if arguments.get("direct").and_then(Value::as_bool) == Some(true) {
+                direct_outcome(direct_subject.clone())
+            } else {
+                Ok(CanonicalCallOutcome::Task(canonical_snapshot(
+                    task_id,
+                    InvocationStatus::Working,
+                    None,
+                )))
+            }
+        });
+        let get: Arc<CanonicalTaskHandler> =
+            Arc::new(move |_, _| Ok(canonical_snapshot(task_id, InvocationStatus::Working, None)));
+        let waits = Arc::new(Mutex::new(Vec::<u64>::new()));
+        let waits_observed = Arc::clone(&waits);
+        let wait_subject = subject.clone();
+        let wait: Arc<CanonicalTaskWaitHandler> = Arc::new(move |_, wait_ms, _| {
+            waits_observed.lock().unwrap().push(wait_ms);
+            Ok(if wait_ms == 0 {
+                canonical_snapshot(task_id, InvocationStatus::Working, None)
+            } else {
+                canonical_snapshot(
+                    task_id,
+                    InvocationStatus::Completed,
+                    Some(wait_subject.clone()),
+                )
+            })
+        });
+        let cancel = Arc::clone(&get);
+        let server = UnicaServer::with_canonical_v13_task_handlers(call, get, wait, cancel);
+        let (mut client, _) = spawn_unica_server(server);
+
+        client
+            .send(json!({
+                "jsonrpc":"2.0", "id":1, "method":"tools/call",
+                "params":{
+                    "name":"unica.check", "arguments":{"direct":true}, "_meta":modern_meta()
+                }
+            }))
+            .await;
+        let direct = client.receive().await;
+        client
+            .send(json!({
+                "jsonrpc":"2.0", "id":2, "method":"tools/call",
+                "params":{
+                    "name":"unica.check", "arguments":{}, "_meta":modern_meta()
+                }
+            }))
+            .await;
+        let initial = client.receive().await;
+        assert_eq!(
+            initial["result"]["structuredContent"]["data"]["task"]["taskId"],
+            task_id.to_string()
+        );
+        client
+            .send(json!({
+                "jsonrpc":"2.0", "id":3, "method":"tools/call",
+                "params":{
+                    "name":"unica.task.result",
+                    "arguments":{"taskId":task_id.to_string(), "waitMs":0},
+                    "_meta":modern_meta()
+                }
+            }))
+            .await;
+        let still_working = client.receive().await;
+        assert_eq!(
+            still_working["result"]["structuredContent"]["data"]["task"]["status"], "working",
+            "{still_working}"
+        );
+        client
+            .send(json!({
+                "jsonrpc":"2.0", "id":4, "method":"tools/call",
+                "params":{
+                    "name":"unica.task.result",
+                    "arguments":{"taskId":task_id.to_string()},
+                    "_meta":modern_meta()
+                }
+            }))
+            .await;
+        let terminal = client.receive().await;
+        assert_eq!(
+            serde_json::to_vec(&direct["result"]).unwrap(),
+            serde_json::to_vec(&terminal["result"]).unwrap()
+        );
+        assert_eq!(executions.load(Ordering::SeqCst), 2);
+        {
+            let waits = waits.lock().unwrap();
+            assert_eq!(waits.len(), 2);
+            assert_eq!(waits[0], 0);
+            assert!(waits[1] <= 7_000);
+            assert!(
+                waits[1] > 0,
+                "default result wait must not become immediate"
+            );
+        }
+        client.shutdown().await;
+    }
+
+    async fn compatibility_closed_errors_case() {
+        use crate::domain::invocation::{InvocationStatus, TaskId};
+        use std::sync::atomic::AtomicUsize;
+
+        let known = TaskId::new();
+        let unknown = TaskId::new();
+        let expired = TaskId::new();
+        let subject_executions = Arc::new(AtomicUsize::new(0));
+        let subject_observed = Arc::clone(&subject_executions);
+        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _| {
+            subject_observed.fetch_add(1, Ordering::SeqCst);
+            Ok(CanonicalCallOutcome::Task(canonical_snapshot(
+                known,
+                InvocationStatus::Working,
+                None,
+            )))
+        });
+        let get_calls = Arc::new(AtomicUsize::new(0));
+        let get_observed = Arc::clone(&get_calls);
+        let get: Arc<CanonicalTaskHandler> = Arc::new(move |task_id, _| {
+            get_observed.fetch_add(1, Ordering::SeqCst);
+            if task_id == unknown {
+                Err(V5TaskExchangeError::Protocol(
+                    V5DaemonErrorCode::TaskNotFound,
+                ))
+            } else {
+                Ok(canonical_snapshot(known, InvocationStatus::Working, None))
+            }
+        });
+        let wait_calls = Arc::new(AtomicUsize::new(0));
+        let wait_observed = Arc::clone(&wait_calls);
+        let wait: Arc<CanonicalTaskWaitHandler> = Arc::new(move |task_id, _, _| {
+            wait_observed.fetch_add(1, Ordering::SeqCst);
+            if task_id == expired {
+                Err(V5TaskExchangeError::Protocol(
+                    V5DaemonErrorCode::TaskExpired,
+                ))
+            } else {
+                Ok(canonical_snapshot(known, InvocationStatus::Working, None))
+            }
+        });
+        let cancel = Arc::clone(&get);
+        let (mut compat, _) = spawn_unica_server(UnicaServer::with_canonical_v13_task_handlers(
+            Arc::clone(&call),
+            Arc::clone(&get),
+            Arc::clone(&wait),
+            Arc::clone(&cancel),
+        ));
+
+        for (id, name, arguments, expected) in [
+            (
+                1,
+                "unica.task.get",
+                json!({"taskId":unknown.to_string()}),
+                "task_not_found",
+            ),
+            (
+                2,
+                "unica.task.result",
+                json!({"taskId":expired.to_string(), "waitMs":0}),
+                "task_expired",
+            ),
+            (
+                3,
+                "unica.task.get",
+                json!({"taskId":"not-canonical"}),
+                "invalid_task_id",
+            ),
+            (
+                4,
+                "unica.task.result",
+                json!({"taskId":known.to_string(), "waitMs":7_001}),
+                "bad_wait_ms",
+            ),
+        ] {
+            compat
+                .send(json!({
+                    "jsonrpc":"2.0", "id":id, "method":"tools/call",
+                    "params":{"name":name, "arguments":arguments, "_meta":modern_meta()}
+                }))
+                .await;
+            let response = compat.receive().await;
+            assert_eq!(
+                response["result"]["structuredContent"]["diagnostics"][0]["code"], expected,
+                "{response}"
+            );
+            assert_eq!(response["result"]["isError"], true, "{response}");
+        }
+        assert_eq!(subject_executions.load(Ordering::SeqCst), 0);
+        assert_eq!(get_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(wait_calls.load(Ordering::SeqCst), 1);
+        compat.shutdown().await;
+
+        let (mut native, _) = spawn_unica_server(UnicaServer::with_canonical_v13_task_handlers(
+            call, get, wait, cancel,
+        ));
+        native
+            .send(json!({
+                "jsonrpc":"2.0", "id":1, "method":"tools/call",
+                "params":{
+                    "name":"unica.task.get",
+                    "arguments":{"taskId":known.to_string()},
+                    "_meta":modern_tasks_meta()
+                }
+            }))
+            .await;
+        let rejected = native.receive().await;
+        assert_eq!(rejected["error"]["code"], -32602, "{rejected}");
+        assert_eq!(subject_executions.load(Ordering::SeqCst), 0);
+        native.shutdown().await;
+    }
+
+    /// A known-long service: every call hands off to a durable Task before
+    /// execution, which is what the compatibility receipts observe.
+    fn known_long_service() -> Arc<ScriptedService> {
+        Arc::new(ScriptedService {
+            delay: Duration::from_millis(50),
+            known_long: true,
+            outcome: Mutex::new(Some(Ok(crate::domain::invocation::DomainResult::success(
+                "durable compatibility result",
+            )))),
+            executions: AtomicUsize::new(0),
+        })
+    }
+
+    async fn compatibility_daemon_restart_case() {
+        use crate::domain::invocation::TaskId;
+        use std::str::FromStr;
+
+        let first_service = known_long_service();
+        let mut daemon = LiveDaemon::start(first_service.clone());
+        let workspace_hint = daemon.workspace_hint.clone();
+        let (mut first, _) = spawn_unica_server(UnicaServer::with_canonical_daemon(
+            daemon.owner(),
+            workspace_hint.clone(),
+        ));
+        first
+            .send(json!({
+                "jsonrpc":"2.0", "id":1, "method":"tools/call",
+                "params":{
+                    "name":"unica.run",
+                    "arguments":{"op":"infobase.build", "args":{}},
+                    "_meta":modern_meta()
+                }
+            }))
+            .await;
+        let initial = first.receive().await;
+        assert_ne!(initial["result"]["resultType"], "task", "{initial}");
+        let task_id_text = initial["result"]["structuredContent"]["data"]["task"]["taskId"]
+            .as_str()
+            .expect("compatibility receipt must disclose the durable task id")
+            .to_owned();
+        let task_id = TaskId::from_str(&task_id_text).unwrap();
+
+        first
+            .send(json!({
+                "jsonrpc":"2.0", "id":2, "method":"tools/call",
+                "params":{
+                    "name":"unica.task.result", "arguments":{"taskId":task_id_text},
+                    "_meta":modern_meta()
+                }
+            }))
+            .await;
+        let first_result = first.receive().await;
+        assert_eq!(
+            first_result["result"]["structuredContent"]["summary"], "durable compatibility result",
+            "{first_result}"
+        );
+        first
+            .send(json!({
+                "jsonrpc":"2.0", "id":3, "method":"tools/call",
+                "params":{
+                    "name":"unica.task.get", "arguments":{"taskId":task_id.to_string()},
+                    "_meta":modern_meta()
+                }
+            }))
+            .await;
+        let before_restart = first.receive().await;
+        let before_task = before_restart["result"]["structuredContent"]["data"]["task"].clone();
+        assert_eq!(before_task["status"], "completed", "{before_restart}");
+        assert_eq!(first_service.executions.load(Ordering::SeqCst), 1);
+
+        first.shutdown().await;
+        daemon.stop();
+
+        let second_service = known_long_service();
+        daemon.restart(second_service.clone(), Duration::from_millis(400));
+        let (mut second, _) = spawn_unica_server(UnicaServer::with_canonical_daemon(
+            daemon.owner(),
+            workspace_hint,
+        ));
+        second
+            .send(json!({
+                "jsonrpc":"2.0", "id":4, "method":"tools/call",
+                "params":{
+                    "name":"unica.task.get", "arguments":{"taskId":task_id.to_string()},
+                    "_meta":modern_meta()
+                }
+            }))
+            .await;
+        let after_restart = second.receive().await;
+        assert_eq!(
+            after_restart["result"]["structuredContent"]["data"]["task"], before_task,
+            "task identity, status, timestamps, and TTL must survive daemon restart: {after_restart}"
+        );
+        second
+            .send(json!({
+                "jsonrpc":"2.0", "id":5, "method":"tools/call",
+                "params":{
+                    "name":"unica.task.result", "arguments":{"taskId":task_id.to_string()},
+                    "_meta":modern_meta()
+                }
+            }))
+            .await;
+        let after_result = second.receive().await;
+        assert_eq!(
+            serde_json::to_vec(&after_result["result"]).unwrap(),
+            serde_json::to_vec(&first_result["result"]).unwrap(),
+            "the restarted adapter must project the same durable terminal result"
+        );
+        assert_eq!(
+            second_service.executions.load(Ordering::SeqCst),
+            0,
+            "a restart never re-executes a completed task"
+        );
+        second.shutdown().await;
+        daemon.finish();
+    }
+
+    #[tokio::test]
+    async fn compatibility_tools_return_durable_receipts_without_native_tasks_or_reexecution() {
+        compatibility_receipts_case().await;
+    }
+
+    #[test]
+    fn compatibility_result_wait_is_bounded_by_request_and_original_frontend_window() {
+        compatibility_wait_budget_case();
+    }
+
+    /// The fake answers every Task frame with a working snapshot, optionally
+    /// only after `response_delay`; the tests below spend the frontend budget
+    /// on connect, handshake and response on purpose.
+    fn working_task_fake(
+        task_id: crate::domain::invocation::TaskId,
+        handshake_delay: Duration,
+        response_delay: Duration,
+        observed: mpsc::Sender<V5ClientRequest>,
+    ) -> FakeDaemon {
+        FakeDaemon::start_with_handshake_delay(
+            Box::new(move |_, request| {
+                let _ = observed.send(request.clone());
+                if !response_delay.is_zero() {
+                    std::thread::sleep(response_delay);
+                }
+                Step::Reply(
+                    crate::infrastructure::daemon::protocol_v5::V5ServerResponse::Task {
+                        snapshot: canonical_snapshot(
+                            task_id,
+                            crate::domain::invocation::InvocationStatus::Working,
+                            None,
+                        ),
+                    },
+                )
+            }),
+            handshake_delay,
+        )
+    }
+
+    async fn compatibility_wait_single_deadline_case() {
+        for requested_wait_ms in [0_u64, 1] {
+            let task_id = crate::domain::invocation::TaskId::new();
+            let (observed, observations) = mpsc::channel();
+            // Connect and handshake take longer than the requested wait, and the
+            // daemon answers only after the 125 ms response margin has passed.
+            let fake = working_task_fake(
+                task_id,
+                Duration::from_millis(60),
+                Duration::from_millis(400),
+                observed,
+            );
+            let (mut mcp, _) = spawn_unica_server(UnicaServer::with_canonical_daemon(
+                fake.owner(),
+                "/workspace".to_string(),
+            ));
+            mcp.send(json!({
+                "jsonrpc":"2.0", "id":1, "method":"tools/call",
+                "params":{
+                    "name":"unica.task.result",
+                    "arguments":{"taskId":task_id.to_string(), "waitMs":requested_wait_ms},
+                    "_meta":modern_meta()
+                }
+            }))
+            .await;
+            let response = mcp.receive().await;
+            assert_eq!(
+                response["result"]["structuredContent"]["diagnostics"][0]["code"],
+                "task_transport_failed",
+                "connect plus wait response exceeded the single {requested_wait_ms}ms + 125ms operation budget: {response}"
+            );
+            // One budget covers connect, handshake and response: on a loaded
+            // runner the handshake alone may cross it, and then the daemon never
+            // sees the request. When it does, the wait slice is already spent.
+            if let Ok(request) = observations.recv_timeout(Duration::from_millis(500)) {
+                assert_eq!(
+                    request,
+                    V5ClientRequest::WaitTask {
+                        task_id,
+                        wait_ms: 0
+                    },
+                    "connect time consumes the wait slice before the 125ms response margin"
+                );
+            }
+            mcp.shutdown().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn compatibility_wait_zero_and_one_share_one_budget_across_connect_and_response() {
+        compatibility_wait_single_deadline_case().await;
+    }
+
+    fn compatibility_wait_frontend_cutoff_is_not_rebased_case() {
+        let task_id = crate::domain::invocation::TaskId::new();
+        let (observed, observations) = mpsc::channel();
+        let fake = working_task_fake(task_id, Duration::ZERO, Duration::ZERO, observed);
+        let router = canonical_daemon_router(fake.owner(), "/workspace".to_string());
+        // The request was received a second ago and only now reaches the
+        // router: a Duration rebase would open a fresh window here, the
+        // absolute cutoff is already expired.
+        let received = Instant::now() - Duration::from_secs(1);
+
+        let outcome = (router.wait)(task_id, 0, FrontendInvocationDeadline::new(received, None));
+
+        assert_eq!(
+            outcome,
+            Err(V5TaskExchangeError::Transport),
+            "the operation must not rebase its cutoff after the injected pause"
+        );
+        assert!(
+            observations.try_recv().is_err(),
+            "an expired absolute cutoff must stop before operation admission"
+        );
+        assert_eq!(
+            fake.sessions.load(Ordering::SeqCst),
+            1,
+            "only the anchor session was opened"
+        );
+    }
+
+    fn compatibility_immediate_task_deadline_case(
+        tool_name: &'static str,
+        host_budget: Duration,
+        handshake_elapsed: Duration,
+        response_elapsed: Duration,
+    ) -> crate::domain::invocation::DomainResult {
+        let task_id = crate::domain::invocation::TaskId::new();
+        let (observed, observations) = mpsc::channel();
+        let fake = working_task_fake(task_id, handshake_elapsed, response_elapsed, observed);
+        let received = Instant::now();
+        let router = SurfaceToolRouter::CanonicalV13(canonical_daemon_router(
+            fake.owner(),
+            "/workspace".to_string(),
+        ));
+        let arguments = json!({"taskId": task_id.to_string()})
+            .as_object()
+            .unwrap()
+            .clone();
+        let outcome = execute_surface_tool(
+            &router,
+            tool_name,
+            &arguments,
+            CancellationToken::new(),
+            Arc::new(NoopProgressSink),
+            FrontendInvocationDeadline::new(received, Some(host_budget)),
+            false,
+        )
+        .unwrap();
+        let SurfaceToolOutcome::Canonical(result) = outcome else {
+            panic!("compatibility task tools must return canonical results");
+        };
+        if let Ok(request) = observations.recv_timeout(Duration::from_millis(500)) {
+            let expected = match tool_name {
+                "unica.task.get" => V5ClientRequest::GetTask { task_id },
+                "unica.task.cancel" => V5ClientRequest::CancelTask { task_id },
+                other => panic!("unexpected immediate compatibility tool {other}"),
+            };
+            assert_eq!(request, expected);
+        }
+        result
+    }
+
+    #[test]
+    fn compatibility_get_and_cancel_do_not_replace_open_frontend_cutoff_with_125ms() {
+        for tool_name in ["unica.task.get", "unica.task.cancel"] {
+            let result = compatibility_immediate_task_deadline_case(
+                tool_name,
+                Duration::from_millis(1_500),
+                Duration::from_millis(200),
+                Duration::ZERO,
+            );
+            assert!(
+                result.ok,
+                "{tool_name} replaced the open frontend cutoff: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn compatibility_get_and_cancel_share_one_absolute_cutoff_across_connect_and_exchange() {
+        for tool_name in ["unica.task.get", "unica.task.cancel"] {
+            let result = compatibility_immediate_task_deadline_case(
+                tool_name,
+                Duration::from_millis(300),
+                Duration::from_millis(200),
+                Duration::from_millis(200),
+            );
+            assert_eq!(
+                result
+                    .diagnostics
+                    .first()
+                    .and_then(|entry| entry["code"].as_str()),
+                Some("task_transport_failed"),
+                "{tool_name} reopened its transport budget after connect: {result:?}"
+            );
+        }
+    }
+
+    /// A payload that arrives after the operation cutoff is never published,
+    /// valid or not, and the operation session is closed for reuse.
+    fn compatibility_wait_late_payload_case(valid_near_limit: bool) {
+        use crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES;
+        use crate::infrastructure::daemon::protocol_v5::{
+            V5ServerResponse, MAX_V5_RESPONSE_LINE_BYTES,
+        };
+
+        let task_id = crate::domain::invocation::TaskId::new();
+        let response_payload = if valid_near_limit {
+            let snapshot = canonical_snapshot(
+                task_id,
+                crate::domain::invocation::InvocationStatus::Completed,
+                Some(crate::domain::invocation::DomainResult::success(
+                    "x".repeat(MAX_CANONICAL_RESULT_BYTES - 4_096),
+                )),
+            );
+            let mut bytes = serde_json::to_vec(&V5ServerResponse::Task { snapshot }).unwrap();
+            bytes.push(b'\n');
+            bytes
+        } else {
+            let mut hostile = br#"{"kind":"task","snapshot":{"unknown":""#.to_vec();
+            hostile.extend(std::iter::repeat_n(
+                b'x',
+                MAX_V5_RESPONSE_LINE_BYTES - hostile.len() - 4_096,
+            ));
+            hostile.extend_from_slice(b"\"}}\n");
+            hostile
+        };
+        let (second_request_seen, second_request_seen_wait) = mpsc::channel();
+        let fake = FakeDaemon::start_with_raw_script(Box::new(move |_, request, writer| {
+            use std::io::Write as _;
+            match request {
+                V5ClientRequest::WaitTask { .. } => {
+                    std::thread::sleep(Duration::from_millis(400));
+                    let _ = writer.write_all(&response_payload);
+                    let _ = writer.flush();
+                    true
+                }
+                _ => {
+                    let _ = second_request_seen.send(());
+                    false
+                }
+            }
+        }));
+        let anchor = fake.owner();
+        let deadline = Instant::now() + Duration::from_millis(150);
+        let mut operation = anchor.connect_peer_before(deadline).unwrap();
+        let first = operation.wait_task_before(task_id, 0, deadline);
+        let second = operation.get_task_before(task_id, Instant::now() + Duration::from_secs(1));
+        let saw_second = second_request_seen_wait
+            .recv_timeout(Duration::from_millis(800))
+            .is_ok();
+
+        assert_eq!(
+            first,
+            Err(V5TaskExchangeError::Transport),
+            "a payload that crossed the cutoff must not publish its snapshot"
+        );
+        assert_eq!(
+            second,
+            Err(V5TaskExchangeError::SessionPoisoned),
+            "a missed cutoff must poison the operation session"
+        );
+        assert!(
+            !saw_second,
+            "a missed cutoff must close the operation session before reuse"
+        );
+    }
+
+    #[test]
+    fn compatibility_wait_preserves_frontend_cutoff_across_client_admission_pause() {
+        compatibility_wait_frontend_cutoff_is_not_rebased_case();
+    }
+
+    #[test]
+    fn compatibility_wait_post_parse_expiry_wins_for_valid_and_malformed_near_limit_frames() {
+        compatibility_wait_late_payload_case(true);
+        compatibility_wait_late_payload_case(false);
+    }
+
+    /// The wait the daemon is asked for once the frontend cutoff, the
+    /// handshake and the response margin have been subtracted. The frontend
+    /// deadline starts after the anchor session exists, so only the
+    /// operation's own connect and handshake spend it.
+    fn compatibility_wait_authenticated_long_and_host_cutoff_case(
+        requested_wait_ms: u64,
+        host_remaining: Option<Duration>,
+        expected_daemon_wait_ms: std::ops::RangeInclusive<u64>,
+        must_answer: bool,
+    ) {
+        let task_id = crate::domain::invocation::TaskId::new();
+        let (observed, observations) = mpsc::channel();
+        let fake = working_task_fake(task_id, Duration::from_millis(60), Duration::ZERO, observed);
+        let router = canonical_daemon_router(fake.owner(), "/workspace".to_string());
+        let received = Instant::now();
+
+        let outcome = (router.wait)(
+            task_id,
+            requested_wait_ms,
+            FrontendInvocationDeadline::new(received, host_remaining),
+        );
+
+        match outcome {
+            Ok(snapshot) => assert_eq!(snapshot.task_id(), task_id),
+            // A host cutoff shorter than handshake plus margin may expire before
+            // the answer arrives; the request the daemon saw is still bounded.
+            Err(V5TaskExchangeError::Transport) if !must_answer => {}
+            Err(error) => panic!("wait failed: {error:?}"),
+        }
+        let observed = observations.recv_timeout(Duration::from_secs(2));
+        let request = match observed {
+            Ok(request) => request,
+            Err(_) if !must_answer => return,
+            Err(_) => panic!("the daemon never saw the wait request"),
+        };
+        let V5ClientRequest::WaitTask {
+            task_id: asked,
+            wait_ms,
+        } = request
+        else {
+            panic!("unexpected frame {request:?}");
+        };
+        assert_eq!(asked, task_id);
+        assert!(
+            expected_daemon_wait_ms.contains(&wait_ms),
+            "daemon wait {wait_ms} outside {expected_daemon_wait_ms:?}"
+        );
+    }
+
+    #[test]
+    fn compatibility_wait_authenticated_transport_bounds_7000_and_earlier_host_cutoff() {
+        // 7000 + 125 ms cutoff, minus the 60 ms handshake and the 125 ms margin;
+        // a loaded runner only lowers the value, never raises it above 6940.
+        compatibility_wait_authenticated_long_and_host_cutoff_case(
+            7_000,
+            None,
+            6_000..=6_940,
+            true,
+        );
+        // An earlier host cutoff consumes the wait entirely.
+        compatibility_wait_authenticated_long_and_host_cutoff_case(
+            7_000,
+            Some(Duration::from_millis(180)),
+            0..=0,
+            false,
+        );
+    }
+
+    #[tokio::test]
+    async fn compatibility_result_uses_wait_handler_and_preserves_terminal_direct_bytes() {
+        compatibility_terminal_result_case().await;
+    }
+
+    #[tokio::test]
+    async fn compatibility_task_errors_are_closed_and_native_profile_rejects_adapters() {
+        compatibility_closed_errors_case().await;
+    }
+
+    async fn compatibility_hostile_status_payload_case() {
+        use crate::domain::invocation::{DomainResult, InvocationStatus, TaskId};
+
+        // The v5 snapshot is a closed union: a status cannot arrive with the
+        // wrong payload, and a failure arrives as a closed reason without
+        // text. Every status therefore projects, and none of them can leak.
+        let statuses = [
+            InvocationStatus::Queued,
+            InvocationStatus::Working,
+            InvocationStatus::Completed,
+            InvocationStatus::Failed,
+            InvocationStatus::Cancelled,
+        ];
+        for status in statuses {
+            let task_id = TaskId::new();
+            let snapshot = canonical_snapshot(
+                task_id,
+                status,
+                (status == InvocationStatus::Completed).then(|| {
+                    DomainResult::success("hostile result /private/result-secret bearer-result")
+                }),
+            );
+            let get_snapshot = snapshot.clone();
+            let get: Arc<CanonicalTaskHandler> = Arc::new(move |_, _| Ok(get_snapshot.clone()));
+            let wait_snapshot = snapshot.clone();
+            let wait: Arc<CanonicalTaskWaitHandler> =
+                Arc::new(move |_, _, _| Ok(wait_snapshot.clone()));
+            let cancel = Arc::clone(&get);
+            let call: Arc<CanonicalCallHandler> =
+                Arc::new(move |_, _, _, _| direct_outcome(DomainResult::success("unused")));
+            let (mut client, _) = spawn_unica_server(
+                UnicaServer::with_canonical_v13_task_handlers(call, get, wait, cancel),
+            );
+
+            for (id, name, arguments) in [
+                (1, "unica.task.get", json!({"taskId": task_id.to_string()})),
+                (
+                    2,
+                    "unica.task.result",
+                    json!({"taskId": task_id.to_string(), "waitMs": 0}),
+                ),
+            ] {
+                client
+                    .send(json!({
+                        "jsonrpc":"2.0", "id":id, "method":"tools/call",
+                        "params":{
+                            "name":name, "arguments":arguments, "_meta":modern_meta()
+                        }
+                    }))
+                    .await;
+                let response = client.receive().await;
+                let code = response["result"]["structuredContent"]["diagnostics"][0]["code"]
+                    .as_str()
+                    .unwrap_or("");
+                match status {
+                    InvocationStatus::Failed => assert_eq!(code, "task_failed", "{response}"),
+                    InvocationStatus::Cancelled => {
+                        assert_eq!(code, "task_cancelled", "{response}")
+                    }
+                    _ => assert_ne!(
+                        code, "task_projection_failed",
+                        "status={status:?} {name}: {response}"
+                    ),
+                }
+                let serialized = serde_json::to_string(&response).unwrap();
+                if status != InvocationStatus::Completed {
+                    for forbidden in ["/private/result-secret", "bearer-result"] {
+                        assert!(!serialized.contains(forbidden), "leaked {forbidden}");
+                    }
+                }
+                assert!(
+                    !serialized.contains("invocation_failed"),
+                    "the closed failure reason stays on the daemon side: {serialized}"
+                );
+            }
+            client.shutdown().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn compatibility_adapter_rejects_every_hostile_status_payload_shape_without_leaking_failure(
+    ) {
+        compatibility_hostile_status_payload_case().await;
+    }
+
+    #[tokio::test]
+    async fn compatibility_adapter_reconnects_to_the_same_durable_task_after_daemon_restart() {
+        compatibility_daemon_restart_case().await;
+    }
+
+    #[tokio::test]
+    async fn v13_compatibility_task_tools_are_profile_gated_durable_and_replay_free() {
+        surface_profiles_case().await;
+        compatibility_receipts_case().await;
+        compatibility_wait_budget_case();
+        compatibility_wait_single_deadline_case().await;
+        compatibility_wait_frontend_cutoff_is_not_rebased_case();
+        compatibility_wait_late_payload_case(true);
+        compatibility_wait_late_payload_case(false);
+        compatibility_wait_authenticated_long_and_host_cutoff_case(
+            7_000,
+            None,
+            6_000..=6_940,
+            true,
+        );
+        compatibility_wait_authenticated_long_and_host_cutoff_case(
+            7_000,
+            Some(Duration::from_millis(180)),
+            0..=0,
+            false,
+        );
+        compatibility_terminal_result_case().await;
+        compatibility_closed_errors_case().await;
+        compatibility_hostile_status_payload_case().await;
+        compatibility_daemon_restart_case().await;
+    }
+
+    async fn tasks_direct_first_capability_case() {
+        use crate::domain::invocation::{InvocationStatus, TaskId};
+        use std::sync::atomic::AtomicUsize;
+
+        let task_id = TaskId::new();
+        let executions = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&executions);
+        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _| {
+            observed.fetch_add(1, Ordering::SeqCst);
+            Ok(CanonicalCallOutcome::Task(canonical_snapshot(
+                task_id,
+                InvocationStatus::Working,
+                None,
+            )))
+        });
+        let get: Arc<CanonicalTaskHandler> =
+            Arc::new(move |_, _| Ok(canonical_snapshot(task_id, InvocationStatus::Working, None)));
+        let cancel = Arc::clone(&get);
+
+        let server = UnicaServer::with_canonical_v13_tasks(call, get, cancel);
+        assert!(server.get_info().capabilities.supports_tasks());
+        let (mut client, _) = spawn_unica_server(server);
+        client
+            .send(json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {
+                    "name": "unica.check", "arguments": {},
+                    "_meta": modern_tasks_meta()
+                }
+            }))
+            .await;
+        let native = client.receive().await;
+        assert_eq!(native["result"]["resultType"], "task", "{native}");
+        assert_eq!(native["result"]["taskId"], task_id.to_string());
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
+        assert!(
+            timeout(Duration::from_millis(50), client.reader.next_line())
+                .await
+                .is_err(),
+            "task projection must not synthesize progress or polling traffic after CreateTaskResult"
+        );
+        client.shutdown().await;
+
+        let executions_without = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&executions_without);
+        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _| {
+            observed.fetch_add(1, Ordering::SeqCst);
+            Ok(CanonicalCallOutcome::Task(canonical_snapshot(
+                task_id,
+                InvocationStatus::Working,
+                None,
+            )))
+        });
+        let get: Arc<CanonicalTaskHandler> =
+            Arc::new(move |_, _| Ok(canonical_snapshot(task_id, InvocationStatus::Working, None)));
+        let server = UnicaServer::with_canonical_v13_tasks(call, Arc::clone(&get), get);
+        let (mut client, _) = spawn_unica_server(server);
+        client
+            .send(json!({
+                "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {
+                    "name": "unica.check", "arguments": {},
+                    "_meta": modern_meta()
+                }
+            }))
+            .await;
+        let compatibility = client.receive().await;
+        assert_ne!(
+            compatibility["result"]["resultType"], "task",
+            "{compatibility}"
+        );
+        assert_eq!(executions_without.load(Ordering::SeqCst), 1);
+        client.shutdown().await;
+
+        let legacy_session_executions = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&legacy_session_executions);
+        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _| {
+            observed.fetch_add(1, Ordering::SeqCst);
+            Ok(CanonicalCallOutcome::Task(canonical_snapshot(
+                task_id,
+                InvocationStatus::Working,
+                None,
+            )))
+        });
+        let get: Arc<CanonicalTaskHandler> =
+            Arc::new(move |_, _| Ok(canonical_snapshot(task_id, InvocationStatus::Working, None)));
+        let server = UnicaServer::with_canonical_v13_tasks(call, Arc::clone(&get), get);
+        let (mut client, _) = spawn_unica_server(server);
+        client
+            .send(json!({
+                "jsonrpc":"2.0", "id":0, "method":"initialize",
+                "params": {
+                    "protocolVersion":"2025-11-25",
+                    "capabilities": {"extensions":{"io.modelcontextprotocol/tasks":{}}},
+                    "clientInfo":{"name":"explicit-task-client","version":"1"}
+                }
+            }))
+            .await;
+        let initialized = client.receive().await;
+        assert!(
+            initialized["result"]["capabilities"]["extensions"]["io.modelcontextprotocol/tasks"]
+                .is_null(),
+            "2025-11-25 must not advertise SEP-2663: {initialized}"
+        );
+        client
+            .send(json!({
+                "jsonrpc":"2.0", "id":8, "method":"tools/call",
+                "params":{"name":"unica.check", "arguments":{}}
+            }))
+            .await;
+        let native = client.receive().await;
+        assert_ne!(native["result"]["resultType"], "task", "{native}");
+        assert_eq!(legacy_session_executions.load(Ordering::SeqCst), 1);
+        client
+            .send(json!({
+                "jsonrpc":"2.0", "id":9, "method":"tasks/get",
+                "params":{"taskId":task_id.to_string()}
+            }))
+            .await;
+        let unavailable = client.receive().await;
+        assert_eq!(unavailable["error"]["code"], -32601, "{unavailable}");
+        client.shutdown().await;
+    }
+
+    async fn legacy_initialized_session_cannot_escalate_tasks_per_request_case() {
+        use crate::domain::invocation::{InvocationStatus, TaskId};
+        use std::sync::atomic::AtomicUsize;
+
+        let task_id = TaskId::new();
+        let executions = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&executions);
+        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _| {
+            observed.fetch_add(1, Ordering::SeqCst);
+            Ok(CanonicalCallOutcome::Task(canonical_snapshot(
+                task_id,
+                InvocationStatus::Working,
+                None,
+            )))
+        });
+        let get: Arc<CanonicalTaskHandler> =
+            Arc::new(move |_, _| Ok(canonical_snapshot(task_id, InvocationStatus::Working, None)));
+        let server = UnicaServer::with_canonical_v13_tasks(call, Arc::clone(&get), get);
+        let (mut client, _) = spawn_unica_server(server);
+        client
+            .send(json!({
+                "jsonrpc":"2.0", "id":0, "method":"initialize",
+                "params": {
+                    "protocolVersion":"2025-11-25",
+                    "capabilities":{"extensions":{"io.modelcontextprotocol/tasks":{}}},
+                    "clientInfo":{"name":"legacy-hybrid-client","version":"1"}
+                }
+            }))
+            .await;
+        let initialized = client.receive().await;
+        assert_eq!(initialized["result"]["protocolVersion"], "2025-11-25");
+
+        client
+            .send(json!({
+                "jsonrpc":"2.0", "id":1, "method":"tools/call",
+                "params": {
+                    "name":"unica.check", "arguments":{},
+                    "_meta":modern_tasks_meta()
+                }
+            }))
+            .await;
+        let call_response = client.receive().await;
+
+        let mut task_method_codes = Vec::new();
+        for (id, method) in [(2, "tasks/get"), (3, "tasks/update"), (4, "tasks/cancel")] {
+            let mut params = json!({
+                "taskId":task_id.to_string(),
+                "_meta":modern_tasks_meta()
+            });
+            if method == "tasks/update" {
+                params["inputResponses"] = json!({});
+            }
+            client
+                .send(json!({"jsonrpc":"2.0", "id":id, "method":method, "params":params}))
+                .await;
+            task_method_codes.push(client.receive().await["error"]["code"].as_i64());
+        }
+
+        assert_eq!(
+            (
+                call_response["result"]["resultType"].as_str(),
+                task_method_codes,
+                executions.load(Ordering::SeqCst),
+            ),
+            (
+                Some("complete"),
+                vec![Some(-32601), Some(-32601), Some(-32601)],
+                1,
+            ),
+            "legacy initialize authority was escalated by request metadata: {call_response}"
+        );
+        client.shutdown().await;
+    }
+
+    async fn modern_initialized_session_retains_native_tasks_case() {
+        use crate::domain::invocation::{InvocationStatus, TaskId};
+
+        let task_id = TaskId::new();
+        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _| {
+            Ok(CanonicalCallOutcome::Task(canonical_snapshot(
+                task_id,
+                InvocationStatus::Working,
+                None,
+            )))
+        });
+        let get: Arc<CanonicalTaskHandler> =
+            Arc::new(move |_, _| Ok(canonical_snapshot(task_id, InvocationStatus::Working, None)));
+        let server = UnicaServer::with_canonical_v13_tasks(call, Arc::clone(&get), get);
+        let (mut client, _) = spawn_unica_server(server);
+        client
+            .send(json!({
+                "jsonrpc":"2.0", "id":0, "method":"initialize",
+                "params": {
+                    "protocolVersion":"2026-07-28",
+                    "capabilities":{"extensions":{"io.modelcontextprotocol/tasks":{}}},
+                    "clientInfo":{"name":"modern-task-client","version":"1"}
+                }
+            }))
+            .await;
+        let initialized = client.receive().await;
+        assert_eq!(initialized["result"]["protocolVersion"], "2026-07-28");
+        client
+            .send(json!({
+                "jsonrpc":"2.0", "id":1, "method":"tools/call",
+                "params":{"name":"unica.check", "arguments":{}}
+            }))
+            .await;
+        let response = client.receive().await;
+        assert_eq!(response["result"]["resultType"], "task", "{response}");
+        client.shutdown().await;
+    }
+
+    async fn native_task_methods_preserve_one_frontend_transport_cutoff_case() {
+        use crate::domain::invocation::{InvocationStatus, TaskId};
+
+        let task_id = TaskId::new();
+        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _| {
+            Ok(CanonicalCallOutcome::Task(canonical_snapshot(
+                task_id,
+                InvocationStatus::Working,
+                None,
+            )))
+        });
+        let (observed, observations) = mpsc::channel();
+        let get_observed = observed.clone();
+        let get: Arc<CanonicalTaskHandler> = Arc::new(move |_, deadline| {
+            get_observed
+                .send(deadline.remaining_transport_at(Instant::now()))
+                .unwrap();
+            Ok(canonical_snapshot(task_id, InvocationStatus::Working, None))
+        });
+        let cancel: Arc<CanonicalTaskHandler> = Arc::new(move |_, deadline| {
+            observed
+                .send(deadline.remaining_transport_at(Instant::now()))
+                .unwrap();
+            Ok(canonical_snapshot(
+                task_id,
+                InvocationStatus::Cancelled,
+                None,
+            ))
+        });
+        let server = UnicaServer::with_canonical_v13_tasks(call, get, cancel);
+        let (mut client, _) = spawn_unica_server(server);
+        client
+            .send(json!({
+                "jsonrpc":"2.0", "id":0, "method":"initialize",
+                "params": {
+                    "protocolVersion":"2026-07-28",
+                    "capabilities":{"extensions":{"io.modelcontextprotocol/tasks":{}}},
+                    "clientInfo":{"name":"native-task-deadline-client","version":"1"}
+                }
+            }))
+            .await;
+        let initialized = client.receive().await;
+        assert_eq!(initialized["result"]["protocolVersion"], "2026-07-28");
+
+        for (id, method) in [(1, "tasks/get"), (2, "tasks/update"), (3, "tasks/cancel")] {
+            let mut params = json!({
+                "taskId": task_id.to_string(),
+                "_meta": modern_tasks_meta()
+            });
+            if method == "tasks/update" {
+                params["inputResponses"] = json!({});
+            }
+            client
+                .send(json!({"jsonrpc":"2.0", "id":id, "method":method, "params":params}))
+                .await;
+            let _response = client.receive().await;
+        }
+
+        let upper = INVOCATION_HANDOFF_WINDOW + RESPONSE_SERIALIZATION_MARGIN;
+        for method in ["tasks/get", "tasks/update", "tasks/cancel"] {
+            let remaining = observations
+                .recv_timeout(Duration::from_secs(1))
+                .expect("native task handler did not observe its frontend cutoff");
+            assert!(
+                remaining > Duration::from_millis(250) && remaining <= upper,
+                "{method} replaced the shared frontend cutoff with a phase-local window: {remaining:?}"
+            );
+        }
+        client.shutdown().await;
+    }
+
+    async fn tasks_direct_and_completed_get_case() {
+        use crate::domain::invocation::{InvocationStatus, TaskId};
+
+        let task_id = TaskId::new();
+        let expected = canonical_result("same canonical result");
+        let direct_expected = expected.clone();
+        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, arguments, _, _| {
+            if arguments.get("async").and_then(Value::as_bool) == Some(true) {
+                Ok(CanonicalCallOutcome::Task(canonical_snapshot(
+                    task_id,
+                    InvocationStatus::Working,
+                    None,
+                )))
+            } else {
+                direct_outcome(direct_expected.clone())
+            }
+        });
+        let get_expected = expected.clone();
+        let get: Arc<CanonicalTaskHandler> = Arc::new(move |_, _| {
+            Ok(canonical_snapshot(
+                task_id,
+                InvocationStatus::Completed,
+                Some(get_expected.clone()),
+            ))
+        });
+        let server = UnicaServer::with_canonical_v13_tasks(call, Arc::clone(&get), get);
+        let (mut client, _) = spawn_unica_server(server);
+
+        for (id, arguments) in [(1, json!({})), (2, json!({"async": true}))] {
+            client
+                .send(json!({
+                    "jsonrpc": "2.0", "id": id, "method": "tools/call",
+                    "params": {
+                        "name": "unica.check", "arguments": arguments,
+                        "_meta": modern_tasks_meta()
+                    }
+                }))
+                .await;
+            let response = client.receive().await;
+            if id == 1 {
+                assert_eq!(response["result"]["resultType"], "complete");
+                client
+                    .send(json!({
+                        "jsonrpc": "2.0", "id": 3, "method": "tasks/get",
+                        "params": {"taskId": task_id.to_string(), "_meta": modern_tasks_meta()}
+                    }))
+                    .await;
+                let completed = client.receive().await;
+                assert_eq!(
+                    serde_json::to_vec(&response["result"]).unwrap(),
+                    serde_json::to_vec(&completed["result"]["result"]).unwrap(),
+                    "direct and durable terminal projections diverged: direct={response}, task={completed}"
+                );
+            } else {
+                assert_eq!(response["result"]["resultType"], "task", "{response}");
+            }
+        }
+        client.shutdown().await;
+    }
+
+    async fn tasks_projection_rejects_reverse_timestamps_on_wire_case() {
+        use crate::domain::invocation::{InvocationStatus, TaskId};
+
+        let task_id = TaskId::new();
+        let reversed = canonical_snapshot_at(
+            task_id,
+            InvocationStatus::Working,
+            None,
+            1_777_012_345_678,
+            1_777_012_345_677,
+        );
+        let call_snapshot = reversed.clone();
+        let call: Arc<CanonicalCallHandler> =
+            Arc::new(move |_, _, _, _| Ok(CanonicalCallOutcome::Task(call_snapshot.clone())));
+        let get: Arc<CanonicalTaskHandler> = Arc::new(move |_, _| Ok(reversed.clone()));
+        let server = UnicaServer::with_canonical_v13_tasks(call, Arc::clone(&get), get);
+        let (mut client, _) = spawn_unica_server(server);
+
+        let mut projection_codes = Vec::new();
+        for (id, method, params) in [
+            (
+                1,
+                "tools/call",
+                json!({"name":"unica.check", "arguments":{}, "_meta":modern_tasks_meta()}),
+            ),
+            (
+                2,
+                "tasks/get",
+                json!({"taskId":task_id.to_string(), "_meta":modern_tasks_meta()}),
+            ),
+        ] {
+            client
+                .send(json!({"jsonrpc":"2.0", "id":id, "method":method, "params":params}))
+                .await;
+            projection_codes.push(client.receive().await["error"]["data"]["code"].clone());
+        }
+        assert_eq!(
+            projection_codes,
+            vec![
+                json!("task_projection_failed"),
+                json!("task_projection_failed")
+            ]
+        );
+        client.shutdown().await;
+    }
+
+    async fn tasks_projection_keeps_near_limit_wire_bounded_and_rejects_over_limit_case() {
+        use crate::application::invocation_store::{
+            MAX_CANONICAL_RESULT_BYTES, MAX_TASK_RECORD_ENVELOPE_BYTES,
+        };
+        use crate::domain::invocation::{InvocationStatus, TaskId};
+        use std::sync::atomic::AtomicUsize;
+
+        let near = crate::domain::invocation::DomainResult::success(
+            "x".repeat(MAX_CANONICAL_RESULT_BYTES - 4_096),
+        );
+        let over = crate::domain::invocation::DomainResult::success(
+            "x".repeat(MAX_CANONICAL_RESULT_BYTES + 1),
+        );
+        let near_task = TaskId::new();
+        let over_task = TaskId::new();
+        let executions = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&executions);
+        let call_near = near.clone();
+        let call_over = over.clone();
+        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, arguments, _, _| {
+            observed.fetch_add(1, Ordering::SeqCst);
+            match arguments.get("mode").and_then(Value::as_str) {
+                Some("near-task") => Ok(CanonicalCallOutcome::Task(canonical_snapshot(
+                    near_task,
+                    InvocationStatus::Working,
+                    None,
+                ))),
+                Some("over-direct") => direct_outcome(call_over.clone()),
+                Some("over-task") => Ok(CanonicalCallOutcome::Task(canonical_snapshot(
+                    over_task,
+                    InvocationStatus::Working,
+                    None,
+                ))),
+                _ => direct_outcome(call_near.clone()),
+            }
+        });
+        let get_near = near.clone();
+        let get_over = over.clone();
+        let get: Arc<CanonicalTaskHandler> = Arc::new(move |task_id, _| {
+            Ok(if task_id == near_task {
+                canonical_snapshot(
+                    near_task,
+                    InvocationStatus::Completed,
+                    Some(get_near.clone()),
+                )
+            } else {
+                canonical_snapshot(
+                    over_task,
+                    InvocationStatus::Completed,
+                    Some(get_over.clone()),
+                )
+            })
+        });
+        let server = UnicaServer::with_canonical_v13_tasks(call, Arc::clone(&get), get);
+        let (mut client, _) = spawn_unica_server(server);
+
+        client
+            .send(json!({
+                "jsonrpc":"2.0", "id":1, "method":"tools/call",
+                "params":{"name":"unica.check", "arguments":{}, "_meta":modern_tasks_meta()}
+            }))
+            .await;
+        let direct = client.receive().await;
+        client
+            .send(json!({
+                "jsonrpc":"2.0", "id":2, "method":"tools/call",
+                "params":{"name":"unica.check", "arguments":{"mode":"near-task"}, "_meta":modern_tasks_meta()}
+            }))
+            .await;
+        let _created = client.receive().await;
+        client
+            .send(json!({
+                "jsonrpc":"2.0", "id":3, "method":"tasks/get",
+                "params":{"taskId":near_task.to_string(), "_meta":modern_tasks_meta()}
+            }))
+            .await;
+        let completed = client.receive().await;
+
+        let projection_limit = MAX_CANONICAL_RESULT_BYTES + MAX_TASK_RECORD_ENVELOPE_BYTES;
+        let direct_bytes = serde_json::to_vec(&direct["result"]).unwrap();
+        let detailed_bytes = serde_json::to_vec(&completed["result"]).unwrap();
+        assert_eq!(
+            serde_json::to_vec(&direct["result"]).unwrap(),
+            serde_json::to_vec(&completed["result"]["result"]).unwrap()
+        );
+        assert_eq!(direct["result"]["content"], json!([]));
+        assert!(
+            direct_bytes.len() <= projection_limit,
+            "direct bytes={}",
+            direct_bytes.len()
+        );
+        assert!(
+            detailed_bytes.len() <= projection_limit,
+            "detailed bytes={}",
+            detailed_bytes.len()
+        );
+
+        let mut over_codes = Vec::new();
+        for (id, method, params) in [
+            (
+                4,
+                "tools/call",
+                json!({"name":"unica.check", "arguments":{"mode":"over-direct"}, "_meta":modern_tasks_meta()}),
+            ),
+            (
+                5,
+                "tools/call",
+                json!({"name":"unica.check", "arguments":{"mode":"over-task"}, "_meta":modern_tasks_meta()}),
+            ),
+            (
+                6,
+                "tasks/get",
+                json!({"taskId":over_task.to_string(), "_meta":modern_tasks_meta()}),
+            ),
+        ] {
+            client
+                .send(json!({"jsonrpc":"2.0", "id":id, "method":method, "params":params}))
+                .await;
+            let response = client.receive().await;
+            if id != 5 {
+                over_codes.push(response["error"]["data"]["code"].clone());
+            }
+        }
+        assert_eq!(
+            over_codes,
+            vec![json!("result_too_large"), json!("result_too_large")]
+        );
+        assert_eq!(executions.load(Ordering::SeqCst), 4);
+        client.shutdown().await;
+    }
+
+    async fn tasks_hooks_closed_errors_case() {
+        use crate::domain::invocation::{InvocationStatus, TaskId};
+        use std::str::FromStr;
+        use std::sync::atomic::AtomicUsize;
+
+        let known = TaskId::new();
+        let unknown = TaskId::new();
+        let expired = TaskId::new();
+        let mismatched = TaskId::new();
+        let lookup_count = Arc::new(AtomicUsize::new(0));
+        let lookup_observed = Arc::clone(&lookup_count);
+        let get: Arc<CanonicalTaskHandler> = Arc::new(move |task_id, _| {
+            lookup_observed.fetch_add(1, Ordering::SeqCst);
+            if task_id == unknown {
+                Err(V5TaskExchangeError::Protocol(
+                    V5DaemonErrorCode::TaskNotFound,
+                ))
+            } else if task_id == expired {
+                Err(V5TaskExchangeError::Protocol(
+                    V5DaemonErrorCode::TaskExpired,
+                ))
+            } else {
+                Ok(canonical_snapshot(known, InvocationStatus::Working, None))
+            }
+        });
+        let cancellations = Arc::new(AtomicUsize::new(0));
+        let cancellation_observed = Arc::clone(&cancellations);
+        let cancel: Arc<CanonicalTaskHandler> = Arc::new(move |_, _| {
+            cancellation_observed.fetch_add(1, Ordering::SeqCst);
+            Ok(canonical_snapshot(known, InvocationStatus::Cancelled, None))
+        });
+        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _| {
+            Ok(CanonicalCallOutcome::Task(canonical_snapshot(
+                known,
+                InvocationStatus::Working,
+                None,
+            )))
+        });
+        let server = UnicaServer::with_canonical_v13_tasks(call, get, cancel);
+        let (mut client, _) = spawn_unica_server(server);
+
+        for (id, method, task_id, expected_code) in [
+            (1, "tasks/get", unknown.to_string(), "task_not_found"),
+            (2, "tasks/get", expired.to_string(), "task_expired"),
+            (
+                3,
+                "tasks/get",
+                "not-a-canonical-uuid".into(),
+                "invalid_task_id",
+            ),
+            (4, "tasks/update", unknown.to_string(), "task_not_found"),
+            (
+                5,
+                "tasks/update",
+                known.to_string(),
+                "task_input_not_supported",
+            ),
+            (
+                8,
+                "tasks/get",
+                mismatched.to_string(),
+                "task_protocol_failed",
+            ),
+        ] {
+            let mut params = json!({"taskId": task_id, "_meta": modern_tasks_meta()});
+            if method == "tasks/update" {
+                params["inputResponses"] = json!({});
+            }
+            client
+                .send(json!({"jsonrpc":"2.0", "id":id, "method":method, "params":params}))
+                .await;
+            let response = client.receive().await;
+            let expected_jsonrpc = if expected_code == "task_protocol_failed" {
+                -32603
+            } else {
+                -32602
+            };
+            assert_eq!(response["error"]["code"], expected_jsonrpc, "{response}");
+            assert_eq!(
+                response["error"]["data"]["code"], expected_code,
+                "{response}"
+            );
+        }
+        assert!(TaskId::from_str("not-a-canonical-uuid").is_err());
+
+        for id in [6, 7] {
+            client
+                .send(json!({
+                    "jsonrpc":"2.0", "id":id, "method":"tasks/cancel",
+                    "params":{"taskId":known.to_string(), "_meta":modern_tasks_meta()}
+                }))
+                .await;
+            let response = client.receive().await;
+            assert_eq!(response["result"]["resultType"], "complete", "{response}");
+        }
+        assert_eq!(cancellations.load(Ordering::SeqCst), 2);
+        assert_eq!(lookup_count.load(Ordering::SeqCst), 5);
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn tasks_direct_first_capability_controls_native_projection_without_reexecution() {
+        tasks_direct_first_capability_case().await;
+    }
+
+    #[tokio::test]
+    async fn legacy_initialized_session_cannot_escalate_tasks_with_modern_request_metadata() {
+        legacy_initialized_session_cannot_escalate_tasks_per_request_case().await;
+    }
+
+    #[tokio::test]
+    async fn modern_initialized_session_can_use_negotiated_native_tasks() {
+        modern_initialized_session_retains_native_tasks_case().await;
+    }
+
+    #[tokio::test]
+    async fn native_task_methods_preserve_one_frontend_transport_cutoff() {
+        native_task_methods_preserve_one_frontend_transport_cutoff_case().await;
+    }
+
+    #[tokio::test]
+    async fn tasks_direct_and_completed_get_use_the_same_call_result_renderer() {
+        tasks_direct_and_completed_get_case().await;
+    }
+
+    #[tokio::test]
+    async fn tasks_projection_rejects_reverse_durable_timestamps_on_wire() {
+        tasks_projection_rejects_reverse_timestamps_on_wire_case().await;
+    }
+
+    #[tokio::test]
+    async fn tasks_projection_bounds_near_limit_wire_and_rejects_over_limit() {
+        tasks_projection_keeps_near_limit_wire_bounded_and_rejects_over_limit_case().await;
+    }
+
+    #[tokio::test]
+    async fn tasks_hooks_preserve_closed_unknown_expired_invalid_and_update_semantics() {
+        tasks_hooks_closed_errors_case().await;
+    }
+
+    #[tokio::test]
+    async fn native_task_projection_contract_is_capability_gated_durable_and_replay_free() {
+        assert!(
+            !UnicaServer::legacy_for_test(application_handler())
+                .get_info()
+                .capabilities
+                .supports_tasks(),
+            "the explicit v0.12 test profile must not advertise Tasks"
+        );
+        tasks_direct_first_capability_case().await;
+        legacy_initialized_session_cannot_escalate_tasks_per_request_case().await;
+        modern_initialized_session_retains_native_tasks_case().await;
+        native_task_methods_preserve_one_frontend_transport_cutoff_case().await;
+        tasks_direct_and_completed_get_case().await;
+        tasks_projection_rejects_reverse_timestamps_on_wire_case().await;
+        tasks_projection_keeps_near_limit_wire_bounded_and_rejects_over_limit_case().await;
+        tasks_hooks_closed_errors_case().await;
+    }
+
     #[tokio::test]
     async fn legacy_offer_2025_11_25_is_echoed() {
         let (mut client, _) = spawn_server(application_handler());
@@ -1481,7 +4233,7 @@ mod tests {
         // A direct-first request with an incomplete reserved set is not a
         // silent legacy downgrade: admission refuses the connection.
         let (client_io, server_io) = tokio::io::duplex(4 * 1024 * 1024);
-        let server = UnicaServer::new(application_handler());
+        let server = UnicaServer::legacy_for_test(application_handler());
         let handle = tokio::spawn(async move {
             server
                 .serve(server_io)
@@ -1681,241 +4433,6 @@ mod tests {
         client.shutdown().await;
     }
 
-    #[tokio::test]
-    async fn tool_results_are_structured() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-meta-structured-mcp-{}-{}",
-            std::process::id(),
-            uuid::Uuid::new_v4()
-        ));
-        let source = root.join("src");
-        std::fs::create_dir_all(&source).unwrap();
-        std::fs::write(
-            root.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .unwrap();
-        for (relative, bytes) in [
-            (
-                "Configuration.xml",
-                include_bytes!(
-                    "../../../../tests/fixtures/unica_mcp_script_parity/meta-validate-language-aware/Configuration.xml"
-                )
-                .as_slice(),
-            ),
-            (
-                "Languages/Русский.xml",
-                include_bytes!(
-                    "../../../../tests/fixtures/unica_mcp_script_parity/meta-validate-language-aware/Languages/Русский.xml"
-                )
-                .as_slice(),
-            ),
-            (
-                "Languages/English.xml",
-                include_bytes!(
-                    "../../../../tests/fixtures/unica_mcp_script_parity/meta-validate-language-aware/Languages/English.xml"
-                )
-                .as_slice(),
-            ),
-            (
-                "Enums/LanguageAware.xml",
-                include_bytes!(
-                    "../../../../tests/fixtures/unica_mcp_script_parity/meta-validate-language-aware/Enums/LanguageAware.xml"
-                )
-                .as_slice(),
-            ),
-        ] {
-            let path = source.join(relative);
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(path, bytes).unwrap();
-        }
-
-        let cwd = crate::test_support::ProcessCwdGuard::enter(&root).unwrap();
-        let (mut client, _) = spawn_server(application_handler());
-        client.initialize().await;
-        client
-            .send(json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} }))
-            .await;
-        let listed = client.receive().await;
-        let tools = listed["result"]["tools"].as_array().unwrap();
-        let meta_schemas = tools
-            .iter()
-            .filter(|tool| {
-                tool["name"]
-                    .as_str()
-                    .is_some_and(|name| name.starts_with("unica.meta."))
-            })
-            .map(|tool| {
-                tool.get("outputSchema")
-                    .expect("every Meta tool must publish outputSchema")
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(meta_schemas.len(), 4);
-        assert!(meta_schemas.windows(2).all(|pair| pair[0] == pair[1]));
-        let output_schema = meta_schemas[0];
-        assert_eq!(output_schema["type"], "object");
-        assert_eq!(output_schema["additionalProperties"], false);
-        assert_eq!(
-            output_schema["required"],
-            json!([
-                "ok",
-                "summary",
-                "changes",
-                "warnings",
-                "errors",
-                "artifacts",
-                "cache"
-            ])
-        );
-        for open_subtree in ["data", "diagnostics", "job"] {
-            assert_eq!(output_schema["properties"][open_subtree], json!({}));
-        }
-        let non_meta = tools
-            .iter()
-            .find(|tool| tool["name"] == "unica.project.status")
-            .unwrap();
-        assert!(non_meta.get("outputSchema").is_none());
-
-        client
-            .send(json!({
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "tools/call",
-                "params": {
-                    "name": "unica.meta.add",
-                    "arguments": {
-                        "sourceSet": "main",
-                        "kind": "Catalog",
-                        "name": "Items"
-                    }
-                }
-            }))
-            .await;
-        let success = client.receive().await;
-        assert!(success.get("error").is_none(), "{success}");
-        let success_result = &success["result"];
-        let success_text: Value =
-            serde_json::from_str(success_result["content"][0]["text"].as_str().unwrap()).unwrap();
-        assert_eq!(success_result["structuredContent"], success_text);
-        assert_eq!(success_result["structuredContent"]["ok"], true, "{success}");
-        assert_eq!(success_result["isError"], false);
-
-        client
-            .send(json!({
-                "jsonrpc": "2.0",
-                "id": 3,
-                "method": "tools/call",
-                "params": {
-                    "name": "unica.meta.info",
-                    "arguments": {}
-                }
-            }))
-            .await;
-        let invalid = client.receive().await;
-        assert!(invalid.get("error").is_none(), "{invalid}");
-        let invalid_result = &invalid["result"];
-        let invalid_text: Value =
-            serde_json::from_str(invalid_result["content"][0]["text"].as_str().unwrap()).unwrap();
-        assert_eq!(invalid_result["structuredContent"], invalid_text);
-        assert_eq!(invalid_result["structuredContent"]["ok"], false);
-        assert_eq!(
-            invalid_result["structuredContent"]["diagnostics"][0]["code"],
-            "invalid_arguments"
-        );
-        assert_eq!(invalid_result["isError"], true);
-
-        client.shutdown().await;
-        drop(cwd);
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[tokio::test]
-    async fn subsystem_provider_failures_are_normal_typed_tool_results() {
-        for (case, descriptor) in [("missing", None), ("malformed", Some("<broken"))] {
-            let root = tempfile::Builder::new()
-                .prefix(&format!("unica-subsystem-mcp-{case}"))
-                .tempdir()
-                .unwrap();
-            let workspace = root.path().join("workspace");
-            let source = workspace.join("src");
-            std::fs::create_dir_all(source.join("Subsystems")).unwrap();
-            std::fs::write(
-                workspace.join("v8project.yaml"),
-                "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-            )
-            .unwrap();
-            std::fs::write(
-                source.join("Configuration.xml"),
-                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Test</Name></Properties><ChildObjects><Subsystem>Sales</Subsystem></ChildObjects></Configuration></MetaDataObject>"#,
-            )
-            .unwrap();
-            if let Some(descriptor) = descriptor {
-                std::fs::write(source.join("Subsystems/Sales.xml"), descriptor).unwrap();
-            }
-
-            let (mut client, _) = spawn_server(application_handler());
-            client.initialize().await;
-            client
-                .send(json!({
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "tools/call",
-                    "params": {
-                        "name": "unica.subsystem.info",
-                        "arguments": {
-                            "cwd": workspace.canonicalize().unwrap(),
-                            "SubsystemPath": "src/Subsystems/Sales.xml"
-                        }
-                    }
-                }))
-                .await;
-            let response = client.receive().await;
-
-            assert!(response.get("error").is_none(), "{case}: {response}");
-            assert_eq!(response["result"]["isError"], false, "{case}: {response}");
-            let result: Value = serde_json::from_str(
-                response["result"]["content"][0]["text"]
-                    .as_str()
-                    .expect("text tool result"),
-            )
-            .unwrap();
-            assert_eq!(result["ok"], false, "{case}: {result}");
-            assert!(result.get("data").is_none(), "{case}: {result}");
-            assert!(result.get("tree").is_none(), "{case}: {result}");
-            assert!(
-                result["diagnostics"]
-                    .as_array()
-                    .is_some_and(|diagnostics| diagnostics
-                        .iter()
-                        .any(|diagnostic| { diagnostic["code"] == "provider_unavailable" })),
-                "{case}: {result}"
-            );
-            client.shutdown().await;
-        }
-    }
-
-    #[test]
-    fn tool_definitions_contain_orchestrated_tool_names() {
-        let listed = tool_definitions(&crate::application::tools());
-        assert_eq!(listed[0].name, "unica.cf.edit");
-        for name in [
-            "unica.project.status",
-            "unica.project.map",
-            "unica.standards.explain",
-            "unica.runtime.job.start",
-            "unica.runtime.job.status",
-            "unica.runtime.job.wait",
-            "unica.runtime.job.logs",
-            "unica.runtime.job.cancel",
-            "unica.runtime.job.list",
-        ] {
-            assert!(
-                listed.iter().any(|tool| tool.name == name),
-                "missing {name}"
-            );
-        }
-    }
-
     #[test]
     fn tool_definitions_expose_logical_diagnostics_action_union() {
         let listed = tool_definitions(&crate::application::tools());
@@ -1952,49 +4469,6 @@ mod tests {
         }]);
 
         assert!(listed[0].output_schema.is_some());
-    }
-
-    #[test]
-    fn role_edit_alone_adds_closed_native_structured_output_schema() {
-        let listed = tool_definitions(&crate::application::tools());
-        let role_edit = listed
-            .iter()
-            .find(|tool| tool.name == "unica.role.edit")
-            .expect("role.edit must be listed");
-        let output = role_edit
-            .output_schema
-            .as_ref()
-            .expect("role.edit must publish outputSchema");
-        assert_eq!(output["properties"]["data"]["additionalProperties"], false);
-        assert_eq!(
-            output["properties"]["cache"]["properties"]["root"],
-            json!({"const": ""})
-        );
-        assert!(output["required"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("data")));
-        for forbidden in ["stdout", "stderr", "command", "diagnostics", "job"] {
-            assert!(
-                output["properties"].get(forbidden).is_none(),
-                "role.edit must not publish legacy `{forbidden}` output"
-            );
-        }
-        assert_eq!(
-            output["properties"]["data"]["required"],
-            json!([
-                "metadataPath",
-                "changed",
-                "effects",
-                "validation",
-                "diagnostics"
-            ])
-        );
-        let role_info = listed
-            .iter()
-            .find(|tool| tool.name == "unica.role.info")
-            .unwrap();
-        assert!(role_info.output_schema.is_none());
     }
 
     #[test]
@@ -2169,78 +4643,6 @@ mod tests {
     }
 
     #[test]
-    fn native_reader_schema_is_typed_and_has_no_invocation_switch() {
-        let listed = tool_definitions(&crate::application::tools());
-        let cf_info = listed
-            .iter()
-            .find(|tool| tool.name == "unica.cf.info")
-            .expect("unica.cf.info must be listed");
-
-        let schema = cf_info.input_schema.as_ref();
-        assert_eq!(schema["additionalProperties"], false);
-        assert!(schema["properties"].get("ConfigPath").is_some());
-        assert!(schema["properties"].get("cwd").is_some());
-        assert!(schema["properties"].get("dryRun").is_none());
-        assert!(schema["properties"].get("args").is_none());
-
-        let form_edit = listed
-            .iter()
-            .find(|tool| tool.name == "unica.form.edit")
-            .expect("unica.form.edit must be listed");
-        assert!(form_edit.input_schema["properties"].get("dryRun").is_some());
-    }
-
-    #[tokio::test]
-    async fn role_validate_schema_publishes_canonical_required_path_without_composition() {
-        let (mut client, _) = spawn_server(application_handler());
-        client.initialize().await;
-        client
-            .send(json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} }))
-            .await;
-        let response = client.receive().await;
-        let role_validate = response["result"]["tools"]
-            .as_array()
-            .expect("tools/list must return an array")
-            .iter()
-            .find(|tool| tool["name"] == "unica.role.validate")
-            .expect("unica.role.validate must be listed");
-
-        let schema = &role_validate["inputSchema"];
-        // ADR-0049 moved the requirement into the two selector branches: the
-        // path is still required to reach the tool by path, and the logical
-        // branch requires the address pair instead.
-        assert_eq!(schema["required"], json!([]));
-        assert_eq!(
-            schema["oneOf"],
-            json!([
-                {
-                    "required": ["sourceSet", "metadataPath"],
-                    "not": {"required": ["RightsPath"]}
-                },
-                {
-                    "required": ["RightsPath"],
-                    "not": {"anyOf": [
-                        {"required": ["sourceSet"]},
-                        {"required": ["metadataPath"]}
-                    ]}
-                }
-            ]),
-            "{schema}"
-        );
-        assert!(schema.get("allOf").is_none());
-        assert!(schema["properties"].get("RightsPath").is_some());
-        assert!(schema["properties"].get("Detailed").is_some());
-        assert!(schema["properties"].get("MaxErrors").is_some());
-        for alias in ["rightsPath", "Path", "path"] {
-            assert!(
-                schema["properties"].get(alias).is_none(),
-                "{alias} is a runtime compatibility alias, not a published argument"
-            );
-        }
-        client.shutdown().await;
-    }
-
-    #[test]
     fn no_public_tool_schema_exposes_raw_adapter_args() {
         for tool in tool_definitions(&crate::application::tools()) {
             for properties in object_schema_property_maps(&tool.input_schema) {
@@ -2254,310 +4656,41 @@ mod tests {
     }
 
     #[test]
-    fn source_navigation_mcp_results_are_bounded_and_hide_provider_state() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-source-navigation-mcp-{}-{}",
-            std::process::id(),
-            uuid::Uuid::new_v4()
-        ));
-        let source = root.join("src");
-        std::fs::create_dir_all(&source).unwrap();
-        std::fs::write(
-            root.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .unwrap();
-        std::fs::write(
-            root.join(".v8-project.json"),
-            r#"{"editingAllowedCheck":"off"}"#,
-        )
-        .unwrap();
-        std::fs::write(
-            source.join("Configuration.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Main</Name></Properties></Configuration></MetaDataObject>"#,
-        )
-        .unwrap();
-        for name in ["Alpha", "Alpine", "Algebra"] {
-            let directory = source.join("CommonModules").join(name);
-            std::fs::create_dir_all(directory.join("Ext")).unwrap();
-            std::fs::write(
-                source.join("CommonModules").join(format!("{name}.xml")),
-                format!(
-                    r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule><Properties><Name>{name}</Name></Properties></CommonModule></MetaDataObject>"#
-                ),
-            )
-            .unwrap();
-            std::fs::write(
-                directory.join("Ext/Module.bsl"),
-                "Procedure Run()\nEndProcedure\n",
-            )
-            .unwrap();
-        }
-        std::fs::create_dir_all(source.join("Catalogs")).unwrap();
-        std::fs::write(
-            source.join("Catalogs/Items.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>Items</Name></Properties></Catalog></MetaDataObject>"#,
-        )
-        .unwrap();
-
-        let resolve_args = json!({
-            "cwd": root,
-            "sourceSet": "main",
-            "query": "CommonModule.Al",
-            "mode": "prefix",
-            "limit": 2
-        })
-        .as_object()
-        .unwrap()
-        .clone();
-        let resolve: Value = serde_json::from_str(
-            &call_tool_text(
-                &UnicaApplication::new(),
-                "unica.source.resolve",
-                &resolve_args,
-                CancellationToken::new(),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(resolve["data"]["candidates"].as_array().unwrap().len(), 2);
-        assert_eq!(resolve["data"]["completeness"], "partial");
-        assert!(resolve["data"]["nextCursor"].is_string());
-        assert_no_private_source_navigation_keys(&resolve);
-
-        let children_args = json!({
-            "cwd": root,
-            "sourceSet": "main",
-            "limit": 1
-        })
-        .as_object()
-        .unwrap()
-        .clone();
-        let children: Value = serde_json::from_str(
-            &call_tool_text(
-                &UnicaApplication::new(),
-                "unica.source.children",
-                &children_args,
-                CancellationToken::new(),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(children["data"]["children"].as_array().unwrap().len(), 1);
-        assert!(children["data"]["nextCursor"].is_string());
-        assert_no_private_source_navigation_keys(&children);
-
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn source_resource_mcp_round_trip_reuses_one_snapshot_and_hides_private_state() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-source-resource-mcp-{}-{}",
-            std::process::id(),
-            uuid::Uuid::new_v4()
-        ));
-        let source = root.join("src");
-        std::fs::create_dir_all(source.join("CommonModules/Shared/Ext")).unwrap();
-        std::fs::write(
-            root.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .unwrap();
-        std::fs::write(
-            source.join("Configuration.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Main</Name></Properties><ChildObjects><CommonModule>Shared</CommonModule></ChildObjects></Configuration></MetaDataObject>"#,
-        )
-        .unwrap();
-        std::fs::write(
-            source.join("CommonModules/Shared.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule><Properties><Name>Shared</Name></Properties></CommonModule></MetaDataObject>"#,
-        )
-        .unwrap();
-        let module = source.join("CommonModules/Shared/Ext/Module.bsl");
-        let bytes = b"\xef\xbb\xbfProcedure Run()\r\nEndProcedure\r\n";
-        std::fs::write(&module, bytes).unwrap();
-
-        let app = UnicaApplication::new();
-        let resources: Value = serde_json::from_str(
-            &call_tool_text(
-                &app,
-                "unica.source.resources",
-                json!({
-                    "cwd": root,
-                    "sourceSet": "main",
-                    "metadataPath": "CommonModule.Shared.Module",
-                    "scope": "self"
-                })
-                .as_object()
-                .unwrap(),
-                CancellationToken::new(),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        let snapshot = resources["data"]["snapshotId"]
-            .as_str()
-            .unwrap()
-            .to_string();
-        let resource = &resources["data"]["resources"][0];
-        // The surface is read-only, so nothing may advertise a write.
-        assert_eq!(resource["access"], json!(["read"]));
-        assert_no_private_source_resource_keys(&resources);
-
-        let read: Value = serde_json::from_str(
-            &call_tool_text(
-                &app,
-                "unica.source.read",
-                json!({
-                    "cwd": root,
-                    "snapshotId": snapshot,
-                    "resourceId": resource["resourceId"].as_str().unwrap()
-                })
-                .as_object()
-                .unwrap(),
-                CancellationToken::new(),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(read["data"]["eof"], json!(true));
-        assert_eq!(read["data"]["contentEncoding"], "utf-8");
-        assert_no_private_source_resource_keys(&read);
-        assert_eq!(
-            std::fs::read(&module).unwrap(),
-            bytes,
-            "a read-only flow must not touch the module"
-        );
-
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    fn assert_no_private_source_resource_keys(value: &Value) {
-        match value {
-            Value::Object(object) => {
-                for key in object.keys() {
-                    assert!(
-                        !matches!(
-                            key.as_str(),
-                            "path"
-                                | "sourceDir"
-                                | "provider"
-                                | "providerId"
-                                | "providerRevision"
-                                | "handle"
-                                | "private"
-                                | "workspaceRoot"
-                        ),
-                        "private source-resource key leaked: {key}"
-                    );
-                }
-                for child in object.values() {
-                    assert_no_private_source_resource_keys(child);
+    fn object_schema_property_maps_visit_nested_schema_nodes() {
+        let schema = json!({
+            "properties": {
+                "object": {"properties": {"args": {"type": "string"}}},
+                "array": {"items": {"properties": {"args": {"type": "string"}}}},
+                "map": {"additionalProperties": {"properties": {"args": {"type": "string"}}}},
+                "combinators": {
+                    "allOf": [{"properties": {"args": {"type": "string"}}}],
+                    "anyOf": [{"properties": {"args": {"type": "string"}}}],
+                    "oneOf": [{"properties": {"args": {"type": "string"}}}],
+                    "not": {"properties": {"args": {"type": "string"}}},
+                    "if": {"properties": {"args": {"type": "string"}}},
+                    "then": {"properties": {"args": {"type": "string"}}},
+                    "else": {"properties": {"args": {"type": "string"}}},
+                    "dependentSchemas": {
+                        "mode": {"properties": {"args": {"type": "string"}}}
+                    },
+                    "definitions": {
+                        "legacy": {"properties": {"args": {"type": "string"}}}
+                    },
+                    "$defs": {
+                        "modern": {"properties": {"args": {"type": "string"}}}
+                    }
                 }
             }
-            Value::Array(items) => {
-                for item in items {
-                    assert_no_private_source_resource_keys(item);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn assert_no_private_source_navigation_keys(value: &Value) {
-        match value {
-            Value::Object(object) => {
-                for key in object.keys() {
-                    assert!(
-                        !matches!(
-                            key.as_str(),
-                            "path"
-                                | "sourceDir"
-                                | "provider"
-                                | "providerId"
-                                | "providerRevision"
-                                | "handle"
-                                | "private"
-                        ),
-                        "private source-navigation key leaked: {key}"
-                    );
-                }
-                for child in object.values() {
-                    assert_no_private_source_navigation_keys(child);
-                }
-            }
-            Value::Array(items) => {
-                for item in items {
-                    assert_no_private_source_navigation_keys(item);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    #[tokio::test]
-    async fn tool_execution_failure_keeps_json_rpc_error_shape() {
-        let (mut client, _) = spawn_server(application_handler());
-        client.initialize().await;
-        client
-            .send(json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": { "name": "unica.no.such.tool", "arguments": {} }
-            }))
-            .await;
-        let response = client.receive().await;
-        assert_eq!(response["error"]["code"], TOOL_EXECUTION_ERROR);
-        assert!(response["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("unknown unica tool"));
-
-        client
-            .send(json!({
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "tools/call",
-                "params": {
-                    "name": "unica.project.status",
-                    "arguments": {"cwd": "/missing/workspace", "dryRun": true}
-                }
-            }))
-            .await;
-        let response = client.receive().await;
-        assert_eq!(response["error"]["code"], TOOL_EXECUTION_ERROR);
-        assert!(response["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("does not accept argument `dryRun`"));
-        client.shutdown().await;
-
-        let handler: Arc<ToolCallHandler> = Arc::new(|_, _, _, _| {
-            Err((
-                TOOL_EXECUTION_ERROR,
-                "typed_result_missing: unica.project.status returned ok without OperationResult.data"
-                    .to_string(),
-            ))
         });
-        let (mut client, _) = spawn_server(handler);
-        client.initialize().await;
-        client
-            .send(json!({
-                "jsonrpc": "2.0",
-                "id": 3,
-                "method": "tools/call",
-                "params": {"name": "unica.project.status", "arguments": {}}
-            }))
-            .await;
-        let response = client.receive().await;
-        assert_eq!(response["error"]["code"], TOOL_EXECUTION_ERROR);
-        assert!(response["error"]["message"]
-            .as_str()
-            .unwrap()
-            .starts_with("typed_result_missing:"));
-        client.shutdown().await;
+        let maps = object_schema_property_maps(schema.as_object().unwrap());
+
+        assert_eq!(maps.len(), 14);
+        assert_eq!(
+            maps.into_iter()
+                .filter(|properties| properties.contains_key("args"))
+                .count(),
+            13
+        );
     }
 
     #[tokio::test]

@@ -498,7 +498,7 @@ mod tests {
     }
 
     #[test]
-    fn expansions_add_terms_without_penalizing_originals() {
+    fn expansions_can_add_a_match_for_an_unmatched_query() {
         let index = corpus(&[
             (
                 "Working with value tables",

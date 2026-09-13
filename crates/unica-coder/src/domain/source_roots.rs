@@ -49,6 +49,7 @@ mod tests {
             kind,
             path: name.to_string(),
             source_format: SourceFormat::Unknown,
+            source_state: crate::domain::project_sources::SourceSetState::Declared,
             format_evidence: Vec::new(),
             format_probe_error: None,
         }

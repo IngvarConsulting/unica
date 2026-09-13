@@ -121,7 +121,6 @@ XML_FAMILY_BY_ROOT_QNAME = {
     "{http://v8.1c.ru/8.2/data/spreadsheet}document": "mxl",
     "{http://v8.1c.ru/8.2/managed-application/core}ClientApplicationInterface": "client-application-interface",
     "{http://v8.1c.ru/8.2/roles}Rights": "roles",
-    "{http://v8.1c.ru/8.1/xdto}package": "xdto-package",
     "{http://v8.1c.ru/8.3/xcf/predef}PredefinedData": "predefined-data",
     "{http://v8.1c.ru/8.3/MDClasses}MetaDataObject": "metadata",
     "{http://v8.1c.ru/8.3/xcf/scheme}GraphicalSchema": "flowchart",
@@ -202,7 +201,6 @@ MANDATORY_CASE_IDS = frozenset(
         "cfe-init-default",
         "cfe-borrow-object",
         "cfe-borrow-managed-form",
-        "xdto-add-nested-property",
     }
 )
 FORBIDDEN_CREDENTIAL_OPTIONS = {

@@ -1,4 +1,11 @@
+// Hidden v0.13 address policy remains unreachable from the package-selected v0.12 surface.
+#[allow(dead_code)]
+pub(crate) mod address;
+// Hidden v0.13 apply foundation remains unreachable from the package-selected v0.12 surface.
+#[allow(dead_code)]
+pub(crate) mod apply;
 pub mod cache;
+pub(crate) mod call_graph_identity;
 pub mod cancellation;
 pub mod code_intelligence;
 pub mod diagnostics;
@@ -7,13 +14,23 @@ pub mod engine;
 pub mod events;
 pub mod form_edit;
 pub mod format_profile;
+// This seam is intentionally dormant while production remains on v0.12.
+#[allow(dead_code)]
+pub(crate) mod invocation;
 pub mod long_work;
+// Hidden v0.13 module projection remains unreachable from the package-selected v0.12 surface.
 pub(crate) mod metadata;
+#[allow(dead_code)]
+pub(crate) mod module_projection;
+pub(crate) mod node_view;
 pub mod operational_config;
+#[allow(dead_code)]
+pub(crate) mod platform_profile;
 pub mod progress;
 #[allow(dead_code)]
 pub(crate) mod project_health;
 pub mod project_sources;
+pub mod refusal;
 pub mod role;
 pub mod source_location;
 pub mod source_resources;

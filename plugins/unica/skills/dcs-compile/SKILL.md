@@ -461,10 +461,9 @@ Raw XML (`"template": "<...>"`) остаётся как fallback. Детект: 
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.dcs.validate",
+    "name": "unica.check",
     "arguments": {
-      "cwd": "<workspace>",
-      "TemplatePath": "<OutputPath>"
+      "at": "<sourceSet>:<Kind>.<Name>.Template.<Template>"
     }
   }
 }
@@ -477,10 +476,10 @@ Raw XML (`"template": "<...>"`) остаётся как fallback. Детект: 
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.dcs.info",
+    "name": "unica.view",
     "arguments": {
       "cwd": "<workspace>",
-      "TemplatePath": "<OutputPath>"
+      "at": "<набор>:Report.<Отчёт>.Template.<Макет>"
     }
   }
 }
@@ -493,10 +492,10 @@ Raw XML (`"template": "<...>"`) остаётся как fallback. Детект: 
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.dcs.info",
+    "name": "unica.view",
     "arguments": {
       "cwd": "<workspace>",
-      "TemplatePath": "<OutputPath>"
+      "at": "<набор>:Report.<Отчёт>.Template.<Макет>.Setting"
     }
   }
 }

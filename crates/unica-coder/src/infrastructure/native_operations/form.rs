@@ -2,6 +2,7 @@
 
 use crate::application::operation_descriptors::{FORM_PATH, OBJECT_PATH};
 use crate::application::AdapterOutcome;
+use crate::domain::address::QualifiedAddress;
 use crate::domain::form_edit::validate_form_edit_definition;
 use crate::domain::format_profile::{classify_root_version, FormatCompatibility};
 use crate::domain::support_state::{
@@ -9,7 +10,8 @@ use crate::domain::support_state::{
 };
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::native_operations::logical_selector::{
-    logical_selection, physical_selection, AttachedResource, ResolvedReadTarget,
+    logical_selection, physical_selection, typed_reader_metadata_target, AttachedResource,
+    ResolvedReadTarget,
 };
 use crate::infrastructure::platform_xml_owner::{root_version_literal, MANAGED_FORM_ROOT};
 use crate::infrastructure::source_roots::normalize_path_identity;
@@ -177,7 +179,7 @@ pub(crate) fn validate_form(
     validate_form_with_source(args, context, None)
 }
 
-fn validate_form_with_source(
+pub(crate) fn validate_form_with_source(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
     source_override: Option<(&Path, &str)>,
@@ -1478,6 +1480,10 @@ pub(crate) struct FormInfoData {
     pub(crate) attributes: Vec<FormInfoAttribute>,
     pub(crate) parameters: Vec<FormInfoParameter>,
     pub(crate) commands: Vec<FormInfoCommand>,
+    /// Parsed semantic context retained for the hidden V13 event projector.
+    /// V12 `form.info` keeps its established public JSON shape.
+    #[serde(skip)]
+    pub(crate) event_context: FormEventContext,
 }
 
 #[derive(Debug, Serialize)]
@@ -1487,7 +1493,7 @@ pub(crate) struct FormInfoProperty {
     pub(crate) value: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct FormInfoEvent {
     pub(crate) name: String,
@@ -1496,10 +1502,14 @@ pub(crate) struct FormInfoEvent {
     pub(crate) call_type: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct FormInfoElement {
     pub(crate) tag: String,
+    /// Closed platform element kind retained for internal event projection.
+    /// The V12 serialized `tag` remains the human-readable tree marker.
+    #[serde(skip)]
+    pub(crate) event_kind: Option<FormElementKind>,
     pub(crate) name: String,
     /// The data path or command the element is bound to; `null` when unbound.
     pub(crate) binding: Option<FormInfoBinding>,
@@ -1512,7 +1522,7 @@ pub(crate) struct FormInfoElement {
     pub(crate) children: Vec<FormInfoElement>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct FormInfoBinding {
     /// `dataPath`, `standardCommand`, `command` or `other`.
@@ -1550,13 +1560,35 @@ pub(crate) struct FormInfoParameter {
     pub(crate) is_key: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct FormInfoCommand {
     pub(crate) name: String,
     pub(crate) actions: Vec<FormInfoEvent>,
     /// The keyboard shortcut; `null` when the command declares none.
     pub(crate) shortcut: Option<String>,
+}
+
+/// Minimal, provider-neutral form evidence consumed by the hidden event
+/// projector. It deliberately excludes support state, report properties and
+/// every other V12 `form.info` concern.
+#[derive(Debug, Clone)]
+pub(crate) struct FormEventEvidence {
+    pub(crate) context: FormEventContext,
+    pub(crate) events: Vec<FormInfoEvent>,
+    pub(crate) elements: Vec<FormInfoElement>,
+    pub(crate) commands: Vec<FormInfoCommand>,
+}
+
+impl FormEventEvidence {
+    pub(crate) fn from_info(data: &FormInfoData) -> Self {
+        Self {
+            context: data.event_context.clone(),
+            events: data.events.clone(),
+            elements: data.elements.clone(),
+            commands: data.commands.clone(),
+        }
+    }
 }
 
 pub(crate) struct FormInfoExecution {
@@ -1618,6 +1650,7 @@ fn form_info_tree(child_items: roxmltree::Node<'_, '_>) -> Vec<FormInfoElement> 
             let name = child.attribute("name").unwrap_or("").to_string();
             FormInfoElement {
                 tag: form_element_tag(child),
+                event_kind: FormElementKind::from_xml_tag(child.tag_name().name()),
                 title: form_title_differs(child, &name),
                 name,
                 binding: form_info_binding(child),
@@ -1695,7 +1728,7 @@ fn form_info_commands(commands: roxmltree::Node<'_, '_>) -> Vec<FormInfoCommand>
             actions: form_children(command, "Action")
                 .into_iter()
                 .map(|action| FormInfoEvent {
-                    name: action.attribute("name").unwrap_or("").to_string(),
+                    name: "Execute".to_string(),
                     handler: action.text().unwrap_or("").to_string(),
                     call_type: action.attribute("callType").map(str::to_string),
                 })
@@ -1703,6 +1736,29 @@ fn form_info_commands(commands: roxmltree::Node<'_, '_>) -> Vec<FormInfoCommand>
             shortcut: form_child_text(command, "Shortcut"),
         })
         .collect()
+}
+
+fn form_event_evidence_from_root(root: roxmltree::Node<'_, '_>) -> FormEventEvidence {
+    FormEventEvidence {
+        context: context_from_root(root),
+        events: form_child(root, "Events")
+            .map(form_info_events_section)
+            .unwrap_or_default(),
+        elements: form_child(root, "ChildItems")
+            .map(form_info_tree)
+            .unwrap_or_default(),
+        commands: form_child(root, "Commands")
+            .map(form_info_commands)
+            .unwrap_or_default(),
+    }
+}
+
+pub(crate) fn parse_form_event_evidence_xml(text: &str) -> Result<FormEventEvidence, String> {
+    let doc = Document::parse(text.trim_start_matches('\u{feff}'))
+        .map_err(|err| format!("Form XML parse error: {err}"))?;
+    let root = doc.root_element();
+    require_form_root(root)?;
+    Ok(form_event_evidence_from_root(root))
 }
 
 pub(crate) fn analyze_form_info(
@@ -1716,6 +1772,12 @@ pub(crate) fn analyze_form_info(
 /// The address kinds a form reader accepts: a nested `Catalog.X.Form.Y` and a
 /// top-level `CommonForm.Y`.
 pub(crate) const FORM_KINDS: &[&str] = &["Form", "CommonForm"];
+
+pub(crate) fn typed_form_reader_target(
+    address: &QualifiedAddress,
+) -> Option<crate::domain::source_target::MetadataAddress> {
+    typed_reader_metadata_target(address, FORM_KINDS)
+}
 
 /// The single args→path entry point of `form.info` and `form.validate`, and the
 /// one the format guard calls.
@@ -1744,6 +1806,91 @@ pub(crate) fn resolve_form_info_target(
         .map_err(|failure| failure.to_string())
 }
 
+pub(crate) fn parse_form_info_xml(
+    text: &str,
+    form_name: String,
+    object_context: String,
+    support: DomainObjectSupportData,
+) -> Result<FormInfoData, String> {
+    let doc = Document::parse(text.trim_start_matches('\u{feff}'))
+        .map_err(|err| format!("Form XML parse error: {err}"))?;
+    let root = doc.root_element();
+    require_form_root(root)?;
+    let base_form = form_child(root, "BaseForm");
+    let is_extension = base_form.is_some();
+    let form_title = form_child(root, "Title")
+        .map(form_ml_text)
+        .filter(|value| !value.is_empty());
+    let prop_names = [
+        "Width",
+        "Height",
+        "Group",
+        "WindowOpeningMode",
+        "EnterKeyBehavior",
+        "AutoTitle",
+        "AutoURL",
+        "AutoFillCheck",
+        "Customizable",
+        "CommandBarLocation",
+        "SaveDataInSettings",
+        "AutoSaveDataInSettings",
+        "AutoTime",
+        "UsePostingMode",
+        "RepostOnWrite",
+        "UseForFoldersAndItems",
+        "ReportResult",
+        "DetailsData",
+        "ReportFormType",
+        "VerticalScroll",
+        "ScalingMode",
+    ];
+    let properties = prop_names
+        .iter()
+        .filter_map(|name| {
+            form_child(root, name).and_then(|node| {
+                let value = form_ml_text(node);
+                (!value.is_empty()).then(|| FormInfoProperty {
+                    name: (*name).to_string(),
+                    value,
+                })
+            })
+        })
+        .collect::<Vec<_>>();
+    let command_bar_location = form_child_text(root, "CommandBarLocation")
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "Auto".to_string());
+    let auto_command_bar = if command_bar_location != "None" {
+        form_child(root, "AutoCommandBar")
+            .map(form_main_command_bar_lines)
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let event_evidence = form_event_evidence_from_root(root);
+    Ok(FormInfoData {
+        name: form_name,
+        title: form_title,
+        object_context: (!object_context.is_empty()).then_some(object_context),
+        is_extension,
+        base_form_version: base_form
+            .map(|node| node.attribute("version").unwrap_or("").to_string()),
+        support,
+        properties,
+        events: event_evidence.events,
+        auto_command_bar,
+        command_bar_location,
+        elements: event_evidence.elements,
+        attributes: form_child(root, "Attributes")
+            .map(form_info_attributes)
+            .unwrap_or_default(),
+        parameters: form_child(root, "Parameters")
+            .map(form_info_parameters)
+            .unwrap_or_default(),
+        commands: event_evidence.commands,
+        event_context: event_evidence.context,
+    })
+}
+
 pub(crate) fn analyze_form_info_with_data(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
@@ -1757,94 +1904,11 @@ pub(crate) fn analyze_form_info_with_data(
         }
 
         let text = read_utf8_sig(&form_path)?;
-        let doc = Document::parse(text.trim_start_matches('\u{feff}'))
-            .map_err(|err| format!("XML parse error in {}: {err}", form_path.display()))?;
-        let root = doc.root_element();
-        require_form_root(root)?;
-        let base_form = form_child(root, "BaseForm");
-        let is_extension = base_form.is_some();
         let (form_name, object_context) = form_info_context(&form_path);
-
-        let form_title = form_child(root, "Title")
-            .map(form_ml_text)
-            .filter(|value| !value.is_empty());
-
-        let prop_names = [
-            "Width",
-            "Height",
-            "Group",
-            "WindowOpeningMode",
-            "EnterKeyBehavior",
-            "AutoTitle",
-            "AutoURL",
-            "AutoFillCheck",
-            "Customizable",
-            "CommandBarLocation",
-            "SaveDataInSettings",
-            "AutoSaveDataInSettings",
-            "AutoTime",
-            "UsePostingMode",
-            "RepostOnWrite",
-            "UseForFoldersAndItems",
-            "ReportResult",
-            "DetailsData",
-            "ReportFormType",
-            "VerticalScroll",
-            "ScalingMode",
-        ];
-        let properties = prop_names
-            .iter()
-            .filter_map(|name| {
-                form_child(root, name).and_then(|node| {
-                    let value = form_ml_text(node);
-                    (!value.is_empty()).then(|| FormInfoProperty {
-                        name: (*name).to_string(),
-                        value,
-                    })
-                })
-            })
-            .collect::<Vec<_>>();
-
-        let command_bar_location = form_child_text(root, "CommandBarLocation")
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "Auto".to_string());
-        let auto_command_bar = if command_bar_location != "None" {
-            form_child(root, "AutoCommandBar")
-                .map(form_main_command_bar_lines)
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-
-        let data = FormInfoData {
-            name: form_name,
-            title: form_title,
-            object_context: (!object_context.is_empty()).then_some(object_context),
-            is_extension,
-            base_form_version: base_form
-                .map(|node| node.attribute("version").unwrap_or("").to_string()),
-            support: support_reader
-                .object_support(&selection.target)
-                .map_err(|error| error.to_string())?,
-            properties,
-            events: form_child(root, "Events")
-                .map(form_info_events_section)
-                .unwrap_or_default(),
-            auto_command_bar,
-            command_bar_location,
-            elements: form_child(root, "ChildItems")
-                .map(form_info_tree)
-                .unwrap_or_default(),
-            attributes: form_child(root, "Attributes")
-                .map(form_info_attributes)
-                .unwrap_or_default(),
-            parameters: form_child(root, "Parameters")
-                .map(form_info_parameters)
-                .unwrap_or_default(),
-            commands: form_child(root, "Commands")
-                .map(form_info_commands)
-                .unwrap_or_default(),
-        };
+        let support = support_reader
+            .object_support(&selection.target)
+            .map_err(|error| error.to_string())?;
+        let data = parse_form_info_xml(&text, form_name, object_context, support)?;
 
         Ok((data, form_path))
     })();
@@ -3789,6 +3853,7 @@ pub(crate) fn form_add_supported_object_types() -> &'static [&'static str] {
     &[
         "Document",
         "Catalog",
+        "Enum",
         "DataProcessor",
         "Report",
         "ExternalDataProcessor",
@@ -4528,7 +4593,7 @@ pub(crate) struct FormEditData {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct FormEditAddedElement {
+pub(crate) struct FormEditAddedElement {
     kind: String,
     name: String,
     /// The data path the element is bound to; `null` when it binds nothing.
@@ -4542,7 +4607,7 @@ struct FormEditAddedElement {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct FormEditAddedAttribute {
+pub(crate) struct FormEditAddedAttribute {
     name: String,
     #[serde(rename = "type")]
     type_name: String,
@@ -4551,7 +4616,7 @@ struct FormEditAddedAttribute {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct FormEditAddedCommand {
+pub(crate) struct FormEditAddedCommand {
     name: String,
     /// The command's action handler; `null` when it has none.
     action: Option<String>,
@@ -4560,7 +4625,7 @@ struct FormEditAddedCommand {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct FormEditAddedEvent {
+pub(crate) struct FormEditAddedEvent {
     /// The element the handler belongs to; `null` for a form-level event.
     element: Option<String>,
     name: String,
@@ -4636,165 +4701,16 @@ fn form_edit_with_mode_data(
             require_form_root(root).map_err(|error| format!("[ERROR] {error}"))?;
             root.range().start
         };
-        if let Some(attributes) = defn.get("attributes").and_then(Value::as_array) {
-            form_edit_validate_named_objects(&xml_text, attributes, "Attribute", "attribute")?;
-        }
-        if let Some(commands) = defn.get("commands").and_then(Value::as_array) {
-            form_edit_validate_named_objects(&xml_text, commands, "Command", "command")?;
-        }
-        let planned_removals = form_edit_plan_removals(&defn, &xml_text)?;
-        form_edit_validate_removal_definition_conflicts(&defn, &planned_removals)?;
-        let planned_events = form_edit_plan_events(&defn, &xml_text)?;
-        form_edit_apply_planned_removals(&mut xml_text, &planned_removals);
-        let form_name = form_edit_form_name(&form_path);
-        let mut elem_ids = FormIdAllocator {
-            next: form_edit_next_id(
-                &xml_text,
-                &[
-                    "InputField",
-                    "ContextMenu",
-                    "ExtendedTooltip",
-                    "UsualGroup",
-                    "Table",
-                    "Button",
-                    "CommandBar",
-                ],
-            ),
-        };
-        let mut attr_ids = FormIdAllocator {
-            next: form_edit_next_id(&xml_text, &["Attribute", "Column"]),
-        };
-        let mut cmd_ids = FormIdAllocator {
-            next: form_edit_next_id(&xml_text, &["Command"]),
-        };
-        if form_edit_is_extension_form(&xml_text) {
-            elem_ids.next = elem_ids.next.max(999_999);
-            attr_ids.next = attr_ids.next.max(999_999);
-            cmd_ids.next = cmd_ids.next.max(999_999);
-        }
-
-        let mut added_elements = Vec::<FormEditAddedElement>::new();
-        let mut emitted_fragments = String::new();
-        let mut companion_count = 0usize;
-        if let Some(elements) = defn.get("elements").and_then(Value::as_array) {
-            if !elements.is_empty() {
-                form_compile_validate_element_property_tree(elements)?;
-                let elements_are_idempotent = form_edit_elements_are_idempotent_noop(
-                    &xml_text,
-                    elements,
-                    defn.get("into").and_then(Value::as_str),
-                    defn.get("after").and_then(Value::as_str),
-                )?;
-                if !elements_are_idempotent {
-                    form_edit_validate_element_names(&xml_text, elements)?;
-                    let insert_target = form_edit_target_child_items_range(
-                        &xml_text,
-                        defn.get("into").and_then(Value::as_str),
-                        defn.get("after").and_then(Value::as_str),
-                    )?;
-                    let element_indent = insert_target.child_indent().to_string();
-                    let start = elem_ids.next;
-                    let mut lines = Vec::<String>::new();
-                    for element in elements {
-                        let record = form_edit_element_record(element);
-                        emit_form_element(&mut lines, element, &element_indent, &mut elem_ids)?;
-                        if let Some(record) = record {
-                            added_elements.push(record);
-                        }
-                    }
-                    emitted_fragments.push_str(&lines.join("\n"));
-                    form_edit_insert_lines_into_target(&mut xml_text, insert_target, &lines)?;
-                    companion_count = elem_ids.next.saturating_sub(start + added_elements.len());
-                }
-            }
-        }
-
-        let mut added_attrs = Vec::<FormEditAddedAttribute>::new();
-        if let Some(attrs) = defn.get("attributes").and_then(Value::as_array) {
-            if !attrs.is_empty() {
-                form_edit_validate_attribute_columns(attrs)?;
-                let mut lines = Vec::<String>::new();
-                for attr in attrs {
-                    let Some(object) = attr.as_object() else {
-                        continue;
-                    };
-                    let Some(name) = object.get("name").and_then(Value::as_str) else {
-                        continue;
-                    };
-                    let id = attr_ids.next();
-                    emit_form_edit_attribute_item(&mut lines, object, name, id, "\t\t")?;
-                    let type_name = object
-                        .get("type")
-                        .and_then(Value::as_str)
-                        .unwrap_or("(no type)");
-                    added_attrs.push(FormEditAddedAttribute {
-                        name: name.to_string(),
-                        type_name: type_name.to_string(),
-                        id: id.to_string(),
-                    });
-                }
-                emitted_fragments.push_str(&lines.join("\n"));
-                form_edit_insert_section_items(&mut xml_text, "Attributes", &lines)?;
-            }
-        }
-
-        let mut added_cmds = Vec::<FormEditAddedCommand>::new();
-        if let Some(commands) = defn.get("commands").and_then(Value::as_array) {
-            if !commands.is_empty() {
-                let mut lines = Vec::<String>::new();
-                for cmd in commands {
-                    let Some(object) = cmd.as_object() else {
-                        continue;
-                    };
-                    let Some(name) = object.get("name").and_then(Value::as_str) else {
-                        continue;
-                    };
-                    let id = cmd_ids.next();
-                    emit_form_edit_command_item(&mut lines, object, name, id, "\t\t");
-                    added_cmds.push(FormEditAddedCommand {
-                        name: name.to_string(),
-                        action: object
-                            .get("action")
-                            .and_then(Value::as_str)
-                            .map(str::to_string),
-                        id: id.to_string(),
-                    });
-                }
-                emitted_fragments.push_str(&lines.join("\n"));
-                form_edit_insert_section_items(&mut xml_text, "Commands", &lines)?;
-            }
-        }
-
-        let mut added_form_events = Vec::<FormEditAddedEvent>::new();
-        let mut added_element_events = Vec::<FormEditAddedEvent>::new();
-        for event in &planned_events {
-            form_edit_apply_planned_event(&mut xml_text, event)?;
-            match &event.owner {
-                FormEditEventOwner::Form => added_form_events.push(FormEditAddedEvent {
-                    element: None,
-                    name: event.name.clone(),
-                    handler: event.handler.clone(),
-                    call_type: event.call_type.clone(),
-                }),
-                FormEditEventOwner::Element(element) => {
-                    added_element_events.push(FormEditAddedEvent {
-                        element: Some(element.clone()),
-                        name: event.name.clone(),
-                        handler: event.handler.clone(),
-                        call_type: event.call_type.clone(),
-                    })
-                }
-            }
-        }
-
-        let emitted_type_qnames = form_edit_collect_emitted_type_qnames(&emitted_fragments)?;
-        form_edit_ensure_emitted_namespaces(&mut xml_text, form_root_start, &emitted_fragments)?;
-        let edited_document = Document::parse(&xml_text)
-            .map_err(|err| format!("[ERROR] XML parse error after edit: {err}"))?;
-        let edited_root = edited_document.root_element();
-        require_form_root(edited_root).map_err(|error| format!("[ERROR] {error}"))?;
-        form_edit_validate_surviving_removal_references(edited_root, &planned_removals)?;
-        form_edit_validate_emitted_type_qnames(edited_root, &emitted_type_qnames)?;
+        let FormEditApplied {
+            added_elements,
+            added_attrs,
+            added_cmds,
+            added_form_events,
+            added_element_events,
+            planned_removals,
+            companion_count,
+            form_name,
+        } = form_edit_apply_definition(&mut xml_text, &defn, &form_path, form_root_start)?;
         form_edit_require_valid(validate_form_with_source(
             args,
             context,
@@ -4899,6 +4815,212 @@ fn form_edit_with_mode_data(
     }
 }
 
+/// What one applied form definition added, for the caller's report.
+pub(crate) struct FormEditApplied {
+    pub(crate) added_elements: Vec<FormEditAddedElement>,
+    pub(crate) added_attrs: Vec<FormEditAddedAttribute>,
+    pub(crate) added_cmds: Vec<FormEditAddedCommand>,
+    pub(crate) added_form_events: Vec<FormEditAddedEvent>,
+    pub(crate) added_element_events: Vec<FormEditAddedEvent>,
+    pub(crate) planned_removals: Vec<FormEditPlannedRemoval>,
+    pub(crate) companion_count: usize,
+    pub(crate) form_name: String,
+}
+
+impl FormEditApplied {
+    /// Names of the elements the definition removed, requested and contained.
+    pub(crate) fn removed_element_names(&self) -> Vec<String> {
+        self.planned_removals
+            .iter()
+            .flat_map(|removal| {
+                std::iter::once(removal.name.clone())
+                    .chain(removal.contained.iter().map(|node| node.name.clone()))
+            })
+            .collect()
+    }
+}
+
+/// Applies one managed-form definition (`elements`, `attributes`,
+/// `commands`, `events`, `removeElements`, `into`, `after`) to the form text
+/// in memory. This is the single source of the form transforms: the legacy
+/// editor and the v0.13 staged planner both route through it. The text must
+/// already be a parsed managed form (`form_root_start` is its root offset).
+pub(crate) fn form_edit_apply_definition(
+    xml_text: &mut String,
+    defn: &Value,
+    form_path: &Path,
+    form_root_start: usize,
+) -> Result<FormEditApplied, String> {
+    if let Some(attributes) = defn.get("attributes").and_then(Value::as_array) {
+        form_edit_validate_named_objects(xml_text, attributes, "Attribute", "attribute")?;
+    }
+    if let Some(commands) = defn.get("commands").and_then(Value::as_array) {
+        form_edit_validate_named_objects(xml_text, commands, "Command", "command")?;
+    }
+    let planned_removals = form_edit_plan_removals(defn, xml_text)?;
+    form_edit_validate_removal_definition_conflicts(defn, &planned_removals)?;
+    let planned_events = form_edit_plan_events(defn, xml_text)?;
+    form_edit_apply_planned_removals(xml_text, &planned_removals);
+    let form_name = form_edit_form_name(form_path);
+    let mut elem_ids = FormIdAllocator {
+        next: form_edit_next_id(
+            xml_text,
+            &[
+                "InputField",
+                "ContextMenu",
+                "ExtendedTooltip",
+                "UsualGroup",
+                "Table",
+                "Button",
+                "CommandBar",
+            ],
+        ),
+    };
+    let mut attr_ids = FormIdAllocator {
+        next: form_edit_next_id(xml_text, &["Attribute", "Column"]),
+    };
+    let mut cmd_ids = FormIdAllocator {
+        next: form_edit_next_id(xml_text, &["Command"]),
+    };
+    if form_edit_is_extension_form(xml_text) {
+        elem_ids.next = elem_ids.next.max(999_999);
+        attr_ids.next = attr_ids.next.max(999_999);
+        cmd_ids.next = cmd_ids.next.max(999_999);
+    }
+
+    let mut added_elements = Vec::<FormEditAddedElement>::new();
+    let mut emitted_fragments = String::new();
+    let mut companion_count = 0usize;
+    if let Some(elements) = defn.get("elements").and_then(Value::as_array) {
+        if !elements.is_empty() {
+            form_compile_validate_element_property_tree(elements)?;
+            let elements_are_idempotent = form_edit_elements_are_idempotent_noop(
+                xml_text,
+                elements,
+                defn.get("into").and_then(Value::as_str),
+                defn.get("after").and_then(Value::as_str),
+            )?;
+            if !elements_are_idempotent {
+                form_edit_validate_element_names(xml_text, elements)?;
+                let insert_target = form_edit_target_child_items_range(
+                    xml_text,
+                    defn.get("into").and_then(Value::as_str),
+                    defn.get("after").and_then(Value::as_str),
+                )?;
+                let element_indent = insert_target.child_indent().to_string();
+                let start = elem_ids.next;
+                let mut lines = Vec::<String>::new();
+                for element in elements {
+                    let record = form_edit_element_record(element);
+                    emit_form_element(&mut lines, element, &element_indent, &mut elem_ids)?;
+                    if let Some(record) = record {
+                        added_elements.push(record);
+                    }
+                }
+                emitted_fragments.push_str(&lines.join("\n"));
+                form_edit_insert_lines_into_target(xml_text, insert_target, &lines)?;
+                companion_count = elem_ids.next.saturating_sub(start + added_elements.len());
+            }
+        }
+    }
+
+    let mut added_attrs = Vec::<FormEditAddedAttribute>::new();
+    if let Some(attrs) = defn.get("attributes").and_then(Value::as_array) {
+        if !attrs.is_empty() {
+            form_edit_validate_attribute_columns(attrs)?;
+            let mut lines = Vec::<String>::new();
+            for attr in attrs {
+                let Some(object) = attr.as_object() else {
+                    continue;
+                };
+                let Some(name) = object.get("name").and_then(Value::as_str) else {
+                    continue;
+                };
+                let id = attr_ids.next();
+                emit_form_edit_attribute_item(&mut lines, object, name, id, "\t\t")?;
+                let type_name = object
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("(no type)");
+                added_attrs.push(FormEditAddedAttribute {
+                    name: name.to_string(),
+                    type_name: type_name.to_string(),
+                    id: id.to_string(),
+                });
+            }
+            emitted_fragments.push_str(&lines.join("\n"));
+            form_edit_insert_section_items(xml_text, "Attributes", &lines)?;
+        }
+    }
+
+    let mut added_cmds = Vec::<FormEditAddedCommand>::new();
+    if let Some(commands) = defn.get("commands").and_then(Value::as_array) {
+        if !commands.is_empty() {
+            let mut lines = Vec::<String>::new();
+            for cmd in commands {
+                let Some(object) = cmd.as_object() else {
+                    continue;
+                };
+                let Some(name) = object.get("name").and_then(Value::as_str) else {
+                    continue;
+                };
+                let id = cmd_ids.next();
+                emit_form_edit_command_item(&mut lines, object, name, id, "\t\t");
+                added_cmds.push(FormEditAddedCommand {
+                    name: name.to_string(),
+                    action: object
+                        .get("action")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    id: id.to_string(),
+                });
+            }
+            emitted_fragments.push_str(&lines.join("\n"));
+            form_edit_insert_section_items(xml_text, "Commands", &lines)?;
+        }
+    }
+
+    let mut added_form_events = Vec::<FormEditAddedEvent>::new();
+    let mut added_element_events = Vec::<FormEditAddedEvent>::new();
+    for event in &planned_events {
+        form_edit_apply_planned_event(xml_text, event)?;
+        match &event.owner {
+            FormEditEventOwner::Form => added_form_events.push(FormEditAddedEvent {
+                element: None,
+                name: event.name.clone(),
+                handler: event.handler.clone(),
+                call_type: event.call_type.clone(),
+            }),
+            FormEditEventOwner::Element(element) => added_element_events.push(FormEditAddedEvent {
+                element: Some(element.clone()),
+                name: event.name.clone(),
+                handler: event.handler.clone(),
+                call_type: event.call_type.clone(),
+            }),
+        }
+    }
+
+    let emitted_type_qnames = form_edit_collect_emitted_type_qnames(&emitted_fragments)?;
+    form_edit_ensure_emitted_namespaces(xml_text, form_root_start, &emitted_fragments)?;
+    let edited_document = Document::parse(xml_text)
+        .map_err(|err| format!("[ERROR] XML parse error after edit: {err}"))?;
+    let edited_root = edited_document.root_element();
+    require_form_root(edited_root).map_err(|error| format!("[ERROR] {error}"))?;
+    form_edit_validate_surviving_removal_references(edited_root, &planned_removals)?;
+    form_edit_validate_emitted_type_qnames(edited_root, &emitted_type_qnames)?;
+
+    Ok(FormEditApplied {
+        added_elements,
+        added_attrs,
+        added_cmds,
+        added_form_events,
+        added_element_events,
+        planned_removals,
+        companion_count,
+        form_name,
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FormEditContainedNode {
     name: String,
@@ -4906,7 +5028,7 @@ struct FormEditContainedNode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct FormEditPlannedRemoval {
+pub(crate) struct FormEditPlannedRemoval {
     name: String,
     kind: String,
     contained: Vec<FormEditContainedNode>,
@@ -6199,7 +6321,7 @@ pub(crate) fn form_edit_publish_preserving_bom(
     Ok(report.cleanup_warnings)
 }
 
-fn form_edit_require_valid(outcome: AdapterOutcome) -> Result<(), String> {
+pub(crate) fn form_edit_require_valid(outcome: AdapterOutcome) -> Result<(), String> {
     if outcome.ok {
         return Ok(());
     }
@@ -6775,7 +6897,20 @@ pub(crate) fn form_edit_insert_section_items(
         return Ok(());
     }
     let Some(pos) = form_edit_find_section_close(xml_text, section) else {
-        return Err(format!("No <{section}> section found in form"));
+        // A form the platform wrote without this section (a fresh form has no
+        // commands or attributes yet): open the section before the root close.
+        let Some(root_close) = xml_text.rfind("</Form>") else {
+            return Err(format!("No <{section}> section found in form"));
+        };
+        let line_start = xml_text[..root_close]
+            .rfind('\n')
+            .map(|idx| idx + 1)
+            .unwrap_or(root_close);
+        xml_text.insert_str(
+            line_start,
+            &format!("\t<{section}>\n{content}\n\t</{section}>\n"),
+        );
+        return Ok(());
     };
     let insert_pos = xml_text[..pos]
         .rfind('\n')
@@ -7499,9 +7634,12 @@ pub(crate) fn form_compile_xml(
     let context = form_project_event_context(
         FormEventContext {
             definition: FormDefinitionKind::Regular,
+            direct_part_writable: true,
             main_attribute: MainAttributeKind::Unknown,
             main_attribute_type: None,
             main_attribute_provenance: MainAttributeProvenance::Missing,
+            main_attribute_name: None,
+            metadata_owner: None,
         },
         0,
         defn,
@@ -10822,7 +10960,7 @@ pub(crate) fn invoke_mutation(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::application::UnicaApplication;
     use crate::domain::cancellation::CancellationToken;
@@ -10930,6 +11068,34 @@ mod tests {
             .iter()
             .any(|error| { error.contains("urn:not-logform") && error.contains(FORM_LOGFORM_NS) }));
         let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn form_info_projects_direct_command_action_as_execute_binding() {
+        let data = parse_form_info_xml(
+            r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">
+  <ChildItems/>
+  <Commands>
+    <Command name="Refresh" id="1">
+      <Action>RefreshAction</Action>
+    </Command>
+  </Commands>
+</Form>"#,
+            "Test".to_string(),
+            String::new(),
+            DomainObjectSupportData {
+                state: crate::domain::support_state::ObjectSupportState::NotSupported,
+                direct_edit_safe: Some(true),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(data.commands.len(), 1);
+        assert_eq!(data.commands[0].actions.len(), 1);
+        let action = &data.commands[0].actions[0];
+        assert_eq!(action.name, "Execute");
+        assert_eq!(action.handler, "RefreshAction");
+        assert_eq!(action.call_type, None);
     }
 
     #[test]
@@ -11691,65 +11857,6 @@ mod tests {
     }
 
     #[test]
-    fn public_form_add_prioritizes_newer_existing_target_over_older_object_owner() {
-        let context = temp_context("public-add-existing-newer-target");
-        fs::write(
-            context.cwd.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .unwrap();
-        let configuration_path = context.cwd.join("src/Configuration.xml");
-        write_file(
-            &configuration_path,
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration/></MetaDataObject>"#,
-        );
-        let object_path = context.cwd.join("src/Catalogs/Goods.xml");
-        let older_owner = empty_catalog_xml("\n", true)
-            .replacen(r#"version="2.20""#, r#"version="2.19""#, 1)
-            .into_bytes();
-        fs::create_dir_all(object_path.parent().unwrap()).unwrap();
-        fs::write(&object_path, &older_owner).unwrap();
-        let descriptor_path = context
-            .cwd
-            .join("src/Catalogs/Goods/Forms/ExistingForm.xml");
-        let newer_descriptor = br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><Form/></MetaDataObject>"#.to_vec();
-        fs::create_dir_all(descriptor_path.parent().unwrap()).unwrap();
-        fs::write(&descriptor_path, &newer_descriptor).unwrap();
-        let configuration_before = fs::read(&configuration_path).unwrap();
-        let mut args = add_list_form_args(&object_path, "ExistingForm");
-        args.insert("cwd".to_string(), json!(context.cwd.display().to_string()));
-        args.insert("dryRun".to_string(), json!(false));
-
-        let outcome = UnicaApplication::new()
-            .call_tool("unica.form.add", &args)
-            .unwrap();
-
-        assert!(!outcome.ok, "{outcome:?}");
-        let diagnostic = &outcome.diagnostics.as_ref().unwrap()["formatCompatibility"];
-        assert_eq!(diagnostic["code"], "platformVersionUnsupported");
-        assert_eq!(diagnostic["actualFormat"], "2.21");
-        let warning = outcome.warnings.join("\n");
-        assert!(warning.contains("1С 8.5"), "{warning}");
-        assert!(!warning.contains("миграц"), "{warning}");
-        assert!(!warning.contains("повторно выгруз"), "{warning}");
-        assert!(!warning.contains("re-export"), "{warning}");
-        assert_eq!(fs::read(&configuration_path).unwrap(), configuration_before);
-        assert_eq!(fs::read(&object_path).unwrap(), older_owner);
-        assert_eq!(fs::read(&descriptor_path).unwrap(), newer_descriptor);
-        assert!(!context
-            .cwd
-            .join("src/Catalogs/Goods/Forms/ExistingForm/Ext/Form.xml")
-            .exists());
-        assert!(!context
-            .cwd
-            .join("src/Catalogs/Goods/Forms/ExistingForm/Ext/Form/Module.bsl")
-            .exists());
-        assert!(outcome.changes.is_empty(), "{outcome:?}");
-        assert!(outcome.artifacts.is_empty(), "{outcome:?}");
-        let _ = fs::remove_dir_all(&context.cwd);
-    }
-
-    #[test]
     fn add_form_rejects_path_form_name_without_mutating_owner_or_escape_target() {
         let context = temp_context("add-path-form-name");
         let root_xml = context.cwd.join("src/Catalogs/Goods.xml");
@@ -11772,7 +11879,7 @@ mod tests {
     }
 
     #[test]
-    fn add_form_rejects_partial_existing_scaffold_before_any_mutation() {
+    pub(crate) fn add_form_rejects_partial_existing_scaffold_before_any_mutation() {
         let context = temp_context("add-partial-scaffold");
         let root_xml = context.cwd.join("src/Catalogs/Goods.xml");
         let descriptor = context.cwd.join("src/Catalogs/Goods/Forms/ListForm.xml");
@@ -11806,6 +11913,44 @@ mod tests {
         for (path, expected) in before {
             assert_eq!(fs::read(&path).ok(), expected, "{}", path.display());
         }
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    pub(crate) fn add_form_rejects_scaffold_member_created_after_planning() {
+        let context = temp_context("add-late-scaffold-member");
+        let root_xml = context.cwd.join("src/Catalogs/Goods.xml");
+        let descriptor = context.cwd.join("src/Catalogs/Goods/Forms/ListForm.xml");
+        let form_xml = context
+            .cwd
+            .join("src/Catalogs/Goods/Forms/ListForm/Ext/Form.xml");
+        let module = context
+            .cwd
+            .join("src/Catalogs/Goods/Forms/ListForm/Ext/Form/Module.bsl");
+        write_file(&root_xml, &empty_catalog_xml("\n", true));
+        let owner_before = fs::read(&root_xml).unwrap();
+        let concurrent = br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"/></MetaDataObject>"#.to_vec();
+        let descriptor_for_hook = descriptor.clone();
+        let concurrent_for_hook = concurrent.clone();
+        let args = add_list_form_args(&root_xml, "ListForm");
+
+        let outcome = with_before_commit_hook(
+            move |_| fs::write(&descriptor_for_hook, concurrent_for_hook).unwrap(),
+            || add_form(&args, &context),
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.join("\n").contains("created concurrently")
+                || outcome.errors.join("\n").contains("already exists")
+                || outcome.errors.join("\n").contains("preimage"),
+            "{outcome:?}"
+        );
+        assert_eq!(fs::read(&root_xml).unwrap(), owner_before);
+        assert_eq!(fs::read(&descriptor).unwrap(), concurrent);
+        assert!(!form_xml.exists(), "{outcome:?}");
+        assert!(!module.exists(), "{outcome:?}");
+        assert!(outcome.changes.is_empty(), "{outcome:?}");
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
@@ -12031,7 +12176,7 @@ mod tests {
     }
 
     #[test]
-    fn remove_form_rejects_payload_directory_that_appears_after_absent_probe() {
+    pub(crate) fn remove_form_rejects_payload_directory_that_appears_after_absent_probe() {
         let context = temp_context("remove-late-payload-directory");
         let root_xml = context.cwd.join("src/Catalogs/Goods.xml");
         let forms_dir = context.cwd.join("src/Catalogs/Goods/Forms");
@@ -13761,7 +13906,7 @@ mod tests {
     }
 
     #[test]
-    fn edit_form_rejects_stale_preimage_without_overwriting_concurrent_change() {
+    pub(crate) fn edit_form_rejects_stale_preimage_without_overwriting_concurrent_change() {
         let context = temp_context("edit-stale-preimage");
         let form_path = context.cwd.join("Form.xml");
         let original = editable_contract_form(FORM_LOGFORM_NS, "");
@@ -17431,7 +17576,7 @@ mod tests {
     }
 
     #[test]
-    fn form_compile_rolls_back_if_unchanged_parent_owner_changes_during_publication() {
+    pub(crate) fn form_compile_rolls_back_if_unchanged_parent_owner_changes_during_publication() {
         let context = temp_context("compile-parent-owner-race");
         let source = context.cwd.join("src");
         let definition_path = context.cwd.join("form.json");
@@ -18507,7 +18652,8 @@ mod tests {
                         "attributes": [projected_attribute],
                         "formEvents": [{
                             "name": "OnReadAtServer",
-                            "handler": "OnReadAtServer"
+                            "handler": "OnReadAtServer",
+                            "callType": "After"
                         }]
                     }),
                 ),
@@ -18866,7 +19012,9 @@ mod tests {
     }
 
     #[test]
-    fn edit_form_identical_event_is_byte_exact_idempotent_noop() {
+    pub(crate) fn edit_form_identical_event_is_byte_and_identity_exact_idempotent_noop() {
+        use crate::infrastructure::platform::testing::file_identity_for_test;
+
         let context = temp_context("edit-event-idempotent");
         let form_path = context.cwd.join("Form.xml");
         let original = event_form_xml(
@@ -18880,6 +19028,7 @@ mod tests {
         .trim_end_matches("\r\n")
         .to_string();
         write_file(&form_path, &original);
+        let identity = file_identity_for_test(&form_path).unwrap();
         let args = Map::from_iter([
             (
                 "FormPath".to_string(),
@@ -18908,6 +19057,7 @@ mod tests {
             "{outcome:?}"
         );
         assert_eq!(fs::read_to_string(&form_path).unwrap(), original);
+        assert_eq!(file_identity_for_test(&form_path).unwrap(), identity);
 
         let _ = fs::remove_dir_all(&context.cwd);
     }
@@ -19454,6 +19604,40 @@ mod tests {
         }
     }
 
+    #[test]
+    fn edit_form_rejects_borrowed_event_without_call_type_before_write() {
+        let context = temp_context("edit-borrowed-event-missing-call-type");
+        let form_path = context.cwd.join("Form.xml");
+        let original = event_form_xml(Some("CatalogObject.Goods"), "", "", true).into_bytes();
+        fs::write(&form_path, &original).unwrap();
+        let args = Map::from_iter([
+            (
+                "FormPath".to_string(),
+                json!(form_path.display().to_string()),
+            ),
+            (
+                "definition".to_string(),
+                json!({
+                    "formEvents": [{
+                        "name": "OnOpen",
+                        "handler": "OnOpenAfter"
+                    }]
+                }),
+            ),
+        ]);
+
+        let outcome = edit_form(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(outcome
+            .errors
+            .iter()
+            .any(|error| error.contains("FORM_EVENT_CALL_TYPE_REQUIRED")));
+        assert!(outcome.changes.is_empty(), "{outcome:?}");
+        assert_eq!(fs::read(&form_path).unwrap(), original);
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
     fn event_form_xml(
         main_type: Option<&str>,
         form_events: &str,
@@ -19536,7 +19720,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod form_read_selector_bridge_tests {
+pub(super) mod form_read_selector_bridge_tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -19597,7 +19781,7 @@ mod form_read_selector_bridge_tests {
     }
 
     #[test]
-    fn form_info_answers_identically_for_a_logical_and_a_physical_selector() {
+    pub(crate) fn form_info_answers_identically_for_a_logical_and_a_physical_selector() {
         let context = workspace("info");
 
         let physical = analyze_form_info_with_data(
@@ -19646,7 +19830,7 @@ mod form_read_selector_bridge_tests {
     }
 
     #[test]
-    fn form_validate_answers_identically_for_a_logical_and_a_physical_selector() {
+    pub(crate) fn form_validate_answers_identically_for_a_logical_and_a_physical_selector() {
         let context = workspace("validate");
 
         let physical = validate_form(

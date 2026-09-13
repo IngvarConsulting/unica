@@ -5,12 +5,12 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import importlib.util
 import json
 import os
-import queue
-import signal
+import queue  # шов подмены: tests/ci/test_smoke_unica_mcp.py
 import socket
-import subprocess
+import subprocess  # шов подмены: tests/ci/test_smoke_unica_mcp.py
 import tempfile
 import threading
 import time
@@ -18,7 +18,23 @@ from pathlib import Path
 from typing import Callable
 
 
-TOOL_SURFACE_REVIEW_RELATIVE = Path("spec/architecture/tool-surface-review.json")
+def _load_wire_probe_module():
+    script = Path(__file__).with_name("probe-unica-wire.py")
+    spec = importlib.util.spec_from_file_location("unica_wire_probe", script)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load shared Unica wire probe module: {script}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_WIRE_PROBE = _load_wire_probe_module()
+ProcessIdentity = _WIRE_PROBE.ProcessIdentity
+ProcessCleanupResult = _WIRE_PROBE.ProcessCleanupResult
+ProcessOwnership = _WIRE_PROBE.ProcessOwnership
+
+
+TOOL_SURFACE_REVIEW_RELATIVE = Path("arch/tool-surface-review.json")
 CHECKOUT_MARKERS = (
     Path("Cargo.toml"),
     Path("plugins/unica/.codex-plugin/plugin.json"),
@@ -29,11 +45,23 @@ SOURCE_TOOL_NAMES = {
     "unica.source.resources",
     "unica.source.read",
 }
+V13_COMPATIBILITY_TOOL_NAMES = {
+    "unica.view",
+    "unica.apply",
+    "unica.resolve",
+    "unica.search",
+    "unica.check",
+    "unica.diff",
+    "unica.run",
+    "unica.docs",
+    "unica.task.get",
+    "unica.task.result",
+    "unica.task.cancel",
+}
 META_TOOL_NAMES = {
     "unica.meta.info",
     "unica.meta.add",
     "unica.meta.edit",
-    "unica.meta.remove",
 }
 ROLE_TYPED_TOOL_NAME = "unica.role.edit"
 CODE_SEARCH_TYPED_TOOL_NAME = "unica.code.search"
@@ -93,6 +121,53 @@ EXPECTED_META_OUTPUT_SCHEMA = {
         "cache",
     ],
 }
+
+
+_SMOKE_STARTED = time.monotonic()
+_PHASE_LOCK = threading.Lock()
+_LAST_PHASE: list[str] = ["starting"]
+
+
+def _trace(message: str) -> None:
+    """Progress line on stderr, stamped with seconds since the smoke started.
+
+    A hang is located by the last line written before the watchdog fires, so
+    every request and cleanup phase reports here. Bytes go straight to fd 2:
+    a cp1252 console on Windows must not turn a progress line into an
+    encoding error.
+    """
+    elapsed = time.monotonic() - _SMOKE_STARTED
+    with _PHASE_LOCK:
+        _LAST_PHASE[0] = f"{message} (at +{elapsed:.1f}s)"
+    try:
+        os.write(
+            2, f"[smoke +{elapsed:.1f}s] {message}\n".encode("utf-8", "replace")
+        )
+    except OSError:
+        pass
+
+
+def _last_phase() -> str:
+    with _PHASE_LOCK:
+        return _LAST_PHASE[0]
+
+
+def _request_label(message: dict) -> str:
+    method = str(message.get("method", "?"))
+    params = message.get("params")
+    if method == "tools/call" and isinstance(params, dict):
+        return f"{method} {params.get('name', '?')}"
+    return method
+
+
+def _describe_error(error: BaseException) -> str:
+    if isinstance(error, SystemExit):
+        return str(error.code) if error.code is not None else "SystemExit"
+    return f"{type(error).__name__}: {error}"
+
+
+def _tail(text: str, lines: int) -> str:
+    return "\n".join(text.rstrip("\n").splitlines()[-lines:])
 
 
 def _valid_unica_tool_name(value: object) -> bool:
@@ -615,192 +690,6 @@ EXPECTED_XDTO_INPUT_SCHEMAS = json.loads(
         }
       ]
     }
-  },
-  "unica.xdto.edit": {
-    "type": "object",
-    "additionalProperties": false,
-    "properties": {
-      "confirm": {
-        "type": "boolean"
-      },
-      "cwd": {
-        "type": "string"
-      },
-      "dryRun": {
-        "type": "boolean",
-        "default": true
-      },
-      "metadataPath": {
-        "type": "string",
-        "pattern": "^(?:XDTOPackage|ПакетXDTO)\\.[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-0-9·̀-ͯ‿-⁀]*$"
-      },
-      "operations": {
-        "type": "array",
-        "minItems": 1,
-        "items": {
-          "oneOf": [
-            {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "op": {
-                  "enum": [
-                    "addValueType"
-                  ]
-                },
-                "name": {
-                  "type": "string",
-                  "minLength": 1,
-                  "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*$"
-                },
-                "base": {
-                  "type": "string",
-                  "minLength": 1,
-                  "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*:[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*$"
-                }
-              },
-              "required": [
-                "op",
-                "name",
-                "base"
-              ]
-            },
-            {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "op": {
-                  "enum": [
-                    "addObjectType"
-                  ]
-                },
-                "name": {
-                  "type": "string",
-                  "minLength": 1,
-                  "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*$"
-                }
-              },
-              "required": [
-                "op",
-                "name"
-              ]
-            },
-            {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "op": {
-                  "enum": [
-                    "addProperty"
-                  ]
-                },
-                "typeName": {
-                  "type": "string",
-                  "minLength": 1,
-                  "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*$"
-                },
-                "property": {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "name": {
-                      "type": "string",
-                      "minLength": 1,
-                      "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*$"
-                    },
-                    "type": {
-                      "type": "string",
-                      "minLength": 1,
-                      "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*:[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*$"
-                    },
-                    "minOccurs": {
-                      "type": "integer",
-                      "minimum": 0,
-                      "maximum": 1
-                    }
-                  },
-                  "required": [
-                    "name",
-                    "type"
-                  ]
-                },
-                "propertyPath": {
-                  "type": "string",
-                  "minLength": 1,
-                  "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-0-9·̀-ͯ‿-⁀]*(?:\\\\\\.[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-0-9·̀-ͯ‿-⁀]*)*(?:\\.[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-0-9·̀-ͯ‿-⁀]*(?:\\\\\\.[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-0-9·̀-ͯ‿-⁀]*)*)*$"
-                }
-              },
-              "required": [
-                "op",
-                "typeName",
-                "property"
-              ]
-            },
-            {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "op": {
-                  "enum": [
-                    "removeType"
-                  ]
-                },
-                "name": {
-                  "type": "string",
-                  "minLength": 1,
-                  "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*$"
-                }
-              },
-              "required": [
-                "op",
-                "name"
-              ]
-            },
-            {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "op": {
-                  "enum": [
-                    "removeProperty"
-                  ]
-                },
-                "typeName": {
-                  "type": "string",
-                  "minLength": 1,
-                  "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*$"
-                },
-                "name": {
-                  "type": "string",
-                  "minLength": 1,
-                  "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*$"
-                },
-                "propertyPath": {
-                  "type": "string",
-                  "minLength": 1,
-                  "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-0-9·̀-ͯ‿-⁀]*(?:\\\\\\.[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-0-9·̀-ͯ‿-⁀]*)*(?:\\.[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-0-9·̀-ͯ‿-⁀]*(?:\\\\\\.[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-0-9·̀-ͯ‿-⁀]*)*)*$"
-                }
-              },
-              "required": [
-                "op",
-                "typeName",
-                "name"
-              ]
-            }
-          ]
-        }
-      },
-      "sourceSet": {
-        "type": "string",
-        "minLength": 1,
-        "pattern": "^\\S(?:.*\\S)?$"
-      }
-    },
-    "required": [
-      "sourceSet",
-      "metadataPath",
-      "operations"
-    ]
   }
 }
 '''
@@ -1162,7 +1051,12 @@ def _source_workspace(root: Path) -> None:
         )
         (root / source_set / "CommonModules/Shared.xml").write_text(
             "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\">"
-            "<CommonModule><Properties><Name>Shared</Name></Properties></CommonModule>"
+            "<CommonModule><Properties><Name>Shared</Name><Global>false</Global>"
+            "<ClientManagedApplication>true</ClientManagedApplication><Server>true</Server>"
+            "<ExternalConnection>false</ExternalConnection>"
+            "<ClientOrdinaryApplication>false</ClientOrdinaryApplication>"
+            "<ServerCall>false</ServerCall><Privileged>false</Privileged>"
+            "<ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties></CommonModule>"
             "</MetaDataObject>",
             encoding="utf-8",
         )
@@ -1255,6 +1149,14 @@ def _workspace_snapshot(root: Path) -> dict[str, bytes]:
     }
 
 
+def _source_snapshot(root: Path) -> dict[str, bytes]:
+    return {
+        relative: content
+        for relative, content in _workspace_snapshot(root).items()
+        if not relative.startswith(".build/unica/")
+    }
+
+
 def source_flow_projection(
     source_set: str,
     cache_root: Path,
@@ -1276,7 +1178,9 @@ def expected_source_flow_projection(source_set: str) -> dict:
     return EXPECTED_SOURCE_FLOW_PROJECTIONS[source_set]
 
 
-class McpSession:
+class McpSession(_WIRE_PROBE.JsonRpcSession):
+    error_label = "Unica MCP smoke"
+
     def __init__(
         self,
         command: list[str],
@@ -1285,202 +1189,59 @@ class McpSession:
         *,
         cwd: Path,
         deadline: float | None = None,
+        service_cache_root: Path | None = None,
     ) -> None:
-        popen_options = {}
-        if os.name == "posix":
-            popen_options["start_new_session"] = True
-        elif os.name == "nt" and hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
-            popen_options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-        self.process = subprocess.Popen(
+        self._service_cache_root = service_cache_root
+        self._service_identities: dict[int, ProcessIdentity] = {}
+        super().__init__(
             command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            env=environment,
+            environment,
             cwd=cwd,
-            **popen_options,
+            deadline=deadline or time.monotonic() + timeout_seconds,
+            timeout_seconds=timeout_seconds,
         )
-        assert self.process.stdin is not None
-        assert self.process.stdout is not None
-        assert self.process.stderr is not None
-        self.timeout_seconds = timeout_seconds
-        self.deadline = deadline
-        self.lines: queue.Queue[str] = queue.Queue()
-        self.diagnostics: list[str] = []
-        self.reader = threading.Thread(target=self._read_stdout, daemon=True)
-        self.error_reader = threading.Thread(target=self._read_stderr, daemon=True)
-        started_readers: list[threading.Thread] = []
+
+    def request(self, message: dict) -> dict:
+        label = _request_label(message)
+        started = time.monotonic()
+        _trace(f"-> {label}")
         try:
-            self.reader.start()
-            started_readers.append(self.reader)
-            # The server stays open across the whole flow and writes diagnostics to
-            # stderr, so an undrained pipe buffer would block it mid-request and
-            # surface as a bare timeout.
-            self.error_reader.start()
-            started_readers.append(self.error_reader)
-        except BaseException:
-            # The constructor has not returned, so neither the admission owner
-            # nor the watchdog can see this process yet. Reap it here before
-            # exposing the original thread-start failure.
-            _terminate_unregistered_process_tree(self.process)
-            for reader in started_readers:
-                reader.join(timeout=5)
-            for stream in (
-                self.process.stdin,
-                self.process.stdout,
-                self.process.stderr,
-            ):
-                if stream is not None and not stream.closed:
-                    stream.close()
+            response = super().request(message)
+        except BaseException as error:
+            _trace(
+                f"!! {label} failed after {time.monotonic() - started:.1f}s: "
+                f"{_describe_error(error)}"
+            )
             raise
+        finally:
+            cache_root = getattr(self, "_service_cache_root", None)
+            if cache_root is not None:
+                self.observe_workspace_services(cache_root)
+        _trace(f"<- {label} in {time.monotonic() - started:.2f}s")
+        return response
 
-    def _read_stdout(self) -> None:
-        assert self.process.stdout is not None
-        for line in self.process.stdout:
-            self.lines.put(line)
-        self.lines.put("")
+    def observe_workspace_services(self, cache_root: Path) -> None:
+        observed = getattr(self, "_service_identities", {})
+        unobserved_pids = _workspace_service_pids(cache_root) - set(observed)
+        identities = self._process_ownership().capture_identities(
+            unobserved_pids
+        )
+        for identity in identities:
+            observed.setdefault(identity.pid, identity)
+        self._service_identities = observed
 
-    def _read_stderr(self) -> None:
-        assert self.process.stderr is not None
-        for line in self.process.stderr:
-            self.diagnostics.append(line)
-
-    def _detail(self) -> str:
-        return "".join(self.diagnostics).strip() or "no process output"
+    def observed_service_identities(self) -> set[ProcessIdentity]:
+        return set(getattr(self, "_service_identities", {}).values())
 
     def terminate_tree(
         self,
         cache_root: Path,
-        known_service_pids: set[int] | None = None,
+        known_service_identities: set[ProcessIdentity] | None = None,
     ) -> None:
-        service_pids = set(known_service_pids or ())
-        service_pids.update(_workspace_service_pids(cache_root))
-        owned_pids: set[int] = set()
-        try:
-            if os.name == "posix":
-                # The public Unica process starts a new session. Detached
-                # workspace services create their own process groups inside
-                # that session, so killing only the public process group would
-                # leak those services and their provider descendants.
-                owned_pids = _posix_owned_process_pids(
-                    self.process.pid,
-                    service_pids,
-                    public_running=self.process.poll() is None,
-                )
-                _signal_processes(owned_pids, signal.SIGTERM)
-            elif os.name == "nt":
-                # The public process may already have exited while a detached
-                # service keeps inherited pipe handles open. Kill recorded
-                # service trees independently before targeting the parent PID.
-                for pid in sorted(service_pids):
-                    _taskkill_process_tree(pid)
-                _taskkill_process_tree(self.process.pid)
-            else:
-                if self.process.poll() is None:
-                    self.process.terminate()
-        except (OSError, ProcessLookupError, subprocess.TimeoutExpired):
-            pass
-        try:
-            self.process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
-        if os.name == "posix":
-            survivors = {
-                pid
-                for pid in owned_pids
-                if _process_is_running(pid)
-            }
-            _signal_processes(survivors, signal.SIGKILL)
-            try:
-                self.process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                pass
-            _wait_for_process_pids(owned_pids, 5)
-            return
-        try:
-            if self.process.poll() is None:
-                self.process.kill()
-        except (OSError, ProcessLookupError, subprocess.TimeoutExpired):
-            pass
-        try:
-            self.process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
-        _wait_for_process_pids(service_pids, 5)
-
-    def request(self, message: dict) -> dict:
-        assert self.process.stdin is not None
-        self.process.stdin.write(json.dumps(message, separators=(",", ":")) + "\n")
-        self.process.stdin.flush()
-        deadline = min(
-            time.monotonic() + self.timeout_seconds,
-            getattr(self, "deadline", None) or float("inf"),
-        )
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise SystemExit(
-                    f"Unica MCP smoke timed out after {self.timeout_seconds:g}s: {self._detail()}"
-                )
-            try:
-                line = self.lines.get(timeout=remaining)
-            except queue.Empty as error:
-                raise SystemExit(
-                    f"Unica MCP smoke timed out after {self.timeout_seconds:g}s: {self._detail()}"
-                ) from error
-            if not line:
-                raise SystemExit(
-                    f"Unica MCP exited before the expected response: {self._detail()}"
-                )
-            try:
-                response = json.loads(line)
-            except json.JSONDecodeError as error:
-                raise SystemExit(f"Unica MCP emitted invalid JSON: {error}: {line}") from error
-            if response.get("id") == message.get("id"):
-                return response
-
-    def notify(self, message: dict) -> None:
-        assert self.process.stdin is not None
-        self.process.stdin.write(json.dumps(message, separators=(",", ":")) + "\n")
-        self.process.stdin.flush()
-
-    def close(self) -> None:
-        if self.process.stdin is not None and not self.process.stdin.closed:
-            self.process.stdin.close()
-        try:
-            result = self.process.wait(timeout=self._remaining_timeout())
-        except subprocess.TimeoutExpired as error:
-            self.process.kill()
-            raise SystemExit(
-                f"Unica MCP smoke timed out after {self.timeout_seconds:g}s: {self._detail()}"
-            ) from error
-        self.reader.join(timeout=self._remaining_timeout())
-        self.error_reader.join(timeout=self._remaining_timeout())
-        if self.reader.is_alive() or self.error_reader.is_alive():
-            raise SystemExit(
-                "Unica MCP reader threads did not stop before the aggregate deadline: "
-                f"{self._detail()}"
-            )
-        detail = self._detail()
-        for stream in (self.process.stdout, self.process.stderr):
-            if stream is not None and not stream.closed:
-                stream.close()
-        if result != 0:
-            raise SystemExit(f"Unica MCP exited with {result}: {detail}")
-
-    def _remaining_timeout(self) -> float:
-        deadline = getattr(self, "deadline", None)
-        if deadline is None:
-            return self.timeout_seconds
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise SystemExit(
-                "Unica MCP smoke exceeded its aggregate deadline: "
-                f"{self._detail()}"
-            )
-        return min(self.timeout_seconds, remaining)
+        del cache_root
+        service_identities = self.observed_service_identities()
+        service_identities.update(known_service_identities or ())
+        self._terminate_owned(service_identities)
 
 
 def _workspace_service_pids(cache_root: Path) -> set[int]:
@@ -1500,108 +1261,6 @@ def _workspace_service_pids(cache_root: Path) -> set[int]:
     return pids
 
 
-def _terminate_unregistered_process_tree(process: subprocess.Popen[str]) -> None:
-    if os.name == "posix":
-        owned_pids = _posix_owned_process_pids(
-            process.pid,
-            set(),
-            public_running=process.poll() is None,
-        )
-        _signal_processes(owned_pids, signal.SIGTERM)
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
-        survivors = {pid for pid in owned_pids if _process_is_running(pid)}
-        _signal_processes(survivors, signal.SIGKILL)
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
-        _wait_for_process_pids(owned_pids, 5)
-        return
-    if os.name == "nt":
-        _taskkill_process_tree(process.pid)
-    try:
-        process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        try:
-            process.kill()
-        except OSError:
-            pass
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
-
-
-def _taskkill_process_tree(pid: int) -> None:
-    try:
-        subprocess.run(
-            ["taskkill", "/PID", str(pid), "/T", "/F"],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=5,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        pass
-
-
-def _signal_processes(pids: set[int], signal_number: int) -> None:
-    for pid in sorted(pids, reverse=True):
-        try:
-            os.kill(pid, signal_number)
-        except OSError:
-            pass
-
-
-def _posix_owned_process_pids(
-    public_pid: int,
-    service_pids: set[int],
-    *,
-    public_running: bool,
-) -> set[int]:
-    try:
-        snapshot = subprocess.run(
-            ["ps", "-axo", "pid=,ppid="],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=5,
-            check=True,
-        ).stdout
-    except (OSError, subprocess.SubprocessError):
-        roots = set(service_pids)
-        if public_running:
-            roots.add(public_pid)
-        return roots
-    processes: dict[int, int] = {}
-    for line in snapshot.splitlines():
-        fields = line.split()
-        if len(fields) != 2:
-            continue
-        try:
-            pid, parent_pid = map(int, fields)
-        except ValueError:
-            continue
-        processes[pid] = parent_pid
-    owned = {pid for pid in service_pids if pid in processes}
-    if public_running and public_pid in processes:
-        owned.add(public_pid)
-    while True:
-        descendants = {
-            pid
-            for pid, parent_pid in processes.items()
-            if parent_pid in owned
-        }
-        expanded = owned | descendants
-        if expanded == owned:
-            return owned
-        owned = expanded
-
-
 def _tool_payload(response: dict) -> dict:
     if "error" in response:
         raise SystemExit(f"Unica MCP tools/call failed: {response['error']}")
@@ -1617,6 +1276,26 @@ def _tool_payload(response: dict) -> dict:
     if not payload.get("ok"):
         raise SystemExit(f"Unica MCP tools/call rejected source flow: {payload}")
     _assert_path_free(payload)
+    return payload
+
+
+def _v13_tool_payload(response: dict) -> dict:
+    if "error" in response:
+        raise SystemExit(f"Unica MCP tools/call failed: {response['error']}")
+    result = response.get("result")
+    if not isinstance(result, dict):
+        raise SystemExit(f"Unica MCP tools/call has no result: {response}")
+    payload = result.get("structuredContent")
+    if not isinstance(payload, dict):
+        raise SystemExit(
+            f"canonical v0.13 call has no structuredContent: {response}"
+        )
+    if result.get("content") != []:
+        raise SystemExit(
+            f"canonical v0.13 call unexpectedly duplicates its wire payload: {response}"
+        )
+    if result.get("isError") is not False or payload.get("ok") is not True:
+        raise SystemExit(f"canonical v0.13 call was rejected: {payload}")
     return payload
 
 
@@ -1735,6 +1414,7 @@ def _exercise_bsl_search(
     deadline = time.monotonic() + max(10.0, timeout_seconds * 3)
     if smoke_deadline is not None:
         deadline = min(deadline, smoke_deadline)
+    attempt = 0
     while True:
         payload = _code_search_payload(
             session.request(
@@ -1754,17 +1434,25 @@ def _exercise_bsl_search(
             )
         )
         request_id += 1
+        attempt += 1
         if _bsl_search_is_ready(payload):
             if payload.get("ok") is not True:
                 raise SystemExit(
                     "Unica MCP code search has inconsistent success state: "
                     f"{payload}"
                 )
+            _trace(f"bsl-analyzer ready after {attempt} code.search attempt(s)")
             return request_id
+        section = payload["data"]["sections"][1]
+        _trace(
+            f"bsl-analyzer not ready (attempt {attempt}): "
+            + json.dumps(section, ensure_ascii=False)[:400]
+        )
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise SystemExit(
-                "Unica MCP bsl-analyzer stayed not_ready until the smoke deadline"
+                "Unica MCP bsl-analyzer stayed not_ready until the smoke deadline "
+                f"after {attempt} attempt(s); last section: {section}"
             )
         time.sleep(min(0.5, remaining))
 
@@ -1819,40 +1507,41 @@ def _wait_for_process_pids(pids: set[int], timeout_seconds: float) -> None:
         time.sleep(min(0.05, remaining))
 
 
-def _capture_posix_owned_process_pids(
-    session: McpSession, service_pids: set[int]
-) -> set[int]:
-    if os.name != "posix":
-        return set()
-    process = getattr(session, "process", None)
-    if process is None:
-        return set()
-    return _posix_owned_process_pids(
-        process.pid,
-        service_pids,
-        public_running=process.poll() is None,
-    )
+def _capture_owned_processes(
+    session: McpSession, service_identities: set[ProcessIdentity]
+) -> tuple[ProcessOwnership | None, set[ProcessIdentity]]:
+    ownership_getter = getattr(session, "_process_ownership", None)
+    if ownership_getter is None:
+        return None, set()
+    ownership = ownership_getter()
+    return ownership, ownership.snapshot(service_identities)
 
 
-def _quiesce_posix_owned_process_pids(
-    owned_pids: set[int], timeout_seconds: float
+def _observed_service_identities(session: McpSession) -> set[ProcessIdentity]:
+    identity_getter = getattr(session, "observed_service_identities", None)
+    return identity_getter() if identity_getter is not None else set()
+
+
+def _quiesce_owned_processes(
+    ownership: ProcessOwnership | None,
+    owned_processes: set[ProcessIdentity],
+    timeout_seconds: float,
 ) -> None:
-    if not owned_pids:
+    if ownership is None:
         return
-    wait_limit = min(1.0, timeout_seconds)
-    _wait_for_process_pids(owned_pids, wait_limit)
-    survivors = {pid for pid in owned_pids if _process_is_running(pid)}
-    if not survivors:
-        return
-    _signal_processes(survivors, signal.SIGTERM)
-    _wait_for_process_pids(survivors, wait_limit)
-    survivors = {pid for pid in survivors if _process_is_running(pid)}
-    if survivors:
-        _signal_processes(survivors, signal.SIGKILL)
-        _wait_for_process_pids(survivors, wait_limit)
-    survivors = {pid for pid in survivors if _process_is_running(pid)}
-    if survivors:
-        rendered = ", ".join(str(pid) for pid in sorted(survivors))
+    result = ownership.quiesce(
+        owned_processes, min(_WIRE_PROBE._CLEANUP_GRACE_SECONDS, timeout_seconds)
+    )
+    if result.incomplete:
+        raise SystemExit(
+            "Unica MCP owned process cleanup evidence is incomplete: "
+            + "; ".join(result.incomplete)
+        )
+    if result.survivors:
+        rendered = ", ".join(
+            str(identity.pid)
+            for identity in sorted(result.survivors, key=lambda item: item.pid)
+        )
         raise SystemExit(
             "Unica MCP owned provider processes survived smoke cleanup: "
             f"{rendered}"
@@ -1868,14 +1557,15 @@ def _wait_for_workspace_services(
     services_root = cache_root / "services"
     service_pids = service_pids or set()
     while True:
-        records_remain = any(services_root.glob("*/service.json"))
+        records = sorted(str(path) for path in services_root.glob("*/service.json"))
         running_pids = {pid for pid in service_pids if _process_is_running(pid)}
-        if not records_remain and not running_pids:
+        if not records and not running_pids:
             return
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise SystemExit(
-                "Unica MCP workspace service did not exit before smoke cleanup"
+                "Unica MCP workspace service did not exit before smoke cleanup "
+                f"(records left: {records}; running pids: {sorted(running_pids)})"
             )
         time.sleep(min(0.05, remaining))
 
@@ -1966,17 +1656,59 @@ def _shutdown_workspace_services(
     return service_pids
 
 
+def _dump_session_diagnostics(session: object, cache_root: Path) -> str:
+    """Copy the child's stderr and the workspace service logs to stderr.
+
+    The temp workspace disappears when the smoke ends, so the logs are copied
+    out on the failure path and by the watchdog, never on success. Returns the
+    rendered text so tests can check it without capturing fd 2.
+    """
+    # The failure path and the watchdog can both get here for one session;
+    # the second copy of the same logs only pushes the first off the screen.
+    with _PHASE_LOCK:
+        if getattr(session, "_smoke_diagnostics_dumped", False):
+            return ""
+        try:
+            session._smoke_diagnostics_dumped = True  # type: ignore[attr-defined]
+        except AttributeError:
+            pass
+    chunks = [f"---- smoke diagnostics (last phase: {_last_phase()}) ----"]
+    diagnostics = "".join(getattr(session, "diagnostics", None) or [])
+    chunks.append("MCP stderr tail:\n" + (_tail(diagnostics, 60) or "<empty>"))
+    services_root = cache_root / "services"
+    for service_dir in sorted(path for path in services_root.glob("*") if path.is_dir()):
+        chunks.append(f"workspace service directory {service_dir}:")
+        for name in ("service.json", "service.stderr.log", "service.stdout.log"):
+            try:
+                content = (service_dir / name).read_text(
+                    encoding="utf-8", errors="replace"
+                )
+            except OSError:
+                continue
+            chunks.append(f"{name} tail:\n" + (_tail(content, 40) or "<empty>"))
+    chunks.append("---- end of smoke diagnostics ----")
+    rendered = "\n".join(chunks) + "\n"
+    try:
+        os.write(2, rendered.encode("utf-8", "replace"))
+    except OSError:
+        pass
+    return rendered
+
+
 def _close_session_and_workspace_services(
     session: McpSession,
     cache_root: Path,
     timeout_seconds: float,
     deadline: float | None = None,
 ) -> None:
-    # Capture PID roots before authenticated shutdown: a failed shutdown or
-    # TemporaryDirectory cleanup may remove the record that makes an orphan
-    # reachable for emergency cleanup.
+    # Reuse only identities captured when the fresh smoke first observed the
+    # service. A record available only at cleanup is a bare PID and cannot
+    # prove that the current process is the service that wrote it.
     service_pids = _workspace_service_pids(cache_root)
-    owned_pids = _capture_posix_owned_process_pids(session, service_pids)
+    service_identities = _observed_service_identities(session)
+    ownership, owned_processes = _capture_owned_processes(
+        session, service_identities
+    )
     try:
         try:
             # On Windows, a detached workspace service may inherit extra copies of
@@ -1984,6 +1716,9 @@ def _close_session_and_workspace_services(
             # waits for reader EOF while the service that owns those copies is
             # still alive, so cleanup never reaches its shutdown call.
             # Ask the authenticated services to stop before waiting for MCP EOF.
+            _trace(
+                f"cleanup: shutting down {len(service_pids)} recorded workspace service(s)"
+            )
             service_pids.update(
                 _shutdown_workspace_services(
                     cache_root,
@@ -1992,19 +1727,25 @@ def _close_session_and_workspace_services(
             )
         finally:
             try:
+                _trace("cleanup: closing MCP session (stdin EOF, exit, pipe EOF)")
                 session.close()
             finally:
+                _trace("cleanup: waiting for workspace services to exit")
                 _wait_for_workspace_services(
                     cache_root,
                     _remaining_smoke_timeout(deadline, timeout_seconds),
                     service_pids,
                 )
-                _quiesce_posix_owned_process_pids(
-                    owned_pids,
+                _trace("cleanup: quiescing owned processes")
+                _quiesce_owned_processes(
+                    ownership,
+                    owned_processes,
                     _remaining_smoke_timeout(deadline, timeout_seconds),
                 )
-    except BaseException:
-        session.terminate_tree(cache_root, service_pids)
+                _trace("cleanup: done")
+    except BaseException as error:
+        _trace(f"cleanup failed: {_describe_error(error)}")
+        session.terminate_tree(cache_root, service_identities)
         raise
 
 
@@ -2024,6 +1765,7 @@ def _call(
     arguments: dict,
     *,
     expect_ok: bool = True,
+    structured_content: bool = False,
 ) -> dict:
     response = session.request(
         {
@@ -2034,7 +1776,11 @@ def _call(
         }
     )
     if expect_ok:
-        return _tool_payload(response)
+        return (
+            _v13_tool_payload(response)
+            if structured_content
+            else _tool_payload(response)
+        )
     # A refusal is the thing under test, so its payload is returned as-is; the
     # caller asserts the stable code rather than the shape of a success.
     if "error" in response:
@@ -2052,6 +1798,9 @@ def _call(
 
 
 def _stable_tool_contract(tools: list[object], expected_names: set[str]) -> None:
+    if expected_names == V13_COMPATIBILITY_TOOL_NAMES:
+        _stable_v13_tool_contract(tools, expected_names)
+        return
     unledgered_source_tools = sorted(SOURCE_TOOL_NAMES - expected_names)
     if unledgered_source_tools:
         raise SystemExit(
@@ -2142,6 +1891,123 @@ def _stable_tool_contract(tools: list[object], expected_names: set[str]) -> None
                     raise SystemExit(f"Unica MCP code.search output schema {error}")
         elif "outputSchema" in tool:
             raise SystemExit(f"non-Meta tool unexpectedly publishes outputSchema: {name}")
+
+
+def _stable_v13_tool_contract(
+    tools: list[object], expected_names: set[str]
+) -> None:
+    by_name: dict[str, dict] = {}
+    duplicates: set[str] = set()
+    malformed = 0
+    for tool in tools:
+        if not isinstance(tool, dict) or not _valid_unica_tool_name(tool.get("name")):
+            malformed += 1
+            continue
+        name = tool["name"]
+        if name in by_name:
+            duplicates.add(name)
+        schema_error = _input_schema_shape_error(tool.get("inputSchema"))
+        if schema_error is not None:
+            raise SystemExit(
+                f"Unica MCP tools/list has malformed input schema for {name}: "
+                f"{schema_error}"
+            )
+        _assert_path_free(tool["inputSchema"])
+        by_name[name] = tool
+
+    actual_names = set(by_name)
+    missing = sorted(expected_names - actual_names)
+    unexpected = sorted(actual_names - expected_names)
+    if missing or unexpected or duplicates or malformed:
+        diagnostics = []
+        if missing:
+            diagnostics.append("missing: " + ", ".join(missing))
+        if unexpected:
+            diagnostics.append("unexpected: " + ", ".join(unexpected))
+        if duplicates:
+            diagnostics.append("duplicate: " + ", ".join(sorted(duplicates)))
+        if malformed:
+            diagnostics.append(f"malformed entries: {malformed}")
+        raise SystemExit(
+            "Unica MCP tools/list differs from the canonical v0.13 compatibility "
+            "surface (" + "; ".join(diagnostics) + ")"
+        )
+
+
+def _exercise_v13_packaged_surface(
+    session: McpSession, request_id: int
+) -> int:
+    checked = _call(
+        session,
+        request_id,
+        "unica.check",
+        {},
+        structured_content=True,
+    )
+    request_id += 1
+    if (
+        checked.get("ok") is not True
+        or checked.get("data", {}).get("status") != "admitted"
+        or set(checked["data"].get("sources", [])) != {"main", "extension"}
+    ):
+        raise SystemExit(f"canonical check did not admit both source sets: {checked}")
+
+    viewed = _call(
+        session,
+        request_id,
+        "unica.view",
+        {"at": "main:Configuration"},
+        structured_content=True,
+    )
+    request_id += 1
+    if viewed.get("ok") is not True or not isinstance(viewed.get("data"), dict):
+        raise SystemExit(f"canonical view did not return typed data: {viewed}")
+
+    compared = _call(
+        session,
+        request_id,
+        "unica.diff",
+        {"left": "main:Configuration", "right": "main:Configuration"},
+        structured_content=True,
+    )
+    request_id += 1
+    if (
+        compared.get("ok") is not True
+        or compared.get("data", {}).get("equal") is not True
+        or compared["data"].get("changes") != []
+    ):
+        raise SystemExit(f"canonical diff did not prove equal projections: {compared}")
+
+    searched = _call(
+        session,
+        request_id,
+        "unica.search",
+        {"query": "RunExtension", "scope": "extension:Configuration"},
+        structured_content=True,
+    )
+    request_id += 1
+    matches = searched.get("data", {}).get("matches")
+    if searched.get("ok") is not True or not isinstance(matches, list) or len(matches) != 1:
+        raise SystemExit(f"canonical search did not return the extension hit: {searched}")
+    if matches[0].get("scope") != "extension:Configuration":
+        raise SystemExit(f"canonical search escaped its logical scope: {searched}")
+    _assert_path_free(searched)
+
+    operations = _call(
+        session,
+        request_id,
+        "unica.run",
+        {},
+        structured_content=True,
+    )
+    request_id += 1
+    if (
+        operations.get("ok") is not True
+        or not isinstance(operations.get("data", {}).get("operations"), list)
+        or not operations["data"]["operations"]
+    ):
+        raise SystemExit(f"canonical run dictionary is unavailable: {operations}")
+    return request_id
 
 
 def _exercise_source_set(
@@ -2256,11 +2122,12 @@ def smoke(
         cache_root = root / "cache"
         environment["UNICA_CACHE_DIR"] = str(cache_root)
         _source_workspace(workspace)
-        before = _workspace_snapshot(workspace)
+        before = _source_snapshot(workspace)
         executable = Path(command[0])
         if executable.exists():
             command = [str(executable.resolve()), *command[1:]]
         admission = admission_lock or contextlib.nullcontext()
+        _trace(f"spawning {command[0]} in {workspace}")
         with admission:
             session = McpSession(
                 command,
@@ -2268,9 +2135,12 @@ def smoke(
                 timeout_seconds,
                 cwd=workspace,
                 deadline=deadline,
+                service_cache_root=cache_root,
             )
             if session_started is not None:
                 session_started(session, cache_root)
+        _trace("session admitted")
+        body_error: BaseException | None = None
         try:
             initialize = session.request({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
                 "protocolVersion": "2025-06-18", "capabilities": {},
@@ -2293,60 +2163,82 @@ def smoke(
             if not isinstance(tools, list):
                 raise SystemExit("Unica MCP tools/list response is missing")
             _stable_tool_contract(tools, expected_names)
-            next_id, _ = _exercise_source_set(
-                session, 3, workspace, cache_root, "main"
-            )
-            next_id, _ = _exercise_source_set(
-                session, next_id, workspace, cache_root, "extension"
-            )
-            next_id = _exercise_bsl_search(
-                session,
-                next_id,
-                timeout_seconds,
-                deadline,
-            )
-            next_id = _exercise_reader_bridge(session, next_id, workspace)
-            success = _meta_payload(
-                session.request(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": next_id,
-                        "method": "tools/call",
-                        "params": {
-                            "name": "unica.meta.info",
-                            "arguments": {
-                                "sourceSet": "main",
-                                "metadataPath": "Enum.LanguageAware",
+            if expected_names == V13_COMPATIBILITY_TOOL_NAMES:
+                _exercise_v13_packaged_surface(session, 3)
+            else:
+                next_id, _ = _exercise_source_set(
+                    session, 3, workspace, cache_root, "main"
+                )
+                next_id, _ = _exercise_source_set(
+                    session, next_id, workspace, cache_root, "extension"
+                )
+                next_id = _exercise_bsl_search(
+                    session,
+                    next_id,
+                    timeout_seconds,
+                    deadline,
+                )
+                next_id = _exercise_reader_bridge(session, next_id, workspace)
+                _meta_payload(
+                    session.request(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": next_id,
+                            "method": "tools/call",
+                            "params": {
+                                "name": "unica.meta.info",
+                                "arguments": {
+                                    "sourceSet": "main",
+                                    "metadataPath": "Enum.LanguageAware",
+                                },
                             },
-                        },
-                    }
-                ),
-                expected_ok=True,
-            )
-            invalid = _meta_payload(
-                session.request(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": next_id + 1,
-                        "method": "tools/call",
-                        "params": {"name": "unica.meta.info", "arguments": {}},
-                    }
-                ),
-                expected_ok=False,
-            )
-            diagnostics = invalid.get("diagnostics")
-            if not isinstance(diagnostics, list) or not diagnostics:
-                raise SystemExit(f"invalid Meta smoke returned no diagnostics: {invalid}")
-            if diagnostics[0].get("code") != "invalid_arguments":
-                raise SystemExit(f"invalid Meta smoke returned unstable diagnostics: {invalid}")
+                        }
+                    ),
+                    expected_ok=True,
+                )
+                invalid = _meta_payload(
+                    session.request(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": next_id + 1,
+                            "method": "tools/call",
+                            "params": {"name": "unica.meta.info", "arguments": {}},
+                        }
+                    ),
+                    expected_ok=False,
+                )
+                diagnostics = invalid.get("diagnostics")
+                if not isinstance(diagnostics, list) or not diagnostics:
+                    raise SystemExit(
+                        f"invalid Meta smoke returned no diagnostics: {invalid}"
+                    )
+                if diagnostics[0].get("code") != "invalid_arguments":
+                    raise SystemExit(
+                        f"invalid Meta smoke returned unstable diagnostics: {invalid}"
+                    )
+        except BaseException as error:
+            body_error = error
+            _trace(f"smoke failed: {_describe_error(error)}")
+            _dump_session_diagnostics(session, cache_root)
+            raise
         finally:
-            _close_session_and_workspace_services(
-                session,
-                cache_root,
-                max(5.0, timeout_seconds),
-                deadline,
-            )
-        after = _workspace_snapshot(workspace)
+            try:
+                _close_session_and_workspace_services(
+                    session,
+                    cache_root,
+                    max(5.0, timeout_seconds),
+                    deadline,
+                )
+            except BaseException as cleanup_error:
+                if body_error is None:
+                    raise
+                # SystemExit prints only its own message, so a cleanup failure
+                # would otherwise replace the failure that caused it.
+                raise SystemExit(
+                    f"{_describe_error(body_error)}; cleanup after that failure "
+                    f"also failed: {_describe_error(cleanup_error)}"
+                ) from cleanup_error
+        after = _source_snapshot(workspace)
         # The whole public source surface is read-only, so the packaged smoke
         # must end with the byte map it started from.
         expected = dict(before)
@@ -2387,7 +2279,7 @@ def main() -> None:
     def cleanup_expired_smoke() -> None:
         message = (
             "Unica MCP smoke exceeded its aggregate deadline of "
-            f"{args.total_timeout_seconds:g}s\n"
+            f"{args.total_timeout_seconds:g}s; last phase: {_last_phase()}\n"
         ).encode("utf-8", errors="replace")
         try:
             os.write(2, message)
@@ -2399,6 +2291,10 @@ def main() -> None:
                     active = active_session[0] if active_session else None
                 if active is not None:
                     session, cache_root = active
+                    try:
+                        _dump_session_diagnostics(session, cache_root)
+                    except BaseException:
+                        pass
                     session.terminate_tree(cache_root)
             finally:
                 cleanup_done.set()
@@ -2435,7 +2331,7 @@ def main() -> None:
                 # racing its slower tree cleanup must not commit exit code 0.
                 cleanup_done.wait(timeout=30)
                 os._exit(124)
-        except BaseException:
+        except BaseException as error:
             with outcome_lock:
                 if outcome[0] == "running" and time.monotonic() < deadline:
                     outcome[0] = "failed"
@@ -2447,6 +2343,19 @@ def main() -> None:
                     failure_action = "wait"
                 else:
                     failure_action = "raise"
+            if failure_action != "raise":
+                # The watchdog owns the exit code; the failure it pre-empted
+                # is still the most useful line of the log.
+                try:
+                    os.write(
+                        2,
+                        (
+                            "Unica MCP smoke failure pending at the deadline: "
+                            f"{_describe_error(error)}\n"
+                        ).encode("utf-8", errors="replace"),
+                    )
+                except OSError:
+                    pass
             if failure_action == "cleanup":
                 cleanup_expired_smoke()
             if failure_action == "wait":
@@ -2458,7 +2367,7 @@ def main() -> None:
             raise
     finally:
         watchdog.cancel()
-    print("verified packaged Unica MCP source-resource flow and bsl-analyzer search")
+    print("verified packaged Unica MCP canonical surface and useful read modes")
 
 
 if __name__ == "__main__":

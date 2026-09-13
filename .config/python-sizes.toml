@@ -1,0 +1,22 @@
+# Размер тестов Python — вне их кода, как выражение nextest для Rust.
+# Умолчание — размер набора (все наборы `small`); здесь перечислено то, что
+# крупнее. Запись — `модуль`, `модуль.Класс` или `модуль.Класс.тест`;
+# признак `medium` — тест зовёт `cargo` (тулчейн) или поднимает сокет
+# (стандартная библиотека), то есть собирает или запускает продукт.
+# Страж `tests/ci/test_python_sizes.py` держит записи существующими, а
+# модули с такими конструкциями — объявленными.
+[medium]
+entries = [
+  # приёмочный корпус: собирает продукт и гоняет сценарии через MCP
+  "test_acceptance_scenarios.AcceptanceCorpusRunTests",
+  # два контракта продукта, которые собирают библиотеку и поднимают транспорт
+  "test_product_contracts.ProductContractTests.test_unica_coder_production_library_satisfies_rmcp_handler_bound",
+  "test_product_contracts.ProductContractTests.test_rmcp_transport_is_confined_to_mcp_interface",
+  # дым MCP: сокет и процесс продукта
+  "test_smoke_unica_mcp.SmokeUnicaMcpTests",
+  # паритет скриптов: собирает и запускает исполняемый файл
+  "test_unica_mcp_script_parity.UnicaMcpScriptParityTests",
+  # дым MCP через `cargo run` и реестр поверхности инструментов через `cargo build`
+  "test_unica_mcp_smoke.UnicaMcpSmokeTests",
+  "test_tool_surface_ledger.ToolSurfaceLedgerTests",
+]

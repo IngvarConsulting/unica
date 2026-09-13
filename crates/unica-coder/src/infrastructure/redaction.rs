@@ -236,6 +236,15 @@ pub(crate) fn is_secret_key(key: &str) -> bool {
             .any(|secret_key| key.contains(secret_key))
 }
 
+#[cfg(test)]
+pub(crate) fn production_secret_key_matrix() -> Vec<String> {
+    EXACT_SECRET_KEYS
+        .iter()
+        .map(|key| (*key).to_string())
+        .chain(SUBSTRING_SECRET_KEYS.iter().map(|key| (*key).to_string()))
+        .collect()
+}
+
 fn is_possible_exact_secret_key(key: &str) -> bool {
     EXACT_SECRET_KEYS.iter().any(|secret_key| {
         secret_key
@@ -304,8 +313,8 @@ fn secret_value_delimiter(ch: char) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{redactor, StreamRedactor};
+pub(crate) mod tests {
+    use super::{is_secret_key, production_secret_key_matrix, redactor, StreamRedactor};
 
     #[test]
     fn stream_redactor_redacts_secret_key_split_across_chunks() {
@@ -316,6 +325,31 @@ mod tests {
             redactor.push("wd=super-secret\nfinished\n"),
             "Pwd=<redacted>\nfinished\n"
         );
+    }
+
+    #[test]
+    pub(crate) fn stream_redactor_covers_production_secret_keys_at_every_chunk_boundary() {
+        for key in production_secret_key_matrix() {
+            assert!(
+                is_secret_key(&key),
+                "fixture key must come from production policy: {key}"
+            );
+            let input = format!("prefix; {key}=value-for-{key}\nsuffix");
+            for split in 0..=input.len() {
+                let mut stream = StreamRedactor::new();
+                let mut output = stream.push(&input[..split]);
+                output.push_str(&stream.push(&input[split..]));
+                output.push_str(&stream.finish());
+                assert!(
+                    !output.contains(&format!("value-for-{key}")),
+                    "key={key}, split={split}: {output}"
+                );
+                assert!(
+                    output.contains("<redacted>"),
+                    "key={key}, split={split}: {output}"
+                );
+            }
+        }
     }
 
     #[test]

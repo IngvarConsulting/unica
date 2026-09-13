@@ -25,7 +25,7 @@ class DonorParityFixture:
         (self.skills_root / "cf-init" / "scripts").mkdir(parents=True)
         (self.skills_root / "demo-validate" / "scripts").mkdir(parents=True)
         (self.case_root / "fixtures" / "on-support").mkdir(parents=True)
-        (root / "spec").mkdir()
+        (root / "docs" / "arch-v1").mkdir(parents=True)
         self.reviews_root = root / "docs" / "provenance" / "reviews"
         self.reviews_root.mkdir(parents=True)
 
@@ -37,7 +37,7 @@ class DonorParityFixture:
             self.skills_root / "demo-validate" / "scripts" / "demo-validate.py"
         )
         self.fixture_file = self.case_root / "fixtures" / "on-support" / "Configuration.xml"
-        self.evidence = root / "spec" / "donor-parity.md"
+        self.evidence = root / "docs" / "arch-v1" / "donor-parity.md"
 
         self.skill_config.write_text(
             json.dumps(
@@ -134,7 +134,7 @@ class DonorParityFixture:
                 self.snapshot_root, "demo/basic"
             ),
             "reason": "Reviewed behavior differs without losing the shared outcome.",
-            "evidence": ["spec/donor-parity.md"],
+            "evidence": ["docs/arch-v1/donor-parity.md"],
             "observation": observation,
             "observationFingerprint": contract.observation_fingerprint(observation),
         }
@@ -305,7 +305,7 @@ class DonorParityContractTests(unittest.TestCase):
     def test_non_exact_relation_requires_existing_safe_evidence(self) -> None:
         fixture = self.fixture()
         relation = fixture.relation("platform_override")
-        relation["evidence"] = ["../outside.md", "spec/missing.md"]
+        relation["evidence"] = ["../outside.md", "docs/arch-v1/missing.md"]
         registry = {
             "schemaVersion": 1,
             "upstreamId": "cc-1c-skills",

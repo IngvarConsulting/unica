@@ -469,7 +469,7 @@ def validate_repository_contract(repo_root: Path) -> list[str]:
     snapshot_root = fixtures_root / "cc-1c-skills"
     baseline_path = fixtures_root / "donor-baseline.json"
     relations_path = fixtures_root / "donor-relations.json"
-    provenance_path = repo_root / "spec" / "provenance" / "skill-upstreams.json"
+    provenance_path = repo_root / "docs" / "provenance" / "skill-upstreams.json"
     errors = []
     for path in (baseline_path, relations_path, provenance_path):
         if not path.is_file():

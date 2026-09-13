@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import re
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -20,6 +22,34 @@ def load_module():
 
 
 class VersionContractTests(unittest.TestCase):
+    def test_public_runtime_binary_name_is_unica(self) -> None:
+        manifest = tomllib.loads(
+            (REPO_ROOT / "crates/unica-coder/Cargo.toml").read_text(encoding="utf-8")
+        )
+        lock = json.loads(
+            (
+                REPO_ROOT / "plugins/unica/third-party/tools.lock.json"
+            ).read_text(encoding="utf-8")
+        )
+        public_tools = [tool for tool in lock["tools"] if tool["name"] == "unica"]
+
+        self.assertEqual(
+            manifest["bin"],
+            [{"name": "unica", "path": "src/main.rs"}],
+        )
+        self.assertEqual(len(public_tools), 1)
+        self.assertEqual(
+            {
+                key: public_tools[0][key]
+                for key in ("binaryName", "cargoPackage", "cargoBin")
+            },
+            {
+                "binaryName": "unica",
+                "cargoPackage": "unica-coder",
+                "cargoBin": "unica",
+            },
+        )
+
     def test_every_contract_location_declares_the_same_version(self) -> None:
         module = load_module()
 

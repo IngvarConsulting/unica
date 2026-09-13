@@ -208,6 +208,14 @@ pub(crate) enum MetaFillValue {
     Boolean(bool),
     DateTime(String),
     Reference(MetadataReference),
+    /// A platform design-time reference that carries an item designator after
+    /// the metadata address — `Catalog.Валюты.EmptyRef` or a predefined item.
+    /// Real platform dumps hold these, and re-emission must round-trip the
+    /// exact value, so the designator is preserved verbatim.
+    DesignTimeItemRef {
+        reference: MetadataReference,
+        item: String,
+    },
 }
 
 /// Metadata kinds that expose a platform `Ref` generated type in the active
@@ -327,13 +335,16 @@ pub(crate) fn validate_metadata_element_value_profile(
                     .iter()
                     .any(|variant| matches!(variant, MetadataTypeVariant::Date { .. }))
         }
-        MetaFillValue::Reference(reference) => metadata_type.variants.iter().any(|variant| {
-            matches!(
-                variant,
-                MetadataTypeVariant::Reference { metadata_path }
-                    if metadata_path == &reference.metadata_path
-            )
-        }),
+        MetaFillValue::Reference(reference)
+        | MetaFillValue::DesignTimeItemRef { reference, .. } => {
+            metadata_type.variants.iter().any(|variant| {
+                matches!(
+                    variant,
+                    MetadataTypeVariant::Reference { metadata_path }
+                        if metadata_path == &reference.metadata_path
+                )
+            })
+        }
     };
     if compatible {
         Ok(())
@@ -489,6 +500,13 @@ impl Serialize for MetaFillValue {
                 state.serialize_field("metadataPath", &reference.metadata_path)?;
                 state.end()
             }
+            Self::DesignTimeItemRef { reference, item } => {
+                let mut state = serializer.serialize_struct("MetaFillValue", 3)?;
+                state.serialize_field("kind", "reference")?;
+                state.serialize_field("metadataPath", &reference.metadata_path)?;
+                state.serialize_field("item", item)?;
+                state.end()
+            }
         }
     }
 }
@@ -504,6 +522,7 @@ pub(crate) struct MetaElementInput {
     pub(crate) attributes: Option<Vec<MetaElementInput>>,
     pub(crate) position: Option<MetaPosition>,
     pub(crate) template_type: Option<MetaTemplateKind>,
+    pub(crate) indexing: Option<String>,
 }
 
 impl MetaElementInput {
@@ -527,6 +546,7 @@ pub(crate) struct MetaElementDefinition {
     pub(crate) attributes: Vec<MetaElementDefinition>,
     pub(crate) position: Option<MetaPosition>,
     pub(crate) template_type: Option<MetaTemplateKind>,
+    pub(crate) indexing: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -539,6 +559,7 @@ pub(crate) struct MetaElementUpdateInput {
     pub(crate) required: Option<bool>,
     pub(crate) fill_value: Option<MetaFillValue>,
     pub(crate) position: Option<MetaPosition>,
+    pub(crate) indexing: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -551,6 +572,7 @@ pub(crate) struct MetaElementUpdate {
     pub(crate) required: Option<bool>,
     pub(crate) fill_value: Option<MetaFillValue>,
     pub(crate) position: Option<MetaPosition>,
+    pub(crate) indexing: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -794,6 +816,7 @@ impl MetaElementDefinition {
             attributes,
             position: input.position,
             template_type: input.template_type,
+            indexing: input.indexing,
         })
     }
 }
@@ -819,6 +842,7 @@ impl MetaElementUpdate {
             && input.required.is_none()
             && input.fill_value.is_none()
             && input.position.is_none()
+            && input.indexing.is_none()
         {
             return Err(invalid_operation(
                 field,
@@ -844,6 +868,7 @@ impl MetaElementUpdate {
             required: input.required,
             fill_value: input.fill_value,
             position: input.position,
+            indexing: input.indexing,
         })
     }
 }
