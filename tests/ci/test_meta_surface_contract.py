@@ -144,6 +144,28 @@ def registered_tool_blocks() -> dict[str, str]:
 
 
 class MetaSurfaceContractTests(unittest.TestCase):
+    def test_ordinary_client_property_uses_the_canonical_surface(self) -> None:
+        registry = META_PROPERTY_REGISTRY.read_text(encoding="utf-8")
+        self.assertRegex(
+            registry,
+            r'property\(\s*"ClientOrdinaryApplication",\s*'
+            r'MetaPropertyKey::ClientOrdinaryApplication,\s*'
+            r'MetaPropertyValueKind::Boolean,\s*COMMON_MODULE_KINDS,\s*\)',
+        )
+        review = json.loads(
+            (REPO_ROOT / "arch/tool-surface-review.json").read_text(encoding="utf-8")
+        )
+        self.assertFalse(any(name.startswith("unica.meta.") for name in review))
+        for name in ("unica.apply", "unica.view"):
+            self.assertIn("ClientOrdinaryApplication", json.dumps(review[name]))
+        decision = (
+            REPO_ROOT / "arch/decisions/2026-08-22-common-module-ordinary-client.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("`unica.apply`", decision)
+        self.assertIn("`unica.view`", decision)
+        for retired in ("unica.meta.add", "unica.meta.edit", "unica.meta.info"):
+            self.assertNotIn(retired, decision)
+
     def test_meta_observation_and_mutation_capability_contract_is_published(
         self,
     ) -> None:
