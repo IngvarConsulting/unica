@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>{{title}}</title>
+<style>
+  /* Карточка ссылки: её видят в ленте, а не на сайте, поэтому она всегда
+     тёмная. Лента показывает картинку и на белом фоне, и на чёрном; светлая
+     карточка на белом фоне сливается с ним, тёмная стоит отдельно на обоих.
+     Палитра — токены кита: Ink, Paper, Blue, Blue on ink. */
+  :root {
+    --ink: #0F172A;
+    --paper: #F8FAFC;
+    --blue: #2563EB;
+    --blue-on-ink: #7FA8E0;
+    --muted: #A6B3C4;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    width: 1200px; height: 630px; overflow: hidden;
+    background: var(--ink);
+    color: var(--paper);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  /* Размеры набраны под ленту на телефоне, а не под просмотр в полный рост:
+     карточка показывается там шириной около 380 точек, то есть втрое мельче.
+     Всё, что на макете меньше сорока точек, на телефоне уходит под десять и
+     не читается — поэтому строк на карточке немного и все они крупные. */
+  .card {
+    position: relative;
+    width: 1200px; height: 630px;
+    padding: 66px 72px 70px;
+    display: flex; flex-direction: column; justify-content: space-between;
+    overflow: hidden;
+  }
+  /* Свечение и знак на просвет держат правую половину: без них карточка
+     читается как скриншот текста, а не как обложка. Оба лежат под текстом и
+     обрезаются краем — знак нарочно уходит за границу, чтобы правый край не
+     превратился в ещё одну рамку. */
+  .glow {
+    position: absolute; top: -260px; right: -200px;
+    width: 760px; height: 760px; border-radius: 50%;
+    background: radial-gradient(circle, rgba(37, 99, 235, 0.38), rgba(37, 99, 235, 0) 62%);
+  }
+  .ghost {
+    position: absolute; top: 156px; right: -148px;
+    width: 468px; height: 468px; opacity: 0.085;
+  }
+  .ghost svg { width: 100%; height: 100%; display: block; }
+  /* Свечение и знак — фон, поэтому в поток они не входят; всё остальное стоит
+     над ними своим слоем. Правило перечисляет ряды карточки поимённо: общее
+     `.card > *` подняло бы и фон, и он поехал бы в колонку. */
+  .brand, .body { position: relative; z-index: 1; }
+
+  .brand { display: block; height: 52px; }
+  .brand svg { height: 52px; width: auto; display: block; color: var(--paper); }
+
+  .eyebrow {
+    margin: 0 0 22px;
+    font-size: 32px; font-weight: 600;
+    letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--blue-on-ink);
+  }
+  h1 {
+    margin: 0 0 26px;
+    font-size: 88px; line-height: 1.06; font-weight: 700;
+    letter-spacing: -0.03em;
+    max-width: 1056px;
+    /* Заголовок в две строки браузер иначе рвёт по правому краю и оставляет
+       на первой строке предлог: делим строки поровну. */
+    text-wrap: balance;
+  }
+  /* Тот же приём, что и в шапке сайта: одно слово заголовка синее. Порог
+     контраста для крупного текста — 3, поэтому заливочный синий не
+     приглушается. */
+  h1 span { color: var(--blue); }
+  p {
+    margin: 0;
+    font-size: 40px; line-height: 1.36;
+    color: var(--muted);
+    max-width: 980px;
+    text-wrap: pretty;
+  }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="glow"></div>
+  <div class="ghost">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" aria-hidden="true">
+      <rect x="0.5" y="0.5" width="63" height="63" rx="15.304" fill="none" stroke="#7FA8E0" stroke-width="1.4"/>
+      <path d="M3.3 3.3v12.004278c0 3.542246 2.853476 6.395722 6.395722 6.395722h5.608556c3.542246 0 6.395722-2.853476 6.395722-6.395722V3.3" transform="translate(10.2608695652 10.2608695652) scale(1.73913043478)" fill="none" stroke="#7FA8E0" stroke-width="3.68" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="32" cy="29.913" r="3.826" fill="#7FA8E0"/>
+    </svg>
+  </div>
+
+  <div class="brand">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192.096 53.36" aria-hidden="true">
+      <g transform="translate(0 0) scale(0.83375)">
+        <rect x="0" y="0" width="64" height="64" rx="15.304" fill="#2563EB"/>
+        <path d="M3.3 3.3v12.004278c0 3.542246 2.853476 6.395722 6.395722 6.395722h5.608556c3.542246 0 6.395722-2.853476 6.395722-6.395722V3.3" transform="translate(10.2608695652 10.2608695652) scale(1.73913043478)" fill="none" stroke="#FFFFFF" stroke-width="3.68" stroke-linecap="round" stroke-linejoin="round"/>
+        <circle cx="32" cy="29.913" r="3.826" fill="#93C5FD"/>
+      </g>
+      <g transform="translate(19.227 8.555) scale(1.45)" fill="none" stroke="currentColor" stroke-width="3.68" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3.3 21.7V9.695722c0-3.542246 2.853476-6.395722 6.395722-6.395722h5.608556c3.542246 0 6.395722 2.853476 6.395722 6.395722V21.7" transform="translate(27.048 0)"/>
+        <path d="M6.125 3.3v18.4" transform="translate(53.295 0)"/>
+        <path d="M21.7 3.3H9.695722c-3.542246 0-6.395722 2.853476-6.395722 6.395722v5.608556c0 3.542246 2.853476 6.395722 6.395722 6.395722H21.7" transform="translate(66.792 0)"/>
+        <path d="M21.7 21.7V9.695722c0-3.542246-2.853476-6.395722-6.395722-6.395722H9.695722c-3.542246 0-6.395722 2.853476-6.395722 6.395722v5.608556c0 3.542246 2.853476 6.395722 6.395722 6.395722h5.608556c3.542246 0 6.395722-2.853476 6.395722-6.395722" transform="translate(95.68 0)"/>
+      </g>
+    </svg>
+  </div>
+
+  <div class="body">
+    <p class="eyebrow">{{eyebrow}}</p>
+    <h1>{{heading}}</h1>
+    <p>{{lede}}</p>
+  </div>
+</div>
+</body>
+</html>

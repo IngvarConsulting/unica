@@ -1,68 +1,46 @@
 ---
 name: subsystem-compile
-description: Создать подсистему 1С — XML-исходники из JSON-определения. Используй когда нужно добавить подсистему (раздел) в конфигурацию
-argument-hint: "[-DefinitionFile <json> | -Value <json-string>] -OutputDir <ConfigDir> [-Parent <path>]"
+description: Создать подсистему 1С — XML-исходники из типизированного определения. Используй когда нужно добавить подсистему (раздел) в конфигурацию
+argument-hint: <at> <name> [content]
 allowed-tools:
-  - Bash
   - Read
-  - Write
   - Glob
 ---
 
-# /subsystem-compile — генерация подсистемы из JSON
+# /subsystem-compile — создание подсистемы
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tool `unica.subsystem.compile`; `unica` owns XML/JSON DSL work and refreshes related workspace caches after mutations.
-- Do not call internal MCP/CLI adapters directly. They are hidden behind `unica` and synchronized by the orchestrator.
-- Execution path: call MCP `unica` tool `unica.subsystem.compile`; skill-local operation scripts are not part of the workflow.
-- For mutating operations, pass `dryRun: false` only when the user explicitly requested the change; otherwise keep the default dry run.
-- Vendor support guard runs inside `unica`; if it blocks a locked/read-only supported object, prefer CFE/release-support or an explicit support-state change plan instead of editing raw support metadata.
+- Preferred path: use MCP `unica` tool `unica.apply` с операциями
+  `subsystem.create`, `props.set` и `content.add`.
+- Do not call internal MCP/CLI adapters directly. They are hidden behind
+  `unica` and synchronized by the orchestrator.
+- Всегда сначала `dryRun: true`. Применяй `dryRun: false` только когда
+  пользователь явно попросил внести именно эту правку, и только с `ifRev` из
+  предпросмотра.
+- Проверка поддержки поставщика работает внутри `unica`.
 
-Принимает JSON-определение подсистемы → генерирует XML + файловую структуру + регистрирует в родителе (Configuration.xml или родительская подсистема).
+**Куда метит создание.** Подсистемы верхнего уровня — `args.at` вида
+`<набор>:Configuration`. Вложенной подсистемы — адрес родителя
+`<набор>:Subsystem.<Родитель>`. Имя новой подсистемы лежит в `values.name`:
+адреса, которого ещё нет, назвать нельзя. Каталогов выгрузки и путей к XML
+родителя тут нет — их место занял адрес.
 
-## MCP параметры
+Создание заводит и файл подсистемы, и запись о ней у родителя. Это одна
+правка, а не две.
 
-| Параметр | Описание |
-|----------|----------|
-| `DefinitionFile` | Путь к JSON-файлу определения |
-| `Value` | Инлайн JSON-строка (альтернатива DefinitionFile) |
-| `OutputDir` | Корень выгрузки (где `Subsystems/`, `Configuration.xml`) |
-| `Parent` | Путь к XML родительской подсистемы (для вложенных) |
-| `NoValidate` | Скрыть подробный отчёт авто-валидации; обязательная проверка корректности 8.3.27 перед фиксацией остаётся включённой |
+## Что задаётся чем
 
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.subsystem.compile",
-    "arguments": {
-      "cwd": "<workspace>",
-      "Value": "{\"name\":\"Продажи\",\"synonym\":\"Продажи\",\"content\":[\"Catalog.Номенклатура\"]}",
-      "OutputDir": "src",
-      "dryRun": false
-    }
-  }
-}
-```
+| Что | Операция | `args` |
+|---|---|---|
+| Сама подсистема | `subsystem.create` | `values: {name}` |
+| Синоним, комментарий, пояснение, картинка, `IncludeInCommandInterface`, `UseOneCommand` | `props.set` | `values: {…}` |
+| Состав | `content.add` | `items: [{object}]` |
 
-## JSON-определение
+Минимально нужно только имя. Всё остальное — умолчания платформы.
 
-```json
-{
-  "name": "МояПодсистема",
-  "synonym": "Моя подсистема",
-  "comment": "",
-  "includeInCommandInterface": true,
-  "useOneCommand": false,
-  "explanation": "Описание раздела",
-  "picture": "CommonPicture.МояКартинка",
-  "content": ["Catalog.Товары", "Document.Заказ"]
-}
-```
-
-Минимально: только `name`. Остальное — дефолты.
+Операции одного вызова публикуются одной транзакцией: подсистема со своим
+составом и свойствами появляется целиком либо не появляется вовсе.
 
 ## Примеры
 
@@ -73,30 +51,63 @@ allowed-tools:
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.subsystem.compile",
+    "name": "unica.apply",
     "arguments": {
-      "cwd": "<workspace>",
-      "Value": "{\"name\":\"Тест\"}",
-      "OutputDir": "config/",
-      "dryRun": false
+      "at": "main:Configuration",
+      "ops": [
+        {
+          "op": "subsystem.create",
+          "args": {
+            "at": "main:Configuration",
+            "values": {"name": "Тест"}
+          }
+        }
+      ],
+      "dryRun": true
     }
   }
 }
 ```
 
-### С составом и картинкой
+### С составом и свойствами
 
 ```json
 {
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.subsystem.compile",
+    "name": "unica.apply",
     "arguments": {
-      "cwd": "<workspace>",
-      "Value": "{\"name\":\"Продажи\",\"content\":[\"Catalog.Товары\",\"Report.Продажи\"],\"picture\":\"CommonPicture.Продажи\"}",
-      "OutputDir": "config/",
-      "dryRun": false
+      "at": "main:Configuration",
+      "ops": [
+        {
+          "op": "subsystem.create",
+          "args": {
+            "at": "main:Configuration",
+            "values": {"name": "Продажи"}
+          }
+        },
+        {
+          "op": "props.set",
+          "args": {
+            "at": "main:Subsystem.Продажи",
+            "values": {
+              "Synonym": "Продажи",
+              "Picture": "CommonPicture.Продажи",
+              "IncludeInCommandInterface": true
+            }
+          }
+        },
+        {
+          "op": "content.add",
+          "args": {
+            "at": "main:Subsystem.Продажи",
+            "items": [{"object": "Catalog.Товары"}, {"object": "Report.Продажи"}]
+          }
+        }
+      ],
+      "dryRun": false,
+      "ifRev": "<rev из предпросмотра>"
     }
   }
 }
@@ -104,18 +115,26 @@ allowed-tools:
 
 ### Вложенная подсистема
 
+Родителя называет адрес, а не путь к его XML.
+
 ```json
 {
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.subsystem.compile",
+    "name": "unica.apply",
     "arguments": {
-      "cwd": "<workspace>",
-      "Value": "{\"name\":\"Дочерняя\"}",
-      "OutputDir": "config/",
-      "Parent": "config/Subsystems/Продажи.xml",
-      "dryRun": false
+      "at": "main:Subsystem.Продажи",
+      "ops": [
+        {
+          "op": "childSubsystem.add",
+          "args": {
+            "at": "main:Subsystem.Продажи",
+            "items": [{"name": "Дочерняя"}]
+          }
+        }
+      ],
+      "dryRun": true
     }
   }
 }

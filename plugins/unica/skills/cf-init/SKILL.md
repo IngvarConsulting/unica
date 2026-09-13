@@ -120,10 +120,9 @@ allowed-tools:
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.cf.info",
+    "name": "unica.view",
     "arguments": {
-      "cwd": "<workspace>",
-      "ConfigPath": "test-tmp/cf"
+      "at": "main:Configuration"
     }
   }
 }
@@ -136,10 +135,9 @@ allowed-tools:
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.cf.validate",
+    "name": "unica.check",
     "arguments": {
-      "cwd": "<workspace>",
-      "ConfigPath": "test-tmp/cf"
+      "at": "<sourceSet>:Configuration"
     }
   }
 }

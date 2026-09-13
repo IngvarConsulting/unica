@@ -151,15 +151,16 @@ allowed-tools:
 
 ## Верификация
 
+Проверка расширения — `unica.check` на корне набора-расширения (`ext` — имя набора типа `EXTENSION` в `v8project.yaml`); валидатор `cfe` выбирается по виду набора, вердикт в `data.status`.
+
 ```json
 {
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.cfe.validate",
+    "name": "unica.check",
     "arguments": {
-      "cwd": "<workspace>",
-      "ExtensionPath": "src/extensions/MyExtension"
+      "at": "ext:Configuration"
     }
   }
 }

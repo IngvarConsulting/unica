@@ -14,29 +14,18 @@ file is not located at `./v8project.yaml`.
 `unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
 `unica.build.*`.
 
-For a new repository with no workspace, use the `v8-runner` skill first. It
-can preview creation of `v8project.yaml` through MCP `unica.runtime.execute`.
-It does not create the file, prepare the default `src` source-set, check
-database access, or inspect a live license in the current contract.
+For a new repository with no workspace, call `unica.view {}` first. Оно
+работает и без проектного файла: отвечает `config.state: "autodetected"`,
+перечисляет найденные наборы и несёт в `setup` рекомендуемое содержимое
+`v8project.yaml`.
 
-Preview the config-init arguments through MCP `unica.runtime.execute`:
+**Файл заводит человек или модель своими файловыми средствами.** Инструмента
+записи `v8project.yaml` в продукте нет: операция `workspace.initialize` снята,
+и в словаре `run` её больше не числится. Возьми содержимое из `setup`, запиши
+файл и спроси `unica.check {}` о готовности.
 
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.runtime.execute",
-    "arguments": {
-      "cwd": "<workspace>",
-      "operation": "config-init",
-      "config": "./v8project.yaml",
-      "connection": "<connection-string>",
-      "dryRun": true
-    }
-  }
-}
-```
+Остальной рантайм-контракт открывается через `unica.run {}`. Не выдумывай
+аргументы операции, у которой `argsSchema` равен `null`.
 
 ## Minimal Shape
 
@@ -105,7 +94,7 @@ new argument of `unica.runtime.execute`.
 
 ## Source-set format discovery
 
-Use MCP `unica.project.map` to inspect configured source-sets before choosing a
+Use MCP `unica.view {}` to inspect configured source-sets before choosing a
 metadata operation. It returns `sourceSets[]` where each entry has `kind`,
 `path`, `sourceFormat`, and `formatEvidence`.
 
@@ -150,12 +139,14 @@ directory named `main` keeps it.
 
 ## Command Mapping
 
-Use the `v8-runner` skill and MCP `unica.runtime.execute` only for previews of
-runtime operation arguments.
+Таблица ниже называет аргументы снятого `unica.runtime.execute` и остаётся
+здесь как карта прежних намерений. Именами операций, их состоянием и схемами
+аргументов на проводе v0.13 отвечает только `unica.run {}`; значения из этой
+таблицы ему не передаются. Создания проектного файла в ней больше нет —
+наследника у него нет ни в одном инструменте.
 
-| Operation | MCP arguments |
+| Legacy intent | Legacy `unica.runtime.execute` arguments |
 | --- | --- |
-| Preview project config creation | `operation=config-init`, `connection=<connection>`, `dryRun=true` |
 | Preview infobase/workspace initialization | `operation=init`, `dryRun=true` |
 | Preview loading XML sources | `operation=build`, `dryRun=true` |
 | Preview a full source load | `operation=build`, `fullRebuild=true`, `dryRun=true` |
@@ -196,8 +187,8 @@ or `v8-runner` would execute; other Unix hosts fail closed as well.
 
 - Do not create or read any legacy JSON project registry.
 - Resolve the active config from the explicit MCP `config` argument when present; otherwise use `./v8project.yaml`.
-- If the config is missing, preview `operation=config-init` with `dryRun=true`,
-  then ask the user to provide the config; preview cannot create it.
+- If the config is missing, read the recommended content from `setup` in
+  `unica.view {}` and write `v8project.yaml` yourself: no tool creates it.
 - Prefer `source-set` names over ad hoc source directories.
 - Treat a platform-generated CDFI sidecar `ConfigDumpInfo.xml` whose root is `ConfigDumpInfo` as local per-infobase runtime state: keep it out of Git and never use it as source-format evidence. A legitimate metadata descriptor (including an external EPF/ERF descriptor) for an object actually named `ConfigDumpInfo` remains source and belongs in Git.
 - `execution_timeout` in `v8project.yaml` describes a future runner-operation

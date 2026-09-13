@@ -24,13 +24,15 @@ CLASSIFICATION_OUTPUTS = (
 )
 ALWAYS_JOBS = (
     "classify-changes",
-    "verify-source",
+    "guards",
+    "test-python",
 )
 PACKAGE_JOBS = (
     "build-tools",
     "package-thin",
 )
 ASSESSMENT_JOB = "release-assessment"
+P0_PROOF_JOB = "p0-release-proof"
 PUBLISH_JOBS = (
     "publish-release-assets",
     "smoke-thin-plugin",
@@ -97,39 +99,66 @@ def expected_results(
         values = {name: False for name in CLASSIFICATION_OUTPUTS}
 
     is_tag = event_name == "push" and ref.startswith("refs/tags/")
+    # Push в `main` приходит из очереди слияния: это дерево уже проверено на
+    # `merge_group`, и прогон здесь ничего не решает. Тесты на нём не идут;
+    # Rust-джоба поднимается только чтобы записать кэш зависимостей, когда
+    # сменился его ключ (toolchain), или когда правили сам конвейер.
+    is_main_push = event_name == "push" and ref == "refs/heads/main"
+    # Push в релизную линию — ворота линии: очереди там нет, поэтому полный
+    # набор тестов без упаковки. Отсюда сайт собирает отчёт линии.
+    is_branch = event_name == "push" and ref.startswith("refs/heads/") and not is_main_push
+    # Очередь слияния — ворота будущего main: полный набор без отбора и без
+    # упаковки, как push в релизную линию. Отсюда сайт собирает отчёт `main`.
+    is_queue = event_name == "merge_group"
     is_manual = event_name == "workflow_dispatch"
     is_pr = event_name == "pull_request"
-    if not (is_tag or is_manual or is_pr):
-        invalid["event"] = (f"{event_name}:{ref}", "pull_request, tag push, or workflow_dispatch")
+    if not (is_tag or is_main_push or is_branch or is_queue or is_manual or is_pr):
+        invalid["event"] = (f"{event_name}:{ref}", "pull_request, merge_group, branch push, tag push, or workflow_dispatch")
 
-    if (is_tag or is_manual) and not all(values.values()):
+    if (is_tag or is_branch or is_queue or is_manual) and not all(values.values()):
         invalid["classification"] = (
             ", ".join(name for name, enabled in values.items() if not enabled) or "invalid",
-            "all contours enabled for tag or workflow_dispatch",
+            "all contours enabled for tag, release-line push, merge_group or workflow_dispatch",
         )
 
-    full_matrix = values["platform_changed"] or values["toolchain_changed"] or values["ci_changed"]
-    primary_rust = values["rust_changed"] and not full_matrix
-    package_pipeline = values["release_required"] or values["ci_changed"]
+    # Любая правка Rust — Rust-джоба обязательна; состав раннеров решает workflow:
+    # pull request — ubuntu, очередь и push — обе платформы. На push в `main`
+    # Rust-джоба — запись кэша, и её поднимает только смена ключа кэша или
+    # правка конвейера: правка исходников кэш зависимостей не меняет.
+    if is_main_push:
+        full_matrix = values["toolchain_changed"] or values["ci_changed"]
+        expected["test-python"] = "skipped"
+    else:
+        full_matrix = (
+            values["rust_changed"] or values["platform_changed"] or values["toolchain_changed"] or values["ci_changed"]
+        )
+    # Сборка пакета и холодные старты сняты с pull request до пересборки системы
+    # тестирования: прослеживаемости они не давали, а гейт красили. Тег и ручной
+    # запуск их сохраняют — выпуск обязан собираться. Push в ветку упаковку тоже
+    # не гоняет: это ворота тестов, а упаковка — дело тега.
+    package_pipeline = (values["release_required"] or values["ci_changed"]) and (is_tag or is_manual)
 
-    expected["test-rust-primary"] = "success" if primary_rust else "skipped"
     expected["test-rust-platforms"] = "success" if full_matrix else "skipped"
-    expected["test-search-integration"] = (
-        "success"
-        if values["search_integration_changed"] or values["ci_changed"]
-        else "skipped"
-    )
     expected.update({job: "success" if package_pipeline else "skipped" for job in PACKAGE_JOBS})
-    expected[ASSESSMENT_JOB] = "success" if values["assessment_required"] else "skipped"
-    expected["probe-thin-bootstrap"] = (
-        "success" if package_pipeline and (is_pr or is_manual) else "skipped"
+    expected[ASSESSMENT_JOB] = (
+        "success" if values["assessment_required"] and (is_tag or is_manual) else "skipped"
     )
+    expected[P0_PROOF_JOB] = (
+        "success" if values["assessment_required"] and is_manual else "skipped"
+    )
+    expected["probe-thin-bootstrap"] = "success" if package_pipeline and is_manual else "skipped"
     expected.update({job: "success" if is_tag else "skipped" for job in PUBLISH_JOBS})
 
     if is_tag:
         contour = "release"
     elif is_manual:
         contour = "full"
+    elif is_main_push:
+        contour = "cache"
+    elif is_branch:
+        contour = "branch"
+    elif is_queue:
+        contour = "queue"
     elif not is_pr:
         contour = "invalid"
     elif all(values.values()) or values["ci_changed"]:
@@ -161,6 +190,11 @@ def evaluate_gate(
         actual_result = results.get(job, "missing")
         if actual_result != expected_result:
             unexpected[job] = (actual_result, expected_result)
+    # Джоба, которой нет в таблице ожиданий, — не «ничего», а отказ: иначе
+    # новая джоба в `needs` гейта падала бы незамеченной, и гейт был бы зелёным.
+    for job, actual_result in results.items():
+        if job not in expected:
+            unexpected[job] = (actual_result, "джоба не в таблице ворот")
 
     skipped_jobs = [job for job in expected if results.get(job) == "skipped"]
     return GateEvaluation(

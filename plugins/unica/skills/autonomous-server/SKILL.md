@@ -7,7 +7,7 @@ description: "Автономный сервер отладки 1С. Исполь
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.project.map`, `unica.runtime.execute`, `unica.meta.info`, `unica.code.search`, and `unica.code.diagnostics`.
+- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.runtime.execute`, `unica.meta.info`, `unica.code.search`, and `unica.code.diagnostics`.
 - По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
 показывает запланированную команду без побочных эффектов, а с `dryRun: false`
 исполняет классифицированную операцию и отвечает её терминальным результатом в
@@ -22,7 +22,7 @@ description: "Автономный сервер отладки 1С. Исполь
 ## Workflow
 
 1. Identify the debug target: HTTP service, web service, web client scenario, client MCP session, or isolated infobase startup.
-2. Map project source-sets with `unica.project.map`; inspect HTTP/WebService metadata with `unica.meta.info` and handlers with `unica.code.search`.
+2. Map project source-sets with `unica.view {}`; inspect HTTP/WebService metadata with `unica.meta.info` and handlers with `unica.code.search`.
 3. Preview the intended infobase sequence through `unica.runtime.execute`: `config-init` if needed, `init`, `build`, then `syntax`; this does not prepare or verify the infobase.
 4. Preview `operation=launch` with the intended `clientMode=mcp` or `clientMode=mcp-va`, then stop: no isolated client/debug surface is started by the current public contract.
 5. If the user independently provides a web URL, report it as the hand-off point for an external browser-testing tool; otherwise report that no public MCP `unica` operation currently produces a web-client URL.

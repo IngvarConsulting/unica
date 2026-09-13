@@ -1,9 +1,9 @@
 ---
 id: INV.PERF.SOURCE-SNAPSHOT-BYTE-BUDGET
-status: active
+status: superseded
 governs: product
-decision: DEC.2026-08-18.CARRIED-RULES
-check: crates/unica-coder/src/infrastructure/platform_xml_resources.rs::source_resource_limits_and_cancellation_matrix_is_exact
+decision: DEC.2026-09-05.SOURCE-SNAPSHOT-PROVIDER-RETIRED
+check: tests/ci/test_acceptance_scenarios.py::test_every_wire_answers_its_frozen_classes
 scope: [product, source]
 ---
 
@@ -11,3 +11,6 @@ scope: [product, source]
 
 Агрегатор прекращает построение до буферизации данных сверх объявленного
 предела одного снимка.
+
+Правило снято вместе с агрегатором снимков: канонический `view` не собирает
+снимок источника в память целиком.

@@ -641,6 +641,7 @@ pub(crate) fn borrow_cfe_with_data(
             mut created,
             mut updated,
             cleanup_warnings,
+            retained_apply_cleanup_diagnostics: _,
         } = write_plan.commit_with_post_validation(&format_owner_targets, context, || {
             cfe_borrow_validate_extension(&ext_path, context)
         })?;

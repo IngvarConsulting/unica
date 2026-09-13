@@ -2,12 +2,13 @@
 id: INV.APP.DEFERRED-MANIFEST
 status: active
 governs: product
-decision: DEC.2026-08-18.CARRIED-RULES
-check: crates/unica-coder/src/application/mod.rs::oversized_typed_read_returns_a_manifest_within_budget
+decision: DEC.2026-09-04.V0-13-LEGACY-BATCH-3
+check: crates/unica-coder/src/application/result_store.rs::cursor_chain_is_refused_before_it_can_exceed_the_entry_bound
 scope: [app]
 ---
 
-# Большое чтение отвечает ограниченным манифестом
+# Большое чтение отвечает ограниченной страницей
 
-Типизированный результат сверх порога заменяется успешным манифестом
-`deferred` с `resultRef`, описанием секций и идентичностью снимка.
+Ответ сверх порога не выдаётся целиком: `view` отдаёт страницу и
+непрозрачный курсор, связанный с вопросом и ревизией. Цепочка курсоров
+ограничена, а чужой или устаревший курсор отказывается вместо чужого ответа.

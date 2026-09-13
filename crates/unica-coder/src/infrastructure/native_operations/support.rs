@@ -24,13 +24,13 @@ type SupportVendorPayloadSnapshot = (
 );
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SupportCapability {
+pub(crate) enum SupportCapability {
     On,
     Off,
 }
 
 impl SupportCapability {
-    fn parse(value: &str) -> Option<Self> {
+    pub(crate) fn parse(value: &str) -> Option<Self> {
         match value {
             "on" => Some(Self::On),
             "off" => Some(Self::Off),
@@ -45,7 +45,7 @@ impl SupportCapability {
         }
     }
 
-    fn enabled(self) -> bool {
+    pub(crate) fn enabled(self) -> bool {
         matches!(self, Self::On)
     }
 
@@ -58,14 +58,14 @@ impl SupportCapability {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SupportObjectRule {
+pub(crate) enum SupportObjectRule {
     Locked,
     Editable,
     OffSupport,
 }
 
 impl SupportObjectRule {
-    fn parse(value: &str) -> Option<Self> {
+    pub(crate) fn parse(value: &str) -> Option<Self> {
         match value {
             "locked" => Some(Self::Locked),
             "editable" => Some(Self::Editable),
@@ -453,13 +453,13 @@ fn string_arg(args: &Map<String, Value>, names: &[&str]) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn decode_parent_configurations(raw: &[u8]) -> Result<String, String> {
+pub(crate) fn decode_parent_configurations(raw: &[u8]) -> Result<String, String> {
     let data = raw.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(raw);
     String::from_utf8(data.to_vec())
         .map_err(|err| format!("ParentConfigurations.bin is not UTF-8: {err}"))
 }
 
-fn plan_capability(
+pub(crate) fn plan_capability(
     bin_path: &Path,
     text: &str,
     capability: SupportCapability,
@@ -519,7 +519,7 @@ fn plan_capability(
     ))
 }
 
-fn plan_object_rule(
+pub(crate) fn plan_object_rule(
     bin_path: &Path,
     text: &str,
     object_uuid: &str,
@@ -605,7 +605,7 @@ fn noop_outcome(action: &str, message: impl Into<String>) -> (AdapterOutcome, Su
     )
 }
 
-fn parent_configurations_bytes(text: &str) -> Vec<u8> {
+pub(crate) fn parent_configurations_bytes(text: &str) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(text.len() + 3);
     bytes.extend_from_slice(&[0xEF, 0xBB, 0xBF]);
     bytes.extend_from_slice(text.as_bytes());
