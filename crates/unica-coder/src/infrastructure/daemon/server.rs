@@ -5253,6 +5253,214 @@ struct ActorLogicalReadLease {"#,
         assert_cache_impact(&published, "published");
     }
 
+    fn subsystem_picture_workspace(picture: &str) -> tempfile::TempDir {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("src");
+        std::fs::create_dir_all(source.join("Subsystems/Sales/Ext")).unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects><Subsystem>Sales</Subsystem></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Subsystems/Sales.xml"),
+            format!(
+                "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+                <MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"2.20\">\n\
+                <Subsystem uuid=\"55555555-5555-4555-8555-555555555555\"><Properties>\n\
+                <Name>Sales</Name>\n\
+                <Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Продажи</v8:content></v8:item></Synonym>\n\
+                <Comment/>\n\
+                <IncludeHelpInContents>true</IncludeHelpInContents>\n\
+                <IncludeInCommandInterface>true</IncludeInCommandInterface>\n\
+                <UseOneCommand>false</UseOneCommand>\n\
+                <Explanation><v8:item><v8:lang>ru</v8:lang><v8:content>Описание</v8:content></v8:item></Explanation>\n\
+                <Picture>{picture}</Picture>\n\
+                <Content><xr:Item xsi:type=\"xr:MDObjectRef\">Catalog.Old</xr:Item></Content>\n\
+                </Properties><ChildObjects/></Subsystem></MetaDataObject>\n"
+            ),
+        )
+        .unwrap();
+        workspace
+    }
+
+    #[test]
+    fn canonical_subsystem_content_preserves_picture_and_preview_plan_without_entity_churn() {
+        for (reference, transparent) in [
+            (true, Some("true")),
+            (true, Some("false")),
+            (true, None),
+            (false, Some("true")),
+            (false, Some("false")),
+            (false, None),
+        ] {
+            let mut picture = String::new();
+            if reference {
+                picture.push_str("<xr:Ref>CommonPicture.Sales</xr:Ref>");
+            }
+            if let Some(value) = transparent {
+                picture.push_str(&format!("<xr:LoadTransparent>{value}</xr:LoadTransparent>"));
+            }
+            let workspace = subsystem_picture_workspace(&picture);
+            let descriptor = workspace.path().join("src/Subsystems/Sales.xml");
+            let runtime = V5CanonicalInvocationRuntime::new(
+                Arc::new(
+                    crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
+                ),
+                Arc::new(TokioClock),
+            );
+            let workspace_hint = std::fs::canonicalize(workspace.path()).unwrap();
+            let call = |arguments| {
+                let request = InvocationRequest::new(
+                    ToolIdentity::Apply,
+                    arguments,
+                    workspace_hint.to_string_lossy(),
+                    7_000,
+                )
+                .unwrap();
+                direct_v5(&runtime, request).unwrap()
+            };
+            let mut arguments = serde_json::json!({
+                "at": "main:Subsystem.Sales",
+                "ops": [
+                    {"op": "content.add", "args": {"items": [{"object": "Catalog.Items"}]}},
+                    {"op": "content.remove", "args": {"items": [{"object": "Catalog.Old"}]}}
+                ],
+                "dryRun": true
+            });
+            let before = crate::test_support::tree_snapshot(workspace.path());
+            let preview = call(arguments.clone());
+            assert!(preview.ok, "{preview:?}");
+            assert_eq!(before, crate::test_support::tree_snapshot(workspace.path()));
+            arguments["dryRun"] = serde_json::json!(false);
+            arguments["ifRev"] = serde_json::json!(preview.rev.as_ref().unwrap());
+            let applied = call(arguments);
+            assert!(applied.ok, "{applied:?}");
+            let preview_data = preview.data.as_ref().unwrap();
+            let applied_data = applied.data.as_ref().unwrap();
+            assert!(preview_data["planHash"].is_string(), "{preview_data}");
+            assert_eq!(preview_data["planHash"], applied_data["planHash"]);
+            assert_eq!(preview_data["effects"], applied_data["effects"]);
+            let edited = std::fs::read_to_string(&descriptor).unwrap();
+            assert!(!edited.contains("&#13;"), "{edited}");
+            assert!(!edited.contains("&#xD;"), "{edited}");
+            assert!(!edited.contains("\r"), "{edited}");
+            assert!(edited.contains("Catalog.Items"), "{edited}");
+            assert!(!edited.contains("Catalog.Old"), "{edited}");
+            assert!(edited.contains("Продажи"), "{edited}");
+            assert!(edited.contains("Описание"), "{edited}");
+            let doc = roxmltree::Document::parse(edited.trim_start_matches('\u{feff}')).unwrap();
+            let value = |name| {
+                doc.descendants()
+                    .find(|node| node.has_tag_name(("http://v8.1c.ru/8.3/xcf/readable", name)))
+                    .and_then(|node| node.text())
+            };
+            assert_eq!(value("LoadTransparent"), transparent);
+            assert_eq!(value("Ref"), reference.then_some("CommonPicture.Sales"));
+
+            let mut child = serde_json::json!({
+                "at": "main:Subsystem.Sales",
+                "ops": [{"op": "childSubsystem.add", "args": {"items": [{"name": "Orders"}]}}],
+                "dryRun": true
+            });
+            let before = crate::test_support::tree_snapshot(workspace.path());
+            let preview = call(child.clone());
+            assert!(preview.ok, "{preview:?}");
+            assert_eq!(before, crate::test_support::tree_snapshot(workspace.path()));
+            assert!(!workspace
+                .path()
+                .join("src/Subsystems/Sales/Subsystems")
+                .exists());
+            child["dryRun"] = serde_json::json!(false);
+            child["ifRev"] = serde_json::json!(preview.rev.unwrap());
+            let applied = call(child);
+            assert!(applied.ok, "{applied:?}");
+            assert_eq!(
+                preview.data.unwrap()["planHash"],
+                applied.data.unwrap()["planHash"]
+            );
+            let stub = std::fs::read_to_string(
+                workspace
+                    .path()
+                    .join("src/Subsystems/Sales/Subsystems/Orders.xml"),
+            )
+            .unwrap();
+            assert!(stub.contains("<Picture/>"), "{stub}");
+            assert!(!stub.contains("LoadTransparent"), "{stub}");
+            let parent = std::fs::read_to_string(&descriptor).unwrap();
+            assert!(parent.contains("<Subsystem>Orders</Subsystem>"), "{parent}");
+            assert!(!parent.contains("&#13;"), "{parent}");
+            let doc = roxmltree::Document::parse(parent.trim_start_matches('\u{feff}')).unwrap();
+            let transparency = doc
+                .descendants()
+                .find(|node| {
+                    node.has_tag_name(("http://v8.1c.ru/8.3/xcf/readable", "LoadTransparent"))
+                })
+                .and_then(|node| node.text());
+            assert_eq!(transparency, transparent);
+        }
+    }
+
+    #[test]
+    fn canonical_subsystem_picture_property_refusal_is_write_free_in_both_modes() {
+        let workspace =
+            subsystem_picture_workspace("<xr:LoadTransparent>true</xr:LoadTransparent>");
+        let runtime = V5CanonicalInvocationRuntime::new(
+            Arc::new(
+                crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
+            ),
+            Arc::new(TokioClock),
+        );
+        let workspace_hint = std::fs::canonicalize(workspace.path()).unwrap();
+        let call = |arguments| {
+            let request = InvocationRequest::new(
+                ToolIdentity::Apply,
+                arguments,
+                workspace_hint.to_string_lossy(),
+                7_000,
+            )
+            .unwrap();
+            direct_v5(&runtime, request).unwrap()
+        };
+        let mut arguments = serde_json::json!({
+            "at": "main:Subsystem.Sales",
+            "ops": [{"op": "childSubsystem.add", "args": {"items": [{"name": "Orders"}]}}],
+            "dryRun": true
+        });
+        let before = crate::test_support::tree_snapshot(workspace.path());
+        let preview = call(arguments.clone());
+        assert!(preview.ok, "{preview:?}");
+        arguments["ops"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::Value::Null);
+        for property in ["LoadTransparent", "Picture.LoadTransparent"] {
+            arguments["ops"][1] = serde_json::json!({
+                "op": "props.set", "args": {"values": {property: true}}
+            });
+            arguments["dryRun"] = serde_json::json!(true);
+            let refused_preview = call(arguments.clone());
+            arguments["dryRun"] = serde_json::json!(false);
+            arguments["ifRev"] = serde_json::json!(preview.rev.as_ref().unwrap());
+            let refused_apply = call(arguments.clone());
+            assert!(!refused_preview.ok, "{refused_preview:?}");
+            assert!(!refused_apply.ok, "{refused_apply:?}");
+            assert_eq!(refused_preview.diagnostics, refused_apply.diagnostics);
+            assert_eq!(refused_preview.at, refused_apply.at);
+            assert!(format!("{refused_preview:?}").contains(property));
+            assert_eq!(before, crate::test_support::tree_snapshot(workspace.path()));
+            assert!(!workspace
+                .path()
+                .join("src/Subsystems/Sales/Subsystems")
+                .exists());
+        }
+    }
+
     /// Два плана на одной ревизии: второй не должен уничтожить первый.
     ///
     /// Это единственное место контракта, где ошибка невидима. Замер до правки:

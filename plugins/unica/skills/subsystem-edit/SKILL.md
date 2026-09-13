@@ -43,6 +43,14 @@ allowed-tools:
 Заведение дочерней подсистемы создаёт и её собственный файл, и ссылку на неё у
 родителя — это одна правка, а не две.
 
+Правка состава сохраняет `Picture.LoadTransparent`, в том числе отсутствие
+этого свойства и картинку без ссылки. XML не получает служебных `&#13;`
+от форматирования (`INV.SOURCE.SUBSYSTEM-PICTURE-PRESERVATION`).
+`LoadTransparent` и `Picture.LoadTransparent` не являются отдельными ключами
+`props.set`: такие запросы отклоняются и в предпросмотре, и при применении,
+без записи (`INV.SOURCE.SUBSYSTEM-PICTURE-REFUSAL`). Допустимые операции и
+аргументы уточняй через `unica.can {at}`.
+
 ## Порядок
 
 1. Найди подсистему: `unica.search {corpus: "names", kind: "Subsystem"}`.

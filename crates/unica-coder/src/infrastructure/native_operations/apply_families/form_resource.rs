@@ -1875,6 +1875,7 @@ fn subsystem_stub_xml(name: &str, format_version: &str, uuid: &str) -> String {
         use_one_command: "false".to_string(),
         explanation: String::new(),
         picture: String::new(),
+        picture_load_transparent: None,
         content: Vec::new(),
         children: Vec::new(),
     };
