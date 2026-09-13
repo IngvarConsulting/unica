@@ -1,4 +1,6 @@
-research/
+# Только корневой каталог местных исследований: scripts/research/ и
+# crates/*/tests/research/ — часть дерева.
+/research/
 its/
 .build/
 .worktrees/

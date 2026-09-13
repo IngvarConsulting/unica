@@ -113,7 +113,7 @@ fn meta_edit_line_indent(text: &str, position: usize) -> String {
         .collect()
 }
 
-pub(super) fn meta_edit_object_identity(xml_text: &str) -> Result<(String, String), String> {
+pub(crate) fn meta_edit_object_identity(xml_text: &str) -> Result<(String, String), String> {
     let doc = Document::parse(xml_text.trim_start_matches('\u{feff}'))
         .map_err(|err| format!("XML parse error: {err}"))?;
     let root = doc.root_element();
@@ -504,6 +504,20 @@ pub(super) fn meta_edit_insert_lines_into_child_objects(
             &format!("<ChildObjects>\n{content}\n{close_indent}</ChildObjects>"),
         );
         return Ok(());
+    }
+    // A self-closing `<ChildObjects/>` whose parsed range stops short of its
+    // terminator (fresh template descriptors): expand the tag in place.
+    if !section_text.contains("</ChildObjects>") {
+        if let Some(relative_end) = xml_text[range.start..].find("/>") {
+            let end = range.start + relative_end + 2;
+            if !xml_text[range.start + 1..end].contains('<') {
+                xml_text.replace_range(
+                    range.start..end,
+                    &format!("<ChildObjects>\n{content}\n{close_indent}</ChildObjects>"),
+                );
+                return Ok(());
+            }
+        }
     }
     let Some(relative_pos) = section_text.rfind("</ChildObjects>") else {
         if section_text.trim_end().ends_with('>') {
@@ -1728,9 +1742,10 @@ pub(super) fn typed_template_primary_path(template_type: MetadataTemplateType) -
     match template_type {
         MetadataTemplateType::HtmlDocument
         | MetadataTemplateType::SpreadsheetDocument
-        | MetadataTemplateType::DataCompositionSchema => "Ext/Template.xml",
+        | MetadataTemplateType::DataCompositionSchema
+        | MetadataTemplateType::DataCompositionAppearanceTemplate => "Ext/Template.xml",
         MetadataTemplateType::TextDocument => "Ext/Template.txt",
-        MetadataTemplateType::BinaryData => "Ext/Template.bin",
+        MetadataTemplateType::BinaryData | MetadataTemplateType::AddIn => "Ext/Template.bin",
     }
 }
 
@@ -1758,7 +1773,10 @@ pub(super) fn typed_template_initial_content(template_type: MetadataTemplateType
                 .expect("closed template kind")
                 .into_bytes()
         }
-        MetadataTemplateType::TextDocument | MetadataTemplateType::BinaryData => Vec::new(),
+        MetadataTemplateType::TextDocument
+        | MetadataTemplateType::BinaryData
+        | MetadataTemplateType::AddIn
+        | MetadataTemplateType::DataCompositionAppearanceTemplate => Vec::new(),
     }
 }
 
@@ -1988,8 +2006,13 @@ fn typed_child_payload_role(
                 {
                     MetadataTemplateResourcePart::Primary
                 }
-                (MetadataTemplateType::BinaryData, path)
+                (MetadataTemplateType::BinaryData | MetadataTemplateType::AddIn, path)
                     if path == Path::new("Ext/Template.bin") =>
+                {
+                    MetadataTemplateResourcePart::Primary
+                }
+                (MetadataTemplateType::DataCompositionAppearanceTemplate, path)
+                    if path == Path::new("Ext/Template.xml") =>
                 {
                     MetadataTemplateResourcePart::Primary
                 }
@@ -3302,6 +3325,18 @@ pub(crate) fn apply_typed_operations(
     xml_text: &mut String,
     operations: &[MetaEditOperation],
 ) -> Result<MetaEditCounts, MetaFailure> {
+    let mut next_uuid = fresh_metadata_uuid;
+    apply_typed_operations_with_uuid(xml_text, operations, &mut next_uuid)
+}
+
+pub(crate) fn apply_typed_operations_with_uuid<F>(
+    xml_text: &mut String,
+    operations: &[MetaEditOperation],
+    next_uuid: &mut F,
+) -> Result<MetaEditCounts, MetaFailure>
+where
+    F: FnMut() -> String,
+{
     let mut working = xml_text.clone();
     let mut counts = MetaEditCounts::default();
     for (operation_index, operation) in operations.iter().enumerate() {
@@ -3331,7 +3366,9 @@ pub(crate) fn apply_typed_operations(
             }
             other => other,
         };
-        if let Err(diagnostic) = apply_typed_operation(&mut working, operation, &mut counts) {
+        if let Err(diagnostic) =
+            apply_typed_operation(&mut working, operation, &mut counts, next_uuid)
+        {
             let mut diagnostic = diagnostic.with_operation_index(operation_index);
             if let Some(field) = diagnostic.field.as_mut() {
                 if !field.starts_with("operations[") {
@@ -3682,11 +3719,15 @@ fn typed_collection_effect_value<'a>(
     })
 }
 
-fn apply_typed_operation(
+fn apply_typed_operation<F>(
     xml_text: &mut String,
     operation: &MetaEditOperation,
     counts: &mut MetaEditCounts,
-) -> Result<(), MetaDiagnostic> {
+    next_uuid: &mut F,
+) -> Result<(), MetaDiagnostic>
+where
+    F: FnMut() -> String,
+{
     let (object_kind, object_name) = meta_edit_object_identity(xml_text).map_err(|_| {
         typed_diagnostic(
             MetaDiagnosticCode::ProviderUnavailable,
@@ -3741,6 +3782,7 @@ fn apply_typed_operation(
                     *collection,
                     scope.as_ref().map(|scope| scope.tabular_section.as_str()),
                     element,
+                    next_uuid,
                 )
                 .map_err(|diagnostic| qualify_element_diagnostic(diagnostic, index))?;
                 counts.added += 1;
@@ -3970,14 +4012,18 @@ fn collection_tag(collection: MetaCollection) -> &'static str {
     }
 }
 
-fn add_typed_element(
+fn add_typed_element<F>(
     xml_text: &mut String,
     object_kind: &str,
     object_name: &str,
     collection: MetaCollection,
     scope: Option<&str>,
     element: &MetaElementDefinition,
-) -> Result<(), MetaDiagnostic> {
+    next_uuid: &mut F,
+) -> Result<(), MetaDiagnostic>
+where
+    F: FnMut() -> String,
+{
     if !is_1c_identifier(&element.name) {
         return Err(typed_diagnostic(
             MetaDiagnosticCode::InvalidArguments,
@@ -3988,7 +4034,7 @@ fn add_typed_element(
     let tag = collection_tag(collection);
     ensure_typed_name_free(xml_text, tag, scope, &element.name)?;
     let position = typed_insert_position(element.position.as_ref());
-    let mut lines = render_typed_element(object_kind, object_name, collection, element)?;
+    let mut lines = render_typed_element(object_kind, object_name, collection, element, next_uuid)?;
     if matches!(
         collection,
         MetaCollection::Dimensions | MetaCollection::Resources
@@ -4111,14 +4157,17 @@ fn element_text_between(haystack: &str, open: &str, close: &str) -> Option<Strin
     Some(haystack[start..end].to_string())
 }
 
-fn render_typed_element(
+fn render_typed_element<F>(
     object_kind: &str,
     object_name: &str,
     collection: MetaCollection,
     element: &MetaElementDefinition,
-) -> Result<Vec<String>, MetaDiagnostic> {
+    next_uuid: &mut F,
+) -> Result<Vec<String>, MetaDiagnostic>
+where
+    F: FnMut() -> String,
+{
     let mut lines = Vec::new();
-    let mut next_uuid = fresh_metadata_uuid;
     let attr = || MetadataAttributeTemplate {
         name: element.name.clone(),
         synonym: element
@@ -4133,7 +4182,7 @@ fn render_typed_element(
             "\t\t\t",
             &attr(),
             meta_attribute_context(object_kind),
-            &mut next_uuid,
+            next_uuid,
         ),
         MetaCollection::TabularSections => {
             let ordered_attributes = order_typed_nested_attributes(&element.attributes)?;
@@ -4157,7 +4206,7 @@ fn render_typed_element(
                 },
                 object_kind,
                 object_name,
-                &mut next_uuid,
+                next_uuid,
             );
             let mut rendered = lines.join("\n");
             apply_typed_element_fields(&mut rendered, element);
@@ -4170,7 +4219,7 @@ fn render_typed_element(
             collection_tag(collection),
             &attr(),
             object_kind,
-            &mut next_uuid,
+            next_uuid,
         ),
         MetaCollection::EnumValues => emit_meta_enum_value(
             &mut lines,
@@ -4183,7 +4232,7 @@ fn render_typed_element(
                     .unwrap_or_else(|| split_meta_camel_case(&element.name)),
                 comment: element.comment.clone().unwrap_or_default(),
             },
-            &mut next_uuid,
+            next_uuid,
         ),
         MetaCollection::Columns
         | MetaCollection::Forms
@@ -4193,7 +4242,7 @@ fn render_typed_element(
             "\t\t\t",
             collection_tag(collection),
             &element.name,
-            &mut next_uuid,
+            next_uuid,
         ),
         MetaCollection::PredefinedItems => {
             unreachable!("predefined items are rendered in Ext/Predefined.xml")
@@ -4340,6 +4389,10 @@ fn apply_typed_element_fields(xml: &mut String, element: &MetaElementDefinition)
         );
         let _ =
             meta_edit_replace_or_insert_property(&mut text, "FillChecking", &replacement, &indent);
+    }
+    if let Some(indexing) = &element.indexing {
+        let replacement = format!("{indent}<Indexing>{}</Indexing>", escape_xml(indexing));
+        let _ = meta_edit_replace_or_insert_property(&mut text, "Indexing", &replacement, &indent);
     }
     xml.replace_range(range, &text);
 }
@@ -4556,6 +4609,22 @@ fn update_typed_element(
             )
         })?;
     }
+    if let Some(indexing) = &update.indexing {
+        let replacement = format!("{indent}<Indexing>{}</Indexing>", escape_xml(indexing));
+        meta_edit_replace_or_insert_property(
+            &mut properties_text,
+            "Indexing",
+            &replacement,
+            &indent,
+        )
+        .map_err(|_| {
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "metadata indexing could not be updated",
+                Some("indexing"),
+            )
+        })?;
+    }
     let mut updated_node = node_xml;
     updated_node.replace_range(properties_range, &properties_text);
     xml_text.replace_range(range, &updated_node);
@@ -4715,18 +4784,45 @@ pub(super) fn parse_typed_fill_value_node(
             "existing date-time fill value is not canonical",
             Some("fillValue"),
         )),
-        (READABLE_NAMESPACE, "DesignTimeRef") => Ok(Some(MetaFillValue::Reference(
-            crate::domain::metadata::MetadataReference {
-                metadata_path: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &value)
-                    .map_err(|_| {
-                        typed_diagnostic(
-                            MetaDiagnosticCode::ValidationFailed,
-                            "existing reference fill value is not a metadata address",
-                            Some("fillValue"),
-                        )
-                    })?,
-            },
-        ))),
+        (READABLE_NAMESPACE, "DesignTimeRef") => {
+            // Real platform dumps carry item designators after the metadata
+            // address — `Catalog.Валюты.EmptyRef` or a predefined item name.
+            // The address prefix is validated; the designator round-trips
+            // verbatim so re-emission cannot corrupt the value.
+            if let Ok(metadata_path) =
+                MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &value)
+            {
+                return Ok(Some(MetaFillValue::Reference(
+                    crate::domain::metadata::MetadataReference { metadata_path },
+                )));
+            }
+            let Some((prefix, item)) = value.rsplit_once('.') else {
+                return Err(typed_diagnostic(
+                    MetaDiagnosticCode::ValidationFailed,
+                    "existing reference fill value is not a metadata address",
+                    Some("fillValue"),
+                ));
+            };
+            let metadata_path = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, prefix)
+                .map_err(|_| {
+                    typed_diagnostic(
+                        MetaDiagnosticCode::ValidationFailed,
+                        "existing reference fill value is not a metadata address",
+                        Some("fillValue"),
+                    )
+                })?;
+            if item.is_empty() {
+                return Err(typed_diagnostic(
+                    MetaDiagnosticCode::ValidationFailed,
+                    "existing reference fill value is not a metadata address",
+                    Some("fillValue"),
+                ));
+            }
+            Ok(Some(MetaFillValue::DesignTimeItemRef {
+                reference: crate::domain::metadata::MetadataReference { metadata_path },
+                item: item.to_string(),
+            }))
+        }
         _ => Err(typed_diagnostic(
             MetaDiagnosticCode::ValidationFailed,
             "existing fill value type is unsupported by typed metadata edit",
@@ -5088,7 +5184,7 @@ fn apply_typed_event_subscription_source(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::domain::metadata::{
         DateFractions, MetaCollection, MetaEditOperation, MetaElementInput, MetaElementUpdateInput,
@@ -6240,11 +6336,13 @@ mod tests {
             MetaElementInput::named(name),
         )
         .unwrap();
+        let mut next_uuid = fresh_metadata_uuid;
         render_typed_element(
             "InformationRegister",
             "Sample",
             MetaCollection::Dimensions,
             &element,
+            &mut next_uuid,
         )
         .unwrap()
         .join("\n")
@@ -6256,11 +6354,13 @@ mod tests {
             MetaElementInput::named(name),
         )
         .unwrap();
+        let mut next_uuid = fresh_metadata_uuid;
         render_typed_element(
             "InformationRegister",
             "Sample",
             MetaCollection::Resources,
             &element,
+            &mut next_uuid,
         )
         .unwrap()
         .join("\n")
@@ -8653,7 +8753,9 @@ mod tests {
     }
 
     #[test]
-    fn typed_exact_noop_form_update_has_no_resource_mutation_or_event() {
+    pub(crate) fn typed_exact_noop_form_update_preserves_resource_bytes_and_identities() {
+        use crate::infrastructure::platform::testing::file_identity_for_test;
+
         let root = std::env::temp_dir().join(format!(
             "unica-meta-edit-form-noop-{}",
             uuid::Uuid::new_v4()
@@ -8678,6 +8780,10 @@ mod tests {
             minimal_typed_form_content("Document", "Order").as_bytes(),
         )
         .unwrap();
+        let child_before = std::fs::read(&child_descriptor).unwrap();
+        let content_before = std::fs::read(&form_content).unwrap();
+        let child_identity = file_identity_for_test(&child_descriptor).unwrap();
+        let content_identity = file_identity_for_test(&form_content).unwrap();
         let operation = MetaEditOperation::update(
             MetaCollection::Forms,
             None,
@@ -8703,6 +8809,16 @@ mod tests {
 
         assert!(resources.file_mutations.is_empty());
         assert!(resources.publication_plan.is_empty());
+        assert_eq!(std::fs::read(&child_descriptor).unwrap(), child_before);
+        assert_eq!(std::fs::read(&form_content).unwrap(), content_before);
+        assert_eq!(
+            file_identity_for_test(&child_descriptor).unwrap(),
+            child_identity
+        );
+        assert_eq!(
+            file_identity_for_test(&form_content).unwrap(),
+            content_identity
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

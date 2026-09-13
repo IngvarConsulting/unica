@@ -1,0 +1,137 @@
+name: Новая операция
+description: Предложить задачу разработчика, которую поверхность `unica.*` ещё не решает — правку, чтение, поиск, проверку, запуск или документацию
+labels: ["area:surface"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Операция здесь — любой вызов поверхности: `unica.apply`, `unica.view`,
+        `unica.find`, `unica.search`, `unica.check`, `unica.diff`, `unica.run`,
+        `unica.docs` и задачи `task.*`. Реестр того, что поверхность уже решает,
+        лежит в
+        [`docs/acceptance-scenarios.md`](https://github.com/IngvarConsulting/unica/blob/main/docs/acceptance-scenarios.md):
+        каталог сценариев по областям, покрытие операций `apply` и профилей
+        `check`. Сверьтесь с ним перед заполнением: возможно, нужна не новая
+        операция, а сценарий для существующей — эта форма годится и для этого.
+
+  - type: textarea
+    id: task
+    attributes:
+      label: Задача разработчика
+      description: >-
+        Что нужно сделать в конфигурации или узнать о ней — словами разработчика
+        1С, одной-двумя фразами и без реализации: «найти все обработчики
+        события ПриЗаписи», а не «прочитать XML модулей».
+      placeholder: Найти все места, где модуль обращается к таблице регистра сведений
+    validations:
+      required: true
+
+  - type: dropdown
+    id: tool
+    attributes:
+      label: Инструмент поверхности
+      description: Каким вызовом `unica.*` задача должна решаться. Если их несколько, выберите главный.
+      options:
+        - "unica.apply — правка исходников"
+        - "unica.view — чтение узла"
+        - "unica.find / unica.search — поиск по метаданным и коду"
+        - "unica.check — проверка узла или профиль валидации"
+        - "unica.diff — сравнение"
+        - "unica.run — сборка, запуск, тесты, выгрузка"
+        - "unica.docs — документация и стандарты"
+        - "task.* — длинные задачи"
+        - "Не знаю"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Область
+      description: Раздел каталога сценариев в реестре, к которому относится задача.
+      options:
+        - "Навигация и чтение"
+        - "Свойства объектов"
+        - "Реквизиты и состав"
+        - "Создание и удаление объектов"
+        - "Формы"
+        - "Код BSL"
+        - "Роли и права"
+        - "СКД"
+        - "Макеты"
+        - "Подсистемы и интерфейс"
+        - "XDTO и обмены"
+        - "Сборка, ИБ и выгрузка"
+        - "Проверки качества"
+        - "Тесты и запуск"
+        - "Документация и стандарты"
+        - "Поддержка поставщика"
+        - "Другая область"
+    validations:
+      required: true
+
+  - type: input
+    id: operation
+    attributes:
+      label: Операция или профиль
+      description: >-
+        Заполняйте, если знаете, чего именно не хватает. Для `apply` — имя
+        операции в нотации реестра `предмет.глагол` и форма аргументов
+        (`items`, `values`, `text` или только `at`); для `check` — профиль;
+        для чтения и поиска — что должно появиться в ответе.
+      placeholder: "command.add (items) — или — профиль check `cfe` — или — view: список ссылок на узел"
+    validations:
+      required: false
+
+  - type: textarea
+    id: wire
+    attributes:
+      label: Провод вызовов
+      description: >-
+        Вызов или цепочка вызовов, которыми задачу должно быть можно решить.
+        Адреса берите из фикстурного пространства `tests/fixtures/acceptance/workspace/`
+        (состав описан в `tests/fixtures/acceptance/README.md`) или из своей
+        конфигурации, обезличив имена. Пример шага — в реестре, раздел
+        «Как предложить сценарий или операцию».
+      render: json
+      placeholder: |
+        [
+          {"tool": "unica.find", "args": {"query": "ПриЗаписи"}, "expect": ["ok"]},
+          {"tool": "unica.view", "args": {"at": "main:Catalog.Валюты.Module.Object"}, "expect": ["ok"]}
+        ]
+    validations:
+      required: false
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Ожидаемый результат
+      description: >-
+        Что должно вернуться в ответе или измениться в исходниках (какие файлы
+        и узлы) и чем должен закончиться вызов: результатом, длинной задачей
+        или умышленным отказом с кодом.
+    validations:
+      required: true
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: Как это делается сейчас
+      description: >-
+        Конфигуратор, EDT, ручной поиск по файлам, правка XML или обход через
+        другие вызовы — и почему это не подходит.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: contribution
+    attributes:
+      label: Готовность добавить сценарий
+      description: >-
+        Сценарий в корпусе — заявка на приёмку: он замораживает класс ответа
+        и проверяется в CI.
+      options:
+        - "Добавлю сценарий в корпус по инструкции из реестра"
+        - "Опишу задачу, сценарий допишем вместе"
+    validations:
+      required: true

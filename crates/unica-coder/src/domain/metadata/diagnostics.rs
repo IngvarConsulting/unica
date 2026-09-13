@@ -10,7 +10,6 @@ pub(crate) enum MetaDiagnosticCode {
     TargetNotFound,
     AlreadyExists,
     SupportLocked,
-    ReferenceConflict,
     ValidationFailed,
     RedundantListPresentation,
     CommandTextRecommendedLimit,
@@ -29,7 +28,6 @@ impl MetaDiagnosticCode {
         Self::TargetNotFound,
         Self::AlreadyExists,
         Self::SupportLocked,
-        Self::ReferenceConflict,
         Self::ValidationFailed,
         Self::RedundantListPresentation,
         Self::CommandTextRecommendedLimit,
@@ -123,10 +121,6 @@ mod tests {
             (MetaDiagnosticCode::TargetNotFound, "\"target_not_found\""),
             (MetaDiagnosticCode::AlreadyExists, "\"already_exists\""),
             (MetaDiagnosticCode::SupportLocked, "\"support_locked\""),
-            (
-                MetaDiagnosticCode::ReferenceConflict,
-                "\"reference_conflict\"",
-            ),
             (
                 MetaDiagnosticCode::ValidationFailed,
                 "\"validation_failed\"",

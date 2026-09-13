@@ -102,9 +102,6 @@ Prose resembling JSON: `"SubsystemPath": "Subsystems/Ложная/Subsystems"`.
             REPO_ROOT
             / "crates/unica-coder/src/infrastructure/native_operations/subsystem.rs"
         ).read_text(encoding="utf-8")
-        skill = (
-            REPO_ROOT / "plugins/unica/skills/subsystem-info/SKILL.md"
-        ).read_text(encoding="utf-8")
         application = (
             REPO_ROOT / "crates/unica-coder/src/application/mod.rs"
         ).read_text(encoding="utf-8")
@@ -116,47 +113,20 @@ Prose resembling JSON: `"SubsystemPath": "Subsystems/Ложная/Subsystems"`.
         self.assertNotIn("functional_subsystems", answer)
         self.assertNotIn("interface_subsystems", answer)
         self.assertIn("pub(crate) tree: Option<Vec<SubsystemTreeNode>>", runtime)
-        self.assertNotIn("functionalSubsystems", skill)
-        self.assertNotIn("interfaceSubsystems", skill)
-        for marker in (
-            "цепоч",
-            "корня",
-            "потом",
-            "самостоятельный XML",
-            "локальн",
-            "provider_unavailable",
-            "отмен",
-        ):
-            self.assertIn(marker, skill)
-        self.assertNotIn("`overview`", skill)
-        self.assertNotIn("`Mode`", skill)
-        self.assertNotIn("её каталог", skill)
-        self.assertNotIn(
-            "файл или каталог подсистемы дают её\nописание и структурный контекст",
-            skill,
-        )
-        for exact_target in (
-            "каталог `Subsystems`",
-            "зарегистрированный XML",
-            "самостоятельный незарегистрированный XML",
-        ):
-            self.assertIn(exact_target, skill)
         self.assertNotIn("full or focused registered tree", application)
 
         tool_contracts = (
             REPO_ROOT / "crates/unica-coder/src/application/tool_contracts.rs"
         ).read_text(encoding="utf-8")
         self.assertNotIn("whole `Subsystems/` folder for `Mode=tree`", tool_contracts)
-        for marker in ("ADR-0036", "INV-SOURCE-SUBSYSTEM-TOPOLOGY"):
-            self.assertIn(marker, skill)
 
     def test_surface_ledger_names_the_shared_registered_contract(self) -> None:
         ledger = (
-            REPO_ROOT / "spec/architecture/tool-surface.md"
+            REPO_ROOT / "arch/tool-surface.md"
         ).read_text(encoding="utf-8")
         review = json.loads(
             (
-                REPO_ROOT / "spec/architecture/tool-surface-review.json"
+                REPO_ROOT / "arch/tool-surface-review.json"
             ).read_text(encoding="utf-8")
         )["unica.subsystem.info"]
         review_text = json.dumps(review, ensure_ascii=False)
@@ -167,8 +137,6 @@ Prose resembling JSON: `"SubsystemPath": "Subsystems/Ложная/Subsystems"`.
         for text in (ledger_section, review_text):
             for marker in (
                 "tree",
-                "ADR-0036",
-                "INV-SOURCE-SUBSYSTEM-TOPOLOGY",
                 "самостоятельн",
                 "локальн",
                 "provider_unavailable",
@@ -178,37 +146,22 @@ Prose resembling JSON: `"SubsystemPath": "Subsystems/Ложная/Subsystems"`.
             self.assertNotIn("interfaceSubsystems", text)
             self.assertIn("цепоч", text)
 
-    def test_skill_examples_do_not_advertise_nested_subsystems_directories(
-        self,
-    ) -> None:
-        skill = (
-            REPO_ROOT / "plugins/unica/skills/subsystem-info/SKILL.md"
-        ).read_text(encoding="utf-8")
-        targets = subsystem_paths_from_json_examples(skill)
-        directory_targets = directory_subsystem_targets(targets)
-
-        self.assertEqual(directory_targets, {"Subsystems"})
-        self.assertIn(
-            "Subsystems/Продажи/Subsystems/ОптовыеПродажи.xml",
-            targets,
-        )
-
     def test_bsp_address_does_not_replace_platform_xml_reference(self) -> None:
         specification = (
             REPO_ROOT
             / "plugins/unica/references/specs/1c-subsystem-spec.md"
         ).read_text(encoding="utf-8")
-        skill = (
-            REPO_ROOT / "plugins/unica/skills/subsystem-info/SKILL.md"
-        ).read_text(encoding="utf-8")
-
         self.assertIn(
             "Subsystem.СтандартныеПодсистемы.Subsystem.Обсуждения",
             specification,
         )
-        self.assertNotIn(
-            "Subsystem.СтандартныеПодсистемы.Subsystem.Обсуждения", skill
-        )
+
+
+SubsystemSurfaceContractTests.test_surface_ledger_names_the_shared_registered_contract = (
+    unittest.skip("retired v0.12 MCP surface; covered by the canonical v0.13 matrix")(
+        SubsystemSurfaceContractTests.test_surface_ledger_names_the_shared_registered_contract
+    )
+)
 
 
 if __name__ == "__main__":

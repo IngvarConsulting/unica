@@ -7,9 +7,9 @@
 
 **Архивный материал планирования, а не источник истины.** Записка отражает
 состояние на свою дату и после реализации не обновляется. Она не нормирует
-поведение системы — ни сейчас, ни в момент написания. Нормативный слой целиком
-живёт в [`spec/`](../../spec/README.md): решения в `spec/decisions/`, правила в
-реестрах `spec/architecture/`.
+поведение системы — ни сейчас, ни в момент написания. Нормативный слой живёт в
+[`arch/`](../../arch/README.md): решения — в `arch/decisions/`, проверяемые
+правила — в `arch/invariants/` и `arch/contracts/`.
 
 ## Обязательная шапка
 
@@ -43,7 +43,7 @@
   тестовый вход и свидетельство профиля формата в
   `tests/ci/test_format_profile_contract.py` и
   `tests/dev/test_verify_8_3_27_platform.py`; действующий контракт находится в
-  `spec/`.
+  `arch/contracts/CTR.FORMAT.PLATFORM-XML-8-3-27.md`.
 - `2026-07-24-updatable-donor-parity-relations-design.md` — назван как
   свидетельство в `tests/fixtures/unica_mcp_script_parity/donor-relations.json`
   и в записях `docs/provenance/reviews/`.

@@ -46,7 +46,7 @@ class DocumentedContractTests(unittest.TestCase):
         verifier = load_verifier()
         expected = f"`{verifier.EXPECTED_CASE_CONTRACT_SHA256}`"
         documents = (
-            ROOT / "spec/acceptance/format-profile-8-3-27.md",
+            ROOT / "docs/arch-v1/acceptance/format-profile-8-3-27.md",
             ROOT
             / "docs/design/2026-08-07-typed-predefined-items-and-role-edit-design.md",
         )

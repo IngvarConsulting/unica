@@ -14,10 +14,11 @@ from pathlib import Path
 
 PLUGIN_ID = "unica"
 
-# Ядро собирается здесь, поставки приезжают из тулчейна. Адресов ровно два, и
-# оба названы: третий — новая запись реестра, а не правка этого списка.
+# Ядро собирается здесь, внешние движки приезжают из тулчейна, а сопровождаемый
+# v8-runner — из собственного репозитория. Перечень закрыт по артефакту.
 SOURCE_REPOSITORY = "https://github.com/IngvarConsulting/unica"
 TOOLCHAIN_REPOSITORY = "https://github.com/IngvarConsulting/unica-toolchain"
+V8_RUNNER_REPOSITORY = "https://github.com/IngvarConsulting/v8-runner-rust"
 
 # Формы доставки: архив распаковывается, одиночный файл ложится под своим
 # именем. Форму объявляет издатель типом содержимого.
@@ -104,6 +105,20 @@ def sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def package_tree_sha256(root: Path) -> str:
+    """Digest package paths and bytes so the proof binds the assembled tree."""
+    digest = hashlib.sha256()
+    for path in sorted(item for item in root.rglob("*") if item.is_file()):
+        relative = path.relative_to(root).as_posix().encode("utf-8")
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        digest.update(path.stat().st_size.to_bytes(8, "big"))
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+    return digest.hexdigest()
 
 
 def load_lock(path: Path) -> dict:
@@ -495,7 +510,7 @@ def load_runtime_metadata(
             if origin is not None:
                 raise SystemExit(f"core artifact {artifact} must not name a foreign origin")
         else:
-            # Поставку издал тулчейн: имя и тег назвал он, а не мы.
+            # Имя и тег назвал издатель поставки, а не упаковщик Unica.
             name = asset.get("name", "")
             if not isinstance(name, str) or not name or "/" in name or "\\" in name:
                 raise SystemExit(f"unsafe runtime asset name for {artifact} {target}: {name}")
@@ -506,7 +521,10 @@ def load_runtime_metadata(
                 )
             if not isinstance(origin, dict):
                 raise SystemExit(f"artifact {artifact} {target} does not name its origin")
-            if origin.get("repository") != TOOLCHAIN_REPOSITORY:
+            approved_repository = (
+                V8_RUNNER_REPOSITORY if artifact == "v8-runner" else TOOLCHAIN_REPOSITORY
+            )
+            if origin.get("repository") != approved_repository:
                 raise SystemExit(
                     f"artifact {artifact} {target} comes from an unapproved repository: "
                     f"{origin.get('repository')}"
@@ -611,8 +629,8 @@ def write_release_runtime_manifest(
             item = by_target[target]
             asset = dict(item["asset"])
             origin = item.get("assetOrigin")
-            # Происхождение решает роль: ядро лежит в выпуске плагина, всё
-            # прочее — в выпуске тулчейна под тегом, который назвал замок.
+            # Ядро лежит в выпуске плагина, а движок — в своём проверенном
+            # release-источнике под тегом, который назвал lock-файл.
             if origin is None:
                 asset["url"] = (
                     f"{SOURCE_REPOSITORY}/releases/download/{release_tag}/{asset['name']}"
@@ -665,6 +683,33 @@ def assert_archive_clean(marketplace_dir: Path) -> None:
             raise SystemExit(f"archive contains generated file: {rel}")
         if path.is_file() and path.name.endswith((".tar.gz", ".zip")):
             raise SystemExit(f"archive contains nested package artifact: {rel}")
+
+
+def write_p0_package_evidence(
+    marketplace_dir: Path, destination: Path, *, source_commit: str
+) -> None:
+    """Write package identity without claiming a tag or a publication."""
+    plugin_dir = marketplace_dir / "plugins" / PLUGIN_ID
+    version = read_release_version(plugin_dir)
+    runtime_manifest = plugin_dir / "runtime-manifest.json"
+    if not runtime_manifest.is_file():
+        raise SystemExit(f"packaged runtime manifest is missing: {runtime_manifest}")
+    evidence = {
+        "schemaVersion": 1,
+        "packageHashFormat": "sha256-u64be-path-content-v1",
+        "pluginVersion": version,
+        "sourceCommit": source_commit,
+        "packageSha256": package_tree_sha256(marketplace_dir),
+        "runtimeManifestSha256": sha256(runtime_manifest),
+        "versionBumped": False,
+        "published": False,
+        "tag": None,
+    }
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(
+        json.dumps(evidence, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def package_local_debug(
@@ -809,6 +854,11 @@ def main() -> None:
     assert_archive_clean(marketplace_dir)
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
+    write_p0_package_evidence(
+        marketplace_dir,
+        args.out_dir / "p0-package-evidence.json",
+        source_commit=args.source_commit,
+    )
 
 
 if __name__ == "__main__":

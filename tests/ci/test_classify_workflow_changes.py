@@ -47,12 +47,12 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
         """The donor index and its review records ship with nothing.
 
         They live outside `plugins/unica/`, so a change to them must not claim
-        the plugin content contour. `verify-source` runs unconditionally and
+        the plugin content contour. `test-python` runs unconditionally and
         still covers the attribution and provenance contracts.
         """
         self.assert_classification(
             [
-                "spec/provenance/skill-upstreams.json",
+                "docs/provenance/skill-upstreams.json",
                 "docs/provenance/reviews/2026-06-15-upstream-review.json",
             ],
         )
@@ -94,7 +94,16 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
                 )
 
     def test_cargo_and_toolchain_changes_require_full_rust_and_package_contours(self) -> None:
-        for path in ("Cargo.toml", "Cargo.lock", "crates/unica-coder/Cargo.toml", "rust-toolchain.toml"):
+        # `.config/nextest.toml` меняет, как гоняется каждая цель на каждом
+        # раннере, — тот же класс, что смена toolchain.
+        for path in (
+            "Cargo.toml",
+            "Cargo.lock",
+            "crates/unica-coder/Cargo.toml",
+            "rust-toolchain.toml",
+            ".config/nextest.toml",
+            ".config/python-sizes.toml",
+        ):
             with self.subTest(path=path):
                 self.assert_classification(
                     [path],
@@ -131,8 +140,6 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             "crates/unica-coder/src/infrastructure/workspace_services.rs",
             "crates/unica-coder/src/interfaces/mcp.rs",
             "crates/unica-coder/src/infrastructure/platform/source_revision_fence.rs",
-            "crates/unica-coder/tests/issue_89_workspace_service.rs",
-            "crates/unica-coder/tests/platform/issue_89_workspace_service.rs",
         ):
             with self.subTest(path=path):
                 platform_changed = (
@@ -230,6 +237,41 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             ci_changed=True,
         )
 
+    def test_the_test_seam_and_its_guard_require_the_ci_contour(self) -> None:
+        """Шов решает, что гоняет каждая джоба: его правка — правка конвейера.
+
+        Иначе правка одного `run-tests.py` ехала бы контуром исходников и
+        могла бы тихо сузить прогон, который сама и должна была запустить.
+        """
+        for path in (
+            "scripts/ci/run-tests.py",
+            "scripts/ci/run-unittest.py",
+            "scripts/ci/allure_results.py",
+            "scripts/ci/collect-results.py",
+            "tests/ci/test_run_tests.py",
+            "tests/ci/test_gate_profiles.py",
+            "scripts/ci/nightly-lines.py",
+            "scripts/ci/resolve-line.py",
+            "tests/ci/test_nightly_lines.py",
+            "tests/ci/test_resolve_line.py",
+            "scripts/ci/size-filters.py",
+            "tests/ci/test_size_guard.py",
+            "tests/ci/test_python_sizes.py",
+            "tests/ci/test_research_policy.py",
+            "tests/ci/test_allure_results.py",
+            "tests/ci/test_collect_results.py",
+        ):
+            with self.subTest(path=path):
+                self.assert_classification([path], ci_changed=True)
+
+    def test_p0_release_proof_changes_route_package_and_assessment_contours(self) -> None:
+        self.assert_classification(
+            ["scripts/ci/release-proof.py"],
+            package_changed=True,
+            release_required=True,
+            assessment_required=True,
+        )
+
     def test_mixed_changes_union_their_contours(self) -> None:
         self.assert_classification(
             [
@@ -274,6 +316,20 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             assessment_required=True,
         )
 
+    def test_p0_evidence_producers_route_package_and_proof_contours(self) -> None:
+        for path in (
+            "scripts/ci/package-unica-plugin.py",
+            "scripts/ci/probe-unica-wire.py",
+            "scripts/ci/verify-release-assets.py",
+        ):
+            with self.subTest(path=path):
+                self.assert_classification(
+                    [path],
+                    package_changed=True,
+                    release_required=True,
+                    assessment_required=True,
+                )
+
     def test_every_assessment_path_also_claims_a_release_or_ci_contour(self) -> None:
         """`evaluate-ci-gate.py` reads a lone assessment contour as a contradiction.
 
@@ -292,6 +348,22 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
                 offenders.append(path)
 
         self.assertEqual([], offenders)
+
+    def test_release_assessment_affected_contour_is_closed(self) -> None:
+        module = load_classifier_module()
+
+        for path in sorted(module.ASSESSMENT_PATHS):
+            with self.subTest(affected=path):
+                self.assertTrue(module.classify_paths([path]).assessment_required)
+        for path in (
+            "README.md",
+            "plugins/unica/skills/meta-add/SKILL.md",
+            "crates/unica-coder/src/domain/cache.rs",
+            "docs/provenance/skill-upstreams.json",
+        ):
+            with self.subTest(unaffected=path):
+                self.assertFalse(module.classify_paths([path]).assessment_required)
+        self.assertTrue(module.classify_paths([], force_full=True).assessment_required)
 
     def test_forced_full_contour_enables_every_output(self) -> None:
         module = load_classifier_module()

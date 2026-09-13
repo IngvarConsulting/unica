@@ -1,0 +1,29 @@
+{
+  "profile": "8.3.27",
+  "cases": [
+    {"case": "object", "at": "main:Document.Заказ.Module.Object", "role": "Object", "source": true},
+    {"case": "manager", "at": "main:Document.Заказ.Module.Manager", "role": "Manager", "source": true},
+    {"case": "record-set", "at": "main:InformationRegister.Цены.Module.RecordSet", "role": "RecordSet", "source": true},
+    {"case": "value-manager", "at": "main:Constant.ОсновнаяВалюта.Module.ValueManager", "role": "ValueManager", "source": true},
+    {"case": "common", "at": "main:CommonModule.ЗаказыСервер", "role": "Common", "source": true},
+    {"case": "form", "at": "main:Document.Заказ.Form.ФормаДокумента.Module.Form", "role": "Form", "source": true},
+    {"case": "command", "at": "main:Document.Заказ.Command.ПровестиИЗакрыть.Module.Command", "role": "Command", "source": true},
+    {"case": "managed-application", "at": "main:Module.ManagedApplication", "role": "ManagedApplication", "source": true},
+    {"case": "ordinary-application", "at": "main:Module.OrdinaryApplication", "role": "OrdinaryApplication", "source": true},
+    {"case": "external-connection", "at": "main:Module.ExternalConnection", "role": "ExternalConnection", "source": true},
+    {"case": "session", "at": "main:Module.Session", "role": "Session", "source": true},
+    {"case": "http", "at": "main:HTTPService.API.Module.HTTPService", "role": "HTTPService", "source": true},
+    {"case": "soap", "at": "main:WebService.Обмен.Module.WebService", "role": "WebService", "source": true},
+    {"case": "integration-service", "at": "main:IntegrationService.Шина.Module.IntegrationService", "role": "IntegrationService", "source": true},
+    {"case": "bot", "at": "main:Bot.Помощник.Module.Bot", "role": "Bot", "source": true},
+    {"case": "websocket-client", "at": "main:WebSocketClient.Телефония.Module.WebSocketClient", "role": "WebSocketClient", "source": true},
+    {"case": "epf-object", "at": "epf:ExternalDataProcessor.Импорт.Module.Object", "role": "Object", "source": true},
+    {"case": "epf-form", "at": "epf:ExternalDataProcessor.Импорт.Form.Основная.Module.Form", "role": "Form", "source": true},
+    {"case": "epf-command", "at": "epf:ExternalDataProcessor.Импорт.Command.Выполнить.Module.Command", "role": "Command", "source": true},
+    {"case": "erf-object", "at": "erf:ExternalReport.Продажи.Module.Object", "role": "Object", "source": true},
+    {"case": "erf-form", "at": "erf:ExternalReport.Продажи.Form.Основная.Module.Form", "role": "Form", "source": true},
+    {"case": "erf-command", "at": "erf:ExternalReport.Продажи.Command.Сформировать.Module.Command", "role": "Command", "source": true},
+    {"case": "extension-object", "at": "sales:Document.Заказ.Module.Object", "role": "Object", "source": true},
+    {"case": "valid-missing-file", "at": "main:Document.Пустой.Module.Object", "role": "Object", "source": false}
+  ]
+}

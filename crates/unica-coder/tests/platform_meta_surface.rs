@@ -8,12 +8,7 @@ fn public_meta_surface_is_the_exact_four_typed_operations() {
 
     assert_eq!(
         meta.iter().map(|tool| tool.name).collect::<Vec<_>>(),
-        vec![
-            "unica.meta.info",
-            "unica.meta.add",
-            "unica.meta.edit",
-            "unica.meta.remove",
-        ]
+        vec!["unica.meta.info", "unica.meta.add", "unica.meta.edit",]
     );
     assert!(!meta[0].execution.is_mutating());
     assert!(meta[1..].iter().all(|tool| tool.execution.is_mutating()));

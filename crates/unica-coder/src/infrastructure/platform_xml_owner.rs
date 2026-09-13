@@ -56,7 +56,10 @@ pub(crate) struct PlatformXmlOwner {
 #[derive(Debug, Clone)]
 pub(crate) struct PlatformXmlSourceSetOwnerEvidence {
     version: Option<String>,
+    artifact_kind: String,
+    artifact_name: Option<String>,
     registrations: BTreeSet<(String, String)>,
+    configuration_extension: bool,
 }
 
 impl PlatformXmlSourceSetOwnerEvidence {
@@ -67,6 +70,24 @@ impl PlatformXmlSourceSetOwnerEvidence {
     pub(crate) fn registers(&self, kind: &str, name: &str) -> bool {
         self.registrations
             .contains(&(kind.to_string(), name.to_string()))
+    }
+
+    pub(crate) fn artifact_kind(&self) -> &str {
+        &self.artifact_kind
+    }
+
+    pub(crate) fn artifact_name(&self) -> Option<&str> {
+        self.artifact_name.as_deref()
+    }
+
+    pub(crate) fn registrations(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.registrations
+            .iter()
+            .map(|(kind, name)| (kind.as_str(), name.as_str()))
+    }
+
+    pub(crate) const fn is_configuration_extension(&self) -> bool {
+        self.configuration_extension
     }
 }
 
@@ -226,20 +247,78 @@ pub(crate) fn prove_already_read_source_set_owner(
             .children()
             .filter(|node| node.is_element() && node.tag_name().namespace() == Some(MD_CLASSES_NS))
         {
-            if let Some(name) = registration
-                .text()
-                .map(str::trim)
-                .filter(|name| !name.is_empty())
-            {
-                registrations
-                    .insert((registration.tag_name().name().to_string(), name.to_string()));
+            if let Some(name) = registered_child_name(registration) {
+                registrations.insert((registration.tag_name().name().to_string(), name));
             }
         }
     }
     Ok(PlatformXmlSourceSetOwnerEvidence {
         version: root_version_literal(source, root),
+        artifact_kind: artifact.tag_name().name().to_string(),
+        artifact_name: metadata_artifact_property(artifact, "Name"),
         registrations,
+        configuration_extension: is_configuration_extension_artifact(artifact),
     })
+}
+
+pub(crate) fn prove_already_read_metadata_owner(
+    path: &Path,
+    raw: &[u8],
+) -> Result<PlatformXmlSourceSetOwnerEvidence, PlatformXmlOwnerError> {
+    parse_platform_xml_owner(path, raw.to_vec(), OwnerExpectation::Standalone)?;
+    let (source, document) = parse_platform_xml_document(path, raw)?;
+    let root = document.root_element();
+    if root.tag_name().namespace() != Some(MD_CLASSES_NS)
+        || root.tag_name().name() != "MetaDataObject"
+    {
+        return invalid_owner(path, "metadata owner must use the MetaDataObject root");
+    }
+    let artifact = root
+        .children()
+        .find(|node| node.is_element())
+        .expect("strict standalone metadata owner has one artifact child");
+    let mut registrations = BTreeSet::new();
+    for child_objects in artifact.children().filter(|node| {
+        node.is_element()
+            && node.tag_name().namespace() == Some(MD_CLASSES_NS)
+            && node.tag_name().name() == "ChildObjects"
+    }) {
+        for registration in child_objects
+            .children()
+            .filter(|node| node.is_element() && node.tag_name().namespace() == Some(MD_CLASSES_NS))
+        {
+            if let Some(name) = registered_child_name(registration) {
+                registrations.insert((registration.tag_name().name().to_string(), name));
+            }
+        }
+    }
+    Ok(PlatformXmlSourceSetOwnerEvidence {
+        version: root_version_literal(source, root),
+        artifact_kind: artifact.tag_name().name().to_string(),
+        artifact_name: metadata_artifact_property(artifact, "Name"),
+        registrations,
+        configuration_extension: false,
+    })
+}
+
+fn metadata_artifact_property(artifact: roxmltree::Node<'_, '_>, name: &str) -> Option<String> {
+    artifact
+        .children()
+        .find(|node| {
+            node.is_element()
+                && node.tag_name().namespace() == Some(MD_CLASSES_NS)
+                && node.tag_name().name() == "Properties"
+        })?
+        .children()
+        .find(|node| {
+            node.is_element()
+                && node.tag_name().namespace() == Some(MD_CLASSES_NS)
+                && node.tag_name().name() == name
+        })?
+        .text()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 pub(crate) fn resolve_platform_xml_owners(
@@ -1015,11 +1094,46 @@ fn is_configuration_extension_artifact(artifact: roxmltree::Node<'_, '_>) -> boo
             })
 }
 
+/// The name a `ChildObjects` entry registers. Forms and templates are text
+/// references (`<Form>Main</Form>`); a command is registered by its full
+/// inline definition (`<Command uuid="…"><Properties><Name>…`) and has no
+/// descriptor file of its own, exactly as Platform XML 8.3.27 emits it.
+fn registered_child_name(registration: roxmltree::Node<'_, '_>) -> Option<String> {
+    if let Some(name) = registration
+        .text()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        return Some(name.to_string());
+    }
+    let properties = registration.children().find(|node| {
+        node.is_element()
+            && node.tag_name().namespace() == Some(MD_CLASSES_NS)
+            && node.tag_name().name() == "Properties"
+    })?;
+    properties
+        .children()
+        .find(|node| {
+            node.is_element()
+                && node.tag_name().namespace() == Some(MD_CLASSES_NS)
+                && node.tag_name().name() == "Name"
+        })
+        .and_then(|node| node.text())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+}
+
 fn is_supported_metadata_artifact(tag: &str) -> bool {
     METADATA_KIND_TAGS.contains(&tag)
         || matches!(
             tag,
-            "Configuration" | "ExternalDataProcessor" | "ExternalReport" | "Form" | "Template"
+            "Configuration"
+                | "ExternalDataProcessor"
+                | "ExternalReport"
+                | "Form"
+                | "Template"
+                | "Command"
         )
 }
 
@@ -1045,21 +1159,20 @@ fn invalid_owner<T>(path: &Path, reason: &str) -> Result<T, PlatformXmlOwnerErro
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::infrastructure::platform::testing::{
         create_file_link_fixture_for_test, FileLinkFixtureOutcome,
     };
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEST_ROOT_NONCE: AtomicU64 = AtomicU64::new(0);
 
     fn temp_context(name: &str) -> WorkspaceContext {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock must follow epoch")
-            .as_nanos();
         let root = std::env::temp_dir().join(format!(
-            "unica-platform-xml-owner-{name}-{}-{nanos}",
-            std::process::id()
+            "unica-platform-xml-owner-{name}-{}-{}",
+            std::process::id(),
+            TEST_ROOT_NONCE.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir_all(&root).expect("temporary workspace must be created");
         WorkspaceContext {
@@ -1089,6 +1202,38 @@ mod tests {
             ),
         ] {
             assert!(!known_standalone_root((Some(namespace), local_name)));
+        }
+    }
+
+    #[test]
+    fn inline_command_definitions_register_the_command_by_name() {
+        let xml = format!(
+            r#"<MetaDataObject xmlns="{MD_CLASSES_NS}" version="2.20"><Catalog><Properties><Name>Items</Name></Properties><ChildObjects><Form>ItemForm</Form><Command uuid="10000000-0000-4000-8000-000000000001"><Properties><Name>Refresh</Name><Synonym/></Properties></Command><Command uuid="10000000-0000-4000-8000-000000000002"><Properties><Comment/></Properties></Command></ChildObjects></Catalog></MetaDataObject>"#
+        );
+        let evidence =
+            prove_already_read_metadata_owner(Path::new("Catalogs/Items.xml"), xml.as_bytes())
+                .unwrap_or_else(|error| panic!("{}", error.message));
+        let registrations = evidence.registrations().collect::<Vec<_>>();
+        assert_eq!(
+            registrations,
+            vec![("Command", "Refresh"), ("Form", "ItemForm")],
+            "a command is registered by its inline definition; a nameless one registers nothing"
+        );
+    }
+
+    #[test]
+    fn strict_metadata_owner_evidence_accepts_registered_physical_child_families() {
+        for kind in ["Form", "Template", "Command"] {
+            let xml = format!(
+                r#"<MetaDataObject xmlns="{MD_CLASSES_NS}" version="2.20"><{kind}><Properties><Name>Main</Name></Properties></{kind}></MetaDataObject>"#
+            );
+            let evidence = prove_already_read_metadata_owner(
+                Path::new(&format!("{kind}s/Main.xml")),
+                xml.as_bytes(),
+            )
+            .unwrap_or_else(|error| panic!("{kind}: {}", error.message));
+            assert_eq!(evidence.artifact_kind(), kind);
+            assert_eq!(evidence.artifact_name(), Some("Main"));
         }
     }
 
@@ -1977,7 +2122,7 @@ mod tests {
     }
 
     #[test]
-    fn equal_depth_source_set_owners_are_ambiguous_for_existing_and_new_outputs() {
+    pub(crate) fn equal_depth_source_set_owners_are_ambiguous_for_existing_and_new_outputs() {
         let source_set_orders = [
             "  - name: external\n    type: EXTERNAL_DATA_PROCESSORS\n    path: src\n  - name: configuration\n    type: CONFIGURATION\n    path: src\n",
             "  - name: configuration\n    type: CONFIGURATION\n    path: src\n  - name: external\n    type: EXTERNAL_DATA_PROCESSORS\n    path: src\n",

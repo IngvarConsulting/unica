@@ -2438,8 +2438,9 @@ fn repository_regular_file_size(
 mod tests {
     use super::{
         classify_platform_xml_relative_path, inspect_working_eol, parse_attribute_records,
-        parse_eol_records, resource_check_ids, RepositoryResourceKind,
-        SourceResourcePolicyInspector, LFS_SINGLE_FILE_THRESHOLD_BYTES,
+        parse_eol_records, reserve_resource_owner_expansion, resource_check_ids,
+        RepositoryResourceKind, ResourceClassificationError, SourceResourcePolicyInspector,
+        LFS_SINGLE_FILE_THRESHOLD_BYTES, MAX_CLASSIFIED_RESOURCES,
     };
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::ProviderDeadline;
@@ -2524,6 +2525,7 @@ mod tests {
                 kind: SourceSetKind::Configuration,
                 path: "src".into(),
                 source_format: SourceFormat::PlatformXml,
+                source_state: crate::domain::project_sources::SourceSetState::Supported,
                 format_evidence: Vec::new(),
                 format_probe_error: None,
             },
@@ -2556,6 +2558,7 @@ mod tests {
                     kind: SourceSetKind::Configuration,
                     path: "src".into(),
                     source_format: SourceFormat::PlatformXml,
+                    source_state: crate::domain::project_sources::SourceSetState::Supported,
                     format_evidence: Vec::new(),
                     format_probe_error: None,
                 },
@@ -2567,6 +2570,7 @@ mod tests {
                     kind: SourceSetKind::Configuration,
                     path: "src/edt".into(),
                     source_format: SourceFormat::Edt,
+                    source_state: crate::domain::project_sources::SourceSetState::Unsupported,
                     format_evidence: Vec::new(),
                     format_probe_error: None,
                 },
@@ -3573,7 +3577,7 @@ mod tests {
     }
 
     #[test]
-    fn project_health_repository_policy_lfs_is_advisory_for_exact_large_binary() {
+    pub(crate) fn project_health_repository_policy_lfs_is_advisory_for_exact_large_binary() {
         let fixture = policy_fixture();
         fs::write(fixture.root.join(".gitattributes"), "*.bin -text\n").unwrap();
         let large = fs::File::create(fixture.root.join("src/Large.bin")).unwrap();
@@ -4071,5 +4075,28 @@ mod tests {
             stdout_had_invalid_utf8: false,
             stderr_had_invalid_utf8: false,
         }
+    }
+
+    #[test]
+    fn resource_owner_expansion_admits_the_ceiling_and_refuses_the_entry_after_it() {
+        let Ok((count, bytes)) =
+            reserve_resource_owner_expansion(MAX_CLASSIFIED_RESOURCES - 1, 0, 1, 0)
+        else {
+            panic!("the ceiling itself is a classified count, not an overflow");
+        };
+
+        assert_eq!(count, MAX_CLASSIFIED_RESOURCES);
+        assert_eq!(bytes, 0);
+
+        let Err(ResourceClassificationError::Incomplete(reason)) =
+            reserve_resource_owner_expansion(MAX_CLASSIFIED_RESOURCES, 0, 1, 0)
+        else {
+            panic!("one entry past the ceiling must fail closed as an incomplete classification");
+        };
+
+        assert!(
+            reason.contains(&format!("exceeds {MAX_CLASSIFIED_RESOURCES} entries")),
+            "{reason}"
+        );
     }
 }

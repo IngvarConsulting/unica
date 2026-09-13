@@ -3,11 +3,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-# Доказательства профиля живут в приёмке, а решение о единственном записываемом
-# профиле — в записи ADR-0016. Тест читает оба адреса, потому что раньше это был
-# один документ, смешивавший решение и доказательства.
-MATRIX = ROOT / "spec/acceptance/format-profile-8-3-27.md"
-PROFILE_DECISIONS = sorted(ROOT.glob("spec/decisions/0016-*.md"))
+PROFILE_CONTRACT = ROOT / "arch/contracts/CTR.FORMAT.PLATFORM-XML-8-3-27.md"
 DESIGN = (
     ROOT
     / "docs/design/2026-07-23-platform-8-3-27-format-2-20-design.md"
@@ -79,49 +75,11 @@ class FormatProfileContractTests(unittest.TestCase):
         self.assertIn("63 passed", text)
         self.assertIn("432 platform commands", text)
 
-    def test_format_matrix_covers_native_xml_operations(self):
-        text = MATRIX.read_text(encoding="utf-8")
-        required = {
-            "unica.cf.edit",
-            "unica.cf.init",
-            "unica.cfe.borrow",
-            "unica.cfe.init",
-            "unica.meta.add",
-            "unica.meta.edit",
-            "unica.meta.remove",
-            "unica.form.add",
-            "unica.form.compile",
-            "unica.form.edit",
-            "unica.template.add",
-            "unica.mxl.compile",
-            "unica.role.compile",
-            "unica.subsystem.compile",
-        }
-        missing = sorted(name for name in required if f"`{name}`" not in text)
-        self.assertFalse(missing, missing)
-
-    def test_decision_records_the_single_writable_profile(self):
-        self.assertEqual(
-            len(PROFILE_DECISIONS),
-            1,
-            "ADR-0016 должен быть ровно одной записью в spec/decisions",
-        )
-        text = PROFILE_DECISIONS[0].read_text(encoding="utf-8")
-        self.assertIn("единственный записываемый профиль", text.lower())
+    def test_active_contract_records_the_profile_corpus(self):
+        text = PROFILE_CONTRACT.read_text(encoding="utf-8")
+        self.assertIn("id: CTR.FORMAT.PLATFORM-XML-8-3-27", text)
         self.assertIn("8.3.27", text)
         self.assertIn("2.20", text)
-
-    def test_matrix_cites_official_8_3_27_mapping(self):
-        text = MATRIX.read_text(encoding="utf-8")
-        self.assertIn("8.3.27", text)
-        self.assertIn("2.20", text)
-        # Официальный источник соответствия версий формата — глава публичного
-        # руководства разработчика, а не путь локального корпуса: контракт
-        # скачанного корпуса снят вместе с загрузчиком (ADR-0029), и активный
-        # слой spec/ на него больше не ссылается
-        # (test_product_contracts.test_downloader_and_local_corpus_contract_are_retired).
-        self.assertIn("Export format versions", text)
-        self.assertIn("2.17.2", text)
 
     def test_prompt_visible_specs_use_only_the_active_format_outside_history(self):
         specs = ROOT / "plugins/unica/references/specs"

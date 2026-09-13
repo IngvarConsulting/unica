@@ -84,7 +84,7 @@ class LegacyMigrationBoundaryTests(unittest.TestCase):
             encoding="utf-8"
         )
         marketplace_adr = (
-            REPO_ROOT / "spec/decisions/0008-public-marketplace-thin-runtime.md"
+            REPO_ROOT / "docs/arch-v1/decisions/0008-public-marketplace-thin-runtime.md"
         ).read_text(encoding="utf-8")
         version = metadata["version"]
         self.assertRegex(version, r"^0\.\d+\.\d+$")

@@ -1,6 +1,4 @@
-use crate::application::metadata::{
-    MetaAddRequest, MetaEditRequest, MetaFailure, MetaRemoveRequest,
-};
+use crate::application::metadata::{MetaAddRequest, MetaEditRequest, MetaFailure};
 use crate::application::ports::{
     MetaPublishReport, MetadataResourceImage, MetadataResourceRole, MetadataValidationSubject,
     PreparedMetadataMutation,
@@ -32,10 +30,9 @@ use super::super::compile_transaction::{
     RegistrationStatus,
 };
 use super::edit::{
-    build_typed_operation_post_image, resolve_typed_metadata_object, ResolvedMetadataObject,
-    TypedChildResourcePlan, TypedOperationDependencyScope, TypedOperationPostImage,
+    build_typed_operation_post_image, ResolvedMetadataObject, TypedChildResourcePlan,
+    TypedOperationDependencyScope, TypedOperationPostImage,
 };
-use super::remove::{plan_typed_remove, TypedMetaRemovePlan};
 use super::template_catalog::{
     MetadataTemplateCatalog, MetadataTemplateFileMode, MetadataTemplateFileRole,
     MetadataTemplateOperationOverrides, PlatformMetadataTemplateCatalog,
@@ -181,16 +178,6 @@ pub(crate) struct PreparedMetaEdit {
     resolved: ResolvedMetadataObject,
     expected_post_images: Vec<(PathBuf, Vec<u8>)>,
     relation_dependency_handles: Vec<ClosedPlatformXmlTarget>,
-}
-
-pub(crate) struct PreparedMetaRemove {
-    preview: MetaMutationData,
-    validation_subject: MetadataValidationSubject,
-    transaction: CompileTransaction,
-    context: WorkspaceContext,
-    resolved: ResolvedMetadataObject,
-    expected_post_images: Vec<(PathBuf, Vec<u8>)>,
-    expected_absent: Vec<PathBuf>,
 }
 
 impl PreparedMetaEdit {
@@ -471,113 +458,6 @@ impl PreparedMetadataMutation for PreparedMetaEdit {
                             "metadata relation dependency changed during publication",
                         )
                     })?;
-                }
-                Ok(())
-            })
-            .map_err(|failure| publication_failure(&target, failure.kind()))?;
-        let warnings = metadata_cleanup_warnings(target.as_str(), &report.cleanup_warnings);
-        Ok(MetaPublishReport {
-            data: self.preview,
-            events,
-            recorded_cache,
-            warnings,
-        })
-    }
-}
-
-pub(crate) fn prepare_meta_remove(
-    request: &MetaRemoveRequest,
-    context: &WorkspaceContext,
-    cancellation: &CancellationToken,
-) -> Result<Box<dyn PreparedMetadataMutation>, MetaFailure> {
-    let resolved = resolve_typed_metadata_object(
-        &request.source_set,
-        &request.metadata_path,
-        "remove",
-        context,
-        cancellation,
-    )?;
-    let TypedMetaRemovePlan {
-        preview,
-        validation_subject,
-        transaction,
-        resolved,
-        expected_post_images,
-        expected_absent,
-    } = plan_typed_remove(request, resolved, context, cancellation)?;
-    Ok(Box::new(PreparedMetaRemove {
-        preview,
-        validation_subject,
-        transaction,
-        context: context.clone(),
-        resolved,
-        expected_post_images,
-        expected_absent,
-    }))
-}
-
-impl PreparedMetadataMutation for PreparedMetaRemove {
-    fn preview(&self) -> &MetaMutationData {
-        &self.preview
-    }
-
-    fn validation_subject(&self) -> &MetadataValidationSubject {
-        &self.validation_subject
-    }
-
-    fn publish(
-        mut self: Box<Self>,
-        cancellation: &CancellationToken,
-    ) -> Result<MetaPublishReport, MetaFailure> {
-        if cancellation.is_cancelled() {
-            return Err(MetaDiagnostic::error(
-                MetaDiagnosticCode::ProviderUnavailable,
-                "metadata removal was cancelled before publication",
-            )
-            .with_metadata_path(self.preview.metadata_path.clone())
-            .into());
-        }
-        let target = self.preview.metadata_path.clone();
-        revalidate_platform_xml_target(&self.context, &self.resolved.handle).map_err(|_| {
-            MetaFailure::from(
-                MetaDiagnostic::error(
-                    MetaDiagnosticCode::ConcurrentModification,
-                    format!("metadata source changed while publishing `{target}`"),
-                )
-                .with_metadata_path(target.clone()),
-            )
-        })?;
-        let expected_post_images = self.expected_post_images.clone();
-        let expected_absent = self.expected_absent.clone();
-        let (events, recorded_cache) =
-            stage_metadata_publication_state(&mut self.transaction, &self.context, &self.preview)?;
-        let report = self
-            .transaction
-            .commit_with_classified_post_validation(move || {
-                for (path, expected) in &expected_post_images {
-                    let actual = fs::read(path).map_err(|_| {
-                        CommitFailure::provider("published metadata post-image is unavailable")
-                    })?;
-                    if &actual != expected {
-                        return Err(CommitFailure::concurrent(
-                            "published metadata post-image differs from its plan",
-                        ));
-                    }
-                }
-                for path in &expected_absent {
-                    match fs::symlink_metadata(path) {
-                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                        Ok(_) => {
-                            return Err(CommitFailure::concurrent(
-                                "removed metadata resource is still present",
-                            ))
-                        }
-                        Err(_) => {
-                            return Err(CommitFailure::provider(
-                                "removed metadata resource could not be inspected",
-                            ))
-                        }
-                    }
                 }
                 Ok(())
             })
@@ -1269,7 +1149,7 @@ pub(crate) fn fresh_metadata_uuid() -> String {
 }
 
 #[cfg(test)]
-mod typed_add_publication_tests {
+pub(crate) mod typed_add_publication_tests {
     use super::*;
     use crate::application::metadata::MetaAddRequest;
     use crate::domain::metadata::{
@@ -1430,7 +1310,7 @@ mod typed_add_publication_tests {
     }
 
     #[test]
-    fn meta_add_detects_concurrent_owner_change_without_overwriting_it() {
+    pub(crate) fn meta_add_detects_concurrent_owner_change_without_overwriting_it() {
         let fixture = Fixture::new("concurrent-owner");
         let cancellation = CancellationToken::new();
         let prepared = prepare_meta_add(

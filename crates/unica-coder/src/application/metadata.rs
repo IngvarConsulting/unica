@@ -27,7 +27,6 @@ pub(crate) enum MetadataOperation {
     Info,
     Add,
     Edit,
-    Remove,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,20 +69,10 @@ pub(crate) struct MetaEditRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct MetaRemoveRequest {
-    pub(crate) source_set: String,
-    pub(crate) metadata_path: MetadataAddress,
-    pub(crate) dry_run: bool,
-    pub(crate) force: bool,
-    pub(crate) confirm: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum MetadataRequest {
     Info(MetaInfoRequest),
     Add(MetaAddRequest),
     Edit(MetaEditRequest),
-    Remove(MetaRemoveRequest),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -309,7 +298,6 @@ fn mutation_dry_run(request: &MetadataRequest) -> bool {
         MetadataRequest::Info(_) => false,
         MetadataRequest::Add(request) => request.dry_run,
         MetadataRequest::Edit(request) => request.dry_run,
-        MetadataRequest::Remove(request) => request.dry_run,
     }
 }
 
@@ -443,26 +431,6 @@ pub(crate) fn parse_metadata_request_after_shape(
                 dry_run,
             }))
         }
-        MetadataOperation::Remove => {
-            let metadata_path = required_metadata_path(args, "metadataPath")?;
-            let dry_run = optional_bool(args, "dryRun", true)?;
-            let force = optional_bool(args, "force", false)?;
-            let confirm = optional_bool(args, "confirm", false)?;
-            if (force && !confirm) || (confirm && !force) {
-                return Err(invalid(
-                    "force",
-                    "forced remove requires force=true and confirm=true; dryRun=false applies it",
-                )
-                .into());
-            }
-            Ok(MetadataRequest::Remove(MetaRemoveRequest {
-                source_set,
-                metadata_path,
-                dry_run,
-                force,
-                confirm,
-            }))
-        }
     }
 }
 
@@ -563,14 +531,6 @@ fn metadata_top_level_fields(operation: MetadataOperation) -> &'static [&'static
         MetadataOperation::Info => &["cwd", "sourceSet", "metadataPath", "sections", "limit"],
         MetadataOperation::Add => &["cwd", "sourceSet", "kind", "name", "operations", "dryRun"],
         MetadataOperation::Edit => &["cwd", "sourceSet", "metadataPath", "operations", "dryRun"],
-        MetadataOperation::Remove => &[
-            "cwd",
-            "sourceSet",
-            "metadataPath",
-            "dryRun",
-            "force",
-            "confirm",
-        ],
     }
 }
 
@@ -1068,6 +1028,7 @@ fn parse_element_input(
             "attributes",
             "position",
             "templateType",
+            "indexing",
         ][..]
     } else {
         &[
@@ -1078,6 +1039,7 @@ fn parse_element_input(
             "required",
             "fillValue",
             "position",
+            "indexing",
         ][..]
     };
     reject_unknown_fields(object, allowed, &format!("{field}."))?;
@@ -1129,7 +1091,30 @@ fn parse_element_input(
                 MetaTemplateKind::parse(value).map_err(|diagnostic| diagnostic.with_field(field))
             })
             .transpose()?,
+        indexing: parse_indexing(object, field)?,
     })
+}
+
+/// `indexing`: the platform's closed set for attribute, dimension, resource
+/// and column indexing.
+fn parse_indexing(
+    object: &Map<String, Value>,
+    field: &str,
+) -> Result<Option<String>, MetaDiagnostic> {
+    let Some(value) = object.get("indexing") else {
+        return Ok(None);
+    };
+    let field = format!("{field}.indexing");
+    let value = value
+        .as_str()
+        .ok_or_else(|| invalid(&field, "`indexing` must be a string"))?;
+    match value {
+        "DontIndex" | "Index" | "IndexWithAdditionalOrder" => Ok(Some(value.to_string())),
+        _ => Err(invalid(
+            &field,
+            "`indexing` must be DontIndex, Index or IndexWithAdditionalOrder",
+        )),
+    }
 }
 
 fn parse_element_update(
@@ -1150,10 +1135,12 @@ fn parse_element_update(
             "required",
             "fillValue",
             "position",
+            "indexing",
         ],
         &format!("{field}."),
     )?;
     Ok(MetaElementUpdateInput {
+        indexing: parse_indexing(object, field)?,
         name: required_string_at(object, "name", &format!("{field}.name"))?,
         new_name: optional_string_at(object, "newName", &format!("{field}.newName"))?,
         synonym: optional_string_at(object, "synonym", &format!("{field}.synonym"))?,
@@ -1856,37 +1843,6 @@ pub(crate) fn metadata_input_schema(operation: MetadataOperation) -> Value {
             );
             vec!["sourceSet", "metadataPath", "operations"]
         }
-        MetadataOperation::Remove => {
-            properties.insert(
-                "metadataPath".into(),
-                string("Logical metadata path of the object to remove."),
-            );
-            properties.insert(
-                "dryRun".into(),
-                json!({
-                    "type": "boolean",
-                    "default": true,
-                    "description": "Preview the mutation without writing workspace files."
-                }),
-            );
-            properties.insert(
-                "force".into(),
-                json!({
-                    "type": "boolean",
-                    "default": false,
-                    "description": "Allow removal despite discovered references when confirmed."
-                }),
-            );
-            properties.insert(
-                "confirm".into(),
-                json!({
-                    "type": "boolean",
-                    "default": false,
-                    "description": "Explicitly confirm a forced metadata object removal."
-                }),
-            );
-            vec!["sourceSet", "metadataPath"]
-        }
     };
     let mut schema = json!({
         "type": "object",
@@ -1900,29 +1856,6 @@ pub(crate) fn metadata_input_schema(operation: MetadataOperation) -> Value {
                 .as_object_mut()
                 .expect("metadata input schema is always an object")
                 .insert("$defs".into(), Value::Object(metadata_schema_definitions()));
-        }
-        MetadataOperation::Remove => {
-            schema
-                .as_object_mut()
-                .expect("metadata input schema is always an object")
-                .insert(
-                    "oneOf".into(),
-                    json!([
-                        {
-                            "properties": {
-                                "force": {"const": false},
-                                "confirm": {"const": false},
-                            },
-                        },
-                        {
-                            "properties": {
-                                "force": {"const": true},
-                                "confirm": {"const": true},
-                            },
-                            "required": ["force", "confirm"],
-                        },
-                    ]),
-                );
         }
         MetadataOperation::Info => {}
     }
@@ -6210,118 +6143,11 @@ mod tests {
                 json!({"sourceSet": "main", "metadataPath": "Document.Order", "operations": []}),
                 "operations",
             ),
-            (
-                MetadataOperation::Remove,
-                json!({"sourceSet": " main ", "metadataPath": "Document.Order"}),
-                "sourceSet",
-            ),
         ];
         for (operation, input, field) in cases {
             let error = diagnostic(operation, input);
             assert_eq!(error.code, MetaDiagnosticCode::InvalidArguments);
             assert_eq!(error.field.as_deref(), Some(field), "{error:?}");
-        }
-    }
-
-    #[test]
-    fn parse_remove_requires_the_complete_force_apply_gate() {
-        let base = || {
-            json!({
-                "sourceSet": "main",
-                "metadataPath": "Catalog.Items"
-            })
-        };
-        let MetadataRequest::Remove(preview) =
-            parse_metadata_request(MetadataOperation::Remove, &object(base())).unwrap()
-        else {
-            panic!("expected remove request")
-        };
-        assert!(preview.dry_run);
-        assert!(!preview.force);
-        assert!(!preview.confirm);
-
-        let MetadataRequest::Remove(forced_preview) = parse_metadata_request(
-            MetadataOperation::Remove,
-            &object(json!({
-                "sourceSet": "main",
-                "metadataPath": "Catalog.Items",
-                "force": true,
-                "confirm": true
-            })),
-        )
-        .unwrap() else {
-            panic!("expected forced remove preview request")
-        };
-        assert!(forced_preview.dry_run && forced_preview.force && forced_preview.confirm);
-
-        let MetadataRequest::Remove(forced) = parse_metadata_request(
-            MetadataOperation::Remove,
-            &object(json!({
-                "sourceSet": "main",
-                "metadataPath": "Catalog.Items",
-                "dryRun": false,
-                "force": true,
-                "confirm": true
-            })),
-        )
-        .unwrap() else {
-            panic!("expected remove request")
-        };
-        assert!(!forced.dry_run && forced.force && forced.confirm);
-
-        for incomplete in [
-            json!({"sourceSet": "main", "metadataPath": "Catalog.Items", "force": true}),
-            json!({"sourceSet": "main", "metadataPath": "Catalog.Items", "dryRun": false, "force": true}),
-            json!({"sourceSet": "main", "metadataPath": "Catalog.Items", "dryRun": false, "confirm": true}),
-        ] {
-            let error = diagnostic(MetadataOperation::Remove, incomplete);
-            assert_eq!(error.field.as_deref(), Some("force"), "{error:?}");
-        }
-    }
-
-    #[test]
-    fn remove_schema_and_parser_agree_on_every_force_confirm_state() {
-        let schema = metadata_input_schema(MetadataOperation::Remove);
-        let validator = jsonschema::validator_for(&schema).unwrap();
-        let cases: &[(Option<bool>, Option<bool>, bool)] = &[
-            (None, None, true),
-            (None, Some(false), true),
-            (None, Some(true), false),
-            (Some(false), None, true),
-            (Some(false), Some(false), true),
-            (Some(false), Some(true), false),
-            (Some(true), None, false),
-            (Some(true), Some(false), false),
-            (Some(true), Some(true), true),
-        ];
-
-        for (force, confirm, expected) in cases {
-            let mut call = json!({
-                "sourceSet": "main",
-                "metadataPath": "Catalog.Items",
-            })
-            .as_object()
-            .unwrap()
-            .clone();
-            if let Some(force) = force {
-                call.insert("force".into(), json!(force));
-            }
-            if let Some(confirm) = confirm {
-                call.insert("confirm".into(), json!(confirm));
-            }
-            let call = Value::Object(call);
-
-            assert_eq!(
-                validator.is_valid(&call),
-                *expected,
-                "published remove schema disagrees for force={force:?}, confirm={confirm:?}: {call}"
-            );
-            assert_eq!(
-                parse_metadata_request(MetadataOperation::Remove, call.as_object().unwrap())
-                    .is_ok(),
-                *expected,
-                "remove parser disagrees for force={force:?}, confirm={confirm:?}: {call}"
-            );
         }
     }
 }

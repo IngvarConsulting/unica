@@ -13,6 +13,28 @@ path = "src/main.rs"
 name = "unica_coder"
 path = "src/lib.rs"
 
+[features]
+default = []
+receipt-ledger-test-support = []
+# Исследования — не тесты: их цели собираются только с этой фичей, и в плане
+# конвейера их нет. Запуск — scripts/research/.
+research = []
+
+[[test]]
+name = "daemon_receipt_ledger"
+path = "tests/daemon_receipt_ledger.rs"
+required-features = ["receipt-ledger-test-support"]
+
+[[test]]
+name = "research_xml_corpus"
+path = "tests/research/xml_corpus.rs"
+required-features = ["research"]
+
+[[test]]
+name = "research_cf_init_checkpoint"
+path = "tests/research/cf_init_checkpoint.rs"
+required-features = ["research"]
+
 [dependencies]
 bsl-parser.workspace = true
 # Доставку движка по требованию ведёт тот же установщик, что ставит ядро:
@@ -28,6 +50,7 @@ serde_yaml.workspace = true
 unsafe-libyaml.workspace = true
 sha2.workspace = true
 rmcp.workspace = true
+chrono.workspace = true
 tokio.workspace = true
 toml.workspace = true
 roxmltree.workspace = true
@@ -59,3 +82,6 @@ cap-fs-ext.workspace = true
 
 [dev-dependencies]
 jsonschema.workspace = true
+proc-macro2.workspace = true
+quote.workspace = true
+syn.workspace = true
