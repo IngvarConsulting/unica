@@ -1,0 +1,60 @@
+name: Unica Nightly
+
+# Ночной прогон тяжёлого яруса. Расписание у GitHub работает только на ветке
+# по умолчанию, поэтому workflow один: он перечисляет открытые линии тем же
+# правилом, что и сайт, и для каждой, чья вершина сдвинулась с прошлого
+# такого прогона, запускает ручной контур сборки плагина на самой линии с
+# `profile: large` — там `github.sha` и `github.ref_name` и есть вершина и
+# линия, checkout стандартный, а контур несёт упаковку, пробу и дым; на
+# Windows он гоняет весь набор тестов. Память о прошлом прогоне лежит на
+# сайте; линия, чей workflow не знает входа `profile`, в ночь не идёт.
+# Завершение прогона, созданного `GITHUB_TOKEN`, другие workflow не будит —
+# поэтому ночь дожидается запущенных прогонов и выкладывает их артефакты
+# своим: завершение ночи страницы будит, её создал планировщик или человек.
+on:
+  schedule:
+    # Не на круглой минуте: расписания на :00 и :30 GitHub исполняет с
+    # наибольшим опозданием, 06.09.2026 ночь пришла в 06:08 UTC.
+    - cron: "17 1 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: unica-nightly
+  cancel-in-progress: false
+
+jobs:
+  lines:
+    name: Перечислить сдвинувшиеся линии, запустить large и забрать результаты
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    # Запуск workflow на линии — запись в Actions; права джобы заменяют права
+    # workflow целиком, поэтому `contents: read` повторён.
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          SITE: https://ingvarconsulting.github.io/unica
+        run: |
+          set -euo pipefail
+          python scripts/ci/nightly-lines.py --repo "$GITHUB_REPOSITORY" --site "$SITE" \
+            --dispatch --follow .build/large --summary "$GITHUB_STEP_SUMMARY" >> "$GITHUB_OUTPUT"
+      # Артефакты запущенных прогонов едут дальше одним своим: внутри те же
+      # `results-*` и `plan-*` с подписями, сайт находит их на любой глубине.
+      - if: always() && hashFiles('.build/large/**/run.json') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: results-nightly
+          path: .build/large
+          retention-days: 7
+          overwrite: true

@@ -179,11 +179,18 @@ fn read_module(path: &str, context: &CodeIntelligenceContext) -> Result<(PathBuf
     Ok((module, text))
 }
 
+/// Shared in-process parser seam for typed BSL readers. Keeping the exact
+/// vendored AST here prevents the v0.13 projection from growing a parallel
+/// regex grammar while leaving the v0.12 outline renderer unchanged.
+pub(crate) fn parse_bsl_syntax(text: &str) -> bsl_syntax::Parse<SyntaxNode> {
+    bsl_parser::parse(text)
+}
+
 fn parse_module(text: &str) -> Result<(Vec<CodeOutlineMethod>, Vec<OutlineRegion>), String> {
     if text.len() > u32::MAX as usize {
         return Err("BSL module is too large for the analyzer parser".to_string());
     }
-    let parsed = bsl_parser::parse(text);
+    let parsed = parse_bsl_syntax(text);
     if !parsed.errors().is_empty() {
         return Err(format!(
             "BSL module cannot be outlined because the parser reported {} diagnostic(s)",

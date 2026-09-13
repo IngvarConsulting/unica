@@ -1,0 +1,22 @@
+{
+  "handlers": [
+    {
+      "owner": "httpMethod",
+      "at": "main:HTTPService.API.URLTemplate.orders.Method.get",
+      "event": "Request",
+      "handler": "ОбработатьGET"
+    },
+    {
+      "owner": "webServiceOperation",
+      "at": "main:WebService.Обмен.Operation.TestConnection",
+      "event": "Call",
+      "handler": "TestConnection"
+    },
+    {
+      "owner": "integrationServiceChannel",
+      "at": "main:IntegrationService.Шина.Channel.Входящие",
+      "event": "Receive",
+      "handler": "ОбработатьСообщение"
+    }
+  ]
+}

@@ -3,14 +3,83 @@ use crate::domain::code_intelligence::ProviderDeadline;
 use std::time::{Duration, Instant};
 
 use super::info::{
-    predefined_code_type_for_info, registrar_scan_checkpoint, typed_elements,
-    typed_optional_root_collection, typed_properties, typed_relations, typed_root_collection,
-    TypedRootCollectionRoute,
+    parse_typed_meta_local_info, predefined_code_type_for_info, registrar_scan_checkpoint,
+    typed_elements, typed_optional_root_collection, typed_properties, typed_relations,
+    typed_root_collection, TypedRootCollectionRoute,
 };
 use super::xml_model::meta_info_child;
 use crate::domain::metadata::{
-    MetaPropertyChanges, MetaPropertyInput, MetaPropertyValue, MetadataKind,
+    MetaPropertyChanges, MetaPropertyInput, MetaPropertyValue, MetaSupportStatus, MetadataKind,
 };
+
+fn typed_local_info_descriptor(name: &str) -> Vec<u8> {
+    format!(
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog uuid="11111111-1111-1111-1111-111111111111"><Properties><Name>{name}</Name></Properties><ChildObjects/></Catalog></MetaDataObject>"#
+    )
+    .into_bytes()
+}
+
+#[test]
+fn typed_local_info_core_projects_the_exact_descriptor_image() {
+    let target = crate::domain::source_target::MetadataAddress::parse(
+        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+        "Catalog.Products",
+    )
+    .unwrap();
+
+    let info = parse_typed_meta_local_info(
+        &typed_local_info_descriptor("Products"),
+        &target,
+        MetaSupportStatus::Locked,
+    )
+    .expect("exact descriptor image is valid");
+
+    assert_eq!(info.metadata_path, target);
+    assert_eq!(info.kind, MetadataKind::Catalog);
+    assert_eq!(info.name, "Products");
+    assert_eq!(info.support, MetaSupportStatus::Locked);
+}
+
+#[test]
+fn typed_local_info_core_rejects_a_wrong_logical_owner() {
+    let target = crate::domain::source_target::MetadataAddress::parse(
+        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+        "Catalog.Orders",
+    )
+    .unwrap();
+
+    let failure = parse_typed_meta_local_info(
+        &typed_local_info_descriptor("Products"),
+        &target,
+        MetaSupportStatus::Supported,
+    )
+    .expect_err("descriptor identity must be bound to the requested owner");
+
+    assert!(
+        failure.diagnostics[0]
+            .message
+            .contains("does not match target Catalog.Orders"),
+        "{failure:?}"
+    );
+}
+
+#[test]
+fn typed_local_info_core_rejects_malformed_descriptor_bytes() {
+    let target = crate::domain::source_target::MetadataAddress::parse(
+        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+        "Catalog.Products",
+    )
+    .unwrap();
+
+    let failure =
+        parse_typed_meta_local_info(b"<not-metadata>", &target, MetaSupportStatus::Supported)
+            .expect_err("malformed bytes cannot become typed metadata");
+
+    assert_eq!(
+        failure.diagnostics[0].code,
+        crate::domain::metadata::MetaDiagnosticCode::ProviderUnavailable
+    );
+}
 
 #[test]
 fn typed_info_reads_simple_form_template_and_command_references() {

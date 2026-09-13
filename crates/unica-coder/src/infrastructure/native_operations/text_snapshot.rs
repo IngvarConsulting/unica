@@ -404,20 +404,6 @@ mod tests {
     }
 
     #[test]
-    fn observed_line_ending_profile_is_closed() {
-        snapshot_classifies_no_line_endings();
-        snapshot_classifies_uniform_lf_and_terminal_newline();
-        snapshot_classifies_uniform_crlf_and_terminal_newline();
-        snapshot_classifies_uniform_cr_and_terminal_newline();
-        snapshot_classifies_mixed_endings_with_exact_counts();
-        snapshot_reports_missing_terminal_newline();
-        preserve_prefers_local_context_for_mixed_source();
-        observed_resolution_serves_no_eol_source_with_explicit_lf();
-        observed_resolution_preserves_uniform_profile_and_prefers_local();
-        observed_resolution_rejects_mixed_profile_without_local_context();
-    }
-
-    #[test]
     fn repository_policy_is_fail_closed() {
         let snapshot = SourceTextSnapshot::from_bytes(b"A\n").unwrap();
 

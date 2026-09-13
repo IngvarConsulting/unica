@@ -1,1633 +1,249 @@
 # Ведомость публичной поверхности инструментов
 
-Порождается `scripts/ci/generate-tool-surface.py` из `tools/list` собранного бинаря. Руками правится только [`tool-surface-review.json`](tool-surface-review.json): контракт результата и сценарии. Имена, описания и аргументы принадлежат реестру в `crates/unica-coder/src/application/mod.rs` и `tool_contracts.rs`; здесь они лишь показаны рядом (`CTR.WIRE.TOOL-SURFACE`).
+Порождается `scripts/ci/generate-tool-surface.py` из `tools/list` собранного бинаря. Руками правится только [`tool-surface-review.json`](tool-surface-review.json): контракт результата и сценарии. Имена, описания и аргументы принадлежат реестру v0.13 в `crates/unica-coder/src/application/v13/tool_catalog.rs`; здесь они лишь показаны рядом (`CTR.WIRE.TOOL-SURFACE`).
 
 Колонка «Результат сейчас» — наблюдение ревью, а не машинный факт: страж проверяет полноту охвата и совпадение аргументов с реестром, но не читает поведение обработчика.
 
 ## Итог
 
-- Инструментов: **71**
-- Отвечают типизированным `data`: **45**
-- Типизированы частично: часть результата всё ещё текст: **1**
-- Отвечают снимком задания в `job`: **6**
-- Отвечают прозой в `stdout`: **19**
+- Инструментов: **11**
+- Отвечают типизированным `data`: **11**
+- Типизированы частично: часть результата всё ещё текст: **0**
+- Отвечают снимком задания в `job`: **0**
+- Отвечают прозой в `stdout`: **0**
 
-- В границах типизации: **45**
-- Вне границ: снимается отдельной фичей (`*.validate`, `*.compile`, `*.decompile`): **14**
-- Вне границ: семейство runtime и build изучается отдельно: **12**
+- В границах типизации: **11**
+- Вне границ: снимается отдельной фичей (`*.validate`, `*.compile`, `*.decompile`): **0**
+- Вне границ: семейство runtime и build изучается отдельно: **0**
 - Осталось перевести на типизированный `data` в границах работы: **0**
-- Публикуют больше 20 аргументов из общего списка: **28**
+- Публикуют больше 20 аргументов из общего списка: **0**
 
-## build — сборка и запуск платформы
+## apply
 
-### `unica.build.dump`
+### `unica.apply`
 
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `config` | string | нет | — |
-| `confirm` | boolean | нет | — |
-| `cwd` | string | нет | — |
-| `database` | string | нет | — |
-| `dbPassword` | string | нет | — |
-| `dbUser` | string | нет | — |
-| `dryRun` | boolean | нет | — |
-| `format` | string | нет | — |
-| `infobase` | string | нет | — |
-| `mode` | string | нет | — |
-| `password` | string | нет | — |
-| `path` | string | нет | — |
-| `sourceDir` | string | нет | — |
-| `sourceSet` | string | нет | — |
-| `target` | string | нет | — |
-| `user` | string | нет | — |
-
-**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
-
-**Вне границ: семейство runtime и build изучается отдельно.**
-
-**Сценарии:**
-
-- Выполнить выгрузку набора исходников через единый MCP без ручной командной строки
-- Проверить предпросмотром, что будет запущено, до фактического запуска
-
-### `unica.build.load`
-
-—
+Preview or atomically apply typed edits to one logically addressed 1C node.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `config` | string | нет | — |
-| `confirm` | boolean | нет | — |
-| `cwd` | string | нет | — |
-| `database` | string | нет | — |
-| `dbPassword` | string | нет | — |
-| `dbUser` | string | нет | — |
-| `dryRun` | boolean | нет | — |
-| `format` | string | нет | — |
-| `infobase` | string | нет | — |
-| `mode` | string | нет | — |
-| `password` | string | нет | — |
-| `path` | string | нет | — |
-| `sourceDir` | string | нет | — |
-| `sourceSet` | string | нет | — |
-| `target` | string | нет | — |
-| `user` | string | нет | — |
+| `at` | string | да | Qualified logical address: <sourceSet>:<Kind>[.<Name>...]. Omit only for workspace bootstrap where allowed. |
+| `dryRun` | boolean | нет | Validate and return the plan without publishing when true. |
+| `ifRev` | string | по условию | Revision returned by a prior dryRun preview; required when dryRun is false. |
+| `ops` | array | да | Ordered operations advertised by the target node's can data. |
 
-**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
+**Результат сейчас:** Для `props.set` и `attribute.add/set/remove` доказаны общий ordered staged planner, одинаковый postimage/effect plan hash в dry-run/real и атомарная retained-публикация (отвечают типизированным `data`)
 
-**Вне границ: семейство runtime и build изучается отдельно.**
+**Целевой контракт:** Спроектировать недостающие object/relation contracts, затем переносить остальные типизированные семейства операций
 
 **Сценарии:**
 
-- Выполнить загрузку исходников в базу через единый MCP без ручной командной строки
-- Проверить предпросмотром, что будет запущено, до фактического запуска
+- Изменить свойство через доказанную retained-публикацию `props.set`
+- Добавить, изменить и удалить атрибут с одинаковым доказуемым dry-run/real планом
 
-### `unica.build.make`
+## check
 
-—
+### `unica.check`
+
+Confirm workspace source-set admission, or validate one logical node: readability plus every validator its kind owns.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `config` | string | нет | — |
-| `confirm` | boolean | нет | — |
-| `cwd` | string | нет | — |
-| `database` | string | нет | — |
-| `dbPassword` | string | нет | — |
-| `dbUser` | string | нет | — |
-| `dryRun` | boolean | нет | — |
-| `extension` | string | нет | — |
-| `format` | string | нет | — |
-| `infobase` | string | нет | — |
-| `mode` | string | нет | — |
-| `output` | string | да | — |
-| `password` | string | нет | — |
-| `path` | string | нет | — |
-| `sourceDir` | string | нет | — |
-| `sourceSet` | string | нет | — |
-| `target` | string | нет | — |
-| `user` | string | нет | — |
+| `at` | string | нет | Qualified logical address: <sourceSet>:<Kind>[.<Name>...]. Omit only for workspace bootstrap where allowed. |
 
-**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
+**Результат сейчас:** Без `at` доказывает admission source set; с `at` читает узел и запускает все валидаторы его вида (`cf`/`cfe` для корня по виду набора, `form`, `dcs`/`mxl` по `TemplateType`, `role`, `subsystem`, `interface`, `meta`), отдавая `status`, `validators` и диагностики; узел без валидаторов отвечает читаемостью (отвечают типизированным `data`)
 
-**Вне границ: семейство runtime и build изучается отдельно.**
+**Целевой контракт:** Держать таблицу вид → валидаторы закрытой и доказанной корпусом; на проводе у `check` нет аргумента выбора валидатора
 
 **Сценарии:**
 
-- Выполнить сборку CF/CFE через единый MCP без ручной командной строки
-- Проверить предпросмотром, что будет запущено, до фактического запуска
+- Проверить, что рабочее пространство и его source set допущены
+- Проверить один логический узел всеми валидаторами его вида
+- Проверить читаемость узла без валидаторов
 
-### `unica.build.run`
+## diff
 
-—
+### `unica.diff`
+
+Compare two readable logical nodes of the same kind without changing files.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `config` | string | нет | — |
-| `confirm` | boolean | нет | — |
-| `cwd` | string | нет | — |
-| `database` | string | нет | — |
-| `dbPassword` | string | нет | — |
-| `dbUser` | string | нет | — |
-| `dryRun` | boolean | нет | — |
-| `format` | string | нет | — |
-| `infobase` | string | нет | — |
-| `mode` | string | нет | — |
-| `password` | string | нет | — |
-| `path` | string | нет | — |
-| `sourceDir` | string | нет | — |
-| `sourceSet` | string | нет | — |
-| `target` | string | нет | — |
-| `user` | string | нет | — |
+| `cursor` | string | нет | Continuation cursor from an earlier diff. |
+| `filter` | object | нет | Optional projection applied before comparison. |
+| `left` | string | да | Qualified logical address of the left node. |
+| `limit` | integer | нет | Maximum differences to return. |
+| `right` | string | да | Qualified logical address of the right node. |
 
-**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
+**Результат сейчас:** Сравнивает два узла одного логического вида и возвращает bounded JSON changes с общей revision; закрытые `paths`/`sections` фильтры поддержаны, cursor пока неподдержан (отвечают типизированным `data`)
 
-**Вне границ: семейство runtime и build изучается отдельно.**
+**Целевой контракт:** Добавить предметные diff-проекции и revision-bound pagination
 
 **Сценарии:**
 
-- Выполнить запуск платформы или конфигуратора через единый MCP без ручной командной строки
-- Проверить предпросмотром, что будет запущено, до фактического запуска
+- Сравнить две логические проекции одного вида
+- Доказать равенство узлов без чтения физических файлов
 
-### `unica.build.update`
+## docs
 
-—
+### `unica.docs`
+
+Search bundled Unica and safe 1C documentation by topic.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `config` | string | нет | — |
-| `confirm` | boolean | нет | — |
-| `cwd` | string | нет | — |
-| `database` | string | нет | — |
-| `dbPassword` | string | нет | — |
-| `dbUser` | string | нет | — |
-| `dryRun` | boolean | нет | — |
-| `format` | string | нет | — |
-| `infobase` | string | нет | — |
-| `mode` | string | нет | — |
-| `password` | string | нет | — |
-| `path` | string | нет | — |
-| `sourceDir` | string | нет | — |
-| `sourceSet` | string | нет | — |
-| `target` | string | нет | — |
-| `user` | string | нет | — |
+| `query` | string | да | Documentation question or search phrase. |
+| `source` | string | нет | Optional documented source kind, not a provider identity. |
 
-**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
+**Результат сейчас:** Отвечает до допуска рабочей области; поиск по platform-help и development-standard возвращает `data.sections`; configuration-documentation отвечает `unsupported_source` до actor-safe reader (отвечают типизированным `data`)
 
-**Вне границ: семейство runtime и build изучается отдельно.**
+**Целевой контракт:** Добавить actor-owned nofollow/cancellation reader для документации конфигурации, адресное получение документа, locale и version
 
 **Сценарии:**
 
-- Выполнить применение изменений конфигурации через единый MCP без ручной командной строки
-- Проверить предпросмотром, что будет запущено, до фактического запуска
+- Искать по справке платформы или стандартам
+- Получить typed unsupported для документации конфигурации без обхода actor boundary
+- Спросить справку из каталога, который ещё не рабочая область
 
-## cf — корень конфигурации
+## resolve
 
-### `unica.cf.edit`
+### `unica.resolve`
 
-—
+Emergency bridge between a logical address and the source layout, in both directions. Use it only when a path arrived from outside Unica - a diff, a build log, a stack trace - or when a file has to be opened outside Unica. To find an object by name use search; to read it use view.
 
-Публикует **133** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+| Аргумент | Тип | Обяз. | Описание |
+| --- | --- | --- | --- |
+| `at` | string | нет | Qualified logical address whose source location is needed. |
+| `path` | string | нет | Path to a source file or object directory, absolute or relative to the workspace root. |
 
-**Результат сейчас:** `data`: каждая операция с признаком применения и причиной пропуска, счётчики, факт перезаписи и валидации (отвечают типизированным `data`)
+**Результат сейчас:** `data` несёт один предмет: `at`, `kind`, `path` и закрытый признак `lines`; ответ точный либо `not_found` и не несёт `rev` (отвечают типизированным `data`)
+
+**Целевой контракт:** Держать путь в одном редком инструменте: в частом ответе он звал бы читать файл мимо адреса
+
+**Сценарии:**
+
+- Узнать, какому объекту принадлежит путь, пришедший из диффа, лога сборки или трассы
+- Получить путь к файлу или каталогу объекта, чтобы прочитать или починить его вне Unica
+- Узнать файл и диапазон строк метода, когда его открывают вне Unica
+
+## run
+
+### `unica.run`
+
+List canonical runtime operations and their invocation contract, or preview/execute one implemented operation.
+
+| Аргумент | Тип | Обяз. | Описание |
+| --- | --- | --- | --- |
+| `args` | object | нет | Typed arguments for the selected operation. |
+| `dryRun` | boolean | нет | Required by previewApply operations: true returns a non-mutating plan and revision; false requires ifRev and applies that plan. |
+| `ifRev` | string | нет | Revision returned by a prior preview of the same previewApply operation; required when dryRun is false. |
+| `op` | string | нет | Canonical operation name; omit to list operation status. |
+
+**Результат сейчас:** Вызов без `op` до source admission возвращает закрытый словарь направленных runtime-намерений, каждому из которых нужна платформа или база; `infobase.configuration.export` и `infobase.dump` реализованы; обе выгрузки используют неисполняющий preview v8-runner, revision-fenced apply и независимую квитанцию файла (отвечают типизированным `data`)
+
+**Целевой контракт:** Подключать остальные восемь направленных операций через preview/apply, capability-specific admission и закрытые terminal/provider-контракты
+
+**Сценарии:**
+
+- Получить машинно-читаемый словарь допустимых runtime намерений
+- Предпросмотреть и выгрузить main CF, extension CFE или полный DT из существующей ИБ
+- Различить сборку артефакта, экспорт конфигурации и полный снимок ИБ без выбора platform provider моделью
+
+## search
+
+### `unica.search`
+
+Search one corpus for a query: BSL module text, or the names and synonyms of metadata objects. Optionally under one logical subtree.
+
+| Аргумент | Тип | Обяз. | Описание |
+| --- | --- | --- | --- |
+| `corpus` | string | нет | Where to search: `text` matches BSL module content and answers scope, line, column and snippet; `names` matches metadata names and synonyms and answers at, kind and title. Defaults to `text`. |
+| `kind` | string | нет | `names` corpus only: narrow the search to one logical node kind. |
+| `limit` | integer | нет | Maximum matches to return. |
+| `query` | string | да | Literal BSL text, symbol, or metadata name to search for. |
+| `regex` | boolean | нет | Request regex matching; currently only false is implemented. |
+| `role` | string | нет | `text` corpus only: which provider answers. `lexical` matches literally, `symbol` uses the symbol index, `semantic` matches by meaning. Omit for the literal search Unica performs itself. |
+| `scope` | string | нет | logical subtree address |
+
+**Результат сейчас:** Литеральный bounded-поиск по BSL возвращает `data.matches` для `Configuration` и разрешённого поддерева объекта метаданных; regex и symbol остаются неподдержанными (отвечают типизированным `data`)
+
+**Целевой контракт:** Добавить символический и regex-режимы через закрытые варианты контракта
+
+**Сценарии:**
+
+- Найти буквальное вхождение в BSL внутри source set
+- Ограничить поиск логическим корнем конфигурации
+
+## task
+
+### `unica.task.cancel`
+
+Idempotently request cancellation and return the current durable Task state without re-running the subject tool.
+
+| Аргумент | Тип | Обяз. | Описание |
+| --- | --- | --- | --- |
+| `taskId` | string | да | Opaque Task identifier returned by Unica |
+
+**Результат сейчас:** Идемпотентно запрашивает отмену и возвращает текущее durable состояние Task (отвечают типизированным `data`)
 
 **Целевой контракт:** достигнут
 
 **Сценарии:**
 
-- Зарегистрировать новый объект в составе конфигурации
-- Переключить роли по умолчанию или стартовую страницу
+- Отменить Task в клиенте без native Tasks
 
-### `unica.cf.info`
+### `unica.task.get`
 
-—
+Read the current durable Task state immediately without waiting or re-running the subject tool.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `ConfigPath` | string | по ветви | — |
-| `confirm` | boolean | нет | — |
-| `cwd` | string | нет | — |
-| `sourceSet` | string | по ветви | — |
+| `taskId` | string | да | Opaque Task identifier returned by Unica |
 
-**Селектор:** ровно одна ветвь — `sourceSet` **либо** `ConfigPath`. Ни одной или обе сразу отклоняются.
-
-**Результат сейчас:** `data`: идентичность, поддержка, свойства корня, состав и начальная страница (отвечают типизированным `data`)
+**Результат сейчас:** Возвращает текущий durable Task state без повторного исполнения предметного вызова (отвечают типизированным `data`)
 
 **Целевой контракт:** достигнут
 
 **Сценарии:**
 
-- Оценить размер и состав конфигурации перед началом работы
-- Проверить режим совместимости и версию платформы
+- Немедленно получить состояние Task в клиенте без native Tasks
 
-### `unica.cf.init`
+### `unica.task.result`
 
-—
+Wait for a Task result for a bounded interval; returns the canonical result or a new working receipt without re-running the subject tool.
 
-Публикует **136** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+| Аргумент | Тип | Обяз. | Описание |
+| --- | --- | --- | --- |
+| `taskId` | string | да | Opaque Task identifier returned by Unica |
+| `waitMs` | integer | нет | Bounded wait in milliseconds; defaults to 7000 |
 
-**Результат сейчас:** `data`: имя конфигурации, корень и созданные файлы заготовки (отвечают типизированным `data`)
+**Результат сейчас:** Ждёт не более 7000 мс и возвращает terminal result либо новый working receipt без повторного исполнения (отвечают типизированным `data`)
 
 **Целевой контракт:** достигнут
 
 **Сценарии:**
 
-- Создать пустую конфигурацию для эксперимента или теста
+- Ожидать результат Task в compatibility-профиле
 
-### `unica.cf.validate`
+## view
 
-—
+### `unica.view`
 
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `ConfigPath` | string | по ветви | — |
-| `sourceSet` | string | по ветви | — |
-
-Публикует **132** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
-
-**Селектор:** ровно одна ветвь — `sourceSet` **либо** `ConfigPath`. Ни одной или обе сразу отклоняются.
-
-**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
-
-**Вне границ: снимается отдельной фичей (`*.validate`, `*.compile`, `*.decompile`).**
-
-**Сценарии:**
-
-- Проверить корень после ручной правки Configuration.xml
-
-## cfe — расширения конфигурации
-
-### `unica.cfe.borrow`
-
-—
+Inspect the workspace with no arguments, or read one logical 1C node by address.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `ConfigPath` | string | да | — |
-| `ExtensionPath` | string | да | — |
-| `Object` | string | да | — |
+| `at` | string | нет | Qualified logical address: <sourceSet>:<Kind>[.<Name>...]. Omit only for workspace bootstrap where allowed. |
+| `cursor` | string | нет | Continuation cursor from an earlier addressed view. |
+| `filter` | object | нет | Optional projection such as sections; valid only with at. |
+| `limit` | integer | нет | Maximum child items to return; valid only with at. |
 
-Публикует **133** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+**Результат сейчас:** Без аргументов `data` описывает workspace, `v8project.yaml`, source sets, infobase target, readiness и только релевантный setup; infobase-only workspace получает точные preview-продолжения CF и DT; с квалифицированным `at` содержит типизированную проекцию логического узла, revision, bounded cursor и закрытые секции `props`/`branches`/`can`/`limits`/`items` (отвечают типизированным `data`)
 
-**Результат сейчас:** `data`: перенесённые объекты и формы, что подтянулось автоматически, что оставлено без изменений и почему (отвечают типизированным `data`)
-
-**Целевой контракт:** достигнут
-
-**Сценарии:**
-
-- Заимствовать форму для доработки без снятия с поддержки
-- Перехватить объект конфигурации в расширении
-
-### `unica.cfe.diff`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `ConfigPath` | string | да | — |
-| `ExtensionPath` | string | да | — |
-| `confirm` | boolean | нет | — |
-| `cwd` | string | нет | — |
-
-**Результат сейчас:** `data`: состав расширения со статусом каждого объекта, перехватчики и проверка переноса вставок (отвечают типизированным `data`)
-
-**Целевой контракт:** достигнут
+**Целевой контракт:** Расширять проекции через закрытые `filter`, не возвращая физические пути
 
 **Сценарии:**
 
-- Понять, что уже содержит расширение
-- Проверить, перенесены ли вставки в основную конфигурацию перед снятием расширения
-
-### `unica.cfe.init`
-
-—
-
-Публикует **131** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
-
-**Результат сейчас:** `data`: свойства расширения, источник каждого выведенного свойства (база или умолчание) и созданные файлы (отвечают типизированным `data`)
-
-**Целевой контракт:** достигнут
-
-**Сценарии:**
-
-- Создать расширение для доработки поставляемой конфигурации
-
-### `unica.cfe.patch_method`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `ExtensionPath` | string | да | — |
-| `InterceptorType` | string | да | — |
-| `MethodName` | string | да | — |
-| `ModulePath` | string | да | — |
-
-Публикует **135** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
-
-**Результат сейчас:** `data`: модуль и признак его создания, декоратор, метод, процедура, директива компиляции и переключённый дескриптор (отвечают типизированным `data`)
-
-**Целевой контракт:** достигнут
-
-**Сценарии:**
-
-- Сгенерировать Before-перехватчик для существующей процедуры
-
-### `unica.cfe.validate`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `ExtensionPath` | string | да | — |
-
-Публикует **133** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
-
-**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
-
-**Вне границ: снимается отдельной фичей (`*.validate`, `*.compile`, `*.decompile`).**
-
-**Сценарии:**
-
-- Проверить расширение перед сборкой CFE
-
-## code — код BSL
-
-### `unica.code.definition`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `confirm` | boolean | нет | — |
-| `cwd` | string | нет | — |
-| `limit` | integer | нет | — |
-| `moduleHint` | string | нет | — |
-| `name` | string | да | — |
-| `sourceDir` | string | нет | — |
-
-**Результат сейчас:** `data`: определения с обязательными файлом и строкой; вид, параметры и признак экспорта равны `null`, когда индекс их не сообщил (отвечают типизированным `data`)
-
-**Целевой контракт:** достигнут
-
-**Сценарии:**
-
-- Найти, где объявлен экспортный метод, вызванный из формы
-- Отличить одноимённые методы в разных общих модулях
-
-### `unica.code.diagnostics`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `action` | string | да | — |
-| `cwd` | string | нет | — |
-| `filter` | object | только в ветви | — |
-| `limit` | integer | только в ветви | — |
-| `metadataPath` | string | по ветви | — |
-| `range` | object | только в ветви | — |
-| `sourceSet` | string | да | — |
-| `timeoutSeconds` | integer | только в ветви | — |
-
-**Результат сейчас:** `data`: provider-neutral результат с `sourceSet`/`metadataPath`, секциями `providers`, логическими `location`, внутренним `focus` и плоскими элементами; физические пути и формат одного анализатора наружу не выходят (отвечают типизированным `data`)
-
-**Целевой контракт:** достигнут
-
-**Сценарии:**
-
-- Прогнать диагностики по изменённому модулю перед коммитом
-- Объяснить, почему BSL LS ругается на конструкцию
-
-### `unica.code.graph`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `confirm` | boolean | нет | — |
-| `cwd` | string | нет | — |
-| `detail` | string | нет | — |
-| `dir` | string | нет | — |
-| `edgeKinds` | array | нет | — |
-| `id` | string | нет | — |
-| `ids` | array | нет | — |
-| `limit` | integer | нет | — |
-| `maxOutputTokens` | integer | нет | — |
-| `mode` | string | да | — |
-| `provenance` | array | нет | — |
-| `query` | string | нет | — |
-| `sourceDir` | string | нет | — |
-
-**Результат сейчас:** `data`: ответ анализатора с узлами и рёбрами графа как есть (отвечают типизированным `data`)
-
-**Целевой контракт:** достигнут
-
-**Сценарии:**
-
-- Проследить, кто вызывает метод, который планируется удалить
-- Найти цикл вызовов между общими модулями
-
-### `unica.code.outline`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `confirm` | boolean | нет | — |
-| `cwd` | string | нет | — |
-| `includeMethods` | boolean | нет | — |
-| `path` | string | да | — |
-| `sourceDir` | string | нет | — |
-
-**Результат сейчас:** типизированный `data` (отвечают типизированным `data`)
-
-**Целевой контракт:** без изменений (эталон CTR.WIRE.TOOL-SURFACE)
-
-**Сценарии:**
-
-- Получить экспортный интерфейс общего модуля перед написанием вызова
-- Проверить сигнатуру процедуры до генерации перехватчика CFE
-
-### `unica.code.patch`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `confirm` | boolean | нет | — |
-| `content` | string | да | — |
-| `cwd` | string | нет | — |
-| `dryRun` | boolean | нет | — |
-| `metadataPath` | string | да | — |
-| `operation` | string | да | — |
-| `position` | string | нет | — |
-| `selector` | object | нет | — |
-| `sourceSet` | string | да | — |
-
-**Результат сейчас:** типизированный `data` (отвечают типизированным `data`)
-
-**Целевой контракт:** без изменений
-
-**Сценарии:**
-
-- Вставить обработчик после существующего метода в модуле конфигурации
-- Заменить тело метода целиком, сохранив соседей побайтово
-- Дописать метод в конец модуля, не называя соседа
-
-### `unica.code.search`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `confirm` | boolean | нет | — |
-| `cwd` | string | нет | — |
-| `limit` | integer | нет | — |
-| `metadataPath` | string | только в ветви | — |
-| `query` | string | да | — |
-| `sourceDir` | string | по ветви | — |
-| `sourceSet` | string | по ветви | — |
-
-**Селектор:** ровно одна ветвь — `sourceSet` **либо** `sourceDir`. Ни одной или обе сразу отклоняются.
-`metadataPath` принимается только вместе с `sourceSet`.
-
-**Результат сейчас:** `data`: три ролевые секции с логическими местоположениями, полнотой, машинной причиной завершения и retryability, ранжированием, счётом и происхождением; ход приходит через typed MCP progress (отвечают типизированным `data`)
-
-**Целевой контракт:** достигнут
-
-**Сценарии:**
-
-- Найти вызовы метода по всей конфигурации перед его изменением
-- Оценить масштаб правки: сколько мест затронет переименование
-
-## dcs — схемы компоновки данных
-
-### `unica.dcs.compile`
-
-—
-
-Публикует **135** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
-
-**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
-
-**Вне границ: снимается отдельной фичей (`*.validate`, `*.compile`, `*.decompile`).**
-
-**Сценарии:**
-
-- Собрать СКД из JSON-описания
-
-### `unica.dcs.edit`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `TemplatePath` | string | да | — |
-
-Публикует **133** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
-
-**Результат сейчас:** `data`: операция, набор данных и вариант, по каждому значению признак применения с причиной, факт перезаписи и валидации (отвечают типизированным `data`)
-
-**Целевой контракт:** достигнут
-
-**Сценарии:**
-
-- Добавить поле и итог в существующую СКД
-
-### `unica.dcs.info`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `TemplatePath` | string | по ветви | — |
-| `confirm` | boolean | нет | — |
-| `cwd` | string | нет | — |
-| `delivery` | string | нет | — |
-| `filter` | string | нет | — |
-| `metadataPath` | string | по ветви | — |
-| `page` | integer | нет | — |
-| `resultRef` | string | нет | — |
-| `section` | string | нет | — |
-| `sourceSet` | string | по ветви | — |
-
-**Селектор:** ровно одна ветвь — `sourceSet` + `metadataPath` **либо** `TemplatePath`. Ни одной или обе сразу отклоняются.
-
-**Результат сейчас:** `data`: наборы данных с полями и точным текстом запроса, связи, вычисляемые поля, ресурсы, параметры, варианты настроек и макеты — все секции сразу (отвечают типизированным `data`)
-
-**Целевой контракт:** достигнут
-
-**Сценарии:**
-
-- Разобрать источник данных отчёта перед его правкой
-- Достать текст запроса набора данных
-
-### `unica.dcs.validate`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `TemplatePath` | string | по ветви | — |
-| `metadataPath` | string | по ветви | — |
-| `sourceSet` | string | по ветви | — |
-
-Публикует **133** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
-
-**Селектор:** ровно одна ветвь — `sourceSet` + `metadataPath` **либо** `TemplatePath`. Ни одной или обе сразу отклоняются.
-
-**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
-
-**Вне границ: снимается отдельной фичей (`*.validate`, `*.compile`, `*.decompile`).**
-
-**Сценарии:**
-
-- Проверить СКД после правки текста запроса
-
-## documentation — справка платформы и стандарты разработки
-
-### `unica.documentation.get`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `confirm` | boolean | нет | — |
-| `cwd` | string | нет | — |
-| `documentId` | string | да | — |
-| `language` | string | нет | — |
-| `platformVersion` | string | нет | — |
-
-**Результат сейчас:** `data`: документ целиком с происхождением, локалью ответа, версией и полным текстом (отвечают типизированным `data`)
-
-**Целевой контракт:** достигнут
-
-**Сценарии:**
-
-- Подтвердить ответ текстом открытой страницы, а не фрагментом выдачи
-- Прочитать стандарт разработки или главу руководства целиком по локатору попадания
-
-### `unica.documentation.search`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `confirm` | boolean | нет | — |
-| `cwd` | string | нет | — |
-| `language` | string | нет | — |
-| `limit` | integer | нет | — |
-| `platformVersion` | string | нет | — |
-| `query` | string | да | — |
-| `sourceKinds` | array | нет | — |
-
-**Результат сейчас:** `data`: секции поставщиков документации с происхождением, локалью ответа и версией (отвечают типизированным `data`)
-
-**Целевой контракт:** достигнут
-
-**Сценарии:**
-
-- Уточнить сигнатуру и доступность метода платформы до написания кода
-- Проверить поведение механизма платформы для конкретной версии установки
-- Отличить справку платформы от стандарта разработки в одном ответе
-- Найти главу руководства площадки вендора для закреплённой версии
-- Найти встроенную справку объекта конфигурации рабочего пространства
-
-## epf — внешние обработки
-
-### `unica.epf.init`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `FormName` | string | нет | — |
-| `Name` | string | да | — |
-| `OutputDir` | string | да | — |
-| `Synonym` | string | нет | — |
-| `confirm` | boolean | нет | — |
-| `cwd` | string | нет | — |
-| `dryRun` | boolean | нет | — |
-
-**Результат сейчас:** `data`: созданные файлы заготовки внешней обработки (отвечают типизированным `data`)
-
-**Целевой контракт:** достигнут
-
-**Сценарии:**
-
-- Создать заготовку внешней обработки с формой
-
-## erf — внешние отчёты
-
-### `unica.erf.init`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `FormName` | string | нет | — |
-| `Name` | string | да | — |
-| `OutputDir` | string | да | — |
-| `Synonym` | string | нет | — |
-| `confirm` | boolean | нет | — |
-| `cwd` | string | нет | — |
-| `dryRun` | boolean | нет | — |
-
-**Результат сейчас:** `data`: созданные файлы заготовки внешнего отчёта (отвечают типизированным `data`)
-
-**Целевой контракт:** достигнут
-
-**Сценарии:**
-
-- Создать заготовку внешнего отчёта
-
-## form — управляемые формы
-
-### `unica.form.add`
-
-—
-
-Публикует **134** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
-
-**Результат сейчас:** `data`: объект, имя формы, дескриптор регистрации, свойство формы по умолчанию и созданные файлы (отвечают типизированным `data`)
-
-**Целевой контракт:** достигнут
-
-**Сценарии:**
-
-- Добавить объекту пустую форму списка
-
-### `unica.form.compile`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `OutputPath` | string | да | — |
-
-Публикует **132** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
-
-**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
-
-**Вне границ: снимается отдельной фичей (`*.validate`, `*.compile`, `*.decompile`).**
-
-**Сценарии:**
-
-- Сгенерировать форму по описанию или по пресету объекта
-
-### `unica.form.edit`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `FormPath` | string | да | — |
-
-Публикует **134** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
-
-**Результат сейчас:** `data`: удалённые узлы с причиной, добавленные элементы, реквизиты, команды и обработчики событий, факт изменения и валидации (отвечают типизированным `data`)
-
-**Целевой контракт:** достигнут
-
-**Сценарии:**
-
-- Добавить поле на существующую форму
-- Подписать обработчик события к элементу
-
-### `unica.form.info`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `FormPath` | string | по ветви | — |
-| `confirm` | boolean | нет | — |
-| `cwd` | string | нет | — |
-| `delivery` | string | нет | — |
-| `filter` | string | нет | — |
-| `metadataPath` | string | по ветви | — |
-| `page` | integer | нет | — |
-| `resultRef` | string | нет | — |
-| `section` | string | нет | — |
-| `sourceSet` | string | по ветви | — |
-
-**Селектор:** ровно одна ветвь — `sourceSet` + `metadataPath` **либо** `FormPath`. Ни одной или обе сразу отклоняются.
-
-**Результат сейчас:** `data`: свойства, события, полное дерево элементов без сворачивания, реквизиты с колонками, параметры и команды (отвечают типизированным `data`)
-
-**Целевой контракт:** достигнут
-
-**Сценарии:**
-
-- Изучить форму перед написанием её модуля
-- Найти имя элемента для программного обращения
-
-### `unica.form.remove`
-
-—
-
-Публикует **136** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
-
-**Результат сейчас:** `data`: удалённые пути формы и обновлённый дескриптор объекта (отвечают типизированным `data`)
-
-**Целевой контракт:** достигнут
-
-**Сценарии:**
-
-- Удалить неиспользуемую форму вместе с регистрацией
-
-### `unica.form.validate`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `FormPath` | string | по ветви | — |
-| `metadataPath` | string | по ветви | — |
-| `sourceSet` | string | по ветви | — |
-
-Публикует **133** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
-
-**Селектор:** ровно одна ветвь — `sourceSet` + `metadataPath` **либо** `FormPath`. Ни одной или обе сразу отклоняются.
-
-**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
-
-**Вне границ: снимается отдельной фичей (`*.validate`, `*.compile`, `*.decompile`).**
-
-**Сценарии:**
-
-- Проверить форму после генерации или ручной правки
-
-## interface — командный интерфейс
-
-### `unica.interface.edit`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `CIPath` | string | да | — |
-
-Публикует **133** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
-
-**Результат сейчас:** `data`: `added`, `removed`, `modified` и `mutation` с обновлённым файлом (отвечают типизированным `data`)
-
-**Целевой контракт:** достигнут
-
-**Сценарии:**
-
-- Скрыть команду из интерфейса подсистемы
-
-### `unica.interface.validate`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `CIPath` | string | да | — |
-
-Публикует **133** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
-
-**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
-
-**Вне границ: снимается отдельной фичей (`*.validate`, `*.compile`, `*.decompile`).**
-
-**Сценарии:**
-
-- Проверить интерфейс после настройки видимости
-
-## meta — объекты метаданных
-
-### `unica.meta.add`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `cwd` | string | нет | — |
-| `dryRun` | boolean | нет | — |
-| `kind` | string | да | — |
-| `name` | string | да | — |
-| `operations` | array | нет | — |
-| `sourceSet` | string | да | — |
-
-**Результат сейчас:** `structuredContent.data`: логический адрес, валидация, семантические `effects` и план атомарной публикации одного объекта из типизированного шаблона с необязательными ordered operations (отвечают типизированным `data`)
-
-**Целевой контракт:** достигнут
-
-**Сценарии:**
-
-- Создать минимальный справочник по логическому sourceSet
-- Одним вызовом создать и настроить объект через общий типизированный `operations` union
-- Создать подписку и атомарно задать совместимые `Source`, `Event` и `Handler`
-- Создать поддерживаемый объект вместе с корневым предопределённым элементом
-- Предварительно проверить план создания объекта без записи файлов
-
-### `unica.meta.edit`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `cwd` | string | нет | — |
-| `dryRun` | boolean | нет | — |
-| `metadataPath` | string | да | — |
-| `operations` | array | да | — |
-| `sourceSet` | string | да | — |
-
-**Результат сейчас:** `structuredContent.data`: логический адрес, валидация, семантические `effects` по `operationIndex` и план атомарной публикации пяти вариантов typed-операций, включая проверку единой связки `EventSubscription.Source`/`Event`/`Handler` через `editRelations.source` и `setProperties` и коллекцию `predefinedItems` в `add`, `update`, `remove` (отвечают типизированным `data`)
-
-**Целевой контракт:** достигнут
-
-**Сценарии:**
-
-- Добавить реквизит существующему документу
-- Назначить владельцев подчинённому справочнику
-- Атомарно заменить источник, событие и обработчик существующей подписки
-- Добавить, изменить или удалить предопределённый элемент по UUID
-
-### `unica.meta.info`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `cwd` | string | нет | — |
-| `limit` | integer | нет | — |
-| `metadataPath` | string | да | — |
-| `sections` | array | нет | — |
-| `sourceSet` | string | да | — |
-
-**Результат сейчас:** `structuredContent.data`: локальная структура и валидация объекта с обязательной связанной парой `kind + details` для 23 видов; `details` возвращает наблюдаемые типы Constant/DefinedType, метод ScheduledJob, schedule CalculationRegister, HTTP templates/methods и WebService packages/operations/parameters с expanded XDTO QName. Формы и макеты наблюдаются по ссылке владельца и отдельному XML-дескриптору, встроенные команды — по дескриптору; HTML-страницы зарегистрированных макетов удерживаются как UTF-8 без XML-разбора. Тип содержит `mutationCapability: editable | readOnly`; UUID представлен вариантом `uuid` и доказанно редактируем, а неизвестный корректный платформенный QName оставляет только свой элемент `incomplete` с warning. `ChartOfCharacteristicTypes.details.type`, `ChartOfCalculationTypes.details.baseCalculationTypes` и `DocumentJournal.details.registeredDocuments` сохраняют kind-specific факты; `standardAttributes`, `characteristics`, `standardTabularSections`, `relations.dataLockFields` и коллекции `recalculations`/`accountingFlags`/`extDimensionAccountingFlags`/`addressingAttributes` имеют typed-владельцев и all-or-none tri-state. Общие read-properties не зависят от writer allowlist; неизвестный составной узел даёт `provider_unavailable`, а не пропускается. `relations.source`, `Event`, `Handler` сохраняют контракт подписки; `functionalSubsystems` и `interfaceSubsystems` содержат только членства текущего объекта в зарегистрированной топологии как плоские `SubsystemAddress`, сопоставляя `Content` по адресу метаданных или UUID корневого дескриптора; доказанное отсутствие членств сериализуется как `[]`, а при недоступном или повреждённом доказательстве поля отсутствуют и диагностика содержит `provider_unavailable`. Явно выбранные секции читаются из дерева исходников в `usage` и `predefinedItems`, а `predefinedItems.items` возвращает плоский документный порядок, UUID, `parentId` и typed-поля владельца; обращения к RLM нет ни при каких аргументах (отвечают типизированным `data`)
-
-**Целевой контракт:** достигнут
-
-**Сценарии:**
-
-- Изучить структуру справочника перед написанием запроса
-- Сравнить два объекта по подчинению и составу реквизитов
-- Уточнить длину кода и основное представление перед генерацией формы
-- Прочитать фактическую логическую связку источников, события и обработчика подписки
-- Увидеть функциональные и интерфейсные подсистемы, в которые входит объект
-- Прочитать вложенные маршруты HTTP-сервиса и типизированный контракт WebService
-- Прочитать предопределённые элементы в документном порядке вместе с их parentId
-
-### `unica.meta.remove`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `confirm` | boolean | нет | — |
-| `cwd` | string | нет | — |
-| `dryRun` | boolean | нет | — |
-| `force` | boolean | нет | — |
-| `metadataPath` | string | да | — |
-| `sourceSet` | string | да | — |
-
-**Результат сейчас:** `structuredContent.data`: логический адрес, ссылки, валидация, семантический `removeObject` effect и план атомарного удаления (отвечают типизированным `data`)
-
-**Целевой контракт:** достигнут
-
-**Сценарии:**
-
-- Удалить устаревший объект вместе с регистрацией в Configuration.xml
-- Проверить предпросмотром, что ещё ссылается на объект
-
-## mxl — табличные макеты
-
-### `unica.mxl.compile`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `JsonPath` | string | да | — |
-| `OutputPath` | string | да | — |
-
-Публикует **135** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
-
-**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
-
-**Вне границ: снимается отдельной фичей (`*.validate`, `*.compile`, `*.decompile`).**
-
-**Сценарии:**
-
-- Собрать печатную форму из JSON-описания
-
-### `unica.mxl.decompile`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `TemplatePath` | string | по ветви | — |
-| `metadataPath` | string | по ветви | — |
-| `sourceSet` | string | по ветви | — |
-
-Публикует **130** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
-
-**Селектор:** ровно одна ветвь — `sourceSet` + `metadataPath` **либо** `TemplatePath`. Ни одной или обе сразу отклоняются.
-
-**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
-
-**Вне границ: снимается отдельной фичей (`*.validate`, `*.compile`, `*.decompile`).**
-
-**Сценарии:**
-
-- Получить редактируемое описание готового макета
-
-### `unica.mxl.info`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `TemplatePath` | string | по ветви | — |
-| `WithText` | boolean | нет | — |
-| `confirm` | boolean | нет | — |
-| `cwd` | string | нет | — |
-| `delivery` | string | нет | — |
-| `filter` | string | нет | — |
-| `metadataPath` | string | по ветви | — |
-| `page` | integer | нет | — |
-| `resultRef` | string | нет | — |
-| `section` | string | нет | — |
-| `sourceSet` | string | по ветви | — |
-| `withText` | boolean | нет | — |
-
-**Селектор:** ровно одна ветвь — `sourceSet` + `metadataPath` **либо** `TemplatePath`. Ни одной или обе сразу отклоняются.
-
-**Результат сейчас:** `data`: области с границами и параметрами, наборы колонок, содержимое вне областей и счётчики (отвечают типизированным `data`)
-
-**Целевой контракт:** достигнут
-
-**Сценарии:**
-
-- Узнать заполняемые параметры печатной формы перед написанием печати
-- Построить пересечения строчных и колоночных областей для `ПолучитьОбласть`
-- Достать текст ячеек макета вместе с параметрами через `WithText`
-
-### `unica.mxl.validate`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `TemplatePath` | string | по ветви | — |
-| `metadataPath` | string | по ветви | — |
-| `sourceSet` | string | по ветви | — |
-
-Публикует **132** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
-
-**Селектор:** ровно одна ветвь — `sourceSet` + `metadataPath` **либо** `TemplatePath`. Ни одной или обе сразу отклоняются.
-
-**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
-
-**Вне границ: снимается отдельной фичей (`*.validate`, `*.compile`, `*.decompile`).**
-
-**Сценарии:**
-
-- Проверить макет после сборки
-
-## project — рабочее пространство
-
-### `unica.project.map`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `confirm` | boolean | нет | — |
-| `cwd` | string | нет | — |
-
-**Результат сейчас:** `data`: карта наборов исходников (отвечают типизированным `data`)
-
-**Целевой контракт:** достигнут
-
-**Сценарии:**
-
-- Узнать имена наборов исходников перед любым логическим вызовом (`sourceSet`)
-- Проверить, в каком формате лежит набор — Platform XML или EDT — до попытки правки
-- Разобраться, почему инструмент выбрал не тот корень исходников
-
-### `unica.project.status`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `confirm` | boolean | нет | — |
-| `cwd` | string | нет | — |
-
-**Результат сейчас:** `data`: `workspaceRoot`, `cacheRoot`, независимые `ready` и `repositoryReady`, полные общие и адресные по уникально адресуемому набору `checks[]` (группа с повторяющимся именем получает одну диагностику рабочего пространства с полным `count`, без неразличимых строк `sourceSet`), `sourceSets` (`array` после завершённой source discovery, `null` когда discovery не доказала наборы; `sourceSets[].sourceFormat` отражает working-tree discovery, а применимость repository-проверок может дополнительно доказываться staged index без изменения опубликованного формата) и `diagnostics[]` с безопасной remediation (отвечают типизированным `data`)
-
-**Целевой контракт:** достигнут
-
-**Сценарии:**
-
-- Понять, может ли Unica безопасно работать с source sets после клонирования
-- Отдельно проверить переносимость Git ignore, attributes и EOL для другого clone
-- Получить типизированные шаги remediation без автоматического изменения файлов или index
-
-## role — роли и права
-
-### `unica.role.compile`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `JsonPath` | string | да | — |
-| `OutputDir` | string | да | — |
-
-Публикует **135** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
-
-**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
-
-**Вне границ: снимается отдельной фичей (`*.validate`, `*.compile`, `*.decompile`).**
-
-**Сценарии:**
-
-- Создать роль из описания прав
-
-### `unica.role.edit`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `dryRun` | boolean | нет | — |
-| `metadataPath` | string | да | — |
-| `operations` | array | да | — |
-| `sourceSet` | string | да | — |
-
-**Результат сейчас:** `structuredContent.data`: канонический `metadataPath`, `changed`, семантические `effects` по `operationIndex`, `validation` и `diagnostics` без stdout, diff и физических путей (отвечают типизированным `data`)
-
-**Целевой контракт:** достигнут
-
-**Сценарии:**
-
-- Запретить удаление для одного справочника, сохранив остальные права, RLS и шаблоны роли
-- Проверить последовательность прав в предпросмотре до атомарного применения
-
-### `unica.role.info`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `RightsPath` | string | по ветви | — |
-| `confirm` | boolean | нет | — |
-| `cwd` | string | нет | — |
-| `delivery` | string | нет | — |
-| `filter` | string | нет | — |
-| `metadataPath` | string | по ветви | — |
-| `page` | integer | нет | — |
-| `resultRef` | string | нет | — |
-| `section` | string | нет | — |
-| `sourceSet` | string | по ветви | — |
-
-**Селектор:** ровно одна ветвь — `sourceSet` + `metadataPath` **либо** `RightsPath`. Ни одной или обе сразу отклоняются.
-
-**Результат сейчас:** `data`: разрешённые и запрещённые права по видам объектов, RLS, шаблоны и поддержка (отвечают типизированным `data`)
-
-**Целевой контракт:** достигнут
-
-**Сценарии:**
-
-- Проверить, какие права даёт роль перед её выдачей
-- Найти объекты с ограничением на уровне записей
-
-### `unica.role.validate`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `RightsPath` | string | по ветви | — |
-| `metadataPath` | string | по ветви | — |
-| `sourceSet` | string | по ветви | — |
-
-Публикует **133** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
-
-**Селектор:** ровно одна ветвь — `sourceSet` + `metadataPath` **либо** `RightsPath`. Ни одной или обе сразу отклоняются.
-
-**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
-
-**Вне границ: снимается отдельной фичей (`*.validate`, `*.compile`, `*.decompile`).**
-
-**Сценарии:**
-
-- Проверить роль после правки Rights.xml
-
-## runtime — выполнение и задания
-
-### `unica.runtime.execute`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `operation` | string | да | — |
-
-Публикует **64** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
-
-**Результат сейчас:** preview сохраняется; любой текущий applied-вызов возвращает терминальный fail-closed отказ до workspace discovery и process spawn (типизированы частично: часть результата всё ещё текст)
-
-**Вне границ: семейство runtime и build изучается отдельно.**
-
-**Сценарии:**
-
-- Предпросмотреть синтаксическую проверку конфигурации
-- Получить терминальный fail-closed результат applied-вызова без запуска процесса и перехода в runtime.job
-
-### `unica.runtime.job.cancel`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `confirm` | boolean | нет | — |
-| `cwd` | string | нет | — |
-| `dryRun` | boolean | нет | — |
-| `jobId` | string | да | — |
-
-**Результат сейчас:** снимок задания в `job` (отвечают снимком задания в `job`)
-
-**Вне границ: семейство runtime и build изучается отдельно.**
-
-**Сценарии:**
-
-- Отменить зависшее задание
-
-### `unica.runtime.job.list`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `confirm` | boolean | нет | — |
-| `cwd` | string | нет | — |
-
-**Результат сейчас:** снимок задания в `job` (отвечают снимком задания в `job`)
-
-**Вне границ: семейство runtime и build изучается отдельно.**
-
-**Сценарии:**
-
-- Перечислить задания рабочего пространства
-
-### `unica.runtime.job.logs`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `confirm` | boolean | нет | — |
-| `cwd` | string | нет | — |
-| `jobId` | string | да | — |
-| `tailChars` | integer | нет | — |
-
-**Результат сейчас:** снимок задания в `job` (отвечают снимком задания в `job`)
-
-**Вне границ: семейство runtime и build изучается отдельно.**
-
-**Сценарии:**
-
-- Прочитать хвост логов задания после падения
-
-### `unica.runtime.job.start`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `operation` | string | да | — |
-
-Публикует **61** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
-
-**Результат сейчас:** снимок задания в `job` (отвечают снимком задания в `job`)
-
-**Вне границ: семейство runtime и build изучается отдельно.**
-
-**Сценарии:**
-
-- Запустить длительную операцию, не блокируя сессию
-
-### `unica.runtime.job.status`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `confirm` | boolean | нет | — |
-| `cwd` | string | нет | — |
-| `jobId` | string | да | — |
-
-**Результат сейчас:** снимок задания в `job` (отвечают снимком задания в `job`)
-
-**Вне границ: семейство runtime и build изучается отдельно.**
-
-**Сценарии:**
-
-- Узнать состояние запущенного задания
-
-### `unica.runtime.job.wait`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `confirm` | boolean | нет | — |
-| `cwd` | string | нет | — |
-| `jobId` | string | да | — |
-| `timeoutSeconds` | integer | нет | — |
-
-**Результат сейчас:** снимок задания в `job` (отвечают снимком задания в `job`)
-
-**Вне границ: семейство runtime и build изучается отдельно.**
-
-**Сценарии:**
-
-- Дождаться завершения задания с ограниченным таймаутом
-
-## source — логическая адресация и ресурсы
-
-### `unica.source.children`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `confirm` | boolean | нет | — |
-| `cursor` | string | нет | — |
-| `cwd` | string | нет | — |
-| `limit` | integer | нет | — |
-| `metadataPath` | string | нет | — |
-| `sourceSet` | string | да | — |
-
-**Результат сейчас:** типизированный `data` (отвечают типизированным `data`)
-
-**Целевой контракт:** без изменений
-
-**Сценарии:**
-
-- Обойти дерево метаданных на один уровень вниз от корня набора
-- Перечислить формы объекта, не читая каталог `Forms/`
-
-### `unica.source.locate`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `confirm` | boolean | нет | — |
-| `cwd` | string | нет | — |
-| `path` | string | да | — |
-| `sourceSet` | string | да | — |
-
-**Результат сейчас:** типизированный `data` (отвечают типизированным `data`)
-
-**Целевой контракт:** без изменений
-
-**Сценарии:**
-
-- Перевести путь из вывода grep или git diff в логический адрес
-- Узнать, какому объекту принадлежит найденный файл модуля
-
-### `unica.source.read`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `confirm` | boolean | нет | — |
-| `cwd` | string | нет | — |
-| `limit` | integer | нет | — |
-| `offset` | integer | нет | — |
-| `resourceId` | string | да | — |
-| `snapshotId` | string | да | — |
-
-**Результат сейчас:** типизированный `data` (отвечают типизированным `data`)
-
-**Целевой контракт:** без изменений
-
-**Сценарии:**
-
-- Прочитать байты модуля кусками по 64 КиБ с сохранением BOM и профиля EOL
-- Достать фрагмент двоичного макета в base64
-
-### `unica.source.resolve`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `confirm` | boolean | нет | — |
-| `cursor` | string | нет | — |
-| `cwd` | string | нет | — |
-| `limit` | integer | нет | — |
-| `mode` | string | нет | — |
-| `query` | string | да | — |
-| `sourceSet` | string | да | — |
-| `targetKind` | string | нет | — |
-
-**Результат сейчас:** типизированный `data` (отвечают типизированным `data`)
-
-**Целевой контракт:** без изменений
-
-**Сценарии:**
-
-- Найти объект по русскому имени и получить канонический адрес для следующих вызовов
-- Проверить, существует ли объект, не зная раскладки выгрузки
-- Разрешить префикс `Справочник.` в ограниченный список кандидатов
-
-### `unica.source.resources`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `confirm` | boolean | нет | — |
-| `cursor` | string | по ветви | — |
-| `cwd` | string | нет | — |
-| `limit` | integer | нет | — |
-| `metadataPath` | string | только в ветви | — |
-| `scope` | string | только в ветви | — |
-| `snapshotId` | string | по ветви | — |
-| `sourceSet` | string | по ветви | — |
-
-**Селектор:** ровно одна ветвь — `sourceSet` **либо** `snapshotId` + `cursor`. Ни одной или обе сразу отклоняются.
-`metadataPath` принимается только вместе с `sourceSet`.
-`scope` принимается только вместе с `sourceSet`.
-
-**Результат сейчас:** типизированный `data` (отвечают типизированным `data`)
-
-**Целевой контракт:** без изменений
-
-**Сценарии:**
-
-- Получить манифест ресурсов объекта: дескриптор и его модули
-- Открыть неизменяемый снимок перед серией ограниченных чтений
-
-## standards — стандарты 1С
-
-### `unica.standards.explain`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `bodyLimit` | string | нет | — |
-| `body_limit` | string | нет | — |
-| `codes` | array | нет | — |
-| `confirm` | boolean | нет | — |
-| `cwd` | string | нет | — |
-| `id` | string | нет | — |
-| `idOrAliasOrUrl` | string | нет | — |
-| `language` | string | нет | — |
-| `limit` | integer | нет | — |
-| `mode` | string | нет | — |
-| `query` | string | нет | — |
-| `snippet` | string | нет | — |
-| `types` | array | нет | — |
-
-**Результат сейчас:** `data`: стандарт или диагностика из удалённого MCP как есть (отвечают типизированным `data`)
-
-**Целевой контракт:** достигнут
-
-**Сценарии:**
-
-- Раскрыть смысл кода диагностики из отчёта проверки
-- Прочитать стандарт целиком по его идентификатору
-
-### `unica.standards.search`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `bodyLimit` | string | нет | — |
-| `body_limit` | string | нет | — |
-| `codes` | array | нет | — |
-| `confirm` | boolean | нет | — |
-| `cwd` | string | нет | — |
-| `id` | string | нет | — |
-| `idOrAliasOrUrl` | string | нет | — |
-| `language` | string | нет | — |
-| `limit` | integer | нет | — |
-| `mode` | string | нет | — |
-| `query` | string | да | — |
-| `snippet` | string | нет | — |
-| `types` | array | нет | — |
-
-**Результат сейчас:** `data`: результат удалённого MCP стандартов как есть, без JSON-RPC конверта (отвечают типизированным `data`)
-
-**Целевой контракт:** достигнут
-
-**Сценарии:**
-
-- Найти стандарт 1С по теме перед проектированием API
-- Проверить, есть ли норматив на спорное решение
-
-## subsystem — подсистемы
-
-### `unica.subsystem.compile`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `OutputDir` | string | да | — |
-
-Публикует **134** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
-
-**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
-
-**Вне границ: снимается отдельной фичей (`*.validate`, `*.compile`, `*.decompile`).**
-
-**Сценарии:**
-
-- Добавить новый раздел в конфигурацию
-
-### `unica.subsystem.edit`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `SubsystemPath` | string | да | — |
-
-Публикует **133** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
-
-**Результат сейчас:** `data`: каждая операция с признаком применения, причиной пропуска и нормализованной ссылкой, счётчики, созданные заготовки и факт валидации (отвечают типизированным `data`)
-
-**Целевой контракт:** достигнут
-
-**Сценарии:**
-
-- Включить объект в подсистему
-
-### `unica.subsystem.info`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `SubsystemPath` | string | по ветви | — |
-| `confirm` | boolean | нет | — |
-| `cwd` | string | нет | — |
-| `delivery` | string | нет | — |
-| `filter` | string | нет | — |
-| `metadataPath` | string | только в ветви | — |
-| `page` | integer | нет | — |
-| `resultRef` | string | нет | — |
-| `section` | string | нет | — |
-| `sourceSet` | string | по ветви | — |
-
-**Селектор:** ровно одна ветвь — `sourceSet` **либо** `SubsystemPath`. Ни одной или обе сразу отклоняются.
-`metadataPath` принимается только вместе с `sourceSet`.
-
-**Результат сейчас:** `data`: состав, группы, дочерние подсистемы и командный интерфейс; каталог `Subsystems` возвращает зарегистрированное `tree`, зарегистрированный XML — сфокусированное `tree` с цепочкой от корня до выбранного узла и всеми его потомками, а самостоятельный незарегистрированный XML — только локальные данные без `tree`; повреждение доказательства даёт `provider_unavailable`, а отмена и истечение срока сохраняют собственную типизированную семантику сбоя; ни один из этих случаев не публикует частичное дерево (отвечают типизированным `data`)
-
-**Целевой контракт:** достигнут
-
-**Сценарии:**
-
-- Понять границы подсистемы перед добавлением объекта
-- Прочитать видимость и размещение команд подсистемы
-- Построить полное дерево зарегистрированной топологии каталога `Subsystems`
-- Увидеть цепочку от корня до выбранной подсистемы и полное дерево её потомков
-- Прочитать самостоятельный XML локально, не принимая отсутствие регистрации за пустое дерево
-
-### `unica.subsystem.validate`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `SubsystemPath` | string | по ветви | — |
-| `metadataPath` | string | по ветви | — |
-| `sourceSet` | string | по ветви | — |
-
-Публикует **133** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
-
-**Селектор:** ровно одна ветвь — `sourceSet` + `metadataPath` **либо** `SubsystemPath`. Ни одной или обе сразу отклоняются.
-
-**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
-
-**Вне границ: снимается отдельной фичей (`*.validate`, `*.compile`, `*.decompile`).**
-
-**Сценарии:**
-
-- Проверить подсистему после правки состава
-
-## support — поддержка поставщика
-
-### `unica.support.edit`
-
-—
-
-Публикует **134** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
-
-**Результат сейчас:** `data`: вид переключения, применённость с причиной, состояние правки, объект и правило, счётчики записей (отвечают типизированным `data`)
-
-**Целевой контракт:** достигнут
-
-**Сценарии:**
-
-- Снять объект с замка поставщика перед доработкой
-- Вернуть объект на поддержку после отката правки
-
-## xdto — пакеты XDTO
-
-### `unica.xdto.edit`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `confirm` | boolean | нет | — |
-| `cwd` | string | нет | — |
-| `dryRun` | boolean | нет | — |
-| `metadataPath` | string | да | — |
-| `operations` | array | да | — |
-| `sourceSet` | string | да | — |
-
-**Результат сейчас:** `data`: транзакционный no-op и `effects[]` — по эффекту на элемент `operations` с `operationIndex`, no-op шага, byte-local планом изменения и стабильными findings шага (отвечают типизированным `data`)
-
-**Целевой контракт:** достигнут
-
-**Сценарии:**
-
-- Предпросмотром добавить тип или свойство и проверить точный план до записи
-- Одним вызовом добавить тип и его свойства: операции видят результаты предыдущих, публикация одна
-- Применить подтверждённый неизменный план с guard-проверками цели и снимка
-- Без записи распознать точный повтор операций как no-op
-
-### `unica.xdto.info`
-
-—
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `confirm` | boolean | нет | — |
-| `cursor` | string | нет | — |
-| `cwd` | string | нет | — |
-| `limit` | integer | нет | — |
-| `metadataPath` | string | да | — |
-| `sourceSet` | string | да | — |
-| `typeName` | string | нет | — |
-
-**Результат сейчас:** `data`: сводка, импорты, типы, свойства и логические позиции пакета XDTO (отвечают типизированным `data`)
-
-**Целевой контракт:** достигнут
-
-**Сценарии:**
-
-- Прочитать сводку и импорты XDTO-пакета по логическому адресу
-- Перелистать именованные типы ограниченными страницами
-- Получить рекурсивную деталь одного типа без раскрытия физического Package.bin
+- Обнаружить workspace и получить точный рецепт v8project.yaml до source admission
+- Распознать существующую ИБ без исходников и предложить preview выгрузки CF или DT
+- Прочитать конфигурацию или объект метаданных по квалифицированному адресу
+- Получить наблюдаемую структуру узла и revision для последующей проверки

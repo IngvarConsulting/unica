@@ -1,0 +1,14 @@
+# Действия закреплены хешем коммита; Dependabot двигает хеш вместе с
+# комментарием версии, одним pull request в неделю на все действия сразу.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "ci"

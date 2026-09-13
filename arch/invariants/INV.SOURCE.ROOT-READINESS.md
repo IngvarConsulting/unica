@@ -2,8 +2,8 @@
 id: INV.SOURCE.ROOT-READINESS
 status: active
 governs: product
-decision: DEC.2026-08-18.CARRIED-RULES
-check: crates/unica-coder/src/application/mod.rs::project_status_workspace_root_rejection_preserves_the_entire_tree
+decision: DEC.2026-09-03.V0-13-LEGACY-BATCH-2
+check: crates/unica-coder/tests/platform/project_health.rs::project_health_workspace_root_rejection_suppresses_source_derived_git_facts
 scope: [source]
 ---
 

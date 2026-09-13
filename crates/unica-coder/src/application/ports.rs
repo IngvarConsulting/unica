@@ -1,10 +1,5 @@
 use super::{AdapterOutcome, InvocationMode, ToolSpec};
 use crate::application::metadata::{MetaFailure, MetaInfoRequest, MetadataRequest};
-use crate::application::source_navigation::{
-    SourceChildrenRequest, SourceChildrenResult, SourceLocateRequest, SourceLocateResult,
-    SourceResolveRequest, SourceResolveResult,
-};
-use crate::application::source_resources::{SourceReadRequest, SourceResourcesRequest};
 use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::{
@@ -17,7 +12,6 @@ use crate::domain::diagnostics::{
 };
 use crate::domain::engine::MissingEngine;
 use crate::domain::events::DomainEvent;
-use crate::domain::long_work::WorkState;
 use crate::domain::metadata::{
     MetaCollectionsData, MetaDiagnostic, MetaDiagnosticCode, MetaInfoData, MetaInfoDeclarations,
     MetaInfoDetails, MetaInfoPropertyData, MetaMutationData, MetaPredefinedItemsData,
@@ -26,16 +20,28 @@ use crate::domain::metadata::{
 };
 use crate::domain::operational_config::{OperationalConfig, OperationalConfigDiagnostic};
 use crate::domain::progress::ProgressSink;
-use crate::domain::project_health::{ProjectHealthInspectionError, ProjectHealthSnapshot};
-use crate::domain::source_resources::{
-    ResourceManifestPage, SourceReadResult, SourceResourceError,
-};
 use crate::domain::source_target::MetadataAddress;
 use crate::domain::subsystem::SubsystemAddress;
 use crate::domain::workspace::WorkspaceContext;
 use serde_json::{Map, Value};
 use std::fmt;
 use std::path::PathBuf;
+use std::time::Instant;
+
+#[allow(dead_code)] // The v0.13 invocation seam consumes this after the hidden phase.
+pub(crate) trait Clock: Send + Sync {
+    fn now(&self) -> Instant;
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+#[allow(dead_code)] // Production implementation for the hidden v0.13 clock port.
+pub(crate) struct TokioClock;
+
+impl Clock for TokioClock {
+    fn now(&self) -> Instant {
+        tokio::time::Instant::now().into_std()
+    }
+}
 
 pub(crate) struct HandlerOutcome {
     pub(crate) adapter: AdapterOutcome,
@@ -48,6 +54,25 @@ pub(crate) struct HandlerOutcome {
 }
 
 impl HandlerOutcome {
+    /// Типизированный результат с событиями: конструктор нужен тестовым
+    /// портам, которые доказывают путь публикации событий через шов.
+    #[cfg(test)]
+    pub(crate) fn with_data_and_events(
+        adapter: AdapterOutcome,
+        data: Value,
+        events: Vec<DomainEvent>,
+    ) -> Self {
+        Self {
+            adapter,
+            data: Some(data),
+            job: None,
+            events,
+            projected_events: Vec::new(),
+            recorded_cache: None,
+            diagnostics: None,
+        }
+    }
+
     pub(crate) fn plain(adapter: AdapterOutcome) -> Self {
         Self {
             adapter,
@@ -67,39 +92,6 @@ impl HandlerOutcome {
             job: None,
             events: Vec::new(),
             projected_events: Vec::new(),
-            recorded_cache: None,
-            diagnostics: None,
-        }
-    }
-
-    pub(crate) fn with_data_and_events(
-        adapter: AdapterOutcome,
-        data: Value,
-        events: Vec<DomainEvent>,
-    ) -> Self {
-        Self {
-            adapter,
-            data: Some(data),
-            job: None,
-            events,
-            projected_events: Vec::new(),
-            recorded_cache: None,
-            diagnostics: None,
-        }
-    }
-
-    pub(crate) fn with_data_events_and_projection(
-        adapter: AdapterOutcome,
-        data: Value,
-        events: Vec<DomainEvent>,
-        projected_events: Vec<DomainEvent>,
-    ) -> Self {
-        Self {
-            adapter,
-            data: Some(data),
-            job: None,
-            events,
-            projected_events,
             recorded_cache: None,
             diagnostics: None,
         }
@@ -151,6 +143,13 @@ pub(crate) enum MetadataTemplateType {
     SpreadsheetDocument,
     BinaryData,
     DataCompositionSchema,
+    /// External component archive. Same opaque payload as `BinaryData`; the
+    /// dedicated type exists so mobile builds can mark components. Logical
+    /// addressing stops at the template and never reads the payload.
+    AddIn,
+    /// Data composition appearance template: an opaque XML body whose
+    /// internals are not addressed.
+    DataCompositionAppearanceTemplate,
 }
 
 impl MetadataTemplateType {
@@ -161,7 +160,22 @@ impl MetadataTemplateType {
             "SpreadsheetDocument" => Some(Self::SpreadsheetDocument),
             "BinaryData" => Some(Self::BinaryData),
             "DataCompositionSchema" => Some(Self::DataCompositionSchema),
+            "AddIn" => Some(Self::AddIn),
+            "DataCompositionAppearanceTemplate" => Some(Self::DataCompositionAppearanceTemplate),
             _ => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn descriptor_value(self) -> &'static str {
+        match self {
+            Self::HtmlDocument => "HTMLDocument",
+            Self::TextDocument => "TextDocument",
+            Self::SpreadsheetDocument => "SpreadsheetDocument",
+            Self::BinaryData => "BinaryData",
+            Self::DataCompositionSchema => "DataCompositionSchema",
+            Self::AddIn => "AddIn",
+            Self::DataCompositionAppearanceTemplate => "DataCompositionAppearanceTemplate",
         }
     }
 }
@@ -489,17 +503,6 @@ pub(crate) trait ApplicationPorts: Send + Sync {
         Ok(OperationalConfig::compiled_defaults())
     }
 
-    fn inspect_project_health(
-        &self,
-        _context: &WorkspaceContext,
-        _cancellation: &CancellationToken,
-        _deadline: ProviderDeadline,
-    ) -> Result<ProjectHealthSnapshot, ProjectHealthInspectionError> {
-        Err(ProjectHealthInspectionError::Fatal(
-            "project health inspector is not configured".into(),
-        ))
-    }
-
     fn prepare_tool_invocation(
         &self,
         _spec: ToolSpec,
@@ -526,17 +529,16 @@ pub(crate) trait ApplicationPorts: Send + Sync {
 
     /// Дождаться движка, которого инструменту не хватает.
     ///
-    /// `None` — ждать нечего: движок на месте, не нужен вовсе или доставке
-    /// взяться неоткуда; вызов идёт дальше. `Some` — доставка не успела за
-    /// окно, и вызывающий получает её состояние вместо результата работы.
+    /// Возвращает состояние exact SharedWork. `NotRequired`/`Ready` продолжают
+    /// вызов; `Working`/`Failed` V12-адаптер проецирует в прежний `WorkState`.
     fn deliver_engine_if_missing(
         &self,
         _spec: ToolSpec,
         _context: &WorkspaceContext,
         _cancellation: &CancellationToken,
         _progress: &dyn ProgressSink,
-    ) -> Option<WorkState> {
-        None
+    ) -> crate::application::shared_work::EngineDeliveryState {
+        crate::application::shared_work::EngineDeliveryState::NotRequired
     }
 
     fn read_metadata_local(
@@ -622,33 +624,6 @@ pub(crate) trait ApplicationPorts: Send + Sync {
         Err("diagnostic provider registry is not configured".to_string())
     }
 
-    fn resolve_source_navigation(
-        &self,
-        _request: SourceResolveRequest,
-        _context: &WorkspaceContext,
-        _cancellation: &CancellationToken,
-    ) -> Result<SourceResolveResult, String> {
-        Err("source navigation resolver is not configured".to_string())
-    }
-
-    fn children_source_navigation(
-        &self,
-        _request: SourceChildrenRequest,
-        _context: &WorkspaceContext,
-        _cancellation: &CancellationToken,
-    ) -> Result<SourceChildrenResult, String> {
-        Err("source navigation traversal is not configured".to_string())
-    }
-
-    fn locate_source_navigation(
-        &self,
-        _request: SourceLocateRequest,
-        _context: &WorkspaceContext,
-        _cancellation: &CancellationToken,
-    ) -> Result<SourceLocateResult, String> {
-        Err("source navigation locator is not configured".to_string())
-    }
-
     fn resolve_diagnostic_context(
         &self,
         _request: &DiagnosticRequest,
@@ -685,30 +660,6 @@ pub(crate) trait ApplicationPorts: Send + Sync {
             .into_iter()
             .map(|observation| self.map_diagnostic_observation(observation, context, cancellation))
             .collect()
-    }
-
-    fn source_resources(
-        &self,
-        _request: SourceResourcesRequest,
-        _context: &WorkspaceContext,
-        _cancellation: &CancellationToken,
-    ) -> Result<ResourceManifestPage, SourceResourceError> {
-        Err(SourceResourceError::new(
-            crate::domain::source_resources::SourceResourceErrorCode::SourceUnavailable,
-            "source resource provider is not configured",
-        ))
-    }
-
-    fn read_source_resource(
-        &self,
-        _request: SourceReadRequest,
-        _context: &WorkspaceContext,
-        _cancellation: &CancellationToken,
-    ) -> Result<SourceReadResult, SourceResourceError> {
-        Err(SourceResourceError::new(
-            crate::domain::source_resources::SourceResourceErrorCode::SourceUnavailable,
-            "source resource provider is not configured",
-        ))
     }
 
     fn evaluate_format_guard(

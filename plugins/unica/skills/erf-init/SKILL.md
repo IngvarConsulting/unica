@@ -25,7 +25,7 @@ description: Создать пустой make-ready scaffold внешнего о
 1. Убедиться, что `v8project.yaml` использует Designer mode: явно `format: DESIGNER` либо поле `format` отсутствует и действует Designer default v8-runner. Skill создаёт platform XML, а EDT external-project layout не поддерживается.
 2. Сохранить существующие `workPath`, `infobase`, credentials и local overrides. Не заменять connection string и не инициализировать существующую ИБ ради scaffold.
 3. Найти source-set с `type: EXTERNAL_REPORTS` и передать его `path` как `OutputDir` без вложенного подкаталога. v8-runner ищет descriptors непосредственно в корне source-set.
-4. Если source-set ещё не объявлен, создать scaffold в выбранном новом каталоге, затем явно добавить этот каталог как корень Designer source-set. Проверить регистрацию через `unica.project.map`: `kind=external_report`, `sourceFormat=platform_xml`.
+4. Если source-set ещё не объявлен, создать scaffold в выбранном новом каталоге, затем явно добавить этот каталог как корень Designer source-set. Проверить регистрацию через `unica.view {}`: `kind=external_report`, `sourceFormat=platform_xml`.
 5. Передать `FormName`, только если нужна пустая управляемая форма. Без него создаются descriptor и `ObjectModule.bsl`; пустая СКД автоматически не добавляется.
 6. Сначала проверить точный список файлов через `dryRun: true`; при явном запросе пользователя повторить с `dryRun: false`.
 7. Добавлять СКД позже через `dcs-*`/`template-*`, затем предпросмотреть `unica.runtime.execute operation=make`. Для будущей applied-сборки в `v8project.yaml` потребуется доступная `infobase.connection`; текущий preview не собирает `.erf`.

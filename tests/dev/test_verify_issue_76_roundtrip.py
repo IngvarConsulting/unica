@@ -219,13 +219,15 @@ class ScriptedClient:
         arguments = copy.deepcopy(arguments)
         self.calls.append((name, arguments))
 
-        if name == "unica.cf.info":
+        if name == "unica.view":
             return {
                 "ok": True,
                 "data": {
-                    "support": {
-                        "state": "supported",
-                        "editingEnabled": self.editing_enabled,
+                    "props": {
+                        "support": {
+                            "state": "supported",
+                            "editingEnabled": self.editing_enabled,
+                        }
                     }
                 },
                 "errors": [],
@@ -1019,14 +1021,16 @@ class Issue76RoundTripTests(unittest.TestCase):
 
             class NoopSupportClient(ScriptedClient):
                 def call(self, name, arguments, **kwargs):
-                    if name == "unica.cf.info":
+                    if name == "unica.view":
                         self.calls.append((name, copy.deepcopy(arguments)))
                         return {
                             "ok": True,
                             "data": {
-                                "support": {
-                                    "state": "supported",
-                                    "editingEnabled": True,
+                                "props": {
+                                    "support": {
+                                        "state": "supported",
+                                        "editingEnabled": True,
+                                    }
                                 }
                             },
                             "errors": [],
@@ -1658,7 +1662,7 @@ class Issue76RoundTripTests(unittest.TestCase):
         baseline_index = call_names.index(
             ("unica.runtime.execute", "build", False)
         )
-        support_after_index = call_names.index(("unica.cf.info", None, None), 1)
+        support_after_index = call_names.index(("unica.view", None, None), 1)
         meta_apply_index = call_names.index(("unica.meta.edit", None, False))
         second_build_index = len(call_names) - 1 - call_names[::-1].index(
             ("unica.runtime.execute", "build", False)
