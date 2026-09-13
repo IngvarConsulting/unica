@@ -2,12 +2,13 @@
 id: INV.APP.SUPPORT-STATE
 status: active
 governs: product
-decision: DEC.2026-08-18.CARRIED-RULES
-check: crates/unica-coder/src/infrastructure/application_ports.rs::native_typed_readers_receive_logical_support_targets
+decision: DEC.2026-09-04.V0-13-LEGACY-BATCH-3
+check: tests/ci/test_acceptance_scenarios.py::test_every_wire_answers_its_frozen_classes
 scope: [app]
 ---
 
-# Типизированные читатели запрашивают поддержку по логической цели
+# Чтение узнаёт поддержку по логической цели
 
-Нативные предметные читатели передают в порт состояния поддержки разрешённый
-логический объект или подсистему, а не физический путь marker-файла.
+Состояние поддержки приходит в ответ чтения по логическому адресу объекта или
+подсистемы, а не по физическому пути marker-файла: канонический `view` кладёт
+его в `props`, и корпус приёмки замораживает этот ответ на объектах поставщика.

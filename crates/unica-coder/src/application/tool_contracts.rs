@@ -5,153 +5,45 @@ use super::operation_descriptors::{
 use super::source_navigation::SOURCE_NAVIGATION_LIMIT_MAX;
 #[cfg(test)]
 use super::ToolExecution;
-use super::{
-    CodeIntelligenceOperation, InvocationMode, RuntimeJobAction, SourceNavigationOperation,
-    SourceResourceOperation, ToolHandler, ToolSpec,
-};
+use super::{CodeIntelligenceOperation, InvocationMode, RuntimeJobAction, ToolHandler, ToolSpec};
 use crate::domain::diagnostics::{DiagnosticAction, LIVE_DIAGNOSTIC_PROVIDERS};
 use crate::domain::form_edit::{form_edit_definition_schema, validate_form_edit_definition};
 use crate::domain::role::{
     all_role_right_names, parse_role_edit_request, ROLE_METADATA_PATH_PATTERN,
     ROLE_OBJECT_NAME_PATTERN,
 };
-use crate::domain::source_resources::{SOURCE_READ_LIMIT_MAX, SOURCE_RESOURCE_PAGE_LIMIT_MAX};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 use uuid::Uuid;
 
 const COMMON_ARGS: &[&str] = &["cwd", "confirm"];
 const MUTATION_ARGS: &[&str] = &["dryRun"];
-/// How much of a logical address a bridged reader can actually use. Publishing
-/// `metadataPath` on a tool that never reads one would be a lie in the schema,
-/// so the three cases are distinguished rather than collapsed into a flag.
+
+/// The package-selected surface is the canonical v0.13 registry. The v0.12
+/// variant remains available only to focused compatibility tests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LogicalAddress {
-    /// The target is the source root itself: `unica.cf.*` reads
-    /// `Configuration.xml`, which has no address.
-    Absent,
-    /// The address narrows the read, and its absence selects the whole set:
-    /// `unica.subsystem.info` answers with the entire registered tree.
-    Optional,
-    /// The tool reads exactly one addressed object.
-    Required,
+pub(crate) enum SurfaceRelease {
+    #[allow(dead_code)] // retained only as the explicit no-fallback test seam
+    V12,
+    V13,
 }
-
-impl LogicalAddress {
-    /// The arguments the logical branch requires.
-    const fn required_args(self) -> &'static [&'static str] {
-        match self {
-            Self::Absent | Self::Optional => &["sourceSet"],
-            Self::Required => &["sourceSet", "metadataPath"],
-        }
-    }
-
-    const fn publishes_address(self) -> bool {
-        !matches!(self, Self::Absent)
-    }
-}
-
-/// ADR-0049 transitional bridge: tool name, its canonical legacy target
-/// argument, and how much address the tool takes. Removing the legacy column is
-/// the separate per-tool slice ADR-0021 §13 requires.
-const BRIDGED_SELECTORS: &[(&str, &str, LogicalAddress)] = &[
-    ("unica.cf.info", "ConfigPath", LogicalAddress::Absent),
-    ("unica.cf.validate", "ConfigPath", LogicalAddress::Absent),
-    (
-        "unica.subsystem.info",
-        "SubsystemPath",
-        LogicalAddress::Optional,
-    ),
-    (
-        "unica.subsystem.validate",
-        "SubsystemPath",
-        LogicalAddress::Required,
-    ),
-    ("unica.role.info", "RightsPath", LogicalAddress::Required),
-    (
-        "unica.role.validate",
-        "RightsPath",
-        LogicalAddress::Required,
-    ),
-    ("unica.form.info", "FormPath", LogicalAddress::Required),
-    ("unica.form.validate", "FormPath", LogicalAddress::Required),
-    ("unica.dcs.info", "TemplatePath", LogicalAddress::Required),
-    (
-        "unica.dcs.validate",
-        "TemplatePath",
-        LogicalAddress::Required,
-    ),
-    ("unica.mxl.info", "TemplatePath", LogicalAddress::Required),
-    (
-        "unica.mxl.validate",
-        "TemplatePath",
-        LogicalAddress::Required,
-    ),
-    (
-        "unica.mxl.decompile",
-        "TemplatePath",
-        LogicalAddress::Required,
-    ),
-];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ReaderMigrationMode {
-    Bridge,
-    DirectSwitch,
+pub(crate) enum V13TaskProfile {
+    Native,
+    Compatibility,
 }
 
-/// Production-owned migration inventory. Schema routing and parity evidence
-/// consume this exact owner rather than maintaining independent reader lists.
-const READER_MIGRATION_INVENTORY: &[(&str, ReaderMigrationMode)] = &[
-    ("unica.cf.info", ReaderMigrationMode::Bridge),
-    ("unica.cf.validate", ReaderMigrationMode::Bridge),
-    ("unica.subsystem.info", ReaderMigrationMode::Bridge),
-    ("unica.subsystem.validate", ReaderMigrationMode::Bridge),
-    ("unica.role.info", ReaderMigrationMode::Bridge),
-    ("unica.role.validate", ReaderMigrationMode::Bridge),
-    ("unica.form.info", ReaderMigrationMode::Bridge),
-    ("unica.form.validate", ReaderMigrationMode::Bridge),
-    ("unica.dcs.info", ReaderMigrationMode::Bridge),
-    ("unica.dcs.validate", ReaderMigrationMode::Bridge),
-    ("unica.mxl.info", ReaderMigrationMode::Bridge),
-    ("unica.mxl.validate", ReaderMigrationMode::Bridge),
-    ("unica.mxl.decompile", ReaderMigrationMode::Bridge),
-    ("unica.code.diagnostics", ReaderMigrationMode::DirectSwitch),
-];
-
-pub(crate) fn authoritative_reader_migration_inventory(
-) -> impl Iterator<Item = (&'static str, ReaderMigrationMode)> {
-    READER_MIGRATION_INVENTORY.iter().copied()
+impl SurfaceRelease {
+    pub(crate) const fn from_package_version() -> Self {
+        Self::V13
+    }
 }
-
 /// Arguments a bridged reader still accepts but must not advertise: no branch
 /// of its schema can honour them, and publishing one would name a selector the
 /// tool cannot use. Refusing them instead would break calls that worked before
 /// the bridge, which it does not do.
 ///
-/// `MetadataPath` is always here. The shared catch-all hands it to every native
-/// tool and no handler has ever read it; once the bridge gave the lowercase
-/// name a meaning, publishing both would put two arguments differing only in
-/// case, with different semantics, in one schema.
-fn unpublished_bridge_args(name: &str) -> &'static [&'static str] {
-    match bridged_selector(name) {
-        Some((_, address)) if !address.publishes_address() => &["metadataPath", "MetadataPath"],
-        Some(_) => &["MetadataPath"],
-        None => &[],
-    }
-}
-
-fn bridged_selector(name: &str) -> Option<(&'static str, LogicalAddress)> {
-    if !authoritative_reader_migration_inventory()
-        .any(|(reader, mode)| reader == name && mode == ReaderMigrationMode::Bridge)
-    {
-        return None;
-    }
-    BRIDGED_SELECTORS
-        .iter()
-        .find(|(tool, _, _)| *tool == name)
-        .map(|(_, legacy, address)| (*legacy, *address))
-}
 const CODE_PATCH_ARGS: &[&str] = &[
     "sourceSet",
     "metadataPath",
@@ -206,38 +98,9 @@ const XDTO_EDIT_OPS: &[&str] = &[
     "removeType",
     "removeProperty",
 ];
-/// ADR-0071: the retired flat form of `unica.xdto.edit`. Any of these at the
-/// top level fails closed with `legacy_arguments_removed` before dispatch.
-const XDTO_EDIT_LEGACY_ARGS: &[&str] = &[
-    "operation",
-    "name",
-    "base",
-    "typeName",
-    "propertyPath",
-    "property",
-];
 const RUNTIME_JOB_STATUS_ARGS: &[&str] = &["jobId"];
 const RUNTIME_JOB_WAIT_ARGS: &[&str] = &["jobId", "timeoutSeconds"];
 const RUNTIME_JOB_LOGS_ARGS: &[&str] = &["jobId", "tailChars"];
-const SOURCE_RESOLVE_ARGS: &[&str] = &[
-    "sourceSet",
-    "query",
-    "mode",
-    "targetKind",
-    "limit",
-    "cursor",
-];
-const SOURCE_CHILDREN_ARGS: &[&str] = &["sourceSet", "metadataPath", "limit", "cursor"];
-const SOURCE_LOCATE_ARGS: &[&str] = &["sourceSet", "path"];
-const SOURCE_RESOURCES_ARGS: &[&str] = &[
-    "sourceSet",
-    "metadataPath",
-    "scope",
-    "snapshotId",
-    "cursor",
-    "limit",
-];
-const SOURCE_READ_ARGS: &[&str] = &["snapshotId", "resourceId", "offset", "limit"];
 pub(crate) const DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS: u64 = 30;
 pub(crate) const DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS: u64 = 3600;
 
@@ -648,6 +511,7 @@ const CODE_ARGS: &[&str] = &[
 
 const CODE_DEFINITION_ARGS: &[&str] = &["limit", "moduleHint", "name", "sourceDir"];
 const CODE_OUTLINE_ARGS: &[&str] = &["includeMethods", "path", "sourceDir"];
+const DOCUMENTATION_GET_ARGS: &[&str] = &["documentId", "language", "platformVersion"];
 const CODE_SEARCH_ARGS: &[&str] = &["limit", "metadataPath", "query", "sourceDir", "sourceSet"];
 const CODE_GRAPH_ARGS: &[&str] = &[
     "detail",
@@ -675,28 +539,6 @@ const CODE_GRAPH_MODES: &[&str] = &[
 const CODE_GRAPH_DIRECTIONS: &[&str] = &["in", "out", "both"];
 const CODE_GRAPH_DETAIL: &[&str] = &["names", "signatures", "bodies"];
 const CODE_DIAGNOSTIC_SEVERITIES: &[&str] = &["error", "warning", "info", "hint"];
-const STANDARDS_ARGS: &[&str] = &[
-    "body_limit",
-    "bodyLimit",
-    "codes",
-    "id",
-    "idOrAliasOrUrl",
-    "language",
-    "limit",
-    "mode",
-    "query",
-    "snippet",
-    "types",
-];
-const DOCUMENTATION_SEARCH_ARGS: &[&str] = &[
-    "language",
-    "limit",
-    "platformVersion",
-    "query",
-    "sourceKinds",
-];
-const DOCUMENTATION_GET_ARGS: &[&str] = &["documentId", "language", "platformVersion"];
-
 /// Removes JSON Schema `description` annotations from a schema tree without
 /// touching members that are property names (a property literally called
 /// `description` survives; only its own annotation is dropped).
@@ -757,9 +599,6 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
             });
         }
     }
-    // ADR-0049: still accepted for compatibility, never advertised.
-    let unpublished = unpublished_bridge_args(tool.name);
-    property_names.retain(|name| !unpublished.contains(name));
     let mut properties = Map::new();
     for name in property_names {
         let mut property = property_schema_for_tool(tool, name);
@@ -782,29 +621,6 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
         "properties": properties,
         "required": required_args(tool),
     });
-    if let Some((legacy, address)) = bridged_selector(tool.name) {
-        // ADR-0049: the two selectors are alternatives, never a precedence
-        // question, so the schema says so instead of leaving a client to guess
-        // which one an answer came from.
-        let logical_required = address.required_args();
-        let mut forbidden_in_legacy = logical_required
-            .iter()
-            .map(|name| json!({"required": [name]}))
-            .collect::<Vec<_>>();
-        if address == LogicalAddress::Optional {
-            forbidden_in_legacy.push(json!({"required": ["metadataPath"]}));
-        }
-        schema["oneOf"] = json!([
-            {
-                "required": logical_required,
-                "not": {"required": [legacy]}
-            },
-            {
-                "required": [legacy],
-                "not": {"anyOf": forbidden_in_legacy}
-            }
-        ]);
-    }
     if tool.name == "unica.form.edit" {
         schema["anyOf"] = json!([
             {"required": ["JsonPath"]},
@@ -1170,7 +986,6 @@ pub fn validate_tool_argument_shape(
         );
     }
     validate_removed_target_arguments(tool, args)?;
-    validate_removed_xdto_edit_arguments(tool, args)?;
     let allowed = allowed_args(&tool).into_iter().collect::<BTreeSet<_>>();
     for key in args.keys() {
         if !allowed.contains(key.as_str()) {
@@ -1214,18 +1029,12 @@ pub fn validate_tool_argument_semantics(
         validate_runtime_job_arguments(tool.name, action, args, dry_run)?;
     }
     validate_code_arguments(tool, args, dry_run)?;
-    validate_source_navigation_arguments(tool, args)?;
-    validate_source_resource_arguments(tool, args)?;
     validate_code_patch_arguments(tool, args)?;
-    validate_form_add_arguments(tool, args)?;
     validate_form_edit_arguments(tool, args, dry_run)?;
-    validate_template_add_arguments(tool, args)?;
-    validate_support_arguments(tool, args, dry_run)?;
     validate_external_init_arguments(tool, args)?;
     validate_cfe_patch_method_arguments(tool, args)?;
     validate_xdto_arguments(tool, args)?;
     validate_role_edit_arguments(tool, args)?;
-    validate_bridged_selector(tool, args)?;
 
     if !dry_run || is_external_init_tool(tool) {
         for required in required_args(&tool) {
@@ -1263,7 +1072,7 @@ fn validate_tool_arguments(
 }
 
 fn validate_xdto_arguments(tool: ToolSpec, args: &Map<String, Value>) -> Result<(), String> {
-    if !matches!(tool.name, "unica.xdto.info" | "unica.xdto.edit") {
+    if tool.name != "unica.xdto.info" {
         return Ok(());
     }
     let source_set = xdto_required_string(tool.name, args, "sourceSet")?;
@@ -1542,113 +1351,6 @@ fn is_xml_ncname_char(character: char) -> bool {
         || xml_character_is_in_ranges(character, XML_NCNAME_CONTINUATION_RANGES)
 }
 
-fn validate_source_resource_arguments(
-    tool: ToolSpec,
-    args: &Map<String, Value>,
-) -> Result<(), String> {
-    let ToolHandler::SourceResources { operation } = tool.handler else {
-        return Ok(());
-    };
-    match operation {
-        SourceResourceOperation::Resources => {
-            validate_integer_bound(
-                tool.name,
-                args,
-                "limit",
-                1,
-                SOURCE_RESOURCE_PAGE_LIMIT_MAX as u64,
-            )?;
-            if let Some(value) = args.get("scope") {
-                let scope = value
-                    .as_str()
-                    .ok_or_else(|| format!("{} argument `scope` must be a string", tool.name))?;
-                if !matches!(scope, "self" | "aggregate" | "registrations") {
-                    return Err(format!(
-                        "{} argument `scope` must be `self`, `aggregate`, or `registrations`",
-                        tool.name
-                    ));
-                }
-            }
-        }
-        SourceResourceOperation::Read => {
-            validate_integer_bound(tool.name, args, "limit", 1, SOURCE_READ_LIMIT_MAX as u64)?;
-        }
-    }
-    Ok(())
-}
-
-fn validate_source_navigation_arguments(
-    tool: ToolSpec,
-    args: &Map<String, Value>,
-) -> Result<(), String> {
-    let ToolHandler::SourceNavigation { operation } = tool.handler else {
-        return Ok(());
-    };
-    for required in match operation {
-        SourceNavigationOperation::Resolve => &["sourceSet", "query"][..],
-        SourceNavigationOperation::Children => &["sourceSet"][..],
-        SourceNavigationOperation::Locate => &["sourceSet", "path"][..],
-    } {
-        let value = args
-            .get(*required)
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| format!("{} requires `{required}` argument", tool.name))?;
-        debug_assert!(!value.is_empty());
-    }
-    if let Some(value) = args.get("mode") {
-        let mode = value
-            .as_str()
-            .ok_or_else(|| format!("{} argument `mode` must be a string", tool.name))?;
-        if !matches!(mode, "exact" | "prefix") {
-            return Err(format!(
-                "{} argument `mode` must be `exact` or `prefix`",
-                tool.name
-            ));
-        }
-    }
-    if let Some(value) = args.get("targetKind") {
-        let target_kind = value
-            .as_str()
-            .ok_or_else(|| format!("{} argument `targetKind` must be a string", tool.name))?;
-        if !matches!(target_kind, "metadataObject" | "module") {
-            return Err(format!(
-                "{} argument `targetKind` must be `metadataObject` or `module`",
-                tool.name
-            ));
-        }
-    }
-    if let Some(value) = args.get("limit") {
-        let limit = value
-            .as_u64()
-            .ok_or_else(|| format!("{} argument `limit` must be a positive integer", tool.name))?;
-        if !(1..=u64::try_from(SOURCE_NAVIGATION_LIMIT_MAX).expect("small constant"))
-            .contains(&limit)
-        {
-            return Err(format!(
-                "{} argument `limit` must be between 1 and {SOURCE_NAVIGATION_LIMIT_MAX}",
-                tool.name
-            ));
-        }
-    }
-    for optional in ["metadataPath", "cursor"] {
-        if let Some(value) = args.get(optional) {
-            let non_empty = value
-                .as_str()
-                .map(str::trim)
-                .is_some_and(|value| !value.is_empty());
-            if !non_empty {
-                return Err(format!(
-                    "{} argument `{optional}` must be a non-empty string",
-                    tool.name
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
 fn validate_removed_target_arguments(
     tool: ToolSpec,
     args: &Map<String, Value>,
@@ -1670,28 +1372,6 @@ fn validate_removed_target_arguments(
     {
         return Err(
             "legacy_target_removed: unica.code.diagnostics no longer accepts `mode`, `sourceDir`, or `path`; use `action + sourceSet` and `metadataPath` for findings"
-                .to_string(),
-        );
-    }
-    Ok(())
-}
-
-/// ADR-0071: the flat single-operation form of `unica.xdto.edit` is retired.
-/// The check precedes unknown-argument validation so the caller of the old
-/// contract gets the stable migration code, not a spelling suggestion.
-fn validate_removed_xdto_edit_arguments(
-    tool: ToolSpec,
-    args: &Map<String, Value>,
-) -> Result<(), String> {
-    if tool.name != "unica.xdto.edit" {
-        return Ok(());
-    }
-    if XDTO_EDIT_LEGACY_ARGS
-        .iter()
-        .any(|field| args.contains_key(*field))
-    {
-        return Err(
-            "legacy_arguments_removed: unica.xdto.edit no longer accepts `operation`, `name`, `base`, `typeName`, `propertyPath`, or `property` at the top level; pass one element of the typed `operations` array instead"
                 .to_string(),
         );
     }
@@ -1892,48 +1572,6 @@ fn validate_external_init_arguments(
     Ok(())
 }
 
-fn validate_form_add_arguments(tool: ToolSpec, args: &Map<String, Value>) -> Result<(), String> {
-    if tool.name != "unica.form.add" {
-        return Ok(());
-    }
-    validate_unique_alias_group(tool.name, args, &["SetDefault", "setDefault"])
-}
-
-/// ADR-0049: a bridged reader accepts exactly one selector. Two at once is a
-/// caller mistake, not a precedence question — resolving it silently would hide
-/// which selector produced the answer. Zero is the pre-existing missing-argument
-/// error, restated so it names both ways in.
-fn validate_bridged_selector(tool: ToolSpec, args: &Map<String, Value>) -> Result<(), String> {
-    let Some((legacy, address)) = bridged_selector(tool.name) else {
-        return Ok(());
-    };
-    let logical = address.required_args();
-    let has_logical = contains_any(args, logical) || args.contains_key("metadataPath");
-    let has_legacy = args.contains_key(legacy);
-    if has_logical && has_legacy {
-        return Err(format!(
-            "selector_conflict: {} accepts either `{}` or `{legacy}`, not both",
-            tool.name,
-            logical.join("` + `"),
-        ));
-    }
-    if !has_logical && !has_legacy {
-        return Err(format!(
-            "{} requires either `{}` or `{legacy}` argument",
-            tool.name,
-            logical.join("` + `"),
-        ));
-    }
-    if has_logical {
-        for required in logical {
-            if !args.contains_key(*required) {
-                return Err(format!("{} requires `{required}` argument", tool.name));
-            }
-        }
-    }
-    Ok(())
-}
-
 fn validate_form_edit_arguments(
     tool: ToolSpec,
     args: &Map<String, Value>,
@@ -1967,64 +1605,6 @@ fn validate_form_edit_arguments(
     Ok(())
 }
 
-fn validate_template_add_arguments(
-    tool: ToolSpec,
-    args: &Map<String, Value>,
-) -> Result<(), String> {
-    if tool.name != "unica.template.add" {
-        return Ok(());
-    }
-    validate_unique_alias_group(tool.name, args, &["SetMainSKD", "setMainSKD"])
-}
-
-fn validate_support_arguments(
-    tool: ToolSpec,
-    args: &Map<String, Value>,
-    dry_run: bool,
-) -> Result<(), String> {
-    if tool.name != "unica.support.edit" {
-        return Ok(());
-    }
-
-    validate_unique_alias_group(tool.name, args, &["Capability", "capability"])?;
-    validate_unique_alias_group(tool.name, args, &["Set", "set"])?;
-    validate_unique_alias_group(
-        tool.name,
-        args,
-        &["Path", "path", "TargetPath", "targetPath"],
-    )?;
-    validate_enum_alias_argument(
-        tool.name,
-        args,
-        &["Capability", "capability"],
-        &["on", "off"],
-    )?;
-    validate_enum_alias_argument(
-        tool.name,
-        args,
-        &["Set", "set"],
-        &["editable", "off-support", "locked"],
-    )?;
-
-    if dry_run {
-        return Ok(());
-    }
-
-    if !contains_any(args, &["Path", "path", "TargetPath", "targetPath"]) {
-        return Err(format!("{} requires `Path` argument", tool.name));
-    }
-    let has_capability = contains_any(args, &["Capability", "capability"]);
-    let has_set = contains_any(args, &["Set", "set"]);
-    if has_capability == has_set {
-        return Err(format!(
-            "{} requires exactly one of `Capability` or `Set`",
-            tool.name
-        ));
-    }
-
-    Ok(())
-}
-
 fn contains_any(args: &Map<String, Value>, names: &[&str]) -> bool {
     names.iter().any(|name| args.contains_key(*name))
 }
@@ -2044,28 +1624,6 @@ fn validate_unique_alias_group(
             "{tool_name} received conflicting aliases: {}",
             present.join(", ")
         ));
-    }
-    Ok(())
-}
-
-fn validate_enum_alias_argument(
-    tool_name: &'static str,
-    args: &Map<String, Value>,
-    names: &[&str],
-    allowed: &[&str],
-) -> Result<(), String> {
-    for name in names {
-        if let Some(value) = args.get(*name) {
-            let Some(value) = value.as_str() else {
-                return Err(format!("{tool_name} argument `{name}` must be string"));
-            };
-            if !allowed.contains(&value) {
-                return Err(format!(
-                    "{tool_name} argument `{name}` must be one of: {}",
-                    allowed.join(", ")
-                ));
-            }
-        }
     }
     Ok(())
 }
@@ -2750,15 +2308,6 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
         ToolHandler::CodeIntelligence { operation } => {
             names.extend(code_intelligence_args(operation))
         }
-        ToolHandler::SourceNavigation { operation } => names.extend(match operation {
-            SourceNavigationOperation::Resolve => SOURCE_RESOLVE_ARGS,
-            SourceNavigationOperation::Children => SOURCE_CHILDREN_ARGS,
-            SourceNavigationOperation::Locate => SOURCE_LOCATE_ARGS,
-        }),
-        ToolHandler::SourceResources { operation } => names.extend(match operation {
-            SourceResourceOperation::Resources => SOURCE_RESOURCES_ARGS,
-            SourceResourceOperation::Read => SOURCE_READ_ARGS,
-        }),
         ToolHandler::Diagnostics => {
             names.clear();
             names.extend(
@@ -2767,29 +2316,11 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
                     .flat_map(|descriptor| descriptor.allowed_args.iter().copied()),
             );
         }
+        ToolHandler::Documentation { .. } => names.extend(DOCUMENTATION_GET_ARGS),
         ToolHandler::CodeAdapter { .. } => names.extend(code_args_for(tool.name)),
-        ToolHandler::StandardsAdapter { .. } => names.extend(STANDARDS_ARGS),
-        ToolHandler::Documentation { operation: "get" } => names.extend(DOCUMENTATION_GET_ARGS),
-        ToolHandler::Documentation { .. } => names.extend(DOCUMENTATION_SEARCH_ARGS),
-        ToolHandler::ProjectStatus | ToolHandler::ProjectMap => {}
     }
     if tool.name == "unica.mxl.decompile" {
         names.retain(|name| *name != "OutputPath" && *name != "outputPath");
-    }
-    // ADR-0049: one place adds the logical selector to all thirteen bridged
-    // readers, so the narrow reader lists and the shared validator list cannot
-    // drift apart. Narrowing the validator lists themselves is a separate
-    // contract question and stays out of this bridge.
-    if let Some((_, address)) = bridged_selector(tool.name) {
-        names.push("sourceSet");
-        if address.publishes_address() {
-            names.push("metadataPath");
-        }
-        // A tool whose branches cannot honour an address does not gain one
-        // here, but it does not lose one either: the shared catch-all already
-        // handed `metadataPath` to every native tool, and this bridge removes
-        // nothing. It stays accepted and is filtered out of the published
-        // schema by `unpublished_bridge_args`.
     }
     names.sort_unstable();
     names.dedup();
@@ -2815,32 +2346,13 @@ fn required_args(tool: &ToolSpec) -> Vec<&'static str> {
         ToolHandler::NativeOperation { operation, .. } => native_operation_descriptor(operation)
             .map(|descriptor| descriptor.required_args.to_vec())
             .unwrap_or_default(),
-        ToolHandler::StandardsAdapter {
-            operation: "search",
-            ..
-        } => vec!["query"],
-        ToolHandler::Documentation {
-            operation: "search",
-            ..
-        } => vec!["query"],
-        ToolHandler::Documentation {
-            operation: "get", ..
-        } => vec!["documentId"],
+        ToolHandler::Documentation { .. } => vec!["documentId"],
         ToolHandler::RuntimeAdapter => runtime_required_args(tool),
         ToolHandler::RuntimeJob { action } => runtime_job_required_args(action),
         ToolHandler::CodeIntelligence { operation } => match operation {
             CodeIntelligenceOperation::Search => vec!["query"],
             CodeIntelligenceOperation::Definition => vec!["name"],
             CodeIntelligenceOperation::Outline => vec!["path"],
-        },
-        ToolHandler::SourceNavigation { operation } => match operation {
-            SourceNavigationOperation::Resolve => vec!["sourceSet", "query"],
-            SourceNavigationOperation::Children => vec!["sourceSet"],
-            SourceNavigationOperation::Locate => vec!["sourceSet", "path"],
-        },
-        ToolHandler::SourceResources { operation } => match operation {
-            SourceResourceOperation::Resources => Vec::new(),
-            SourceResourceOperation::Read => vec!["snapshotId", "resourceId"],
         },
         ToolHandler::Diagnostics => vec!["action", "sourceSet"],
         ToolHandler::CodeAdapter { .. } => match tool.name {
@@ -2860,7 +2372,6 @@ fn code_args_for(tool_name: &str) -> &'static [&'static str] {
     match tool_name {
         "unica.code.search" => CODE_SEARCH_ARGS,
         "unica.code.definition" => CODE_DEFINITION_ARGS,
-        "unica.code.outline" => CODE_OUTLINE_ARGS,
         "unica.code.graph" => CODE_GRAPH_ARGS,
         _ => CODE_ARGS,
     }
@@ -2972,7 +2483,6 @@ fn property_schema(name: &str) -> Value {
             | "usePrivilegedMode"
             | "waitForExit"
             | "webClient"
-            | "includeMethods"
     ) {
         "boolean"
     } else if matches!(name, "definition" | "property") {
@@ -3047,14 +2557,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     (
         "bodyLimit",
         "Max page-body size for `unica.standards.explain` when it fetches a standard by `id`/`idOrAliasOrUrl`; the XML/DSL tools accept the key but never read it",
-    ),
-    (
-        "body_limit",
-        "Maximum size of the standard page body returned by unica.standards.explain in page mode (snake_case alias of bodyLimit); honoured only alongside id/idOrAliasOrUrl, and ignored by standards.search.",
-    ),
-    (
-        "typeName",
-        "Name of the XDTO valueType or objectType whose full detail `unica.xdto.info` returns instead of the paged type list.",
     ),
     (
         "borrowMainAttribute",
@@ -3137,10 +2639,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
         "`unica.interface.edit` only: boolean, create `CommandInterface.xml` when it does not exist yet instead of failing",
     ),
     (
-        "cursor",
-        "Opaque continuation token returned by the same source navigation request or source.resources snapshot page; do not inspect or reuse it with another request or snapshot",
-    ),
-    (
         "cwd",
         "Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it",
     ),
@@ -3169,6 +2667,26 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
         "Path to a JSON file holding a batch of operations or a full definition, for `unica.cf.edit`, `interface.edit`, `subsystem.edit`/`compile` and `dcs.compile`; relative to `cwd`",
     ),
     (
+        "delivery",
+        "Deferred continuation only: `\"full\"` asks for the whole stored snapshot; it expresses the caller's intent and proves no human confirmation (ADR-0070)",
+    ),
+    (
+        "page",
+        "Deferred continuation only: 1-based page of 50 entities inside the selected section of the stored snapshot",
+    ),
+    (
+        "resultRef",
+        "Continuation reference issued by a deferred manifest of the same tool: the call is served from the immutable stored snapshot without re-reading the source (ADR-0070)",
+    ),
+    (
+        "documentId",
+        "Stable locator of a documentation hit, minted by the canonical documentation query and passed verbatim to unica.documentation.get to fetch the full document text: configuration-help:<source-set>:<path> for the workspace configuration's embedded help, platform-syntax-help:<corpus>:<path> for the installed platform's help, an absolute https://kb.1ci.com/... page address for the vendor knowledge base, and an https://v8std.ru/... address for a development standard; the provider that minted the locator is the only one that resolves it.",
+    ),
+    (
+        "platformVersion",
+        "Requested platform installation version for unica.documentation.get, matched against an installation directory name exactly, for example 8.3.27.2074; when omitted the project's own tools.platform.version constrains the choice, and without that the numerically newest installation found under a configured platform root wins; a tools.platform.path pin names the installation directly instead of walking the roots, with the same version constraints applied to it.",
+    ),
+    (
         "detail",
         "How much detail to return from unica.code.graph: names, signatures or bodies",
     ),
@@ -3179,10 +2697,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     (
         "dir",
         "Edge direction to follow on unica.code.graph - in, out, or both; applies to the traversal modes such as neighbors, callers, and callees",
-    ),
-    (
-        "documentId",
-        "Stable locator of a unica.documentation.search hit, passed verbatim to unica.documentation.get to fetch the full document text: configuration-help:<source-set>:<path> for the workspace configuration's embedded help, platform-syntax-help:<corpus>:<path> for the installed platform's help, an absolute https://kb.1ci.com/... page address for the vendor knowledge base, and an https://v8std.ru/... address for a development standard; the provider that minted the locator is the only one that resolves it.",
     ),
     (
         "distributiveModules",
@@ -3270,20 +2784,12 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
         "Standard id, alias or URL for standards.explain (lower-precedence alias of idOrAliasOrUrl), but a graph node id such as method:CommonModule.Sales.OnPost for code.graph; standards.search ignores it.",
     ),
     (
-        "idOrAliasOrUrl",
-        "Standard number, alias or full URL (e.g. \"644\") that puts standards.explain in page-fetch mode; prefer it over id, which it overrides when both are passed, and standards.search ignores it.",
-    ),
-    (
         "ids",
         "Array of code-graph node ids for unica.code.graph, forwarded as ids alongside the single-node id argument; use it when one request targets several nodes",
     ),
     (
         "ignoreTags",
         "Array of Vanessa Automation tags to exclude for operation test with testRunner va; each entry becomes one --ignore-tag",
-    ),
-    (
-        "includeMethods",
-        "Boolean for unica.code.outline controlling whether method entries appear in the outline; defaults to true",
     ),
     (
         "incorrectReferences",
@@ -3448,10 +2954,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
         "Workspace-relative file path whose meaning is tool-scoped: the required .cf or .cfe artifact for unica.runtime.execute operation load (.epf and .erf are rejected there), a module-relative file for path-based unica.code.* tools, the canonical alias of the object/config path argument on native XML tools, and a plain --path passthrough on unica.build.*.",
     ),
     (
-        "platformVersion",
-        "Requested platform installation version for unica.documentation.search and unica.documentation.get, matched against an installation directory name exactly, for example 8.3.27.2074; when omitted the project's own tools.platform.version constrains the choice, and without that the numerically newest installation found under a configured platform root wins; a tools.platform.path pin names the installation directly instead of walking the roots, with the same version constraints applied to it.",
-    ),
-    (
         "position",
         "Where unica.code.patch places the content relative to the selector: before or after. Accepted only when insert names a selector",
     ),
@@ -3488,10 +2990,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
         "Path to a role's `Rights.xml`, or the role directory that resolves to it, for `unica.role.info` and `unica.role.validate`, relative to `cwd`",
     ),
     (
-        "resourceId",
-        "Opaque resource identifier returned inside one source.resources snapshot; valid only together with the snapshotId that issued it",
-    ),
-    (
         "scenarioFilters",
         "Array of Vanessa Automation scenario filters for operation test with testRunner va; each entry becomes one --scenario-filter",
     ),
@@ -3500,20 +2998,8 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
         "Bounded source.resources manifest scope: self, aggregate, or registrations",
     ),
     (
-        "delivery",
-        "Deferred continuation only: `\"full\"` asks for the whole stored snapshot; it expresses the caller's intent and proves no human confirmation (ADR-0070)",
-    ),
-    (
         "filter",
         "Deferred continuation only: case-insensitive substring over entity names inside the selected section of the stored snapshot",
-    ),
-    (
-        "page",
-        "Deferred continuation only: 1-based page of 50 entities inside the selected section of the stored snapshot",
-    ),
-    (
-        "resultRef",
-        "Continuation reference issued by a deferred manifest of the same tool: the call is served from the immutable stored snapshot without re-reading the source (ADR-0070)",
     ),
     (
         "section",
@@ -3548,20 +3034,8 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
         "`unica.role.info` only: also list denied rights, which are hidden by default; pass a real JSON boolean, a string is ignored",
     ),
     (
-        "snippet",
-        "Literal BSL source text for standards.explain to explain against standards, sent with language and limit; codes outranks it when both are passed, and standards.search ignores it.",
-    ),
-    (
-        "snapshotId",
-        "Opaque application-instance and workspace-bound identifier returned by source.resources; expires after five minutes",
-    ),
-    (
         "sourceDir",
         "Workspace-relative source root to work in: on path-based unica.code.* tools it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead.",
-    ),
-    (
-        "sourceKinds",
-        "Optional filter of unica.documentation.search by source kind, not by provider id: an array of configuration-documentation, platform-help and/or development-standard; providers without a matching corpus are not polled and their sections are not published, an empty or omitted array means every kind, and an unknown value is refused rather than silently ignored.",
     ),
     (
         "sourceSet",
@@ -3598,10 +3072,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     (
         "target",
         "String forwarded to unica.build.* as --target; the skills document no behaviour for it beyond the flag name",
-    ),
-    (
-        "targetKind",
-        "Optional `unica.source.resolve` filter: `metadataObject` or `module`; it narrows exact or prefix matches without changing their canonical metadataPath",
     ),
     (
         "targetPath",
@@ -3654,10 +3124,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     (
         "tool",
         "Runner tool payload to fetch with operation tools-download: yaxunit, vanessa or client-mcp",
-    ),
-    (
-        "types",
-        "Array of strings forwarded unchanged as the types parameter of the standards search; honoured only by standards.search and by standards.explain given query alone, with no allowed values declared.",
     ),
     (
         "unreferenceProcedures",
@@ -3791,7 +3257,7 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
             _ => property_schema(name),
         };
     }
-    if matches!(tool.name, "unica.xdto.info" | "unica.xdto.edit") {
+    if tool.name == "unica.xdto.info" {
         return match name {
             "sourceSet" => json!({
                 "type": "string",
@@ -3879,57 +3345,6 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
                     { "required": ["anchor"] }
                 ]
             }),
-            _ => property_schema(name),
-        };
-    }
-    if matches!(tool.handler, ToolHandler::SourceNavigation { .. }) {
-        return match name {
-            "path" => json!({
-                "type": "string",
-                "minLength": 1,
-                "pattern": r"\S",
-                "description": "Source file to look up, given either workspace-relative or relative to the named source set; the answer names the metadata address that owns it"
-            }),
-            "sourceSet" | "query" | "metadataPath" | "cursor" => {
-                json!({ "type": "string", "minLength": 1, "pattern": r"\S" })
-            }
-            "mode" => json!({ "type": "string", "enum": ["exact", "prefix"] }),
-            "targetKind" => json!({
-                "type": "string",
-                "enum": ["metadataObject", "module"]
-            }),
-            "limit" => json!({
-                "type": "integer",
-                "minimum": 1,
-                "maximum": SOURCE_NAVIGATION_LIMIT_MAX
-            }),
-            _ => property_schema(name),
-        };
-    }
-    if let ToolHandler::SourceResources { operation } = tool.handler {
-        return match (operation, name) {
-            (SourceResourceOperation::Resources, "scope") => json!({
-                "type": "string",
-                "enum": ["self", "aggregate", "registrations"]
-            }),
-            (SourceResourceOperation::Resources, "limit") => json!({
-                "type": "integer",
-                "minimum": 1,
-                "maximum": SOURCE_RESOURCE_PAGE_LIMIT_MAX
-            }),
-            (SourceResourceOperation::Read, "limit") => json!({
-                "type": "integer",
-                "minimum": 1,
-                "maximum": SOURCE_READ_LIMIT_MAX
-            }),
-            (SourceResourceOperation::Read, "offset") => json!({
-                "type": "integer",
-                "minimum": 0,
-                "description": "Zero-based byte offset inside the immutable resource snapshot"
-            }),
-            (_, "sourceSet" | "metadataPath" | "snapshotId" | "resourceId" | "cursor") => {
-                json!({ "type": "string", "minLength": 1, "pattern": r"\S" })
-            }
             _ => property_schema(name),
         };
     }
@@ -4143,7 +3558,6 @@ fn expected_scalar_type(key: &str) -> Option<&'static str> {
             | "usePrivilegedMode"
             | "waitForExit"
             | "webClient"
-            | "includeMethods"
     ) {
         Some("boolean")
     } else if key == "query" {
@@ -4250,7 +3664,6 @@ pub(crate) mod tests {
                 MetadataOperation::Info => "unica.meta.info",
                 MetadataOperation::Add => "unica.meta.add",
                 MetadataOperation::Edit => "unica.meta.edit",
-                MetadataOperation::Remove => "unica.meta.remove",
             },
             description: "direct metadata contract test",
             execution: if matches!(operation, MetadataOperation::Info) {
@@ -4326,347 +3739,6 @@ pub(crate) mod tests {
             }
             _ => {}
         }
-    }
-
-    #[test]
-    fn meta_contract_schema_snapshots_are_closed_and_registered() {
-        let cases = [
-            (
-                MetadataOperation::Info,
-                vec!["cwd", "limit", "metadataPath", "sections", "sourceSet"],
-                json!(["sourceSet", "metadataPath"]),
-            ),
-            (
-                MetadataOperation::Add,
-                vec!["cwd", "dryRun", "kind", "name", "operations", "sourceSet"],
-                json!(["sourceSet", "kind", "name"]),
-            ),
-            (
-                MetadataOperation::Edit,
-                vec!["cwd", "dryRun", "metadataPath", "operations", "sourceSet"],
-                json!(["sourceSet", "metadataPath", "operations"]),
-            ),
-            (
-                MetadataOperation::Remove,
-                vec![
-                    "confirm",
-                    "cwd",
-                    "dryRun",
-                    "force",
-                    "metadataPath",
-                    "sourceSet",
-                ],
-                json!(["sourceSet", "metadataPath"]),
-            ),
-        ];
-
-        for (operation, properties, required) in cases {
-            let schema = input_schema_for_tool(&metadata_tool(operation));
-            assert_eq!(schema["type"], "object");
-            assert_eq!(schema["additionalProperties"], false);
-            assert_eq!(sorted_property_names(&schema), properties);
-            assert_eq!(schema["required"], required);
-        }
-
-        let info = input_schema_for_tool(&metadata_tool(MetadataOperation::Info));
-        assert_eq!(info["properties"]["sections"]["default"], json!([]));
-        assert_eq!(info["properties"]["limit"]["default"], 20);
-        assert_eq!(info["properties"]["limit"]["maximum"], 50);
-        assert_eq!(
-            info["properties"]["sections"]["items"]["enum"],
-            json!([
-                "roles",
-                "subscriptions",
-                "functionalOptions",
-                "predefinedItems"
-            ])
-        );
-
-        for operation in [
-            MetadataOperation::Add,
-            MetadataOperation::Edit,
-            MetadataOperation::Remove,
-        ] {
-            let schema = input_schema_for_tool(&metadata_tool(operation));
-            assert_eq!(schema["properties"]["dryRun"]["default"], true);
-        }
-
-        let add = input_schema_for_tool(&metadata_tool(MetadataOperation::Add));
-        assert_eq!(
-            add["properties"]["kind"]["enum"],
-            json!([
-                "Catalog",
-                "Document",
-                "Enum",
-                "Constant",
-                "InformationRegister",
-                "AccumulationRegister",
-                "AccountingRegister",
-                "CalculationRegister",
-                "ChartOfAccounts",
-                "ChartOfCharacteristicTypes",
-                "ChartOfCalculationTypes",
-                "BusinessProcess",
-                "Task",
-                "ExchangePlan",
-                "DocumentJournal",
-                "Report",
-                "DataProcessor",
-                "CommonModule",
-                "ScheduledJob",
-                "EventSubscription",
-                "HTTPService",
-                "WebService",
-                "DefinedType"
-            ])
-        );
-
-        let edit = input_schema_for_tool(&metadata_tool(MetadataOperation::Edit));
-        assert_eq!(add["properties"]["operations"]["minItems"], 1);
-        // No conditional branches: the union is the whole published contract,
-        // and both mutations publish the same one.
-        assert!(add.get("allOf").is_none());
-        assert!(edit.get("allOf").is_none());
-        assert_eq!(
-            metadata_operation_union(&add),
-            metadata_operation_union(&edit),
-            "meta.add and meta.edit must publish one operation union"
-        );
-        let item = metadata_operation_union(&edit);
-        let variants = item["oneOf"].as_array().expect("closed operation union");
-        assert_eq!(variants.len(), 9);
-        for (variant, tag, required, properties) in [
-            (
-                &variants[0],
-                "setProperties",
-                json!(["op", "values"]),
-                vec!["op", "values"],
-            ),
-            (
-                &variants[1],
-                "add",
-                json!(["op", "collection", "elements"]),
-                vec!["collection", "elements", "op", "scope"],
-            ),
-            (
-                &variants[2],
-                "update",
-                json!(["op", "collection", "elements"]),
-                vec!["collection", "elements", "op", "scope"],
-            ),
-            (
-                &variants[3],
-                "remove",
-                json!(["op", "collection", "names"]),
-                vec!["collection", "names", "op", "scope"],
-            ),
-            (
-                &variants[4],
-                "add",
-                json!(["op", "collection", "elements"]),
-                vec!["collection", "elements", "op"],
-            ),
-            (
-                &variants[5],
-                "update",
-                json!(["op", "collection", "elements"]),
-                vec!["collection", "elements", "op"],
-            ),
-            (
-                &variants[6],
-                "remove",
-                json!(["op", "collection", "ids"]),
-                vec!["collection", "ids", "op"],
-            ),
-            // ADR-0072: embedded help is an object facet, so its create-only
-            // operation lives in the same union as every other object change.
-            (&variants[7], "addHelp", json!(["op"]), vec!["lang", "op"]),
-            (
-                &variants[8],
-                "editRelations",
-                json!(["op", "relation", "mode", "targets"]),
-                vec!["mode", "op", "relation", "targets"],
-            ),
-        ] {
-            assert!(
-                variant.get("$ref").is_none(),
-                "{tag}: a host that cannot resolve $ref must still see the variant"
-            );
-            assert_eq!(variant["type"], "object", "{tag}");
-            assert_eq!(variant["additionalProperties"], false, "{tag}");
-            assert_eq!(variant["required"], required, "{tag}");
-            assert_eq!(sorted_property_names(variant), properties, "{tag}");
-            assert_eq!(variant["properties"]["op"]["enum"], json!([tag]));
-        }
-        // The union publishes the closed domains themselves: every collection
-        // and relation the writer knows, not the subset one kind allows.
-        let mut add_collections = variants[1]["properties"]["collection"]["enum"]
-            .as_array()
-            .expect("the add branch publishes a closed collection domain")
-            .iter()
-            .map(|value| value.as_str().unwrap())
-            .collect::<Vec<_>>();
-        add_collections.sort_unstable();
-        assert_eq!(
-            add_collections,
-            vec![
-                "attributes",
-                "columns",
-                "commands",
-                "dimensions",
-                "enumValues",
-                "forms",
-                "resources",
-                "tabularSections",
-                "templates",
-            ]
-        );
-        for variant in &variants[4..=6] {
-            assert_eq!(
-                variant["properties"]["collection"]["enum"],
-                json!(["predefinedItems"])
-            );
-        }
-        let mut relations = variants[8]["properties"]["relation"]["enum"]
-            .as_array()
-            .expect("the relation branch publishes a closed relation domain")
-            .iter()
-            .map(|value| value.as_str().unwrap())
-            .collect::<Vec<_>>();
-        relations.sort_unstable();
-        assert_eq!(
-            relations,
-            vec![
-                "basedOn",
-                "inputByString",
-                "owners",
-                "registerRecords",
-                "source",
-            ]
-        );
-        assert_eq!(
-            variants[8]["properties"]["mode"]["enum"],
-            json!(["add", "remove", "replace"])
-        );
-        let targets = &variants[8]["properties"]["targets"];
-        assert_eq!(targets["uniqueItems"], true);
-        assert!(
-            targets.get("minItems").is_none(),
-            "relation-specific branches own target cardinality"
-        );
-        let relation_variants = variants[8]["oneOf"]
-            .as_array()
-            .expect("editRelations publishes a relation-correlated oneOf");
-        assert_eq!(relation_variants.len(), 5);
-        let relation = |name: &str| {
-            relation_variants
-                .iter()
-                .find(|branch| branch["properties"]["relation"]["const"] == name)
-                .unwrap_or_else(|| panic!("missing relation branch {name}"))
-        };
-        let source = relation("source");
-        assert_eq!(source["properties"]["mode"]["enum"], json!(["replace"]));
-        let source_targets = &source["properties"]["targets"];
-        assert_eq!(source_targets["type"], "array");
-        assert_eq!(source_targets["minItems"], 1);
-        let target_variants = source_targets["items"]["oneOf"]
-            .as_array()
-            .expect("source targets publish a closed logical oneOf");
-        assert_eq!(target_variants.len(), 6);
-        for target in target_variants {
-            assert_eq!(target["type"], "object");
-            assert_eq!(target["additionalProperties"], false);
-        }
-        let event_kinds = target_variants
-            .iter()
-            .map(|target| {
-                target["properties"]["kind"]["const"]
-                    .as_str()
-                    .expect("event target kind is a const")
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(
-            event_kinds,
-            [
-                "object",
-                "manager",
-                "manager",
-                "recordSet",
-                "definedType",
-                "family",
-            ]
-        );
-        assert!(target_variants.iter().any(|target| {
-            target["properties"]["kind"]["const"] == "manager"
-                && target["required"] == json!(["kind", "metadataPath", "sourceClass"])
-                && target["properties"]["sourceClass"]["enum"]
-                    == json!(["constantManager", "constantValueManager"])
-        }));
-        for name in ["owners", "registerRecords", "basedOn", "inputByString"] {
-            let branch = relation(name);
-            assert_eq!(
-                branch["properties"]["mode"]["enum"],
-                json!(["add", "remove", "replace"])
-            );
-            assert_eq!(branch["properties"]["targets"]["minItems"], 1);
-        }
-        assert_eq!(
-            relation("owners")["properties"]["targets"]["items"]["required"],
-            json!(["metadataPath"])
-        );
-        assert_eq!(
-            relation("inputByString")["properties"]["targets"]["items"]["required"],
-            json!(["fieldPath"])
-        );
-        assert!(variants[8]["description"]
-            .as_str()
-            .is_some_and(|description| description.contains("replace-only")));
-
-        let schemas = [
-            info,
-            add,
-            edit,
-            input_schema_for_tool(&metadata_tool(MetadataOperation::Remove)),
-        ];
-        let mut published_property_names = Vec::new();
-        for schema in &schemas {
-            collect_schema_property_names(schema, &mut published_property_names);
-        }
-        for retired in [
-            "JsonPath",
-            "DefinitionFile",
-            "Operation",
-            "Value",
-            "ObjectPath",
-            "ConfigDir",
-            "Object",
-            "jsonPath",
-            "definitionFile",
-            "generatedType",
-            "operation",
-            "objectPath",
-            "configDir",
-            "object",
-            "Path",
-            "path",
-        ] {
-            assert!(!published_property_names.contains(&retired), "{retired}");
-        }
-
-        let published = tools()
-            .into_iter()
-            .filter(|tool| tool.name.starts_with("unica.meta."))
-            .map(|tool| tool.name)
-            .collect::<Vec<_>>();
-        assert_eq!(
-            published,
-            vec![
-                "unica.meta.info",
-                "unica.meta.add",
-                "unica.meta.edit",
-                "unica.meta.remove",
-            ]
-        );
     }
 
     #[test]
@@ -4998,11 +4070,8 @@ pub(crate) mod tests {
                 "dcs-edit",
                 "epf-init",
                 "erf-init",
-                "form-add",
-                "form-remove",
                 "interface-edit",
                 "subsystem-edit",
-                "support-edit",
             ],
             "ADR-0073 §5: the transitional list is approved item by item"
         );
@@ -5064,25 +4133,9 @@ pub(crate) mod tests {
                 "unica.build.run",
                 "unica.build.update",
                 "unica.runtime.execute",
-                "unica.runtime.job.cancel",
                 "unica.runtime.job.start",
             ]
         );
-    }
-
-    #[test]
-    fn native_contracts_reject_unknown_args() {
-        let tool = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.cf.info")
-            .unwrap();
-        let mut args = Map::new();
-        args.insert("ConfigPath".to_string(), json!("Configuration.xml"));
-        args.insert("unknown".to_string(), json!("value"));
-
-        let error = validate_tool_arguments(tool, &args, false).unwrap_err();
-
-        assert!(error.contains("does not accept argument `unknown`"));
     }
 
     fn reject_argument(tool_name: &str, argument: &str) -> String {
@@ -5190,67 +4243,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn mxl_decompile_rejects_legacy_output_path_aliases() {
-        let tool = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.mxl.decompile")
-            .unwrap();
-
-        for argument in ["OutputPath", "outputPath"] {
-            let args = Map::from_iter([(argument.to_string(), json!("result.json"))]);
-            let error = validate_tool_arguments(tool, &args, false).unwrap_err();
-
-            assert!(error.contains(&format!("does not accept argument `{argument}`")));
-        }
-    }
-
-    #[test]
-    fn read_only_native_tools_reject_out_file_arguments() {
-        let required_path = |name: &str| match name {
-            "unica.cf.info" | "unica.cf.validate" => ("ConfigPath", "src"),
-            "unica.cfe.validate" => ("ExtensionPath", "src"),
-            "unica.interface.validate" => ("CIPath", "src/CommandInterface.xml"),
-            "unica.subsystem.info" | "unica.subsystem.validate" => {
-                ("SubsystemPath", "src/Subsystems/Main.xml")
-            }
-            "unica.dcs.info" | "unica.dcs.validate" => ("TemplatePath", "src/Template.xml"),
-            "unica.role.info" | "unica.role.validate" => ("RightsPath", "src/Rights.xml"),
-            _ => unreachable!("unexpected read-only tool"),
-        };
-
-        for name in [
-            "unica.cf.info",
-            "unica.cf.validate",
-            "unica.cfe.validate",
-            "unica.interface.validate",
-            "unica.subsystem.info",
-            "unica.subsystem.validate",
-            "unica.dcs.info",
-            "unica.dcs.validate",
-            "unica.role.info",
-            "unica.role.validate",
-        ] {
-            let tool = tools()
-                .into_iter()
-                .find(|tool| tool.name == name)
-                .expect("read-only tool is registered");
-            let (path_key, path) = required_path(name);
-            for argument in ["OutFile", "outFile"] {
-                let args = Map::from_iter([
-                    (path_key.to_string(), json!(path)),
-                    (argument.to_string(), json!("report.txt")),
-                ]);
-
-                let error = validate_tool_arguments(tool, &args, false).unwrap_err();
-                assert!(
-                    error.contains(&format!("does not accept argument `{argument}`")),
-                    "{name}: {error}"
-                );
-            }
-        }
-    }
-
-    #[test]
     fn code_patch_contract_is_narrow_and_requires_one_typed_selector() {
         let tool = tools()
             .into_iter()
@@ -5291,612 +4283,6 @@ pub(crate) mod tests {
         let mut selector_without_position = tail;
         selector_without_position.insert("selector".to_string(), json!({"method": "Run"}));
         assert!(validate_tool_arguments(tool, &selector_without_position, false).is_err());
-    }
-
-    #[test]
-    fn xdto_contract_publishes_and_enforces_typed_arguments() {
-        let info = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.xdto.info")
-            .unwrap();
-        let edit = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.xdto.edit")
-            .unwrap();
-        let info_schema = input_schema_for_tool(&info);
-        let edit_schema = input_schema_for_tool(&edit);
-        let info_validator = jsonschema::validator_for(&info_schema).unwrap();
-        let edit_validator = jsonschema::validator_for(&edit_schema).unwrap();
-
-        assert!(info_validator.is_valid(&json!({
-            "sourceSet": "configuration",
-            "metadataPath": "XDTOPackage.EnterpriseData_1_17_3"
-        })));
-        assert!(!info_validator.is_valid(&json!({
-            "sourceSet": "configuration",
-            "metadataPath": "XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin"
-        })));
-        assert!(!info_validator.is_valid(&json!({
-            "sourceSet": "configuration",
-            "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-            "typeName": "Document",
-            "limit": 1
-        })));
-        assert_eq!(info_schema["properties"]["limit"]["maximum"], 50);
-
-        let valid_calls = [
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [
-                    {"op": "addValueType", "name": "Document", "base": "xs:string"}
-                ]
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{"op": "addObjectType", "name": "Document"}]
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{
-                    "op": "addProperty",
-                    "typeName": "AnyRef",
-                    "propertyPath": "ObjectRef.Nested",
-                    "property": {"name": "Document", "type": "tns:Document", "minOccurs": 0}
-                }]
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{"op": "removeType", "name": "Document"}]
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{
-                    "op": "removeProperty",
-                    "typeName": "AnyRef",
-                    "propertyPath": "ObjectRef.Nested",
-                    "name": "Document"
-                }]
-            }),
-            // ADR-0071: one call carries an ordered batch in one transaction.
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [
-                    {"op": "addObjectType", "name": "Order"},
-                    {"op": "addProperty", "typeName": "Order",
-                     "property": {"name": "Ref", "type": "tns:Document"}}
-                ]
-            }),
-        ];
-        // ADR-0025 §4: the union lives directly in properties.operations.items;
-        // the tool publishes no top-level conditional composition.
-        assert!(edit_schema.get("oneOf").is_none());
-        assert!(edit_schema.get("allOf").is_none());
-        assert!(edit_schema.get("not").is_none());
-        assert_eq!(
-            edit_schema["required"],
-            json!(["sourceSet", "metadataPath", "operations"])
-        );
-        assert_eq!(edit_schema["properties"]["dryRun"]["default"], true);
-        assert_eq!(edit_schema["properties"]["operations"]["minItems"], 1);
-        let variants = edit_schema["properties"]["operations"]["items"]["oneOf"]
-            .as_array()
-            .expect("closed operation union");
-        assert_eq!(variants.len(), XDTO_EDIT_OPS.len());
-        for (variant, op) in variants.iter().zip(XDTO_EDIT_OPS) {
-            assert_eq!(variant["properties"]["op"]["enum"], json!([op]));
-            assert_eq!(variant["additionalProperties"], false);
-            assert_eq!(
-                variant["required"]
-                    .as_array()
-                    .and_then(|required| required.first()),
-                Some(&json!("op")),
-                "variant `{op}` must require its tag first"
-            );
-        }
-        for call in &valid_calls {
-            assert!(edit_validator.is_valid(call), "schema rejected {call}");
-            for dry_run in [true, false] {
-                validate_tool_arguments(edit, call.as_object().unwrap(), dry_run)
-                    .unwrap_or_else(|error| panic!("dryRun={dry_run} rejected {call}: {error}"));
-            }
-        }
-        let unicode_ncname = json!({
-            "sourceSet": "configuration",
-            "metadataPath": "ПакетXDTO.Обмен",
-            "operations": [{"op": "addObjectType", "name": "A·B́"}]
-        });
-        assert!(edit_validator.is_valid(&unicode_ncname));
-        validate_tool_arguments(edit, unicode_ncname.as_object().unwrap(), true).unwrap();
-
-        // The retired flat form fails closed with a stable code naming the
-        // typed replacement (ADR-0071).
-        let legacy = json!({
-            "sourceSet": "configuration",
-            "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-            "operation": "add-object-type",
-            "name": "Document"
-        });
-        assert!(
-            !edit_validator.is_valid(&legacy),
-            "schema accepted {legacy}"
-        );
-        for dry_run in [true, false] {
-            let error = validate_tool_arguments(edit, legacy.as_object().unwrap(), dry_run)
-                .expect_err("legacy flat form must fail before dispatch");
-            assert!(
-                error.contains("legacy_arguments_removed") && error.contains("operations"),
-                "unexpected legacy rejection: {error}"
-            );
-        }
-
-        // An element failure names the exact operations[<index>] element.
-        let second_element_broken = json!({
-            "sourceSet": "configuration",
-            "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-            "operations": [
-                {"op": "addObjectType", "name": "Document"},
-                {"op": "addValueType", "name": "Document"}
-            ]
-        });
-        assert!(!edit_validator.is_valid(&second_element_broken));
-        let error = validate_tool_arguments(edit, second_element_broken.as_object().unwrap(), true)
-            .expect_err("missing base must fail");
-        assert!(error.contains("operations[1]"), "{error}");
-
-        let element_required: &[(&str, &[&str], &str)] = &[
-            ("addValueType", &["name", "base"], "typeName"),
-            ("addObjectType", &["name"], "base"),
-            ("addProperty", &["typeName", "property"], "name"),
-            ("removeType", &["name"], "base"),
-            ("removeProperty", &["typeName", "name"], "base"),
-        ];
-        for (call, (op, required, extra)) in valid_calls.iter().zip(element_required) {
-            let element = call["operations"][0].as_object().unwrap().clone();
-            assert_eq!(&element["op"], &json!(op));
-            for field in *required {
-                let mut missing_element = element.clone();
-                missing_element.remove(*field);
-                let mut missing = call.as_object().unwrap().clone();
-                missing.insert("operations".to_string(), json!([missing_element]));
-                let missing = Value::Object(missing);
-                assert!(
-                    !edit_validator.is_valid(&missing),
-                    "schema accepted {missing}"
-                );
-                for dry_run in [true, false] {
-                    assert!(
-                        validate_tool_arguments(edit, missing.as_object().unwrap(), dry_run)
-                            .is_err(),
-                        "runtime accepted dryRun={dry_run}: {missing}"
-                    );
-                }
-            }
-            let mut extra_element = element.clone();
-            extra_element.insert(
-                (*extra).to_string(),
-                if *extra == "base" {
-                    json!("xs:string")
-                } else {
-                    json!("Value")
-                },
-            );
-            let mut incompatible = call.as_object().unwrap().clone();
-            incompatible.insert("operations".to_string(), json!([extra_element]));
-            let incompatible = Value::Object(incompatible);
-            assert!(
-                !edit_validator.is_valid(&incompatible),
-                "schema accepted {incompatible}"
-            );
-            for dry_run in [true, false] {
-                assert!(
-                    validate_tool_arguments(edit, incompatible.as_object().unwrap(), dry_run)
-                        .is_err(),
-                    "runtime accepted dryRun={dry_run}: {incompatible}"
-                );
-            }
-        }
-        for field in ["sourceSet", "metadataPath", "operations"] {
-            let mut missing = valid_calls[0].as_object().unwrap().clone();
-            missing.remove(field);
-            for dry_run in [true, false] {
-                assert!(
-                    validate_tool_arguments(edit, &missing, dry_run).is_err(),
-                    "runtime accepted missing {field} with dryRun={dry_run}"
-                );
-            }
-        }
-
-        let invalid_calls = [
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": []
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": {"op": "addObjectType", "name": "Document"}
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{"op": "addObjectType"}]
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{"op": "addObjectType", "name": "Document", "base": "xs:string"}]
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{
-                    "op": "addProperty",
-                    "typeName": "AnyRef",
-                    "property": {"name": "Document"}
-                }]
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{
-                    "op": "addProperty",
-                    "typeName": "AnyRef",
-                    "propertyPath": "ObjectRef..Nested",
-                    "property": {"name": "Document", "type": "tns:Document"}
-                }]
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{
-                    "op": "addProperty",
-                    "typeName": "AnyRef",
-                    "property": {"name": "Document", "type": "tns:Document", "minOccurs": 2}
-                }]
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{"op": "addValueType", "name": "bad:name", "base": "xs:string"}]
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{"op": "addValueType", "name": "Document", "base": "xs::string"}]
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{"op": "addObjectType", "name": 1}]
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{"op": "addValueType", "name": "Document", "base": 1}]
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{
-                    "op": "addProperty",
-                    "typeName": 1,
-                    "property": {"name": "Document", "type": "tns:Document"}
-                }]
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{
-                    "op": "removeProperty",
-                    "typeName": "AnyRef",
-                    "name": "Document",
-                    "propertyPath": 1
-                }]
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{
-                    "op": "addProperty",
-                    "typeName": "AnyRef",
-                    "property": {"name": "Document", "type": "tns:Document", "minOccurs": -1}
-                }]
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{
-                    "op": "addProperty",
-                    "typeName": "AnyRef",
-                    "property": {"name": "Document", "type": "tns:Document", "minOccurs": "0"}
-                }]
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{
-                    "op": "addProperty",
-                    "typeName": "AnyRef",
-                    "property": {"name": "Document", "type": "tns:Document", "extra": true}
-                }]
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{"op": "renameType", "name": "Document"}]
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{"op": " addObjectType", "name": "Document"}]
-            }),
-            json!({
-                "sourceSet": " configuration ",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{"op": "addObjectType", "name": "Document"}]
-            }),
-        ];
-        for call in &invalid_calls {
-            assert!(!edit_validator.is_valid(call), "schema accepted {call}");
-            for dry_run in [true, false] {
-                assert!(
-                    validate_tool_arguments(edit, call.as_object().unwrap(), dry_run).is_err(),
-                    "runtime accepted dryRun={dry_run}: {call}"
-                );
-            }
-        }
-
-        for dry_run in [true, false] {
-            assert!(validate_tool_arguments(edit, &Map::new(), dry_run).is_err());
-            assert!(validate_tool_arguments(info, &Map::new(), dry_run).is_err());
-        }
-
-        for invalid in [
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "typeName": "bad:name"
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "typeName": 1
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "limit": 51
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "typeName": "Document",
-                "cursor": "nav1-token"
-            }),
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.Enterprise.Data"
-            }),
-        ] {
-            assert!(
-                !info_validator.is_valid(&invalid),
-                "schema accepted {invalid}"
-            );
-            assert!(
-                validate_tool_arguments(info, invalid.as_object().unwrap(), false).is_err(),
-                "runtime accepted {invalid}"
-            );
-        }
-
-        let invalid_path = json!({
-            "sourceSet": "configuration",
-            "metadataPath": "Package.bin"
-        });
-        assert!(validate_tool_arguments(info, invalid_path.as_object().unwrap(), false).is_err());
-        let invalid_property = json!({
-            "sourceSet": "configuration",
-            "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-            "operations": [{
-                "op": "addProperty",
-                "typeName": "AnyRef",
-                "property": {"name": "Document", "type": "Document", "upperBound": 1}
-            }]
-        });
-        assert!(
-            validate_tool_arguments(edit, invalid_property.as_object().unwrap(), false).is_err()
-        );
-    }
-
-    #[test]
-    fn xdto_qname_schema_and_runtime_require_an_unpadded_prefix() {
-        let edit = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.xdto.edit")
-            .unwrap();
-        let schema = input_schema_for_tool(&edit);
-        let validator = jsonschema::validator_for(&schema).unwrap();
-        let value_type = |base: &str| {
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{"op": "addValueType", "name": "Document", "base": base}]
-            })
-        };
-        let property = |type_ref: &str| {
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{
-                    "op": "addProperty",
-                    "typeName": "AnyRef",
-                    "property": {"name": "Document", "type": type_ref}
-                }]
-            })
-        };
-
-        for call in [value_type("xs:string"), property("tns:Document")] {
-            assert!(validator.is_valid(&call), "schema rejected {call}");
-            validate_tool_arguments(edit, call.as_object().unwrap(), true)
-                .unwrap_or_else(|error| panic!("runtime rejected {call}: {error}"));
-        }
-
-        for call in [
-            value_type("string"),
-            value_type(" xs:string"),
-            value_type("xs:string "),
-            property("Document"),
-            property(" tns:Document"),
-            property("tns:Document "),
-        ] {
-            assert!(!validator.is_valid(&call), "schema accepted {call}");
-            assert!(
-                validate_tool_arguments(edit, call.as_object().unwrap(), true).is_err(),
-                "runtime accepted {call}"
-            );
-        }
-    }
-
-    #[test]
-    fn xdto_published_patterns_do_not_embed_astral_code_points() {
-        let info = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.xdto.info")
-            .unwrap();
-        let edit = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.xdto.edit")
-            .unwrap();
-        let info_schema = input_schema_for_tool(&info);
-        let edit_schema = input_schema_for_tool(&edit);
-        let union = &edit_schema["properties"]["operations"]["items"]["oneOf"];
-        let patterns = [
-            &info_schema["properties"]["metadataPath"]["pattern"],
-            &info_schema["properties"]["typeName"]["pattern"],
-            &edit_schema["properties"]["metadataPath"]["pattern"],
-            &union[0]["properties"]["name"]["pattern"],
-            &union[0]["properties"]["base"]["pattern"],
-            &union[2]["properties"]["typeName"]["pattern"],
-            &union[2]["properties"]["propertyPath"]["pattern"],
-            &union[2]["properties"]["property"]["properties"]["name"]["pattern"],
-            &union[2]["properties"]["property"]["properties"]["type"]["pattern"],
-        ];
-
-        for pattern in patterns {
-            let pattern = pattern.as_str().expect("XDTO pattern must be a string");
-            assert!(
-                pattern.chars().all(|character| character <= '\u{ffff}'),
-                "published ECMAScript pattern embeds an astral code point: {pattern}"
-            );
-        }
-    }
-
-    #[test]
-    fn xdto_runtime_keeps_the_full_xml_ncname_range() {
-        let edit = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.xdto.edit")
-            .unwrap();
-        let astral_name = "\u{10000}";
-        let call = json!({
-            "sourceSet": "configuration",
-            "metadataPath": format!("XDTOPackage.{astral_name}"),
-            "operations": [{
-                "op": "addProperty",
-                "typeName": astral_name,
-                "propertyPath": format!("{astral_name}.{astral_name}"),
-                "property": {
-                    "name": astral_name,
-                    "type": format!("{astral_name}:{astral_name}")
-                }
-            }]
-        });
-
-        validate_tool_arguments(edit, call.as_object().unwrap(), true)
-            .unwrap_or_else(|error| panic!("runtime rejected XML astral NCNames: {error}"));
-    }
-
-    #[test]
-    fn xdto_property_path_schema_and_runtime_share_the_escape_grammar() {
-        let edit = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.xdto.edit")
-            .unwrap();
-        let schema = input_schema_for_tool(&edit);
-        let validator = jsonschema::validator_for(&schema).unwrap();
-        let call = |property_path: &str| {
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "operations": [{
-                    "op": "addProperty",
-                    "typeName": "AnyRef",
-                    "propertyPath": property_path,
-                    "property": {"name": "Document", "type": "tns:Document"}
-                }]
-            })
-        };
-
-        for property_path in [r"A\.B", r"A\.B.Child", "A.Child"] {
-            let call = call(property_path);
-            assert!(validator.is_valid(&call), "schema rejected {call}");
-            validate_tool_arguments(edit, call.as_object().unwrap(), true)
-                .unwrap_or_else(|error| panic!("runtime rejected {call}: {error}"));
-        }
-
-        for property_path in [
-            "", ".A", "A.", "A..B", r"\A", r"A\B", "A\\", r"A\\.B", r"A\.B\C",
-        ] {
-            let call = call(property_path);
-            assert!(!validator.is_valid(&call), "schema accepted {call}");
-            assert!(
-                validate_tool_arguments(edit, call.as_object().unwrap(), true).is_err(),
-                "runtime accepted {call}"
-            );
-        }
-    }
-
-    #[test]
-    fn xdto_cursor_schema_and_runtime_reject_all_whitespace() {
-        let info = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.xdto.info")
-            .unwrap();
-        let schema = input_schema_for_tool(&info);
-        let validator = jsonschema::validator_for(&schema).unwrap();
-        let call = |cursor: &str| {
-            json!({
-                "sourceSet": "configuration",
-                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-                "cursor": cursor
-            })
-        };
-
-        assert_eq!(schema["properties"]["cursor"]["pattern"], r"^\S+$");
-        let valid = call("nav1-token");
-        assert!(validator.is_valid(&valid));
-        validate_tool_arguments(info, valid.as_object().unwrap(), false).unwrap();
-
-        for cursor in [
-            " nav1-token",
-            "nav1-token ",
-            "nav1 token",
-            "nav1\ttoken",
-            "nav1\u{00a0}token",
-        ] {
-            let call = call(cursor);
-            assert!(!validator.is_valid(&call), "schema accepted {call}");
-            assert!(
-                validate_tool_arguments(info, call.as_object().unwrap(), false).is_err(),
-                "runtime accepted {call}"
-            );
-        }
     }
 
     #[test]
@@ -5970,303 +4356,6 @@ pub(crate) mod tests {
             );
         }
     }
-
-    #[test]
-    fn bridged_readers_publish_two_mutually_exclusive_selector_branches() {
-        for (name, legacy, address) in BRIDGED_SELECTORS {
-            let tool = tools()
-                .into_iter()
-                .find(|tool| tool.name == *name)
-                .unwrap_or_else(|| panic!("{name} is registered"));
-            let schema = input_schema_for_tool(&tool);
-            let properties = schema["properties"].as_object().expect("object schema");
-
-            assert!(
-                properties.contains_key("sourceSet"),
-                "{name} must publish `sourceSet`"
-            );
-            assert!(
-                properties.contains_key(*legacy),
-                "{name} must keep `{legacy}` until its own removal slice"
-            );
-            assert_eq!(
-                properties.contains_key("metadataPath"),
-                address.publishes_address(),
-                "{name} publishes `metadataPath` only when it can use one"
-            );
-
-            let mut forbidden_in_legacy = address
-                .required_args()
-                .iter()
-                .map(|argument| json!({"required": [argument]}))
-                .collect::<Vec<_>>();
-            if *address == LogicalAddress::Optional {
-                forbidden_in_legacy.push(json!({"required": ["metadataPath"]}));
-            }
-            assert_eq!(
-                schema["oneOf"],
-                json!([
-                    {
-                        "required": address.required_args(),
-                        "not": {"required": [legacy]}
-                    },
-                    {
-                        "required": [legacy],
-                        "not": {"anyOf": forbidden_in_legacy}
-                    }
-                ]),
-                "{name} must publish its two selector branches as mutually exclusive"
-            );
-            assert_eq!(
-                schema["required"],
-                json!([]),
-                "{name} has no unconditionally required selector"
-            );
-        }
-    }
-
-    #[test]
-    fn bridged_readers_that_have_no_address_do_not_publish_one() {
-        // `unica.cf.*` reads `Configuration.xml` at the root of a source set,
-        // so no branch of its schema can honour an address. Publishing one
-        // would advertise a selector the tool cannot use.
-        for name in ["unica.cf.info", "unica.cf.validate"] {
-            let tool = tools()
-                .into_iter()
-                .find(|tool| tool.name == name)
-                .expect("tool is registered");
-            let schema = input_schema_for_tool(&tool);
-            assert!(
-                schema["properties"].get("metadataPath").is_none(),
-                "{name} publishes an address it cannot use: {schema}"
-            );
-        }
-    }
-
-    /// The bridged tools whose arguments come from `NATIVE_XML_DSL_ARGS`. The
-    /// rest carry narrow published lists and never saw the catch-all names.
-    const CATCH_ALL_BRIDGED_READERS: &[&str] = &[
-        "unica.cf.validate",
-        "unica.role.validate",
-        "unica.form.validate",
-        "unica.dcs.validate",
-        "unica.mxl.validate",
-        "unica.mxl.decompile",
-        "unica.subsystem.validate",
-    ];
-
-    /// Two arguments differing only in case, with different meanings, is a
-    /// contract no caller can read. The bridge is what made the lowercase name
-    /// meaningful, so it is the bridge's job not to advertise the inherited
-    /// uppercase one beside it — while still accepting it, because it was
-    /// accepted before and no handler ever read it.
-    #[test]
-    fn a_bridged_reader_never_publishes_two_addresses_differing_only_in_case() {
-        for (name, _, address) in BRIDGED_SELECTORS {
-            let tool = tools()
-                .into_iter()
-                .find(|tool| tool.name == *name)
-                .expect("tool is registered");
-            let schema = input_schema_for_tool(&tool);
-            let properties = schema["properties"].as_object().expect("object schema");
-
-            assert!(
-                properties.get("MetadataPath").is_none(),
-                "{name} publishes `MetadataPath` beside a selector it does not drive: {schema}"
-            );
-            assert_eq!(
-                properties.contains_key("metadataPath"),
-                address.publishes_address(),
-                "{name}"
-            );
-
-            // Only the tools that drew from the shared catch-all ever accepted
-            // it. The six `*.info` readers have carried narrow lists since
-            // ADR-0023, so refusing it there is the contract they already had.
-            if !CATCH_ALL_BRIDGED_READERS.contains(name) {
-                continue;
-            }
-            let mut args = Map::from_iter([
-                ("sourceSet".to_string(), json!("main")),
-                ("MetadataPath".to_string(), json!("Role.Sales")),
-            ]);
-            if *address == LogicalAddress::Required {
-                args.insert("metadataPath".to_string(), json!("Role.Sales"));
-            }
-            validate_tool_arguments(tool, &args, false).unwrap_or_else(|error| {
-                panic!("{name} must keep tolerating the inherited name: {error}")
-            });
-        }
-    }
-
-    /// `unica.cf.validate` drew `metadataPath` from the shared catch-all before
-    /// this bridge and ignored it. Publishing it would be a lie, but refusing
-    /// it would break a call that used to work — and this bridge removes
-    /// nothing. So it stays accepted and unpublished.
-    ///
-    /// `unica.cf.info` never took it: it has carried a narrow argument list
-    /// since ADR-0023, so refusing it there is the contract it already had.
-    #[test]
-    fn cf_validate_still_tolerates_the_address_the_catch_all_used_to_hand_it() {
-        let args = Map::from_iter([
-            ("sourceSet".to_string(), json!("main")),
-            ("metadataPath".to_string(), json!("Catalog.Items")),
-        ]);
-
-        let validate = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.cf.validate")
-            .expect("tool is registered");
-        validate_tool_arguments(validate, &args, false)
-            .unwrap_or_else(|error| panic!("cf.validate must keep tolerating it: {error}"));
-
-        let info = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.cf.info")
-            .expect("tool is registered");
-        let error = validate_tool_arguments(info, &args, false)
-            .expect_err("cf.info never accepted an address");
-        assert!(
-            error.contains("does not accept argument `metadataPath`"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn bridged_readers_refuse_two_selectors_at_once() {
-        for (name, legacy, address) in BRIDGED_SELECTORS {
-            let tool = tools()
-                .into_iter()
-                .find(|tool| tool.name == *name)
-                .expect("tool is registered");
-            let mut args = Map::from_iter([
-                (legacy.to_string(), json!("src/whatever.xml")),
-                ("sourceSet".to_string(), json!("main")),
-            ]);
-            if *address == LogicalAddress::Required {
-                args.insert("metadataPath".to_string(), json!("Role.Sales"));
-            }
-            let error = validate_tool_arguments(tool, &args, false)
-                .expect_err("two selectors must be refused before the handler");
-            assert!(error.contains("selector_conflict"), "{name}: {error}");
-        }
-    }
-
-    #[test]
-    fn bridged_readers_still_refuse_a_call_with_no_selector() {
-        for (name, _, _) in BRIDGED_SELECTORS {
-            let tool = tools()
-                .into_iter()
-                .find(|tool| tool.name == *name)
-                .expect("tool is registered");
-            assert!(
-                validate_tool_arguments(tool, &Map::new(), false).is_err(),
-                "{name} must still refuse a call carrying no selector at all"
-            );
-        }
-    }
-
-    #[test]
-    fn bridged_readers_accept_either_selector_on_its_own() {
-        for (name, legacy, address) in BRIDGED_SELECTORS {
-            let tool = tools()
-                .into_iter()
-                .find(|tool| tool.name == *name)
-                .expect("tool is registered");
-
-            let mut logical = Map::from_iter([("sourceSet".to_string(), json!("main"))]);
-            if *address == LogicalAddress::Required {
-                logical.insert("metadataPath".to_string(), json!("Role.Sales"));
-            }
-            validate_tool_arguments(tool, &logical, false)
-                .unwrap_or_else(|error| panic!("{name} logical call: {error}"));
-
-            let physical = Map::from_iter([(legacy.to_string(), json!("src/whatever.xml"))]);
-            validate_tool_arguments(tool, &physical, false)
-                .unwrap_or_else(|error| panic!("{name} physical call: {error}"));
-        }
-    }
-
-    /// Registry-facing falsifier for the complete public selector bridge.
-    /// The component tests stay independently runnable, while this name binds
-    /// one architecture record to publication, exclusivity and acceptance for
-    /// every bridged reader.
-    #[test]
-    fn bridged_reader_selector_schema_contract_is_complete() {
-        bridged_readers_publish_two_mutually_exclusive_selector_branches();
-        bridged_readers_that_have_no_address_do_not_publish_one();
-        bridged_readers_refuse_two_selectors_at_once();
-        bridged_readers_still_refuse_a_call_with_no_selector();
-        bridged_readers_accept_either_selector_on_its_own();
-    }
-
-    #[test]
-    fn subject_reader_migration_inventory_is_complete() {
-        let inventory = authoritative_reader_migration_inventory().collect::<Vec<_>>();
-        assert_eq!(
-            inventory,
-            vec![
-                ("unica.cf.info", ReaderMigrationMode::Bridge),
-                ("unica.cf.validate", ReaderMigrationMode::Bridge),
-                ("unica.subsystem.info", ReaderMigrationMode::Bridge),
-                ("unica.subsystem.validate", ReaderMigrationMode::Bridge),
-                ("unica.role.info", ReaderMigrationMode::Bridge),
-                ("unica.role.validate", ReaderMigrationMode::Bridge),
-                ("unica.form.info", ReaderMigrationMode::Bridge),
-                ("unica.form.validate", ReaderMigrationMode::Bridge),
-                ("unica.dcs.info", ReaderMigrationMode::Bridge),
-                ("unica.dcs.validate", ReaderMigrationMode::Bridge),
-                ("unica.mxl.info", ReaderMigrationMode::Bridge),
-                ("unica.mxl.validate", ReaderMigrationMode::Bridge),
-                ("unica.mxl.decompile", ReaderMigrationMode::Bridge),
-                ("unica.code.diagnostics", ReaderMigrationMode::DirectSwitch),
-            ]
-        );
-
-        let bridge_names = inventory
-            .iter()
-            .filter_map(|(name, mode)| (*mode == ReaderMigrationMode::Bridge).then_some(*name))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            bridge_names,
-            BRIDGED_SELECTORS
-                .iter()
-                .map(|(name, _, _)| *name)
-                .collect::<Vec<_>>()
-        );
-        let direct_names = inventory
-            .iter()
-            .filter_map(|(name, mode)| {
-                (*mode == ReaderMigrationMode::DirectSwitch).then_some(*name)
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(direct_names, ["unica.code.diagnostics"]);
-
-        for (name, mode) in inventory {
-            let tool = tools()
-                .into_iter()
-                .find(|tool| tool.name == name)
-                .unwrap_or_else(|| panic!("reader migration inventory lost {name}"));
-            let schema = input_schema_for_tool(&tool);
-            match mode {
-                ReaderMigrationMode::Bridge => {
-                    let (legacy, _) = bridged_selector(name).expect("bridge selector");
-                    assert!(schema["properties"].get(legacy).is_some(), "{name}");
-                    assert!(schema["properties"].get("sourceSet").is_some(), "{name}");
-                }
-                ReaderMigrationMode::DirectSwitch => {
-                    assert!(matches!(tool.handler, ToolHandler::Diagnostics), "{name}");
-                    for legacy in ["sourceDir", "path", "mode"] {
-                        assert!(
-                            schema["properties"].get(legacy).is_none(),
-                            "{name}: {legacy}"
-                        );
-                    }
-                }
-            }
-        }
-    }
-
     fn native_mutation_schema_signature(schema: &Value) -> String {
         fn write_canonical(value: &Value, output: &mut Vec<u8>) {
             match value {
@@ -6326,6 +4415,139 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn logical_only_tool_schemas_match_exact_property_allowlists() {
+        use std::collections::{BTreeMap, BTreeSet};
+
+        let mut actual = BTreeMap::new();
+        for tool in tools() {
+            let schema = input_schema_for_tool(&tool);
+            let Some(properties) = schema["properties"].as_object() else {
+                continue;
+            };
+            if !properties.contains_key("sourceSet") || !properties.contains_key("metadataPath") {
+                continue;
+            }
+            if tool.name == "unica.code.search" {
+                continue;
+            }
+            assert_eq!(schema["additionalProperties"], false, "{}", tool.name);
+            actual.insert(
+                tool.name,
+                properties.keys().cloned().collect::<BTreeSet<_>>(),
+            );
+        }
+        fn fields(names: &[&str]) -> BTreeSet<String> {
+            names.iter().map(|name| (*name).to_string()).collect()
+        }
+        let expected = BTreeMap::from([
+            (
+                "unica.code.diagnostics",
+                fields(&[
+                    "action",
+                    "cwd",
+                    "filter",
+                    "limit",
+                    "metadataPath",
+                    "range",
+                    "sourceSet",
+                    "timeoutSeconds",
+                ]),
+            ),
+            (
+                "unica.code.patch",
+                fields(&[
+                    "confirm",
+                    "content",
+                    "cwd",
+                    "dryRun",
+                    "metadataPath",
+                    "operation",
+                    "position",
+                    "selector",
+                    "sourceSet",
+                ]),
+            ),
+            (
+                "unica.meta.edit",
+                fields(&["cwd", "dryRun", "metadataPath", "operations", "sourceSet"]),
+            ),
+            (
+                "unica.meta.info",
+                fields(&["cwd", "limit", "metadataPath", "sections", "sourceSet"]),
+            ),
+            (
+                "unica.role.edit",
+                fields(&["dryRun", "metadataPath", "operations", "sourceSet"]),
+            ),
+        ]);
+        assert_eq!(actual, expected);
+    }
+
+    /// The eight readers ADR-0023 narrowed publish exactly this set and accept
+    /// exactly that one. The table is the contract: dropping a functional
+    /// selector by accident fails here, publishing an unreachable one fails
+    /// here, and so does letting a reader fall back to the historical catch-all.
+    /// Published names are canonical (ADR-0019 collapses path aliases in
+    /// `tools/list`); accepted names include the aliases validation still takes.
+    /// Six of them are also ADR-0049 bridges, so their logical selector belongs
+    /// to the pinned set: losing it would be as invisible as losing the path.
+    #[test]
+    fn every_narrowed_reader_publishes_its_exact_argument_set() {
+        let cases: [(&str, &[&str], &[&str]); 2] = [
+            (
+                "unica.mxl.info",
+                // Мост читателей снят: логический селектор больше не
+                // добавляется к файловому адресу макета.
+                &[
+                    "TemplatePath",
+                    "WithText",
+                    "confirm",
+                    "cwd",
+                    "delivery",
+                    "filter",
+                    "page",
+                    "resultRef",
+                    "section",
+                    "withText",
+                ],
+                &[
+                    "Path",
+                    "TemplatePath",
+                    "WithText",
+                    "confirm",
+                    "cwd",
+                    "delivery",
+                    "filter",
+                    "page",
+                    "path",
+                    "resultRef",
+                    "section",
+                    "templatePath",
+                    "withText",
+                ],
+            ),
+            (
+                "unica.meta.info",
+                &["cwd", "limit", "metadataPath", "sections", "sourceSet"],
+                // The metadata surface has no path aliases and validates its
+                // own closed shape, so `allowed_args` stays empty by design.
+                &[],
+            ),
+        ];
+
+        for (name, published, accepted) in cases {
+            let tool = tools()
+                .into_iter()
+                .find(|tool| tool.name == name)
+                .unwrap_or_else(|| panic!("{name} must be registered"));
+            let schema = input_schema_for_tool(&tool);
+            assert_eq!(schema["additionalProperties"], false, "{name}");
+            assert_eq!(sorted_property_names(&schema), published, "{name}");
+            assert_eq!(allowed_args(&tool), accepted, "{name}");
+        }
+    }
+
+    #[test]
     pub(crate) fn native_mutation_surface_has_exact_operations_and_schemas() {
         use std::collections::BTreeMap;
 
@@ -6382,20 +4604,12 @@ pub(crate) mod tests {
             ("unica.epf.init", entry("epf-init", "1729:02a6a6ebaf86d9f6")),
             ("unica.erf.init", entry("erf-init", "1729:02a6a6ebaf86d9f6")),
             (
-                "unica.form.add",
-                entry("form-add", "31503:ad0297af29ca9ed3"),
-            ),
-            (
                 "unica.form.compile",
                 entry("form-compile", "31140:8c354e756d3bb2f2"),
             ),
             (
                 "unica.form.edit",
                 entry("form-edit", "32016:c091f5e4c8fe6835"),
-            ),
-            (
-                "unica.form.remove",
-                entry("form-remove", "32225:41144b8a4d71de9c"),
             ),
             (
                 "unica.interface.edit",
@@ -6408,10 +4622,6 @@ pub(crate) mod tests {
             (
                 "unica.meta.edit",
                 entry("metadata:Edit", "28192:488b7c1cd73aeaa8"),
-            ),
-            (
-                "unica.meta.remove",
-                entry("metadata:Remove", "1025:b8843dc27d6b5b7e"),
             ),
             (
                 "unica.mxl.compile",
@@ -6433,170 +4643,8 @@ pub(crate) mod tests {
                 "unica.subsystem.edit",
                 entry("subsystem-edit", "31164:52fff7efa16e1c71"),
             ),
-            (
-                "unica.support.edit",
-                entry("support-edit", "31857:0742d10d9c5080e6"),
-            ),
-            (
-                "unica.xdto.edit",
-                entry("xdto-edit", "6126:3957bd36139d3b35"),
-            ),
         ]);
         assert_eq!(actual, expected);
-    }
-
-    #[test]
-    fn logical_only_tool_schemas_match_exact_property_allowlists() {
-        use std::collections::{BTreeMap, BTreeSet};
-
-        let mut actual = BTreeMap::new();
-        for tool in tools() {
-            let schema = input_schema_for_tool(&tool);
-            let Some(properties) = schema["properties"].as_object() else {
-                continue;
-            };
-            if !properties.contains_key("sourceSet") || !properties.contains_key("metadataPath") {
-                continue;
-            }
-            if bridged_selector(tool.name).is_some()
-                || tool.name == "unica.code.search"
-                || matches!(
-                    tool.handler,
-                    ToolHandler::SourceNavigation {
-                        operation: SourceNavigationOperation::Locate
-                    }
-                )
-            {
-                continue;
-            }
-            assert_eq!(schema["additionalProperties"], false, "{}", tool.name);
-            actual.insert(
-                tool.name,
-                properties.keys().cloned().collect::<BTreeSet<_>>(),
-            );
-        }
-        fn fields(names: &[&str]) -> BTreeSet<String> {
-            names.iter().map(|name| (*name).to_string()).collect()
-        }
-        let expected = BTreeMap::from([
-            (
-                "unica.code.diagnostics",
-                fields(&[
-                    "action",
-                    "cwd",
-                    "filter",
-                    "limit",
-                    "metadataPath",
-                    "range",
-                    "sourceSet",
-                    "timeoutSeconds",
-                ]),
-            ),
-            (
-                "unica.code.patch",
-                fields(&[
-                    "confirm",
-                    "content",
-                    "cwd",
-                    "dryRun",
-                    "metadataPath",
-                    "operation",
-                    "position",
-                    "selector",
-                    "sourceSet",
-                ]),
-            ),
-            (
-                "unica.meta.edit",
-                fields(&["cwd", "dryRun", "metadataPath", "operations", "sourceSet"]),
-            ),
-            (
-                "unica.meta.info",
-                fields(&["cwd", "limit", "metadataPath", "sections", "sourceSet"]),
-            ),
-            (
-                "unica.meta.remove",
-                fields(&[
-                    "confirm",
-                    "cwd",
-                    "dryRun",
-                    "force",
-                    "metadataPath",
-                    "sourceSet",
-                ]),
-            ),
-            (
-                "unica.role.edit",
-                fields(&["dryRun", "metadataPath", "operations", "sourceSet"]),
-            ),
-            (
-                "unica.source.children",
-                fields(&[
-                    "confirm",
-                    "cursor",
-                    "cwd",
-                    "limit",
-                    "metadataPath",
-                    "sourceSet",
-                ]),
-            ),
-            (
-                "unica.source.resources",
-                fields(&[
-                    "confirm",
-                    "cursor",
-                    "cwd",
-                    "limit",
-                    "metadataPath",
-                    "scope",
-                    "snapshotId",
-                    "sourceSet",
-                ]),
-            ),
-            (
-                "unica.xdto.edit",
-                fields(&[
-                    "confirm",
-                    "cwd",
-                    "dryRun",
-                    "metadataPath",
-                    "operations",
-                    "sourceSet",
-                ]),
-            ),
-            (
-                "unica.xdto.info",
-                fields(&[
-                    "confirm",
-                    "cursor",
-                    "cwd",
-                    "limit",
-                    "metadataPath",
-                    "sourceSet",
-                    "typeName",
-                ]),
-            ),
-        ]);
-        assert_eq!(actual, expected);
-    }
-
-    #[test]
-    fn meta_info_rejects_legacy_target_fields_as_unknown_arguments() {
-        let tool = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.meta.info")
-            .expect("unica.meta.info is registered");
-
-        for legacy in ["ObjectPath", "objectPath", "Path", "path"] {
-            let args = Map::from_iter([(legacy.to_string(), json!("src/Catalogs/Items.xml"))]);
-            let error = validate_tool_arguments(tool, &args, false).unwrap_err();
-            assert!(
-                error.contains(&format!("does not accept argument `{legacy}`")),
-                "{legacy}: {error}"
-            );
-            assert!(error.contains("sourceSet"), "{error}");
-            assert!(error.contains("metadataPath"), "{error}");
-        }
     }
 
     #[test]
@@ -6641,34 +4689,6 @@ pub(crate) mod tests {
         let mut invalid = base;
         invalid["selector"] = json!({"method": "A", "anchor": "B"});
         assert!(!validator.is_valid(&invalid));
-    }
-
-    #[test]
-    fn code_patch_metadata_path_description_is_tool_specific() {
-        let tools = tools();
-        let code_patch = tools
-            .iter()
-            .find(|tool| tool.name == "unica.code.patch")
-            .unwrap();
-        let role_validate = tools
-            .iter()
-            .find(|tool| tool.name == "unica.role.validate")
-            .unwrap();
-
-        let code_patch_schema = input_schema_for_tool(code_patch);
-        let role_validate_schema = input_schema_for_tool(role_validate);
-        let code_patch_description = code_patch_schema["properties"]["metadataPath"]["description"]
-            .as_str()
-            .unwrap();
-        let role_validate_description = role_validate_schema["properties"]["metadataPath"]
-            ["description"]
-            .as_str()
-            .unwrap();
-
-        assert!(code_patch_description.contains("logical module address"));
-        assert!(code_patch_description.contains("sourceSet"));
-        assert!(!role_validate_description.contains("unica.code.patch"));
-        assert!(!role_validate_description.contains("module"));
     }
 
     #[test]
@@ -6732,44 +4752,8 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn meta_remove_does_not_publish_keep_files() {
-        let remove = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.meta.remove")
-            .expect("unica.meta.remove must be registered");
-        let schema = input_schema_for_tool(&remove);
-
-        assert!(schema["properties"]["KeepFiles"].is_null());
-        assert!(schema["properties"]["keepFiles"].is_null());
-        for spelling in ["KeepFiles", "keepFiles"] {
-            let error = validate_tool_arguments(
-                remove,
-                json!({
-                    "sourceSet": "main",
-                    "metadataPath": "Catalog.Legacy",
-                    spelling: true,
-                })
-                .as_object()
-                .expect("test arguments must be an object"),
-                false,
-            )
-            .expect_err("meta.remove must reject the retired keep-files flag");
-            assert!(error.contains(&format!("does not accept argument `{spelling}`")));
-        }
-    }
-
-    #[test]
     fn native_required_paths_publish_canonical_json_schema_only() {
         let cases = [
-            (
-                "unica.cf.info",
-                json!({"ConfigPath": "src"}),
-                vec![
-                    json!({"configPath": "src"}),
-                    json!({"Path": "src"}),
-                    json!({"path": "src"}),
-                ],
-            ),
             (
                 "unica.form.edit",
                 json!({"FormPath": "Ext/Form.xml", "definition": {}}),
@@ -6916,13 +4900,6 @@ pub(crate) mod tests {
             ])
         );
 
-        let validate_tool = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.form.validate")
-            .unwrap();
-        let validate_schema = input_schema_for_tool(&validate_tool);
-        assert!(validate_schema["properties"].get("definition").is_none());
-
         let mut inline = Map::new();
         inline.insert("FormPath".to_string(), json!("Form.xml"));
         inline.insert("definition".to_string(), json!({"formEvents": []}));
@@ -7013,67 +4990,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn support_edit_contract_exposes_typed_enums_and_rejects_invalid_payloads() {
-        let tool = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.support.edit")
-            .unwrap();
-
-        let schema = input_schema_for_tool(&tool);
-        assert_eq!(schema["additionalProperties"], false);
-        assert_eq!(
-            schema["properties"]["Capability"]["enum"],
-            json!(["on", "off"])
-        );
-        assert_eq!(
-            schema["properties"]["Set"]["enum"],
-            json!(["editable", "off-support", "locked"])
-        );
-        assert!(schema["properties"].get("args").is_none());
-
-        let mut args = Map::new();
-        args.insert("Path".to_string(), json!("src"));
-        args.insert("Capability".to_string(), json!(true));
-        let error = validate_tool_arguments(tool, &args, false).unwrap_err();
-        assert!(error.contains("Capability"));
-        assert!(error.contains("string"));
-
-        let mut args = Map::new();
-        args.insert("Path".to_string(), json!("src"));
-        args.insert("Capability".to_string(), json!("on"));
-        args.insert("Set".to_string(), json!("editable"));
-        let error = validate_tool_arguments(tool, &args, false).unwrap_err();
-        assert!(error.contains("exactly one"));
-
-        let mut args = Map::new();
-        args.insert("Path".to_string(), json!("src"));
-        args.insert("Capability".to_string(), json!("on"));
-        args.insert("capability".to_string(), json!("off"));
-        let error = validate_tool_arguments(tool, &args, false).unwrap_err();
-        assert!(error.contains("conflicting aliases"));
-        assert!(error.contains("Capability"));
-        assert!(error.contains("capability"));
-
-        let mut args = Map::new();
-        args.insert("Path".to_string(), json!("src"));
-        args.insert("Set".to_string(), json!("editable"));
-        args.insert("set".to_string(), json!("locked"));
-        let error = validate_tool_arguments(tool, &args, false).unwrap_err();
-        assert!(error.contains("conflicting aliases"));
-        assert!(error.contains("Set"));
-        assert!(error.contains("set"));
-
-        let mut args = Map::new();
-        args.insert("Path".to_string(), json!("src"));
-        args.insert("TargetPath".to_string(), json!("src/Catalogs/Items.xml"));
-        args.insert("Capability".to_string(), json!("on"));
-        let error = validate_tool_arguments(tool, &args, false).unwrap_err();
-        assert!(error.contains("conflicting aliases"));
-        assert!(error.contains("Path"));
-        assert!(error.contains("TargetPath"));
-    }
-
-    #[test]
     fn meta_edit_contract_accepts_only_typed_ordered_operations() {
         let tool = tools()
             .into_iter()
@@ -7139,33 +5055,6 @@ pub(crate) mod tests {
 
         assert!(error.contains("dryRun"));
         assert!(error.contains("boolean"));
-    }
-
-    #[test]
-    fn form_boolean_flags_are_boolean_in_mcp_contract() {
-        let form_add = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.form.add")
-            .unwrap();
-        let schema = input_schema_for_tool(&form_add);
-        assert_eq!(schema["properties"]["SetDefault"]["type"], "boolean");
-        assert_eq!(schema["properties"]["setDefault"]["type"], "boolean");
-
-        let mut args = Map::new();
-        args.insert("ObjectPath".to_string(), json!("src/Catalogs/Goods.xml"));
-        args.insert("FormName".to_string(), json!("ListForm"));
-        args.insert("SetDefault".to_string(), json!("false"));
-        let error = validate_tool_arguments(form_add, &args, false).unwrap_err();
-        assert!(error.contains("SetDefault"));
-        assert!(error.contains("boolean"));
-
-        let mut args = Map::new();
-        args.insert("ObjectPath".to_string(), json!("src/Catalogs/Goods.xml"));
-        args.insert("FormName".to_string(), json!("ListForm"));
-        args.insert("SetDefault".to_string(), json!(false));
-        args.insert("setDefault".to_string(), json!(true));
-        let error = validate_tool_arguments(form_add, &args, false).unwrap_err();
-        assert!(error.contains("conflicting aliases"));
     }
 
     #[test]
@@ -7364,126 +5253,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn source_navigation_schemas_are_logical_exact_and_bounded() {
-        let resolve = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.source.resolve")
-            .expect("source.resolve is registered");
-        let children = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.source.children")
-            .expect("source.children is registered");
-
-        let resolve_schema = input_schema_for_tool(&resolve);
-        assert_eq!(resolve_schema["required"], json!(["sourceSet", "query"]));
-        assert_eq!(
-            resolve_schema["properties"]["mode"]["enum"],
-            json!(["exact", "prefix"])
-        );
-        assert_eq!(
-            resolve_schema["properties"]["targetKind"]["enum"],
-            json!(["metadataObject", "module"])
-        );
-        assert_eq!(resolve_schema["properties"]["limit"]["minimum"], 1);
-        assert_eq!(resolve_schema["properties"]["limit"]["maximum"], 50);
-        for forbidden in ["path", "sourceDir", "provider", "handle"] {
-            assert!(
-                resolve_schema["properties"].get(forbidden).is_none(),
-                "source.resolve must not publish {forbidden}"
-            );
-        }
-
-        let children_schema = input_schema_for_tool(&children);
-        assert_eq!(children_schema["required"], json!(["sourceSet"]));
-        assert_eq!(
-            children_schema["properties"]["metadataPath"]["type"],
-            "string"
-        );
-        assert_eq!(children_schema["properties"]["cursor"]["type"], "string");
-        assert_eq!(children_schema["properties"]["limit"]["minimum"], 1);
-        assert_eq!(children_schema["properties"]["limit"]["maximum"], 50);
-        for forbidden in ["path", "sourceDir", "provider", "handle", "collection"] {
-            assert!(
-                children_schema["properties"].get(forbidden).is_none(),
-                "source.children must not publish {forbidden}"
-            );
-        }
-    }
-
-    #[test]
-    fn source_resource_schemas_are_bounded_typed_and_path_free() {
-        let resources = crate::application::tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.source.resources")
-            .expect("source.resources is registered");
-        let read = crate::application::tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.source.read")
-            .expect("source.read is registered");
-        // The bounded resource surface is read-only; BSL mutation lives in
-        // `unica.code.patch`.
-        assert!(crate::application::tools()
-            .into_iter()
-            .all(|tool| tool.name != "unica.source.apply"));
-        let resources_schema = input_schema_for_tool(&resources);
-        let read_schema = input_schema_for_tool(&read);
-
-        assert_eq!(resources_schema["additionalProperties"], false);
-        assert_eq!(
-            resources_schema["properties"]["scope"]["enum"],
-            json!(["self", "aggregate", "registrations"])
-        );
-        assert_eq!(resources_schema["properties"]["limit"]["maximum"], 50);
-        assert_eq!(read_schema["additionalProperties"], false);
-        assert_eq!(read_schema["required"], json!(["snapshotId", "resourceId"]));
-        assert_eq!(read_schema["properties"]["offset"]["minimum"], 0);
-        assert_eq!(read_schema["properties"]["limit"]["maximum"], 65_536);
-        for forbidden in [
-            "path",
-            "sourceDir",
-            "handle",
-            "provider",
-            "providerRevision",
-            "expectedHash",
-            "content",
-        ] {
-            for (name, schema) in [
-                ("source.resources", &resources_schema),
-                ("source.read", &read_schema),
-            ] {
-                assert!(
-                    schema["properties"].get(forbidden).is_none(),
-                    "{name} must not publish {forbidden}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn source_navigation_arguments_reject_fuzzy_modes_and_unbounded_limits() {
-        let resolve = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.source.resolve")
-            .unwrap();
-        for args in [
-            json!({"sourceSet": "main", "query": "Catalog.Items", "mode": "fuzzy"}),
-            json!({"sourceSet": "main", "query": "Catalog.Items", "mode": 1}),
-            json!({"sourceSet": "main", "query": "Catalog.Items", "targetKind": "sourceRoot"}),
-            json!({"sourceSet": "main", "query": "Catalog.Items", "targetKind": 1}),
-            json!({"sourceSet": "main", "query": "Catalog.Items", "limit": -1}),
-            json!({"sourceSet": "main", "query": "Catalog.Items", "limit": 0}),
-            json!({"sourceSet": "main", "query": "Catalog.Items", "limit": 51}),
-        ] {
-            let error = validate_tool_arguments(resolve, args.as_object().unwrap(), false)
-                .expect_err("invalid source navigation input must be rejected");
-            assert!(
-                error.contains("mode") || error.contains("limit") || error.contains("targetKind"),
-                "unexpected error: {error}"
-            );
-        }
-    }
-
-    #[test]
     fn runtime_job_schemas_keep_execution_typed_and_controls_narrow() {
         let runtime_jobs = tools()
             .into_iter()
@@ -7493,11 +5262,9 @@ pub(crate) mod tests {
         assert_eq!(
             runtime_jobs,
             [
-                "unica.runtime.job.cancel",
                 "unica.runtime.job.list",
                 "unica.runtime.job.logs",
                 "unica.runtime.job.start",
-                "unica.runtime.job.status",
                 "unica.runtime.job.wait",
             ]
             .into_iter()
@@ -7655,10 +5422,6 @@ pub(crate) mod tests {
             .into_iter()
             .find(|tool| tool.name == "unica.runtime.job.wait")
             .expect("runtime job wait is registered");
-        let cancel = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.runtime.job.cancel")
-            .expect("runtime job cancel is registered");
         let logs = tools()
             .into_iter()
             .find(|tool| tool.name == "unica.runtime.job.logs")
@@ -7719,14 +5482,6 @@ pub(crate) mod tests {
             )
             .unwrap_or_else(|error| panic!("tailChars={tail_chars}: {error}"));
         }
-        assert!(validate_tool_arguments(
-            cancel,
-            json!({"jobId":valid_id,"operation":"build"})
-                .as_object()
-                .unwrap(),
-            true
-        )
-        .is_err());
     }
 
     #[test]
@@ -7735,10 +5490,6 @@ pub(crate) mod tests {
             .into_iter()
             .find(|tool| tool.name == "unica.code.definition")
             .expect("unica.code.definition must be registered");
-        let outline = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.code.outline")
-            .expect("unica.code.outline must be registered");
         let search = tools()
             .into_iter()
             .find(|tool| tool.name == "unica.code.search")
@@ -7751,15 +5502,6 @@ pub(crate) mod tests {
         assert!(definition_schema["properties"].get("args").is_none());
         assert_eq!(definition_schema["properties"]["limit"]["type"], "integer");
         assert_eq!(definition_schema["required"], json!(["name"]));
-
-        let outline_schema = input_schema_for_tool(&outline);
-        assert_eq!(outline_schema["additionalProperties"], false);
-        assert!(outline_schema["properties"].get("path").is_some());
-        assert_eq!(
-            outline_schema["properties"]["includeMethods"]["type"],
-            "boolean"
-        );
-        assert_eq!(outline_schema["required"], json!(["path"]));
 
         let search_schema = input_schema_for_tool(&search);
         assert_eq!(search_schema["additionalProperties"], false);
@@ -7888,337 +5630,6 @@ pub(crate) mod tests {
             error.contains("requires `name`"),
             "reader validation cannot be weakened by a preview boolean: {error}"
         );
-    }
-
-    /// The typed reader answers with every section at once, so the selectors
-    /// that used to trim its report select nothing. Publishing them promised a
-    /// behaviour the handler no longer has (ADR-0023).
-    #[test]
-    fn dcs_info_contract_publishes_only_what_the_typed_reader_reads() {
-        let dcs_info = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.dcs.info")
-            .expect("unica.dcs.info must be registered");
-
-        let schema = input_schema_for_tool(&dcs_info);
-        assert_eq!(schema["additionalProperties"], false);
-        for retired in ["Raw", "Mode", "Name", "Limit", "Offset"] {
-            assert!(
-                schema["properties"].get(retired).is_none(),
-                "{retired} no longer selects anything: {schema}"
-            );
-        }
-        // ADR-0049 moved the requirement into the selector branches: the path
-        // is still required, just not unconditionally — a logical call carries
-        // `sourceSet` + `metadataPath` instead.
-        assert_eq!(schema["required"], json!([]));
-        assert_eq!(
-            schema["oneOf"][1]["required"],
-            json!(["TemplatePath"]),
-            "the physical branch still requires the path: {schema}"
-        );
-        assert!(schema.get("allOf").is_none());
-
-        let mut args = Map::new();
-        args.insert(
-            "TemplatePath".to_string(),
-            json!("Reports/Sales/Templates/Main"),
-        );
-        validate_tool_arguments(dcs_info, &args, false).unwrap();
-    }
-
-    /// The eight readers ADR-0023 narrowed publish exactly this set and accept
-    /// exactly that one. The table is the contract: dropping a functional
-    /// selector by accident fails here, publishing an unreachable one fails
-    /// here, and so does letting a reader fall back to the historical catch-all.
-    /// Published names are canonical (ADR-0019 collapses path aliases in
-    /// `tools/list`); accepted names include the aliases validation still takes.
-    /// Six of them are also ADR-0049 bridges, so their logical selector belongs
-    /// to the pinned set: losing it would be as invisible as losing the path.
-    #[test]
-    fn every_narrowed_reader_publishes_its_exact_argument_set() {
-        let cases: [(&str, &[&str], &[&str]); 8] = [
-            (
-                "unica.cf.info",
-                &["ConfigPath", "confirm", "cwd", "sourceSet"],
-                &[
-                    "ConfigPath",
-                    "Path",
-                    "configPath",
-                    "confirm",
-                    "cwd",
-                    "path",
-                    "sourceSet",
-                ],
-            ),
-            (
-                "unica.role.info",
-                &[
-                    "RightsPath",
-                    "confirm",
-                    "cwd",
-                    "delivery",
-                    "filter",
-                    "metadataPath",
-                    "page",
-                    "resultRef",
-                    "section",
-                    "sourceSet",
-                ],
-                &[
-                    "Path",
-                    "RightsPath",
-                    "confirm",
-                    "cwd",
-                    "delivery",
-                    "filter",
-                    "metadataPath",
-                    "page",
-                    "path",
-                    "resultRef",
-                    "rightsPath",
-                    "section",
-                    "sourceSet",
-                ],
-            ),
-            (
-                "unica.subsystem.info",
-                &[
-                    "SubsystemPath",
-                    "confirm",
-                    "cwd",
-                    "delivery",
-                    "filter",
-                    "metadataPath",
-                    "page",
-                    "resultRef",
-                    "section",
-                    "sourceSet",
-                ],
-                &[
-                    "Path",
-                    "SubsystemPath",
-                    "confirm",
-                    "cwd",
-                    "delivery",
-                    "filter",
-                    "metadataPath",
-                    "page",
-                    "path",
-                    "resultRef",
-                    "section",
-                    "sourceSet",
-                    "subsystemPath",
-                ],
-            ),
-            (
-                "unica.dcs.info",
-                &[
-                    "TemplatePath",
-                    "confirm",
-                    "cwd",
-                    "delivery",
-                    "filter",
-                    "metadataPath",
-                    "page",
-                    "resultRef",
-                    "section",
-                    "sourceSet",
-                ],
-                &[
-                    "Path",
-                    "TemplatePath",
-                    "confirm",
-                    "cwd",
-                    "delivery",
-                    "filter",
-                    "metadataPath",
-                    "page",
-                    "path",
-                    "resultRef",
-                    "section",
-                    "sourceSet",
-                    "templatePath",
-                ],
-            ),
-            (
-                "unica.form.info",
-                &[
-                    "FormPath",
-                    "confirm",
-                    "cwd",
-                    "delivery",
-                    "filter",
-                    "metadataPath",
-                    "page",
-                    "resultRef",
-                    "section",
-                    "sourceSet",
-                ],
-                &[
-                    "FormPath",
-                    "Path",
-                    "confirm",
-                    "cwd",
-                    "delivery",
-                    "filter",
-                    "formPath",
-                    "metadataPath",
-                    "page",
-                    "path",
-                    "resultRef",
-                    "section",
-                    "sourceSet",
-                ],
-            ),
-            (
-                "unica.mxl.info",
-                &[
-                    "TemplatePath",
-                    "WithText",
-                    "confirm",
-                    "cwd",
-                    "delivery",
-                    "filter",
-                    "metadataPath",
-                    "page",
-                    "resultRef",
-                    "section",
-                    "sourceSet",
-                    "withText",
-                ],
-                &[
-                    "Path",
-                    "TemplatePath",
-                    "WithText",
-                    "confirm",
-                    "cwd",
-                    "delivery",
-                    "filter",
-                    "metadataPath",
-                    "page",
-                    "path",
-                    "resultRef",
-                    "section",
-                    "sourceSet",
-                    "templatePath",
-                    "withText",
-                ],
-            ),
-            (
-                "unica.cfe.diff",
-                &["ConfigPath", "ExtensionPath", "confirm", "cwd"],
-                &[
-                    "ConfigPath",
-                    "ExtensionPath",
-                    "configPath",
-                    "confirm",
-                    "cwd",
-                    "extensionPath",
-                ],
-            ),
-            (
-                "unica.meta.info",
-                &["cwd", "limit", "metadataPath", "sections", "sourceSet"],
-                // The metadata surface has no path aliases and validates its
-                // own closed shape, so `allowed_args` stays empty by design.
-                &[],
-            ),
-        ];
-
-        for (name, published, accepted) in cases {
-            let tool = tools()
-                .into_iter()
-                .find(|tool| tool.name == name)
-                .unwrap_or_else(|| panic!("{name} must be registered"));
-            let schema = input_schema_for_tool(&tool);
-            assert_eq!(schema["additionalProperties"], false, "{name}");
-            assert_eq!(sorted_property_names(&schema), published, "{name}");
-            assert_eq!(allowed_args(&tool), accepted, "{name}");
-        }
-    }
-
-    /// The historical catch-all is what made a narrowing invisible: every native
-    /// XML tool accepted every name, so removing one from a handler changed
-    /// nothing observable. No reader may reach it again.
-    #[test]
-    fn no_narrowed_reader_falls_back_to_the_native_catch_all() {
-        for name in [
-            "unica.cf.info",
-            "unica.role.info",
-            "unica.subsystem.info",
-            "unica.dcs.info",
-            "unica.form.info",
-            "unica.mxl.info",
-            "unica.cfe.diff",
-        ] {
-            let tool = tools()
-                .into_iter()
-                .find(|tool| tool.name == name)
-                .unwrap_or_else(|| panic!("{name} must be registered"));
-            let published = allowed_args(&tool);
-            assert!(
-                published.len() < NATIVE_XML_DSL_ARGS.len(),
-                "{name} publishes the catch-all argument list"
-            );
-            // One representative name from every family the catch-all carried.
-            for foreign in ["Mode", "Limit", "Offset", "Name", "Format", "OutputDir"] {
-                assert!(
-                    !published.contains(&foreign),
-                    "{name} accepts `{foreign}` again"
-                );
-            }
-        }
-    }
-
-    /// `SrcDir` only ever addressed a template together with `ProcessorName`
-    /// and `TemplateName`, and `TemplatePath` has been required throughout, so
-    /// the composite address was never reachable. Publishing `SrcDir` alone
-    /// advertised a lever that could not select anything.
-    #[test]
-    fn mxl_info_publishes_one_reachable_template_address() {
-        let mxl_info = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.mxl.info")
-            .expect("unica.mxl.info must be registered");
-
-        let schema = input_schema_for_tool(&mxl_info);
-        // ADR-0049 moved the requirement into the selector branches: the
-        // physical branch still requires the path, and the logical one requires
-        // the address pair instead.
-        assert_eq!(schema["required"], json!([]));
-        assert_eq!(
-            schema["oneOf"][1]["required"],
-            json!(["TemplatePath"]),
-            "the physical branch still requires one reachable address: {schema}"
-        );
-        for unreachable in ["SrcDir", "srcDir", "ProcessorName", "TemplateName"] {
-            assert!(
-                schema["properties"].get(unreachable).is_none(),
-                "{unreachable} cannot address a template on its own: {schema}"
-            );
-            let args = Map::from_iter([
-                (
-                    "TemplatePath".to_string(),
-                    json!("Reports/Sales/Templates/Main"),
-                ),
-                (unreachable.to_string(), json!("src")),
-            ]);
-            let error = validate_tool_arguments(mxl_info, &args, false).unwrap_err();
-            assert!(
-                error.contains(&format!("does not accept argument `{unreachable}`")),
-                "{unreachable}: {error}"
-            );
-        }
-
-        // `WithText` stays: it selects cell content, not report formatting.
-        let mut args = Map::new();
-        args.insert(
-            "TemplatePath".to_string(),
-            json!("Reports/Sales/Templates/Main"),
-        );
-        args.insert("WithText".to_string(), json!(true));
-        validate_tool_arguments(mxl_info, &args, false).unwrap();
     }
 
     #[test]

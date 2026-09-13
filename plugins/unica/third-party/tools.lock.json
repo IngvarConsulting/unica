@@ -58,27 +58,27 @@
     },
     {
       "name": "v8-runner",
-      "version": "0.5.1",
-      "repository": "https://github.com/alkoleft/v8-runner-rust",
-      "sourceTag": "master",
-      "sourceCommit": "7ce1b062843d86644fe55741dbe0ee79f7ca767d",
-      "assetRepository": "https://github.com/IngvarConsulting/unica-toolchain",
-      "assetTag": "v8-runner-nightly-master-build.2",
+      "version": "0.9.0",
+      "repository": "https://github.com/IngvarConsulting/v8-runner-rust",
+      "sourceTag": "v0.9.0",
+      "sourceCommit": "ae1b614f4fbccf3b6915543172f80b2eae356800",
+      "assetRepository": "https://github.com/IngvarConsulting/v8-runner-rust",
+      "assetTag": "v0.9.0",
       "license": "AGPL-3.0-only",
       "assetStrategy": "direct-release-asset",
       "binaryName": "v8-runner",
       "assets": {
         "darwin-arm64": {
           "assetName": "v8-runner-darwin-arm64",
-          "sha256": "2a92802edf5a73d5fdcc42cc61b1abbbc95226cd75bdfe3c50407b13eb8da590"
+          "sha256": "71030d8d810504fd36da97378a01c20250bdc1a4a4d41fe4211d65ce5c745a85"
         },
         "linux-x64": {
           "assetName": "v8-runner-linux-x64",
-          "sha256": "70690845033ab41abe4ed0a6af206f7022cd1481ae408748b7de03c56ced0b6b"
+          "sha256": "82866e93fe7efd3e3dd8a551dbe06c1786712bd319ceacab4c2e9a77ffdf496e"
         },
         "win-x64": {
           "assetName": "v8-runner-win-x64.exe",
-          "sha256": "191a3d7c930007377238dda0543d1e42cc1a1bd4b209736d54fd41c0ffaac32e"
+          "sha256": "e4ac314636d88f216a093d29fca12e1f7d0f1cca012389cbfca31126b5e20f30"
         }
       }
     },

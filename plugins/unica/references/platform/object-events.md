@@ -12,7 +12,7 @@ The normative rules here are development standards, not platform evidence:
 `BSLLS:DataExchangeLoading`, `BSLLS:UsingCancelParameter`,
 `BSLLS:EventHandlerOutsideEventRegion`,
 `BSLLS:MissingEventSubscriptionHandler`. Confirm the current wording with
-`unica.standards.explain` before citing one.
+`unica.docs` with `source: "development-standard"` before citing one.
 
 ## Which Handler Owns What
 

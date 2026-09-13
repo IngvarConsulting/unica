@@ -42,6 +42,11 @@ pub(crate) enum ObservedMetadataTypeVariant {
     DefinedType {
         metadata_path: MetadataAddress,
     },
+    /// The characteristic type set of a chart of characteristic types
+    /// (`cfg:Characteristic.X`): readable, but outside the writer algebra.
+    CharacteristicTypes {
+        metadata_path: MetadataAddress,
+    },
     Uuid,
 }
 
@@ -58,6 +63,28 @@ impl ObservedMetadataType {
             return Err(observed_type_error(
                 "observed type variants must not be empty",
             ));
+        }
+        if variants.iter().any(|variant| {
+            matches!(
+                variant,
+                ObservedMetadataTypeVariant::CharacteristicTypes { .. }
+            )
+        }) {
+            // Read-only observation: the platform type is understood and
+            // shown, but no typed writer expresses it, so mutation is refused
+            // at the writer boundary instead of failing the projection.
+            let mut seen = HashSet::new();
+            for variant in &variants {
+                if !seen.insert(variant.clone()) {
+                    return Err(observed_type_error(
+                        "duplicate observed platform type variant",
+                    ));
+                }
+            }
+            return Ok(Self {
+                variants,
+                mutation_capability: MetadataMutationCapability::ReadOnly,
+            });
         }
         let mut seen = HashSet::new();
         for variant in &variants {
@@ -193,6 +220,11 @@ fn observed_variant_into_writer(variant: ObservedMetadataTypeVariant) -> Metadat
         }
         ObservedMetadataTypeVariant::DefinedType { metadata_path } => {
             MetadataTypeVariant::DefinedType { metadata_path }
+        }
+        // Never reached for an editable observation: a characteristic type
+        // set makes the whole observed type read-only.
+        ObservedMetadataTypeVariant::CharacteristicTypes { metadata_path } => {
+            MetadataTypeVariant::Reference { metadata_path }
         }
         ObservedMetadataTypeVariant::Uuid => MetadataTypeVariant::Uuid,
     }

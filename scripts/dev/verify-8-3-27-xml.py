@@ -394,7 +394,6 @@ def verified_runtime(path: Path | str, profile: dict) -> dict:
                 relative = declaration.get("file")
                 if not _is_canonical_relative_path(relative, suffix=".xsd"):
                     raise SourceError("runtime schema declaration has no file")
-                pure = PurePosixPath(relative)
                 member = prefix + relative
                 if member in declared_names:
                     raise SourceError(f"duplicate runtime schema declaration: {relative}")

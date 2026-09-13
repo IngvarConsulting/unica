@@ -1,9 +1,9 @@
 ---
 id: INV.REGISTRY.RECIPROCAL-OWNERSHIP
-status: active
+status: superseded
 governs: process
 decision: DEC.2026-08-18.REGISTRY-SHAPE
-check: tests/arch/test_registry.py::test_rule_decision_and_establishes_are_reciprocal
+check: tests/arch/test_registry.py::test_current_rule_owner_establishes_the_rule
 scope: [docs]
 ---
 

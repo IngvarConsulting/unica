@@ -2,12 +2,13 @@
 id: INV.APP.HIDDEN-SERVICES
 status: active
 governs: product
-decision: DEC.2026-08-19.RULE-CLAIMS-ONLY-WHAT-IT-CHECKS
-check: crates/unica-coder/src/infrastructure/workspace_services.rs::service_identity_reuses_same_workspace_source_root_and_separates_other_roots
+decision: DEC.2026-08-23.USER-CORE-DAEMON-SLICE
+check: crates/unica-coder/src/infrastructure/workspace_services.rs::hidden_service_identity_distinguishes_user_core_daemon_from_workspace_helpers
 scope: [app]
 ---
 
-# Внутренние сервисы привязаны к рабочему пространству
+# Служебная топология отделяет пользовательский executor от workspace helpers
 
-Служебный процесс живёт в границах своего рабочего пространства: один корень
-исходников переиспользует ту же службу, чужие корни получают отдельные.
+Executor ключуется пользователем, версией протокола и совместимой идентичностью
+ядра, но не workspace. Существующие служебные helpers до удаления compatibility
+слоя остаются ключеваны каноническими корнями workspace и набора исходников.

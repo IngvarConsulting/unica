@@ -1206,6 +1206,11 @@ pub(super) fn emit_meta_typed_fill_value(
             "{indent}<FillValue xsi:type=\"xr:DesignTimeRef\">{}</FillValue>",
             escape_xml(reference.metadata_path.as_str())
         )),
+        Some(MetaFillValue::DesignTimeItemRef { reference, item }) => lines.push(format!(
+            "{indent}<FillValue xsi:type=\"xr:DesignTimeRef\">{}.{}</FillValue>",
+            escape_xml(reference.metadata_path.as_str()),
+            escape_xml(item)
+        )),
     }
 }
 

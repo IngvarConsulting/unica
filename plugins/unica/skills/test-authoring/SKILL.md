@@ -7,7 +7,7 @@ description: "Проектирование тестов 1С и preview кома�
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.code.search`, `unica.project.map`, `unica.runtime.execute`, and the relevant `unica.*.info` tools.
+- Preferred path: use MCP `unica` tools `unica.code.search`, `unica.view {}`, `unica.runtime.execute`, and the relevant `unica.*.info` tools.
 - По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
 показывает запланированную команду без побочных эффектов, а с `dryRun: false`
 исполняет классифицированную операцию и отвечает её терминальным результатом в
@@ -17,7 +17,7 @@ description: "Проектирование тестов 1С и preview кома�
 исполнением не является. Работу, которую вызов ждать не должен, запускай через
 `unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
 `unica.build.*`.
-- Use `unica.standards.search` or `unica.standards.explain` only when test design depends on a `development-standard`. Expected platform API or mechanics require a `platform-help` source; if public MCP `unica` does not expose one, report the contract gap.
+- Use `unica.docs` with `source: "development-standard"` only when test design depends on a `development-standard`. Expected platform API or mechanics require `unica.docs` with `source: "platform-help"`.
 - Do not call internal runtime, analyzer, or package adapters directly. They are hidden behind MCP `unica`.
 
 ## Workflow

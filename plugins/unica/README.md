@@ -70,9 +70,8 @@ atomically replaces the transliterated `skd` domain with the official
 | --- | --- |
 | `unica.skd.compile` | `unica.dcs.compile` |
 | `unica.skd.edit` | `unica.dcs.edit` |
-| `unica.skd.info` | `unica.dcs.info` |
-| `unica.skd.validate` | `unica.dcs.validate` |
-| `skd-compile/edit/info/validate` | `dcs-compile/edit/info/validate` |
+| `unica.skd.info` | `unica.dcs.info`, itself later retired for `unica.view` |
+| `skd-compile/edit/info` | `dcs-compile/edit` |
 
 The operation arguments and `DataCompositionSchema` XML format are unchanged.
 
@@ -105,31 +104,26 @@ Platform XML Configuration and Extension targets; Unica resolves the physical
 `*Module.bsl` or descriptor location privately. `unica.meta.info` also stops
 accepting `Detailed`, which it never read.
 
-`unica.source.resolve` finds an address by name, and `unica.source.locate`
-converts a path discovered by other means into one.
+`unica.search {corpus: "names"}` converts a name or a synonym into a logical
+address. `unica.resolve` converts a path discovered by other means, and is the
+emergency bridge: use it only when the path arrived from outside Unica.
 
 ### Readers that accept either selector
 
-Thirteen readers and validators are in the transitional state ADR-0049
-defines: they accept the logical selector **and** still accept their existing
-path. Nothing is removed here, so no call breaks; removing each path is its own
-later merge request.
+Only the two spreadsheet-template readers remain in the transitional state
+ADR-0049 defines: they accept the logical selector **and** still accept their
+existing path. Every other reader that shared this table — the configuration,
+subsystem, role, form and schema readers, and the six `*.validate` tools — is
+retired in favour of `unica.view` and `unica.check`; removing the remaining
+paths is its own later merge request.
 
 | Tool | Logical selector | Path kept for now |
 | --- | --- | --- |
-| `unica.cf.info`, `unica.cf.validate` | `sourceSet` | `ConfigPath` |
-| `unica.subsystem.info` | `sourceSet`, optional `metadataPath` | `SubsystemPath` |
-| `unica.subsystem.validate` | `sourceSet` + `metadataPath` | `SubsystemPath` |
-| `unica.role.info`, `unica.role.validate` | `sourceSet` + `metadataPath` | `RightsPath` |
-| `unica.form.info`, `unica.form.validate` | `sourceSet` + `metadataPath` | `FormPath` |
-| `unica.dcs.info`, `unica.dcs.validate` | `sourceSet` + `metadataPath` | `TemplatePath` |
-| `unica.mxl.info`, `unica.mxl.validate`, `unica.mxl.decompile` | `sourceSet` + `metadataPath` | `TemplatePath` |
+| `unica.mxl.info`, `unica.mxl.decompile` | `sourceSet` + `metadataPath` | `TemplatePath` |
 
 Exactly one selector per call. Passing both fails with `selector_conflict`,
 because resolving a conflict silently would hide which selector produced the
-answer. A configuration root has no address, so `unica.cf.*` takes `sourceSet`
-alone and no longer publishes `metadataPath`; `unica.subsystem.info` reads the
-whole registered tree when the address is omitted.
+answer.
 
 An addressed object whose requested body is missing — a template whose
 `TemplateType` writes `Template.bin` rather than `Template.xml` — fails with
@@ -139,8 +133,9 @@ addressable, that body does not.
 ## XDTO operations migration
 
 The release containing [issue #374](https://github.com/IngvarConsulting/unica/issues/374)
-replaces the flat single-operation form of `unica.xdto.edit` with a typed
-ordered `operations` array (ADR-0071). There is no compatibility alias: a call
+replaced the flat single-operation form of the retired `unica.xdto.edit`
+with a typed ordered `operations` array (ADR-0071); on the canonical surface
+the same operations are `unica.apply` ops of the XDTO family. There is no compatibility alias: a call
 that still passes any retired top-level field fails with
 `legacy_arguments_removed` and names the replacement.
 
@@ -157,25 +152,16 @@ package writer has always read. Operations in one call apply in order, see
 each other's results, and publish once; a failed element leaves no partial
 write, and every effect is reported by `operationIndex`.
 
-## Template and help migration
+## Templates, embedded help and validation
 
-The release containing [issue #375](https://github.com/IngvarConsulting/unica/issues/375)
-retires `unica.template.add`, `unica.template.remove` and `unica.help.add`
-(ADR-0072). There is no compatibility alias: every call answers
-`unknown unica tool`. Template registration and embedded help are operations
-of the shared `unica.meta.add`/`unica.meta.edit` union:
-
-| Removed call | Canonical `operations` element |
-| --- | --- |
-| `unica.template.add` + `ObjectName`, `TemplateName`, `TemplateType` | `{"op": "add", "collection": "templates", "elements": [{"name": "Basic", "templateType": "SpreadsheetDocument"}]}` |
-| `unica.template.remove` + `ObjectName`, `TemplateName` | `{"op": "remove", "collection": "templates", "names": ["Basic"]}` |
-| `unica.help.add` + `ObjectName`, `Lang` | `{"op": "addHelp", "lang": "ru"}` |
-
-The owner is addressed by `sourceSet + metadataPath`; the retired
-`ObjectName` path dialect under `SrcDir` is gone. `templateType` defaults to
-`SpreadsheetDocument`; `addHelp` is create-only and flips
-`IncludeHelpInContents` on the owner's forms exactly the way the retired tool
-did.
+Template registration and embedded help are `unica.apply` operations of the
+owning object: `template.add`, `template.set`, `template.remove` and
+`help.create`. Validation is `unica.check` over a node: the node kind
+owns its validators (`cf`, `cfe`, `form`, `dcs`, `mxl`, `role`,
+`subsystem`, `interface`, `meta`); the verdict travels in `data.status` and a
+root outside the platform XML profile `2.20` is reported as a warning
+diagnostic next to it. The retired `unica.template.*`, `unica.help.add` and
+`unica.*.validate` names have no alias.
 
 ## Runtime delivery
 
@@ -261,7 +247,7 @@ scripts/dev/install-local-unica.sh
 ```
 
 On native Windows x64, run the script from **Git Bash** included with 64-bit Git
-for Windows. The local build requires Python 3.10 or newer, stable Rust with the
+for Windows. The local build requires Python 3.12 or newer, stable Rust with the
 native MSVC toolchain, Microsoft C++ Build Tools, and the Windows SDK. A current
 Codex CLI is required for the install and fresh-prompt verification steps.
 

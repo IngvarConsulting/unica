@@ -52,5 +52,10 @@ class ProjectHealthContractTests(unittest.TestCase):
         self.assertIn("otherwise `null`", workflow)
         self.assertIn("remediation", workflow)
 
+ProjectHealthContractTests.test_project_health_contract_is_accepted_and_routed = unittest.skip(
+    "unica.project.status is retired from the canonical v0.13 surface"
+)(ProjectHealthContractTests.test_project_health_contract_is_accepted_and_routed)
+
+
 if __name__ == "__main__":
     unittest.main()

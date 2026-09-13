@@ -3,11 +3,14 @@ id: INV.WIRE.COMMON-MODULE-ORDINARY-CLIENT
 status: active
 governs: product
 decision: DEC.2026-08-22.COMMON-MODULE-ORDINARY-CLIENT
-check: crates/unica-coder/src/application/metadata.rs::common_module_ordinary_client_property_is_shared_by_add_and_edit
+check: crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_apply_view_round_trip_common_module_ordinary_client
 scope: [wire]
 ---
 
-# Add и edit разделяют свойство обычного клиента
+# Apply и view сохраняют свойство обычного клиента
 
-Закрытые схемы `unica.meta.add` и `unica.meta.edit` публикуют и принимают
-boolean-свойство `ClientOrdinaryApplication` для `CommonModule`.
+`props.set` в `unica.apply` записывает boolean `ClientOrdinaryApplication`
+для `CommonModule`; `unica.view` читает `true` и `false` в `props.commonModule.clientOrdinaryApplication`.
+Preview сохраняет файлы и наблюдаемую ревизию. Неверный тип значения и попытка
+записать свойство документа отклоняются с `bad_value` в preview и apply,
+сохраняя файлы и ревизию.
