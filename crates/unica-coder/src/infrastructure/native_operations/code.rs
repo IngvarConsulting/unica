@@ -28,6 +28,9 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[path = "code_module_state.rs"]
+mod module_state;
+
 #[cfg(test)]
 use crate::infrastructure::platform_xml_source_targets::platform_xml_module_identity as module_identity;
 
@@ -526,6 +529,7 @@ fn plan_one_code_operation(
         .map_err(|error| staged_code_error(error, &at_path))?;
     let postimage =
         plan_code_postimage(before.as_deref().unwrap_or_default(), operation, op_index)?;
+    module_state::stage_borrowed_module_state(staged, effects, authority, &identity, &at_path)?;
     if postimage.no_op {
         return Ok(());
     }
@@ -1872,6 +1876,10 @@ fn unified_diff(path: &str, before: &str, after: &str) -> Result<String, String>
     }
     Ok(rendered)
 }
+
+#[cfg(test)]
+#[path = "code_module_state_tests.rs"]
+mod module_state_tests;
 
 #[cfg(test)]
 pub(super) mod tests {

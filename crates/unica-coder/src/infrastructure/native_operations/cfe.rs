@@ -5751,7 +5751,7 @@ fn cfe_patch_validate_form_xml(module_path: &str, path: &Path, raw: &[u8]) -> Re
     Ok(())
 }
 
-fn cfe_patch_mark_extended_property(
+pub(super) fn cfe_patch_mark_extended_property(
     module_path: &str,
     path: &Path,
     raw: &[u8],
