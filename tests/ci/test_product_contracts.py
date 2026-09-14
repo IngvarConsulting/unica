@@ -917,6 +917,10 @@ class ProductContractTests(unittest.TestCase):
             "duration_ms": 12,
             "data": {
                 "ok": False,
+                # v8-runner 0.9.0 (ADR-0028 форка): признак есть у каждого
+                # ответа `build`; `platform_failure` удостоверяет, что
+                # провайдер был вызван, — значит здесь он обязан быть `true`.
+                "provider_dispatched": True,
                 "steps": [
                     {
                         "source_set": "main",
@@ -953,6 +957,19 @@ class ProductContractTests(unittest.TestCase):
         unknown_field["data"]["steps"][0]["mode"]["partial"]["unknown"] = True
         self.assertTrue(
             any("closed" in error for error in validator(unknown_field, 4, "main"))
+        )
+        undispatched = copy.deepcopy(envelope)
+        undispatched["data"]["provider_dispatched"] = False
+        self.assertTrue(
+            any(
+                "provider_dispatched" in error
+                for error in validator(undispatched, 4, "main")
+            )
+        )
+        pre_0_9_0 = copy.deepcopy(envelope)
+        del pre_0_9_0["data"]["provider_dispatched"]
+        self.assertTrue(
+            any("closed" in error for error in validator(pre_0_9_0, 4, "main"))
         )
 
     def test_v8_runner_bounded_external_epf_result_accepts_exit_seven_artifacts(
