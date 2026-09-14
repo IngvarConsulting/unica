@@ -54,7 +54,19 @@
     "unica.resolve": {
       "status": "partial",
       "reason": "Both directions of the bridge answer exactly, and a line-based source also answers its line range; a tree-based source names the absence instead of guessing, so a caller who needs a position inside XML still searches the file itself.",
-      "evidence": []
+      "evidence": [{
+        "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
+        "test": "production_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/v13_find.rs",
+        "test": "the_bridge_locates_a_path_and_an_address_without_guessing"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/v13_find.rs",
+        "test": "a_file_path_resolves_back_to_its_object_address"
+      }, {
+        "file": "crates/unica-coder/src/application/v13/resolve.rs",
+        "test": "resolve_takes_exactly_one_side_of_the_bridge"
+      }]
     },
     "unica.search": {
       "status": "partial",
@@ -91,7 +103,16 @@
     "unica.docs": {
       "status": "partial",
       "reason": "Platform-help and development-standard search are implemented, while configuration documentation remains unsupported.",
-      "evidence": []
+      "evidence": [{
+        "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
+        "test": "production_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/application_ports.rs",
+        "test": "a_page_reference_is_told_apart_from_a_question_without_guessing"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/application_ports.rs",
+        "test": "documentation_registry_wires_providers_in_the_declared_order"
+      }]
     }
   },
   "runOperations": {
