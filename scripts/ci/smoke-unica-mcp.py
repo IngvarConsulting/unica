@@ -1893,6 +1893,25 @@ def _stable_tool_contract(tools: list[object], expected_names: set[str]) -> None
             raise SystemExit(f"non-Meta tool unexpectedly publishes outputSchema: {name}")
 
 
+# `unica.resolve` — аварийный мост между логическим адресом и раскладкой
+# файлов в обе стороны, и путь на входе разрешён только ему (#801): это
+# единственное место поверхности, куда путь приходит снаружи. Остальные схемы
+# ключ `path` не несут, и для них запрет остаётся.
+RESOLVE_BRIDGE_TOOL_NAME = "unica.resolve"
+
+
+def _without_bridge_path_input(name: str, schema: dict) -> dict:
+    if name != RESOLVE_BRIDGE_TOOL_NAME:
+        return schema
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return schema
+    return {
+        **schema,
+        "properties": {key: value for key, value in properties.items() if key != "path"},
+    }
+
+
 def _stable_v13_tool_contract(
     tools: list[object], expected_names: set[str]
 ) -> None:
@@ -1912,7 +1931,7 @@ def _stable_v13_tool_contract(
                 f"Unica MCP tools/list has malformed input schema for {name}: "
                 f"{schema_error}"
             )
-        _assert_path_free(tool["inputSchema"])
+        _assert_path_free(_without_bridge_path_input(name, tool["inputSchema"]))
         by_name[name] = tool
 
     actual_names = set(by_name)

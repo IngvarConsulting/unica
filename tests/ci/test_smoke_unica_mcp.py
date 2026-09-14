@@ -116,6 +116,38 @@ class FakeWindowsApi:
 
 
 class SmokeUnicaMcpTests(unittest.TestCase):
+    def test_v13_contract_allows_path_only_as_the_resolve_bridge_input(self) -> None:
+        # `unica.resolve` — аварийный мост между адресом и раскладкой, и путь на
+        # входе разрешён только ему (#801, решение зонтика #871). Остальные схемы
+        # ключ `path` по-прежнему не несут; дым обязан различать эти два случая.
+        module = load_module()
+
+        def schema(properties: dict) -> dict:
+            return {
+                "type": "object",
+                "properties": properties,
+                "required": [],
+                "additionalProperties": False,
+            }
+
+        def tools(extra: dict[str, dict]) -> list[dict]:
+            listed = []
+            for name in sorted(module.V13_COMPATIBILITY_TOOL_NAMES):
+                properties = {"at": {"type": "string"}}
+                properties.update(extra.get(name, {}))
+                listed.append({"name": name, "inputSchema": schema(properties)})
+            return listed
+
+        module._stable_v13_tool_contract(
+            tools({"unica.resolve": {"path": {"type": "string"}}}),
+            module.V13_COMPATIBILITY_TOOL_NAMES,
+        )
+        with self.assertRaisesRegex(SystemExit, "leaks path"):
+            module._stable_v13_tool_contract(
+                tools({"unica.view": {"path": {"type": "string"}}}),
+                module.V13_COMPATIBILITY_TOOL_NAMES,
+            )
+
     def expected_tools(self) -> set[str]:
         module = load_module()
         return module.expected_tool_names(REPO_ROOT / "plugins" / "unica")
