@@ -705,7 +705,13 @@ def assert_archive_clean(marketplace_dir: Path) -> None:
 def write_p0_package_evidence(
     marketplace_dir: Path, destination: Path, *, source_commit: str
 ) -> None:
-    """Write package identity without claiming a tag or a publication."""
+    """Write the observed package identity: version, source commit, digests.
+
+    Nothing here says "not bumped", "not published" or "no tag": those were
+    literals the proof then compared with the same literals, so they could
+    never turn false (#696). Read-only-ness is a property of the CI job that
+    runs the proof and is pinned by tests/ci/test_unica_workflow.py.
+    """
     plugin_dir = marketplace_dir / "plugins" / PLUGIN_ID
     version = read_release_version(plugin_dir)
     runtime_manifest = plugin_dir / "runtime-manifest.json"
@@ -718,9 +724,6 @@ def write_p0_package_evidence(
         "sourceCommit": source_commit,
         "packageSha256": package_tree_sha256(marketplace_dir),
         "runtimeManifestSha256": sha256(runtime_manifest),
-        "versionBumped": False,
-        "published": False,
-        "tag": None,
     }
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(

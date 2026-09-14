@@ -239,7 +239,13 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         for step in steps_using(proof, "actions/download-artifact"):
             self.assertNotEqual((step.get("with") or {}).get("name"), "unica-thin-marketplace")
         self.assertEqual(steps_using(proof, "softprops/action-gh-release"), [])
+        # Read-only-ность proof живёт здесь, в устройстве джобы, а не в
+        # самоотчётных полях JSON (#696): нет прав на запись, нет шагов
+        # публикации, нет ни тега, ни push, ни бампа версии.
         self.assertNotIn("git tag", script(proof))
+        self.assertNotIn("git push", script(proof))
+        self.assertNotIn("gh release", script(proof))
+        self.assertNotIn("bump-version", script(proof))
         self.assertIn("p0-release-proof", needs(job(self.release, "unica-ci")))
 
     def test_wire_probes_embed_the_matrix_target_in_their_evidence(self) -> None:
