@@ -494,7 +494,11 @@ for raw in sys.stdin:
             self.assertEqual(len(responses), 1)
             self.assertNotIn("error", responses[0])
 
-    def test_v13_read_replays_one_lost_submit_response_as_at_least_once(self) -> None:
+    def test_v13_read_reports_a_lost_submit_response_instead_of_replaying_it(self) -> None:
+        # Демон v5 сам восстанавливает потерянный submit-response по точному
+        # ключу квитанции; до провода `-32000` доходит только когда не
+        # уложились и в окно восстановления. Оценка обязана показать это как
+        # отказ сценария, а не прятать одним повтором (#698).
         module = load_assessment_module()
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -550,16 +554,19 @@ for raw in sys.stdin:
                 title="view",
                 tool="unica.view",
                 arguments={"at": "main:Configuration"},
-                timeout_seconds=2,
+                timeout_seconds=10,
             )
 
-            self.assertEqual(scenario["status"], "passed", scenario)
-            self.assertEqual(scenario["metrics"]["submitRetries"], 1)
-            self.assertEqual(
-                scenario["metrics"]["submitReplaySemantics"], "at-least-once"
+            self.assertEqual(scenario["status"], "failed", scenario)
+            self.assertTrue(
+                any("-32000" in error and "submit response" in error for error in scenario["errors"]),
+                scenario["errors"],
             )
-            self.assertEqual((root / "cache" / "view-executions").read_text(), "2")
-            self.assertEqual(payload["data"]["kind"], "Configuration")
+            self.assertNotIn("submitRetries", scenario["metrics"])
+            self.assertNotIn("submitReplaySemantics", scenario["metrics"])
+            executions = root / "cache" / "view-executions"
+            self.assertEqual(executions.read_text(encoding="utf-8"), "1")
+            self.assertIsNone(payload)
 
     def test_mcp_client_surfaces_injected_handshake_error(self) -> None:
         module = load_assessment_module()

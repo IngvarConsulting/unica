@@ -51,13 +51,6 @@ P0_LIFECYCLE_SCENARIOS = (
     "restart",
     "rollback",
 )
-SAFE_V13_AT_LEAST_ONCE_REPLAY_TOOLS = frozenset(
-    {"unica.check", "unica.view", "unica.resolve", "unica.search", "unica.diff"}
-)
-LOST_DAEMON_SUBMIT_RESPONSE_CODE = -32000
-LOST_DAEMON_SUBMIT_RESPONSE_MESSAGE = (
-    "daemon deadline expired during invocation submit response"
-)
 
 
 def utc_now() -> str:
@@ -535,7 +528,10 @@ def search_progress_snapshots(stdout: str, progress_token: str) -> list[dict[str
 def parse_tool_payload(response: dict[str, Any]) -> tuple[dict[str, Any] | None, list[str]]:
     if "error" in response:
         error = response["error"]
-        return None, [str(error.get("message", error))]
+        if isinstance(error, dict) and "code" in error:
+            # Код рядом с текстом: закрытый отказ провода читается по коду.
+            return None, [f"{error['code']}: {error.get('message', '')}"]
+        return None, [str(error.get("message", error) if isinstance(error, dict) else error)]
     result = response.get("result")
     if isinstance(result, dict) and "structuredContent" in result:
         payload = result.get("structuredContent")
@@ -789,7 +785,6 @@ def run_v13_tool_scenario(
     total_duration_ms = 0
     total_output_bytes = 0
     task_polls = 0
-    submit_retries = 0
     next_tool = tool
     next_arguments = dict(arguments)
 
@@ -806,25 +801,11 @@ def run_v13_tool_scenario(
             timeout_seconds=remaining,
         )
         total_duration_ms += duration_ms
-        if (
-            submit_retries == 0
-            and next_tool == tool
-            and tool in SAFE_V13_AT_LEAST_ONCE_REPLAY_TOOLS
-            and returncode == 0
-            and len(responses) == 1
-            and responses[0].get("error")
-            == {
-                "code": LOST_DAEMON_SUBMIT_RESPONSE_CODE,
-                "message": LOST_DAEMON_SUBMIT_RESPONSE_MESSAGE,
-            }
-        ):
-            # The daemon may have accepted this read before its bounded submit
-            # response was lost. V3 has no stable recovery identity, so replay
-            # is explicitly at-least-once and may execute the read twice. Keep
-            # it to read-only tools, one replay and the original scenario budget.
-            total_output_bytes += response_output_size(stdout, stderr, None)
-            submit_retries += 1
-            continue
+        # Потерянный submit-response демон v5 восстанавливает сам, по точному
+        # ключу квитанции и в своём окне после cutoff; до провода `-32000`
+        # доходит только когда не уложились и в него. Здесь это отказ сценария,
+        # как любой другой: повтора нет, чтобы сигнал не исчезал в метрике,
+        # которую никто не читает (#698).
         if returncode != 0:
             errors.append(f"unica exited with {returncode}: {stderr.strip()}")
         if len(responses) != 1:
@@ -852,8 +833,6 @@ def run_v13_tool_scenario(
     metrics: dict[str, Any] = {
         "outputBytes": total_output_bytes,
         "taskPolls": task_polls,
-        "submitRetries": submit_retries,
-        "submitReplaySemantics": "at-least-once" if submit_retries else "none",
         "warningsCount": len(payload.get("warnings", [])) if payload else 0,
         "errorsCount": len(errors),
     }
