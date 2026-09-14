@@ -4,7 +4,9 @@ import importlib.util
 import json
 import os
 import queue
+import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import unittest
@@ -67,6 +69,16 @@ MUTATION_TOOL_NAMES = frozenset(
 def source_smoke_oracle():
     script = Path(__file__).resolve().parents[2] / "scripts/ci/smoke-unica-mcp.py"
     spec = importlib.util.spec_from_file_location("smoke_unica_mcp_oracle", script)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def packaged_plugin_oracle():
+    """Load the packaging script used to generate the production MCP launcher."""
+    script = Path(__file__).resolve().parents[2] / "scripts/ci/package-unica-plugin.py"
+    spec = importlib.util.spec_from_file_location("package_unica_plugin_oracle", script)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -182,12 +194,18 @@ class UnicaMcpSmokeTests(unittest.TestCase):
         *,
         cache_dir: Path | None = None,
         workdir: Path | None = None,
+        command: list[str] | None = None,
+        extra_env: dict[str, str] | None = None,
     ):
+        """Run a handshaken MCP session with optional packaged-launch overrides."""
         env = os.environ.copy()
         if cache_dir is not None:
             env["UNICA_CACHE_DIR"] = str(cache_dir)
+        if extra_env is not None:
+            env.update(extra_env)
         process = subprocess.Popen(
-            [
+            command
+            or [
                 "cargo",
                 "run",
                 "--quiet",
@@ -288,21 +306,181 @@ class UnicaMcpSmokeTests(unittest.TestCase):
                 "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\">"
                 f"<Configuration><Properties><Name>{name}</Name>"
                 + ("<ConfigurationExtensionPurpose>Customization</ConfigurationExtensionPurpose>" if source_set == "ext" else "")
-                + "</Properties><ChildObjects><CommonModule>Shared</CommonModule>"
+                + "</Properties><ChildObjects><Catalog>Items</Catalog><CommonModule>Shared</CommonModule>"
                 "</ChildObjects></Configuration></MetaDataObject>"
             ).encode()
             (root / source_set / "Configuration.xml").write_bytes(descriptor)
             module_descriptor = (
                 "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\">"
-                "<CommonModule><Properties><Name>Shared</Name></Properties></CommonModule>"
+                "<CommonModule><Properties><Name>Shared</Name>"
+                "<Global>false</Global><ClientManagedApplication>false</ClientManagedApplication>"
+                "<Server>true</Server><ExternalConnection>false</ExternalConnection>"
+                "<ClientOrdinaryApplication>false</ClientOrdinaryApplication>"
+                "<ServerCall>false</ServerCall><Privileged>false</Privileged>"
+                "<ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties></CommonModule>"
                 "</MetaDataObject>"
             ).encode()
             (root / source_set / "CommonModules/Shared.xml").write_bytes(module_descriptor)
+            catalog_path = root / source_set / "Catalogs/Items.xml"
+            catalog_path.parent.mkdir()
+            catalog_descriptor = (
+                '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">'
+                '<Catalog uuid="77777777-7777-7777-7777-777777777777"><InternalInfo/>'
+                '<Properties><Name>Items</Name><Comment>cwd smoke</Comment></Properties>'
+                '<ChildObjects/></Catalog></MetaDataObject>'
+            ).encode()
+            catalog_path.write_bytes(catalog_descriptor)
             module_path = root / source_set / "CommonModules/Shared/Ext/Module.bsl"
             module_path.write_bytes((f"\ufeffProcedure {method}()\r\nEndProcedure\r\n").encode())
             xml[str(root / source_set / "Configuration.xml")] = descriptor
             xml[str(root / source_set / "CommonModules/Shared.xml")] = module_descriptor
+            xml[str(catalog_path)] = catalog_descriptor
         return xml
+
+    @unittest.skipIf(
+        os.name == "nt",
+        "Windows does not allow removing a process current directory",
+    )
+    def test_workspace_hint_survives_deleted_frontend_and_daemon_cwd(self) -> None:
+        """A long-lived packaged MCP must outlive its replaced plugin directory.
+
+        Marketplace ``.mcp.json`` starts the server with ``cwd: \".\"``.
+        The v0.13 frontend captures an absolute workspace hint before the
+        handshake and sends it to the daemon; cwd is not a public tool argument.
+        Neither process may need its launch directory for later workspace,
+        typed metadata, or code-search requests.
+        """
+
+        with tempfile.TemporaryDirectory() as tmp:
+            temp = Path(tmp).resolve()
+            workspace = temp / "workspace"
+            launch_dir = workspace / "plugins/unica"
+            launch_dir.mkdir(parents=True)
+            self.source_fixture(workspace)
+            workspace = workspace.resolve()
+
+            source_plugin = self.repo_root() / "plugins/unica"
+            shutil.copy2(source_plugin / ".mcp.json", launch_dir / ".mcp.json")
+            module = packaged_plugin_oracle()
+            module.write_packaged_mcp_launcher(launch_dir, {})
+            server = json.loads(
+                (launch_dir / ".mcp.json").read_text(encoding="utf-8")
+            )["mcpServers"]["unica"]
+            self.assertEqual(server["cwd"], ".")
+
+            launcher = launch_dir / "bootstrap/launch.sh"
+            launcher.parent.mkdir(parents=True)
+            shutil.copy2(source_plugin / "bootstrap/launch.sh", launcher)
+            bootstrap = launch_dir / "bootstrap/bin/linux-x64/unica-bootstrap"
+            bootstrap.parent.mkdir(parents=True)
+            bootstrap.write_text(
+                "#!/bin/sh\n"
+                "set -eu\n"
+                "[ \"$1\" = run ]\n"
+                "[ \"$2\" = --plugin-root ]\n"
+                "exec \"$UNICA_TEST_CORE\"\n",
+                encoding="utf-8",
+            )
+            bootstrap.chmod(0o755)
+            subprocess.run(["git", "init", "--quiet"], cwd=launch_dir, check=True)
+            build = subprocess.run(
+                [
+                    "cargo",
+                    "build",
+                    "--quiet",
+                    "--bin",
+                    "unica",
+                    "--message-format=json-render-diagnostics",
+                ],
+                cwd=self.repo_root(),
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+            )
+            core = next(
+                Path(message["executable"])
+                for line in build.stdout.splitlines()
+                if (message := json.loads(line)).get("reason") == "compiler-artifact"
+                and message["target"]["name"] == "unica"
+                and message.get("executable")
+            )
+            command = [server["command"], *server["args"]]
+            entry_env = {
+                **server.get("env", {}),
+                "CLAUDE_PLUGIN_ROOT": "",
+                "UNICA_BOOTSTRAP_UNAME_S": "Linux",
+                "UNICA_BOOTSTRAP_UNAME_M": "x86_64",
+                "UNICA_TEST_CORE": str(core),
+                "UNICA_PROVIDER_STATE_DIR": str(temp / "provider-state"),
+                "UNICA_DAEMON_IDLE_GRACE_MS": "5000",
+            }
+
+            with self.mcp_session(
+                cache_dir=temp / "cache",
+                workdir=launch_dir / server["cwd"],
+                command=command,
+                extra_env=entry_env,
+            ) as request:
+                def call(request_id: int, name: str, arguments: dict) -> dict:
+                    response = request(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": request_id,
+                            "method": "tools/call",
+                            "params": {"name": name, "arguments": arguments},
+                        }
+                    )
+                    self.assertNotIn("error", response, response)
+                    result = response["result"]
+                    payload = result["structuredContent"]
+                    self.assertFalse(result.get("isError", False), payload)
+                    self.assertTrue(payload["ok"], payload)
+                    return payload
+
+                def inspect_workspace(request_id: int) -> None:
+                    payload = call(request_id, "unica.view", {})
+                    self.assertEqual(
+                        Path(payload["data"]["workspaceRoot"]), workspace, payload
+                    )
+                    self.assertEqual(payload["data"]["config"]["state"], "configured")
+                    metadata = call(
+                        request_id + 1, "unica.view", {"at": "main:Catalog.Items"}
+                    )
+                    self.assertEqual(metadata["data"]["at"], "main:Catalog.Items")
+                    self.assertEqual(metadata["data"]["kind"], "Catalog")
+                    self.assertEqual(metadata["data"]["props"]["Comment"], "cwd smoke")
+                    search = call(
+                        request_id + 2,
+                        "unica.search",
+                        {"query": "Run", "scope": "main:CommonModule.Shared"},
+                    )
+                    self.assertEqual(search["data"]["mode"], "literal")
+                    self.assertTrue(search["data"]["matches"], search)
+
+                inspect_workspace(2)
+                shutil.rmtree(launch_dir)
+                inspect_workspace(5)
+
+                # The production daemon starts in provider-state, independently
+                # of the frontend. Keep its state files and directory identities
+                # at their original paths while retiring that launch directory.
+                # This makes getcwd fail in the actual executor without deleting
+                # its receipt ledger, socket, or workspace data.
+                state = temp / "provider-state"
+                endpoints = list(state.glob("daemon-*/endpoint.json"))
+                self.assertEqual(len(endpoints), 1)
+                endpoint = endpoints[0]
+                daemon_before = json.loads(endpoint.read_text(encoding="utf-8"))
+                retired = temp / "retired-daemon-cwd"
+                state.rename(retired)
+                state.mkdir(mode=0o700)
+                for child in retired.iterdir():
+                    child.rename(state / child.name)
+                retired.rmdir()
+                inspect_workspace(8)
+                daemon_after = json.loads(endpoint.read_text(encoding="utf-8"))
+                self.assertEqual(daemon_after["pid"], daemon_before["pid"])
+                self.assertEqual(daemon_after["instanceId"], daemon_before["instanceId"])
 
     def test_notifications_do_not_count_as_responses(self) -> None:
         responses = self.call_mcp(
@@ -319,4 +497,3 @@ class UnicaMcpSmokeTests(unittest.TestCase):
         )
 
         self.assertEqual([response["id"] for response in responses], [1, 2])
-
