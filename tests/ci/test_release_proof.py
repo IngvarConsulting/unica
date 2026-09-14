@@ -361,6 +361,18 @@ class ReleaseProofTests(unittest.TestCase):
         with self.assertRaisesRegex(self.module.ProofError, "pluginVersion does not match"):
             self.evaluate()
 
+    def test_dry_proof_certifies_only_deferred_lifecycle_outcomes(self) -> None:
+        # Продюсера исходов до публикации нет, значит `passed` здесь может быть
+        # только подделкой или дрейфом формата — и proof его не удостоверяет.
+        lifecycle = self.assessment()["lifecycle"]
+        lifecycle["fresh_install"] = {
+            "status": "passed",
+            "supported": True,
+            "evidence": ["forged:fresh_install"],
+        }
+        with self.assertRaisesRegex(self.module.ProofError, "fresh_install.*must be deferred"):
+            self.evaluate(assessment=self.assessment(lifecycle=lifecycle))
+
     def test_proof_has_a_single_dry_mode_by_construction(self) -> None:
         # Сценарии жизненного цикла доказываются только на опубликованных байтах,
         # а этот proof идёт до публикации: второго режима у него нет ни в

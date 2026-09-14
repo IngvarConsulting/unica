@@ -340,8 +340,13 @@ def _validate_lifecycle(
             isinstance(item, str) and item for item in evidence
         ):
             raise ProofError(f"{scenario} lifecycle outcome must name machine-readable evidence")
-        if status == "failed":
-            raise ProofError(f"{scenario} lifecycle outcome is failed")
+        # Before publication nothing can have proven a scenario, so the only
+        # honest outcome is `deferred`; `passed` here is a forgery or a format
+        # drift and must not be certified, `failed` is a failure either way.
+        if status != "deferred":
+            raise ProofError(
+                f"{scenario} lifecycle outcome must be deferred in the P0 proof, got {status}"
+            )
         result[scenario] = {
             "status": status,
             "supported": supported,
