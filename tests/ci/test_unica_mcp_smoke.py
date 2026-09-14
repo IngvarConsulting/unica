@@ -306,20 +306,35 @@ class UnicaMcpSmokeTests(unittest.TestCase):
                 "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\">"
                 f"<Configuration><Properties><Name>{name}</Name>"
                 + ("<ConfigurationExtensionPurpose>Customization</ConfigurationExtensionPurpose>" if source_set == "ext" else "")
-                + "</Properties><ChildObjects><CommonModule>Shared</CommonModule>"
+                + "</Properties><ChildObjects><Catalog>Items</Catalog><CommonModule>Shared</CommonModule>"
                 "</ChildObjects></Configuration></MetaDataObject>"
             ).encode()
             (root / source_set / "Configuration.xml").write_bytes(descriptor)
             module_descriptor = (
                 "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\">"
-                "<CommonModule><Properties><Name>Shared</Name></Properties></CommonModule>"
+                "<CommonModule><Properties><Name>Shared</Name>"
+                "<Global>false</Global><ClientManagedApplication>false</ClientManagedApplication>"
+                "<Server>true</Server><ExternalConnection>false</ExternalConnection>"
+                "<ClientOrdinaryApplication>false</ClientOrdinaryApplication>"
+                "<ServerCall>false</ServerCall><Privileged>false</Privileged>"
+                "<ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties></CommonModule>"
                 "</MetaDataObject>"
             ).encode()
             (root / source_set / "CommonModules/Shared.xml").write_bytes(module_descriptor)
+            catalog_path = root / source_set / "Catalogs/Items.xml"
+            catalog_path.parent.mkdir()
+            catalog_descriptor = (
+                '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">'
+                '<Catalog uuid="77777777-7777-7777-7777-777777777777"><InternalInfo/>'
+                '<Properties><Name>Items</Name><Comment>cwd smoke</Comment></Properties>'
+                '<ChildObjects/></Catalog></MetaDataObject>'
+            ).encode()
+            catalog_path.write_bytes(catalog_descriptor)
             module_path = root / source_set / "CommonModules/Shared/Ext/Module.bsl"
             module_path.write_bytes((f"\ufeffProcedure {method}()\r\nEndProcedure\r\n").encode())
             xml[str(root / source_set / "Configuration.xml")] = descriptor
             xml[str(root / source_set / "CommonModules/Shared.xml")] = module_descriptor
+            xml[str(catalog_path)] = catalog_descriptor
         return xml
 
     @unittest.skipIf(
@@ -332,7 +347,8 @@ class UnicaMcpSmokeTests(unittest.TestCase):
         Marketplace ``.mcp.json`` starts the server with ``cwd: \".\"``.
         The v0.13 frontend captures an absolute workspace hint before the
         handshake and sends it to the daemon; cwd is not a public tool argument.
-        Neither process may need its launch directory for a later root view.
+        Neither process may need its launch directory for later workspace,
+        typed metadata, or code-search requests.
         """
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -405,13 +421,13 @@ class UnicaMcpSmokeTests(unittest.TestCase):
                 command=command,
                 extra_env=entry_env,
             ) as request:
-                def view(request_id: int) -> None:
+                def call(request_id: int, name: str, arguments: dict) -> dict:
                     response = request(
                         {
                             "jsonrpc": "2.0",
                             "id": request_id,
                             "method": "tools/call",
-                            "params": {"name": "unica.view", "arguments": {}},
+                            "params": {"name": name, "arguments": arguments},
                         }
                     )
                     self.assertNotIn("error", response, response)
@@ -419,14 +435,31 @@ class UnicaMcpSmokeTests(unittest.TestCase):
                     payload = result["structuredContent"]
                     self.assertFalse(result.get("isError", False), payload)
                     self.assertTrue(payload["ok"], payload)
+                    return payload
+
+                def inspect_workspace(request_id: int) -> None:
+                    payload = call(request_id, "unica.view", {})
                     self.assertEqual(
                         Path(payload["data"]["workspaceRoot"]), workspace, payload
                     )
                     self.assertEqual(payload["data"]["config"]["state"], "configured")
+                    metadata = call(
+                        request_id + 1, "unica.view", {"at": "main:Catalog.Items"}
+                    )
+                    self.assertEqual(metadata["data"]["at"], "main:Catalog.Items")
+                    self.assertEqual(metadata["data"]["kind"], "Catalog")
+                    self.assertEqual(metadata["data"]["props"]["Comment"], "cwd smoke")
+                    search = call(
+                        request_id + 2,
+                        "unica.search",
+                        {"query": "Run", "scope": "main:CommonModule.Shared"},
+                    )
+                    self.assertEqual(search["data"]["mode"], "literal")
+                    self.assertTrue(search["data"]["matches"], search)
 
-                view(2)
+                inspect_workspace(2)
                 shutil.rmtree(launch_dir)
-                view(3)
+                inspect_workspace(5)
 
                 # The production daemon starts in provider-state, independently
                 # of the frontend. Keep its state files and directory identities
@@ -444,7 +477,7 @@ class UnicaMcpSmokeTests(unittest.TestCase):
                 for child in retired.iterdir():
                     child.rename(state / child.name)
                 retired.rmdir()
-                view(4)
+                inspect_workspace(8)
                 daemon_after = json.loads(endpoint.read_text(encoding="utf-8"))
                 self.assertEqual(daemon_after["pid"], daemon_before["pid"])
                 self.assertEqual(daemon_after["instanceId"], daemon_before["instanceId"])
