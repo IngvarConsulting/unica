@@ -83,7 +83,7 @@ pub fn runtime_event_kind(operation: &str) -> Option<DomainEventKind> {
     match operation {
         "config-init" | "init" | "convert" | "dump" => Some(DomainEventKind::SourceSetChanged),
         "build" | "load" | "extensions" | "test" => Some(DomainEventKind::BuildCompleted),
-        "make" | "syntax" | "launch" | "tools-download" => None,
+        "make" | "syntax" | "launch" => None,
         _ => None,
     }
 }

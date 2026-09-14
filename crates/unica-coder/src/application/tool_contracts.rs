@@ -313,7 +313,6 @@ const RUNTIME_ARGS: &[&str] = &[
     "settings",
     "sourceSet",
     "sourceSets",
-    "sources",
     "testRunner",
     "testScope",
     "thickClientManagedApplication",
@@ -321,7 +320,6 @@ const RUNTIME_ARGS: &[&str] = &[
     "thickClientServerManagedApplication",
     "thickClientServerOrdinaryApplication",
     "thinClient",
-    "tool",
     "unsupportedFunctional",
     "unreferenceProcedures",
     "usePrivilegedMode",
@@ -343,7 +341,6 @@ pub(super) const RUNTIME_OPERATIONS: &[&str] = &[
     "test",
     "launch",
     "extensions",
-    "tools-download",
 ];
 
 const RUNTIME_STRING_ARGS: &[&str] = &[
@@ -367,7 +364,6 @@ const RUNTIME_STRING_ARGS: &[&str] = &[
     "sourceSet",
     "testRunner",
     "testScope",
-    "tool",
     "workdir",
 ];
 
@@ -385,7 +381,6 @@ const RUNTIME_ARRAY_ARGS: &[&str] = &[
 const RUNTIME_CLIENT_MODES: &[&str] = &["designer", "thin", "thick", "ordinary", "mcp", "mcp-va"];
 const RUNTIME_TEST_RUNNERS: &[&str] = &["yaxunit", "va"];
 const RUNTIME_TEST_SCOPES: &[&str] = &["all", "module"];
-const RUNTIME_TOOLS: &[&str] = &["yaxunit", "vanessa", "client-mcp"];
 const RUNTIME_DUMP_MODES: &[&str] = &["full", "incremental", "partial"];
 const RUNTIME_LOAD_MODES: &[&str] = &["load", "merge"];
 pub(super) const RUNTIME_SYNTAX_MODES: &[&str] = &["designer-config", "designer-modules", "edt"];
@@ -496,8 +491,6 @@ const RUNTIME_LAUNCH_OPERATION_ARGS: &[&str] = &[
 ];
 const RUNTIME_EXTENSIONS_OPERATION_ARGS: &[&str] =
     &["operation", "config", "workdir", "sourceSet", "sourceSets"];
-const RUNTIME_TOOLS_DOWNLOAD_OPERATION_ARGS: &[&str] =
-    &["operation", "config", "workdir", "tool", "sources", "force"];
 
 const CODE_ARGS: &[&str] = &[
     "config",
@@ -1914,7 +1907,6 @@ fn validate_runtime_arguments(
         "syntax" => &["mode"][..],
         "test" => &["testRunner"][..],
         "launch" => &["clientMode"][..],
-        "tools-download" => &["tool"][..],
         _ => &[][..],
     };
     for key in required {
@@ -2131,22 +2123,6 @@ fn validate_runtime_operation_payload(
                 ));
             }
         }
-        "tools-download" => {
-            validate_enum_argument(tool_name, args, "tool", RUNTIME_TOOLS)?;
-            if args
-                .get("sources")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-                && args
-                    .get("tool")
-                    .and_then(Value::as_str)
-                    .is_some_and(|tool| tool == "vanessa")
-            {
-                return Err(format!(
-                    "{tool_name} operation `tools-download` accepts `sources` only for `yaxunit` or `client-mcp`"
-                ));
-            }
-        }
         _ => {}
     }
     Ok(())
@@ -2165,7 +2141,6 @@ fn runtime_operation_args(operation: &str) -> &'static [&'static str] {
         "test" => RUNTIME_TEST_OPERATION_ARGS,
         "launch" => RUNTIME_LAUNCH_OPERATION_ARGS,
         "extensions" => RUNTIME_EXTENSIONS_OPERATION_ARGS,
-        "tools-download" => RUNTIME_TOOLS_DOWNLOAD_OPERATION_ARGS,
         _ => &[],
     }
 }
@@ -2472,7 +2447,6 @@ fn property_schema(name: &str) -> Value {
             | "mobileClient"
             | "mobileClientDigiSign"
             | "server"
-            | "sources"
             | "thickClientManagedApplication"
             | "thickClientOrdinaryApplication"
             | "thickClientServerManagedApplication"
@@ -2749,7 +2723,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "force",
-        "Boolean --force: on unica.runtime.execute it overwrites an existing project config for config-init and re-downloads the payload for tools-download; native XML tools may expose their own operation-specific Force argument.",
+        "Boolean --force: on unica.runtime.execute it overwrites an existing project config for config-init; native XML tools may expose their own operation-specific Force argument.",
     ),
     (
         "formName",
@@ -2927,7 +2901,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "operation",
-        "Required selector whose accepted values are tool-scoped: config-init, init, build, dump, convert, make, load, syntax, test, launch, extensions or tools-download for unica.runtime.execute and unica.runtime.job.start; `insert` or `replace` for unica.code.patch — read the enum published in the tool's own schema.",
+        "Required selector whose accepted values are tool-scoped: config-init, init, build, dump, convert, make, load, syntax, test, launch or extensions for unica.runtime.execute and unica.runtime.job.start; `insert` or `replace` for unica.code.patch — read the enum published in the tool's own schema.",
     ),
     (
         "output",
@@ -3046,10 +3020,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
         "Array of source-set names for operation extensions when several extensions are synchronized at once; use the singular sourceSet for one",
     ),
     (
-        "sources",
-        "Boolean that on operation tools-download fetches sources instead of the prebuilt release artifact; omit it to get the ready artifact, such as build/tools/client_mcp.cfe. What the source route yields differs by tool: client-mcp gets an EDT tree that only 1cedtcli can build and no .cfe at all, while yaxunit gets the tests source-set. Supported only for tool yaxunit or client-mcp and rejected for vanessa",
-    ),
-    (
         "srcDir",
         "Directory holding `<objectName>.xml`, default `src`; for `unica.form.remove` and `unica.template.add`/`remove` point it at the type folder such as `src/Reports`, and `unica.help.add` uses it too",
     ),
@@ -3120,10 +3090,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     (
         "timeoutSeconds",
         "Integer seconds bounding a blocking call: 1..60 (default 30) for unica.runtime.job.wait, and 30..3600 for unica.code.diagnostics action=analyze; diagnostics falls back to operational.code_diagnostics.analyze_timeout_seconds from workspace config, then to 120.",
-    ),
-    (
-        "tool",
-        "Runner tool payload to fetch with operation tools-download: yaxunit, vanessa or client-mcp",
     ),
     (
         "unreferenceProcedures",
@@ -3386,7 +3352,6 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
             }
             "testRunner" => return json!({ "type": "string", "enum": RUNTIME_TEST_RUNNERS }),
             "testScope" => return json!({ "type": "string", "enum": RUNTIME_TEST_SCOPES }),
-            "tool" => return json!({ "type": "string", "enum": RUNTIME_TOOLS }),
             _ => {}
         }
     }
@@ -3547,7 +3512,6 @@ fn expected_scalar_type(key: &str) -> Option<&'static str> {
             | "mobileClient"
             | "mobileClientDigiSign"
             | "server"
-            | "sources"
             | "thickClientManagedApplication"
             | "thickClientOrdinaryApplication"
             | "thickClientServerManagedApplication"
@@ -3845,49 +3809,6 @@ pub(crate) mod tests {
         assert!(
             !description.contains("unica.code.diagnostics"),
             "{description}"
-        );
-    }
-
-    /// #346. `sources` is exclusive, not additive. Pinned v8-runner 0.5.1
-    /// reports `mode: artifacts` without it and writes the prebuilt
-    /// `build/tools/client_mcp.cfe`; with it the runner reports `mode: sources`
-    /// and writes an EDT tree under `build/tools/onec-client-mcp-devkit/exts/`
-    /// and no `.cfe` at all. The description said the flag "also" downloads
-    /// sources, which reads as artifact plus sources, so a caller who wanted
-    /// the ready extension asked for the EDT path, took a `1cedtcli` dependency
-    /// it never announced, and still lacked the artifact that
-    /// `tools.client_mcp.extension.artifact.path` and the `build` preflight
-    /// require.
-    #[test]
-    fn sources_description_says_it_replaces_the_prebuilt_artifact() {
-        let (_, description) = ARG_DESCRIPTIONS
-            .iter()
-            .find(|(name, _)| *name == "sources")
-            .expect("sources must have a shared description");
-
-        assert!(
-            !description.contains("also"),
-            "`also` reads as artifact plus sources, but the flag replaces one with the other: {description}"
-        );
-        assert!(
-            description.contains("instead of"),
-            "the description has to say the source tree replaces the release artifact: {description}"
-        );
-        assert!(
-            description.contains("1cedtcli"),
-            "the source tree is EDT and still has to be built, so the description names that cost: {description}"
-        );
-        assert!(
-            description.contains("omit"),
-            "a caller who wants the prebuilt artifact needs to be told to leave the flag off: {description}"
-        );
-        // One description serves both tools, and their source routes differ:
-        // yaxunit lays down the tests source-set, with no EDT tree and no
-        // 1cedtcli anywhere in it. Naming that keeps the client-mcp cost from
-        // reading as the price of the flag itself.
-        assert!(
-            description.contains("source-set"),
-            "the yaxunit source route is not EDT, so the description says what it yields instead of letting the client-mcp cost stand for both: {description}"
         );
     }
 
@@ -4575,45 +4496,45 @@ pub(crate) mod tests {
             (operation.to_string(), signature.to_string())
         }
         let expected = BTreeMap::from([
-            ("unica.cf.edit", entry("cf-edit", "31140:0dfa39055a94ec4a")),
-            ("unica.cf.init", entry("cf-init", "32217:893638c6206fff82")),
+            ("unica.cf.edit", entry("cf-edit", "31012:c433a35b86123a36")),
+            ("unica.cf.init", entry("cf-init", "32089:0adf6331c7be5f72")),
             (
                 "unica.cfe.borrow",
-                entry("cfe-borrow", "31181:e0138a6de5ab4446"),
+                entry("cfe-borrow", "31053:bb2e7d985f70383a"),
             ),
             (
                 "unica.cfe.init",
-                entry("cfe-init", "30676:08fdc87570145611"),
+                entry("cfe-init", "30548:ec3c61499046f415"),
             ),
             (
                 "unica.cfe.patch_method",
-                entry("cfe-patch-method", "32493:c72e4d6e943f0724"),
+                entry("cfe-patch-method", "32365:5d187f43c2801228"),
             ),
             (
                 "unica.code.patch",
-                entry("code-patch", "2893:4855cf0424173695"),
+                entry("code-patch", "2877:b3b8e19fa0225043"),
             ),
             (
                 "unica.dcs.compile",
-                entry("dcs-compile", "32043:6a7d31e2ba3e5813"),
+                entry("dcs-compile", "31915:a8ee0ccb9a4f7adb"),
             ),
             (
                 "unica.dcs.edit",
-                entry("dcs-edit", "31150:ab08c9da4f06de92"),
+                entry("dcs-edit", "31022:1d9ca0e0aa704416"),
             ),
             ("unica.epf.init", entry("epf-init", "1729:02a6a6ebaf86d9f6")),
             ("unica.erf.init", entry("erf-init", "1729:02a6a6ebaf86d9f6")),
             (
                 "unica.form.compile",
-                entry("form-compile", "31140:8c354e756d3bb2f2"),
+                entry("form-compile", "31012:4d7a9d32f187d4c6"),
             ),
             (
                 "unica.form.edit",
-                entry("form-edit", "32016:c091f5e4c8fe6835"),
+                entry("form-edit", "31888:5af3464cbc2e5c75"),
             ),
             (
                 "unica.interface.edit",
-                entry("interface-edit", "31248:b6f1a20a2f4a1dde"),
+                entry("interface-edit", "31120:06b17ade8eb3689a"),
             ),
             (
                 "unica.meta.add",
@@ -4625,11 +4546,11 @@ pub(crate) mod tests {
             ),
             (
                 "unica.mxl.compile",
-                entry("mxl-compile", "32111:7da4e1b775eca3c1"),
+                entry("mxl-compile", "31983:ae7b7812eb5925d5"),
             ),
             (
                 "unica.role.compile",
-                entry("role-compile", "32058:21d9a4e0c9bd3f92"),
+                entry("role-compile", "31930:f59bf82faf49adf6"),
             ),
             (
                 "unica.role.edit",
@@ -4637,11 +4558,11 @@ pub(crate) mod tests {
             ),
             (
                 "unica.subsystem.compile",
-                entry("subsystem-compile", "31797:0b2d56b36dee4581"),
+                entry("subsystem-compile", "31669:fb368aaf922dd419"),
             ),
             (
                 "unica.subsystem.edit",
-                entry("subsystem-edit", "31164:52fff7efa16e1c71"),
+                entry("subsystem-edit", "31036:da501d27d5b085d5"),
             ),
         ]);
         assert_eq!(actual, expected);
@@ -5186,10 +5107,6 @@ pub(crate) mod tests {
                 json!({"operation": "dump", "mode": "partial"}),
                 "operation `dump` with mode `partial` requires `object` or `objects`",
             ),
-            (
-                json!({"operation": "tools-download", "tool": "vanessa", "sources": true}),
-                "operation `tools-download` accepts `sources` only for `yaxunit` or `client-mcp`",
-            ),
         ];
 
         for (input, expected) in cases {
@@ -5226,18 +5143,18 @@ pub(crate) mod tests {
             .as_array()
             .unwrap()
             .contains(&json!("build")));
-        assert!(schema["properties"]["operation"]["enum"]
+        // Загрузка зависимостей стороннему исполнителю не делегируется:
+        // маршрута `tools-download` в схеме нет (#871, B-2).
+        assert!(!schema["properties"]["operation"]["enum"]
             .as_array()
             .unwrap()
             .contains(&json!("tools-download")));
+        assert!(schema["properties"].get("tool").is_none());
+        assert!(schema["properties"].get("sources").is_none());
         assert!(schema["properties"]["clientMode"]["enum"]
             .as_array()
             .unwrap()
             .contains(&json!("mcp-va")));
-        assert!(schema["properties"]["tool"]["enum"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("client-mcp")));
         assert_eq!(schema["properties"]["fullOutput"]["type"], "boolean");
         assert_eq!(schema["properties"]["objects"]["type"], "array");
         assert_eq!(schema["properties"]["sourceSets"]["type"], "array");

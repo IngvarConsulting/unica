@@ -148,7 +148,7 @@ fn runtime_completion_capability(
         "init" | "build" | "load" | "test" | "extensions" => {
             RuntimeCompletionCapability::CriticalNonAbortable
         }
-        "config-init" | "dump" | "convert" | "make" | "tools-download" => {
+        "config-init" | "dump" | "convert" | "make" => {
             RuntimeCompletionCapability::PublicationWithoutBoundedRecovery
         }
         _ => RuntimeCompletionCapability::Unclassified,
@@ -217,11 +217,6 @@ mod tests {
                 json!({"operation": "extensions"}),
                 "runtime_risk_critical_non_abortable",
                 "CriticalNonAbortable",
-            ),
-            (
-                json!({"operation": "tools-download"}),
-                "runtime_risk_publication_without_bounded_recovery",
-                "persistent state",
             ),
             (
                 json!({"operation": "launch", "waitForExit": true}),

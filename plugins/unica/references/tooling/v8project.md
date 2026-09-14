@@ -158,7 +158,6 @@ directory named `main` keeps it.
 | Preview 1C launch arguments | `operation=launch`, one of `clientMode=thin`, `clientMode=thick`, `clientMode=designer`, or `clientMode=ordinary`, `dryRun=true` |
 | Preview syntax arguments | `operation=syntax`, one of `mode=designer-config`, `mode=designer-modules`, or `mode=edt`, `dryRun=true` |
 | Preview test arguments | `operation=test`, one of `testRunner=yaxunit` or `testRunner=va`, `dryRun=true` |
-| Preview configured tool download | `operation=tools-download`, one of `tool=yaxunit`, `tool=vanessa`, or `tool=client-mcp`, `dryRun=true` |
 
 A classified applied mode runs and answers with its named risk; a mode the
 completion map does not classify still fails closed before workspace discovery

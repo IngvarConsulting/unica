@@ -2376,8 +2376,6 @@ const RUNTIME_MAPPER_LAUNCH_ARGS: &[&str] = &[
 ];
 const RUNTIME_MAPPER_EXTENSIONS_ARGS: &[&str] =
     &["operation", "config", "workdir", "sourceSet", "sourceSets"];
-const RUNTIME_MAPPER_TOOLS_DOWNLOAD_ARGS: &[&str] =
-    &["operation", "config", "workdir", "tool", "sources", "force"];
 const RUNTIME_MAPPER_ARRAY_ARGS: &[&str] = &[
     "features",
     "filterTags",
@@ -2392,7 +2390,6 @@ const RUNTIME_MAPPER_LOAD_MODES: &[&str] = &["load", "merge"];
 const RUNTIME_MAPPER_DUMP_MODES: &[&str] = &["full", "incremental", "partial"];
 const RUNTIME_MAPPER_TEST_RUNNERS: &[&str] = &["yaxunit", "va"];
 const RUNTIME_MAPPER_TEST_SCOPES: &[&str] = &["all", "module"];
-const RUNTIME_MAPPER_TOOLS: &[&str] = &["yaxunit", "vanessa", "client-mcp"];
 
 fn runtime_args(args: &Map<String, Value>, redact: bool) -> Result<Vec<String>, String> {
     if args.contains_key("args") {
@@ -2508,14 +2505,6 @@ fn runtime_args(args: &Map<String, Value>, redact: bool) -> Result<Vec<String>, 
             append_arg(&mut result, "--name", args, "sourceSet", redact);
             append_array_args(&mut result, "--name", args, "sourceSets", redact);
         }
-        "tools-download" => {
-            result.extend(["tools".to_string(), "download".to_string()]);
-            if let Some(tool) = string_arg(args, "tool", redact) {
-                result.push(tool);
-            }
-            append_bool_flag(&mut result, "--sources", args, "sources");
-            append_bool_flag(&mut result, "--force", args, "force");
-        }
         other => return Err(format!("unknown runtime operation: {other}")),
     }
 
@@ -2580,7 +2569,7 @@ fn reject_missing_client_mcp_extension(
         return Ok(());
     }
     Err(format!(
-        "project declares `tools.client_mcp.extension.artifact.path` = `{declared}` but the artifact is missing; download it with operation `tools-download` before `build`"
+        "project declares `tools.client_mcp.extension.artifact.path` = `{declared}` but the artifact is missing; put the built `.cfe` at that path before `build` — the product does not fetch it, delivery of client-mcp is the toolchain of 0.14 (#870)"
     ))
 }
 
@@ -2671,23 +2660,6 @@ fn validate_runtime_mapper_payload(
             validate_mapper_enum(args, "testScope", RUNTIME_MAPPER_TEST_SCOPES)?;
         }
         "launch" => validate_bounded_external_epf_launch(args)?,
-        "tools-download" => {
-            validate_mapper_enum(args, "tool", RUNTIME_MAPPER_TOOLS)?;
-            if args
-                .get("sources")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-                && args
-                    .get("tool")
-                    .and_then(Value::as_str)
-                    .is_some_and(|tool| tool == "vanessa")
-            {
-                return Err(
-                    "operation `tools-download` accepts `sources` only for `yaxunit` or `client-mcp`"
-                        .to_string(),
-                );
-            }
-        }
         _ => {}
     }
 
@@ -2785,7 +2757,6 @@ fn runtime_mapper_operation_args(operation: &str) -> Option<&'static [&'static s
         "test" => Some(RUNTIME_MAPPER_TEST_ARGS),
         "launch" => Some(RUNTIME_MAPPER_LAUNCH_ARGS),
         "extensions" => Some(RUNTIME_MAPPER_EXTENSIONS_ARGS),
-        "tools-download" => Some(RUNTIME_MAPPER_TOOLS_DOWNLOAD_ARGS),
         _ => None,
     }
 }
@@ -3776,7 +3747,8 @@ mod tests {
         let error = reject_missing_client_mcp_extension(&args, &context)
             .expect_err("a declared artifact that is absent is refused before the run");
 
-        assert!(error.contains("tools-download"), "{error}");
+        assert!(!error.contains("tools-download"), "{error}");
+        assert!(error.contains("#870"), "{error}");
         assert!(error.contains("client_mcp.cfe"), "{error}");
 
         // Present artifact, and a project that declares none, both pass.
@@ -4608,21 +4580,18 @@ mod tests {
                 }),
                 vec!["extensions", "--name", "Sales", "--name", "Warehouse"],
             ),
-            (
-                json!({
-                    "operation": "tools-download",
-                    "tool": "client-mcp",
-                    "sources": true,
-                    "force": true,
-                }),
-                vec!["tools", "download", "client-mcp", "--sources", "--force"],
-            ),
         ];
 
         for (input, expected) in cases {
             let args = input.as_object().unwrap().clone();
             assert_eq!(runtime_args(&args, false).unwrap(), expected);
         }
+
+        // Маршрут загрузки зависимостей через раннер снят: продукт его не
+        // маппит ни в какую команду (#871, B-2).
+        let removed = json!({"operation": "tools-download", "tool": "client-mcp"});
+        let error = runtime_args(removed.as_object().unwrap(), false).unwrap_err();
+        assert!(error.contains("unknown runtime operation"), "{error}");
     }
 
     #[test]

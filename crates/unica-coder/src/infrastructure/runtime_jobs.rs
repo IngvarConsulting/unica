@@ -80,7 +80,6 @@ pub(crate) enum RuntimeJobOperation {
     Make,
     Syntax,
     Test,
-    ToolsDownload,
     ConfigInit,
     Init,
     Build,
@@ -94,7 +93,7 @@ pub(crate) enum RuntimeJobOperation {
 impl RuntimeJobOperation {
     pub(crate) fn cancel_policy(self) -> CancelPolicy {
         match self {
-            Self::Make | Self::Syntax | Self::Test | Self::ToolsDownload => CancelPolicy::Safe,
+            Self::Make | Self::Syntax | Self::Test => CancelPolicy::Safe,
             Self::ConfigInit
             | Self::Init
             | Self::Build
@@ -111,7 +110,6 @@ impl RuntimeJobOperation {
             Self::Make => "make",
             Self::Syntax => "syntax",
             Self::Test => "test",
-            Self::ToolsDownload => "tools-download",
             Self::ConfigInit => "config-init",
             Self::Init => "init",
             Self::Build => "build",
@@ -128,7 +126,6 @@ impl RuntimeJobOperation {
             "make" => Ok(Self::Make),
             "syntax" => Ok(Self::Syntax),
             "test" => Ok(Self::Test),
-            "tools-download" => Ok(Self::ToolsDownload),
             "config-init" => Ok(Self::ConfigInit),
             "init" => Ok(Self::Init),
             "build" => Ok(Self::Build),
@@ -4041,6 +4038,14 @@ pub(crate) mod tests {
     };
 
     const PROCESS_TREE_STARTUP_BUDGET: Duration = Duration::from_secs(15);
+
+    /// Загрузку зависимостей продукт стороннему исполнителю не делегирует:
+    /// `tools-download` снят с провода вместе с v0.12 и не должен доживать
+    /// в словаре заданий как принимаемая операция (#871, B-2).
+    #[test]
+    fn tools_download_is_not_a_runtime_job_operation() {
+        assert!(RuntimeJobOperation::from_label("tools-download").is_err());
+    }
 
     #[test]
     fn atomic_write_replaces_an_existing_runtime_job_record() {
