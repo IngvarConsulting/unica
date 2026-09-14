@@ -358,6 +358,35 @@ fn code_does_not_mark_configuration_or_owned_extension_objects() {
 }
 
 #[test]
+fn borrowed_code_rejects_malformed_property_state_children_before_staging() {
+    for children in [
+        "<xr:Property>Module</xr:Property><xr:State>Extended</xr:State><xr:State>Notify</xr:State>",
+        "<xr:Property>Module</xr:Property><xr:Property>ObjectModule</xr:Property><xr:State>Extended</xr:State>",
+        "<xr:State>Extended</xr:State><xr:Property>Module</xr:Property>",
+        "<xr:Property>Module</xr:Property><State>Extended</State>",
+        "<xr:Property>Module</xr:Property><xr:State>Extended<xr:Other/></xr:State>",
+        "<xr:Property>Module</xr:Property><xr:State>Extended</xr:State><xr:Other/>",
+    ] {
+        let fixture = Fixture::common();
+        let text = String::from_utf8(fixture.descriptor_bytes()).unwrap().replace(
+            "<InternalInfo/>", &format!("<InternalInfo><xr:PropertyState>{children}</xr:PropertyState></InternalInfo>"),
+        );
+        fs::write(fixture.source.join(&fixture.descriptor), &text).unwrap();
+        for dry_run in [true, false] {
+            for replace in [false, true] {
+                let admission = fixture.admission(dry_run);
+                let error = fixture.plan(&admission, &[fixture.operation(replace)])
+                    .expect_err(&format!("malformed state must refuse: {children}"));
+                assert_eq!(error.kind(), crate::infrastructure::native_operations::apply::ApplyPlanErrorKind::InvalidSource);
+                assert_eq!(error.path(), Some("ops[0].args.at"));
+                assert_eq!(fixture.descriptor_bytes(), text.as_bytes());
+                assert_eq!(fs::read(fixture.source.join(&fixture.module)).unwrap(), BEFORE);
+            }
+        }
+    }
+}
+
+#[test]
 fn borrowed_code_repairs_missing_state_when_bsl_is_already_present() {
     let fixture = Fixture::common();
     fs::write(
