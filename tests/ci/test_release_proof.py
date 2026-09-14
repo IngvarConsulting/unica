@@ -242,7 +242,8 @@ class ReleaseProofTests(unittest.TestCase):
         self.native_names.add(legacy_name)
 
         with self.assertRaisesRegex(
-            self.module.ProofError, f"native wire surface differs.*{legacy_name}"
+            self.module.ProofError,
+            f"native wire surface of .* differs from .*tool-surface\\.md.*unexpected: .*{legacy_name}",
         ):
             self.evaluate()
 
