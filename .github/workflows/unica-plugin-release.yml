@@ -628,10 +628,13 @@ jobs:
           destination=".build/bootstrap-artifacts/${{ matrix.target }}/bootstrap/bin/${{ matrix.target }}"
           mkdir -p "$destination"
           cp ".build/tool-bundles/${{ matrix.target }}/bootstrap/bin/${{ matrix.target }}/${bootstrap_name}" "$destination/"
+      # Побочные артефакты сборки носят имена вне `unica-runtime-*`: этим
+      # паттерном публикация выпуска забирает архивы ядра, и совпадать с ним
+      # должны только они (#701).
       - name: Upload runtime metadata
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: unica-runtime-metadata-${{ matrix.target }}
+          name: unica-metadata-${{ matrix.target }}
           # Разрез поставки: по архиву на артефакт, и у каждого свои
           # метаданные. Имя ядра здесь отобрало бы у выпуска движки.
           path: .build/runtime-assets/${{ matrix.target }}/*-runtime-${{ matrix.target }}.json
@@ -640,7 +643,7 @@ jobs:
       - name: Upload runtime verification evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: unica-runtime-verification-${{ matrix.target }}
+          name: unica-asset-verification-${{ matrix.target }}
           path: .build/runtime-assets/${{ matrix.target }}/asset-verification-${{ matrix.target }}.json
           if-no-files-found: error
           retention-days: 1
@@ -714,7 +717,7 @@ jobs:
           echo "RELEASE_TAG=v${version}" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: unica-runtime-metadata-*
+          pattern: unica-metadata-*
           path: .build/runtime-metadata
           merge-multiple: true
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -792,7 +795,7 @@ jobs:
           merge-multiple: true
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: unica-runtime-verification-*
+          pattern: unica-asset-verification-*
           path: .build/p0-assets
           merge-multiple: true
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1

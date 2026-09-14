@@ -682,7 +682,6 @@ class WireProbe:
                 request_id += 1
 
             output = {
-                "schemaVersion": 1 if self.profile is not None else None,
                 "protocolVersion": self.protocol_version,
                 "responseKinds": session.response_kinds,
                 "serverInfo": server_info,
@@ -691,9 +690,10 @@ class WireProbe:
                 "toolCount": len(tool_names),
                 "toolNames": sorted(tool_names),
             }
-            if self.profile is None:
-                output.pop("schemaVersion")
-            else:
+            if self.profile is not None:
+                # Профильная проба — свидетельство proof: у него есть схема,
+                # профиль и цель. Бесприфильная — прежняя форма дыма.
+                output["schemaVersion"] = 1
                 output["profile"] = self.profile
                 output["target"] = self.target
             completed = True

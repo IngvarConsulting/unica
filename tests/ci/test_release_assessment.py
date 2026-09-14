@@ -56,6 +56,22 @@ class ReleaseAssessmentTests(unittest.TestCase):
 
         self.assertEqual(module.unica_version(run_unica), "0.12.0")
 
+    def test_unica_version_names_the_manifest_that_lacks_the_unica_entry(self) -> None:
+        # Манифест есть, записи `unica` нет — так устроен исходный
+        # `plugins/unica/third-party/manifest.json` с пустым `tools`. Отказ
+        # обязан назвать файл, а не абстрактного «кандидата» (#701, п. 5).
+        module = load_assessment_module()
+        runtime = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        manifest = runtime / "third-party" / "manifest.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(json.dumps({"schemaVersion": 2, "tools": []}), encoding="utf-8")
+        run_unica = runtime / "bin" / "linux-x64" / "unica"
+        run_unica.parent.mkdir(parents=True)
+        run_unica.write_bytes(b"unica")
+
+        with self.assertRaisesRegex(SystemExit, r"third-party[/\\]manifest\.json.*unica"):
+            module.unica_version(run_unica)
+
     def test_dry_assessment_declares_separate_p0_lifecycle_outcomes(self) -> None:
         module = load_assessment_module()
 

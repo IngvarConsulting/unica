@@ -252,7 +252,10 @@ def unica_version(run_unica: Path) -> str:
             if isinstance(tool, dict) and tool.get("name") == "unica"
         ]
         if len(candidates) != 1:
-            raise SystemExit("candidate runtime manifest must contain exactly one unica tool")
+            raise SystemExit(
+                f"{tool_manifest_path} must contain exactly one tool named unica, "
+                f"got {len(candidates)}; a packaged candidate lists its core there"
+            )
         version = candidates[0].get("version")
         if not isinstance(version, str) or not version:
             raise SystemExit("candidate runtime manifest unica version is missing")

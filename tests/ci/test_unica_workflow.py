@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import re
 import unittest
 from collections.abc import Iterator
@@ -233,7 +234,10 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("p0-release-proof", needs(job(self.release, "unica-ci")))
 
     def test_wire_probes_embed_the_matrix_target_in_their_evidence(self) -> None:
-        self.assertEqual(2, script(job(self.release, "build-tools")).count('--target "$TARGET"'))
+        build = job(self.release, "build-tools")
+        for name in ("Probe native package wire profile", "Probe compatibility package wire profile"):
+            with self.subTest(step=name):
+                self.assertIn('--target "$TARGET"', step_text(step_named(build, name)))
 
     def test_classifier_exposes_typed_contours_and_ci_full_override(self) -> None:
         classifier = job(self.release, "classify-changes")
@@ -699,7 +703,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         for tool in ("scripts/ci/build-unica-tools.py", "scripts/ci/package-unica-runtime.py", "scripts/ci/verify-release-assets.py"):
             self.assertIn(tool, script(build))
         self.assertIn('--target "${{ matrix.target }}"', script(build))
-        for name in ("unica-runtime-metadata-${{ matrix.target }}", "unica-bootstrap-${{ matrix.target }}", "unica-runtime-${{ matrix.target }}"):
+        for name in ("unica-metadata-${{ matrix.target }}", "unica-bootstrap-${{ matrix.target }}", "unica-runtime-${{ matrix.target }}"):
             with self.subTest(name=name):
                 self.assertIn(name, names)
         # Узость здесь — про цель, а не про артефакт: разрез поставки дал по
@@ -737,7 +741,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         marketplace = next(upload for upload in uploads(thin) if upload.get("name") == "unica-thin-marketplace")
 
         self.assertEqual(needs(thin), ["build-tools"])
-        self.assertIn("unica-runtime-metadata-*", patterns)
+        self.assertIn("unica-metadata-*", patterns)
         self.assertIn("unica-bootstrap-*", patterns)
         self.assertNotIn("unica-tools-*", patterns)
         self.assertNotIn("unica-runtime-*", patterns)
@@ -805,6 +809,17 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         assert_pinned(self, RELEASE_WORKFLOW, release, "v3")
         self.assertIn("unica-runtime-*.tar.gz", release["with"]["files"])
         self.assertIn("unica-runtime-*.json", release["with"]["files"])
+        # Паттерн скачивания `unica-runtime-*` обязан совпадать только с
+        # артефактами выпуска: побочные артефакты (метаданные, верификация)
+        # носят имена вне него, а не полагаются на фильтр `files:` (#701, п. 4).
+        upload_names = {
+            upload["name"]
+            for job_id in jobs(self.release)
+            for upload in uploads(job(self.release, job_id))
+            if upload.get("name")
+        }
+        matched = {name for name in upload_names if fnmatch.fnmatch(name, "unica-runtime-*")}
+        self.assertEqual(matched, {"unica-runtime-${{ matrix.target }}"})
         self.assertFalse(any("install-unica" in value for value in strings(publish)))
         self.assertIn("gh release download", script(verify))
         self.assertIn("verify-release-assets.py", script(verify))
