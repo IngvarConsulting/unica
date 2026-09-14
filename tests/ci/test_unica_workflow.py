@@ -219,7 +219,6 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertEqual(set(needs(proof)), {"build-tools", "package-thin", "release-assessment"})
         for argument in (
             "scripts/ci/release-proof.py",
-            "--mode dry",
             "--wire-dir",
             "--package-dir",
             "--asset-verification-dir",
@@ -228,7 +227,17 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             "--out-dir dist/p0-proof",
         ):
             self.assertIn(argument, script(proof))
-        self.assertEqual(proof["permissions"], {"contents": "read"})
+        # Единственный режим proof — dry: сценарии жизненного цикла доказываются
+        # на опубликованных байтах, а эта джоба идёт до публикации (#697).
+        self.assertNotIn("--mode", script(proof))
+        # Идентичность пакета включает бит исполнения (#700), а
+        # actions/download-artifact режимы не сохраняет: пакет для сверки
+        # приходит через `gh run download`, которому нужно `actions: read`.
+        self.assertEqual(proof["permissions"], {"contents": "read", "actions": "read"})
+        self.assertIn("gh run download", script(proof))
+        self.assertIn("unica-thin-marketplace", script(proof))
+        for step in steps_using(proof, "actions/download-artifact"):
+            self.assertNotEqual((step.get("with") or {}).get("name"), "unica-thin-marketplace")
         self.assertEqual(steps_using(proof, "softprops/action-gh-release"), [])
         self.assertNotIn("git tag", script(proof))
         self.assertIn("p0-release-proof", needs(job(self.release, "unica-ci")))

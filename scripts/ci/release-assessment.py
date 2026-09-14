@@ -65,7 +65,15 @@ def utc_now() -> str:
 
 
 def dry_lifecycle_outcomes() -> dict[str, dict[str, Any]]:
-    """Name lifecycle evidence that is intentionally deferred outside RC joins."""
+    """Name lifecycle evidence that is intentionally deferred outside RC joins.
+
+    This is the only producer of ``lifecycle`` in the repository, and it is
+    unconditional on purpose: the assessment runs before publication, and fresh
+    install, upgrade, offline prefetch, restart and rollback can only be proven
+    on published bytes. That proof is step R-3 of IngvarConsulting/unica#871 and
+    needs its own post-publication producer; until it exists every scenario is
+    ``deferred`` (#697).
+    """
     return {
         name: {
             "status": "deferred",
