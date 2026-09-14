@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,10 +12,11 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BASELINE_PATH = REPO_ROOT / "tests" / "fixtures" / "migration" / "v0.12.3-baseline.json"
+SCRIPT = REPO_ROOT / "scripts" / "ci" / "release-proof.py"
 
 
 def load_module():
-    module_path = REPO_ROOT / "scripts" / "ci" / "release-proof.py"
+    module_path = SCRIPT
     spec = importlib.util.spec_from_file_location("release_proof", module_path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"failed to load {module_path}")
@@ -169,7 +173,6 @@ class ReleaseProofTests(unittest.TestCase):
             "asset_verification_dir": self.asset_dir,
             "source_commit": "a" * 40,
             "release_tag": "v0.12.0",
-            "mode": "dry",
         }
         values.update(overrides)
         return self.module.evaluate_proof(**values)
@@ -336,16 +339,36 @@ class ReleaseProofTests(unittest.TestCase):
         with self.assertRaisesRegex(self.module.ProofError, "pluginVersion does not match"):
             self.evaluate()
 
-    def test_rc_proof_rejects_deferred_lifecycle_outcomes(self) -> None:
-        lifecycle = self.assessment()["lifecycle"]
-        for name in ("fresh_install", "upgrade"):
-            lifecycle[name] = {
-                "status": "passed",
-                "supported": True,
-                "evidence": [f"rc:{name}"],
-            }
-        with self.assertRaisesRegex(self.module.ProofError, "offline_prefetch.*deferred"):
-            self.evaluate(mode="rc", assessment=self.assessment(lifecycle=lifecycle))
+    def test_proof_has_a_single_dry_mode_by_construction(self) -> None:
+        # Сценарии жизненного цикла доказываются только на опубликованных байтах,
+        # а этот proof идёт до публикации: второго режима у него нет ни в
+        # сигнатуре, ни в CLI, ни в отчёте (#697).
+        self.assertNotIn("mode", inspect.signature(self.module.evaluate_proof).parameters)
+
+        report = self.evaluate()
+        self.assertNotIn("mode", report)
+        self.assertNotIn("Mode:", self.module.render_summary(report))
+
+        required = [
+            "--wire-dir", "wire",
+            "--baseline", "baseline.json",
+            "--assessment", "assessment.json",
+            "--package", "package.json",
+            "--package-dir", "package",
+            "--asset-verification-dir", "assets",
+            "--source-commit", "a" * 40,
+            "--release-tag", "v0.12.0",
+            "--out-dir", "out",
+        ]
+        cli = subprocess.run(
+            [sys.executable, str(SCRIPT), *required, "--mode", "dry"],
+            cwd=self.tempdir.name,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(cli.returncode, 2, cli.stderr)
+        self.assertIn("unrecognized arguments: --mode", cli.stderr)
 
     def test_dry_proof_rejects_version_tag_or_publication_mutation(self) -> None:
         with self.assertRaisesRegex(self.module.ProofError, "must not publish"):

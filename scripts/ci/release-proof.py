@@ -1,5 +1,15 @@
 #!/usr/bin/env python3
-"""Validate the machine-readable proof boundary for the v0.13 RC package."""
+"""Validate the machine-readable proof boundary for the v0.13 RC package.
+
+The proof has exactly one mode, and it is dry by construction: the job runs
+before anything is published, on a locally built package, so it can only record
+lifecycle outcomes as ``deferred``. Fresh install, upgrade, offline prefetch,
+restart and rollback are proven on the published bytes instead — that is step
+R-3 of the release umbrella (IngvarConsulting/unica#871), which has no producer
+in this repository yet. A former ``--mode rc`` that demanded ``passed`` outcomes
+was unreachable for that reason and was removed (#697); bring a second mode back
+only together with a producer that runs after publication.
+"""
 
 from __future__ import annotations
 
@@ -274,7 +284,6 @@ def _validate_asset_reports(asset_dir: Path, expected_plugin_version: str) -> di
 
 def _validate_lifecycle(
     assessment: dict[str, Any],
-    mode: str,
     *,
     expected_release_tag: str,
     expected_unica_version: str,
@@ -315,8 +324,8 @@ def _validate_lifecycle(
             isinstance(item, str) and item for item in evidence
         ):
             raise ProofError(f"{scenario} lifecycle outcome must name machine-readable evidence")
-        if status == "failed" or (mode == "rc" and status != "passed"):
-            raise ProofError(f"{scenario} lifecycle outcome is {status} in {mode} mode")
+        if status == "failed":
+            raise ProofError(f"{scenario} lifecycle outcome is failed")
         result[scenario] = {
             "status": status,
             "supported": supported,
@@ -336,10 +345,7 @@ def evaluate_proof(
     asset_verification_dir: Path,
     source_commit: str,
     release_tag: str,
-    mode: str = "dry",
 ) -> dict[str, Any]:
-    if mode not in {"dry", "rc"}:
-        raise ProofError(f"unsupported proof mode: {mode}")
     release_tag = _require_string(release_tag, "releaseTag")
     native = _validate_wire_profiles("native", native_wires)
     compatibility = _validate_wire_profiles("compatibility", compatibility_wires)
@@ -361,14 +367,12 @@ def evaluate_proof(
         raise ProofError("legacy baseline overlap: " + ", ".join(overlap))
     lifecycle = _validate_lifecycle(
         assessment,
-        mode,
         expected_release_tag=release_tag,
         expected_unica_version=package_summary["pluginVersion"],
     )
 
     return {
         "schemaVersion": SCHEMA_VERSION,
-        "mode": mode,
         "status": "passed",
         "releaseTag": release_tag,
         "package": package_summary,
@@ -394,7 +398,6 @@ def render_summary(report: dict[str, Any]) -> str:
         "# Unica P0 RC/package proof",
         "",
         f"- Status: `{report['status']}`",
-        f"- Mode: `{report['mode']}`",
         f"- Release tag input: `{report['releaseTag']}`",
         f"- Native surface: `{report['surfaces']['native']['toolCount']}` tools",
         f"- Compatibility surface: `{report['surfaces']['compatibility']['toolCount']}` tools",
@@ -437,7 +440,6 @@ def main() -> None:
     parser.add_argument("--asset-verification-dir", type=Path, required=True)
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--release-tag", required=True)
-    parser.add_argument("--mode", choices=("dry", "rc"), default="dry")
     parser.add_argument("--out-dir", type=Path, required=True)
     args = parser.parse_args()
     try:
@@ -458,7 +460,6 @@ def main() -> None:
             asset_verification_dir=args.asset_verification_dir,
             source_commit=args.source_commit,
             release_tag=args.release_tag,
-            mode=args.mode,
         )
     except ProofError as error:
         raise SystemExit(f"P0 release proof failed: {error}") from error

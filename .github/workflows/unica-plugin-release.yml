@@ -823,7 +823,6 @@ jobs:
             --asset-verification-dir .build/p0-assets \
             --source-commit "$source_commit" \
             --release-tag "v$version" \
-            --mode dry \
             --out-dir dist/p0-proof
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
