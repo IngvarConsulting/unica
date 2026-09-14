@@ -9,6 +9,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BASELINE_PATH = REPO_ROOT / "tests" / "fixtures" / "migration" / "v0.12.3-baseline.json"
+SURFACE_LEDGER = REPO_ROOT / "arch" / "tool-surface.md"
 
 
 def load_module():
@@ -169,6 +170,7 @@ class ReleaseProofTests(unittest.TestCase):
             "asset_verification_dir": self.asset_dir,
             "source_commit": "a" * 40,
             "release_tag": "v0.12.0",
+            "surface_ledger": SURFACE_LEDGER,
             "mode": "dry",
         }
         values.update(overrides)
@@ -196,6 +198,32 @@ class ReleaseProofTests(unittest.TestCase):
             report["guards"],
             {"noVersionBump": True, "noTag": True, "noPublication": True},
         )
+
+    def test_proof_holds_no_copy_of_the_surface(self) -> None:
+        # Поверхность нормирует CTR.WIRE.TOOL-SURFACE, а показывает
+        # порождаемая ведомость arch/tool-surface.md. Proof читает её, а не
+        # держит четвёртую копию имён (#699).
+        self.assertFalse(hasattr(self.module, "NATIVE_TOOLS"))
+        self.assertFalse(hasattr(self.module, "COMPATIBILITY_TOOLS"))
+        self.assertEqual(
+            set(self.module.read_surface_ledger(SURFACE_LEDGER)), self.compatibility_names
+        )
+
+    def test_proof_names_both_places_when_wire_drifts_from_the_ledger(self) -> None:
+        drifted = Path(self.tempdir.name) / "tool-surface.md"
+        drifted.write_text(
+            SURFACE_LEDGER.read_text(encoding="utf-8").replace("### `unica.docs`", "### `unica.help`"),
+            encoding="utf-8",
+        )
+
+        with self.assertRaises(self.module.ProofError) as caught:
+            self.evaluate(surface_ledger=drifted)
+
+        message = str(caught.exception)
+        self.assertIn(str(drifted), message)
+        self.assertIn("native wire surface", message)
+        self.assertIn("missing: unica.help", message)
+        self.assertIn("unexpected: unica.docs", message)
 
     def test_native_direct_first_proof_accepts_absent_server_info(self) -> None:
         native_wires, compatibility_wires = self.wire_sets()

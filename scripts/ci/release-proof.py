@@ -26,21 +26,15 @@ LIFECYCLE_SCENARIOS = (
     "restart",
     "rollback",
 )
-NATIVE_TOOLS = frozenset(
-    {
-        "unica.view",
-        "unica.apply",
-        "unica.resolve",
-        "unica.search",
-        "unica.check",
-        "unica.diff",
-        "unica.run",
-        "unica.docs",
-    }
-)
-COMPATIBILITY_TOOLS = NATIVE_TOOLS | frozenset(
-    {"unica.task.get", "unica.task.result", "unica.task.cancel"}
-)
+# The public surface is normed by CTR.WIRE.TOOL-SURFACE and shown by the
+# ledger its producer renders from the built binary's `tools/list`. The proof
+# reads that ledger instead of keeping a copy of the names: a copy here would
+# be a second, unregistered enforcement point that a surface change could not
+# see coming (#699). The compatibility profile is the whole ledger; the native
+# Tasks profile is the ledger without the `unica.task.*` bridge — that split is
+# the contract's own prose, not a list of this script's.
+TASK_TOOL_PREFIX = "unica.task."
+LEDGER_TOOL_HEADING = re.compile(r"^### `(unica\.[a-z0-9.]+)`$", re.M)
 HEX_40 = re.compile(r"^[0-9a-f]{40}$")
 HEX_64 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -85,6 +79,30 @@ def read_json(path: Path) -> dict[str, Any]:
     return value
 
 
+def read_surface_ledger(path: Path) -> list[str]:
+    """Tool names the generated ledger lists: one third-level heading per tool."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise ProofError(f"cannot read surface ledger {path}: {error}") from error
+    names = LEDGER_TOOL_HEADING.findall(text)
+    if not names:
+        raise ProofError(f"surface ledger {path} names no tools")
+    if len(names) != len(set(names)):
+        raise ProofError(f"surface ledger {path} repeats a tool heading")
+    return names
+
+
+def surface_profiles(names: list[str]) -> dict[str, frozenset[str]]:
+    task_tools = frozenset(name for name in names if name.startswith(TASK_TOOL_PREFIX))
+    if not task_tools:
+        raise ProofError("surface ledger describes no unica.task.* compatibility bridge")
+    return {
+        "native": frozenset(names) - task_tools,
+        "compatibility": frozenset(names),
+    }
+
+
 def _require_string(value: Any, name: str) -> str:
     if not isinstance(value, str) or not value:
         raise ProofError(f"{name} must be a non-empty string")
@@ -92,7 +110,11 @@ def _require_string(value: Any, name: str) -> str:
 
 
 def _validate_wire(
-    profile: str, target: str, evidence: dict[str, Any]
+    profile: str,
+    target: str,
+    evidence: dict[str, Any],
+    expected: frozenset[str],
+    ledger: Path,
 ) -> dict[str, Any]:
     if evidence.get("schemaVersion") != SCHEMA_VERSION:
         raise ProofError(f"{profile} wire evidence schemaVersion must be {SCHEMA_VERSION}")
@@ -106,7 +128,6 @@ def _validate_wire(
     if len(names) != len(set(names)):
         raise ProofError(f"{profile} wire evidence contains duplicate tool names")
     actual = set(names)
-    expected = NATIVE_TOOLS if profile == "native" else COMPATIBILITY_TOOLS
     if actual != expected:
         missing = sorted(expected - actual)
         unexpected = sorted(actual - expected)
@@ -115,7 +136,9 @@ def _validate_wire(
             detail.append("missing: " + ", ".join(missing))
         if unexpected:
             detail.append("unexpected: " + ", ".join(unexpected))
-        raise ProofError(f"{profile} wire surface differs: {'; '.join(detail)}")
+        raise ProofError(
+            f"{profile} wire surface of {target} differs from {ledger}: {'; '.join(detail)}"
+        )
     if evidence.get("toolCount") != len(names):
         raise ProofError(f"{profile} wire evidence toolCount disagrees with toolNames")
     server_info = evidence.get("serverInfo")
@@ -148,12 +171,16 @@ def _validate_wire(
 
 
 def _validate_wire_profiles(
-    profile: str, wires: Mapping[str, dict[str, Any]]
+    profile: str,
+    wires: Mapping[str, dict[str, Any]],
+    expected: frozenset[str],
+    ledger: Path,
 ) -> dict[str, Any]:
     if set(wires) != set(TARGETS):
         raise ProofError(f"{profile} wire evidence must cover all targets: {', '.join(TARGETS)}")
     validated = {
-        target: _validate_wire(profile, target, wires[target]) for target in TARGETS
+        target: _validate_wire(profile, target, wires[target], expected, ledger)
+        for target in TARGETS
     }
     first = validated[TARGETS[0]]
     if any(value != first for value in validated.values()):
@@ -336,13 +363,19 @@ def evaluate_proof(
     asset_verification_dir: Path,
     source_commit: str,
     release_tag: str,
+    surface_ledger: Path,
     mode: str = "dry",
 ) -> dict[str, Any]:
     if mode not in {"dry", "rc"}:
         raise ProofError(f"unsupported proof mode: {mode}")
     release_tag = _require_string(release_tag, "releaseTag")
-    native = _validate_wire_profiles("native", native_wires)
-    compatibility = _validate_wire_profiles("compatibility", compatibility_wires)
+    profiles = surface_profiles(read_surface_ledger(surface_ledger))
+    native = _validate_wire_profiles(
+        "native", native_wires, profiles["native"], surface_ledger
+    )
+    compatibility = _validate_wire_profiles(
+        "compatibility", compatibility_wires, profiles["compatibility"], surface_ledger
+    )
     baseline_tag, legacy_names = _validate_baseline(baseline)
     package_summary = _validate_package(package, package_dir, source_commit)
     if release_tag != "v" + package_summary["pluginVersion"]:
@@ -437,6 +470,7 @@ def main() -> None:
     parser.add_argument("--asset-verification-dir", type=Path, required=True)
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--release-tag", required=True)
+    parser.add_argument("--surface-ledger", type=Path, required=True)
     parser.add_argument("--mode", choices=("dry", "rc"), default="dry")
     parser.add_argument("--out-dir", type=Path, required=True)
     args = parser.parse_args()
@@ -458,6 +492,7 @@ def main() -> None:
             asset_verification_dir=args.asset_verification_dir,
             source_commit=args.source_commit,
             release_tag=args.release_tag,
+            surface_ledger=args.surface_ledger,
             mode=args.mode,
         )
     except ProofError as error:

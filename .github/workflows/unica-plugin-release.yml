@@ -815,6 +815,7 @@ jobs:
           baseline="$(python -c 'from pathlib import Path; paths=sorted(Path("tests/fixtures/migration").glob("*-baseline.json")); assert len(paths) == 1; print(paths[0])')"
           source_commit="$(git rev-parse HEAD)"
           python scripts/ci/release-proof.py \
+            --surface-ledger arch/tool-surface.md \
             --wire-dir .build/p0-wire \
             --baseline "$baseline" \
             --assessment .build/release-assessment/assessment.json \

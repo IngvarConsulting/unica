@@ -50,6 +50,8 @@ NATIVE_V13 = [
     "unica.docs",
 ]
 TASK_COMPATIBILITY = ["unica.task.get", "unica.task.result", "unica.task.cancel"]
+BOOTSTRAP_VERIFICATION = REPO_ROOT / "crates/unica-bootstrap/src/verification.rs"
+LEDGER_TOOL_HEADING = re.compile(r"^### `(unica\.[a-z0-9.]+)`$", re.M)
 
 
 def load_generator():
@@ -317,6 +319,36 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
         self.assertRegex(
             application_tests,
             r"fn\s+tool_specs_match_reviewed_result_contracts\s*\(",
+        )
+
+
+class SurfaceCopiesAgreeTests(unittest.TestCase):
+    """Копии имён поверхности вне check контракта обязаны совпадать с ведомостью.
+
+    Ведомость порождается из бинаря, и её сверяет `CTR.WIRE.TOOL-SURFACE`.
+    Остальные списки — ожидание этого теста и константа бутстрапа — не
+    проверки контракта, а его потребители; расхождение обязано ломаться здесь,
+    одним сообщением, называющим оба места (#699).
+    """
+
+    def test_ledger_names_the_expected_compatibility_surface(self) -> None:
+        ledger = LEDGER_TOOL_HEADING.findall(LEDGER.read_text(encoding="utf-8"))
+        self.assertEqual(sorted(ledger), sorted(NATIVE_V13 + TASK_COMPATIBILITY), str(LEDGER))
+        self.assertEqual(len(ledger), len(set(ledger)), f"дубли заголовков в {LEDGER}")
+
+    def test_bootstrap_verification_copy_matches_the_ledger(self) -> None:
+        source = BOOTSTRAP_VERIFICATION.read_text(encoding="utf-8")
+        block = re.search(
+            r"EXPECTED_COMPATIBILITY_TOOLS: \[&str; (\d+)\] = \[(.*?)\];", source, re.S
+        )
+        self.assertIsNotNone(block, f"нет EXPECTED_COMPATIBILITY_TOOLS в {BOOTSTRAP_VERIFICATION}")
+        names = re.findall(r'"(unica\.[a-z0-9.]+)"', block.group(2))
+        self.assertEqual(int(block.group(1)), len(names))
+        ledger = LEDGER_TOOL_HEADING.findall(LEDGER.read_text(encoding="utf-8"))
+        self.assertEqual(
+            sorted(names),
+            sorted(ledger),
+            f"{BOOTSTRAP_VERIFICATION} расходится с {LEDGER}",
         )
 
 
