@@ -23,7 +23,7 @@ from typing import Any
 
 
 SCHEMA_VERSION = 1
-PACKAGE_HASH_FORMAT = "sha256-u64be-path-content-v1"
+PACKAGE_HASH_FORMAT = "sha256-u64be-path-mode-content-v2"
 BASELINE_CANONICAL_SHA256 = (
     "c0c1658a3740a4bcda5098dfd31aa7c64476f709653ea3fc3b207ce41c00a9df"
 )
@@ -71,14 +71,31 @@ def file_sha256(path: Path) -> str:
 
 
 def tree_sha256(root: Path) -> str:
+    """Digest the package tree in the ``PACKAGE_HASH_FORMAT`` frame.
+
+    Per file, sorted by path: u64be path length, path, u64be size, one mode
+    byte (``0x01`` executable, ``0x00`` plain), content. The mode byte is the
+    ``v2`` addition: the package ships an executable bootstrap, and a lost
+    ``+x`` is exactly the breakage a package identity must see (#700). Symlinks
+    are refused rather than dereferenced — the packager never emits them, and a
+    link that hashes like its target would hide a changed tree. The producer
+    side lives in ``scripts/ci/package-unica-plugin.py::package_tree_sha256``
+    and must change in the same commit.
+    """
     if not root.is_dir():
         raise ProofError(f"downloaded package directory is missing: {root}")
     digest = hashlib.sha256()
-    for path in sorted(item for item in root.rglob("*") if item.is_file()):
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink():
+            raise ProofError(f"package tree must not contain symlinks: {path}")
+        if not path.is_file():
+            continue
         relative = path.relative_to(root).as_posix().encode("utf-8")
+        stat = path.stat()
         digest.update(len(relative).to_bytes(8, "big"))
         digest.update(relative)
-        digest.update(path.stat().st_size.to_bytes(8, "big"))
+        digest.update(stat.st_size.to_bytes(8, "big"))
+        digest.update(b"\x01" if stat.st_mode & 0o111 else b"\x00")
         with path.open("rb") as stream:
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                 digest.update(chunk)

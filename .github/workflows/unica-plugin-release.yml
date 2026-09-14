@@ -778,6 +778,7 @@ jobs:
       }}
     permissions:
       contents: read
+      actions: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -795,10 +796,16 @@ jobs:
           pattern: unica-runtime-verification-*
           path: .build/p0-assets
           merge-multiple: true
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: unica-thin-marketplace
-          path: .build/p0-marketplace
+      # Идентичность пакета включает бит исполнения (#700), а
+      # actions/download-artifact режимы не сохраняет: после него все файлы
+      # 644. `gh run download` применяет атрибуты из zip и отдаёт bootstrap
+      # исполняемым — тем же путём пакет уезжает в маркетплейс, где дерево
+      # держит 100755. Для чтения артефактов своего же прогона джобе нужно
+      # `actions: read`; на запись прав по-прежнему нет.
+      - name: Download the thin payload with its file modes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download "$GITHUB_RUN_ID" --name unica-thin-marketplace --dir .build/p0-marketplace
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: unica-p0-package-evidence

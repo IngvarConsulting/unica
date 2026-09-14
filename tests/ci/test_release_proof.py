@@ -119,7 +119,7 @@ class ReleaseProofTests(unittest.TestCase):
             )
         package = {
             "schemaVersion": 1,
-            "packageHashFormat": "sha256-u64be-path-content-v1",
+            "packageHashFormat": "sha256-u64be-path-mode-content-v2",
             "pluginVersion": version,
             "sourceCommit": "a" * 40,
             "packageSha256": self.module.tree_sha256(self.package_dir),
@@ -262,12 +262,36 @@ class ReleaseProofTests(unittest.TestCase):
         first_digest = self.module.tree_sha256(first)
         self.assertEqual(
             first_digest,
-            "5188569041dcc3e6e365f6a5b95d375ba69964b3cd93a8f28c198a521c30bda2",
+            "b849d8517c4382efe5ab53dbed90a249ae953f7695a806b260aa3c9d07782a34",
         )
         self.assertNotEqual(first_digest, self.module.tree_sha256(second))
 
+    def test_tree_hash_frames_the_executable_bit(self) -> None:
+        # Пакет несёт исполняемый bootstrap; потеря бита исполнения при
+        # переупаковке или в транспорте — настоящая поломка, и идентичность
+        # пакета обязана её видеть (#700).
+        root = Path(self.tempdir.name)
+        plain = root / "plain-tree"
+        executable = root / "executable-tree"
+        for tree in (plain, executable):
+            tree.mkdir()
+            (tree / "bin").write_bytes(b"#!/bin/sh\n")
+        (executable / "bin").chmod(0o755)
+        (plain / "bin").chmod(0o644)
+
+        self.assertNotEqual(self.module.tree_sha256(plain), self.module.tree_sha256(executable))
+
+    def test_tree_hash_rejects_symlinks_instead_of_dereferencing_them(self) -> None:
+        root = Path(self.tempdir.name) / "linked-tree"
+        root.mkdir()
+        (root / "real").write_bytes(b"payload")
+        (root / "alias").symlink_to("real")
+
+        with self.assertRaisesRegex(self.module.ProofError, "symlink"):
+            self.module.tree_sha256(root)
+
     def test_proof_requires_the_framed_package_hash_format(self) -> None:
-        for value in (None, "sha256-path-nul-content-v0"):
+        for value in (None, "sha256-path-nul-content-v0", "sha256-u64be-path-content-v1"):
             package = self.package()
             if value is None:
                 del package["packageHashFormat"]
