@@ -351,7 +351,7 @@ def prompt_frontmatter(document: str) -> dict[str, str]:
 IN_SCOPE_TOOLS = {
     "cf-edit": "unica.cf.edit",
     "cf-init": "unica.cf.init",
-    "cfe-borrow": "unica.cfe.borrow",
+    "cfe-borrow": "unica.view",
     "cfe-init": "unica.cfe.init",
     "cfe-patch-method": "unica.cfe.patch_method",
     "epf-init": "unica.epf.init",
@@ -779,7 +779,7 @@ REPLACED_RUNTIME_SKILLS = {
 TASK_EXAMPLE_ARGUMENT_KEYS = {
     "cf-edit": ["ConfigPath", "Operation", "Value"],
     "cf-init": ["Name", "OutputDir"],
-    "cfe-borrow": ["ExtensionPath", "ConfigPath", "Object"],
+    "cfe-borrow": ["at", "filter"],
     "cfe-init": ["Name", "OutputDir"],
     "cfe-patch-method": ["ExtensionPath", "ModulePath", "MethodName"],
     "epf-init": ["Name", "OutputDir", "FormName"],
@@ -805,7 +805,7 @@ TASK_EXAMPLE_ARGUMENT_KEYS = {
 SCENARIO_PRESERVING_MIN_MCP_CALLS = {
     "cf-edit": 6,
     "cf-init": 6,
-    "cfe-borrow": 7,
+    "cfe-borrow": 2,
     "cfe-init": 6,
     "cfe-patch-method": 4,
     "meta-add": 2,
@@ -854,12 +854,10 @@ SCENARIO_PRESERVING_TOKENS = {
         '"name": "unica.check"',
     ],
     "cfe-borrow": [
-        '"Object": "Catalog.Контрагенты"',
-        '"Object": "Catalog.Контрагенты.Form.ФормаЭлемента"',
-        '"Object": "Catalog.Контрагенты ;; CommonModule.ОбщийМодуль ;; Enum.ВидыОплат"',
-        '"BorrowMainAttribute": true',
-        '"BorrowMainAttribute": "All"',
+        '"sections": ["can"]',
         '"name": "unica.check"',
+        "ExtendedConfigurationObject",
+        "xr:PropertyState",
     ],
     "cfe-init": [
         '"ConfigPath": "C:\\\\WS\\\\tasks\\\\cfsrc\\\\erp_8.3.24"',
@@ -1466,6 +1464,19 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             if retired_routes.search(text):
                 offenders.append(path.relative_to(self.repo_root()).as_posix())
         self.assertEqual(offenders, [])
+
+    def test_cfe_borrow_guidance_does_not_claim_a_public_borrower(self) -> None:
+        text = (self.skill_root() / "cfe-borrow" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("заимствование пока недоступно", " ".join(text.split()))
+        self.assertIn('"sections": ["can"]', text)
+        self.assertIn('"name": "unica.check"', text)
+        calls = [json.loads(block)["params"]["name"] for block in fenced_json_blocks(text)
+                 if '"method": "tools/call"' in block]
+        self.assertEqual(calls, ["unica.view", "unica.check"])
+        self.assertIn("code.insert", text)
+        self.assertIn("code.replace", text)
+        self.assertIn("не устанавливает", " ".join(text.split()))
+        self.assertIn("https://github.com/IngvarConsulting/unica/issues/867", text)
 
     def test_in_scope_skills_route_to_single_unica_mcp(self) -> None:
         for skill, tool_name in IN_SCOPE_TOOLS.items():

@@ -1762,14 +1762,6 @@ enum PlatformXmlModuleLayoutFamily {
     NestedCommand,
 }
 
-const OWNER_MODULE_KINDS: &[&str] = &[
-    "CommonModule",
-    "Bot",
-    "HTTPService",
-    "WebService",
-    "IntegrationService",
-];
-
 #[derive(Debug, Clone, Copy)]
 enum ModuleLayoutToken {
     Literal(&'static str),
@@ -2012,7 +2004,7 @@ impl PlatformXmlModuleLayoutDescriptor {
             ModuleLayoutCapability::Any => true,
             ModuleLayoutCapability::OwnerModule => captures
                 .kind
-                .is_some_and(|kind| OWNER_MODULE_KINDS.contains(&kind.tag)),
+                .is_some_and(|kind| super::metadata_kinds::supports_owner_module(kind.tag)),
             ModuleLayoutCapability::DirectModule => captures
                 .kind
                 .zip(captures.role)

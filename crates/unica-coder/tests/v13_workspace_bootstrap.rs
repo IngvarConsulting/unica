@@ -456,3 +456,142 @@ fn canonical_stdio_names_mixed_source_formats_instead_of_recommending_a_project_
 // The symlink evidence for the canonical module view lives under `platform/`:
 // the OS-specific link call belongs to a platform facade path.
 include!("platform/v13_canonical_symlinked_workspace.rs");
+
+/// The fixture is already borrowed. This exercises the shipped MCP validator,
+/// and deliberately does not use the retained legacy borrower to claim a
+/// public borrowing route.
+#[test]
+#[ignore = "daemon tier: raises a daemon process; run explicitly for CFE validation"]
+fn canonical_stdio_checks_borrowed_cfe_structure_and_reports_borrowing_unavailable() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    let source = workspace.join("ext");
+    let state = root.path().join("state");
+    std::fs::create_dir_all(source.join("Reports/PriceList/Ext")).unwrap();
+    std::fs::create_dir(&state).unwrap();
+    std::fs::write(
+        workspace.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: ext\n    type: EXTENSION\n    path: ext\n",
+    )
+    .unwrap();
+    std::fs::write(
+        source.join("Configuration.xml"),
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+<Configuration uuid="66666666-6666-6666-6666-666666666666"><InternalInfo/>
+<Properties><ObjectBelonging>Adopted</ObjectBelonging><Name>GuardedExtension</Name>
+<ConfigurationExtensionPurpose>Customization</ConfigurationExtensionPurpose><NamePrefix>GE_</NamePrefix></Properties>
+<ChildObjects><Report>PriceList</Report></ChildObjects></Configuration></MetaDataObject>"#,
+    )
+    .unwrap();
+    let descriptor = source.join("Reports/PriceList.xml");
+    let mut mcp = McpProcess::start(&workspace, &state);
+    let initialized = mcp.exchange(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-11-25", "capabilities": {},
+            "clientInfo": {"name": "cfe-structure-ci", "version": "1"}}
+    }));
+    assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
+    mcp.notify(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
+    let listed = mcp.exchange(json!({
+        "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}
+    }));
+    let tools = listed["result"]["tools"].as_array().unwrap();
+    assert!(tools.iter().any(|tool| tool["name"] == "unica.check"));
+    assert!(tools
+        .iter()
+        .all(|tool| !tool["name"].as_str().unwrap().starts_with("unica.cfe.")));
+
+    let extended = "<xr:PropertyState><xr:Property>ObjectModule</xr:Property><xr:State>Extended</xr:State></xr:PropertyState>";
+    let cases = [
+        ("missing", "", "", "", false, Some("ChildObjects is required")),
+        ("foreign", "", "<ChildObjects xmlns=\"urn:foreign\"/>", "", false, Some("ChildObjects is required")),
+        ("duplicate", "", "<ChildObjects/><ChildObjects/>", "", false, Some("ChildObjects is required")),
+        ("order", "<ChildObjects/>", "", "", false, Some("ChildObjects must follow Properties")),
+        ("empty", "", "<ChildObjects/>", "", false, None),
+        ("prefixed", "", "<md:ChildObjects xmlns:md=\"http://v8.1c.ru/8.3/MDClasses\"/>", "", false, None),
+        ("missing-state", "", "<ChildObjects/>", "", true, Some("PropertyState ObjectModule=Extended is missing")),
+        ("extended", "", "<ChildObjects/>", extended, true, None),
+        ("foreign-state", "", "<ChildObjects/>", "<xr:PropertyState xmlns:xr=\"urn:foreign\"><xr:Property>ObjectModule</xr:Property><xr:State>Extended</xr:State></xr:PropertyState>", true, Some("PropertyState ObjectModule=Extended is missing")),
+        ("reversed-state", "", "<ChildObjects/>", "<xr:PropertyState><xr:State>Extended</xr:State><xr:Property>ObjectModule</xr:Property></xr:PropertyState>", true, Some("PropertyState ObjectModule=Extended is missing")),
+        ("conflicting-state", "", "<ChildObjects/>", "<xr:PropertyState><xr:Property>ObjectModule</xr:Property><xr:State>Notify</xr:State><xr:State>Extended</xr:State></xr:PropertyState>", true, Some("PropertyState ObjectModule=Extended is missing")),
+    ];
+    for (label, before, after, property_states, module, expected) in cases {
+        let xml = format!(
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20">
+<Report uuid="77777777-7777-7777-7777-777777777777"><InternalInfo>{property_states}</InternalInfo>{before}
+<Properties><ObjectBelonging>Adopted</ObjectBelonging><Name>PriceList</Name><Comment/>
+<ExtendedConfigurationObject>88888888-8888-8888-8888-888888888888</ExtendedConfigurationObject></Properties>{after}
+</Report></MetaDataObject>"#
+        );
+        std::fs::write(&descriptor, &xml).unwrap();
+        if module {
+            std::fs::write(
+                source.join("Reports/PriceList/Ext/ObjectModule.bsl"),
+                "// connected module\n",
+            )
+            .unwrap();
+        }
+        let response = mcp.exchange(json!({
+            "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": {"name": "unica.check", "arguments": {"at": "ext:Configuration"}}
+        }));
+        let result = &response["result"]["structuredContent"];
+        assert_eq!(result["ok"], true, "{label}: {response:#}");
+        let data = &result["data"];
+        assert_eq!(data["validators"], json!(["cfe"]), "{label}: {response:#}");
+        assert_eq!(
+            data["status"],
+            if expected.is_some() {
+                "failed"
+            } else {
+                "passed"
+            },
+            "{label}: {response:#}"
+        );
+        if let Some(expected) = expected {
+            assert!(
+                data["diagnostics"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|finding| {
+                        finding["validator"] == "cfe"
+                            && finding["message"]
+                                .as_str()
+                                .is_some_and(|message| message.contains(expected))
+                    }),
+                "{label}: {response:#}"
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(&descriptor).unwrap(),
+            xml,
+            "check is read-only"
+        );
+    }
+    let can = mcp.exchange(json!({
+        "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+        "params": {"name": "unica.view", "arguments": {"at": "ext:Configuration", "filter": {"sections": ["can"]}}}
+    }));
+    assert_eq!(can["result"]["structuredContent"]["ok"], true, "{can:#}");
+    let can_data = &can["result"]["structuredContent"]["data"];
+    assert!(!can_data.to_string().contains("borrow"), "{can:#}");
+    let refused = mcp.exchange(json!({
+        "jsonrpc": "2.0", "id": 5, "method": "tools/call",
+        "params": {"name": "unica.apply", "arguments": {"at": "ext:Configuration", "dryRun": true,
+            "ops": [{"op": "cfe.borrow", "args": {}}]}}
+    }));
+    assert_eq!(
+        refused["result"]["structuredContent"]["diagnostics"][0]["code"], "unsupported_operation",
+        "{refused:#}"
+    );
+    let retired = mcp.exchange(json!({
+        "jsonrpc": "2.0", "id": 6, "method": "tools/call",
+        "params": {"name": "unica.cfe.borrow", "arguments": {}}
+    }));
+    assert!(
+        retired.get("error").is_some() || retired["result"]["isError"] == true,
+        "{retired:#}"
+    );
+    mcp.finish();
+}

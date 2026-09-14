@@ -1,202 +1,78 @@
 ---
 name: cfe-borrow
-description: Заимствование объектов из конфигурации 1С в расширение (CFE). Используй когда нужно перехватить метод, изменить форму или добавить реквизит к существующему объекту конфигурации
-argument-hint: -ExtensionPath <path> -ConfigPath <path> -Object "Catalog.Контрагенты.Form.ФормаЭлемента" -BorrowMainAttribute
+description: Заимствование объектов из конфигурации 1С в расширение (CFE). Проверка доступности сценария и структуры уже заимствованных объектов
+argument-hint: <sourceSet>:Configuration
 allowed-tools:
-  - Bash
   - Read
-  - Glob
 ---
 
 # /cfe-borrow — Заимствование объектов из конфигурации
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tool `unica.cfe.borrow`; `unica` owns XML/JSON DSL work and refreshes related workspace caches after mutations.
-- Do not call internal MCP/CLI adapters directly. They are hidden behind `unica` and synchronized by the orchestrator.
-- Execution path: call MCP `unica` tool `unica.cfe.borrow`; skill-local operation scripts are not part of the workflow.
-- For mutating operations, pass `dryRun: false` only when the user explicitly requested the change; otherwise keep the default dry run.
+Используй MCP `unica`: `unica.view` для доступных операций и `unica.check`
+для проверки расширения. В текущей публичной поверхности заимствование пока
+недоступно: прежний `unica.cfe.borrow` не опубликован, операции заимствования
+в словаре `unica.apply` нет. Не вызывай внутренние адаптеры и не выдавай
+`object.create` за заимствование из базовой конфигурации.
 
-Заимствует объекты из основной конфигурации в расширение. Создаёт XML-файлы с `ObjectBelonging=Adopted` и `ExtendedConfigurationObject`, добавляет запись в ChildObjects расширения.
-
-## Предусловие
-
-Расширение должно быть создано (`/cfe-init`) и содержать валидный `Configuration.xml`.
-
-### Авто-определение ConfigPath
-
-Если пользователь не указал `-ConfigPath` — попробуй определить автоматически:
-1. Используй `./v8project.yaml`.
-2. Найди `source-set` с `type: CONFIGURATION`.
-3. Используй его `path` как `-ConfigPath`.
-4. Если source-set не найден — спроси путь у пользователя.
-
-## Параметры
-
-| Параметр | Описание |
-|----------|----------|
-| `ExtensionPath` | Путь к каталогу расширения (обязат.) |
-| `ConfigPath` | Путь к конфигурации-источнику (обязат.) |
-| `Object` | Что заимствовать (обязат.), batch через `;;` |
-| `BorrowMainAttribute` | Заимствовать основной реквизит формы. Без параметра — не заимствует. `Form` — реквизиты, используемые на форме. `All` — все реквизиты объекта. Требует форму в -Object |
-
-## Формат -Object
-
-- `Catalog.Контрагенты` — справочник
-- `CommonModule.РаботаСФайлами` — общий модуль
-- `Document.РеализацияТоваров` — документ
-- `Enum.ВидыОплат` — перечисление
-- `Catalog.Контрагенты.Form.ФормаЭлемента` — форма объекта (заимствование формы)
-- `Catalog.X ;; CommonModule.Y ;; Enum.Z` — несколько объектов
-Поддерживаются все 44 типа объектов конфигурации.
-
-### Заимствование форм
-
-Формат `Тип.Имя.Form.ИмяФормы` заимствует форму конкретного объекта. Если родительский объект ещё не заимствован — он будет заимствован автоматически.
-
-Создаётся:
-1. **Метаданные формы** — `Forms/ИмяФормы.xml` с `ObjectBelonging=Adopted`, `FormType=Managed`
-2. **Form.xml** — `Forms/ИмяФормы/Ext/Form.xml` с копией исходной формы + `<BaseForm>` (начальное состояние)
-3. **Module.bsl** — пустой файл `Forms/ИмяФормы/Ext/Form/Module.bsl`
-4. **Регистрация** — `<Form>` в ChildObjects родительского объекта
-
-### Заимствование основного реквизита формы (-BorrowMainAttribute)
-
-**Когда нужно**: пользователь хочет добавить новый реквизит в существующий объект конфигурации и вывести его на заимствованную форму. Без `-BorrowMainAttribute` форма заимствуется "пустой" — только визуальные элементы, без привязки к данным объекта. С `-BorrowMainAttribute` форма сохраняет привязки к реквизитам объекта (DataPath), что позволяет затем добавить на неё новые элементы через `/form-edit`.
-
-**Два режима**:
-- `Form` (по умолчанию) — заимствует только те реквизиты объекта, которые уже выведены на форму. Оптимальный выбор для большинства случаев
-- `All` — заимствует все реквизиты и табличные части объекта. Используй если планируешь выводить на форму реквизиты, которых на ней ещё нет
-
-**Типовой сценарий** (добавление реквизита + вывод на форму):
-1. `/cfe-borrow` с `-BorrowMainAttribute` — заимствовать форму с реквизитами
-2. `/meta-edit` — добавить новый реквизит в объект расширения
-3. `/form-edit` — вывести реквизит на заимствованную форму
-
-**Защита существующих данных**: если зависимый объект уже заимствован с содержимым (реквизитами, формами) — скрипт не перезаписывает его, а добавляет только недостающее.
-
-## MCP вызов
+Сначала прочитай `can` корня существующего набора типа `EXTENSION`.
+Здесь `ext` — имя набора в `v8project.yaml`.
 
 ```json
 {
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.cfe.borrow",
+    "name": "unica.view",
     "arguments": {
-      "cwd": "<workspace>",
-      "ExtensionPath": "src/extensions/MyExtension",
-      "ConfigPath": "src",
-      "Object": "Catalog.Контрагенты.Form.ФормаЭлемента",
-      "BorrowMainAttribute": "Form",
-      "dryRun": false
+      "at": "ext:Configuration",
+      "filter": {"sections": ["can"]}
     }
   }
 }
 ```
 
-## Примеры
+Если подходящей операции нет, сообщи пользователю об ограничении. Для нового
+заимствования нужен Конфигуратор 1С; после выгрузки его результата проверяй
+исходники через `unica.check`. Успех внутреннего генератора не доказывает
+доступность этой операции через MCP.
 
-### Заимствовать один объект
+## Структура заимствованного объекта
 
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.cfe.borrow",
-    "arguments": {
-      "cwd": "<workspace>",
-      "ExtensionPath": "src",
-      "ConfigPath": "C:\\cfsrc\\erp",
-      "Object": "Catalog.Контрагенты",
-      "dryRun": false
-    }
-  }
-}
-```
+Дескриптор содержит `ObjectBelonging=Adopted` и `ExtendedConfigurationObject`;
+объект зарегистрирован в `ChildObjects` расширения. У видов с дочерними
+коллекциями, включая `Report` и `DataProcessor`, обязательный `ChildObjects`
+идёт после `Properties` в namespace `http://v8.1c.ru/8.3/MDClasses`, даже если
+коллекция пуста.
 
-### Заимствовать форму
+Подключённому модулю соответствует единственная запись `xr:PropertyState`
+в `InternalInfo`: `xr:Property` с именем свойства модуля, затем
+`xr:State` со значением `Extended`. Namespace `xr` —
+`http://v8.1c.ru/8.3/xcf/readable`. Проверяются прямые модули, модули владельца
+`Ext/Module.bsl` и модуль общей команды `Ext/CommandModule.bsl`.
 
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.cfe.borrow",
-    "arguments": {
-      "cwd": "<workspace>",
-      "ExtensionPath": "src",
-      "ConfigPath": "C:\\cfsrc\\erp",
-      "Object": "Catalog.Контрагенты.Form.ФормаЭлемента",
-      "dryRun": false
-    }
-  }
-}
-```
+Сохранённый внутренний генератор при повторном заимствовании сохраняет
+состояния подключённых модулей и их BSL-файлы. Это свойство генератора;
+публичный маршрут его запуска отсутствует.
 
-### Несколько объектов за раз
+Запись BSL через `unica.apply` (`code.insert` или `code.replace`) сама по себе
+не доказывает подключение заимствованного модуля: текущий писатель не устанавливает
+недостающий `PropertyState`. Дефект отслеживается в
+[#867](https://github.com/IngvarConsulting/unica/issues/867). После записи
+обязательно прочти результат `unica.check`; при отсутствии состояния не объявляй
+расширение готовым к загрузке. Подключение модуля следует завершить в Конфигураторе
+и выгрузить результат, пока писатель не исправлен.
 
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.cfe.borrow",
-    "arguments": {
-      "cwd": "<workspace>",
-      "ExtensionPath": "src",
-      "ConfigPath": "C:\\cfsrc\\erp",
-      "Object": "Catalog.Контрагенты ;; CommonModule.ОбщийМодуль ;; Enum.ВидыОплат",
-      "dryRun": false
-    }
-  }
-}
-```
-
-### Заимствовать форму с основным реквизитом
-
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.cfe.borrow",
-    "arguments": {
-      "cwd": "<workspace>",
-      "ExtensionPath": "src",
-      "ConfigPath": "C:\\cfsrc\\erp",
-      "Object": "Catalog.Номенклатура.Form.ФормаЭлемента",
-      "BorrowMainAttribute": true,
-      "dryRun": false
-    }
-  }
-}
-```
-
-### Заимствовать форму со всеми реквизитами объекта
-
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.cfe.borrow",
-    "arguments": {
-      "cwd": "<workspace>",
-      "ExtensionPath": "src",
-      "ConfigPath": "C:\\cfsrc\\erp",
-      "Object": "Catalog.Номенклатура.Form.ФормаЭлемента",
-      "BorrowMainAttribute": "All",
-      "dryRun": false
-    }
-  }
-}
-```
+Подробнее о дескрипторах и заимствованных формах —
+[спецификация расширений](../../references/specs/1c-extension-spec.md).
 
 ## Верификация
 
-Проверка расширения — `unica.check` на корне набора-расширения (`ext` — имя набора типа `EXTENSION` в `v8project.yaml`); валидатор `cfe` выбирается по виду набора, вердикт в `data.status`.
+`unica.check` на корне набора-расширения выбирает валидатор `cfe` по виду
+набора. Вердикт — `data.status`, подробности — `data.diagnostics`.
+`ok: true` означает выполненную проверку; при дефектах XML `data.status`
+равен `failed`.
 
 ```json
 {
@@ -204,9 +80,7 @@ allowed-tools:
   "method": "tools/call",
   "params": {
     "name": "unica.check",
-    "arguments": {
-      "at": "ext:Configuration"
-    }
+    "arguments": {"at": "ext:Configuration"}
   }
 }
 ```
