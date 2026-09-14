@@ -375,15 +375,34 @@ fn runtime_process_pid_alive_for_test(_process_id: u32) -> io::Result<bool> {
     Ok(false)
 }
 
+/// How long the probe lets the PowerShell leader start, spawn its descendant
+/// and exit. The semantics under test do not depend on this number: the
+/// descendant is a Job Object member that outlives the leader, and the tree
+/// is torn down explicitly at the end. Five seconds was a cold-start budget
+/// for `powershell.exe`, and the nightly `large` tier on `windows-latest`
+/// overran it in two of six nights (runs 34317173405 and 34676550320) while
+/// this probe ran nested inside `daemon_exact_long_work_ownership_contract`
+/// next to the full suite (#750). The descendant lives long enough for the
+/// leader budget to expire with it still alive, so a slow leader is told apart
+/// from a tree that went terminal.
+#[cfg(all(test, windows))]
+const WINDOWS_PROBE_LEADER_EXIT_BUDGET: Duration = Duration::from_secs(30);
+#[cfg(all(test, windows))]
+const WINDOWS_PROBE_DESCENDANT_PINGS: &str = "90";
+
 #[cfg(all(test, windows))]
 pub(crate) fn assert_windows_runtime_process_tree_semantics_for_test() -> io::Result<()> {
     let mut command = Command::new("powershell.exe");
+    let start_descendant = format!(
+        "Start-Process -WindowStyle Hidden ping.exe -ArgumentList @('-n','{}','127.0.0.1') | Out-Null",
+        WINDOWS_PROBE_DESCENDANT_PINGS
+    );
     command
         .args([
             "-NoProfile",
             "-NonInteractive",
             "-Command",
-            "Start-Process -WindowStyle Hidden ping.exe -ArgumentList @('-n','20','127.0.0.1') | Out-Null",
+            start_descendant.as_str(),
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -399,7 +418,9 @@ pub(crate) fn assert_windows_runtime_process_tree_semantics_for_test() -> io::Re
     loop {
         match process_tree.poll(&mut child)? {
             RuntimeProcessTreeState::Running if process_tree.leader_exited() => break,
-            RuntimeProcessTreeState::Running if started.elapsed() < Duration::from_secs(5) => {
+            RuntimeProcessTreeState::Running
+                if started.elapsed() < WINDOWS_PROBE_LEADER_EXIT_BUDGET =>
+            {
                 thread::sleep(PROCESS_POLL_INTERVAL)
             }
             RuntimeProcessTreeState::Running => {
