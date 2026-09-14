@@ -1473,6 +1473,10 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         calls = [json.loads(block)["params"]["name"] for block in fenced_json_blocks(text)
                  if '"method": "tools/call"' in block]
         self.assertEqual(calls, ["unica.view", "unica.check"])
+        self.assertIn("code.insert", text)
+        self.assertIn("code.replace", text)
+        self.assertIn("не устанавливает", " ".join(text.split()))
+        self.assertIn("https://github.com/IngvarConsulting/unica/issues/867", text)
 
     def test_in_scope_skills_route_to_single_unica_mcp(self) -> None:
         for skill, tool_name in IN_SCOPE_TOOLS.items():
