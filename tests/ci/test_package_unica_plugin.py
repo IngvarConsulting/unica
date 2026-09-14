@@ -41,9 +41,34 @@ class PackageUnicaPluginTests(unittest.TestCase):
         first_digest = module.package_tree_sha256(first)
         self.assertEqual(
             first_digest,
-            "5188569041dcc3e6e365f6a5b95d375ba69964b3cd93a8f28c198a521c30bda2",
+            "b849d8517c4382efe5ab53dbed90a249ae953f7695a806b260aa3c9d07782a34",
         )
         self.assertNotEqual(first_digest, module.package_tree_sha256(second))
+
+    def test_package_tree_hash_frames_the_executable_bit(self) -> None:
+        # Тот же кадр, что у proof: бит исполнения входит в идентичность
+        # пакета, иначе потерянный `+x` у bootstrap пройдёт сверку (#700).
+        module = load_package_module()
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        plain = root / "plain"
+        executable = root / "executable"
+        for tree in (plain, executable):
+            tree.mkdir()
+            (tree / "bin").write_bytes(b"#!/bin/sh\n")
+        (executable / "bin").chmod(0o755)
+        (plain / "bin").chmod(0o644)
+
+        self.assertNotEqual(module.package_tree_sha256(plain), module.package_tree_sha256(executable))
+
+    def test_package_tree_hash_rejects_symlinks(self) -> None:
+        module = load_package_module()
+        root = Path(self.enterContext(tempfile.TemporaryDirectory())) / "linked"
+        root.mkdir()
+        (root / "real").write_bytes(b"payload")
+        (root / "alias").symlink_to("real")
+
+        with self.assertRaisesRegex(SystemExit, "symlink"):
+            module.package_tree_sha256(root)
 
     def test_runtime_metadata_asset_must_be_an_object(self) -> None:
         module = load_package_module()
@@ -1299,7 +1324,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
             self.assertEqual(package_evidence["schemaVersion"], 1)
             self.assertEqual(
                 package_evidence["packageHashFormat"],
-                "sha256-u64be-path-content-v1",
+                "sha256-u64be-path-mode-content-v2",
             )
             self.assertEqual(package_evidence["pluginVersion"], version)
             self.assertEqual(package_evidence["sourceCommit"], "a" * 40)

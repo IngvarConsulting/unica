@@ -1,5 +1,15 @@
 #!/usr/bin/env python3
-"""Validate the machine-readable proof boundary for the v0.13 RC package."""
+"""Validate the machine-readable proof boundary for the v0.13 RC package.
+
+The proof has exactly one mode, and it is dry by construction: the job runs
+before anything is published, on a locally built package, so it can only record
+lifecycle outcomes as ``deferred``. Fresh install, upgrade, offline prefetch,
+restart and rollback are proven on the published bytes instead — that is step
+R-3 of the release umbrella (IngvarConsulting/unica#871), which has no producer
+in this repository yet. A former ``--mode rc`` that demanded ``passed`` outcomes
+was unreachable for that reason and was removed (#697); bring a second mode back
+only together with a producer that runs after publication.
+"""
 
 from __future__ import annotations
 
@@ -13,7 +23,7 @@ from typing import Any
 
 
 SCHEMA_VERSION = 1
-PACKAGE_HASH_FORMAT = "sha256-u64be-path-content-v1"
+PACKAGE_HASH_FORMAT = "sha256-u64be-path-mode-content-v2"
 BASELINE_CANONICAL_SHA256 = (
     "c0c1658a3740a4bcda5098dfd31aa7c64476f709653ea3fc3b207ce41c00a9df"
 )
@@ -61,14 +71,31 @@ def file_sha256(path: Path) -> str:
 
 
 def tree_sha256(root: Path) -> str:
+    """Digest the package tree in the ``PACKAGE_HASH_FORMAT`` frame.
+
+    Per file, sorted by path: u64be path length, path, u64be size, one mode
+    byte (``0x01`` executable, ``0x00`` plain), content. The mode byte is the
+    ``v2`` addition: the package ships an executable bootstrap, and a lost
+    ``+x`` is exactly the breakage a package identity must see (#700). Symlinks
+    are refused rather than dereferenced — the packager never emits them, and a
+    link that hashes like its target would hide a changed tree. The producer
+    side lives in ``scripts/ci/package-unica-plugin.py::package_tree_sha256``
+    and must change in the same commit.
+    """
     if not root.is_dir():
         raise ProofError(f"downloaded package directory is missing: {root}")
     digest = hashlib.sha256()
-    for path in sorted(item for item in root.rglob("*") if item.is_file()):
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink():
+            raise ProofError(f"package tree must not contain symlinks: {path}")
+        if not path.is_file():
+            continue
         relative = path.relative_to(root).as_posix().encode("utf-8")
+        stat = path.stat()
         digest.update(len(relative).to_bytes(8, "big"))
         digest.update(relative)
-        digest.update(path.stat().st_size.to_bytes(8, "big"))
+        digest.update(stat.st_size.to_bytes(8, "big"))
+        digest.update(b"\x01" if stat.st_mode & 0o111 else b"\x00")
         with path.open("rb") as stream:
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                 digest.update(chunk)
@@ -273,7 +300,6 @@ def _validate_asset_reports(asset_dir: Path, expected_plugin_version: str) -> di
 
 def _validate_lifecycle(
     assessment: dict[str, Any],
-    mode: str,
     *,
     expected_release_tag: str,
     expected_unica_version: str,
@@ -314,8 +340,8 @@ def _validate_lifecycle(
             isinstance(item, str) and item for item in evidence
         ):
             raise ProofError(f"{scenario} lifecycle outcome must name machine-readable evidence")
-        if status == "failed" or (mode == "rc" and status != "passed"):
-            raise ProofError(f"{scenario} lifecycle outcome is {status} in {mode} mode")
+        if status == "failed":
+            raise ProofError(f"{scenario} lifecycle outcome is failed")
         result[scenario] = {
             "status": status,
             "supported": supported,
@@ -335,10 +361,7 @@ def evaluate_proof(
     asset_verification_dir: Path,
     source_commit: str,
     release_tag: str,
-    mode: str = "dry",
 ) -> dict[str, Any]:
-    if mode not in {"dry", "rc"}:
-        raise ProofError(f"unsupported proof mode: {mode}")
     release_tag = _require_string(release_tag, "releaseTag")
     native = _validate_wire_profiles("native", native_wires)
     compatibility = _validate_wire_profiles("compatibility", compatibility_wires)
@@ -360,14 +383,12 @@ def evaluate_proof(
         raise ProofError("legacy baseline overlap: " + ", ".join(overlap))
     lifecycle = _validate_lifecycle(
         assessment,
-        mode,
         expected_release_tag=release_tag,
         expected_unica_version=package_summary["pluginVersion"],
     )
 
     return {
         "schemaVersion": SCHEMA_VERSION,
-        "mode": mode,
         "status": "passed",
         "releaseTag": release_tag,
         "package": package_summary,
@@ -392,7 +413,6 @@ def render_summary(report: dict[str, Any]) -> str:
         "# Unica P0 RC/package proof",
         "",
         f"- Status: `{report['status']}`",
-        f"- Mode: `{report['mode']}`",
         f"- Release tag input: `{report['releaseTag']}`",
         f"- Native surface: `{report['surfaces']['native']['toolCount']}` tools",
         f"- Compatibility surface: `{report['surfaces']['compatibility']['toolCount']}` tools",
@@ -435,7 +455,6 @@ def main() -> None:
     parser.add_argument("--asset-verification-dir", type=Path, required=True)
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--release-tag", required=True)
-    parser.add_argument("--mode", choices=("dry", "rc"), default="dry")
     parser.add_argument("--out-dir", type=Path, required=True)
     args = parser.parse_args()
     try:
@@ -456,7 +475,6 @@ def main() -> None:
             asset_verification_dir=args.asset_verification_dir,
             source_commit=args.source_commit,
             release_tag=args.release_tag,
-            mode=args.mode,
         )
     except ProofError as error:
         raise SystemExit(f"P0 release proof failed: {error}") from error

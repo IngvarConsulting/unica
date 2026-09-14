@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,10 +12,11 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BASELINE_PATH = REPO_ROOT / "tests" / "fixtures" / "migration" / "v0.12.3-baseline.json"
+SCRIPT = REPO_ROOT / "scripts" / "ci" / "release-proof.py"
 
 
 def load_module():
-    module_path = REPO_ROOT / "scripts" / "ci" / "release-proof.py"
+    module_path = SCRIPT
     spec = importlib.util.spec_from_file_location("release_proof", module_path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"failed to load {module_path}")
@@ -115,7 +119,7 @@ class ReleaseProofTests(unittest.TestCase):
             )
         package = {
             "schemaVersion": 1,
-            "packageHashFormat": "sha256-u64be-path-content-v1",
+            "packageHashFormat": "sha256-u64be-path-mode-content-v2",
             "pluginVersion": version,
             "sourceCommit": "a" * 40,
             "packageSha256": self.module.tree_sha256(self.package_dir),
@@ -166,7 +170,6 @@ class ReleaseProofTests(unittest.TestCase):
             "asset_verification_dir": self.asset_dir,
             "source_commit": "a" * 40,
             "release_tag": "v0.12.0",
-            "mode": "dry",
         }
         values.update(overrides)
         return self.module.evaluate_proof(**values)
@@ -257,12 +260,36 @@ class ReleaseProofTests(unittest.TestCase):
         first_digest = self.module.tree_sha256(first)
         self.assertEqual(
             first_digest,
-            "5188569041dcc3e6e365f6a5b95d375ba69964b3cd93a8f28c198a521c30bda2",
+            "b849d8517c4382efe5ab53dbed90a249ae953f7695a806b260aa3c9d07782a34",
         )
         self.assertNotEqual(first_digest, self.module.tree_sha256(second))
 
+    def test_tree_hash_frames_the_executable_bit(self) -> None:
+        # Пакет несёт исполняемый bootstrap; потеря бита исполнения при
+        # переупаковке или в транспорте — настоящая поломка, и идентичность
+        # пакета обязана её видеть (#700).
+        root = Path(self.tempdir.name)
+        plain = root / "plain-tree"
+        executable = root / "executable-tree"
+        for tree in (plain, executable):
+            tree.mkdir()
+            (tree / "bin").write_bytes(b"#!/bin/sh\n")
+        (executable / "bin").chmod(0o755)
+        (plain / "bin").chmod(0o644)
+
+        self.assertNotEqual(self.module.tree_sha256(plain), self.module.tree_sha256(executable))
+
+    def test_tree_hash_rejects_symlinks_instead_of_dereferencing_them(self) -> None:
+        root = Path(self.tempdir.name) / "linked-tree"
+        root.mkdir()
+        (root / "real").write_bytes(b"payload")
+        (root / "alias").symlink_to("real")
+
+        with self.assertRaisesRegex(self.module.ProofError, "symlink"):
+            self.module.tree_sha256(root)
+
     def test_proof_requires_the_framed_package_hash_format(self) -> None:
-        for value in (None, "sha256-path-nul-content-v0"):
+        for value in (None, "sha256-path-nul-content-v0", "sha256-u64be-path-content-v1"):
             package = self.package()
             if value is None:
                 del package["packageHashFormat"]
@@ -334,16 +361,36 @@ class ReleaseProofTests(unittest.TestCase):
         with self.assertRaisesRegex(self.module.ProofError, "pluginVersion does not match"):
             self.evaluate()
 
-    def test_rc_proof_rejects_deferred_lifecycle_outcomes(self) -> None:
-        lifecycle = self.assessment()["lifecycle"]
-        for name in ("fresh_install", "upgrade"):
-            lifecycle[name] = {
-                "status": "passed",
-                "supported": True,
-                "evidence": [f"rc:{name}"],
-            }
-        with self.assertRaisesRegex(self.module.ProofError, "offline_prefetch.*deferred"):
-            self.evaluate(mode="rc", assessment=self.assessment(lifecycle=lifecycle))
+    def test_proof_has_a_single_dry_mode_by_construction(self) -> None:
+        # Сценарии жизненного цикла доказываются только на опубликованных байтах,
+        # а этот proof идёт до публикации: второго режима у него нет ни в
+        # сигнатуре, ни в CLI, ни в отчёте (#697).
+        self.assertNotIn("mode", inspect.signature(self.module.evaluate_proof).parameters)
+
+        report = self.evaluate()
+        self.assertNotIn("mode", report)
+        self.assertNotIn("Mode:", self.module.render_summary(report))
+
+        required = [
+            "--wire-dir", "wire",
+            "--baseline", "baseline.json",
+            "--assessment", "assessment.json",
+            "--package", "package.json",
+            "--package-dir", "package",
+            "--asset-verification-dir", "assets",
+            "--source-commit", "a" * 40,
+            "--release-tag", "v0.12.0",
+            "--out-dir", "out",
+        ]
+        cli = subprocess.run(
+            [sys.executable, str(SCRIPT), *required, "--mode", "dry"],
+            cwd=self.tempdir.name,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(cli.returncode, 2, cli.stderr)
+        self.assertIn("unrecognized arguments: --mode", cli.stderr)
 
     def test_proof_ignores_self_reported_mutation_flags(self) -> None:
         # Продюсер писал `versionBumped`/`published`/`tag` литералами, а proof
