@@ -116,7 +116,7 @@ fn property_states_are_well_formed(object: roxmltree::Node<'_, '_>) -> bool {
             || children.iter().any(|node| {
                 node.children().any(|child| child.is_element())
                     || node.children().filter(|child| child.is_text()).count() != 1
-                    || node.text().is_none_or(|text| text.is_empty())
+                    || node.text().is_none_or(|text| text.trim().is_empty())
             })
         {
             return false;

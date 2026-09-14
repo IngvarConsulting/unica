@@ -360,6 +360,9 @@ fn code_does_not_mark_configuration_or_owned_extension_objects() {
 #[test]
 fn borrowed_code_rejects_malformed_property_state_children_before_staging() {
     for children in [
+        "<xr:Property>   </xr:Property><xr:State>Extended</xr:State>",
+        "<xr:Property>\t\n </xr:Property><xr:State>Extended</xr:State>",
+        "<xr:Property>ObjectModule</xr:Property><xr:State> \t\n</xr:State>",
         "<xr:Property>Module</xr:Property><xr:State>Extended</xr:State><xr:State>Notify</xr:State>",
         "<xr:Property>Module</xr:Property><xr:Property>ObjectModule</xr:Property><xr:State>Extended</xr:State>",
         "<xr:State>Extended</xr:State><xr:Property>Module</xr:Property>",
