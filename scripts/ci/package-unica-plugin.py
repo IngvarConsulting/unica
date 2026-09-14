@@ -107,14 +107,31 @@ def sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+PACKAGE_HASH_FORMAT = "sha256-u64be-path-mode-content-v2"
+
+
 def package_tree_sha256(root: Path) -> str:
-    """Digest package paths and bytes so the proof binds the assembled tree."""
+    """Digest package paths, modes and bytes so the proof binds the assembled tree.
+
+    The frame is ``PACKAGE_HASH_FORMAT`` and is mirrored by
+    ``scripts/ci/release-proof.py::tree_sha256``; the two change together. Per
+    file, sorted by path: u64be path length, path, u64be size, one mode byte
+    (``0x01`` executable, ``0x00`` plain), content. The mode byte binds the
+    executable bootstrap's ``+x`` (#700). Symlinks are refused: the packager
+    never copies them, so one here is a broken tree, not a member.
+    """
     digest = hashlib.sha256()
-    for path in sorted(item for item in root.rglob("*") if item.is_file()):
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink():
+            raise SystemExit(f"package tree must not contain symlinks: {path}")
+        if not path.is_file():
+            continue
         relative = path.relative_to(root).as_posix().encode("utf-8")
+        stat = path.stat()
         digest.update(len(relative).to_bytes(8, "big"))
         digest.update(relative)
-        digest.update(path.stat().st_size.to_bytes(8, "big"))
+        digest.update(stat.st_size.to_bytes(8, "big"))
+        digest.update(b"\x01" if stat.st_mode & 0o111 else b"\x00")
         with path.open("rb") as stream:
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                 digest.update(chunk)
@@ -696,7 +713,7 @@ def write_p0_package_evidence(
         raise SystemExit(f"packaged runtime manifest is missing: {runtime_manifest}")
     evidence = {
         "schemaVersion": 1,
-        "packageHashFormat": "sha256-u64be-path-content-v1",
+        "packageHashFormat": PACKAGE_HASH_FORMAT,
         "pluginVersion": version,
         "sourceCommit": source_commit,
         "packageSha256": package_tree_sha256(marketplace_dir),
