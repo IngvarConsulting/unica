@@ -126,9 +126,6 @@ class ReleaseProofTests(unittest.TestCase):
             "runtimeManifestSha256": self.module.file_sha256(
                 self.package_dir / "plugins" / "unica" / "runtime-manifest.json"
             ),
-            "versionBumped": False,
-            "published": False,
-            "tag": None,
         }
         package.update(overrides)
         return package
@@ -195,10 +192,11 @@ class ReleaseProofTests(unittest.TestCase):
             },
         )
         self.assertTrue(all(item["status"] == "deferred" for item in report["lifecycle"].values()))
-        self.assertEqual(
-            report["guards"],
-            {"noVersionBump": True, "noTag": True, "noPublication": True},
-        )
+        # Отчёт утверждает только наблюдённое. «Нет бампа, тега, публикации»
+        # наблюдением не является — это устройство джобы, и приколочено оно в
+        # test_unica_workflow, а не литералом в JSON (#696).
+        self.assertNotIn("guards", report)
+        self.assertNotIn("guards", self.module.render_summary(report))
 
     def test_native_direct_first_proof_accepts_absent_server_info(self) -> None:
         native_wires, compatibility_wires = self.wire_sets()
@@ -394,12 +392,17 @@ class ReleaseProofTests(unittest.TestCase):
         self.assertEqual(cli.returncode, 2, cli.stderr)
         self.assertIn("unrecognized arguments: --mode", cli.stderr)
 
-    def test_dry_proof_rejects_version_tag_or_publication_mutation(self) -> None:
-        with self.assertRaisesRegex(self.module.ProofError, "must not publish"):
-            self.evaluate(package=self.package(published=True))
-
-        with self.assertRaisesRegex(self.module.ProofError, "must not create a tag"):
-            self.evaluate(package=self.package(tag="v0.12.0"))
+    def test_proof_ignores_self_reported_mutation_flags(self) -> None:
+        # Продюсер писал `versionBumped`/`published`/`tag` литералами, а proof
+        # сверял их с теми же литералами: условие не могло стать ложным ни при
+        # какой правке репозитория. Такие поля не читаются — ни как гарантия,
+        # ни как отказ (#696).
+        report = self.evaluate(
+            package=self.package(versionBumped=True, published=True, tag="v0.12.0")
+        )
+        self.assertEqual(report["status"], "passed")
+        for key in ("versionBumped", "published", "tag"):
+            self.assertNotIn(key, report["package"])
 
     def test_prerelease_is_explicitly_non_promotable(self) -> None:
         report = self.evaluate(

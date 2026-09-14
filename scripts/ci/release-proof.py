@@ -231,12 +231,11 @@ def _validate_package(
         value = _require_string(package.get(key), f"package {key}")
         if not HEX_64.fullmatch(value):
             raise ProofError(f"package {key} must be 64 lowercase hexadecimal characters")
-    if package.get("versionBumped") is not False:
-        raise ProofError("P0 package proof must not bump the version")
-    if package.get("published") is not False:
-        raise ProofError("P0 package proof must not publish")
-    if package.get("tag") is not None:
-        raise ProofError("P0 package proof must not create a tag")
+    # The proof claims only what it observed. "No version bump, no tag, no
+    # publication" is not an observation of the package: it is how the
+    # p0-release-proof job is built — read-only token, no publish steps — and
+    # that is pinned by tests/ci/test_unica_workflow.py. Self-reported flags
+    # here would be checked against the literals that wrote them (#696).
     if source_commit != expected_source_commit:
         raise ProofError("package sourceCommit does not match checked-out source")
     plugin_dir = package_dir / "plugins" / "unica"
@@ -406,7 +405,6 @@ def evaluate_proof(
             "promote": False,
             "reason": "P0 proof is never a publication or promotion action",
         },
-        "guards": {"noVersionBump": True, "noTag": True, "noPublication": True},
     }
 
 
@@ -431,7 +429,7 @@ def render_summary(report: dict[str, Any]) -> str:
     lines.extend(
         [
             "",
-            "P0 guards: no version bump, tag, release publication, or marketplace promotion.",
+            "Read-only by construction of the p0-release-proof job, not by a claim in this report.",
             "",
         ]
     )

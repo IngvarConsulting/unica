@@ -1328,9 +1328,11 @@ class PackageUnicaPluginTests(unittest.TestCase):
             )
             self.assertEqual(package_evidence["pluginVersion"], version)
             self.assertEqual(package_evidence["sourceCommit"], "a" * 40)
-            self.assertFalse(package_evidence["versionBumped"])
-            self.assertFalse(package_evidence["published"])
-            self.assertIsNone(package_evidence["tag"])
+            # Свидетельство пакета несёт только наблюдённое: версию, коммит и
+            # дайджесты. Флаги «не бампали, не публиковали, тега нет» были
+            # литералами продюсера и сняты (#696).
+            for key in ("versionBumped", "published", "tag"):
+                self.assertNotIn(key, package_evidence)
 
             # Maintainer material stays in the source tree. The donor index and
             # the dated review records answer questions a consumer never asks,
