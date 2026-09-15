@@ -30,7 +30,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 pub(super) const CONFIG_NAME: &str = "v8project.yaml";
-const LOCAL_CONFIG_NAME: &str = "v8project.local.yaml";
+pub(super) const LOCAL_CONFIG_NAME: &str = "v8project.local.yaml";
 pub(super) const RUNNER_OUTPUT_LIMIT: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -413,7 +413,7 @@ pub(super) fn closed_workspace_relative_path(value: &str) -> Result<PathBuf, &'s
     }
 }
 
-fn valid_1c_identifier(value: &str) -> bool {
+pub(super) fn valid_1c_identifier(value: &str) -> bool {
     let mut chars = value.chars();
     let Some(first) = chars.next() else {
         return false;

@@ -138,9 +138,9 @@ List canonical runtime operations and their invocation contract, or preview/exec
 | `ifRev` | string | нет | Revision returned by a prior preview of the same previewApply operation; required when dryRun is false. |
 | `op` | string | нет | Canonical operation name; omit to list operation status. |
 
-**Результат сейчас:** Вызов без `op` до source admission возвращает закрытый словарь направленных runtime-намерений, каждому из которых нужна платформа или база; `cf.export`, `infobase.export`, `infobase.import` и `client.run` реализованы; выгрузки и загрузка используют неисполняющий preview v8-runner, revision-fenced apply и независимую квитанцию файла, а терминальный `client.run` запускает клиента сразу с необязательным превью и без забора (отвечают типизированным `data`)
+**Результат сейчас:** Вызов без `op` до source admission возвращает закрытый словарь направленных runtime-намерений, каждому из которых нужна платформа или база; `cf.export`, `cf.import`, `infobase.export`, `infobase.import` и `client.run` реализованы; выгрузки и загрузки используют неисполняющий preview v8-runner, revision-fenced apply и независимую квитанцию файла, а терминальный `client.run` запускает клиента сразу с необязательным превью и без забора (отвечают типизированным `data`)
 
-**Целевой контракт:** Подключать остальные пять направленных операций через preview/apply, capability-specific admission и закрытые provider-контракты
+**Целевой контракт:** Подключать остальные четыре направленные операции через preview/apply, capability-specific admission и закрытые provider-контракты
 
 **Сценарии:**
 

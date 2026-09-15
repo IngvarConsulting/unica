@@ -7,6 +7,7 @@ pub(crate) mod runtime_v5;
 pub(crate) mod server;
 pub(crate) mod terminal_codec_v5;
 mod v13_call_graph;
+mod v13_cf_import;
 mod v13_client_run;
 mod v13_documentation;
 mod v13_infobase_exports;

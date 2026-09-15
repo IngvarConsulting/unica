@@ -141,6 +141,15 @@ impl RunOperation {
                 },
                 "required": ["output"]
             })),
+            RunIntent::CfImport => Some(json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "input": {"type": "string", "description": "Workspace-relative .cf file to import as the main configuration, or .cfe file to import as an extension."},
+                    "extension": {"type": "string", "description": "Extension name the infobase will know the .cfe by; required for .cfe and refused for .cf."}
+                },
+                "required": ["input"]
+            })),
             RunIntent::InfobaseImport => Some(json!({
                 "type": "object",
                 "additionalProperties": false,
@@ -392,6 +401,7 @@ fn run_dictionary() -> Vec<RunOperation> {
         implemented: matches!(
             intent,
             RunIntent::CfExport
+                | RunIntent::CfImport
                 | RunIntent::InfobaseExport
                 | RunIntent::InfobaseImport
                 | RunIntent::ClientRun
@@ -786,11 +796,12 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 "cf.export",
+                "cf.import",
                 "infobase.export",
                 "infobase.import",
                 "client.run"
             ],
-            "реализованы обе вертикали выгрузки, парная к ним загрузка и терминальный запуск клиента; проектный файл в словаре не числится вовсе"
+            "реализованы обе пары export/import на слоях cf и infobase и терминальный запуск клиента; проектный файл в словаре не числится вовсе"
         );
 
         let output = &catalog.result_envelope_schema;
@@ -913,11 +924,36 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 "cf.export",
+                "cf.import",
                 "infobase.export",
                 "infobase.import",
                 "client.run"
             ],
-            "реализованы обе вертикали выгрузки, парная к ним загрузка и терминальный запуск клиента; проектный файл в словаре не числится вовсе"
+            "реализованы обе пары export/import на слоях cf и infobase и терминальный запуск клиента; проектный файл в словаре не числится вовсе"
+        );
+    }
+
+    #[test]
+    fn v13_cf_import_is_implemented_with_a_closed_input_and_extension() {
+        let catalog =
+            catalog_for(SurfaceRelease::V13).expect("v0.13 catalog must be test-loadable");
+        let import = catalog
+            .run_dictionary
+            .iter()
+            .find(|operation| operation.intent == RunIntent::CfImport)
+            .expect("cf.import belongs to the v0.13 dictionary");
+        assert!(import.implemented);
+        assert_eq!(import.execution(), "previewApply");
+        assert_eq!(import.effects(), &["infobase"]);
+        let schema = import.args_schema().expect("cf.import publishes its args");
+        assert_eq!(schema["additionalProperties"], false);
+        assert_eq!(schema["required"], json!(["input"]));
+        assert_eq!(
+            schema["properties"]
+                .as_object()
+                .map(|properties| properties.keys().cloned().collect::<Vec<_>>()),
+            Some(vec!["input".to_string(), "extension".to_string()]),
+            "режим один — load; merge с внешним файлом настроек за словарём"
         );
     }
 

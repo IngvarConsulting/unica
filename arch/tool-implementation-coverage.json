@@ -94,7 +94,7 @@
     },
     "unica.run": {
       "status": "partial",
-      "reason": "The closed directional nine-operation dictionary, configuration-package export, DT export, DT restore and the terminal client launch are implemented; the exports and the restore go through non-executing preview and revision-fenced apply, and the other five run operations remain unsupported.",
+      "reason": "The closed directional nine-operation dictionary, configuration-package export and import, DT export, DT restore and the terminal client launch are implemented; the exports and both imports go through non-executing preview and revision-fenced apply, and the other four run operations remain unsupported.",
       "evidence": [{
         "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
         "test": "production_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"
@@ -148,9 +148,21 @@
       }]
     },
     "cf.import": {
-      "status": "unsupported",
-      "reason": "Configuration package loading has not been connected to the v0.13 run adapter.",
-      "evidence": []
+      "status": "supported",
+      "reason": "Importing a workspace CF or CFE into the infobase is implemented as previewApply over v8-runner load: the preview names the source file, the target kind and the fixed load mode without applying anything, apply is fenced by ifRev built from the project file and the file digest, the source must stay intact through the load, and the infobase state is reported as attested by the provider.",
+      "evidence": [{
+        "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
+        "test": "v5_cf_import_prepares_before_source_admission_and_keeps_the_revision_gate"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/daemon/v13_cf_import.rs",
+        "test": "preview_names_the_source_and_the_target_without_touching_the_infobase"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/daemon/v13_cf_import.rs",
+        "test": "apply_repeats_the_preview_and_attributes_the_infobase_state_to_the_provider"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/daemon/v13_cf_import.rs",
+        "test": "apply_refuses_a_provider_that_touched_the_source_or_reported_nothing_applied"
+      }]
     },
     "infobase.export": {
       "status": "supported",

@@ -371,6 +371,13 @@ pub(super) enum V5ActorBoundCanonicalInvocation {
         launch: Arc<super::v13_client_run::PreparedClientRun>,
         workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
     },
+    /// Загрузка CF/CFE в базу: previewApply с забором, как выгрузки,
+    /// готовится до admission PlatformXml и известна длинной по внешнему
+    /// процессу.
+    CfImport {
+        import: Arc<super::v13_cf_import::PreparedCfImport>,
+        workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
+    },
     Documentation {
         search: Arc<super::v13_documentation::PreparedDocumentationSearch>,
         workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
@@ -389,6 +396,9 @@ pub(super) enum V5PreparedCanonicalInvocation {
     },
     ClientRun {
         launch: Arc<super::v13_client_run::PreparedClientRun>,
+    },
+    CfImport {
+        import: Arc<super::v13_cf_import::PreparedCfImport>,
     },
     Documentation {
         search: Arc<super::v13_documentation::PreparedDocumentationSearch>,
@@ -514,6 +524,19 @@ impl V5CanonicalInvocationRuntime {
                 });
             }
         }
+        match super::v13_cf_import::prepare(&request) {
+            super::v13_cf_import::Preparation::NotApplicable => {}
+            super::v13_cf_import::Preparation::Rejected(result) => {
+                return Err(V5CanonicalPrepareError::Rejected(result))
+            }
+            super::v13_cf_import::Preparation::Ready(import) => {
+                let workspace_identity_hash = import.workspace_identity_hash();
+                return Ok(V5ActorBoundCanonicalInvocation::CfImport {
+                    import,
+                    workspace_identity_hash,
+                });
+            }
+        }
         match super::v13_documentation::prepare(&request) {
             super::v13_documentation::Preparation::NotApplicable => {}
             super::v13_documentation::Preparation::Rejected(result) => {
@@ -556,7 +579,7 @@ impl V5ActorBoundCanonicalInvocation {
     pub(super) fn response_deadline(&self) -> Option<InvocationResponseDeadline> {
         match self {
             Self::Workspace { invocation, .. } => Some(invocation.response_deadline().clone()),
-            Self::InfobaseExport { .. } | Self::ClientRun { .. } => None,
+            Self::InfobaseExport { .. } | Self::ClientRun { .. } | Self::CfImport { .. } => None,
             // Справка не известна длинной: локальное попадание отвечает
             // сразу, сетевое доходит до седьмой секунды. Значит у неё тот же
             // cutoff, что у чтений, — захваченный при bind.
@@ -574,6 +597,10 @@ impl V5ActorBoundCanonicalInvocation {
                 ..
             }
             | Self::ClientRun {
+                workspace_identity_hash,
+                ..
+            }
+            | Self::CfImport {
                 workspace_identity_hash,
                 ..
             }
@@ -603,6 +630,7 @@ impl V5ActorBoundCanonicalInvocation {
             Self::ClientRun { launch, .. } => {
                 Ok(V5PreparedCanonicalInvocation::ClientRun { launch })
             }
+            Self::CfImport { import, .. } => Ok(V5PreparedCanonicalInvocation::CfImport { import }),
             Self::Documentation { search, .. } => {
                 Ok(V5PreparedCanonicalInvocation::Documentation { search })
             }
@@ -616,7 +644,9 @@ impl V5PreparedCanonicalInvocation {
             ExecutionClass::KnownLong(KnownLongReason::ExternalProcess);
         match self {
             Self::Workspace { class, .. } => class,
-            Self::InfobaseExport { .. } | Self::ClientRun { .. } => &INFOBASE_EXPORT_CLASS,
+            Self::InfobaseExport { .. } | Self::ClientRun { .. } | Self::CfImport { .. } => {
+                &INFOBASE_EXPORT_CLASS
+            }
             Self::Documentation { .. } => &ExecutionClass::InlineCandidate,
         }
     }
@@ -647,6 +677,7 @@ impl V5PreparedCanonicalInvocation {
             }
             Self::InfobaseExport { export } => Ok(export.execute(cancellation)),
             Self::ClientRun { launch } => Ok(launch.execute(cancellation)),
+            Self::CfImport { import } => Ok(import.execute(cancellation)),
             Self::Documentation { search } => Ok(search.execute(cancellation)),
         }
     }
@@ -6673,6 +6704,77 @@ struct ActorLogicalReadLease {"#,
             preparations.load(Ordering::SeqCst),
             0,
             "client.run must not enter the PlatformXml service"
+        );
+    }
+
+    #[test]
+    fn v5_cf_import_prepares_before_source_admission_and_keeps_the_revision_gate() {
+        // A-5 зонтика #871: загрузка CF/CFE в базу — previewApply с забором,
+        // готовится до admission PlatformXml и известна длинной по внешнему
+        // процессу; применение без `ifRev` отказывает словом `bad_value`.
+        let workspace = tempfile::tempdir().expect("temporary cf.import workspace");
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\ninfobase:\n  connection: \"File=.build/infobase\"\n",
+        )
+        .expect("write infobase-only workspace descriptor");
+        std::fs::create_dir_all(workspace.path().join("dist")).expect("dist");
+        std::fs::write(workspace.path().join("dist/main.cf"), b"cf bytes").expect("cf");
+        let preparations = Arc::new(AtomicUsize::new(0));
+        let runtime = V5CanonicalInvocationRuntime::new(
+            Arc::new(CountingPrepareService {
+                preparations: Arc::clone(&preparations),
+            }),
+            Arc::new(TokioClock),
+        );
+        let request = |arguments: serde_json::Value| {
+            InvocationRequest::new(
+                ToolIdentity::Run,
+                arguments,
+                std::fs::canonicalize(workspace.path())
+                    .expect("canonical workspace")
+                    .to_string_lossy(),
+                7_000,
+            )
+            .expect("valid cf.import request")
+        };
+
+        for arguments in [
+            serde_json::json!({"op": "cf.import", "args": {"input": "dist/main.cf"}, "dryRun": true}),
+            serde_json::json!({"op": "cf.import", "args": {"input": "dist/main.cf"}, "dryRun": false, "ifRev": "unica-cf-import-sha256-v1:test"}),
+        ] {
+            let bound = runtime
+                .bind(request(arguments))
+                .expect("cf.import binds without a PlatformXml source set");
+            assert!(matches!(
+                bound,
+                V5ActorBoundCanonicalInvocation::CfImport { .. }
+            ));
+            let prepared = bound.prepare().expect("cf.import preparation");
+            assert_eq!(
+                prepared.execution_class(),
+                &ExecutionClass::KnownLong(KnownLongReason::ExternalProcess)
+            );
+        }
+
+        let unfenced = match runtime.bind(request(serde_json::json!({
+            "op": "cf.import",
+            "args": {"input": "dist/main.cf"},
+            "dryRun": false,
+        }))) {
+            Err(V5CanonicalPrepareError::Rejected(result)) => result,
+            Ok(_) => panic!("an apply without ifRev was accepted"),
+            Err(other) => panic!("apply without ifRev returned infrastructure failure: {other:?}"),
+        };
+        assert_eq!(unfenced.diagnostics[0]["code"], "bad_value");
+        assert!(unfenced.diagnostics[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("requires ifRev"));
+        assert_eq!(
+            preparations.load(Ordering::SeqCst),
+            0,
+            "cf.import must not enter the PlatformXml service"
         );
     }
 
