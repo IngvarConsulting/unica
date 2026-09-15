@@ -7,7 +7,9 @@ there is no argument that points a call at another file.
 Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
-превью исполнением не является. Не обходи контракт прямым runner-ом.
+выбирай только операцию с `implemented: true` и не выдумывай аргументов
+записи с `argsSchema: null`; превью исполнением не является. Не обходи
+контракт прямым runner-ом.
 
 For a new repository with no workspace, call `unica.view {}` first. Оно
 работает и без проектного файла: отвечает `config.state: "autodetected"`,
@@ -57,7 +59,7 @@ connections also require the documented `infobase.dbms` block.
 
 `v8project.local.yaml` is loaded automatically next to the primary config. It
 may override local-only `workPath`, `infobase`, `tools`, `tests`, and `mcp`
-settings. It cannot be passed as `config` and must not redefine shared
+settings. It is not selectable by a call and must not redefine shared
 `source-set`, `format`, `builder`, or `execution_timeout`.
 
 ## Strict platform resolution
@@ -176,7 +178,7 @@ or `v8-runner` would execute; other Unix hosts fail closed as well.
 ## Skill Rules
 
 - Do not create or read any legacy JSON project registry.
-- Resolve the active config from the explicit MCP `config` argument when present; otherwise use `./v8project.yaml`.
+- The active config is `./v8project.yaml` at the workspace root; no `unica` call takes a `config` argument.
 - If the config is missing, read the recommended content from `setup` in
   `unica.view {}` and write `v8project.yaml` yourself: no tool creates it.
 - Prefer `source-set` names over ad hoc source directories.

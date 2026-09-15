@@ -11,7 +11,9 @@ description: "Оптимизация запросов 1С и СКД. Испол�
 - Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
-превью исполнением не является. Не обходи контракт прямым runner-ом.
+выбирай только операцию с `implemented: true` и не выдумывай аргументов
+записи с `argsSchema: null`; превью исполнением не является. Не обходи
+контракт прямым runner-ом.
 - Use `unica.view {}` if the source-set or format is unclear.
 - Do not call internal analyzer, standards, runtime, or package adapters directly. They are hidden behind MCP `unica`.
 

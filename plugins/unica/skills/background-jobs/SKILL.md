@@ -11,7 +11,9 @@ description: "Фоновые и регламентные задания 1С. И�
 - Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
-превью исполнением не является. Не обходи контракт прямым runner-ом.
+выбирай только операцию с `implemented: true` и не выдумывай аргументов
+записи с `argsSchema: null`; превью исполнением не является. Не обходи
+контракт прямым runner-ом.
 - Use `unica.view` on the role node when job behavior depends on user context or permissions.
 - Do not call internal runtime, analyzer, standards, or package adapters directly. They are hidden behind MCP `unica`.
 

@@ -11,7 +11,9 @@ description: "Разделение данных 1С. Используй когд
 - Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
-превью исполнением не является. Не обходи контракт прямым runner-ом.
+выбирай только операцию с `implemented: true` и не выдумывай аргументов
+записи с `argsSchema: null`; превью исполнением не является. Не обходи
+контракт прямым runner-ом.
 - Use `unica.view` on the schema node when reports/DCS queries may bypass tenant filters.
 - Do not call internal metadata, analyzer, standards, runtime, or package adapters directly. They are hidden behind MCP `unica`.
 

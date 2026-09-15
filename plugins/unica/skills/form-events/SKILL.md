@@ -11,7 +11,9 @@ description: "Модуль управляемой формы 1С. Использ
 - Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
-превью исполнением не является. Не обходи контракт прямым runner-ом.
+выбирай только операцию с `implemented: true` и не выдумывай аргументов
+записи с `argsSchema: null`; превью исполнением не является. Не обходи
+контракт прямым runner-ом.
 - Use `unica.docs` with `source: "development-standard"` for the standards about form modules: 439, 455, 487, 492, 642, 724, 741, and diagnostics АПК:100, АПК:526, АПК:547, АПК:1410, АПК:1412, BSLLS:SeveralCompilerDirectives, BSLLS:ServerSideExportFormMethod. These are standards, not evidence of runtime behavior; confirm the wording before citing one.
 - Do not call internal analyzer, runtime, standards, or package adapters directly. They are hidden behind MCP `unica`.
 

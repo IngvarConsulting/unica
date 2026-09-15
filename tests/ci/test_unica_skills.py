@@ -15,16 +15,16 @@ MIN_RUNTIME_GUIDANCE_DOCS = 31
 # dictionary implements. Syntax lives in `unica.check`, test runs and EPF/ERF
 # publication are outside the v0.13 surface, so their examples are gone.
 MIN_RUNTIME_EXECUTE_EXAMPLES = 2
+# The allowlist is the registry's own truth, so a dictionary change cannot
+# leave the guard checking examples against a stale set.
 RUN_DICTIONARY_OPERATIONS = {
-    "infobase.create",
-    "infobase.export",
-    "infobase.import",
-    "cf.export",
-    "cf.import",
-    "source.export",
-    "source.import",
-    "artifact.build",
-    "client.run",
+    name
+    for name, entry in json.loads(
+        (REPO_ROOT / "arch" / "tool-implementation-coverage.json").read_text(
+            encoding="utf-8"
+        )
+    )["runOperations"].items()
+    if entry.get("status") == "supported"
 }
 RETIRED_RUNTIME_NAMES = re.compile(
     r"unica\.runtime\.|unica\.build\.|runtime_risk_|runtime_operation_unbounded|"
@@ -166,12 +166,33 @@ def indented_code_blocks(text: str) -> list[str]:
     return blocks
 
 
+def runtime_arguments_have_if_rev(block: str) -> bool:
+    """`ifRev` counts only inside `params.arguments`; a malformed block is
+    judged by its text, because it cannot be judged by its shape."""
+    try:
+        payload = json.loads(decode_active_json_unicode_escapes(block))
+    except json.JSONDecodeError:
+        return '"ifRev"' in block
+    candidates = payload if isinstance(payload, list) else [payload]
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        arguments = candidate.get("params", {}).get("arguments", {})
+        if not isinstance(arguments, dict):
+            return False
+        if arguments.get("dryRun") is False and not (
+            isinstance(arguments.get("ifRev"), str) and arguments["ifRev"]
+        ):
+            return False
+    return True
+
+
 def reject_indented_applied_runtime_examples(text: str) -> None:
     for block_number, block in enumerate(indented_code_blocks(text), start=1):
         if (
             block_mentions_runtime_tool(block)
             and DRY_RUN_FALSE.search(block)
-            and '"ifRev"' not in block
+            and not runtime_arguments_have_if_rev(block)
         ):
             raise ValueError(
                 f"indented runtime JSON example #{block_number} applies without ifRev"
@@ -1977,6 +1998,19 @@ class UnicaSkillRoutingTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "indented runtime JSON example"):
             runtime_guidance_document(example)
+
+    def test_indented_runtime_example_needs_if_rev_inside_arguments(self) -> None:
+        outside = (
+            '    {"ifRev": "note", "params": {"name": "unica.run", '
+            '"arguments": {"op": "cf.import", "dryRun": false}}}\n'
+        )
+        with self.assertRaisesRegex(ValueError, "applies without ifRev"):
+            reject_indented_applied_runtime_examples(outside)
+        inside = (
+            '    {"params": {"name": "unica.run", "arguments": '
+            '{"op": "cf.import", "dryRun": false, "ifRev": "unica-cf-import-sha256-v1:abc"}}}\n'
+        )
+        reject_indented_applied_runtime_examples(inside)
 
     def test_runtime_guidance_collection_skips_parse_failures_without_stale_payloads(
         self,

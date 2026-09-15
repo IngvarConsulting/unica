@@ -15,7 +15,9 @@ with object-specific info tools, source search, syntax checks, and focused tests
 Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
-превью исполнением не является. Не обходи контракт прямым runner-ом.
+выбирай только операцию с `implemented: true` и не выдумывай аргументов
+записи с `argsSchema: null`; превью исполнением не является. Не обходи
+контракт прямым runner-ом.
 
 - Inspect metadata shape with `unica.*.info` tools before changing code that
   depends on objects, forms, roles, or reports.

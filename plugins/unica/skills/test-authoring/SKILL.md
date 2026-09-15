@@ -11,7 +11,9 @@ description: "Проектирование тестов 1С: YaXUnit и Vanessa 
 - Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
-превью исполнением не является. Не обходи контракт прямым runner-ом.
+выбирай только операцию с `implemented: true` и не выдумывай аргументов
+записи с `argsSchema: null`; превью исполнением не является. Не обходи
+контракт прямым runner-ом.
 - Use `unica.docs` with `source: "development-standard"` only when test design depends on a `development-standard`. Expected platform API or mechanics require `unica.docs` with `source: "platform-help"`.
 - Do not call internal runtime, analyzer, or package adapters directly. They are hidden behind MCP `unica`.
 
@@ -21,7 +23,7 @@ description: "Проектирование тестов 1С: YaXUnit и Vanessa 
 2. Search existing tests and fixtures with `unica.code.search`; follow local naming, setup, teardown, and assertion style.
 3. Prefer YaXUnit for module/unit-level BSL behavior and Vanessa Automation for UI/business scenarios that require a client.
 4. Build the smallest stable fixture. Avoid dependence on production data unless the user explicitly requests an integration test.
-5. Check syntax with `unica.check` after adding test code; a YaXUnit or Vanessa Automation run is not on the v0.13 surface, so it is not launched from here.
+5. Check the new test module with `unica.check {at}` after adding test code (`unica.check {}` alone judges workspace readiness); a YaXUnit or Vanessa Automation run is not on the v0.13 surface, so it is not launched from here.
 6. Report that runtime verification was not performed. If separate test evidence is supplied, report the exact failing test, expected/actual behavior, and whether the failure is test setup or product behavior.
 
 ## Verification gate
@@ -51,7 +53,9 @@ description: "Проектирование тестов 1С: YaXUnit и Vanessa 
   "method": "tools/call",
   "params": {
     "name": "unica.check",
-    "arguments": {}
+    "arguments": {
+      "at": "main:CommonModule.ТестДокументаЗаказКлиента"
+    }
   }
 }
 ```

@@ -14,7 +14,9 @@ server deployment skill surface; runtime setup must stay behind MCP `unica`.
 Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
-превью исполнением не является. Не обходи контракт прямым runner-ом.
+выбирай только операцию с `implemented: true` и не выдумывай аргументов
+записи с `argsSchema: null`; превью исполнением не является. Не обходи
+контракт прямым runner-ом.
 
 - `autonomous-server` prepares and analyzes the isolated runtime contour.
 - `unica.run` prepares the contour step by step: `infobase.create`,

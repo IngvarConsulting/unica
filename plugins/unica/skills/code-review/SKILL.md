@@ -11,7 +11,9 @@ description: "Код-ревью BSL и изменений 1С. Использу�
 - Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
-превью исполнением не является. Не обходи контракт прямым runner-ом.
+выбирай только операцию с `implemented: true` и не выдумывай аргументов
+записи с `argsSchema: null`; превью исполнением не является. Не обходи
+контракт прямым runner-ом.
 - Use `unica.view` at the object's logical address before reviewing code that depends on metadata shape, form structure, rights, DCS, or interfaces; a spreadsheet template is read by `unica.mxl.info`.
 - Do not call internal analyzer, standards, runtime, or package adapters directly. They are hidden behind MCP `unica`.
 

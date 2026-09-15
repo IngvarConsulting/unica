@@ -11,7 +11,9 @@ description: "Безопасная аутентификация и крипто�
 - Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
-превью исполнением не является. Не обходи контракт прямым runner-ом.
+выбирай только операцию с `implemented: true` и не выдумывай аргументов
+записи с `argsSchema: null`; превью исполнением не является. Не обходи
+контракт прямым runner-ом.
 - Use integration and autonomous-server skills when auth behavior must be verified through HTTP service or web-client runtime.
 - Do not call internal analyzer, standards, runtime, or package adapters directly. They are hidden behind MCP `unica`.
 
