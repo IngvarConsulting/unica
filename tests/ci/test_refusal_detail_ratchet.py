@@ -23,13 +23,20 @@ SOURCE_ROOT = REPO_ROOT / "crates" / "unica-coder" / "src"
 UNDETAILED_PROVIDER_UNAVAILABLE_CEILING = 157
 
 TEST_TAIL = re.compile(r"#\[cfg\(test\)\]\s*(?:pub(?:\(crate\))?\s+)?mod\s+\w+")
+STRING_LITERAL = re.compile(r'"(?:\\.|[^"\\])*"')
+LINE_COMMENT = re.compile(r"//[^\n]*")
 
 
 def production_text(path: Path) -> str:
-    """Текст файла без хвостового тестового модуля."""
+    """Код файла: без хвостового тестового модуля, строковых литералов и
+    комментариев — упоминание кода в прозе или в тексте сообщения местом
+    отказа не является."""
     text = path.read_text(encoding="utf-8")
     match = TEST_TAIL.search(text)
-    return text[: match.start()] if match else text
+    if match:
+        text = text[: match.start()]
+    text = STRING_LITERAL.sub('""', text)
+    return LINE_COMMENT.sub("", text)
 
 
 def undetailed_sites() -> dict[str, int]:
@@ -62,12 +69,21 @@ class RefusalDetailRatchetTests(unittest.TestCase):
             f"UNDETAILED_PROVIDER_UNAVAILABLE_CEILING до {total}",
         )
 
-    def test_production_text_drops_only_the_test_tail(self) -> None:
-        sample = "fn a() {}\n#[cfg(test)]\nmod tests {\n    fn b() {}\n}\n"
+    def test_production_text_keeps_code_and_drops_tests_strings_and_comments(
+        self,
+    ) -> None:
+        sample = (
+            "// RefusalCode::ProviderUnavailable in a comment\n"
+            'fn a() -> &str { "RefusalCode::ProviderUnavailable in a string" }\n'
+            "fn b() { let _ = RefusalCode::ProviderUnavailable; } // trailing\n"
+            "#[cfg(test)]\nmod tests {\n    fn c() { RefusalCode::ProviderUnavailable }\n}\n"
+        )
         path = REPO_ROOT / "tests" / "ci" / "_ratchet_sample.rs"
         path.write_text(sample, encoding="utf-8")
         try:
-            self.assertEqual(production_text(path), "fn a() {}\n")
+            self.assertEqual(
+                production_text(path).count("RefusalCode::ProviderUnavailable"), 1
+            )
         finally:
             path.unlink()
 
