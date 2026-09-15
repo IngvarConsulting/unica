@@ -1247,6 +1247,44 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("could not be verified"));
+
+        // Цель есть, но раннер в неё ничего не положил: квитанция пустая.
+        let root = workspace();
+        let revision = run(
+            root.path(),
+            &prepared(root.path(), ExportMode::Full, None, None, true, None),
+            &SequenceRunner::new(vec![process(
+                envelope(root.path(), "main", "FULL", None, false),
+                true,
+            )]),
+        )
+        .rev
+        .unwrap();
+        std::fs::create_dir(root.path().join("main")).unwrap();
+        let runner = SequenceRunner::new(vec![
+            process(envelope(root.path(), "main", "FULL", None, false), true),
+            process(envelope(root.path(), "main", "FULL", None, true), true),
+        ]);
+        let result = run(
+            root.path(),
+            &prepared(
+                root.path(),
+                ExportMode::Full,
+                None,
+                None,
+                false,
+                Some(revision),
+            ),
+            &runner,
+        );
+        assert_eq!(
+            result.diagnostics[0]["code"], "invalid_result",
+            "{result:?}"
+        );
+        assert!(result.diagnostics[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("the target source set is empty"));
     }
 
     #[test]
