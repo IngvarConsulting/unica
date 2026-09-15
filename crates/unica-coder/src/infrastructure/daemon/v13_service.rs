@@ -1606,9 +1606,12 @@ fn run_bsl_diagnostics(
             // «проверено и чисто» — худшее направление ошибки для инструмента
             // проверки.
             if !result.ok || result.state != DiagnosticResultState::Completed {
-                return Err(Box::new(error_result_detailed(
+                // Прогон начался и не завершился — это не отсутствие
+                // поставщика: уточнения у такого случая нет, и код отвечает
+                // своим умолчанием.
+                return Err(Box::new(error_result(
                     Some(address.to_string()),
-                    RefusalDetail::ProviderAbsent,
+                    RefusalCode::ProviderUnavailable,
                     "BSL analysis did not complete, so the module is unproven",
                 )));
             }
@@ -1631,11 +1634,27 @@ fn run_bsl_diagnostics(
             });
             Ok((passed, findings))
         }
-        Err(error) => Err(Box::new(error_result_detailed(
-            Some(address.to_string()),
-            RefusalDetail::ProviderAbsent,
-            format!("{}: {}", error.code, error.message),
-        ))),
+        // Координатор отказывает по разным причинам, и уточнение получает
+        // только та, которую словарь уточнений называет: «подходящего
+        // поставщика нет». Отмена — свой код, а не отказ провайдера; всё
+        // остальное отвечает умолчанием, а не выдуманным уточнением.
+        Err(error) => Err(Box::new(match error.code {
+            "cancelled" => error_result(
+                Some(address.to_string()),
+                RefusalCode::Cancelled,
+                format!("{}: {}", error.code, error.message),
+            ),
+            "no_applicable_provider" => error_result_detailed(
+                Some(address.to_string()),
+                RefusalDetail::ProviderAbsent,
+                format!("{}: {}", error.code, error.message),
+            ),
+            _ => error_result(
+                Some(address.to_string()),
+                RefusalCode::ProviderUnavailable,
+                format!("{}: {}", error.code, error.message),
+            ),
+        })),
     }
 }
 
