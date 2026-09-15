@@ -149,6 +149,14 @@ impl RunOperation {
                 "properties": {},
                 "required": []
             })),
+            RunIntent::SourceImport => Some(json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "sourceSet": {"type": "string", "description": "Name of one source set declared in v8project.yaml; omit to import every declared source set."},
+                    "fullRebuild": {"type": "boolean", "default": false, "description": "Clear the runner's change cache and import everything instead of the changed files only."}
+                }
+            })),
             RunIntent::CfImport => Some(json!({
                 "type": "object",
                 "additionalProperties": false,
@@ -409,6 +417,7 @@ fn run_dictionary() -> Vec<RunOperation> {
         implemented: matches!(
             intent,
             RunIntent::InfobaseCreate
+                | RunIntent::SourceImport
                 | RunIntent::CfExport
                 | RunIntent::CfImport
                 | RunIntent::InfobaseExport
@@ -805,13 +814,14 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 "infobase.create",
+                "source.import",
                 "cf.export",
                 "cf.import",
                 "infobase.export",
                 "infobase.import",
                 "client.run"
             ],
-            "реализованы создание базы, обе пары export/import на слоях cf и infobase и терминальный запуск клиента; проектный файл в словаре не числится вовсе"
+            "реализованы создание базы, импорт исходников, обе пары export/import на слоях cf и infobase и терминальный запуск клиента; проектный файл в словаре не числится вовсе"
         );
 
         let output = &catalog.result_envelope_schema;
@@ -934,14 +944,40 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 "infobase.create",
+                "source.import",
                 "cf.export",
                 "cf.import",
                 "infobase.export",
                 "infobase.import",
                 "client.run"
             ],
-            "реализованы создание базы, обе пары export/import на слоях cf и infobase и терминальный запуск клиента; проектный файл в словаре не числится вовсе"
+            "реализованы создание базы, импорт исходников, обе пары export/import на слоях cf и infobase и терминальный запуск клиента; проектный файл в словаре не числится вовсе"
         );
+    }
+
+    #[test]
+    fn v13_source_import_is_implemented_with_closed_source_set_and_full_rebuild() {
+        let catalog =
+            catalog_for(SurfaceRelease::V13).expect("v0.13 catalog must be test-loadable");
+        let import = catalog
+            .run_dictionary
+            .iter()
+            .find(|operation| operation.intent == RunIntent::SourceImport)
+            .expect("source.import belongs to the v0.13 dictionary");
+        assert!(import.implemented);
+        assert_eq!(import.execution(), "previewApply");
+        assert_eq!(import.effects(), &["infobase"]);
+        let schema = import
+            .args_schema()
+            .expect("source.import publishes its args");
+        assert_eq!(schema["additionalProperties"], false);
+        assert_eq!(
+            schema["properties"]
+                .as_object()
+                .map(|properties| properties.keys().cloned().collect::<Vec<_>>()),
+            Some(vec!["sourceSet".to_string(), "fullRebuild".to_string()])
+        );
+        assert!(schema.get("required").is_none());
     }
 
     #[test]

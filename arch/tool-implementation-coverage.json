@@ -94,7 +94,7 @@
     },
     "unica.run": {
       "status": "partial",
-      "reason": "The closed directional nine-operation dictionary, infobase creation, configuration-package export and import, DT export, DT restore and the terminal client launch are implemented; creation, the exports and both imports go through non-executing preview and revision-fenced apply, and the other three run operations remain unsupported.",
+      "reason": "The closed directional nine-operation dictionary, infobase creation, source import, configuration-package export and import, DT export, DT restore and the terminal client launch are implemented; creation, the exports and the three imports go through non-executing preview and revision-fenced apply, and the other two run operations remain unsupported.",
       "evidence": [{
         "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
         "test": "production_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"
@@ -134,9 +134,21 @@
       }]
     },
     "source.import": {
-      "status": "unsupported",
-      "reason": "Infobase build execution has not been connected to the v0.13 run adapter.",
-      "evidence": []
+      "status": "supported",
+      "reason": "Importing workspace sources into the infobase is implemented as previewApply over v8-runner build: the preview plans one step per declared source set (or the one named by sourceSet) with the runner's full or partial mode without dispatching Designer, apply is fenced by ifRev built from the project file, the declared composition and the planned modes, a different composition or mode at apply is refused as a concurrent change, and the infobase state is reported as attested by the provider.",
+      "evidence": [{
+        "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
+        "test": "v5_source_import_prepares_before_source_admission_and_keeps_the_revision_gate"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs",
+        "test": "preview_plans_every_declared_source_set_with_its_mode_without_dispatching_designer"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs",
+        "test": "apply_repeats_the_preview_and_attributes_the_infobase_state_to_the_provider"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs",
+        "test": "apply_refuses_a_stale_revision_and_a_plan_that_changed_underneath"
+      }]
     },
     "source.export": {
       "status": "unsupported",

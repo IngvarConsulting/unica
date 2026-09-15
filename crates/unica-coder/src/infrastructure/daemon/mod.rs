@@ -16,6 +16,7 @@ mod v13_read_modes;
 mod v13_run_dictionary;
 #[allow(dead_code)]
 mod v13_service;
+mod v13_source_import;
 mod v13_workspace_bootstrap;
 
 use identity::CoreIdentity;
@@ -318,7 +319,7 @@ mod tests {
         let owner = daemon.owner();
         let request = build_request(
             workspace.path(),
-            serde_json::json!({"op": "source.import", "args": {}}),
+            serde_json::json!({"op": "artifact.build", "args": {}}),
         );
 
         let task_id = daemon.task_id(&owner, &request);
@@ -368,7 +369,7 @@ mod tests {
             assert_eq!(invocation.tool(), ToolIdentity::Run);
             assert_eq!(
                 invocation.arguments(),
-                &serde_json::json!({"op": "source.import", "args": {}})
+                &serde_json::json!({"op": "artifact.build", "args": {}})
                     .as_object()
                     .unwrap()
                     .clone()
@@ -442,7 +443,7 @@ mod tests {
         ] {
             let request = build_request(
                 workspace,
-                serde_json::json!({"op": "source.import", "args": {}}),
+                serde_json::json!({"op": "artifact.build", "args": {}}),
             );
             let task_id = daemon.task_id(&owner, &request);
             let (actor_hash, bytes) = observed_wait
@@ -478,7 +479,7 @@ mod tests {
         let request = build_request(
             &workspace,
             serde_json::json!({
-                "op": "source.import",
+                "op": "artifact.build",
                 "args": {"ambientRoot": "/tmp/foreign"}
             }),
         );

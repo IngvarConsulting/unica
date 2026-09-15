@@ -384,6 +384,12 @@ pub(super) enum V5ActorBoundCanonicalInvocation {
         create: Arc<super::v13_infobase_create::PreparedInfobaseCreate>,
         workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
     },
+    /// Импорт исходников в базу: previewApply с забором, известен длинным по
+    /// внешнему процессу.
+    SourceImport {
+        import: Arc<super::v13_source_import::PreparedSourceImport>,
+        workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
+    },
     Documentation {
         search: Arc<super::v13_documentation::PreparedDocumentationSearch>,
         workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
@@ -408,6 +414,9 @@ pub(super) enum V5PreparedCanonicalInvocation {
     },
     InfobaseCreate {
         create: Arc<super::v13_infobase_create::PreparedInfobaseCreate>,
+    },
+    SourceImport {
+        import: Arc<super::v13_source_import::PreparedSourceImport>,
     },
     Documentation {
         search: Arc<super::v13_documentation::PreparedDocumentationSearch>,
@@ -559,6 +568,19 @@ impl V5CanonicalInvocationRuntime {
                 });
             }
         }
+        match super::v13_source_import::prepare(&request) {
+            super::v13_source_import::Preparation::NotApplicable => {}
+            super::v13_source_import::Preparation::Rejected(result) => {
+                return Err(V5CanonicalPrepareError::Rejected(result))
+            }
+            super::v13_source_import::Preparation::Ready(import) => {
+                let workspace_identity_hash = import.workspace_identity_hash();
+                return Ok(V5ActorBoundCanonicalInvocation::SourceImport {
+                    import,
+                    workspace_identity_hash,
+                });
+            }
+        }
         match super::v13_documentation::prepare(&request) {
             super::v13_documentation::Preparation::NotApplicable => {}
             super::v13_documentation::Preparation::Rejected(result) => {
@@ -604,7 +626,8 @@ impl V5ActorBoundCanonicalInvocation {
             Self::InfobaseExport { .. }
             | Self::ClientRun { .. }
             | Self::CfImport { .. }
-            | Self::InfobaseCreate { .. } => None,
+            | Self::InfobaseCreate { .. }
+            | Self::SourceImport { .. } => None,
             // Справка не известна длинной: локальное попадание отвечает
             // сразу, сетевое доходит до седьмой секунды. Значит у неё тот же
             // cutoff, что у чтений, — захваченный при bind.
@@ -630,6 +653,10 @@ impl V5ActorBoundCanonicalInvocation {
                 ..
             }
             | Self::InfobaseCreate {
+                workspace_identity_hash,
+                ..
+            }
+            | Self::SourceImport {
                 workspace_identity_hash,
                 ..
             }
@@ -663,6 +690,9 @@ impl V5ActorBoundCanonicalInvocation {
             Self::InfobaseCreate { create, .. } => {
                 Ok(V5PreparedCanonicalInvocation::InfobaseCreate { create })
             }
+            Self::SourceImport { import, .. } => {
+                Ok(V5PreparedCanonicalInvocation::SourceImport { import })
+            }
             Self::Documentation { search, .. } => {
                 Ok(V5PreparedCanonicalInvocation::Documentation { search })
             }
@@ -679,7 +709,8 @@ impl V5PreparedCanonicalInvocation {
             Self::InfobaseExport { .. }
             | Self::ClientRun { .. }
             | Self::CfImport { .. }
-            | Self::InfobaseCreate { .. } => &INFOBASE_EXPORT_CLASS,
+            | Self::InfobaseCreate { .. }
+            | Self::SourceImport { .. } => &INFOBASE_EXPORT_CLASS,
             Self::Documentation { .. } => &ExecutionClass::InlineCandidate,
         }
     }
@@ -712,6 +743,7 @@ impl V5PreparedCanonicalInvocation {
             Self::ClientRun { launch } => Ok(launch.execute(cancellation)),
             Self::CfImport { import } => Ok(import.execute(cancellation)),
             Self::InfobaseCreate { create } => Ok(create.execute(cancellation)),
+            Self::SourceImport { import } => Ok(import.execute(cancellation)),
             Self::Documentation { search } => Ok(search.execute(cancellation)),
         }
     }
@@ -6304,7 +6336,7 @@ struct ActorLogicalReadLease {"#,
         let owner = daemon.owner();
         let request = InvocationRequest::new(
             ToolIdentity::Run,
-            serde_json::json!({"op": "source.import", "args": {}}),
+            serde_json::json!({"op": "artifact.build", "args": {}}),
             root.to_string_lossy(),
             7_000,
         )
@@ -6894,6 +6926,75 @@ struct ActorLogicalReadLease {"#,
     }
 
     #[test]
+    fn v5_source_import_prepares_before_source_admission_and_keeps_the_revision_gate() {
+        // A-4 зонтика #871: импорт исходников в базу — previewApply с забором,
+        // готовится до admission PlatformXml и известен длинным по внешнему
+        // процессу; применение без `ifRev` отказывает `bad_value`.
+        let workspace = tempfile::tempdir().expect("temporary source.import workspace");
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\ninfobase:\n  connection: \"File=.build/infobase\"\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .expect("write a workspace descriptor with one source set");
+        let preparations = Arc::new(AtomicUsize::new(0));
+        let runtime = V5CanonicalInvocationRuntime::new(
+            Arc::new(CountingPrepareService {
+                preparations: Arc::clone(&preparations),
+            }),
+            Arc::new(TokioClock),
+        );
+        let request = |arguments: serde_json::Value| {
+            InvocationRequest::new(
+                ToolIdentity::Run,
+                arguments,
+                std::fs::canonicalize(workspace.path())
+                    .expect("canonical workspace")
+                    .to_string_lossy(),
+                7_000,
+            )
+            .expect("valid source.import request")
+        };
+
+        for arguments in [
+            serde_json::json!({"op": "source.import", "args": {}, "dryRun": true}),
+            serde_json::json!({"op": "source.import", "args": {"sourceSet": "main", "fullRebuild": true}, "dryRun": true}),
+            serde_json::json!({"op": "source.import", "args": {}, "dryRun": false, "ifRev": "unica-source-import-sha256-v1:test"}),
+        ] {
+            let bound = runtime
+                .bind(request(arguments))
+                .expect("source.import binds without a PlatformXml source set");
+            assert!(matches!(
+                bound,
+                V5ActorBoundCanonicalInvocation::SourceImport { .. }
+            ));
+            let prepared = bound.prepare().expect("source.import preparation");
+            assert_eq!(
+                prepared.execution_class(),
+                &ExecutionClass::KnownLong(KnownLongReason::ExternalProcess)
+            );
+        }
+
+        let unfenced = match runtime.bind(request(serde_json::json!({
+            "op": "source.import", "args": {},
+            "dryRun": false,
+        }))) {
+            Err(V5CanonicalPrepareError::Rejected(result)) => result,
+            Ok(_) => panic!("an apply without ifRev was accepted"),
+            Err(other) => panic!("apply without ifRev returned infrastructure failure: {other:?}"),
+        };
+        assert_eq!(unfenced.diagnostics[0]["code"], "bad_value");
+        assert!(unfenced.diagnostics[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("requires ifRev"));
+        assert_eq!(
+            preparations.load(Ordering::SeqCst),
+            0,
+            "source.import must not enter the PlatformXml service"
+        );
+    }
+
+    #[test]
     fn v5_documentation_answers_before_source_admission_without_an_actor_lease() {
         // Каталог без `v8project.yaml` и без корней 1С — тот, из которого
         // новичок и спрашивает, как рабочее пространство завести.
@@ -7186,7 +7287,7 @@ struct ActorLogicalReadLease {"#,
         let request = |root: &std::path::Path| {
             InvocationRequest::new(
                 ToolIdentity::Run,
-                serde_json::json!({"op": "source.import", "args": {}}),
+                serde_json::json!({"op": "artifact.build", "args": {}}),
                 root.to_string_lossy(),
                 7_000,
             )
@@ -7322,7 +7423,7 @@ struct ActorLogicalReadLease {"#,
             let request = |root: &std::path::Path| {
                 InvocationRequest::new(
                     ToolIdentity::Run,
-                    serde_json::json!({"op": "source.import", "args": {}}),
+                    serde_json::json!({"op": "artifact.build", "args": {}}),
                     root.to_string_lossy(),
                     7_000,
                 )
@@ -7414,7 +7515,7 @@ struct ActorLogicalReadLease {"#,
         let request = |root: &std::path::Path| {
             InvocationRequest::new(
                 ToolIdentity::Run,
-                serde_json::json!({"op": "source.import", "args": {}}),
+                serde_json::json!({"op": "artifact.build", "args": {}}),
                 root.to_string_lossy(),
                 7_000,
             )
@@ -7535,7 +7636,7 @@ struct ActorLogicalReadLease {"#,
         let request = || {
             InvocationRequest::new(
                 ToolIdentity::Run,
-                serde_json::json!({"op": "source.import", "args": {}}),
+                serde_json::json!({"op": "artifact.build", "args": {}}),
                 root.to_string_lossy(),
                 7_000,
             )
@@ -7639,7 +7740,7 @@ struct ActorLogicalReadLease {"#,
         let request = |root: &std::path::Path| {
             InvocationRequest::new(
                 ToolIdentity::Run,
-                serde_json::json!({"op": "source.import", "args": {}}),
+                serde_json::json!({"op": "artifact.build", "args": {}}),
                 root.to_string_lossy(),
                 7_000,
             )
@@ -7726,7 +7827,7 @@ struct ActorLogicalReadLease {"#,
             .bind(
                 InvocationRequest::new(
                     ToolIdentity::Run,
-                    serde_json::json!({"op": "source.import", "args": {}}),
+                    serde_json::json!({"op": "artifact.build", "args": {}}),
                     root.to_string_lossy(),
                     7_000,
                 )
@@ -7751,7 +7852,7 @@ struct ActorLogicalReadLease {"#,
             ensure_platform_xml_workspace(&root.to_string_lossy());
             InvocationRequest::new(
                 ToolIdentity::Run,
-                serde_json::json!({"op": "source.import", "args": {}}),
+                serde_json::json!({"op": "artifact.build", "args": {}}),
                 root.to_string_lossy(),
                 7_000,
             )
@@ -7823,7 +7924,7 @@ struct ActorLogicalReadLease {"#,
         let owner = daemon.owner();
         let request = InvocationRequest::new(
             ToolIdentity::Run,
-            serde_json::json!({"op": "source.import", "args": {}}),
+            serde_json::json!({"op": "artifact.build", "args": {}}),
             root.to_string_lossy(),
             7_000,
         )

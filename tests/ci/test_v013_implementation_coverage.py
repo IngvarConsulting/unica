@@ -135,10 +135,12 @@ class V013ImplementationCoverageTests(unittest.TestCase):
         ревизии (вариант А развилки A-1 в #871). Пятая — `cf.import` (A-5):
         пара к `cf.export`, забор и неизменность входного файла как у
         `infobase.import`. Шестая — `infobase.create` (A-3): без аргументов,
-        квитанция — повторное превью раннера.
+        квитанция — повторное превью раннера. Седьмая — `source.import` (A-4):
+        режимы шагов раннера как забор от изменившихся исходников.
         """
         supported = {
             "infobase.create",
+            "source.import",
             "cf.export",
             "cf.import",
             "infobase.export",
