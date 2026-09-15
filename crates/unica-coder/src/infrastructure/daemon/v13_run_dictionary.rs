@@ -23,6 +23,9 @@ pub(super) fn execute_run_dictionary(request: &InvocationRequest) -> Option<Doma
             "run without op lists the operation dictionary and accepts no other arguments",
         )),
         Some(Value::String(op)) => {
+            if is_test_seam_operation(op) {
+                return None;
+            }
             let catalog = catalog_for(SurfaceRelease::V13).expect("canonical catalog exists");
             if catalog
                 .run_dictionary
@@ -58,6 +61,9 @@ pub(super) fn reject_unavailable_run_before_admission(
         }
         None => return None,
     };
+    if is_test_seam_operation(op) {
+        return None;
+    }
     let catalog = catalog_for(SurfaceRelease::V13).expect("canonical catalog exists");
     match catalog
         .run_dictionary
@@ -74,6 +80,21 @@ pub(super) fn reject_unavailable_run_before_admission(
             format!("unknown canonical run operation `{op}`"),
         )),
     }
+}
+
+/// Тестовый шов: пока словарь не был реализован целиком, нереализованная
+/// операция доходила до актора рабочего пространства, и тесты долгой работы
+/// демона ходили через неё. Теперь каждая операция готовится до admission, и
+/// тесты зовут актора именем `test.*`, которого в продукте не существует:
+/// вне тестов такое имя — неизвестная операция.
+#[cfg(test)]
+fn is_test_seam_operation(op: &str) -> bool {
+    op.starts_with("test.")
+}
+
+#[cfg(not(test))]
+const fn is_test_seam_operation(_op: &str) -> bool {
+    false
 }
 
 pub(super) fn run_dictionary_result() -> DomainResult {

@@ -94,7 +94,7 @@
     },
     "unica.run": {
       "status": "partial",
-      "reason": "The closed directional nine-operation dictionary, infobase creation, source import and export, configuration-package export and import, DT export, DT restore and the terminal client launch are implemented; creation, the exports and the imports go through non-executing preview and revision-fenced apply, and the remaining run operation stays unsupported.",
+      "reason": "The closed directional nine-operation dictionary is implemented in full: infobase creation, source import and export, artifact build, configuration-package export and import, DT export, DT restore and the terminal client launch; all but the terminal launch go through non-executing preview and revision-fenced apply.",
       "evidence": [{
         "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
         "test": "production_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"
@@ -168,9 +168,21 @@
       }]
     },
     "artifact.build": {
-      "status": "unsupported",
-      "reason": "Artifact build execution has not been connected to the v0.13 run adapter.",
-      "evidence": []
+      "status": "supported",
+      "reason": "Building a CF or CFE from workspace sources is implemented as previewApply over v8-runner make: the output is confined to the workspace before the runner is called, .epf and .erf are refused as unsupported in v0.13, the preview names the artifact kind, source set and output without publishing, apply is fenced by ifRev built from the project file, the declared composition, the arguments and the output digest, and Unica verifies the built file by size and digest rather than trusting the provider.",
+      "evidence": [{
+        "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
+        "test": "v5_artifact_build_prepares_before_source_admission_and_keeps_the_revision_gate"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/daemon/v13_artifact_build.rs",
+        "test": "preview_names_the_artifact_and_the_set_without_publishing"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/daemon/v13_artifact_build.rs",
+        "test": "apply_repeats_the_preview_and_returns_an_independent_file_receipt"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/daemon/v13_artifact_build.rs",
+        "test": "arguments_are_closed_and_each_refusal_names_the_fix"
+      }]
     },
     "cf.export": {
       "status": "supported",

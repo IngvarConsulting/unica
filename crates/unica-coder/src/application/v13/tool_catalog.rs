@@ -149,6 +149,16 @@ impl RunOperation {
                 "properties": {},
                 "required": []
             })),
+            RunIntent::ArtifactBuild => Some(json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "output": {"type": "string", "description": "Workspace-relative .cf or .cfe file to build; .epf and .erf are not published in v0.13."},
+                    "sourceSet": {"type": "string", "description": "Name of one source set declared in v8project.yaml when several are declared."},
+                    "extension": {"type": "string", "description": "Extension name in the infobase for a .cfe output; required for .cfe and refused for .cf."}
+                },
+                "required": ["output"]
+            })),
             RunIntent::SourceExport => Some(json!({
                 "type": "object",
                 "additionalProperties": false,
@@ -200,7 +210,6 @@ impl RunOperation {
                 },
                 "required": ["clientMode"]
             })),
-            _ => None,
         }
     }
 }
@@ -429,6 +438,7 @@ fn run_dictionary() -> Vec<RunOperation> {
             RunIntent::InfobaseCreate
                 | RunIntent::SourceImport
                 | RunIntent::SourceExport
+                | RunIntent::ArtifactBuild
                 | RunIntent::CfExport
                 | RunIntent::CfImport
                 | RunIntent::InfobaseExport
@@ -827,13 +837,14 @@ mod tests {
                 "infobase.create",
                 "source.import",
                 "source.export",
+                "artifact.build",
                 "cf.export",
                 "cf.import",
                 "infobase.export",
                 "infobase.import",
                 "client.run"
             ],
-            "реализованы создание базы, все три пары export/import и терминальный запуск клиента; проектный файл в словаре не числится вовсе"
+            "реализован весь словарь: создание базы, все три пары export/import, сборка артефакта и терминальный запуск клиента; проектный файл в словаре не числится вовсе"
         );
 
         let output = &catalog.result_envelope_schema;
@@ -958,13 +969,40 @@ mod tests {
                 "infobase.create",
                 "source.import",
                 "source.export",
+                "artifact.build",
                 "cf.export",
                 "cf.import",
                 "infobase.export",
                 "infobase.import",
                 "client.run"
             ],
-            "реализованы создание базы, все три пары export/import и терминальный запуск клиента; проектный файл в словаре не числится вовсе"
+            "реализован весь словарь: создание базы, все три пары export/import, сборка артефакта и терминальный запуск клиента; проектный файл в словаре не числится вовсе"
+        );
+    }
+
+    #[test]
+    fn v13_artifact_build_is_implemented_for_cf_and_cfe_inside_the_workspace() {
+        let catalog =
+            catalog_for(SurfaceRelease::V13).expect("v0.13 catalog must be test-loadable");
+        let build = catalog
+            .run_dictionary
+            .iter()
+            .find(|operation| operation.intent == RunIntent::ArtifactBuild)
+            .expect("artifact.build belongs to the v0.13 dictionary");
+        assert!(build.implemented);
+        assert_eq!(build.execution(), "previewApply");
+        assert_eq!(build.effects(), &["workspaceFiles"]);
+        let schema = build
+            .args_schema()
+            .expect("artifact.build publishes its args");
+        assert_eq!(schema["additionalProperties"], false);
+        assert_eq!(schema["required"], json!(["output"]));
+        assert!(
+            catalog
+                .run_dictionary
+                .iter()
+                .all(|operation| operation.implemented),
+            "словарь реализован целиком"
         );
     }
 

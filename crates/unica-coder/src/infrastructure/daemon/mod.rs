@@ -6,6 +6,7 @@ pub(crate) mod protocol_v5;
 pub(crate) mod runtime_v5;
 pub(crate) mod server;
 pub(crate) mod terminal_codec_v5;
+mod v13_artifact_build;
 mod v13_call_graph;
 mod v13_cf_import;
 mod v13_client_run;
@@ -320,7 +321,7 @@ mod tests {
         let owner = daemon.owner();
         let request = build_request(
             workspace.path(),
-            serde_json::json!({"op": "artifact.build", "args": {}}),
+            serde_json::json!({"op": "test.long-work", "args": {}}),
         );
 
         let task_id = daemon.task_id(&owner, &request);
@@ -370,7 +371,7 @@ mod tests {
             assert_eq!(invocation.tool(), ToolIdentity::Run);
             assert_eq!(
                 invocation.arguments(),
-                &serde_json::json!({"op": "artifact.build", "args": {}})
+                &serde_json::json!({"op": "test.long-work", "args": {}})
                     .as_object()
                     .unwrap()
                     .clone()
@@ -444,7 +445,7 @@ mod tests {
         ] {
             let request = build_request(
                 workspace,
-                serde_json::json!({"op": "artifact.build", "args": {}}),
+                serde_json::json!({"op": "test.long-work", "args": {}}),
             );
             let task_id = daemon.task_id(&owner, &request);
             let (actor_hash, bytes) = observed_wait
@@ -479,10 +480,7 @@ mod tests {
         let owner = daemon.owner();
         let request = build_request(
             &workspace,
-            serde_json::json!({
-                "op": "artifact.build",
-                "args": {"ambientRoot": "/tmp/foreign"}
-            }),
+            serde_json::json!({"op": "test.long-work", "args": {}}),
         );
         let task_id = daemon.task_id(&owner, &request);
         entered_wait

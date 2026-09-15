@@ -138,9 +138,9 @@ List canonical runtime operations and their invocation contract, or preview/exec
 | `ifRev` | string | нет | Revision returned by a prior preview of the same previewApply operation; required when dryRun is false. |
 | `op` | string | нет | Canonical operation name; omit to list operation status. |
 
-**Результат сейчас:** Вызов без `op` до source admission возвращает закрытый словарь направленных runtime-намерений, каждому из которых нужна платформа или база; `infobase.create`, `source.import`, `source.export`, `cf.export`, `cf.import`, `infobase.export`, `infobase.import` и `client.run` реализованы; создание, обмен с исходниками, выгрузки и загрузки используют неисполняющий preview v8-runner, revision-fenced apply и независимую квитанцию файла, а терминальный `client.run` запускает клиента сразу с необязательным превью и без забора (отвечают типизированным `data`)
+**Результат сейчас:** Вызов без `op` до source admission возвращает закрытый словарь направленных runtime-намерений, каждому из которых нужна платформа или база; весь словарь реализован — `infobase.create`, `source.import`, `source.export`, `artifact.build`, `cf.export`, `cf.import`, `infobase.export`, `infobase.import` и `client.run`; создание, обмен с исходниками, сборка, выгрузки и загрузки используют неисполняющий preview v8-runner, revision-fenced apply и независимую квитанцию файла, а терминальный `client.run` запускает клиента сразу с необязательным превью и без забора (отвечают типизированным `data`)
 
-**Целевой контракт:** Подключить остальную одну направленную операцию, `artifact.build`, через preview/apply, capability-specific admission и закрытый provider-контракт
+**Целевой контракт:** Нереализованных операций ноль; дальше — семейство операций над расширениями базы отдельным решением словаря
 
 **Сценарии:**
 

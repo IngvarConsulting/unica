@@ -396,6 +396,12 @@ pub(super) enum V5ActorBoundCanonicalInvocation {
         export: Arc<super::v13_source_export::PreparedSourceExport>,
         workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
     },
+    /// Сборка CF/CFE из исходников: previewApply с забором, известна длинной
+    /// по внешнему процессу.
+    ArtifactBuild {
+        build: Arc<super::v13_artifact_build::PreparedArtifactBuild>,
+        workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
+    },
     Documentation {
         search: Arc<super::v13_documentation::PreparedDocumentationSearch>,
         workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
@@ -426,6 +432,9 @@ pub(super) enum V5PreparedCanonicalInvocation {
     },
     SourceExport {
         export: Arc<super::v13_source_export::PreparedSourceExport>,
+    },
+    ArtifactBuild {
+        build: Arc<super::v13_artifact_build::PreparedArtifactBuild>,
     },
     Documentation {
         search: Arc<super::v13_documentation::PreparedDocumentationSearch>,
@@ -603,6 +612,19 @@ impl V5CanonicalInvocationRuntime {
                 });
             }
         }
+        match super::v13_artifact_build::prepare(&request) {
+            super::v13_artifact_build::Preparation::NotApplicable => {}
+            super::v13_artifact_build::Preparation::Rejected(result) => {
+                return Err(V5CanonicalPrepareError::Rejected(result))
+            }
+            super::v13_artifact_build::Preparation::Ready(build) => {
+                let workspace_identity_hash = build.workspace_identity_hash();
+                return Ok(V5ActorBoundCanonicalInvocation::ArtifactBuild {
+                    build,
+                    workspace_identity_hash,
+                });
+            }
+        }
         match super::v13_documentation::prepare(&request) {
             super::v13_documentation::Preparation::NotApplicable => {}
             super::v13_documentation::Preparation::Rejected(result) => {
@@ -650,7 +672,8 @@ impl V5ActorBoundCanonicalInvocation {
             | Self::CfImport { .. }
             | Self::InfobaseCreate { .. }
             | Self::SourceImport { .. }
-            | Self::SourceExport { .. } => None,
+            | Self::SourceExport { .. }
+            | Self::ArtifactBuild { .. } => None,
             // Справка не известна длинной: локальное попадание отвечает
             // сразу, сетевое доходит до седьмой секунды. Значит у неё тот же
             // cutoff, что у чтений, — захваченный при bind.
@@ -684,6 +707,10 @@ impl V5ActorBoundCanonicalInvocation {
                 ..
             }
             | Self::SourceExport {
+                workspace_identity_hash,
+                ..
+            }
+            | Self::ArtifactBuild {
                 workspace_identity_hash,
                 ..
             }
@@ -723,6 +750,9 @@ impl V5ActorBoundCanonicalInvocation {
             Self::SourceExport { export, .. } => {
                 Ok(V5PreparedCanonicalInvocation::SourceExport { export })
             }
+            Self::ArtifactBuild { build, .. } => {
+                Ok(V5PreparedCanonicalInvocation::ArtifactBuild { build })
+            }
             Self::Documentation { search, .. } => {
                 Ok(V5PreparedCanonicalInvocation::Documentation { search })
             }
@@ -741,7 +771,8 @@ impl V5PreparedCanonicalInvocation {
             | Self::CfImport { .. }
             | Self::InfobaseCreate { .. }
             | Self::SourceImport { .. }
-            | Self::SourceExport { .. } => &INFOBASE_EXPORT_CLASS,
+            | Self::SourceExport { .. }
+            | Self::ArtifactBuild { .. } => &INFOBASE_EXPORT_CLASS,
             Self::Documentation { .. } => &ExecutionClass::InlineCandidate,
         }
     }
@@ -776,6 +807,7 @@ impl V5PreparedCanonicalInvocation {
             Self::InfobaseCreate { create } => Ok(create.execute(cancellation)),
             Self::SourceImport { import } => Ok(import.execute(cancellation)),
             Self::SourceExport { export } => Ok(export.execute(cancellation)),
+            Self::ArtifactBuild { build } => Ok(build.execute(cancellation)),
             Self::Documentation { search } => Ok(search.execute(cancellation)),
         }
     }
@@ -4544,10 +4576,11 @@ struct ActorLogicalReadLease {"#,
                 serde_json::json!({"op": "client.run", "args": {}}),
                 "bad_value",
             ),
+            // `artifact.build` реализован: пустые аргументы — ошибка вызова.
             (
                 ToolIdentity::Run,
                 serde_json::json!({"op": "artifact.build", "args": {}}),
-                "unsupported_operation",
+                "bad_value",
             ),
             (
                 ToolIdentity::Run,
@@ -6368,7 +6401,7 @@ struct ActorLogicalReadLease {"#,
         let owner = daemon.owner();
         let request = InvocationRequest::new(
             ToolIdentity::Run,
-            serde_json::json!({"op": "artifact.build", "args": {}}),
+            serde_json::json!({"op": "test.long-work", "args": {}}),
             root.to_string_lossy(),
             7_000,
         )
@@ -7097,6 +7130,87 @@ struct ActorLogicalReadLease {"#,
     }
 
     #[test]
+    fn v5_artifact_build_prepares_before_source_admission_and_keeps_the_revision_gate() {
+        // A-7 зонтика #871: сборка CF/CFE из исходников — previewApply с
+        // забором, готовится до admission PlatformXml и известна длинной по
+        // внешнему процессу; применение без `ifRev` отказывает `bad_value`.
+        let workspace = tempfile::tempdir().expect("temporary artifact.build workspace");
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\ninfobase:\n  connection: \"File=.build/infobase\"\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .expect("write a workspace descriptor with one source set");
+        let preparations = Arc::new(AtomicUsize::new(0));
+        let runtime = V5CanonicalInvocationRuntime::new(
+            Arc::new(CountingPrepareService {
+                preparations: Arc::clone(&preparations),
+            }),
+            Arc::new(TokioClock),
+        );
+        let request = |arguments: serde_json::Value| {
+            InvocationRequest::new(
+                ToolIdentity::Run,
+                arguments,
+                std::fs::canonicalize(workspace.path())
+                    .expect("canonical workspace")
+                    .to_string_lossy(),
+                7_000,
+            )
+            .expect("valid artifact.build request")
+        };
+
+        for arguments in [
+            serde_json::json!({"op": "artifact.build", "args": {"output": "dist/main.cf"}, "dryRun": true}),
+            serde_json::json!({"op": "artifact.build", "args": {"output": "dist/main.cf", "sourceSet": "main"}, "dryRun": false, "ifRev": "unica-artifact-build-sha256-v1:test"}),
+        ] {
+            let bound = runtime
+                .bind(request(arguments))
+                .expect("artifact.build binds without a PlatformXml source set");
+            assert!(matches!(
+                bound,
+                V5ActorBoundCanonicalInvocation::ArtifactBuild { .. }
+            ));
+            let prepared = bound.prepare().expect("artifact.build preparation");
+            assert_eq!(
+                prepared.execution_class(),
+                &ExecutionClass::KnownLong(KnownLongReason::ExternalProcess)
+            );
+        }
+
+        let unfenced = match runtime.bind(request(serde_json::json!({
+            "op": "artifact.build",
+            "args": {"output": "dist/main.cf"},
+            "dryRun": false,
+        }))) {
+            Err(V5CanonicalPrepareError::Rejected(result)) => result,
+            Ok(_) => panic!("an apply without ifRev was accepted"),
+            Err(other) => panic!("apply without ifRev returned infrastructure failure: {other:?}"),
+        };
+        assert_eq!(unfenced.diagnostics[0]["code"], "bad_value");
+        assert!(unfenced.diagnostics[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("requires ifRev"));
+        let external = match runtime.bind(request(serde_json::json!({
+            "op": "artifact.build",
+            "args": {"output": "dist/report.epf"},
+            "dryRun": true,
+        }))) {
+            Err(V5CanonicalPrepareError::Rejected(result)) => result,
+            Ok(_) => panic!("an .epf output was accepted"),
+            Err(other) => {
+                panic!(".epf on artifact.build returned infrastructure failure: {other:?}")
+            }
+        };
+        assert_eq!(external.diagnostics[0]["code"], "unsupported_operation");
+        assert_eq!(
+            preparations.load(Ordering::SeqCst),
+            0,
+            "artifact.build must not enter the PlatformXml service"
+        );
+    }
+
+    #[test]
     fn v5_documentation_answers_before_source_admission_without_an_actor_lease() {
         // Каталог без `v8project.yaml` и без корней 1С — тот, из которого
         // новичок и спрашивает, как рабочее пространство завести.
@@ -7389,7 +7503,7 @@ struct ActorLogicalReadLease {"#,
         let request = |root: &std::path::Path| {
             InvocationRequest::new(
                 ToolIdentity::Run,
-                serde_json::json!({"op": "artifact.build", "args": {}}),
+                serde_json::json!({"op": "test.long-work", "args": {}}),
                 root.to_string_lossy(),
                 7_000,
             )
@@ -7525,7 +7639,7 @@ struct ActorLogicalReadLease {"#,
             let request = |root: &std::path::Path| {
                 InvocationRequest::new(
                     ToolIdentity::Run,
-                    serde_json::json!({"op": "artifact.build", "args": {}}),
+                    serde_json::json!({"op": "test.long-work", "args": {}}),
                     root.to_string_lossy(),
                     7_000,
                 )
@@ -7617,7 +7731,7 @@ struct ActorLogicalReadLease {"#,
         let request = |root: &std::path::Path| {
             InvocationRequest::new(
                 ToolIdentity::Run,
-                serde_json::json!({"op": "artifact.build", "args": {}}),
+                serde_json::json!({"op": "test.long-work", "args": {}}),
                 root.to_string_lossy(),
                 7_000,
             )
@@ -7738,7 +7852,7 @@ struct ActorLogicalReadLease {"#,
         let request = || {
             InvocationRequest::new(
                 ToolIdentity::Run,
-                serde_json::json!({"op": "artifact.build", "args": {}}),
+                serde_json::json!({"op": "test.long-work", "args": {}}),
                 root.to_string_lossy(),
                 7_000,
             )
@@ -7842,7 +7956,7 @@ struct ActorLogicalReadLease {"#,
         let request = |root: &std::path::Path| {
             InvocationRequest::new(
                 ToolIdentity::Run,
-                serde_json::json!({"op": "artifact.build", "args": {}}),
+                serde_json::json!({"op": "test.long-work", "args": {}}),
                 root.to_string_lossy(),
                 7_000,
             )
@@ -7929,7 +8043,7 @@ struct ActorLogicalReadLease {"#,
             .bind(
                 InvocationRequest::new(
                     ToolIdentity::Run,
-                    serde_json::json!({"op": "artifact.build", "args": {}}),
+                    serde_json::json!({"op": "test.long-work", "args": {}}),
                     root.to_string_lossy(),
                     7_000,
                 )
@@ -7954,7 +8068,7 @@ struct ActorLogicalReadLease {"#,
             ensure_platform_xml_workspace(&root.to_string_lossy());
             InvocationRequest::new(
                 ToolIdentity::Run,
-                serde_json::json!({"op": "artifact.build", "args": {}}),
+                serde_json::json!({"op": "test.long-work", "args": {}}),
                 root.to_string_lossy(),
                 7_000,
             )
@@ -8026,7 +8140,7 @@ struct ActorLogicalReadLease {"#,
         let owner = daemon.owner();
         let request = InvocationRequest::new(
             ToolIdentity::Run,
-            serde_json::json!({"op": "artifact.build", "args": {}}),
+            serde_json::json!({"op": "test.long-work", "args": {}}),
             root.to_string_lossy(),
             7_000,
         )

@@ -2726,7 +2726,7 @@ mod tests {
                 "jsonrpc":"2.0", "id":1, "method":"tools/call",
                 "params":{
                     "name":"unica.run",
-                    "arguments":{"op": "artifact.build", "args": {}},
+                    "arguments":{"op": "test.long-work", "args": {}},
                     "_meta":modern_meta()
                 }
             }))

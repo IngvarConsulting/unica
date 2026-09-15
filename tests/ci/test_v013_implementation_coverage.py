@@ -137,12 +137,14 @@ class V013ImplementationCoverageTests(unittest.TestCase):
         `infobase.import`. Шестая — `infobase.create` (A-3): без аргументов,
         квитанция — повторное превью раннера. Седьмая — `source.import` (A-4):
         режимы шагов раннера как забор от изменившихся исходников. Восьмая —
-        `source.export` (A-6): квитанция — пересчёт файлов в цели.
+        `source.export` (A-6): квитанция — пересчёт файлов в цели. Девятая —
+        `artifact.build` (A-7): словарь реализован целиком.
         """
         supported = {
             "infobase.create",
             "source.import",
             "source.export",
+            "artifact.build",
             "cf.export",
             "cf.import",
             "infobase.export",
