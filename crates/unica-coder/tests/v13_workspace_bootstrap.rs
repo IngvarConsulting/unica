@@ -1,4 +1,7 @@
 use serde_json::{json, Value};
+
+#[path = "support/code_module_state.rs"]
+mod code_module_state;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
