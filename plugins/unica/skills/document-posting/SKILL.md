@@ -7,7 +7,7 @@ description: "Проведение документов 1С. Используй 
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.meta.info`, `unica.meta.edit`, `unica.code.search`, `unica.code.definition`, `unica.code.graph`, `unica.code.patch`, `unica.code.diagnostics`, and `unica.run`.
+- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.view` on the object node, `unica.apply`, `unica.search`, `unica.check`, and `unica.run`.
 - Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
@@ -38,13 +38,13 @@ By default the handler writes nothing itself: the platform writes the record set
 ## Workflow
 
 1. Name the accounting subjects the document affects before touching code. Each subject is a register, not a column on an existing one.
-2. Inspect the document with `unica.meta.info`: declared registers, `Posting`, `RealTimePosting`, `RegisterRecordsDeletion`, `RegisterRecordsWritingOnPost`, and privileged-mode flags. Inspect every target register the same way for dimensions, resources, and periodicity.
-3. Read the current handlers with `unica.code.definition` and `unica.view` on the module node (its `Method` branch lists the methods) before reading full modules; use `unica.code.graph` when posting calls shared procedures.
+2. Inspect the document with `unica.view` on the object node: declared registers, `Posting`, `RealTimePosting`, `RegisterRecordsDeletion`, `RegisterRecordsWritingOnPost`, and privileged-mode flags. Inspect every target register the same way for dimensions, resources, and periodicity.
+3. Read the current handlers with `unica.view` on the module node (its `Method` branch lists the methods) before reading full modules; find the shared procedures posting calls with `unica.search` (a call graph is not on the v0.13 surface).
 4. Decide the branch split: what the real-time branch checks, what the regular branch skips, and what both always write.
 5. Decide which balances need control at all. Skip control where it cannot fail: a receipt document only increases balances, and re-posting cannot write off more than the first posting already did.
 6. Fix the write order for the std661 shape: uncontrolled registers early with `БлокироватьДляИзменения = Ложь` in a stable register order, controlled registers last with `БлокироватьДляИзменения = Истина`, negative-balance queries after that write. Keep the same order in every handler that shares those registers.
-7. Change metadata with `unica.meta.edit` and module code with `unica.code.patch`, one verifiable step at a time.
-8. Verify statically with `unica.code.diagnostics`; check syntax with `unica.check` (test runs are outside the v0.13 surface), and require separate evidence for posting, unposting, and runtime behavior with a realistic tabular section.
+7. Change metadata with `unica.apply` and module code with `unica.apply`, one verifiable step at a time.
+8. Verify statically with `unica.check` on the module node (test runs are outside the v0.13 surface), and require separate evidence for posting, unposting, and runtime behavior with a realistic tabular section.
 
 ## Design rules
 

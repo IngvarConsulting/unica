@@ -7,7 +7,7 @@ description: "Обработчики событий объекта 1С. Испо
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.meta.info`, `unica.code.search`, `unica.code.definition`, `unica.code.graph`, `unica.code.patch`, `unica.code.diagnostics`, and `unica.run`.
+- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.view` on the object node, `unica.search`, `unica.apply`, `unica.check`, and `unica.run`.
 - Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
@@ -39,12 +39,12 @@ Two rules cut across all of them: `ОбменДанными.Загрузка` is
 ## Workflow
 
 1. Name what the logic needs to observe — fill source, old values, written state, or nothing yet — and let that pick the handler.
-2. Locate what already runs: read the object module with `unica.view` on the module node (its `Method` branch lists the methods) and `unica.code.definition`, and find subscriptions on the same events with `unica.code.search` and `unica.meta.info`. A subscription is invisible from the object module it affects.
-3. Use `unica.code.graph` when the handler calls shared procedures, to see what else the change reaches.
+2. Locate what already runs: read the object module with `unica.view` on the module node (its `Method` branch lists the methods), and find subscriptions on the same events with `unica.search` and `unica.view` on the object node. A subscription is invisible from the object module it affects.
+3. Search the shared procedures the handler calls with `unica.search` to see what else the change reaches; a call graph is not on the v0.13 surface.
 4. Write the guard before the logic: `Если ОбменДанными.Загрузка Тогда Возврат; КонецЕсли;` — in the subscription handler too, not only in the object module.
 5. Express conditional requiredness by collecting `НепроверяемыеРеквизиты` and removing them from `ПроверяемыеРеквизиты` at the end, never by adding to `ПроверяемыеРеквизиты`.
-6. Apply the change with `unica.code.patch`, one verifiable step at a time.
-7. Verify statically with `unica.code.diagnostics`; check syntax with `unica.check` (test runs are outside the v0.13 surface), and require separate runtime evidence for the exchange path when the object participates in one.
+6. Apply the change with `unica.apply`, one verifiable step at a time.
+7. Verify statically with `unica.check` on the module node (test runs are outside the v0.13 surface), and require separate runtime evidence for the exchange path when the object participates in one.
 
 ## Design rules
 

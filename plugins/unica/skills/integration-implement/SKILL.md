@@ -7,7 +7,7 @@ description: "Реализация интеграций 1С. Используй 
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.meta.info`, `unica.meta.add`, `unica.meta.edit`, `unica.code.search`, `unica.docs`, and `unica.run`.
+- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.view` on the object node, `unica.apply`, `unica.search`, `unica.docs`, and `unica.run`.
 - Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
@@ -20,8 +20,8 @@ description: "Реализация интеграций 1С. Используй 
 ## Workflow
 
 1. Define the contract first: endpoint, method, auth, payload schema, idempotency key, retries, timeout, and error response shape.
-2. Inspect existing integration modules and HTTP/web service metadata with `unica.code.search` and `unica.meta.info`.
-3. Create or edit metadata through `unica.meta.add` / `unica.meta.edit`; keep source-set and format selected by `unica.view {}`.
+2. Inspect existing integration modules and HTTP/web service metadata with `unica.search` and `unica.view` on the object node.
+3. Create or edit metadata through `unica.apply`; keep source-set and format selected by `unica.view {}`.
 4. Put reusable logic in common modules; keep HTTP service handlers thin and explicit about request parsing, validation, and response codes.
 5. Handle secrets outside versioned modules and configs. Do not log tokens, passwords, full request bodies with personal data, or raw auth headers.
 6. Check syntax with `unica.check` (test runs are outside the v0.13 surface) and report runtime verification as unavailable; for live HTTP behavior require a user-provided debug URL and external evidence, because no `unica.run` operation publishes a web-client URL.
@@ -51,10 +51,9 @@ description: "Реализация интеграций 1С. Используй 
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.meta.info",
+    "name": "unica.view",
     "arguments": {
-      "sourceSet": "main",
-      "metadataPath": "HTTPService.ExternalAPI"
+      "at": "main:HTTPService.ExternalAPI"
     }
   }
 }

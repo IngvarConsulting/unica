@@ -19,7 +19,7 @@ Runtime идёт через `unica.run`: вызов без `op` отдаёт с�
 записи с `argsSchema: null`; превью исполнением не является. Не обходи
 контракт прямым runner-ом.
 
-- Inspect metadata shape with `unica.*.info` tools before changing code that
+- Inspect metadata shape with `unica.view` on the object node before changing code that
   depends on objects, forms, roles, or reports.
 - Use code search/analysis tools through MCP `unica` where available.
 - Check syntax with `unica.check`; test runs are outside the v0.13 surface,

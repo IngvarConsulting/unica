@@ -7,7 +7,7 @@ description: "Фоновые и регламентные задания 1С. И�
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.code.search`, `unica.meta.info`, `unica.code.diagnostics`, `unica.docs`, and `unica.run`.
+- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.search`, `unica.view` on the object node, `unica.check`, `unica.docs`, and `unica.run`.
 - Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
@@ -26,10 +26,10 @@ description: "Фоновые и регламентные задания 1С. И�
 ## Workflow
 
 1. Identify job type: scheduled job, background job launched from code, queue worker, exchange worker, or deferred integration retry.
-2. Find entry points with `unica.code.search`; inspect related metadata with `unica.meta.info` and project layout with `unica.view {}`.
+2. Find entry points with `unica.search`; inspect related metadata with `unica.view` on the object node and project layout with `unica.view {}`.
 3. Define execution contract: parameters, user context, transaction scope, idempotency key, lock strategy, timeout, retry count, and logging fields.
 4. Check failure behavior before implementation: duplicate launch, partial write, stale lock, external service failure, session termination, and restart after crash.
-5. Run `unica.code.diagnostics`; check syntax with `unica.check`, launch a client through `unica.run` (`client.run`) when the diagnosis needs one, and record runtime verification as unavailable unless separate evidence is supplied: test runs are outside the v0.13 surface.
+5. Run `unica.check` on the module node; launch a client through `unica.run` (`client.run`) when the diagnosis needs one, and record runtime verification as unavailable unless separate evidence is supplied: test runs are outside the v0.13 surface.
 6. For diagnosis, build a timeline from ЖР/ТЖ and map the first failure back to module code.
 
 ## Review checklist

@@ -7,7 +7,7 @@ description: "Проектирование регистров 1С. Исполь�
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.meta.info`, `unica.meta.add`, `unica.meta.edit`, `unica.code.search`, `unica.view` on the schema node, `unica.code.diagnostics`, and `unica.run`.
+- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.view` on the object node, `unica.apply`, `unica.search`, `unica.view` on the schema node, `unica.check`, and `unica.run`.
 - Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
@@ -39,12 +39,12 @@ Totals separation is the decision that pulls both ways: std664 wants it for writ
 
 1. State the accounting subject and the questions the register must answer. One subject, one register.
 2. Pick the class, then split every field into dimension, resource, or attribute before creating anything. Check the receipt/expense rule for every candidate dimension of a `Balances` register.
-3. Inspect neighbours with `unica.meta.info` — an existing register with the same subject is a reason to extend rather than add — and locate the read paths with `unica.code.search`, `unica.view` on the module node (its `Method` branch lists the methods), and `unica.view` on the schema node.
+3. Inspect neighbours with `unica.view` on the object node — an existing register with the same subject is a reason to extend rather than add — and locate the read paths with `unica.search`, `unica.view` on the module node (its `Method` branch lists the methods), and `unica.view` on the schema node.
 4. Decide periodicity and `WriteMode` for an information register, and whether every std708 condition holds before enabling `EnableTotalsSliceLast` or `EnableTotalsSliceFirst`.
 5. Decide `EnableTotalsSplitting` against the read paths found in step 3, not in the abstract.
 6. Set `DenyIncompleteValues` on dimensions that must always carry a value, and decide `Master` deliberately: it makes record lifetime follow the master value.
-7. Create with `unica.meta.add` and refine with `unica.meta.edit`, one verifiable step at a time.
-8. Verify statically with `unica.code.diagnostics`; check syntax with `unica.check` (test runs are outside the v0.13 surface), report runtime behavior as unverified, and re-check the read paths that step 5 traded against.
+7. Create with `unica.apply` and refine with `unica.apply`, one verifiable step at a time.
+8. Verify statically with `unica.check` on the module node (test runs are outside the v0.13 surface), report runtime behavior as unverified, and re-check the read paths that step 5 traded against.
 
 ## Design rules
 

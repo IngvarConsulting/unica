@@ -7,7 +7,7 @@ description: "Проектирование тестов 1С: YaXUnit и Vanessa 
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.code.search`, `unica.view {}`, `unica.check`, and the relevant `unica.*.info` tools.
+- Preferred path: use MCP `unica` tools `unica.search`, `unica.view {}`, and `unica.check`.
 - Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
@@ -20,7 +20,7 @@ description: "Проектирование тестов 1С: YaXUnit и Vanessa 
 ## Workflow
 
 1. Define the behavior under test before choosing the framework: pure BSL unit, object lifecycle, form behavior, integration contract, or regression around a diagnostic.
-2. Search existing tests and fixtures with `unica.code.search`; follow local naming, setup, teardown, and assertion style.
+2. Search existing tests and fixtures with `unica.search`; follow local naming, setup, teardown, and assertion style.
 3. Prefer YaXUnit for module/unit-level BSL behavior and Vanessa Automation for UI/business scenarios that require a client.
 4. Build the smallest stable fixture. Avoid dependence on production data unless the user explicitly requests an integration test.
 5. Check the new test module with `unica.check {at}` after adding test code (`unica.check {}` alone judges workspace readiness); a YaXUnit or Vanessa Automation run is not on the v0.13 surface, so it is not launched from here.
@@ -33,8 +33,8 @@ description: "Проектирование тестов 1С: YaXUnit и Vanessa 
 - For public API, integration, release, or metadata behavior, include impact
   analysis evidence from the relevant `unica.*` tools before treating the test
   plan as complete.
-- Do not call donor-specific check commands. Use `unica.code.diagnostics` and
-  focused `unica.*.info` tools for available static checks; a test run
+- Do not call donor-specific check commands. Use `unica.check {at}` on the module and
+  `unica.view` on the object for available static checks; a test run
   needs separate execution evidence.
 
 ## Scenario design

@@ -7,7 +7,7 @@ description: "Поиск и исследование BSL-кода и точек 
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.search`, `unica.view`, and
+- Preferred path: use MCP `unica` tools `unica.search`, `unica.view`, and and.
   `unica.check`.
 - Не зови индекс кода, анализатор или пакетные адаптеры напрямую: они спрятаны
   за MCP `unica`.

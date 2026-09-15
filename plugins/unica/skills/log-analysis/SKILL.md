@@ -7,7 +7,7 @@ description: "Анализ журнала регистрации и технол
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.code.search`, `unica.meta.info`, `unica.view {}`, `unica.code.diagnostics`, `unica.docs`.
+- Preferred path: use MCP `unica` tools `unica.search`, `unica.view` on the object node, `unica.view {}`, `unica.check`, and `unica.docs`.
 - Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
@@ -31,7 +31,7 @@ Accept explicit journal registration exports, technological log files, copied lo
 1. Classify the evidence: ЖР event, ТЖ event, platform exception, DBMS/SQL, lock/deadlock, long call, background job, HTTP service, web client request, or auth/session problem.
 2. Build a timeline. Keep clock source and timezone explicit when several files are involved.
 3. Extract module, procedure, metadata object, HTTP path, query text, user/session, and transaction identifiers.
-4. Map log entries back to source with `unica.code.search` and metadata with `unica.meta.info`.
+4. Map log entries back to source with `unica.search` and metadata with `unica.view` on the object node.
 5. Use `unica.docs` with `source: "development-standard"` for diagnostic ids and `development-standard` recommendations. The exact meaning of a platform message requires `unica.docs` with `source: "platform-help"`.
 6. Separate root cause from consequences: the first exception/lock/timeout usually matters more than later rollback noise.
 7. For DBMS evidence, preserve lock holder/waiter, SQL text, transaction boundary, process id, session id, wait event, table/index name, and elapsed time together.
@@ -51,11 +51,10 @@ Accept explicit journal registration exports, technological log files, copied lo
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.code.search",
+    "name": "unica.search",
     "arguments": {
-      "cwd": "<workspace>",
-      "sourceSet": "<source-set-from-unica-view>",
       "query": "ВыполнитьОбменСКонтрагентом",
+      "scope": "<source-set-from-unica-view>:Configuration",
       "limit": 20
     }
   }

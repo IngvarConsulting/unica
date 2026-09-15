@@ -7,7 +7,7 @@ description: "Обмен данными 1С. Используй когда ну�
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.code.search`, `unica.meta.info`, `unica.code.diagnostics`, `unica.docs`, and `unica.run`.
+- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.search`, `unica.view` on the object node, `unica.check`, `unica.docs`, and `unica.run`.
 - Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
@@ -26,7 +26,7 @@ description: "Обмен данными 1С. Используй когда ну�
 ## Workflow
 
 1. Identify the exchange model: plan exchange, РИБ, file batch, queue, direct API, or hybrid integration.
-2. Inspect metadata and modules with `unica.meta.info` and `unica.code.search`: plans, nodes, registration rules, message numbers, loading handlers, and conflict resolution.
+2. Inspect metadata and modules with `unica.view` on the object node and `unica.search`: plans, nodes, registration rules, message numbers, loading handlers, and conflict resolution.
 3. Define the exchange contract: node identity, external ids, schema version, ordering, idempotency, retry behavior, duplicate detection, and compatibility rules.
 4. Check change registration deliberately: keep регистрация изменений explicit, state which objects are registered, when registration is suppressed, how deletes are represented, and how retries avoid double writes.
 5. Check syntax with `unica.check` (test runs are outside the v0.13 surface) and report runtime verification as unavailable; for live failures, rely on supplied ЖР/ТЖ and correlate message id, node, user/session, and object ids.

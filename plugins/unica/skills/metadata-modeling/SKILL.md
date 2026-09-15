@@ -7,7 +7,7 @@ description: "Моделирование метаданных 1С. Исполь�
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.meta.info`, `unica.meta.add`, `unica.meta.edit`, `unica.view` on the subsystem node, `unica.code.search`, `unica.code.diagnostics`, and `unica.run`.
+- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.view` on the object node, `unica.apply`, `unica.view` on the subsystem node, `unica.search`, `unica.check`, and `unica.run`.
 - Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
@@ -44,12 +44,12 @@ A value several objects carry identically may be a common attribute (std677) rat
 ## Workflow
 
 1. State the business question the data must answer, and who is allowed to change the set of values. That answer picks the class.
-2. Check what already exists with `unica.view` (the configuration root and the object) and `unica.meta.info` — an existing object with the same meaning is a reason to extend rather than add — and locate the owning subsystem with `unica.view` on the subsystem node.
+2. Check what already exists with `unica.view` (the configuration root and the object) and `unica.view` on the object node — an existing object with the same meaning is a reason to extend rather than add — and locate the owning subsystem with `unica.view` on the subsystem node.
 3. Type every attribute deliberately: string length, composite type set, and whether a defined type already covers it (std432, std728, std704).
 4. Decide predefined items and their update mode before creating the object, and check the interactive-deletion rights with `unica.view` on the role node (std697).
-5. Create with `unica.meta.add` and refine with `unica.meta.edit`, one verifiable step at a time.
+5. Create with `unica.apply` and refine with `unica.apply`, one verifiable step at a time.
 6. Fill names, synonyms, and presentations; leaving both object and list presentation empty is АПК:93.
-7. Verify statically with `unica.code.diagnostics`; check syntax with `unica.check` (test runs are outside the v0.13 surface), report runtime behavior as unverified, and search existing callers with `unica.code.search` when a type changed.
+7. Verify statically with `unica.check` on the module node (test runs are outside the v0.13 surface), report runtime behavior as unverified, and search existing callers with `unica.search` when a type changed.
 
 ## Design rules
 

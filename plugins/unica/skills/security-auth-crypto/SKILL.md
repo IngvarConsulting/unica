@@ -7,7 +7,7 @@ description: "Безопасная аутентификация и крипто�
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.code.search`, `unica.meta.info`, `unica.view` on the role node, `unica.code.diagnostics`, `unica.docs`, and `unica.run`.
+- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.search`, `unica.view` on the object node, `unica.view` on the role node, `unica.check`, `unica.docs`, and `unica.run`.
 - Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
@@ -26,10 +26,10 @@ description: "Безопасная аутентификация и крипто�
 ## Workflow
 
 1. Identify the trust boundary: user login, service account, external API, OpenID provider, certificate store, CryptoPro provider, TLS endpoint, or file/key storage.
-2. Inspect existing auth and role paths with `unica.code.search`, `unica.meta.info`, and `unica.view` on the role node.
+2. Inspect existing auth and role paths with `unica.search`, `unica.view` on the object node, and `unica.view` on the role node.
 3. Define secret lifecycle: source, storage, rotation, masking, runtime process user, test fixture policy, and log redaction.
 4. Define auth error semantics: missing credentials, expired token, invalid certificate, provider unavailable, denied rights, tenant mismatch, and remote auth failure.
-5. Verify statically with `unica.code.diagnostics`; check syntax with `unica.check` (test runs are outside the v0.13 surface) and report runtime behavior as unverified.
+5. Verify statically with `unica.check` on the module node (test runs are outside the v0.13 surface) and report runtime behavior as unverified.
 
 ## Review checklist
 

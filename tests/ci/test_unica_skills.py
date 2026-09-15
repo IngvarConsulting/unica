@@ -26,6 +26,12 @@ RUN_DICTIONARY_OPERATIONS = {
     )["runOperations"].items()
     if entry.get("status") == "supported"
 }
+# Reading and writing names the wire never publishes; the package README keeps
+# its migration table of removed selectors and is not scanned for these.
+RETIRED_READ_WRITE_NAMES = re.compile(
+    r"unica\.code\.|unica\.meta\.info|unica\.meta\.add|unica\.meta\.edit|"
+    r"unica\.\*\.info"
+)
 RETIRED_RUNTIME_NAMES = re.compile(
     r"unica\.runtime\.|unica\.build\.|runtime_risk_|runtime_operation_unbounded|"
     r"INV-MCP-RUNTIME-RECEIPT|ADR-0074"
@@ -412,11 +418,11 @@ IN_SCOPE_TOOLS = {
 
 SCENARIO_SKILLS = {
     "api-design": [
-        "unica.code.search",
-        "unica.code.definition",
-        "unica.code.diagnostics",
+        "unica.search",
+        "unica.search",
+        "unica.check",
         "unica.view",
-        "unica.meta.info",
+        "unica.view",
         "unica.docs",
         "unica.run",
     ],
@@ -436,23 +442,23 @@ SCENARIO_SKILLS = {
         "unica.view",
     ],
     "code-review": [
-        "unica.code.search",
-        "unica.code.definition",
-        "unica.code.diagnostics",
-        "unica.meta.info",
+        "unica.search",
+        "unica.search",
+        "unica.check",
+        "unica.view",
         "unica.docs",
         "unica.view",
         "unica.run",
     ],
     "query-optimize": [
-        "unica.code.search",
+        "unica.search",
         "unica.view",
-        "unica.meta.info",
+        "unica.view",
         "unica.docs",
         "unica.run",
     ],
     "test-authoring": [
-        "unica.code.search",
+        "unica.search",
         "unica.view",
         "unica.check",
     ],
@@ -463,81 +469,81 @@ SCENARIO_SKILLS = {
         "unica.run",
     ],
     "bsp-patterns": [
-        "unica.code.search",
-        "unica.meta.info",
+        "unica.search",
+        "unica.view",
         "unica.view",
         "unica.docs",
         "unica.run",
     ],
     "integration-implement": [
         "unica.view",
-        "unica.meta.info",
-        "unica.meta.add",
-        "unica.meta.edit",
-        "unica.code.search",
+        "unica.view",
+        "unica.apply",
+        "unica.apply",
+        "unica.search",
         "unica.docs",
         "unica.run",
     ],
     "autonomous-server": [
         "unica.view",
         "unica.run",
-        "unica.meta.info",
-        "unica.code.search",
-        "unica.code.diagnostics",
+        "unica.view",
+        "unica.search",
+        "unica.check",
     ],
     "log-analysis": [
-        "unica.code.search",
-        "unica.meta.info",
+        "unica.search",
         "unica.view",
-        "unica.code.diagnostics",
+        "unica.view",
+        "unica.check",
         "unica.docs",
     ],
     "background-jobs": [
         "unica.view",
-        "unica.code.search",
-        "unica.meta.info",
-        "unica.code.diagnostics",
+        "unica.search",
+        "unica.view",
+        "unica.check",
         "unica.docs",
         "unica.run",
     ],
     "data-exchange": [
         "unica.view",
-        "unica.code.search",
-        "unica.meta.info",
-        "unica.code.diagnostics",
+        "unica.search",
+        "unica.view",
+        "unica.check",
         "unica.docs",
         "unica.run",
     ],
     "db-performance": [
         "unica.view",
-        "unica.code.search",
-        "unica.meta.info",
-        "unica.code.diagnostics",
+        "unica.search",
+        "unica.view",
+        "unica.check",
         "unica.docs",
         "unica.run",
     ],
     "security-auth-crypto": [
         "unica.view",
-        "unica.code.search",
-        "unica.meta.info",
-        "unica.code.diagnostics",
+        "unica.search",
+        "unica.view",
+        "unica.check",
         "unica.docs",
         "unica.run",
     ],
     "data-separation": [
         "unica.view",
-        "unica.code.search",
-        "unica.meta.info",
-        "unica.code.diagnostics",
+        "unica.search",
+        "unica.view",
+        "unica.check",
         "unica.docs",
         "unica.run",
     ],
     "release-support": [
         "unica.view",
-        "unica.code.search",
+        "unica.search",
         "unica.diff",
-        "unica.meta.info",
-        "unica.code.diagnostics",
+        "unica.view",
+        "unica.check",
         "unica.docs",
         "unica.run",
     ],
@@ -550,72 +556,68 @@ SCENARIO_SKILLS = {
     ],
     "document-posting": [
         "unica.view",
-        "unica.meta.info",
-        "unica.meta.edit",
-        "unica.code.definition",
-        "unica.code.patch",
-        "unica.code.diagnostics",
+        "unica.view",
+        "unica.apply",
+        "unica.search",
+        "unica.apply",
+        "unica.check",
         "unica.run",
     ],
     "register-design": [
         "unica.view",
-        "unica.meta.info",
-        "unica.meta.add",
-        "unica.meta.edit",
-        "unica.code.search",
-        "unica.code.diagnostics",
+        "unica.view",
+        "unica.apply",
+        "unica.apply",
+        "unica.search",
+        "unica.check",
         "unica.run",
     ],
     "object-events": [
         "unica.view",
-        "unica.meta.info",
-        "unica.code.search",
-        "unica.code.definition",
-        "unica.code.graph",
-        "unica.code.patch",
-        "unica.code.diagnostics",
+        "unica.view",
+        "unica.search",
+        "unica.search",
+        "unica.apply",
+        "unica.check",
         "unica.run",
     ],
     "form-events": [
         "unica.view",
         "unica.form.edit",
-        "unica.meta.info",
-        "unica.code.patch",
-        "unica.code.diagnostics",
+        "unica.view",
+        "unica.apply",
+        "unica.check",
         "unica.run",
     ],
     "module-placement": [
         "unica.view",
-        "unica.meta.info",
-        "unica.meta.add",
-        "unica.code.graph",
-        "unica.code.patch",
-        "unica.code.diagnostics",
+        "unica.view",
+        "unica.apply",
+        "unica.apply",
+        "unica.check",
         "unica.run",
     ],
     "metadata-modeling": [
         "unica.view",
-        "unica.meta.info",
-        "unica.meta.add",
-        "unica.meta.edit",
-        "unica.code.diagnostics",
+        "unica.view",
+        "unica.apply",
+        "unica.apply",
+        "unica.check",
         "unica.run",
     ],
     "transactions-locks": [
         "unica.view",
-        "unica.code.search",
-        "unica.code.graph",
-        "unica.code.patch",
-        "unica.code.diagnostics",
-        "unica.meta.info",
+        "unica.search",
+        "unica.apply",
+        "unica.check",
+        "unica.view",
         "unica.run",
     ],
     "object-locks": [
         "unica.view",
-        "unica.code.search",
-        "unica.code.graph",
-        "unica.code.patch",
-        "unica.code.diagnostics",
+        "unica.search",
+        "unica.apply",
+        "unica.check",
         "unica.run",
     ],
 }
@@ -2124,6 +2126,25 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                 for claim in forbidden_applied_claims:
                     self.assertNotRegex(text, claim)
 
+    def test_shipped_guidance_names_no_retired_reading_or_writing_tool(self) -> None:
+        """C-1: `unica.code.*` and `unica.meta.*` route to search/view/check/apply."""
+        shipped_docs = list(self.skill_root().glob("**/*.md")) + list(
+            self.reference_root().glob("**/*.md")
+        )
+        offenders = {}
+        for doc in sorted(shipped_docs):
+            hits = sorted(
+                {
+                    match.group(0)
+                    for match in RETIRED_READ_WRITE_NAMES.finditer(
+                        doc.read_text(encoding="utf-8")
+                    )
+                }
+            )
+            if hits:
+                offenders[doc.relative_to(self.repo_root()).as_posix()] = hits
+        self.assertEqual(offenders, {})
+
     def test_shipped_guidance_names_no_retired_runtime_tool(self) -> None:
         """#702: the wire has no `unica.runtime.execute`, so no skill may teach it."""
         shipped_docs = (
@@ -2612,7 +2633,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         )
         self.assertIn("support-state", release_support)
         self.assertIn("unica.view", release_support)
-        self.assertIn("unica.meta.info", release_support)
+        self.assertIn("ParentConfigurations.bin", release_support)
 
     def test_source_set_format_detection_contract_is_documented(self) -> None:
         docs = {

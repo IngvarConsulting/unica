@@ -7,7 +7,7 @@ description: "Оптимизация запросов 1С и СКД. Испол�
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.code.search`, `unica.view`, `unica.code.graph`, `unica.code.diagnostics`, `unica.view` on the schema node, `unica.meta.info`, `unica.docs`, and `unica.run`.
+- Preferred path: use MCP `unica` tools `unica.search`, `unica.view`, `unica.check`, `unica.view` on the schema node, `unica.view` on the object node, `unica.docs`, and `unica.run`.
 - Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
@@ -19,11 +19,11 @@ description: "Оптимизация запросов 1С и СКД. Испол�
 
 ## Workflow
 
-1. Extract the exact query text with `unica.code.search` or `unica.view` on the schema node.
+1. Extract the exact query text with `unica.search` or `unica.view` on the schema node.
 2. Inspect the execution context with `unica.view` on the module node (its `Method` branch lists the methods): module, exported entry point, region, temporary table chain, and caller loop.
-3. Use `unica.code.graph` for callers/callees when the query is inside reusable API, background jobs, event handlers, or suspected query-in-loop flow.
-4. Run `unica.code.diagnostics` with `action=findings`, the exact `sourceSet`, and the containing module's logical `metadataPath` when analyzer diagnostics can reveal unreachable code, unresolved calls, or type issues around the query. Do not pass a DCS `TemplatePath` as a diagnostic target; locate the BSL module that executes the query.
-5. Inspect `unica.meta.info` for both related modules, subscriptions, roles, functional options and the local registers, dimensions, resources, реквизиты, tabular sections, and indexes implied by the platform object type.
+3. Find callers with `unica.search` by the method name when the query is inside reusable API, background jobs, event handlers, or suspected query-in-loop flow; a call graph is not on the v0.13 surface.
+4. Run `unica.check {at}` on the containing module when analyzer diagnostics can reveal unreachable code, unresolved calls, or type issues around the query. Do not pass a DCS `TemplatePath` as a diagnostic target; locate the BSL module that executes the query.
+5. Inspect `unica.view` on the object node for both related modules, subscriptions, roles, functional options and the local registers, dimensions, resources, реквизиты, tabular sections, and indexes implied by the platform object type.
 6. Inspect DCS with `unica.view` on the schema node when the query lives in a data composition schema.
 7. Search `unica.docs` with `source: "development-standard"` only for `development-standard` query rules. Exact platform query semantics require `unica.docs` with `source: "platform-help"` before a platform-dependent rewrite.
 8. Read `../../references/platform/db-performance.md` when performance depends on DBMS behavior, locks, indexes, temp storage, WAL, TEMPDB, or large table statistics.

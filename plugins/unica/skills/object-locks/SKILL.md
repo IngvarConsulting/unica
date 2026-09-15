@@ -7,7 +7,7 @@ description: "Объектные блокировки 1С — пессимист
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.code.search`, `unica.code.definition`, `unica.code.graph`, `unica.code.patch`, `unica.view` on the form node, `unica.code.diagnostics`, and `unica.run`.
+- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.search`, `unica.apply`, `unica.view` on the form node, `unica.check`, and `unica.run`.
 - Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
@@ -43,12 +43,12 @@ Two facts decide most reviews:
 ## Workflow
 
 1. Name the concurrency you are actually facing: two users on one object → this skill; two transactions on shared data → `transactions-locks`.
-2. Find every path that modifies the object with `unica.code.search` and `unica.code.graph`. A cooperative lock is only as good as the path that skips it.
+2. Find every path that modifies the object with `unica.search` by the method and object names; a call graph is not on the v0.13 surface. A cooperative lock is only as good as the path that skips it.
 3. Choose the shape before writing code: fail loudly so the user learns who holds the object, or skip and retry on the next run for background work (std490).
 4. Decide the form id question. With a form id the lock follows the form's lifetime; without one it follows the session, the server call, or the transaction. Do not mix both for the same object — that combination raises.
 5. Inspect a non-standard editing form with `unica.view` on the form node and reproduce the standard behaviour with the form lock and unlock methods.
 6. Decide what the version conflict says to the user before it happens; the platform's own message names nothing useful.
-7. Apply with `unica.code.patch`, verify statically with `unica.code.diagnostics`; require separate two-session evidence before calling the conflict reproduced.
+7. Apply with `unica.apply` (`code.replace` or `code.insert`), verify statically with `unica.check`; require separate two-session evidence before calling the conflict reproduced.
 
 ## Design rules
 

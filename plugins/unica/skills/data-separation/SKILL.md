@@ -7,7 +7,7 @@ description: "Разделение данных 1С. Используй когд
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.code.search`, `unica.meta.info`, `unica.view` on the role node, `unica.code.diagnostics`, `unica.docs`, and `unica.run`.
+- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.search`, `unica.view` on the object node, `unica.view` on the role node, `unica.check`, `unica.docs`, and `unica.run`.
 - Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
@@ -26,7 +26,7 @@ description: "Разделение данных 1С. Используй когд
 ## Workflow
 
 1. Identify separation model: separator values, tenant ownership, user/session context, rights/RLS, privileged code, and external ids.
-2. Inspect metadata and roles with `unica.meta.info` and `unica.view` on the role node; find risky code with `unica.code.search`.
+2. Inspect metadata and roles with `unica.view` on the object node and `unica.view` on the role node; find risky code with `unica.search`.
 3. Trace tenant value through reads, writes, reports, background jobs, exchange messages, file batches, temp storage, and integration calls.
 4. Review queries for missing tenant filters, unsafe privileged mode, broad virtual tables, and joins that cross boundaries.
 5. Check syntax with `unica.check` (test runs are outside the v0.13 surface); record runtime verification as unavailable and require separate evidence covering at least two tenant contexts.

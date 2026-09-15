@@ -7,7 +7,7 @@ description: "Транзакции, блокировки и ответствен
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.code.search`, `unica.code.definition`, `unica.code.graph`, `unica.code.patch`, `unica.code.diagnostics`, `unica.meta.info`, and `unica.run`.
+- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.search`, `unica.apply`, `unica.check`, `unica.view` on the object node, and `unica.run`.
 - Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
@@ -42,10 +42,10 @@ The read-decide-write pair is the shape to recognise: read a value, compute from
 
 1. Classify every read on the path: does its result change data or drive a decision that will? If yes, it is responsible and needs a lock.
 2. Name the resources the operation captures and in what order, before writing any lock code.
-3. Locate the existing transaction boundaries with `unica.view` on the module node (its `Method` branch lists the methods) and `unica.code.graph` — a transaction begun in one method and finished in another is the defect, not a style issue.
+3. Locate the existing transaction boundaries with `unica.view` on the module node (its `Method` branch lists the methods) and `unica.search` for the methods it calls (a call graph is not on the v0.13 surface) — a transaction begun in one method and finished in another is the defect, not a style issue.
 4. Write the shape whole: `НачатьТранзакцию()`, then `Попытка` with the lock, the read, the write and the commit, then `Исключение` with `ОтменитьТранзакцию()` first.
-5. Apply with `unica.code.patch`, one verifiable step at a time.
-6. Verify statically with `unica.code.diagnostics` — the transaction-scheme diagnostics are exactly what this skill's rules encode — and check syntax with `unica.check` (test runs are outside the v0.13 surface); report runtime behavior as unverified.
+5. Apply with `unica.apply`, one verifiable step at a time.
+6. Verify statically with `unica.check` on the module node — the transaction-scheme diagnostics are exactly what this skill's rules encode (test runs are outside the v0.13 surface); report runtime behavior as unverified.
 7. For diagnosis, build the timeline from the runtime evidence and identify the contended resource before proposing any change.
 
 ## Design rules

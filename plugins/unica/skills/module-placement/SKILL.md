@@ -7,7 +7,7 @@ description: "Размещение кода 1С по модулям. Испол�
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.meta.info`, `unica.meta.add`, `unica.meta.edit`, `unica.view` on the subsystem node, `unica.code.search`, `unica.code.definition`, `unica.code.graph`, `unica.code.patch`, `unica.code.diagnostics`, and `unica.run`.
+- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.view` on the object node, `unica.apply`, `unica.view` on the subsystem node, `unica.search`, `unica.check`, and `unica.run`.
 - Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
@@ -49,11 +49,11 @@ Then pick exactly one of the four common module contexts (std469) and name it by
 
 1. Answer the three std486 questions before opening any module. The answer, not convenience, picks the host.
 2. Map the neighbourhood with `unica.view {}` and `unica.view` on the subsystem node: an existing module for the same subsystem or purpose is a reason to extend rather than add.
-3. Check the callers with `unica.code.graph` before moving anything — a move that changes the module context changes what the callers may pass.
-4. When adding a common module, choose the context row first, then `unica.meta.add` with the matching flags and postfix.
+3. Find the callers with `unica.search` by the method name before moving anything (a call graph is not on the v0.13 surface) — a move that changes the module context changes what the callers may pass.
+4. When adding a common module, choose the context row first, then `unica.apply` with the matching flags and postfix.
 5. Set `Вызов сервера` only for API genuinely called from the client, and state what it exposes.
-6. Apply code with `unica.code.patch`, one verifiable step at a time.
-7. Verify statically with `unica.code.diagnostics`; check syntax with `unica.check` (test runs are outside the v0.13 surface) and report runtime behavior as unverified.
+6. Apply code with `unica.apply`, one verifiable step at a time.
+7. Verify statically with `unica.check` on the module node (test runs are outside the v0.13 surface) and report runtime behavior as unverified.
 
 ## Design rules
 

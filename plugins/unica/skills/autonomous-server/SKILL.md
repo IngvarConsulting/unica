@@ -7,7 +7,7 @@ description: "Автономный сервер отладки 1С. Исполь
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.run`, `unica.meta.info`, `unica.code.search`, and `unica.code.diagnostics`.
+- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.run`, `unica.view` on the object node, `unica.search`, and `unica.check`.
 - Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
@@ -19,7 +19,7 @@ description: "Автономный сервер отладки 1С. Исполь
 ## Workflow
 
 1. Identify the debug target: HTTP service, web service, web client scenario, client MCP session, or isolated infobase startup.
-2. Map project source-sets with `unica.view {}`; inspect HTTP/WebService metadata with `unica.meta.info` and handlers with `unica.code.search`.
+2. Map project source-sets with `unica.view {}`; inspect HTTP/WebService metadata with `unica.view` on the object node and handlers with `unica.search`.
 3. Check the workspace with `unica.check {}`, then prepare the contour through `unica.run`: `infobase.create`, then `source.import`; each step is previewed with `dryRun: true` and applied with the `ifRev` the preview returned.
 4. Launch the client with `client.run` (`clientMode=thin`), then stop: an MCP client mode and a web-client URL are not on the v0.13 surface.
 5. If the user independently provides a web URL, report it as the hand-off point for an external browser-testing tool; otherwise report that no public MCP `unica` operation currently produces a web-client URL.

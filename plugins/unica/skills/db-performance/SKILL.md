@@ -7,7 +7,7 @@ description: "Производительность БД и запросов 1С.
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.code.search`, `unica.code.graph`, `unica.meta.info`, `unica.view` on the schema node, `unica.code.diagnostics`, `unica.docs`, and `unica.run`.
+- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.search`, `unica.view` on the object node, `unica.view` on the schema node, `unica.check`, `unica.docs`, and `unica.run`.
 - Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
@@ -26,9 +26,9 @@ description: "Производительность БД и запросов 1С.
 ## Workflow
 
 1. Name the slow scenario first: user action, API call, report, background job, exchange step, or posting.
-2. Extract exact query/DCS text with `unica.code.search` or `unica.view` on the schema node; inspect large candidate modules with `unica.view` on the module node (its `Method` branch lists the methods) before reading full bodies.
-3. Use `unica.code.graph` for callers/callees when the performance issue depends on execution path, query-in-loop risk, or impact of moving logic.
-4. Inspect `unica.meta.info` for both the local object structure and related modules, roles, subscriptions, functional options, or predefined items that can change the performance path.
+2. Extract exact query/DCS text with `unica.search` or `unica.view` on the schema node; inspect large candidate modules with `unica.view` on the module node (its `Method` branch lists the methods) before reading full bodies.
+3. Find callers with `unica.search` by the method name when the performance issue depends on execution path, query-in-loop risk, or impact of moving logic; a call graph is not on the v0.13 surface.
+4. Inspect `unica.view` on the object node for both the local object structure and related modules, roles, subscriptions, functional options, or predefined items that can change the performance path.
 5. Gather evidence: row counts, generated SQL, query plan, managed locks, lock order, lock/deadlock participants, long transaction boundaries, temp storage, TEMPDB or WAL pressure, and table/index names.
 6. Separate causes: inefficient platform query, missing or harmful index, broad virtual table read, query-in-loop, lock contention, DBMS maintenance, or data growth.
 7. Propose one measurable change at a time; check syntax with `unica.check` (test runs are outside the v0.13 surface), and require separate runtime plus timing/DBMS evidence before calling the change verified.
