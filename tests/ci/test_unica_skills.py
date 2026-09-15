@@ -1495,6 +1495,36 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                 for token in SCENARIO_REQUIRED_TOKENS.get(skill, []):
                     self.assertIn(token, text)
 
+    def test_query_optimize_pins_first_rows_constant_semantics(self) -> None:
+        text = (self.skill_root() / "query-optimize" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+
+        for token in (
+            "ПЕРВЫЕ &",
+            "Ожидается константа",
+            "СтрЗаменить",
+            "СтрЧислоВхождений",
+            "Символы.ПС",
+            "Формат(",
+            '"ЧГ=0"',
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, text)
+
+        normalized = " ".join(text.split())
+        self.assertIn(
+            'МаркерОграничения = "ПЕРВЫЕ 1" + Символы.ПС;', normalized
+        )
+        self.assertRegex(
+            normalized,
+            r"СтрЧислоВхождений\(Запрос\.Текст, МаркерОграничения\) <> 1",
+        )
+        self.assertIn(
+            '"ПЕРВЫЕ " + Формат(Количество, "ЧГ=0") + Символы.ПС',
+            normalized,
+        )
+
     def test_skill_guidance_never_reintroduces_removed_code_grep_tool(self) -> None:
         offenders = [
             path.relative_to(self.repo_root()).as_posix()
