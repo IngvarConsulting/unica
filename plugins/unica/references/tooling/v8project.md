@@ -156,7 +156,7 @@ directory named `main` keeps it.
 Syntax checks are `unica.check`; test runs and Designer/EDT conversion are not
 operations of the dictionary. A previewApply operation is applied with the
 `ifRev` its preview returned; a changed workspace or plan answers
-`revision_mismatch` or `concurrent_change` instead of applying. ADR-0016
+`stale_revision` or `concurrent_change` instead of applying. ADR-0016
 continues to own the future full-dump publication contract; its transaction
 guarantees do not make the current applied route executable.
 

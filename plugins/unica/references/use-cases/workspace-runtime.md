@@ -83,7 +83,7 @@ source-set path itself has no stronger structural evidence.
 | Launch a 1C client | `client.run`, `clientMode`, optional `execute`, `waitForExit`, `waitTimeoutMs`; terminal, no preview required |
 
 A previewApply operation is applied with the `ifRev` its preview returned; a
-changed workspace or plan answers `revision_mismatch` or `concurrent_change`
+changed workspace or plan answers `stale_revision` or `concurrent_change`
 instead of applying. Syntax checks are `unica.check`; test runs, Designer/EDT
 conversion, Designer `rawKeys` and extension property sync are not on the v0.13
 surface. Keep a
