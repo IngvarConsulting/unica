@@ -4,7 +4,7 @@ const CALL_GRAPH_PAGE_LIMIT: usize = 50;
 
 use super::v13_call_graph::{
     branch_collection, branch_direction, branch_owner, extend_method_node, fetch_summary,
-    CallGraphSummary, CALL_GRAPH_SECTION,
+    module_file_for_placed, placed_for_module_file, CallGraphSummary, CALL_GRAPH_SECTION,
 };
 use super::v13_read_modes::{filter_diff_data, project_view_sections, search_scope_prefix};
 use crate::application::invocation_store::ToolIdentity;
@@ -12,7 +12,7 @@ use crate::application::operation_descriptors::ExecutionClass;
 use crate::application::result_store::ViewCursorStore;
 use crate::application::tool_contracts::SurfaceRelease;
 use crate::application::v13::apply::parse_request as parse_apply_request;
-use crate::application::v13::find::FindRequest;
+use crate::application::v13::find::{FindIndex, FindRequest};
 use crate::application::v13::resolve::{ResolveRequest, ResolvedLines, ResolvedSource};
 use crate::application::v13::tool_catalog::catalog_for;
 use crate::application::v13::view::{ViewRequest, ViewService};
@@ -395,20 +395,41 @@ impl CanonicalV13ReadService {
                 return owner_result;
             }
             return match self.call_graph_summary(invocation, &owner, cancellation) {
-                Ok(summary) => {
+                Ok((summary, directory)) => {
                     let mut answer = owner_result;
                     if let Some(reason) = summary.reason.clone() {
                         answer.warnings.push(json!({"callGraph": reason}));
                     }
-                    answer.data = Some(branch_collection(
-                        &address,
-                        direction,
-                        &summary,
-                        // Резолвер адреса по пути к ветви не подключён: сосед,
-                        // названный файлом, попадёт в `limits`, а не в ответ
-                        // внутренним именем анализатора.
-                        |_| None,
-                    ));
+                    // Сосед, которого анализатор называет файлом, получает адрес
+                    // через раскладку: файл модуля → дескриптор → узел → роль
+                    // модуля. Раскладка строится один раз и только когда такой
+                    // сосед есть; кого раскладка не размещает, тот остаётся в
+                    // `limits`.
+                    let directory = match directory {
+                        Some(directory) => Some(directory),
+                        None if summary.names_a_peer_by_file() => {
+                            match self.layout_directory(
+                                invocation,
+                                Some(owner.to_string()),
+                                owner.source_set(),
+                                cancellation,
+                            ) {
+                                Ok(directory) => Some(directory),
+                                Err(refusal) => return *refusal,
+                            }
+                        }
+                        None => None,
+                    };
+                    let source_set = owner.source_set();
+                    answer.data = Some(branch_collection(&address, direction, &summary, |path| {
+                        let directory = directory.as_ref()?;
+                        let (placed, role) = placed_for_module_file(path)?;
+                        let entry = directory.locate_path(&placed)?;
+                        if entry.at().split(':').next() != Some(source_set) {
+                            return None;
+                        }
+                        QualifiedAddress::parse(&format!("{}.Module.{role}", entry.at())).ok()
+                    }));
                     answer.cursor = None;
                     answer
                 }
@@ -441,7 +462,7 @@ impl CanonicalV13ReadService {
                 );
             }
             match self.call_graph_summary(invocation, &address, cancellation) {
-                Ok(summary) => {
+                Ok((summary, _directory)) => {
                     if let Some(reason) = summary.reason.clone() {
                         result.warnings.push(json!({"callGraph": reason}));
                     }
@@ -467,26 +488,53 @@ impl CanonicalV13ReadService {
 
     /// Сводка графа вызовов для одного метода.
     ///
-    /// Личность узла строится из адреса; модуль, который анализатор называет
-    /// файлом, требует разрешённого пути, и пока резолвер к этому маршруту не
-    /// подключён, такой адрес отказывает названным случаем, а не отвечает
-    /// пустым графом.
+    /// Личность узла строится из адреса; модуль формы или команды анализатор
+    /// называет файлом, и путь к нему даёт раскладка — та же, которой живёт
+    /// `resolve`. Раскладка строится только для таких адресов и возвращается
+    /// вызывающему, чтобы соседей, названных файлом, не переводить второй
+    /// сборкой.
     fn call_graph_summary(
         &self,
         invocation: &ActorBoundExecution,
         method_at: &QualifiedAddress,
         cancellation: &CancellationToken,
-    ) -> Result<CallGraphSummary, Box<DomainResult>> {
-        let identity = CallGraphIdentity::from_address(method_at, None).map_err(|error| {
+    ) -> Result<(CallGraphSummary, Option<FindIndex>), Box<DomainResult>> {
+        let mut directory = None;
+        let identity = match CallGraphIdentity::from_address(method_at, None) {
+            Err(CallGraphIdentityError::PathRequired) => {
+                let built = self.layout_directory(
+                    invocation,
+                    Some(method_at.to_string()),
+                    method_at.source_set(),
+                    cancellation,
+                )?;
+                let owner = owning_metadata_address(method_at);
+                let path = built
+                    .locate_address(&owner)
+                    .and_then(|entry| module_file_for_placed(entry.kind(), entry.placed_path()?))
+                    .ok_or_else(|| {
+                        Box::new(error_result(
+                            Some(method_at.to_string()),
+                            RefusalCode::NotFound,
+                            format!(
+                                "the source layout does not place the module file of `{owner}`"
+                            ),
+                        ))
+                    })?;
+                let identity = CallGraphIdentity::from_address(method_at, Some(&path));
+                directory = Some(built);
+                identity
+            }
+            other => other,
+        };
+        let identity = identity.map_err(|error| {
             Box::new(error_result(
                 Some(method_at.to_string()),
-                match error {
-                    CallGraphIdentityError::PathRequired => RefusalCode::UnsupportedSection,
-                    _ => RefusalCode::BadValue,
-                },
+                RefusalCode::BadValue,
                 match error {
                     CallGraphIdentityError::PathRequired => {
-                        "the analyzer names this module by file, and the call graph route does not resolve the path yet".to_string()
+                        "the analyzer names this module by file, and its path could not be resolved"
+                            .to_string()
                     }
                     CallGraphIdentityError::UnsupportedRole(role) => {
                         format!("call graph does not cover module role `{role}` yet")
@@ -509,7 +557,7 @@ impl CanonicalV13ReadService {
                 format!("operational config is unreadable: {diagnostic}"),
             ))
         })?;
-        fetch_summary(
+        let summary = fetch_summary(
             self.ports.as_ref(),
             workspace,
             method_at.source_set(),
@@ -526,7 +574,45 @@ impl CanonicalV13ReadService {
                 RefusalCode::ProviderUnavailable,
                 error,
             ))
-        })
+        })?;
+        Ok((summary, directory))
+    }
+
+    /// Справочник раскладки одного допущенного набора — тот же, что строит
+    /// `resolve`: адрес ↔ место в исходниках.
+    fn layout_directory(
+        &self,
+        invocation: &ActorBoundExecution,
+        at: Option<String>,
+        source_set: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<FindIndex, Box<DomainResult>> {
+        let sources = invocation.read_sources().map_err(|error| {
+            Box::new(error_result(
+                at.clone(),
+                RefusalCode::ProviderUnavailable,
+                error,
+            ))
+        })?;
+        let source = sources
+            .iter()
+            .find(|source| source.source_set_name() == source_set)
+            .ok_or_else(|| {
+                Box::new(error_result(
+                    at.clone(),
+                    RefusalCode::ProviderUnavailable,
+                    format!("source set `{source_set}` was not admitted by the workspace actor"),
+                ))
+            })?;
+        let root = source.retained_root();
+        let layout = vec![LayoutFindSource::new(
+            source.source_set_name(),
+            source.source_kind(),
+            root.as_ref(),
+        )];
+        self.find_builder
+            .build(&layout, source.deadline(), cancellation)
+            .map_err(|error| Box::new(error_result(at, error.code(), error.to_string())))
     }
 
     fn execute_search(
@@ -1260,34 +1346,14 @@ impl CanonicalV13ReadService {
         cancellation: &CancellationToken,
     ) -> DomainResult {
         let at = address.to_string();
-        let sources = match invocation.read_sources() {
-            Ok(sources) => sources,
-            Err(error) => {
-                return error_result(Some(at), RefusalCode::ProviderUnavailable, error);
-            }
-        };
-        let Some(source) = sources
-            .iter()
-            .find(|source| source.source_set_name() == address.source_set())
-        else {
-            return error_result(
-                Some(at),
-                RefusalCode::ProviderUnavailable,
-                "resolve source set was not admitted by the workspace actor",
-            );
-        };
-        let root = source.retained_root();
-        let layout = vec![LayoutFindSource::new(
-            source.source_set_name(),
-            source.source_kind(),
-            root.as_ref(),
-        )];
-        let directory = match self
-            .find_builder
-            .build(&layout, source.deadline(), cancellation)
-        {
+        let directory = match self.layout_directory(
+            invocation,
+            Some(at.clone()),
+            address.source_set(),
+            cancellation,
+        ) {
             Ok(directory) => directory,
-            Err(error) => return error_result(Some(at), error.code(), error.to_string()),
+            Err(refusal) => return *refusal,
         };
         let owner = owning_metadata_address(address);
         let Some(entry) = directory.locate_address(&owner) else {
