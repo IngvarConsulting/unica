@@ -19,7 +19,7 @@
 use super::protocol::InvocationRequest;
 use super::v13_infobase_exports::{
     closed_workspace_relative_path, digest_optional_workspace_file, digest_required_workspace_file,
-    map_runner_code, valid_1c_identifier, CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
+    runner_rejection, valid_1c_identifier, CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
 };
 use crate::application::invocation_store::ToolIdentity;
 use crate::domain::cancellation::CancellationToken;
@@ -572,7 +572,7 @@ fn parse_runner_output(output: ProcessOutput) -> Result<Value, DomainResult> {
             .as_str()
             .map(redactor)
             .unwrap_or_else(|| "v8-runner failed without a typed message".to_string());
-        return Err(reject(map_runner_code(code), message));
+        return Err(runner_rejection(Some(OPERATION.to_string()), code, message));
     }
     Ok(envelope)
 }
@@ -716,6 +716,7 @@ fn reject(code: RefusalCode, message: impl Into<String>) -> DomainResult {
 
 #[cfg(test)]
 mod tests {
+    use super::super::v13_infobase_exports::map_runner_code;
     use super::*;
     use crate::domain::refusal::Outcome;
     use std::fs;

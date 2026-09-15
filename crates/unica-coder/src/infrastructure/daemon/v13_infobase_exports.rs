@@ -6,7 +6,7 @@ use super::protocol::InvocationRequest;
 use crate::application::invocation_store::ToolIdentity;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::invocation::{DomainResult, SafeIdentityHash};
-use crate::domain::refusal::RefusalCode;
+use crate::domain::refusal::{RefusalCode, RefusalDetail};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::{
     bundled_tool_version, resolve_bundled_tool, BundledTool,
@@ -911,7 +911,11 @@ fn parse_runner_output(
             .as_str()
             .map(redactor)
             .unwrap_or_else(|| "v8-runner failed without a typed message".to_string());
-        return Err(reject(operation, map_runner_code(code), message));
+        return Err(runner_rejection(
+            Some(operation.name().to_string()),
+            code,
+            message,
+        ));
     }
     Ok(envelope)
 }
@@ -942,6 +946,28 @@ const RUNNER_WIRE_CODES: [&str; 9] = [
 /// `platform_failure`, и различать их Unica не должна: ни один из трёх не решается
 /// ни повтором, ни правкой вызова — нужен человек. Поэтому прав мы заранее не
 /// проверяем: факта отказа платформы достаточно.
+/// Уточнение к коду раннера, когда оно есть: «платформа, версия или соединение
+/// не готовы» — это отсутствующий поставщик, и агент видит причину, а не только
+/// исход. `platform_failure` уточнения не получает намеренно (см. выше).
+pub(super) fn map_runner_detail(code: &str) -> Option<RefusalDetail> {
+    match code {
+        "environment_unavailable" => Some(RefusalDetail::ProviderAbsent),
+        _ => None,
+    }
+}
+
+/// Отказ по коду раннера: с уточнением, когда словарь его знает, иначе по коду.
+pub(super) fn runner_rejection(
+    at: Option<String>,
+    code: &str,
+    message: impl Into<String>,
+) -> DomainResult {
+    match map_runner_detail(code) {
+        Some(detail) => DomainResult::canonical_rejection_detailed(at, detail, message),
+        None => DomainResult::canonical_rejection(at, map_runner_code(code), message),
+    }
+}
+
 pub(super) fn map_runner_code(code: &str) -> RefusalCode {
     match code {
         // Платформа сказала нет: авторизация, права, лицензия, занятая база.
