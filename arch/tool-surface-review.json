@@ -78,8 +78,8 @@
   "unica.run": {
     "result": {
       "contract": "typed",
-      "now": "Вызов без `op` до source admission возвращает закрытый словарь направленных runtime-намерений, каждому из которых нужна платформа или база; `infobase.create`, `source.import`, `cf.export`, `cf.import`, `infobase.export`, `infobase.import` и `client.run` реализованы; создание, импорт исходников, выгрузки и загрузки используют неисполняющий preview v8-runner, revision-fenced apply и независимую квитанцию файла, а терминальный `client.run` запускает клиента сразу с необязательным превью и без забора",
-      "target": "Подключать остальные две направленные операции через preview/apply, capability-specific admission и закрытые provider-контракты"
+      "now": "Вызов без `op` до source admission возвращает закрытый словарь направленных runtime-намерений, каждому из которых нужна платформа или база; `infobase.create`, `source.import`, `source.export`, `cf.export`, `cf.import`, `infobase.export`, `infobase.import` и `client.run` реализованы; создание, обмен с исходниками, выгрузки и загрузки используют неисполняющий preview v8-runner, revision-fenced apply и независимую квитанцию файла, а терминальный `client.run` запускает клиента сразу с необязательным превью и без забора",
+      "target": "Подключить остальную одну направленную операцию, `artifact.build`, через preview/apply, capability-specific admission и закрытый provider-контракт"
     },
     "scenarios": [
       "Получить машинно-читаемый словарь допустимых runtime намерений",

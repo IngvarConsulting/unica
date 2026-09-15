@@ -16,6 +16,7 @@ mod v13_read_modes;
 mod v13_run_dictionary;
 #[allow(dead_code)]
 mod v13_service;
+mod v13_source_export;
 mod v13_source_import;
 mod v13_workspace_bootstrap;
 

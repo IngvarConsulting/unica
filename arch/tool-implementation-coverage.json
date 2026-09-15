@@ -94,7 +94,7 @@
     },
     "unica.run": {
       "status": "partial",
-      "reason": "The closed directional nine-operation dictionary, infobase creation, source import, configuration-package export and import, DT export, DT restore and the terminal client launch are implemented; creation, the exports and the three imports go through non-executing preview and revision-fenced apply, and the other two run operations remain unsupported.",
+      "reason": "The closed directional nine-operation dictionary, infobase creation, source import and export, configuration-package export and import, DT export, DT restore and the terminal client launch are implemented; creation, the exports and the imports go through non-executing preview and revision-fenced apply, and the remaining run operation stays unsupported.",
       "evidence": [{
         "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
         "test": "production_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"
@@ -151,9 +151,21 @@
       }]
     },
     "source.export": {
-      "status": "unsupported",
-      "reason": "Source dump execution has not been connected to the v0.13 run adapter.",
-      "evidence": []
+      "status": "supported",
+      "reason": "Exporting the infobase into a workspace source set is implemented as previewApply over v8-runner dump in full or incremental mode: the preview names the declared source set, the mode and a target inside the workspace without writing, apply is fenced by ifRev built from the project file, the declared composition, the arguments and the target, and Unica verifies the export by counting the files in the target rather than trusting the provider.",
+      "evidence": [{
+        "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
+        "test": "v5_source_export_prepares_before_source_admission_and_keeps_the_revision_gate"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs",
+        "test": "preview_names_the_target_inside_the_workspace_without_writing"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs",
+        "test": "apply_repeats_the_preview_and_counts_the_exported_files_itself"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs",
+        "test": "preview_refuses_a_target_outside_the_workspace_an_undeclared_set_or_a_write"
+      }]
     },
     "artifact.build": {
       "status": "unsupported",

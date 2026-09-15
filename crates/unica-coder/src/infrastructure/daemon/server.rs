@@ -390,6 +390,12 @@ pub(super) enum V5ActorBoundCanonicalInvocation {
         import: Arc<super::v13_source_import::PreparedSourceImport>,
         workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
     },
+    /// Выгрузка базы в исходники: previewApply с забором, известна длинной
+    /// по внешнему процессу.
+    SourceExport {
+        export: Arc<super::v13_source_export::PreparedSourceExport>,
+        workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
+    },
     Documentation {
         search: Arc<super::v13_documentation::PreparedDocumentationSearch>,
         workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
@@ -417,6 +423,9 @@ pub(super) enum V5PreparedCanonicalInvocation {
     },
     SourceImport {
         import: Arc<super::v13_source_import::PreparedSourceImport>,
+    },
+    SourceExport {
+        export: Arc<super::v13_source_export::PreparedSourceExport>,
     },
     Documentation {
         search: Arc<super::v13_documentation::PreparedDocumentationSearch>,
@@ -581,6 +590,19 @@ impl V5CanonicalInvocationRuntime {
                 });
             }
         }
+        match super::v13_source_export::prepare(&request) {
+            super::v13_source_export::Preparation::NotApplicable => {}
+            super::v13_source_export::Preparation::Rejected(result) => {
+                return Err(V5CanonicalPrepareError::Rejected(result))
+            }
+            super::v13_source_export::Preparation::Ready(export) => {
+                let workspace_identity_hash = export.workspace_identity_hash();
+                return Ok(V5ActorBoundCanonicalInvocation::SourceExport {
+                    export,
+                    workspace_identity_hash,
+                });
+            }
+        }
         match super::v13_documentation::prepare(&request) {
             super::v13_documentation::Preparation::NotApplicable => {}
             super::v13_documentation::Preparation::Rejected(result) => {
@@ -627,7 +649,8 @@ impl V5ActorBoundCanonicalInvocation {
             | Self::ClientRun { .. }
             | Self::CfImport { .. }
             | Self::InfobaseCreate { .. }
-            | Self::SourceImport { .. } => None,
+            | Self::SourceImport { .. }
+            | Self::SourceExport { .. } => None,
             // Справка не известна длинной: локальное попадание отвечает
             // сразу, сетевое доходит до седьмой секунды. Значит у неё тот же
             // cutoff, что у чтений, — захваченный при bind.
@@ -657,6 +680,10 @@ impl V5ActorBoundCanonicalInvocation {
                 ..
             }
             | Self::SourceImport {
+                workspace_identity_hash,
+                ..
+            }
+            | Self::SourceExport {
                 workspace_identity_hash,
                 ..
             }
@@ -693,6 +720,9 @@ impl V5ActorBoundCanonicalInvocation {
             Self::SourceImport { import, .. } => {
                 Ok(V5PreparedCanonicalInvocation::SourceImport { import })
             }
+            Self::SourceExport { export, .. } => {
+                Ok(V5PreparedCanonicalInvocation::SourceExport { export })
+            }
             Self::Documentation { search, .. } => {
                 Ok(V5PreparedCanonicalInvocation::Documentation { search })
             }
@@ -710,7 +740,8 @@ impl V5PreparedCanonicalInvocation {
             | Self::ClientRun { .. }
             | Self::CfImport { .. }
             | Self::InfobaseCreate { .. }
-            | Self::SourceImport { .. } => &INFOBASE_EXPORT_CLASS,
+            | Self::SourceImport { .. }
+            | Self::SourceExport { .. } => &INFOBASE_EXPORT_CLASS,
             Self::Documentation { .. } => &ExecutionClass::InlineCandidate,
         }
     }
@@ -744,6 +775,7 @@ impl V5PreparedCanonicalInvocation {
             Self::CfImport { import } => Ok(import.execute(cancellation)),
             Self::InfobaseCreate { create } => Ok(create.execute(cancellation)),
             Self::SourceImport { import } => Ok(import.execute(cancellation)),
+            Self::SourceExport { export } => Ok(export.execute(cancellation)),
             Self::Documentation { search } => Ok(search.execute(cancellation)),
         }
     }
@@ -6991,6 +7023,76 @@ struct ActorLogicalReadLease {"#,
             preparations.load(Ordering::SeqCst),
             0,
             "source.import must not enter the PlatformXml service"
+        );
+    }
+
+    #[test]
+    fn v5_source_export_prepares_before_source_admission_and_keeps_the_revision_gate() {
+        // A-6 зонтика #871: выгрузка базы в исходники — previewApply с забором,
+        // готовится до admission PlatformXml и известна длинной по внешнему
+        // процессу; применение без `ifRev` отказывает `bad_value`.
+        let workspace = tempfile::tempdir().expect("temporary source.export workspace");
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\ninfobase:\n  connection: \"File=.build/infobase\"\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .expect("write a workspace descriptor with one source set");
+        let preparations = Arc::new(AtomicUsize::new(0));
+        let runtime = V5CanonicalInvocationRuntime::new(
+            Arc::new(CountingPrepareService {
+                preparations: Arc::clone(&preparations),
+            }),
+            Arc::new(TokioClock),
+        );
+        let request = |arguments: serde_json::Value| {
+            InvocationRequest::new(
+                ToolIdentity::Run,
+                arguments,
+                std::fs::canonicalize(workspace.path())
+                    .expect("canonical workspace")
+                    .to_string_lossy(),
+                7_000,
+            )
+            .expect("valid source.export request")
+        };
+
+        for arguments in [
+            serde_json::json!({"op": "source.export", "args": {"mode": "full"}, "dryRun": true}),
+            serde_json::json!({"op": "source.export", "args": {"mode": "incremental", "sourceSet": "main"}, "dryRun": true}),
+            serde_json::json!({"op": "source.export", "args": {"mode": "full"}, "dryRun": false, "ifRev": "unica-source-export-sha256-v1:test"}),
+        ] {
+            let bound = runtime
+                .bind(request(arguments))
+                .expect("source.export binds without a PlatformXml source set");
+            assert!(matches!(
+                bound,
+                V5ActorBoundCanonicalInvocation::SourceExport { .. }
+            ));
+            let prepared = bound.prepare().expect("source.export preparation");
+            assert_eq!(
+                prepared.execution_class(),
+                &ExecutionClass::KnownLong(KnownLongReason::ExternalProcess)
+            );
+        }
+
+        let unfenced = match runtime.bind(request(serde_json::json!({
+            "op": "source.export",
+            "args": {"mode": "full"},
+            "dryRun": false,
+        }))) {
+            Err(V5CanonicalPrepareError::Rejected(result)) => result,
+            Ok(_) => panic!("an apply without ifRev was accepted"),
+            Err(other) => panic!("apply without ifRev returned infrastructure failure: {other:?}"),
+        };
+        assert_eq!(unfenced.diagnostics[0]["code"], "bad_value");
+        assert!(unfenced.diagnostics[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("requires ifRev"));
+        assert_eq!(
+            preparations.load(Ordering::SeqCst),
+            0,
+            "source.export must not enter the PlatformXml service"
         );
     }
 
