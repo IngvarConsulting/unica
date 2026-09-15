@@ -53,12 +53,14 @@ impl CallGraphSummary {
         }
     }
 
-    /// Есть ли среди соседей тот, кого анализатор называет файлом: только ему
-    /// нужна раскладка, чтобы получить адрес.
-    pub(super) fn names_a_peer_by_file(&self) -> bool {
-        [&self.callers, &self.callees]
+    /// Есть ли в запрошенном направлении сосед, которого анализатор называет
+    /// файлом: только ему нужна раскладка, чтобы получить адрес. Направление
+    /// спрашивается именно потому, что страница отвечает за своё: сосед другого
+    /// направления не повод строить раскладку и не повод отказать этой странице.
+    pub(super) fn names_a_peer_by_file(&self, direction: CallGraphDirection) -> bool {
+        self.result(direction)
+            .edges
             .iter()
-            .flat_map(|result| result.edges.iter())
             .any(|edge| edge.id.starts_with("method/file/"))
     }
 
@@ -539,6 +541,32 @@ mod tests {
             placed_for_module_file("Catalogs/Валюты/Ext/ObjectModule.bsl"),
             None
         );
+    }
+
+    /// Страница отвечает за своё направление: файловый сосед у вызываемых не
+    /// заставляет страницу вызывающих просить раскладку.
+    #[test]
+    fn a_file_named_peer_is_seen_only_in_its_own_direction() {
+        let summary = CallGraphSummary {
+            callers: ready(
+                1,
+                vec![edge(
+                    "method/object/Catalog/Валюты/ПриЗаписи",
+                    CallEdgeProvenance::Resolved,
+                )],
+            ),
+            callees: ready(
+                1,
+                vec![edge(
+                    "method/file/Catalogs/Валюты/Forms/Форма/Ext/Form/Module.bsl::ПриОткрытии",
+                    CallEdgeProvenance::Resolved,
+                )],
+            ),
+            reason: None,
+        };
+
+        assert!(!summary.names_a_peer_by_file(CallGraphDirection::Callers));
+        assert!(summary.names_a_peer_by_file(CallGraphDirection::Callees));
     }
 
     /// Адрес, не называющий ветвь графа, направления не даёт.

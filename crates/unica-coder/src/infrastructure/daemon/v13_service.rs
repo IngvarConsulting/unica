@@ -407,7 +407,7 @@ impl CanonicalV13ReadService {
                     // `limits`.
                     let directory = match directory {
                         Some(directory) => Some(directory),
-                        None if summary.names_a_peer_by_file() => {
+                        None if summary.names_a_peer_by_file(direction) => {
                             match self.layout_directory(
                                 invocation,
                                 Some(owner.to_string()),
