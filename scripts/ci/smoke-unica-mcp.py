@@ -1956,6 +1956,10 @@ def _stable_v13_tool_contract(
 def _exercise_v13_packaged_surface(
     session: McpSession, request_id: int
 ) -> int:
+    # #800: `check {}` отвечает вердиктом, `view {}` — фактами. Перечень
+    # наборов из вердикта убран, он живёт в `sourceSets` фактов; та же
+    # раскладка проверяется в release-assessment (`workspace-check`,
+    # `workspace-facts`).
     checked = _call(
         session,
         request_id,
@@ -1964,12 +1968,31 @@ def _exercise_v13_packaged_surface(
         structured_content=True,
     )
     request_id += 1
+    verdict = checked.get("data", {})
     if (
         checked.get("ok") is not True
-        or checked.get("data", {}).get("status") != "admitted"
-        or set(checked["data"].get("sources", [])) != {"main", "extension"}
+        or verdict.get("status") != "passed"
+        or verdict.get("ready") is not True
+        or "sources" in verdict
     ):
-        raise SystemExit(f"canonical check did not admit both source sets: {checked}")
+        raise SystemExit(f"canonical check did not pass the workspace verdict: {checked}")
+
+    facts = _call(
+        session,
+        request_id,
+        "unica.view",
+        {},
+        structured_content=True,
+    )
+    request_id += 1
+    declared = facts.get("data", {}).get("sourceSets")
+    names = (
+        {item.get("name") for item in declared if isinstance(item, dict)}
+        if isinstance(declared, list)
+        else set()
+    )
+    if facts.get("ok") is not True or names != {"main", "extension"}:
+        raise SystemExit(f"canonical view did not name both source sets: {facts}")
 
     viewed = _call(
         session,
