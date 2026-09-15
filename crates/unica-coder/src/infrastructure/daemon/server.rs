@@ -4408,9 +4408,16 @@ struct ActorLogicalReadLease {"#,
                 serde_json::json!({"op": "syntax.check", "args": {"mode": "shell"}}),
                 "unsupported_operation",
             ),
+            // `client.run` реализован: пустые аргументы — ошибка вызова, а не
+            // нереализованная операция.
             (
                 ToolIdentity::Run,
                 serde_json::json!({"op": "client.run", "args": {}}),
+                "bad_value",
+            ),
+            (
+                ToolIdentity::Run,
+                serde_json::json!({"op": "artifact.build", "args": {}}),
                 "unsupported_operation",
             ),
             (
