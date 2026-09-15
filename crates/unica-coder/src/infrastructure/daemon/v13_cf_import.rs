@@ -47,6 +47,8 @@ pub(super) const OPERATION: &str = "cf.import";
 /// раннер называет свои команды по-своему.
 const RUNNER_COMMAND: &str = "load";
 const RUNNER_MODE: &str = "load";
+/// Состояния совместимости, которые раннер 0.9.0 обещает в `compatibility_state`.
+const COMPATIBILITY_STATES: [&str; 4] = ["supported", "absent", "not_established", "not_probed"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ArtifactKind {
@@ -600,6 +602,19 @@ fn validate_envelope(
         return Err(reject(
             RefusalCode::InvalidResult,
             format!("v8-runner {phase} answered for a different artifact or target"),
+        ));
+    }
+    // Поля состояния уходят в ответ как улика провайдера: без них или с
+    // чужим типом применение не признаётся, а не отдаётся с `null`.
+    if applied
+        && (!data["compatibility_state"]
+            .as_str()
+            .is_some_and(|state| COMPATIBILITY_STATES.contains(&state))
+            || !data["execution"]["payload"]["update_db_cfg_ran"].is_boolean())
+    {
+        return Err(reject(
+            RefusalCode::InvalidResult,
+            "v8-runner apply result omitted the compatibility state or the database update flag",
         ));
     }
     let reported = data["artifact_path"].as_str().ok_or_else(|| {
@@ -1219,6 +1234,64 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("without applying"));
+    }
+
+    #[test]
+    fn apply_refuses_an_envelope_without_the_state_it_attests() {
+        let root = workspace();
+        let revision = preview(root.path(), "dist/main.cf", None).rev.unwrap();
+        let prepared = import_of(root.path(), "dist/main.cf", None, false, Some(revision));
+        let mut applied = envelope(&prepared.arguments.input, ArtifactKind::Cf, None, true);
+        applied["data"]["compatibility_state"] = json!("maybe");
+        let runner = SequenceRunner::new(vec![
+            process(
+                envelope(&prepared.arguments.input, ArtifactKind::Cf, None, false),
+                true,
+            ),
+            process(applied, true),
+        ]);
+        let result = execute_with_resolved_runner(
+            &prepared,
+            &runner,
+            CancellationToken::new(),
+            &tool(root.path()),
+            "0.9.0",
+        );
+        assert_eq!(
+            result.diagnostics[0]["code"], "invalid_result",
+            "{result:?}"
+        );
+        assert!(result.diagnostics[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("compatibility state"));
+
+        let root = workspace();
+        let revision = preview(root.path(), "dist/main.cf", None).rev.unwrap();
+        let prepared = import_of(root.path(), "dist/main.cf", None, false, Some(revision));
+        let mut applied = envelope(&prepared.arguments.input, ArtifactKind::Cf, None, true);
+        applied["data"]["execution"]["payload"]
+            .as_object_mut()
+            .unwrap()
+            .remove("update_db_cfg_ran");
+        let runner = SequenceRunner::new(vec![
+            process(
+                envelope(&prepared.arguments.input, ArtifactKind::Cf, None, false),
+                true,
+            ),
+            process(applied, true),
+        ]);
+        let result = execute_with_resolved_runner(
+            &prepared,
+            &runner,
+            CancellationToken::new(),
+            &tool(root.path()),
+            "0.9.0",
+        );
+        assert_eq!(
+            result.diagnostics[0]["code"], "invalid_result",
+            "{result:?}"
+        );
     }
 
     #[test]
