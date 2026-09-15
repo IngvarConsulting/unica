@@ -87,7 +87,6 @@ pub(super) fn run_dictionary_result() -> DomainResult {
                 RunIntent::InfobaseCreate
                     | RunIntent::InfobaseBuild
                     | RunIntent::SourceDump
-                    | RunIntent::SourceConvert
                     | RunIntent::ArtifactBuild
                     | RunIntent::InfobaseConfigurationExport
                     | RunIntent::InfobaseConfigurationLoad

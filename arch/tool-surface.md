@@ -140,7 +140,7 @@ List canonical runtime operations and their invocation contract, or preview/exec
 
 **Результат сейчас:** Вызов без `op` до source admission возвращает закрытый словарь направленных runtime-намерений, каждому из которых нужна платформа или база; `infobase.configuration.export`, `infobase.dump`, `infobase.restore` и `client.run` реализованы; выгрузки и загрузка используют неисполняющий preview v8-runner, revision-fenced apply и независимую квитанцию файла, а терминальный `client.run` запускает клиента сразу с необязательным превью и без забора (отвечают типизированным `data`)
 
-**Целевой контракт:** Подключать остальные шесть направленных операций через preview/apply, capability-specific admission и закрытые provider-контракты
+**Целевой контракт:** Подключать остальные пять направленных операций через preview/apply, capability-specific admission и закрытые provider-контракты
 
 **Сценарии:**
 

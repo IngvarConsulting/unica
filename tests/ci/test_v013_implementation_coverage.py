@@ -92,7 +92,7 @@ class V013ImplementationCoverageTests(unittest.TestCase):
         self.assertEqual(set(self.coverage["subjectTools"]), SUBJECT_TOOLS)
         self.assertEqual(set(self.coverage["compatibilityTools"]), COMPATIBILITY_TOOLS)
         self.assertEqual(set(self.coverage["runOperations"]), catalog_run_operations())
-        self.assertEqual(len(self.coverage["runOperations"]), 10)
+        self.assertEqual(len(self.coverage["runOperations"]), 9)
         self.assertNotIn("query.execute", self.coverage["runOperations"])
 
     def test_no_query_dictionary_invariant_remains_active(self) -> None:

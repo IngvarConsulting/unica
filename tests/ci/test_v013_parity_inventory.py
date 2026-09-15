@@ -141,7 +141,6 @@ RUN_OPERATIONS = {
     "infobase.create",
     "infobase.build",
     "source.dump",
-    "source.convert",
     "artifact.build",
     "infobase.configuration.export",
     "infobase.configuration.load",
@@ -670,11 +669,16 @@ class V013ParityInventoryTest(unittest.TestCase):
             ("operation=init", "infobase.create"),
             ("operation=build", "infobase.build"),
             ("operation=dump", "source.dump"),
-            ("operation=convert", "source.convert"),
             ("operation=make", "artifact.build"),
             ("operation=launch", "client.run"),
         )
         removed_legacy_run_variants = (
+            (
+                "operation=convert",
+                "v0.13 run dictionary publishes no successor: Designer/EDT "
+                "conversion needs EDT, which Unica does not read, and the old "
+                "dump-format migration goes through source.dump",
+            ),
             (
                 "operation=config-init",
                 "v0.13 run dictionary publishes no successor: the project file is "
@@ -1312,7 +1316,6 @@ class V013ParityInventoryTest(unittest.TestCase):
             "infobase.create",
             "infobase.build",
             "source.dump",
-            "source.convert",
             "artifact.build",
             "infobase.configuration.export",
             "infobase.configuration.load",

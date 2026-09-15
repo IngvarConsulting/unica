@@ -94,7 +94,7 @@
     },
     "unica.run": {
       "status": "partial",
-      "reason": "The closed directional ten-operation dictionary, configuration-package export, and DT export are implemented through non-executing preview and revision-fenced apply; the other eight run operations remain unsupported.",
+      "reason": "The closed directional nine-operation dictionary, configuration-package export, DT export, DT restore and the terminal client launch are implemented; the exports and the restore go through non-executing preview and revision-fenced apply, and the other five run operations remain unsupported.",
       "evidence": [{
         "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
         "test": "production_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"
@@ -129,11 +129,6 @@
     "source.dump": {
       "status": "unsupported",
       "reason": "Source dump execution has not been connected to the v0.13 run adapter.",
-      "evidence": []
-    },
-    "source.convert": {
-      "status": "unsupported",
-      "reason": "Source conversion execution has not been connected to the v0.13 run adapter.",
       "evidence": []
     },
     "artifact.build": {

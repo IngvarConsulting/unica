@@ -41,7 +41,6 @@ pub(crate) enum RunIntent {
     InfobaseCreate,
     InfobaseBuild,
     SourceDump,
-    SourceConvert,
     ArtifactBuild,
     InfobaseConfigurationExport,
     InfobaseConfigurationLoad,
@@ -64,7 +63,6 @@ impl RunOperation {
             RunIntent::InfobaseCreate => "infobase.create",
             RunIntent::InfobaseBuild => "infobase.build",
             RunIntent::SourceDump => "source.dump",
-            RunIntent::SourceConvert => "source.convert",
             RunIntent::ArtifactBuild => "artifact.build",
             RunIntent::InfobaseConfigurationExport => "infobase.configuration.export",
             RunIntent::InfobaseConfigurationLoad => "infobase.configuration.load",
@@ -79,7 +77,6 @@ impl RunOperation {
             RunIntent::InfobaseCreate => "Create an empty target 1C infobase.",
             RunIntent::InfobaseBuild => "Build or update a 1C infobase from attached sources.",
             RunIntent::SourceDump => "Export a 1C infobase into a workspace source set.",
-            RunIntent::SourceConvert => "Convert source sets between supported source formats.",
             RunIntent::ArtifactBuild => {
                 "Build a CF, CFE, EPF, or ERF artifact from attached sources."
             }
@@ -108,7 +105,7 @@ impl RunOperation {
 
     pub(crate) const fn effects(&self) -> &'static [&'static str] {
         match self.intent {
-            RunIntent::SourceConvert | RunIntent::ArtifactBuild => &["workspaceFiles"],
+            RunIntent::ArtifactBuild => &["workspaceFiles"],
             RunIntent::SourceDump
             | RunIntent::InfobaseConfigurationExport
             | RunIntent::InfobaseDump => &["infobaseRead", "workspaceFiles"],
@@ -377,7 +374,6 @@ fn run_dictionary() -> Vec<RunOperation> {
         RunIntent::InfobaseCreate,
         RunIntent::InfobaseBuild,
         RunIntent::SourceDump,
-        RunIntent::SourceConvert,
         RunIntent::ArtifactBuild,
         RunIntent::InfobaseConfigurationExport,
         RunIntent::InfobaseConfigurationLoad,
@@ -758,7 +754,6 @@ mod tests {
                 RunIntent::InfobaseCreate,
                 RunIntent::InfobaseBuild,
                 RunIntent::SourceDump,
-                RunIntent::SourceConvert,
                 RunIntent::ArtifactBuild,
                 RunIntent::InfobaseConfigurationExport,
                 RunIntent::InfobaseConfigurationLoad,
@@ -862,7 +857,8 @@ mod tests {
 
     #[test]
     // Имя удерживает счёт, которого больше нет: две операции сняты решением
-    // DEC.2026-09-09.PROJECT-CONFIG-IS-HANDWRITTEN. Переименовать нельзя —
+    // DEC.2026-09-09.PROJECT-CONFIG-IS-HANDWRITTEN, третья —
+    // DEC.2026-09-15.SOURCE-CONVERT-LEAVES-THE-DICTIONARY. Переименовать нельзя —
     // на это имя ссылаются принятые записи реестра как на доказательство, а
     // переименование там читается как правка обещания. Счёт в имени проверки
     // устаревает так же, как счёт в прозе правила (#798).
@@ -881,7 +877,6 @@ mod tests {
                 "infobase.create",
                 "infobase.build",
                 "source.dump",
-                "source.convert",
                 "artifact.build",
                 "infobase.configuration.export",
                 "infobase.configuration.load",
@@ -920,6 +915,32 @@ mod tests {
             ],
             "реализованы обе вертикали выгрузки, парная к ним загрузка и терминальный запуск клиента; проектный файл в словаре не числится вовсе"
         );
+    }
+
+    #[test]
+    fn v13_run_dictionary_names_no_operation_that_needs_edt() {
+        // Unica читает и пишет выгрузку Designer; операция, которой нужен EDT
+        // или его CLI, в словаре была бы адресом в тупик
+        // (DEC.2026-09-15.SOURCE-CONVERT-LEAVES-THE-DICTIONARY).
+        let catalog =
+            catalog_for(SurfaceRelease::V13).expect("v0.13 catalog must be test-loadable");
+        for operation in &catalog.run_dictionary {
+            assert!(
+                !operation.name().contains("convert"),
+                "{} converts between formats, and Unica supports one",
+                operation.name()
+            );
+            let description = operation.description().to_ascii_lowercase();
+            assert!(
+                !description.contains("edt") && !description.contains("source format"),
+                "{} promises a format Unica does not read: {description}",
+                operation.name()
+            );
+        }
+        assert!(catalog
+            .run_dictionary
+            .iter()
+            .all(|operation| operation.name() != "source.convert"));
     }
 
     #[test]
