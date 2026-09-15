@@ -640,10 +640,11 @@ fn execute_with_resolved_runner(
     if prepared.if_rev.as_deref() != Some(revision.as_str()) {
         return reject(
             prepared.operation,
-            RefusalCode::RevisionMismatch,
+            RefusalCode::StaleRevision,
             format!(
-                "{} plan or environment changed after preview; run dryRun: true again",
-                prepared.operation.name()
+                "{} plan or environment changed after preview: expected rev {revision}, ifRev {}; run dryRun: true again",
+                prepared.operation.name(),
+                prepared.if_rev.as_deref().unwrap_or("absent")
             ),
         );
     }
@@ -1928,7 +1929,7 @@ mod tests {
             execute_with_resolved_runner(&apply, &runner, CancellationToken::new(), &tool, "0.7.0");
 
         assert!(!result.ok);
-        assert_eq!(result.diagnostics[0]["code"], "revision_mismatch");
+        assert_eq!(result.diagnostics[0]["code"], "stale_revision");
         assert_eq!(runner.calls.lock().unwrap().len(), 1);
         assert!(!apply.arguments.named_file.exists());
     }

@@ -425,9 +425,15 @@ fn execute_with_resolved_runner(
         return result;
     }
     if prepared.if_rev.as_deref() != Some(revision.as_str()) {
+        // A stale `ifRev` is the caller's conflict with a known recovery, so it
+        // answers `stale_revision` and names both revisions
+        // (INV.WIRE.V13-REFUSAL-CHANNEL).
         return reject(
-            RefusalCode::RevisionMismatch,
-            "source.export plan or environment changed after preview; run dryRun: true again",
+            RefusalCode::StaleRevision,
+            format!(
+                "source.export plan or environment changed after preview: expected rev {revision}, ifRev {}; run dryRun: true again",
+                prepared.if_rev.as_deref().unwrap_or("absent")
+            ),
         );
     }
     if cancellation.is_cancelled() {
@@ -1170,7 +1176,7 @@ mod tests {
             ),
             &runner,
         );
-        assert_eq!(result.diagnostics[0]["code"], "revision_mismatch");
+        assert_eq!(result.diagnostics[0]["code"], "stale_revision");
         assert_eq!(runner.call_count(), 1);
 
         let preview_runner = SequenceRunner::new(vec![process(
