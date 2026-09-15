@@ -39,13 +39,13 @@ pub(crate) struct CatalogSemantics {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RunIntent {
     InfobaseCreate,
-    InfobaseBuild,
-    SourceDump,
+    SourceImport,
+    SourceExport,
     ArtifactBuild,
-    InfobaseConfigurationExport,
-    InfobaseConfigurationLoad,
-    InfobaseDump,
-    InfobaseRestore,
+    CfExport,
+    CfImport,
+    InfobaseExport,
+    InfobaseImport,
     ClientRun,
 }
 
@@ -61,13 +61,13 @@ impl RunOperation {
     pub(crate) const fn name(&self) -> &'static str {
         match self.intent {
             RunIntent::InfobaseCreate => "infobase.create",
-            RunIntent::InfobaseBuild => "infobase.build",
-            RunIntent::SourceDump => "source.dump",
+            RunIntent::SourceImport => "source.import",
+            RunIntent::SourceExport => "source.export",
             RunIntent::ArtifactBuild => "artifact.build",
-            RunIntent::InfobaseConfigurationExport => "infobase.configuration.export",
-            RunIntent::InfobaseConfigurationLoad => "infobase.configuration.load",
-            RunIntent::InfobaseDump => "infobase.dump",
-            RunIntent::InfobaseRestore => "infobase.restore",
+            RunIntent::CfExport => "cf.export",
+            RunIntent::CfImport => "cf.import",
+            RunIntent::InfobaseExport => "infobase.export",
+            RunIntent::InfobaseImport => "infobase.import",
             RunIntent::ClientRun => "client.run",
         }
     }
@@ -75,22 +75,26 @@ impl RunOperation {
     pub(crate) const fn description(&self) -> &'static str {
         match self.intent {
             RunIntent::InfobaseCreate => "Create an empty target 1C infobase.",
-            RunIntent::InfobaseBuild => "Build or update a 1C infobase from attached sources.",
-            RunIntent::SourceDump => "Export a 1C infobase into a workspace source set.",
+            RunIntent::SourceImport => {
+                "Import workspace sources into the infobase: build or update its configuration from the attached source sets."
+            }
+            RunIntent::SourceExport => {
+                "Export the infobase into a workspace source set."
+            }
             RunIntent::ArtifactBuild => {
                 "Build a CF, CFE, EPF, or ERF artifact from attached sources."
             }
-            RunIntent::InfobaseConfigurationExport => {
-                "Export a working configuration, database configuration, or extension from an infobase to CF or CFE."
+            RunIntent::CfExport => {
+                "Export the working configuration, the database configuration, or an extension out of the infobase to a CF or CFE file."
             }
-            RunIntent::InfobaseConfigurationLoad => {
-                "Load a CF or CFE configuration artifact into a target infobase."
+            RunIntent::CfImport => {
+                "Import a CF or CFE file into the infobase as its configuration or extension."
             }
-            RunIntent::InfobaseDump => {
+            RunIntent::InfobaseExport => {
                 "Export the complete infobase to a DT transfer file; this is not a backup."
             }
-            RunIntent::InfobaseRestore => {
-                "Load an infobase from a DT transfer file; the mode states whether an absent infobase is created or the data of an existing one is discarded."
+            RunIntent::InfobaseImport => {
+                "Import a DT transfer file as the infobase; the mode states whether an absent infobase is created or the data of an existing one is discarded."
             }
             RunIntent::ClientRun => "Launch an interactive 1C client session.",
         }
@@ -106,20 +110,20 @@ impl RunOperation {
     pub(crate) const fn effects(&self) -> &'static [&'static str] {
         match self.intent {
             RunIntent::ArtifactBuild => &["workspaceFiles"],
-            RunIntent::SourceDump
-            | RunIntent::InfobaseConfigurationExport
-            | RunIntent::InfobaseDump => &["infobaseRead", "workspaceFiles"],
+            RunIntent::SourceExport | RunIntent::CfExport | RunIntent::InfobaseExport => {
+                &["infobaseRead", "workspaceFiles"]
+            }
             RunIntent::InfobaseCreate
-            | RunIntent::InfobaseBuild
-            | RunIntent::InfobaseConfigurationLoad
-            | RunIntent::InfobaseRestore => &["infobase"],
+            | RunIntent::SourceImport
+            | RunIntent::CfImport
+            | RunIntent::InfobaseImport => &["infobase"],
             RunIntent::ClientRun => &["clientSession"],
         }
     }
 
     pub(crate) fn args_schema(&self) -> Option<Value> {
         match self.intent {
-            RunIntent::InfobaseConfigurationExport => Some(json!({
+            RunIntent::CfExport => Some(json!({
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
@@ -129,7 +133,7 @@ impl RunOperation {
                 },
                 "required": ["state", "output"]
             })),
-            RunIntent::InfobaseDump => Some(json!({
+            RunIntent::InfobaseExport => Some(json!({
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
@@ -137,7 +141,7 @@ impl RunOperation {
                 },
                 "required": ["output"]
             })),
-            RunIntent::InfobaseRestore => Some(json!({
+            RunIntent::InfobaseImport => Some(json!({
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
@@ -372,13 +376,13 @@ fn cursor(description: &'static str) -> Value {
 fn run_dictionary() -> Vec<RunOperation> {
     [
         RunIntent::InfobaseCreate,
-        RunIntent::InfobaseBuild,
-        RunIntent::SourceDump,
+        RunIntent::SourceImport,
+        RunIntent::SourceExport,
         RunIntent::ArtifactBuild,
-        RunIntent::InfobaseConfigurationExport,
-        RunIntent::InfobaseConfigurationLoad,
-        RunIntent::InfobaseDump,
-        RunIntent::InfobaseRestore,
+        RunIntent::CfExport,
+        RunIntent::CfImport,
+        RunIntent::InfobaseExport,
+        RunIntent::InfobaseImport,
         RunIntent::ClientRun,
     ]
     .into_iter()
@@ -387,9 +391,9 @@ fn run_dictionary() -> Vec<RunOperation> {
         rejects_sessions: intent == RunIntent::ClientRun,
         implemented: matches!(
             intent,
-            RunIntent::InfobaseConfigurationExport
-                | RunIntent::InfobaseDump
-                | RunIntent::InfobaseRestore
+            RunIntent::CfExport
+                | RunIntent::InfobaseExport
+                | RunIntent::InfobaseImport
                 | RunIntent::ClientRun
         ),
         intent,
@@ -752,13 +756,13 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 RunIntent::InfobaseCreate,
-                RunIntent::InfobaseBuild,
-                RunIntent::SourceDump,
+                RunIntent::SourceImport,
+                RunIntent::SourceExport,
                 RunIntent::ArtifactBuild,
-                RunIntent::InfobaseConfigurationExport,
-                RunIntent::InfobaseConfigurationLoad,
-                RunIntent::InfobaseDump,
-                RunIntent::InfobaseRestore,
+                RunIntent::CfExport,
+                RunIntent::CfImport,
+                RunIntent::InfobaseExport,
+                RunIntent::InfobaseImport,
                 RunIntent::ClientRun,
             ]
         );
@@ -781,9 +785,9 @@ mod tests {
                 .map(|operation| operation.name())
                 .collect::<Vec<_>>(),
             [
-                "infobase.configuration.export",
-                "infobase.dump",
-                "infobase.restore",
+                "cf.export",
+                "infobase.export",
+                "infobase.import",
                 "client.run"
             ],
             "реализованы обе вертикали выгрузки, парная к ним загрузка и терминальный запуск клиента; проектный файл в словаре не числится вовсе"
@@ -875,13 +879,13 @@ mod tests {
             names,
             [
                 "infobase.create",
-                "infobase.build",
-                "source.dump",
+                "source.import",
+                "source.export",
                 "artifact.build",
-                "infobase.configuration.export",
-                "infobase.configuration.load",
-                "infobase.dump",
-                "infobase.restore",
+                "cf.export",
+                "cf.import",
+                "infobase.export",
+                "infobase.import",
                 "client.run",
             ],
             "словарь `run` различает сборку исходников, перенос конфигурации и перенос базы целиком — и не держит операции, которым платформа не нужна"
@@ -908,12 +912,68 @@ mod tests {
                 .map(|operation| operation.name())
                 .collect::<Vec<_>>(),
             [
-                "infobase.configuration.export",
-                "infobase.dump",
-                "infobase.restore",
+                "cf.export",
+                "infobase.export",
+                "infobase.import",
                 "client.run"
             ],
             "реализованы обе вертикали выгрузки, парная к ним загрузка и терминальный запуск клиента; проектный файл в словаре не числится вовсе"
+        );
+    }
+
+    #[test]
+    fn v13_run_names_read_as_layer_and_direction() {
+        // Имя операции — `<слой>.<глагол>`: слой называет, с чем работаем,
+        // глагол считается относительно базы — `export` наружу, `import`
+        // внутрь. Одно направление не называется двумя словами
+        // (DEC.2026-09-15.RUN-NAMES-READ-AS-LAYER-AND-DIRECTION).
+        const LAYERS: [&str; 5] = ["infobase", "cf", "source", "artifact", "client"];
+        const VERBS: [&str; 5] = ["create", "export", "import", "build", "run"];
+        const RETIRED_VERBS: [&str; 4] = ["dump", "restore", "load", "convert"];
+        let catalog =
+            catalog_for(SurfaceRelease::V13).expect("v0.13 catalog must be test-loadable");
+        let names = catalog
+            .run_dictionary
+            .iter()
+            .map(|operation| operation.name())
+            .collect::<Vec<_>>();
+        for name in &names {
+            let (layer, verb) = name
+                .split_once('.')
+                .unwrap_or_else(|| panic!("{name} is not `<layer>.<verb>`"));
+            assert!(LAYERS.contains(&layer), "{name}: unknown layer `{layer}`");
+            assert!(VERBS.contains(&verb), "{name}: unknown verb `{verb}`");
+            assert!(
+                !RETIRED_VERBS.contains(&verb),
+                "{name}: `{verb}` names a direction the dictionary already spells as export/import"
+            );
+        }
+        // Каждый слой, который выгружается из базы, загружается в неё тем же
+        // словом: у `export` есть парный `import`, и наоборот.
+        for layer in ["infobase", "cf", "source"] {
+            for (verb, pair) in [("export", "import"), ("import", "export")] {
+                let name = format!("{layer}.{verb}");
+                let paired = format!("{layer}.{pair}");
+                assert_eq!(
+                    names.contains(&name.as_str()),
+                    names.contains(&paired.as_str()),
+                    "{name} needs {paired}"
+                );
+            }
+        }
+        assert_eq!(
+            names,
+            [
+                "infobase.create",
+                "source.import",
+                "source.export",
+                "artifact.build",
+                "cf.export",
+                "cf.import",
+                "infobase.export",
+                "infobase.import",
+                "client.run",
+            ]
         );
     }
 
@@ -1011,7 +1071,7 @@ mod tests {
                 .expect("runtime operation")
         };
 
-        let configuration = operation(RunIntent::InfobaseConfigurationExport);
+        let configuration = operation(RunIntent::CfExport);
         assert!(configuration.implemented);
         assert_eq!(
             configuration.args_schema(),
@@ -1027,7 +1087,7 @@ mod tests {
             }))
         );
 
-        let dump = operation(RunIntent::InfobaseDump);
+        let dump = operation(RunIntent::InfobaseExport);
         assert!(dump.implemented);
         assert_eq!(
             dump.args_schema(),

@@ -34,7 +34,7 @@ v0.12 отвечает `-32602 tool is not in the canonical v0.13 profile`.
 | неизвестная операция | `unsupported_operation`: «unknown canonical run operation» |
 
 **Словарь объявляет двенадцать операций, реализованы три:**
-`workspace.initialize`, `infobase.configuration.export`, `infobase.dump`.
+`workspace.initialize`, `cf.export`, `infobase.export`.
 Остальные девять отвечают `unsupported_operation`. Из объявленных две
 снимаются решением ниже — `workspace.initialize` и `source.create`, — так что
 словарь сходится к десяти, из них реализованы две.
@@ -158,7 +158,7 @@ Designer, а он пишется файлами.
 отсутствующую. `source.convert` снят со словаря
 (`DEC.2026-09-15.SOURCE-CONVERT-LEAVES-THE-DICTIONARY`); миграцию старой
 выгрузки делает путь платформы — загрузка в базу и выгрузка заново текущим
-форматом, то есть A5 и A6 (`infobase.configuration.load` → `source.dump`).
+форматом, то есть A5 и A6 (`cf.import` → `source.export`).
 Предшественник `operation=convert` наследника не имеет.
 
 ### B. Информационная база
@@ -171,32 +171,32 @@ Designer, а он пишется файлами.
 
 **B2. Собрать или обновить ИБ из исходников.** Просит: те же плюс
 `test-authoring` — тесты идут по собранной базе.
-Вызов: `run {op: "infobase.build", args: {sourceSet, fullRebuild?}, dryRun}`.
+Вызов: `run {op: "source.import", args: {sourceSet, fullRebuild?}, dryRun}`.
 Отвечает: что будет загружено, потребуется ли монопольный режим.
 Отказ: база занята сеансами; исходники не проходят проверку.
 Предшественник: `operation=build` с `sourceSet`, `fullRebuild`.
 
 **B3. Загрузить CF или CFE в базу.**
-Вызов: `run {op: "infobase.configuration.load", args: {path, extension?, mode?, settings?}, dryRun}`.
+Вызов: `run {op: "cf.import", args: {path, extension?, mode?, settings?}, dryRun}`.
 Предшественник: `operation=load`.
 
 **B4. Восстановить базу из DT.** Парная операция к реализованной
-`infobase.dump`; без неё выгрузка есть, а возврата нет.
-Вызов: `run {op: "infobase.restore", args: {input, connection?}, dryRun}`.
+`infobase.export`; без неё выгрузка есть, а возврата нет.
+Вызов: `run {op: "infobase.import", args: {input, connection?}, dryRun}`.
 Отказ: файл не читается; целевая база существует и замена не разрешена.
 
 ### C. Выгрузка
 
 **C1. Выгрузить базу в набор исходников.** Просит: `release-support` —
 сравнение поставки с рабочей конфигурацией начинается с выгрузки.
-Вызов: `run {op: "source.dump", args: {sourceSet, mode?, object?, objects?, extension?}, dryRun}`.
+Вызов: `run {op: "source.export", args: {sourceSet, mode?, object?, objects?, extension?}, dryRun}`.
 Отказ: набор не настроен; объект не зарегистрирован.
 Предшественник: `operation=dump`.
 
 **C2. Выгрузить конфигурацию, конфигурацию БД или расширение в CF/CFE** —
-реализовано: `run {op: "infobase.configuration.export", args: {state, output, extension?}}`.
+реализовано: `run {op: "cf.export", args: {state, output, extension?}}`.
 
-**C3. Выгрузить базу целиком в DT** — реализовано: `run {op: "infobase.dump", args: {output}}`.
+**C3. Выгрузить базу целиком в DT** — реализовано: `run {op: "infobase.export", args: {output}}`.
 Описание уже честно говорит, что это не резервная копия.
 
 ### D. Артефакты
@@ -249,7 +249,7 @@ Designer, а он пишется файлами.
 **Форма ответа для G1 — открытый вопрос.** Словарь `run` знает два вида
 исполнения: `previewApply` и `terminal` (последний — только `client.run`).
 Чтения среди них нет. Эффекты знают `infobaseRead`, но он всегда стоит рядом
-с записью: `source.dump`, `infobase.configuration.export` и `infobase.dump`
+с записью: `source.export`, `cf.export` и `infobase.export`
 читают базу и пишут файл. Операция, которая только читает состояние базы и
 ничего не меняет, в этот словарь не ложится: превью нечего показывать, а
 применять нечего.
@@ -354,7 +354,7 @@ Designer, а он пишется файлами.
 5. **Логи упавшей операции.** Открыто. Добавлять поле хвостов в
    `task.result` или заводить отдельную операцию чтения логов задачи —
    решается при реализации первой операции с длинным выводом
-   (`infobase.build`, A-4 в #871).
+   (`source.import`, A-4 в #871).
 6. **`unsupported_operation` вне закрытого набора отказов.** Решено: набор
    объявлен настоящим — `RefusalCode` держит словарь целиком, исход
    выводится из кода (#756); `unsupported_operation` в нём есть, сводить к

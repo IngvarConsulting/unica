@@ -15,7 +15,7 @@ CF/CFE configuration export/load и DT infobase dump/restore. Он не публ
 Реализованная операция публикует закрытую `argsSchema`; нереализованная не
 выдаёт предположение о ещё не принятом контракте аргументов.
 
-`infobase.configuration.export` принимает `state`, workspace-relative
-`output` и необязательное имя `extension`; `infobase.dump` принимает только
+`cf.export` принимает `state`, workspace-relative
+`output` и необязательное имя `extension`; `infobase.export` принимает только
 workspace-relative `output`. Обе схемы закрыты и не передают модели выбор
 provider.

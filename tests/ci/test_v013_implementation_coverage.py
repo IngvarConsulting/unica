@@ -135,9 +135,9 @@ class V013ImplementationCoverageTests(unittest.TestCase):
         ревизии (вариант А развилки A-1 в #871).
         """
         supported = {
-            "infobase.configuration.export",
-            "infobase.dump",
-            "infobase.restore",
+            "cf.export",
+            "infobase.export",
+            "infobase.import",
             "client.run",
         }
         for name, entry in self.coverage["runOperations"].items():

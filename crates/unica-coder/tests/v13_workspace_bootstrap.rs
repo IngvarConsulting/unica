@@ -249,13 +249,9 @@ fn canonical_stdio_bootstraps_an_empty_workspace_before_address_discovery() {
             .filter(|operation| operation["implemented"] == true)
             .map(|operation| operation["op"].as_str().unwrap())
             .collect::<std::collections::BTreeSet<_>>(),
-        std::collections::BTreeSet::from([
-            "workspace.initialize",
-            "infobase.configuration.export",
-            "infobase.dump",
-        ])
+        std::collections::BTreeSet::from(["workspace.initialize", "cf.export", "infobase.export",])
     );
-    for operation in ["infobase.configuration.export", "infobase.dump"] {
+    for operation in ["cf.export", "infobase.export"] {
         assert!(operations
             .iter()
             .find(|candidate| candidate["op"] == operation)

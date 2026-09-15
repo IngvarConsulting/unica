@@ -44,14 +44,25 @@ enum ExportOperation {
 impl ExportOperation {
     fn parse(value: &str) -> Option<Self> {
         match value {
-            "infobase.configuration.export" => Some(Self::Configuration),
-            "infobase.dump" => Some(Self::Infobase),
-            "infobase.restore" => Some(Self::Restore),
+            "cf.export" => Some(Self::Configuration),
+            "infobase.export" => Some(Self::Infobase),
+            "infobase.import" => Some(Self::Restore),
             _ => None,
         }
     }
 
     const fn name(self) -> &'static str {
+        match self {
+            Self::Configuration => "cf.export",
+            Self::Infobase => "infobase.export",
+            Self::Restore => "infobase.import",
+        }
+    }
+
+    /// Имя команды в конверте раннера. Словарь Unica читается как «слой и
+    /// направление», раннер называет свои команды по-своему; совпадение имён
+    /// было случайным и держать его незачем.
+    const fn runner_command(self) -> &'static str {
         match self {
             Self::Configuration => "infobase.configuration.export",
             Self::Infobase => "infobase.dump",
@@ -123,7 +134,7 @@ struct ExportArguments {
     /// применением в обоих случаях, поэтому слот один.
     named_file_relative: PathBuf,
     named_file: PathBuf,
-    /// Присутствует только у `infobase.restore`.
+    /// Присутствует только у `infobase.import`.
     restore_mode: Option<RestoreMode>,
 }
 
@@ -276,7 +287,7 @@ fn parse_export_arguments(
                 return Err(reject(
                     operation,
                     RefusalCode::BadValue,
-                    "infobase.configuration.export state must be `working` or `database`",
+                    "cf.export state must be `working` or `database`",
                 ))
             }
         },
@@ -294,7 +305,7 @@ fn parse_export_arguments(
                     return Err(reject(
                         operation,
                         RefusalCode::BadValue,
-                        "infobase.restore mode must be `create` for an absent infobase or `replace` to discard the data of an existing one",
+                        "infobase.import mode must be `create` for an absent infobase or `replace` to discard the data of an existing one",
                     ))
                 }
             }
@@ -308,7 +319,7 @@ fn parse_export_arguments(
             return Err(reject(
                 operation,
                 RefusalCode::BadValue,
-                "infobase.configuration.export extension must be a non-empty 1C identifier",
+                "cf.export extension must be a non-empty 1C identifier",
             ))
         }
     };
@@ -874,7 +885,7 @@ fn parse_runner_output(
             "v8-runner returned an invalid JSON result",
         )
     })?;
-    if envelope["command"] != operation.name() {
+    if envelope["command"] != operation.runner_command() {
         return Err(reject(
             operation,
             RefusalCode::InvalidResult,

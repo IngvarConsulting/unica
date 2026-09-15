@@ -453,10 +453,7 @@ fn bootstrap_result(
         result.next.push(next_action(
             "unica.run",
             object([
-                (
-                    "op",
-                    Value::String("infobase.configuration.export".to_string()),
-                ),
+                ("op", Value::String("cf.export".to_string())),
                 (
                     "args",
                     object([
@@ -471,7 +468,7 @@ fn bootstrap_result(
         result.next.push(next_action(
             "unica.run",
             object([
-                ("op", Value::String("infobase.dump".to_string())),
+                ("op", Value::String("infobase.export".to_string())),
                 (
                     "args",
                     object([("output", Value::String("dist/base.dt".to_string()))]),

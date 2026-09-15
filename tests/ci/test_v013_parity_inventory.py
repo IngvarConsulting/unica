@@ -139,13 +139,13 @@ NATIVE_ENTRIES = {"view", "apply", "resolve", "search", "check", "diff", "run", 
 OPERATION_ENTRIES = {"apply", "run"}
 RUN_OPERATIONS = {
     "infobase.create",
-    "infobase.build",
-    "source.dump",
+    "source.import",
+    "source.export",
     "artifact.build",
-    "infobase.configuration.export",
-    "infobase.configuration.load",
-    "infobase.dump",
-    "infobase.restore",
+    "cf.export",
+    "cf.import",
+    "infobase.export",
+    "infobase.import",
     "client.run",
 }
 DISPOSITIONS = {"mapped", "absorbed", "transport-replaced", "removed"}
@@ -667,8 +667,8 @@ class V013ParityInventoryTest(unittest.TestCase):
         mappable_index = 0
         mapped_legacy_run_variants = (
             ("operation=init", "infobase.create"),
-            ("operation=build", "infobase.build"),
-            ("operation=dump", "source.dump"),
+            ("operation=build", "source.import"),
+            ("operation=dump", "source.export"),
             ("operation=make", "artifact.build"),
             ("operation=launch", "client.run"),
         )
@@ -677,7 +677,7 @@ class V013ParityInventoryTest(unittest.TestCase):
                 "operation=convert",
                 "v0.13 run dictionary publishes no successor: Designer/EDT "
                 "conversion needs EDT, which Unica does not read, and the old "
-                "dump-format migration goes through source.dump",
+                "dump-format migration goes through source.export",
             ),
             (
                 "operation=config-init",
@@ -707,10 +707,10 @@ class V013ParityInventoryTest(unittest.TestCase):
             ),
         )
         new_run_capabilities = (
-            "infobase.configuration.export",
-            "infobase.configuration.load",
-            "infobase.dump",
-            "infobase.restore",
+            "cf.export",
+            "cf.import",
+            "infobase.export",
+            "infobase.import",
         )
         non_run_entries = ("view", "apply", "resolve", "search", "check", "diff", "docs")
         for index, legacy_tool in enumerate(IMMUTABLE_BASELINE_NAMES):
@@ -1314,13 +1314,13 @@ class V013ParityInventoryTest(unittest.TestCase):
     def test_every_run_operation_is_the_literal_test_oracle(self) -> None:
         expected = (
             "infobase.create",
-            "infobase.build",
-            "source.dump",
+            "source.import",
+            "source.export",
             "artifact.build",
-            "infobase.configuration.export",
-            "infobase.configuration.load",
-            "infobase.dump",
-            "infobase.restore",
+            "cf.export",
+            "cf.import",
+            "infobase.export",
+            "infobase.import",
             "client.run",
         )
         self.assertEqual(RUN_OPERATIONS, set(expected))

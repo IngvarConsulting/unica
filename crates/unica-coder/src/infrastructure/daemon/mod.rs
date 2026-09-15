@@ -316,7 +316,7 @@ mod tests {
         let owner = daemon.owner();
         let request = build_request(
             workspace.path(),
-            serde_json::json!({"op": "infobase.build", "args": {}}),
+            serde_json::json!({"op": "source.import", "args": {}}),
         );
 
         let task_id = daemon.task_id(&owner, &request);
@@ -366,7 +366,7 @@ mod tests {
             assert_eq!(invocation.tool(), ToolIdentity::Run);
             assert_eq!(
                 invocation.arguments(),
-                &serde_json::json!({"op": "infobase.build", "args": {}})
+                &serde_json::json!({"op": "source.import", "args": {}})
                     .as_object()
                     .unwrap()
                     .clone()
@@ -440,7 +440,7 @@ mod tests {
         ] {
             let request = build_request(
                 workspace,
-                serde_json::json!({"op": "infobase.build", "args": {}}),
+                serde_json::json!({"op": "source.import", "args": {}}),
             );
             let task_id = daemon.task_id(&owner, &request);
             let (actor_hash, bytes) = observed_wait
@@ -476,7 +476,7 @@ mod tests {
         let request = build_request(
             &workspace,
             serde_json::json!({
-                "op": "infobase.build",
+                "op": "source.import",
                 "args": {"ambientRoot": "/tmp/foreign"}
             }),
         );

@@ -32,7 +32,7 @@ infobase transfer. Реализованная операция также соо
 угадывала будущий контракт. Операции `previewApply` принимают `dryRun`;
 applied-вызов связывается с preview через `ifRev`.
 
-`infobase.configuration.export` и `infobase.dump` реализованы до source
+`cf.export` и `infobase.export` реализованы до source
 admission. Их schema не принимает выбор provider: v8-runner выбирает Designer
 или ibcmd и возвращает этот выбор данными preview. Apply повторяет preview,
 сверяет `ifRev` и публикует проверенную квитанцию CF/CFE/DT через Task transport.

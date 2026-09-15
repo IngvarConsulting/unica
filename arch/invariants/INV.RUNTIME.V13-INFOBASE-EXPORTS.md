@@ -9,7 +9,7 @@ scope: [app, product, wire]
 
 # Выгрузки ИБ проходят неисполняющий preview и проверяемый apply
 
-`infobase.configuration.export` и `infobase.dump` доступны без source set.
+`cf.export` и `infobase.export` доступны без source set.
 Preview вызывает только неисполняющий `v8-runner --dry-run`, связывает выбранный
 provider, конфиги и состояние назначения с revision и не создаёт output. Apply
 повторяет такой preview, принимает только совпавший `ifRev`, затем запускает

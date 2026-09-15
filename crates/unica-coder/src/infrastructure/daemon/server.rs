@@ -1125,7 +1125,7 @@ pub(crate) mod actor_capacity_tests {
         let request = InvocationRequest::new(
             ToolIdentity::Run,
             serde_json::json!({
-                "op": "infobase.dump",
+                "op": "infobase.export",
                 "args": {"output": "dist/base.dt"},
                 "dryRun": true
             }),
@@ -1184,7 +1184,7 @@ pub(crate) mod actor_capacity_tests {
         assert_eq!(
             result.next[0]["args"],
             serde_json::json!({
-                "op": "infobase.configuration.export",
+                "op": "cf.export",
                 "args": {"state": "working", "output": "dist/main.cf"},
                 "dryRun": true
             })
@@ -1192,7 +1192,7 @@ pub(crate) mod actor_capacity_tests {
         assert_eq!(
             result.next[1]["args"],
             serde_json::json!({
-                "op": "infobase.dump",
+                "op": "infobase.export",
                 "args": {"output": "dist/base.dt"},
                 "dryRun": true
             })
@@ -6239,7 +6239,7 @@ struct ActorLogicalReadLease {"#,
         let owner = daemon.owner();
         let request = InvocationRequest::new(
             ToolIdentity::Run,
-            serde_json::json!({"op": "infobase.build", "args": {}}),
+            serde_json::json!({"op": "source.import", "args": {}}),
             root.to_string_lossy(),
             7_000,
         )
@@ -6552,11 +6552,11 @@ struct ActorLogicalReadLease {"#,
 
         for (op, args) in [
             (
-                "infobase.configuration.export",
+                "cf.export",
                 serde_json::json!({"state": "working", "output": "dist/main.cf"}),
             ),
             (
-                "infobase.dump",
+                "infobase.export",
                 serde_json::json!({"output": "dist/main.dt"}),
             ),
         ] {
@@ -6587,7 +6587,7 @@ struct ActorLogicalReadLease {"#,
         }
 
         let missing_revision = match runtime.bind(request(
-            "infobase.configuration.export",
+            "cf.export",
             serde_json::json!({"state": "working", "output": "dist/main.cf"}),
             false,
             None,
@@ -6969,7 +6969,7 @@ struct ActorLogicalReadLease {"#,
         let request = |root: &std::path::Path| {
             InvocationRequest::new(
                 ToolIdentity::Run,
-                serde_json::json!({"op": "infobase.build", "args": {}}),
+                serde_json::json!({"op": "source.import", "args": {}}),
                 root.to_string_lossy(),
                 7_000,
             )
@@ -7105,7 +7105,7 @@ struct ActorLogicalReadLease {"#,
             let request = |root: &std::path::Path| {
                 InvocationRequest::new(
                     ToolIdentity::Run,
-                    serde_json::json!({"op": "infobase.build", "args": {}}),
+                    serde_json::json!({"op": "source.import", "args": {}}),
                     root.to_string_lossy(),
                     7_000,
                 )
@@ -7197,7 +7197,7 @@ struct ActorLogicalReadLease {"#,
         let request = |root: &std::path::Path| {
             InvocationRequest::new(
                 ToolIdentity::Run,
-                serde_json::json!({"op": "infobase.build", "args": {}}),
+                serde_json::json!({"op": "source.import", "args": {}}),
                 root.to_string_lossy(),
                 7_000,
             )
@@ -7318,7 +7318,7 @@ struct ActorLogicalReadLease {"#,
         let request = || {
             InvocationRequest::new(
                 ToolIdentity::Run,
-                serde_json::json!({"op": "infobase.build", "args": {}}),
+                serde_json::json!({"op": "source.import", "args": {}}),
                 root.to_string_lossy(),
                 7_000,
             )
@@ -7422,7 +7422,7 @@ struct ActorLogicalReadLease {"#,
         let request = |root: &std::path::Path| {
             InvocationRequest::new(
                 ToolIdentity::Run,
-                serde_json::json!({"op": "infobase.build", "args": {}}),
+                serde_json::json!({"op": "source.import", "args": {}}),
                 root.to_string_lossy(),
                 7_000,
             )
@@ -7509,7 +7509,7 @@ struct ActorLogicalReadLease {"#,
             .bind(
                 InvocationRequest::new(
                     ToolIdentity::Run,
-                    serde_json::json!({"op": "infobase.build", "args": {}}),
+                    serde_json::json!({"op": "source.import", "args": {}}),
                     root.to_string_lossy(),
                     7_000,
                 )
@@ -7534,7 +7534,7 @@ struct ActorLogicalReadLease {"#,
             ensure_platform_xml_workspace(&root.to_string_lossy());
             InvocationRequest::new(
                 ToolIdentity::Run,
-                serde_json::json!({"op": "infobase.build", "args": {}}),
+                serde_json::json!({"op": "source.import", "args": {}}),
                 root.to_string_lossy(),
                 7_000,
             )
@@ -7606,7 +7606,7 @@ struct ActorLogicalReadLease {"#,
         let owner = daemon.owner();
         let request = InvocationRequest::new(
             ToolIdentity::Run,
-            serde_json::json!({"op": "infobase.build", "args": {}}),
+            serde_json::json!({"op": "source.import", "args": {}}),
             root.to_string_lossy(),
             7_000,
         )

@@ -121,12 +121,12 @@
       "reason": "Infobase creation execution has not been connected to the v0.13 run adapter.",
       "evidence": []
     },
-    "infobase.build": {
+    "source.import": {
       "status": "unsupported",
       "reason": "Infobase build execution has not been connected to the v0.13 run adapter.",
       "evidence": []
     },
-    "source.dump": {
+    "source.export": {
       "status": "unsupported",
       "reason": "Source dump execution has not been connected to the v0.13 run adapter.",
       "evidence": []
@@ -136,7 +136,7 @@
       "reason": "Artifact build execution has not been connected to the v0.13 run adapter.",
       "evidence": []
     },
-    "infobase.configuration.export": {
+    "cf.export": {
       "status": "supported",
       "reason": "Working/database main configuration and named extension export use v8-runner provider selection, non-executing preview, revision-fenced apply, and independent artifact verification.",
       "evidence": [{
@@ -147,12 +147,12 @@
         "test": "cfe_and_dt_invocations_use_only_their_closed_runner_arguments"
       }]
     },
-    "infobase.configuration.load": {
+    "cf.import": {
       "status": "unsupported",
       "reason": "Configuration package loading has not been connected to the v0.13 run adapter.",
       "evidence": []
     },
-    "infobase.dump": {
+    "infobase.export": {
       "status": "supported",
       "reason": "Full DT export uses v8-runner provider selection, non-executing preview, revision-fenced apply, and independent artifact verification.",
       "evidence": [{
@@ -163,7 +163,7 @@
         "test": "infobase_export_is_task_admitted_without_platform_xml_source_sets"
       }]
     },
-    "infobase.restore": {
+    "infobase.import": {
       "status": "supported",
       "reason": "DT restore states which irreversible change is allowed, uses the same provider selection and revision-fenced apply as the exports, and attributes the resulting infobase state to the provider because it is not verifiable without the platform.",
       "evidence": [{

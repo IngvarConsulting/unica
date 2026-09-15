@@ -85,13 +85,13 @@ pub(super) fn run_dictionary_result() -> DomainResult {
             let preview_required = matches!(
                 operation.intent,
                 RunIntent::InfobaseCreate
-                    | RunIntent::InfobaseBuild
-                    | RunIntent::SourceDump
+                    | RunIntent::SourceImport
+                    | RunIntent::SourceExport
                     | RunIntent::ArtifactBuild
-                    | RunIntent::InfobaseConfigurationExport
-                    | RunIntent::InfobaseConfigurationLoad
-                    | RunIntent::InfobaseDump
-                    | RunIntent::InfobaseRestore
+                    | RunIntent::CfExport
+                    | RunIntent::CfImport
+                    | RunIntent::InfobaseExport
+                    | RunIntent::InfobaseImport
             );
             json!({
                 "op": operation.name(),
