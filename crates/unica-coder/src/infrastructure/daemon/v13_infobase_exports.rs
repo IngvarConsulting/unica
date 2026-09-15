@@ -29,9 +29,9 @@ use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-const CONFIG_NAME: &str = "v8project.yaml";
+pub(super) const CONFIG_NAME: &str = "v8project.yaml";
 const LOCAL_CONFIG_NAME: &str = "v8project.local.yaml";
-const RUNNER_OUTPUT_LIMIT: usize = 1024 * 1024;
+pub(super) const RUNNER_OUTPUT_LIMIT: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExportOperation {
@@ -380,7 +380,7 @@ fn parse_export_arguments(
     })
 }
 
-fn closed_workspace_relative_path(value: &str) -> Result<PathBuf, &'static str> {
+pub(super) fn closed_workspace_relative_path(value: &str) -> Result<PathBuf, &'static str> {
     let path = Path::new(value);
     if path.is_absolute() {
         return Err("must be workspace-relative");
@@ -445,7 +445,10 @@ fn capture_inputs(prepared: &PreparedInfobaseExport) -> Result<StableInputs, Dom
     })
 }
 
-fn digest_required_workspace_file(root: &Path, relative: &Path) -> Result<String, String> {
+pub(super) fn digest_required_workspace_file(
+    root: &Path,
+    relative: &Path,
+) -> Result<String, String> {
     digest_optional_workspace_file(root, relative)?
         .map(|(digest, _)| digest)
         .ok_or_else(|| {
@@ -459,7 +462,7 @@ fn digest_required_workspace_file(root: &Path, relative: &Path) -> Result<String
         })
 }
 
-fn digest_optional_workspace_file(
+pub(super) fn digest_optional_workspace_file(
     root: &Path,
     relative: &Path,
 ) -> Result<Option<(String, u64)>, String> {
@@ -927,7 +930,7 @@ const RUNNER_WIRE_CODES: [&str; 9] = [
 /// `platform_failure`, и различать их Unica не должна: ни один из трёх не решается
 /// ни повтором, ни правкой вызова — нужен человек. Поэтому прав мы заранее не
 /// проверяем: факта отказа платформы достаточно.
-fn map_runner_code(code: &str) -> RefusalCode {
+pub(super) fn map_runner_code(code: &str) -> RefusalCode {
     match code {
         // Платформа сказала нет: авторизация, права, лицензия, занятая база.
         "platform_failure" => RefusalCode::ProviderUnavailable,

@@ -365,6 +365,12 @@ pub(super) enum V5ActorBoundCanonicalInvocation {
         export: Arc<super::v13_infobase_exports::PreparedInfobaseExport>,
         workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
     },
+    /// Терминальный запуск клиента: как выгрузка, готовится до admission
+    /// PlatformXml и известен длинным по внешнему процессу.
+    ClientRun {
+        launch: Arc<super::v13_client_run::PreparedClientRun>,
+        workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
+    },
     Documentation {
         search: Arc<super::v13_documentation::PreparedDocumentationSearch>,
         workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
@@ -380,6 +386,9 @@ pub(super) enum V5PreparedCanonicalInvocation {
     },
     InfobaseExport {
         export: Arc<super::v13_infobase_exports::PreparedInfobaseExport>,
+    },
+    ClientRun {
+        launch: Arc<super::v13_client_run::PreparedClientRun>,
     },
     Documentation {
         search: Arc<super::v13_documentation::PreparedDocumentationSearch>,
@@ -492,6 +501,19 @@ impl V5CanonicalInvocationRuntime {
                 });
             }
         }
+        match super::v13_client_run::prepare(&request) {
+            super::v13_client_run::Preparation::NotApplicable => {}
+            super::v13_client_run::Preparation::Rejected(result) => {
+                return Err(V5CanonicalPrepareError::Rejected(result))
+            }
+            super::v13_client_run::Preparation::Ready(launch) => {
+                let workspace_identity_hash = launch.workspace_identity_hash();
+                return Ok(V5ActorBoundCanonicalInvocation::ClientRun {
+                    launch,
+                    workspace_identity_hash,
+                });
+            }
+        }
         match super::v13_documentation::prepare(&request) {
             super::v13_documentation::Preparation::NotApplicable => {}
             super::v13_documentation::Preparation::Rejected(result) => {
@@ -534,7 +556,7 @@ impl V5ActorBoundCanonicalInvocation {
     pub(super) fn response_deadline(&self) -> Option<InvocationResponseDeadline> {
         match self {
             Self::Workspace { invocation, .. } => Some(invocation.response_deadline().clone()),
-            Self::InfobaseExport { .. } => None,
+            Self::InfobaseExport { .. } | Self::ClientRun { .. } => None,
             // Справка не известна длинной: локальное попадание отвечает
             // сразу, сетевое доходит до седьмой секунды. Значит у неё тот же
             // cutoff, что у чтений, — захваченный при bind.
@@ -548,6 +570,10 @@ impl V5ActorBoundCanonicalInvocation {
         match self {
             Self::Workspace { invocation, .. } => invocation.workspace_identity_hash(),
             Self::InfobaseExport {
+                workspace_identity_hash,
+                ..
+            }
+            | Self::ClientRun {
                 workspace_identity_hash,
                 ..
             }
@@ -574,6 +600,9 @@ impl V5ActorBoundCanonicalInvocation {
             Self::InfobaseExport { export, .. } => {
                 Ok(V5PreparedCanonicalInvocation::InfobaseExport { export })
             }
+            Self::ClientRun { launch, .. } => {
+                Ok(V5PreparedCanonicalInvocation::ClientRun { launch })
+            }
             Self::Documentation { search, .. } => {
                 Ok(V5PreparedCanonicalInvocation::Documentation { search })
             }
@@ -587,7 +616,7 @@ impl V5PreparedCanonicalInvocation {
             ExecutionClass::KnownLong(KnownLongReason::ExternalProcess);
         match self {
             Self::Workspace { class, .. } => class,
-            Self::InfobaseExport { .. } => &INFOBASE_EXPORT_CLASS,
+            Self::InfobaseExport { .. } | Self::ClientRun { .. } => &INFOBASE_EXPORT_CLASS,
             Self::Documentation { .. } => &ExecutionClass::InlineCandidate,
         }
     }
@@ -617,6 +646,7 @@ impl V5PreparedCanonicalInvocation {
                 })?
             }
             Self::InfobaseExport { export } => Ok(export.execute(cancellation)),
+            Self::ClientRun { launch } => Ok(launch.execute(cancellation)),
             Self::Documentation { search } => Ok(search.execute(cancellation)),
         }
     }
@@ -6568,6 +6598,74 @@ struct ActorLogicalReadLease {"#,
             preparations.load(Ordering::SeqCst),
             0,
             "infobase exports must not enter the PlatformXml service"
+        );
+    }
+
+    #[test]
+    fn v5_client_run_binds_before_source_admission_without_a_revision_gate() {
+        // Вариант А развилки A-1 (#871): терминальная операция запускается
+        // сразу, превью необязательно, `ifRev` не принимается.
+        let workspace = tempfile::tempdir().expect("temporary infobase workspace");
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\ninfobase:\n  connection: \"File=.build/infobase\"\n",
+        )
+        .expect("write infobase-only workspace descriptor");
+        let preparations = Arc::new(AtomicUsize::new(0));
+        let runtime = V5CanonicalInvocationRuntime::new(
+            Arc::new(CountingPrepareService {
+                preparations: Arc::clone(&preparations),
+            }),
+            Arc::new(TokioClock),
+        );
+        let request = |arguments: serde_json::Value| {
+            InvocationRequest::new(
+                ToolIdentity::Run,
+                arguments,
+                std::fs::canonicalize(workspace.path())
+                    .expect("canonical workspace")
+                    .to_string_lossy(),
+                7_000,
+            )
+            .expect("valid client.run request")
+        };
+
+        for arguments in [
+            serde_json::json!({"op": "client.run", "args": {"clientMode": "designer"}, "dryRun": true}),
+            serde_json::json!({"op": "client.run", "args": {"clientMode": "thin"}}),
+        ] {
+            let bound = runtime
+                .bind(request(arguments))
+                .expect("client.run binds without a PlatformXml source set");
+            assert!(matches!(
+                bound,
+                V5ActorBoundCanonicalInvocation::ClientRun { .. }
+            ));
+            let prepared = bound.prepare().expect("client.run preparation");
+            assert_eq!(
+                prepared.execution_class(),
+                &ExecutionClass::KnownLong(KnownLongReason::ExternalProcess)
+            );
+        }
+
+        let fenced = match runtime.bind(request(serde_json::json!({
+            "op": "client.run",
+            "args": {"clientMode": "thin"},
+            "ifRev": "unica-infobase-export-sha256-v1:test",
+        }))) {
+            Err(V5CanonicalPrepareError::Rejected(result)) => result,
+            Ok(_) => panic!("a terminal operation accepted ifRev"),
+            Err(other) => panic!("ifRev on client.run returned infrastructure failure: {other:?}"),
+        };
+        assert_eq!(fenced.diagnostics[0]["code"], "bad_value");
+        assert!(fenced.diagnostics[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("takes no ifRev"));
+        assert_eq!(
+            preparations.load(Ordering::SeqCst),
+            0,
+            "client.run must not enter the PlatformXml service"
         );
     }
 

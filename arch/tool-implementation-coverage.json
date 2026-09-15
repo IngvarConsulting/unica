@@ -183,9 +183,21 @@
       }]
     },
     "client.run": {
-      "status": "unsupported",
-      "reason": "Interactive client execution has not been connected to the v0.13 run adapter.",
-      "evidence": []
+      "status": "supported",
+      "reason": "Terminal launch of a 1C client is implemented as published: the call launches at once, dryRun is an optional non-executing preview from v8-runner, no revision fence; closed args are clientMode, execute, waitForExit and waitTimeoutMs, and the answer names the selected platform without exposing the command line.",
+      "evidence": [{
+        "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
+        "test": "v5_client_run_binds_before_source_admission_without_a_revision_gate"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/daemon/v13_client_run.rs",
+        "test": "preview_names_the_platform_without_dispatching_or_exposing_the_command"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/daemon/v13_client_run.rs",
+        "test": "launch_reports_the_session_the_provider_attests"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/daemon/v13_client_run.rs",
+        "test": "arguments_are_closed_and_each_refusal_names_the_fix"
+      }]
     }
   },
   "compatibilityTools": {

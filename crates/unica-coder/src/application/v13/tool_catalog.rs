@@ -153,6 +153,17 @@ impl RunOperation {
                 },
                 "required": ["input", "mode"]
             })),
+            RunIntent::ClientRun => Some(json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "clientMode": {"type": "string", "enum": ["designer", "thin", "thick", "ordinary"], "description": "1C client to launch."},
+                    "execute": {"type": "string", "description": "Workspace-relative .epf or .erf external processor to run with /Execute; enterprise clients only."},
+                    "waitForExit": {"type": "boolean", "default": false, "description": "Wait for the external processor session to exit; requires execute and waitTimeoutMs."},
+                    "waitTimeoutMs": {"type": "integer", "minimum": 1, "maximum": 86400000, "description": "Bound for waitForExit in milliseconds."}
+                },
+                "required": ["clientMode"]
+            })),
             _ => None,
         }
     }
@@ -383,6 +394,7 @@ fn run_dictionary() -> Vec<RunOperation> {
             RunIntent::InfobaseConfigurationExport
                 | RunIntent::InfobaseDump
                 | RunIntent::InfobaseRestore
+                | RunIntent::ClientRun
         ),
         intent,
     })
@@ -776,9 +788,10 @@ mod tests {
             [
                 "infobase.configuration.export",
                 "infobase.dump",
-                "infobase.restore"
+                "infobase.restore",
+                "client.run"
             ],
-            "реализованы обе вертикали выгрузки и парная к ним загрузка; проектный файл в словаре не числится вовсе"
+            "реализованы обе вертикали выгрузки, парная к ним загрузка и терминальный запуск клиента; проектный файл в словаре не числится вовсе"
         );
 
         let output = &catalog.result_envelope_schema;
@@ -902,9 +915,10 @@ mod tests {
             [
                 "infobase.configuration.export",
                 "infobase.dump",
-                "infobase.restore"
+                "infobase.restore",
+                "client.run"
             ],
-            "реализованы обе вертикали выгрузки и парная к ним загрузка; проектный файл в словаре не числится вовсе"
+            "реализованы обе вертикали выгрузки, парная к ним загрузка и терминальный запуск клиента; проектный файл в словаре не числится вовсе"
         );
     }
 
@@ -932,6 +946,37 @@ mod tests {
         // The no-query guarantee remains independently active while the
         // directional-intents test above owns the exact operation names.
         v13_run_dictionary_has_twelve_directional_runtime_intents();
+    }
+
+    #[test]
+    fn v13_client_run_is_implemented_as_a_terminal_operation_with_closed_arguments() {
+        let catalog = catalog_for(SurfaceRelease::V13).expect("canonical catalog exists");
+        let client_run = catalog
+            .run_dictionary
+            .iter()
+            .find(|operation| operation.intent == RunIntent::ClientRun)
+            .expect("client.run belongs to the dictionary");
+        assert!(client_run.implemented);
+        assert_eq!(client_run.execution(), "terminal");
+        assert_eq!(client_run.effects(), ["clientSession"]);
+        let schema = client_run
+            .args_schema()
+            .expect("implemented operations publish argsSchema");
+        assert_eq!(schema["additionalProperties"], false);
+        assert_eq!(schema["required"], json!(["clientMode"]));
+        assert_eq!(
+            schema["properties"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["clientMode", "execute", "waitForExit", "waitTimeoutMs"]
+        );
+        assert_eq!(
+            schema["properties"]["clientMode"]["enum"],
+            json!(["designer", "thin", "thick", "ordinary"])
+        );
     }
 
     #[test]

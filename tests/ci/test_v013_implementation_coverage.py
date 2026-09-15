@@ -126,17 +126,19 @@ class V013ImplementationCoverageTests(unittest.TestCase):
                             f"{location} supported status requires executable evidence",
                         )
 
-    def test_runtime_truth_supports_the_infobase_exports_and_their_paired_restore(self) -> None:
+    def test_runtime_truth_supports_the_infobase_family_and_the_client_launch(self) -> None:
         """Имя перечисляет состав, поэтому меняется вместе с ним.
 
-        Прежнее имя обещало «ровно две выгрузки». Загрузка — парная к `infobase.dump`
-        операция, и без неё выгрузка была без возврата; состав стал тройкой, и имя
-        гейта обязано это говорить, иначе оно врёт читателю.
+        Прежнее имя обещало «ровно две выгрузки», затем тройку с парной загрузкой.
+        Четвёртая — `client.run`, единственная терминальная операция словаря:
+        запуск клиента как опубликовано, без обязательного превью и без забора
+        ревизии (вариант А развилки A-1 в #871).
         """
         supported = {
             "infobase.configuration.export",
             "infobase.dump",
             "infobase.restore",
+            "client.run",
         }
         for name, entry in self.coverage["runOperations"].items():
             with self.subTest(operation=name):
