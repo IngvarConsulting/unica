@@ -7,16 +7,11 @@ description: "Обработчики событий объекта 1С. Испо
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.meta.info`, `unica.code.search`, `unica.code.definition`, `unica.code.graph`, `unica.code.patch`, `unica.code.diagnostics`, and `unica.runtime.execute`.
-- По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
-показывает запланированную команду без побочных эффектов, а с `dryRun: false`
-исполняет классифицированную операцию и отвечает её терминальным результатом в
-том же вызове, приложив названную причину риска (`runtime_risk_*`)
-предупреждением; неклассифицированная операция по-прежнему отказывает
-`runtime_operation_unbounded` до обнаружения рабочего пространства. Preview
-исполнением не является. Работу, которую вызов ждать не должен, запускай через
-`unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
-`unica.build.*`.
+- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.meta.info`, `unica.code.search`, `unica.code.definition`, `unica.code.graph`, `unica.code.patch`, `unica.code.diagnostics`, and `unica.run`.
+- Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
+контракт каждой — `argsSchema`, `execution`, `previewRequired`,
+`ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
+превью исполнением не является. Не обходи контракт прямым runner-ом.
 - Use `unica.docs` with `source: "development-standard"` for the standards about handlers: 396, 455, 463, 464, 465, 466, 686, 752, 773, and diagnostics АПК:75, АПК:144, АПК:1340, BSLLS:DataExchangeLoading, BSLLS:UsingCancelParameter, BSLLS:MissingEventSubscriptionHandler. These are standards, not evidence of runtime behavior; confirm the wording before citing one.
 - Do not call internal analyzer, runtime, standards, or package adapters directly. They are hidden behind MCP `unica`.
 
@@ -47,7 +42,7 @@ Two rules cut across all of them: `ОбменДанными.Загрузка` is
 4. Write the guard before the logic: `Если ОбменДанными.Загрузка Тогда Возврат; КонецЕсли;` — in the subscription handler too, not only in the object module.
 5. Express conditional requiredness by collecting `НепроверяемыеРеквизиты` and removing them from `ПроверяемыеРеквизиты` at the end, never by adding to `ПроверяемыеРеквизиты`.
 6. Apply the change with `unica.code.patch`, one verifiable step at a time.
-7. Verify statically with `unica.code.diagnostics`; use `unica.runtime.execute` to preview typed syntax/test arguments and, with `dryRun: false`, to run them, and require separate runtime evidence for the exchange path when the object participates in one.
+7. Verify statically with `unica.code.diagnostics`; check syntax with `unica.check` (test runs are outside the v0.13 surface), and require separate runtime evidence for the exchange path when the object participates in one.
 
 ## Design rules
 

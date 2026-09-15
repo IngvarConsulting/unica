@@ -12,23 +12,17 @@ with object-specific info tools, source search, syntax checks, and focused tests
 
 ## Primary path
 
-По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
-показывает запланированную команду без побочных эффектов, а с `dryRun: false`
-исполняет классифицированную операцию и отвечает её терминальным результатом в
-том же вызове, приложив названную причину риска (`runtime_risk_*`)
-предупреждением; неклассифицированная операция по-прежнему отказывает
-`runtime_operation_unbounded` до обнаружения рабочего пространства. Preview
-исполнением не является. Работу, которую вызов ждать не должен, запускай через
-`unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
-`unica.build.*`.
+Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
+контракт каждой — `argsSchema`, `execution`, `previewRequired`,
+`ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
+превью исполнением не является. Не обходи контракт прямым runner-ом.
 
 - Inspect metadata shape with `unica.*.info` tools before changing code that
   depends on objects, forms, roles, or reports.
 - Use code search/analysis tools through MCP `unica` where available.
-- Use `v8-runner` with `dryRun: true` to preview `unica.runtime.execute`
-  `operation=syntax`/`operation=test` arguments and with `dryRun: false` to run
-  them; never claim YaXUnit, Vanessa Automation, or syntax validation from a
-  preview alone.
+- Check syntax with `unica.check`; test runs are outside the v0.13 surface,
+  so never claim YaXUnit or Vanessa Automation results without separate
+  execution evidence.
 - Report findings first for reviews, ordered by severity and grounded in file
   references.
 
@@ -40,8 +34,8 @@ with object-specific info tools, source search, syntax checks, and focused tests
   unbounded selections.
 - Keep refactors test-first: write a reproducing test and confirm that it fails
   for the defect before changing the code. Then map callers, make the smallest
-  coherent fix, preview intended syntax/test arguments as a separate typed-
-  argument check, and retain explicit residual runtime risk.
+  coherent fix, check syntax with `unica.check` as a separate static check,
+  and retain explicit residual runtime risk.
 
 ## Related references
 

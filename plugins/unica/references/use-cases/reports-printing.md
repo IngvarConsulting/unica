@@ -5,21 +5,17 @@
 Use this when the user needs reports, DCS/DCS schemas, tabular document layouts,
 print forms, BSP external processing registration, or EPF/ERF build/export.
 
-Do not use `operation=load` for `.epf` or `.erf`. External processors and
-reports are handled through external source-sets with `build`, `dump`, and
-`make`.
+`cf.import` and `artifact.build` in `unica.run` take `.cf`/`.cfe` only.
+External processors and reports live in external source-sets: `source.import`
+and `source.export` move their sources, and their publication as `.epf`/`.erf`
+is outside the v0.13 surface.
 
 ## Primary path
 
-По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
-показывает запланированную команду без побочных эффектов, а с `dryRun: false`
-исполняет классифицированную операцию и отвечает её терминальным результатом в
-том же вызове, приложив названную причину риска (`runtime_risk_*`)
-предупреждением; неклассифицированная операция по-прежнему отказывает
-`runtime_operation_unbounded` до обнаружения рабочего пространства. Preview
-исполнением не является. Работу, которую вызов ждать не должен, запускай через
-`unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
-`unica.build.*`.
+Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
+контракт каждой — `argsSchema`, `execution`, `previewRequired`,
+`ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
+превью исполнением не является. Не обходи контракт прямым runner-ом.
 
 - `unica.dcs.*` for DCS/DCS schema info, compile, edit, and validation.
 - `unica.mxl.*` for MXL info, compile, decompile, and validation.
@@ -29,17 +25,15 @@ reports are handled through external source-sets with `build`, `dump`, and
   `unica.epf.init` or `unica.erf.init`
   and do not synthesize `Configuration.xml` or a platform-generated CDFI sidecar.
 - `epf-bsp-init` and `epf-bsp-add-command` for BSP registration code.
-- `v8-runner` with `unica.runtime.execute` only previews EPF/ERF external
-  source-set `build`/`dump`/`make` arguments with `dryRun: true`; it does not
-  build, dump, or publish an artifact.
+- `unica.run` moves external source-set sources with `source.import` and
+  `source.export`; it does not publish an `.epf`/`.erf` artifact.
 
 Declare the generated directory in `v8project.yaml` as
 `EXTERNAL_DATA_PROCESSORS` or `EXTERNAL_REPORTS` under `format: DESIGNER` and
-place descriptors directly in that source-set root, then preview
-`operation=make` with `dryRun: true` and report artifact publication as
-unverified.
+place descriptors directly in that source-set root, and report artifact
+publication as a Unica MCP contract gap.
 These scaffolds are platform XML and are rejected for EDT external-project
-layouts. Do not use `operation=load` for `.epf` or `.erf`.
+layouts.
 
 This is a fragment to merge into an existing valid `v8project.yaml`; it does
 not replace required `workPath`, `builder`, or `infobase.connection`. Preserve

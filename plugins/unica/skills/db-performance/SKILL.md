@@ -7,16 +7,11 @@ description: "Производительность БД и запросов 1С.
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.code.search`, `unica.code.graph`, `unica.meta.info`, `unica.view` on the schema node, `unica.code.diagnostics`, `unica.docs`, and `unica.runtime.execute`.
-- По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
-показывает запланированную команду без побочных эффектов, а с `dryRun: false`
-исполняет классифицированную операцию и отвечает её терминальным результатом в
-том же вызове, приложив названную причину риска (`runtime_risk_*`)
-предупреждением; неклассифицированная операция по-прежнему отказывает
-`runtime_operation_unbounded` до обнаружения рабочего пространства. Preview
-исполнением не является. Работу, которую вызов ждать не должен, запускай через
-`unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
-`unica.build.*`.
+- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.code.search`, `unica.code.graph`, `unica.meta.info`, `unica.view` on the schema node, `unica.code.diagnostics`, `unica.docs`, and `unica.run`.
+- Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
+контракт каждой — `argsSchema`, `execution`, `previewRequired`,
+`ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
+превью исполнением не является. Не обходи контракт прямым runner-ом.
 - Use `unica.view` on the role node when performance behavior depends on rights filters, RLS, or tenant boundaries.
 - Do not call internal analyzer, runtime, standards, or package adapters directly. They are hidden behind MCP `unica`.
 
@@ -34,7 +29,7 @@ description: "Производительность БД и запросов 1С.
 4. Inspect `unica.meta.info` for both the local object structure and related modules, roles, subscriptions, functional options, or predefined items that can change the performance path.
 5. Gather evidence: row counts, generated SQL, query plan, managed locks, lock order, lock/deadlock participants, long transaction boundaries, temp storage, TEMPDB or WAL pressure, and table/index names.
 6. Separate causes: inefficient platform query, missing or harmful index, broad virtual table read, query-in-loop, lock contention, DBMS maintenance, or data growth.
-7. Propose one measurable change at a time; use `unica.runtime.execute` to preview typed syntax/test arguments and, with `dryRun: false`, to run them, and require separate runtime plus timing/DBMS evidence before calling the change verified.
+7. Propose one measurable change at a time; check syntax with `unica.check` (test runs are outside the v0.13 surface), and require separate runtime plus timing/DBMS evidence before calling the change verified.
 
 ## Stop rules
 

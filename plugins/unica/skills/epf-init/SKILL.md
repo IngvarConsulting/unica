@@ -9,16 +9,11 @@ description: Создать пустой make-ready scaffold внешней об
 
 - Использовать MCP `unica` tool `unica.epf.init` для scaffold XML/BSL.
 - Не вызывать внутренние adapters и не добавлять skill-local scripts.
-- По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
-показывает запланированную команду без побочных эффектов, а с `dryRun: false`
-исполняет классифицированную операцию и отвечает её терминальным результатом в
-том же вызове, приложив названную причину риска (`runtime_risk_*`)
-предупреждением; неклассифицированная операция по-прежнему отказывает
-`runtime_operation_unbounded` до обнаружения рабочего пространства. Preview
-исполнением не является. Работу, которую вызов ждать не должен, запускай через
-`unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
-`unica.build.*`.
-- Для будущей сборки результата предпросмотреть `operation=make` через `v8-runner`; текущий вызов не создаёт артефакт.
+- Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
+контракт каждой — `argsSchema`, `execution`, `previewRequired`,
+`ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
+превью исполнением не является. Не обходи контракт прямым runner-ом.
+- Сборку `.epf`/`.erf` из исходников словарь `unica.run` не публикует: `artifact.build` собирает только `.cf` и `.cfe`. Сообщай это как пробел контракта, а не обходи runner-ом.
 
 ## Порядок работы
 
@@ -28,7 +23,7 @@ description: Создать пустой make-ready scaffold внешней об
 4. Если source-set ещё не объявлен, создать scaffold в выбранном новом каталоге, затем явно добавить этот каталог как корень Designer source-set. Проверить регистрацию через `unica.view {}`: `kind=external_processor`, `sourceFormat=platform_xml`.
 5. Передать `FormName`, только если нужна пустая управляемая форма. Без него создаются descriptor и `ObjectModule.bsl`.
 6. Сначала проверить точный список файлов через `dryRun: true`; при явном запросе пользователя повторить с `dryRun: false`.
-7. Предпросмотреть `unica.runtime.execute operation=make`; для будущей applied-сборки в `v8project.yaml` потребуется доступная `infobase.connection`. Текущий preview не собирает `.epf`.
+7. Публикацию артефакта не обещать: `artifact.build` в `unica.run` `.epf` не собирает и отвечает `unsupported_operation`.
 
 `Name` и `FormName` должны быть идентификаторами 1С. Существующие descriptor или одноимённый каталог не перезаписываются. При `format: EDT` остановиться и объяснить несовместимость, не создавать Designer XML внутри EDT source-set.
 
@@ -56,7 +51,7 @@ source-set:
     path: src/external-processors
 ```
 
-Не выполняй applied `operation=init` ради scaffold или существующей проектной базы: он инициализирует runtime-состояние и несёт непрерываемую фазу, а для scaffold это не нужно. Для существующей connection сохранить настройки без переинициализации; `db-auth-check` может классифицировать только уже предоставленное runtime evidence и не запускает auth probe.
+Не вызывай `infobase.create` ради scaffold или существующей проектной базы: он заводит базу, а для scaffold это не нужно. Для существующей connection сохранить настройки без переинициализации; `db-auth-check` может классифицировать только уже предоставленное runtime evidence и не запускает auth probe.
 
 ## Параметры
 
@@ -113,25 +108,4 @@ Preview обработки с формой:
 
 `unica.epf.init` разбирает весь сгенерированный XML до публикации. Проверить, что созданы `<Name>.xml`, `<Name>/Ext/ObjectModule.bsl` и, если запрошена форма, три файла под `<Name>/Forms/`. Форму дополнительно проверить через `unica.form.validate` с путём к её `Ext/Form.xml`. Отдельный generic Meta validator не использовать: он не принимает root `ExternalDataProcessor`. Не создавать `Configuration.xml` или platform-generated CDFI sidecar; legitimate external descriptor может называться `ConfigDumpInfo.xml`, если пользователь выбрал такое имя объекта.
 
-Предпросмотреть будущую команду сборки только с `dryRun: true`:
-
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.runtime.execute",
-    "arguments": {
-      "cwd": "<workspace>",
-      "operation": "make",
-      "sourceSet": "external-processors",
-      "output": "build/external",
-      "dryRun": true
-    }
-  }
-}
-```
-
-Перед заменой `dryRun` на `false` предупреди: applied `make` публикует артефакт без ограниченного восстановления.
-
-Не использовать `operation=load` для `.epf`.
+Сборку и загрузку артефакта словарь `unica.run` не публикует: `artifact.build` отвечает `unsupported_operation` на `.epf`/`.erf`, а `cf.import` принимает только `.cf` и `.cfe`. Сообщай публикацию как пробел контракта Unica MCP.

@@ -7,16 +7,11 @@ description: "Моделирование метаданных 1С. Исполь�
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.meta.info`, `unica.meta.add`, `unica.meta.edit`, `unica.view` on the subsystem node, `unica.code.search`, `unica.code.diagnostics`, and `unica.runtime.execute`.
-- По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
-показывает запланированную команду без побочных эффектов, а с `dryRun: false`
-исполняет классифицированную операцию и отвечает её терминальным результатом в
-том же вызове, приложив названную причину риска (`runtime_risk_*`)
-предупреждением; неклассифицированная операция по-прежнему отказывает
-`runtime_operation_unbounded` до обнаружения рабочего пространства. Preview
-исполнением не является. Работу, которую вызов ждать не должен, запускай через
-`unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
-`unica.build.*`.
+- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.meta.info`, `unica.meta.add`, `unica.meta.edit`, `unica.view` on the subsystem node, `unica.code.search`, `unica.code.diagnostics`, and `unica.run`.
+- Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
+контракт каждой — `argsSchema`, `execution`, `previewRequired`,
+`ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
+превью исполнением не является. Не обходи контракт прямым runner-ом.
 - Use `unica.docs` with `source: "development-standard"` for the standards about modelling: 432, 468, 474, 531, 587, 603, 649, 677, 697, 704, 728, and diagnostics АПК:93, АПК:304, АПК:305, АПК:1205, АПК:1207, АПК:1210-1217, АПК:1329, АПК:1330. These are standards, not evidence of runtime behavior; confirm the wording before citing one.
 - Use `unica.view` on the role node when predefined items need their interactive-deletion rights checked.
 - Do not call internal analyzer, runtime, standards, or package adapters directly. They are hidden behind MCP `unica`.
@@ -52,7 +47,7 @@ A value several objects carry identically may be a common attribute (std677) rat
 4. Decide predefined items and their update mode before creating the object, and check the interactive-deletion rights with `unica.view` on the role node (std697).
 5. Create with `unica.meta.add` and refine with `unica.meta.edit`, one verifiable step at a time.
 6. Fill names, synonyms, and presentations; leaving both object and list presentation empty is АПК:93.
-7. Verify statically with `unica.code.diagnostics`; use `unica.runtime.execute` to preview typed syntax/test arguments and, with `dryRun: false`, to run them, report runtime behavior as unverified, and search existing callers with `unica.code.search` when a type changed.
+7. Verify statically with `unica.code.diagnostics`; check syntax with `unica.check` (test runs are outside the v0.13 surface), report runtime behavior as unverified, and search existing callers with `unica.code.search` when a type changed.
 
 ## Design rules
 

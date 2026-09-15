@@ -8,16 +8,11 @@ description: "Анализ журнала регистрации и технол
 ## MCP routing
 
 - Preferred path: use MCP `unica` tools `unica.code.search`, `unica.meta.info`, `unica.view {}`, `unica.code.diagnostics`, `unica.docs`.
-- По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
-показывает запланированную команду без побочных эффектов, а с `dryRun: false`
-исполняет классифицированную операцию и отвечает её терминальным результатом в
-том же вызове, приложив названную причину риска (`runtime_risk_*`)
-предупреждением; неклассифицированная операция по-прежнему отказывает
-`runtime_operation_unbounded` до обнаружения рабочего пространства. Preview
-исполнением не является. Работу, которую вызов ждать не должен, запускай через
-`unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
-`unica.build.*`.
-- Use `unica.runtime.execute` to preview typed syntax/test/launch arguments and, with `dryRun: false`, to run it, never as verification or a substitute for log evidence.
+- Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
+контракт каждой — `argsSchema`, `execution`, `previewRequired`,
+`ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
+превью исполнением не является. Не обходи контракт прямым runner-ом.
+- Check syntax with `unica.check` and launch a client through `unica.run` (`client.run`); test runs are outside the v0.13 surface, and neither call is verification or a substitute for log evidence.
 - Do not call internal runtime, analyzer, standards, or package adapters directly. They are hidden behind MCP `unica`.
 
 ## Inputs

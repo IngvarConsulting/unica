@@ -8,15 +8,10 @@
 являются разрешённым пользовательским workflow Unica и не должны запускаться
 напрямую как обход публичной границы.
 
-По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
-показывает запланированную команду без побочных эффектов, а с `dryRun: false`
-исполняет классифицированную операцию и отвечает её терминальным результатом в
-том же вызове, приложив названную причину риска (`runtime_risk_*`)
-предупреждением; неклассифицированная операция по-прежнему отказывает
-`runtime_operation_unbounded` до обнаружения рабочего пространства. Preview
-исполнением не является. Работу, которую вызов ждать не должен, запускай через
-`unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
-`unica.build.*`.
+Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
+контракт каждой — `argsSchema`, `execution`, `previewRequired`,
+`ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
+превью исполнением не является. Не обходи контракт прямым runner-ом.
 
 **Два режима запуска:**
 
@@ -307,33 +302,13 @@ Documents/РеализацияТоваровУслуг/Forms/ФормаДоку�
 
 ## Сборка и разборка внешних обработок (EPF/ERF)
 
-EPF/ERF runtime-аргументы в packaged Unica plugin предпросматриваются через
-`v8-runner` и MCP `unica.runtime.execute`. Отдельные EPF/ERF build/dump skills
-не являются пользовательским workflow, а текущий preview не собирает и не
-выгружает артефакты.
-
-### Preview публикации внешних обработок и отчетов
-
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.runtime.execute",
-    "arguments": {
-      "operation": "make",
-      "cwd": "<workspace>",
-      "sourceSet": "external-processors",
-      "output": "build/external",
-      "dryRun": true
-    }
-  }
-}
-```
-
-Для preview внешних отчетов используй `sourceSet: "external-reports"`.
-`output` задаёт предполагаемый каталог будущей публикации; текущий вызов не
-создаёт `.epf` или `.erf`.
+Внешние обработки и отчёты в словаре `unica.run` сборкой не публикуются:
+`artifact.build` собирает только `.cf` и `.cfe`, а `.epf`/`.erf` в `output`
+отвечают `unsupported_operation`; `cf.import` их тоже не принимает. Исходники
+внешнего набора движутся как исходники: `source.export` выгружает набор,
+объявленный в `v8project.yaml` с типом `EXTERNAL_DATA_PROCESSORS` или
+`EXTERNAL_REPORTS`, `source.import` загружает его в базу. Публикацию
+`.epf`/`.erf` сообщай как пробел контракта Unica MCP.
 
 ### Выгрузка внешних исходников
 
@@ -342,46 +317,25 @@ EPF/ERF runtime-аргументы в packaged Unica plugin предпросма
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.runtime.execute",
+    "name": "unica.run",
     "arguments": {
-      "operation": "dump",
-      "cwd": "<workspace>",
-      "sourceSet": "external-processors",
-      "mode": "full",
+      "op": "source.export",
+      "args": {
+        "mode": "full",
+        "sourceSet": "external-processors"
+      },
       "dryRun": true
     }
   }
 }
 ```
 
-Для выгрузки внешних отчетов используй `sourceSet: "external-reports"`.
-Сейчас это только preview: applied external dump блокируется до появления
-такой же проверяемой private-stage публикации, как для configuration/extension.
-
-### Preview загрузки XML-исходников в базу
-
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.runtime.execute",
-    "arguments": {
-      "operation": "build",
-      "cwd": "<workspace>",
-      "sourceSet": "external-processors",
-      "mode": "full",
-      "dryRun": true
-    }
-  }
-}
-```
+Для внешних отчётов используй `sourceSet: "external-reports"`. Превью отвечает
+`rev`; применение — тот же вызов с `dryRun: false` и `ifRev` из превью.
 
 ### Примечания
 
-- `operation=load` моделирует `.cf` и `.cfe`; `.epf` и `.erf` моделируются
-  через preview `build` и `make` external source-set. Все эти текущие операции,
-  включая `dump`, вызываются только с `dryRun=true`.
+- `cf.import` принимает `.cf` и `.cfe`; `.epf` и `.erf` — нет.
 - Внешние source-set должны быть объявлены в `v8project.yaml` с типами `EXTERNAL_DATA_PROCESSORS` или `EXTERNAL_REPORTS`.
 - Dump требует базу с конфигурацией, содержащей используемые типы. Dump в пустой базе может потерять ссылочные типы (`CatalogRef.XXX` превращается в `xs:string`).
 - Категории колонок регистров (Dimension/Resource/Attribute) зависят от Form.xml и конфигурации базы; при round-trip через неподходящую базу привязки полей формы могут не сохраниться.

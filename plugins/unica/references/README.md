@@ -7,7 +7,7 @@ Use this index when a skill needs background guidance beyond its own `SKILL.md`.
 
 | Intent | Reference |
 | --- | --- |
-| Create a workspace, configure `v8project.yaml`, build/dump/load, publish CF/CFE/EPF/ERF | `use-cases/workspace-runtime.md` |
+| Create a workspace, configure `v8project.yaml`, import/export sources, build or load CF/CFE | `use-cases/workspace-runtime.md` |
 | Create, inspect, edit, validate, or remove metadata objects and configuration roots | `use-cases/metadata-modeling.md` |
 | Design or modify managed forms and form modules | `use-cases/forms-ui.md` |
 | Build reports, DCS/DCS schemas, MXL layouts, print forms, and external report artifacts | `use-cases/reports-printing.md` |

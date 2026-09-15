@@ -7,16 +7,11 @@ description: "Разделение данных 1С. Используй когд
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.code.search`, `unica.meta.info`, `unica.view` on the role node, `unica.code.diagnostics`, `unica.docs`, and `unica.runtime.execute`.
-- По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
-показывает запланированную команду без побочных эффектов, а с `dryRun: false`
-исполняет классифицированную операцию и отвечает её терминальным результатом в
-том же вызове, приложив названную причину риска (`runtime_risk_*`)
-предупреждением; неклассифицированная операция по-прежнему отказывает
-`runtime_operation_unbounded` до обнаружения рабочего пространства. Preview
-исполнением не является. Работу, которую вызов ждать не должен, запускай через
-`unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
-`unica.build.*`.
+- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.code.search`, `unica.meta.info`, `unica.view` on the role node, `unica.code.diagnostics`, `unica.docs`, and `unica.run`.
+- Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
+контракт каждой — `argsSchema`, `execution`, `previewRequired`,
+`ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
+превью исполнением не является. Не обходи контракт прямым runner-ом.
 - Use `unica.view` on the schema node when reports/DCS queries may bypass tenant filters.
 - Do not call internal metadata, analyzer, standards, runtime, or package adapters directly. They are hidden behind MCP `unica`.
 
@@ -32,7 +27,7 @@ description: "Разделение данных 1С. Используй когд
 2. Inspect metadata and roles with `unica.meta.info` and `unica.view` on the role node; find risky code with `unica.code.search`.
 3. Trace tenant value through reads, writes, reports, background jobs, exchange messages, file batches, temp storage, and integration calls.
 4. Review queries for missing tenant filters, unsafe privileged mode, broad virtual tables, and joins that cross boundaries.
-5. Use `unica.runtime.execute` to preview typed syntax/test arguments and, with `dryRun: false`, to run them; record runtime verification as unavailable and require separate evidence covering at least two tenant contexts.
+5. Check syntax with `unica.check` (test runs are outside the v0.13 surface); record runtime verification as unavailable and require separate evidence covering at least two tenant contexts.
 
 ## Red flags
 

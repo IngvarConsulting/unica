@@ -11,20 +11,16 @@ server deployment skill surface; runtime setup must stay behind MCP `unica`.
 
 ## Primary path
 
-По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
-показывает запланированную команду без побочных эффектов, а с `dryRun: false`
-исполняет классифицированную операцию и отвечает её терминальным результатом в
-том же вызове, приложив названную причину риска (`runtime_risk_*`)
-предупреждением; неклассифицированная операция по-прежнему отказывает
-`runtime_operation_unbounded` до обнаружения рабочего пространства. Preview
-исполнением не является. Работу, которую вызов ждать не должен, запускай через
-`unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
-`unica.build.*`.
+Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
+контракт каждой — `argsSchema`, `execution`, `previewRequired`,
+`ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
+превью исполнением не является. Не обходи контракт прямым runner-ом.
 
 - `autonomous-server` prepares and analyzes the isolated runtime contour.
-- `v8-runner` previews MCP `unica.runtime.execute` arguments for `config-init`,
-  `init`, `build`, `syntax`, and `launch`; each preview explicitly keeps
-  `dryRun: true` and does not prepare or launch the contour.
+- `unica.run` prepares the contour step by step: `infobase.create`,
+  `source.import`, then `client.run`; each previewApply step is previewed first
+  and applied with its `ifRev`. Web publication and an MCP client mode are not
+  on the v0.13 surface.
 - A concrete web-client URL supplied independently by the user is the hand-off
   point for an external browser-testing tool. Preview cannot produce one.
 - `log-analysis` analyzes journal registration and technological log evidence.

@@ -29,16 +29,11 @@ description: "Справка платформы 1С и объектной мод
   их в ответе, чтобы читатель мог открыть ту же страницу сам, и не выдавайте
   фрагмент за прочитанную страницу.
 - For project context, use `unica.search`, `unica.view {}`, and
-  `unica.runtime.execute`.
-- По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
-показывает запланированную команду без побочных эффектов, а с `dryRun: false`
-исполняет классифицированную операцию и отвечает её терминальным результатом в
-том же вызове, приложив названную причину риска (`runtime_risk_*`)
-предупреждением; неклассифицированная операция по-прежнему отказывает
-`runtime_operation_unbounded` до обнаружения рабочего пространства. Preview
-исполнением не является. Работу, которую вызов ждать не должен, запускай через
-`unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
-`unica.build.*`.
+  `unica.check`.
+- Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
+контракт каждой — `argsSchema`, `execution`, `previewRequired`,
+`ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
+превью исполнением не является. Не обходи контракт прямым runner-ом.
 - Когда вопрос об API зависит от структуры метаданных, читай её `unica.view` по
   логическому адресу объекта.
 - Do not call internal standards, runtime, or package adapters directly.
@@ -82,8 +77,7 @@ description: "Справка платформы 1С и объектной мод
    страницу по памяти.
 6. Validate against local project context with `unica.view {}` and targeted
    `unica.search` if the answer depends on project conventions.
-7. For code examples, use `unica.runtime.execute` to preview `operation=syntax`
-   and, with `dryRun: false`, to run it; report actual syntax and runtime
+7. For code examples, check syntax with `unica.check`; report runtime
    behavior as unverified.
 
 ## Platform context

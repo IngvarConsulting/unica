@@ -7,16 +7,11 @@ description: "Безопасная аутентификация и крипто�
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.code.search`, `unica.meta.info`, `unica.view` on the role node, `unica.code.diagnostics`, `unica.docs`, and `unica.runtime.execute`.
-- По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
-показывает запланированную команду без побочных эффектов, а с `dryRun: false`
-исполняет классифицированную операцию и отвечает её терминальным результатом в
-том же вызове, приложив названную причину риска (`runtime_risk_*`)
-предупреждением; неклассифицированная операция по-прежнему отказывает
-`runtime_operation_unbounded` до обнаружения рабочего пространства. Preview
-исполнением не является. Работу, которую вызов ждать не должен, запускай через
-`unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
-`unica.build.*`.
+- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.code.search`, `unica.meta.info`, `unica.view` on the role node, `unica.code.diagnostics`, `unica.docs`, and `unica.run`.
+- Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
+контракт каждой — `argsSchema`, `execution`, `previewRequired`,
+`ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
+превью исполнением не является. Не обходи контракт прямым runner-ом.
 - Use integration and autonomous-server skills when auth behavior must be verified through HTTP service or web-client runtime.
 - Do not call internal analyzer, standards, runtime, or package adapters directly. They are hidden behind MCP `unica`.
 
@@ -32,7 +27,7 @@ description: "Безопасная аутентификация и крипто�
 2. Inspect existing auth and role paths with `unica.code.search`, `unica.meta.info`, and `unica.view` on the role node.
 3. Define secret lifecycle: source, storage, rotation, masking, runtime process user, test fixture policy, and log redaction.
 4. Define auth error semantics: missing credentials, expired token, invalid certificate, provider unavailable, denied rights, tenant mismatch, and remote auth failure.
-5. Verify statically with `unica.code.diagnostics`; use `unica.runtime.execute` to preview typed syntax/test arguments and, with `dryRun: false`, to run them and report runtime behavior as unverified.
+5. Verify statically with `unica.code.diagnostics`; check syntax with `unica.check` (test runs are outside the v0.13 surface) and report runtime behavior as unverified.
 
 ## Review checklist
 

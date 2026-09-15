@@ -10,12 +10,26 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MIN_RUNTIME_GUIDANCE_DOCS = 31
-# The retired v8-runner skill carried eleven duplicate examples. Remaining
-# examples belong to subject skills and shared references until their v0.13
-# operation is implemented and migrated to unica.run. The `config-init` example
-# left the floor when the project file lost its writer: no tool creates it, so
-# there is no applied contract left to state (DEC.2026-09-09.PROJECT-CONFIG-IS-HANDWRITTEN).
-MIN_RUNTIME_EXECUTE_EXAMPLES = 8
+# Runtime guidance points at the `unica.run` dictionary instead of restating
+# per-operation rules; the remaining fenced examples call operations the
+# dictionary implements. Syntax lives in `unica.check`, test runs and EPF/ERF
+# publication are outside the v0.13 surface, so their examples are gone.
+MIN_RUNTIME_EXECUTE_EXAMPLES = 2
+RUN_DICTIONARY_OPERATIONS = {
+    "infobase.create",
+    "infobase.export",
+    "infobase.import",
+    "cf.export",
+    "cf.import",
+    "source.export",
+    "source.import",
+    "artifact.build",
+    "client.run",
+}
+RETIRED_RUNTIME_NAMES = re.compile(
+    r"unica\.runtime\.|unica\.build\.|runtime_risk_|runtime_operation_unbounded|"
+    r"INV-MCP-RUNTIME-RECEIPT|ADR-0074"
+)
 
 
 # Both ways a document points at another one: a backticked path, where the
@@ -130,7 +144,7 @@ def decode_active_json_unicode_escapes(text: str) -> str:
 
 
 def block_mentions_runtime_tool(block: str) -> bool:
-    return "unica.runtime.execute" in decode_active_json_unicode_escapes(block)
+    return '"unica.run' in decode_active_json_unicode_escapes(block)
 
 
 def indented_code_blocks(text: str) -> list[str]:
@@ -154,9 +168,13 @@ def indented_code_blocks(text: str) -> list[str]:
 
 def reject_indented_applied_runtime_examples(text: str) -> None:
     for block_number, block in enumerate(indented_code_blocks(text), start=1):
-        if block_mentions_runtime_tool(block) and DRY_RUN_FALSE.search(block):
+        if (
+            block_mentions_runtime_tool(block)
+            and DRY_RUN_FALSE.search(block)
+            and '"ifRev"' not in block
+        ):
             raise ValueError(
-                f"indented runtime JSON example #{block_number} uses dryRun false"
+                f"indented runtime JSON example #{block_number} applies without ifRev"
             )
 
 
@@ -178,7 +196,7 @@ def runtime_execute_json_examples(text: str) -> list[dict]:
             params = candidate.get("params")
             if not isinstance(params, dict):
                 continue
-            if params.get("name") != "unica.runtime.execute":
+            if params.get("name") != "unica.run":
                 continue
             examples.append(candidate)
     return examples
@@ -188,9 +206,7 @@ def runtime_guidance_document(text: str) -> tuple[bool, list[dict]]:
     reject_indented_applied_runtime_examples(text)
     examples = runtime_execute_json_examples(text)
     return (
-        bool(examples)
-        or "unica.runtime.execute" in text
-        or "v8-runner" in text,
+        bool(examples) or "`unica.run`" in text or "v8-runner" in text,
         examples,
     )
 
@@ -213,7 +229,7 @@ def collect_runtime_guidance(
         for payload in payloads:
             if (
                 payload.get("method") == "tools/call"
-                and payload.get("params", {}).get("name") == "unica.runtime.execute"
+                and payload.get("params", {}).get("name") == "unica.run"
             ):
                 runtime_examples.append((doc, payload["params"]["arguments"]))
     return runtime_docs, runtime_examples, parse_failures
@@ -381,7 +397,7 @@ SCENARIO_SKILLS = {
         "unica.view",
         "unica.meta.info",
         "unica.docs",
-        "unica.runtime.execute",
+        "unica.run",
     ],
         # Поиск по тексту и по именам — один `search`, различается свод;
     # чтение узла и профиль объекта — один `view`.
@@ -405,32 +421,32 @@ SCENARIO_SKILLS = {
         "unica.meta.info",
         "unica.docs",
         "unica.view",
-        "unica.runtime.execute",
+        "unica.run",
     ],
     "query-optimize": [
         "unica.code.search",
         "unica.view",
         "unica.meta.info",
         "unica.docs",
-        "unica.runtime.execute",
+        "unica.run",
     ],
     "test-authoring": [
         "unica.code.search",
         "unica.view",
-        "unica.runtime.execute",
+        "unica.check",
     ],
     "platform-help": [
         "unica.docs",
         "unica.search",
         "unica.view",
-        "unica.runtime.execute",
+        "unica.run",
     ],
     "bsp-patterns": [
         "unica.code.search",
         "unica.meta.info",
         "unica.view",
         "unica.docs",
-        "unica.runtime.execute",
+        "unica.run",
     ],
     "integration-implement": [
         "unica.view",
@@ -439,11 +455,11 @@ SCENARIO_SKILLS = {
         "unica.meta.edit",
         "unica.code.search",
         "unica.docs",
-        "unica.runtime.execute",
+        "unica.run",
     ],
     "autonomous-server": [
         "unica.view",
-        "unica.runtime.execute",
+        "unica.run",
         "unica.meta.info",
         "unica.code.search",
         "unica.code.diagnostics",
@@ -461,7 +477,7 @@ SCENARIO_SKILLS = {
         "unica.meta.info",
         "unica.code.diagnostics",
         "unica.docs",
-        "unica.runtime.execute",
+        "unica.run",
     ],
     "data-exchange": [
         "unica.view",
@@ -469,7 +485,7 @@ SCENARIO_SKILLS = {
         "unica.meta.info",
         "unica.code.diagnostics",
         "unica.docs",
-        "unica.runtime.execute",
+        "unica.run",
     ],
     "db-performance": [
         "unica.view",
@@ -477,7 +493,7 @@ SCENARIO_SKILLS = {
         "unica.meta.info",
         "unica.code.diagnostics",
         "unica.docs",
-        "unica.runtime.execute",
+        "unica.run",
     ],
     "security-auth-crypto": [
         "unica.view",
@@ -485,7 +501,7 @@ SCENARIO_SKILLS = {
         "unica.meta.info",
         "unica.code.diagnostics",
         "unica.docs",
-        "unica.runtime.execute",
+        "unica.run",
     ],
     "data-separation": [
         "unica.view",
@@ -493,7 +509,7 @@ SCENARIO_SKILLS = {
         "unica.meta.info",
         "unica.code.diagnostics",
         "unica.docs",
-        "unica.runtime.execute",
+        "unica.run",
     ],
     "release-support": [
         "unica.view",
@@ -502,7 +518,7 @@ SCENARIO_SKILLS = {
         "unica.meta.info",
         "unica.code.diagnostics",
         "unica.docs",
-        "unica.runtime.execute",
+        "unica.run",
     ],
     "source-access": [
         "unica.resolve",
@@ -518,7 +534,7 @@ SCENARIO_SKILLS = {
         "unica.code.definition",
         "unica.code.patch",
         "unica.code.diagnostics",
-        "unica.runtime.execute",
+        "unica.run",
     ],
     "register-design": [
         "unica.view",
@@ -527,7 +543,7 @@ SCENARIO_SKILLS = {
         "unica.meta.edit",
         "unica.code.search",
         "unica.code.diagnostics",
-        "unica.runtime.execute",
+        "unica.run",
     ],
     "object-events": [
         "unica.view",
@@ -537,7 +553,7 @@ SCENARIO_SKILLS = {
         "unica.code.graph",
         "unica.code.patch",
         "unica.code.diagnostics",
-        "unica.runtime.execute",
+        "unica.run",
     ],
     "form-events": [
         "unica.view",
@@ -545,7 +561,7 @@ SCENARIO_SKILLS = {
         "unica.meta.info",
         "unica.code.patch",
         "unica.code.diagnostics",
-        "unica.runtime.execute",
+        "unica.run",
     ],
     "module-placement": [
         "unica.view",
@@ -554,7 +570,7 @@ SCENARIO_SKILLS = {
         "unica.code.graph",
         "unica.code.patch",
         "unica.code.diagnostics",
-        "unica.runtime.execute",
+        "unica.run",
     ],
     "metadata-modeling": [
         "unica.view",
@@ -562,7 +578,7 @@ SCENARIO_SKILLS = {
         "unica.meta.add",
         "unica.meta.edit",
         "unica.code.diagnostics",
-        "unica.runtime.execute",
+        "unica.run",
     ],
     "transactions-locks": [
         "unica.view",
@@ -571,7 +587,7 @@ SCENARIO_SKILLS = {
         "unica.code.patch",
         "unica.code.diagnostics",
         "unica.meta.info",
-        "unica.runtime.execute",
+        "unica.run",
     ],
     "object-locks": [
         "unica.view",
@@ -579,7 +595,7 @@ SCENARIO_SKILLS = {
         "unica.code.graph",
         "unica.code.patch",
         "unica.code.diagnostics",
-        "unica.runtime.execute",
+        "unica.run",
     ],
 }
 
@@ -600,7 +616,7 @@ SCENARIO_REQUIRED_TOKENS = {
     "code-diagnostics": ["АПК", "EDT", "BSL LS", "отключ", "v8std"],
     "code-review": ["Findings first", "severity", "file/line"],
     "query-optimize": ["СКД", "virtual", "query-in-loop"],
-    "test-authoring": ['"testRunner": "yaxunit"', '"testRunner": "va"'],
+    "test-authoring": ["YaXUnit", "Vanessa Automation"],
     "platform-help": [
         "platform-help contract gap",
         "development-standard",
@@ -826,8 +842,6 @@ ALLOWED_ADDITIONAL_MCP_TOOL_NAMES = {
     "cf-init": {"unica.view", "unica.check"},
     "cfe-borrow": {"unica.check"},
     "cfe-init": {"unica.check"},
-    "epf-init": {"unica.runtime.execute"},
-    "erf-init": {"unica.runtime.execute"},
     "form-compile": {"unica.view", "unica.check"},
     "role-compile": {"unica.view", "unica.check"},
     "dcs-compile": {"unica.view", "unica.check"},
@@ -1770,7 +1784,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
 {
   "method": "tools/call",
   "params": {
-    "name": "unica.runtime.execute",
+    "name": "unica.run",
     "arguments": {"operation": "build", "dryRun": false}
   }
 }
@@ -1782,7 +1796,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                 {
                     "method": "tools/call",
                     "params": {
-                        "name": "unica.runtime.execute",
+                        "name": "unica.run",
                         "arguments": {"operation": "build", "dryRun": False},
                     },
                 }
@@ -1796,7 +1810,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
 {
   "method": "tools/call",
   "params": {
-    "name": "unica.runtime.execute",
+    "name": "unica.run",
     "arguments": {"operation": "build", "dryRun": false}
   }
 }
@@ -1812,7 +1826,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
 {
   "method": "tools/call",
   "params": {
-    "name": "unica\u002eruntime.execute",
+    "name": "unica\u002erun",
     "arguments": {"operation": "build", "dryRun": false}
   }
 }
@@ -1821,7 +1835,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         payloads = runtime_execute_json_examples(example)
 
         self.assertEqual(len(payloads), 1)
-        self.assertEqual(payloads[0]["params"]["name"], "unica.runtime.execute")
+        self.assertEqual(payloads[0]["params"]["name"], "unica.run")
         self.assertIs(payloads[0]["params"]["arguments"]["dryRun"], False)
 
     def test_runtime_json_guard_keeps_malformed_block_boundary(self) -> None:
@@ -1832,7 +1846,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertEqual(
             runtime_execute_json_examples(
                 r'''```json
-{"note":"unica\\u002eruntime.execute",
+{"note":"unica\\u002erun",
 ```'''
             ),
             [],
@@ -1842,7 +1856,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             ValueError, r"invalid fenced runtime JSON example #1"
         ):
             runtime_execute_json_examples(
-                '```json\n{"name":"unica.runtime.execute",\n```'
+                '```json\n{"name":"unica.run",\n```'
             )
 
     def test_runtime_json_guard_rejects_malformed_escaped_tool_name(self) -> None:
@@ -1851,7 +1865,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         ):
             runtime_execute_json_examples(
                 r'''```json
-{"params":{"name":"unica\u002eruntime.execute","arguments":{"dryRun":false}},
+{"params":{"name":"unica\u002erun","arguments":{"dryRun":false}},
 ```'''
             )
 
@@ -1860,19 +1874,19 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         ):
             runtime_execute_json_examples(
                 r'''```json
-{"params":{"name":"unica\u002eruntime.execute
+{"params":{"name":"unica\u002erun
 ```'''
             )
 
     def test_runtime_json_guard_handles_commonmark_fences_and_batches(self) -> None:
         examples = r'''~~~JSON
-[{"method":"tools/call","params":{"name":"unica\u002eruntime.execute","arguments":{"dryRun":false}}}]
+[{"method":"tools/call","params":{"name":"unica\u002erun","arguments":{"dryRun":false}}}]
 ~~~
 ``` json
-{"method":"tools/call","params":{"name":"unica.runtime.execute","arguments":{"dryRun":false}}}
+{"method":"tools/call","params":{"name":"unica.run","arguments":{"dryRun":false}}}
 ```
 ````json
-{"note":"```","method":"tools/call","params":{"name":"unica.runtime.execute","arguments":{"dryRun":false}}}
+{"note":"```","method":"tools/call","params":{"name":"unica.run","arguments":{"dryRun":false}}}
 ````'''
 
         payloads = runtime_execute_json_examples(examples)
@@ -1880,7 +1894,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertEqual(len(payloads), 3)
         self.assertTrue(
             all(
-                payload["params"]["name"] == "unica.runtime.execute"
+                payload["params"]["name"] == "unica.run"
                 and payload["params"]["arguments"]["dryRun"] is False
                 for payload in payloads
             )
@@ -1888,15 +1902,15 @@ class UnicaSkillRoutingTests(unittest.TestCase):
 
     def test_runtime_json_guard_handles_commonmark_containers_and_info(self) -> None:
         examples = '''> ```json
-> {"method":"tools/call","params":{"name":"unica.runtime.execute","arguments":{"dryRun":false}}}
+> {"method":"tools/call","params":{"name":"unica.run","arguments":{"dryRun":false}}}
 > ```
 - example:
 
     ```json
-    {"method":"tools/call","params":{"name":"unica.runtime.execute","arguments":{"dryRun":false}}}
+    {"method":"tools/call","params":{"name":"unica.run","arguments":{"dryRun":false}}}
     ```
 ```json title=request
-{"method":"tools/call","params":{"name":"unica.runtime.execute","arguments":{"dryRun":false}}}
+{"method":"tools/call","params":{"name":"unica.run","arguments":{"dryRun":false}}}
 ```'''
 
         payloads = runtime_execute_json_examples(examples)
@@ -1911,10 +1925,10 @@ class UnicaSkillRoutingTests(unittest.TestCase):
 
     def test_runtime_json_guard_handles_fence_after_list_marker(self) -> None:
         examples = '''- ```json
-  {"method":"tools/call","params":{"name":"unica.runtime.execute","arguments":{"dryRun":false}}}
+  {"method":"tools/call","params":{"name":"unica.run","arguments":{"dryRun":false}}}
   ```
 > - ```json
->   {"method":"tools/call","params":{"name":"unica.runtime.execute","arguments":{"dryRun":false}}}
+>   {"method":"tools/call","params":{"name":"unica.run","arguments":{"dryRun":false}}}
 >   ```'''
 
         payloads = runtime_execute_json_examples(examples)
@@ -1924,14 +1938,14 @@ class UnicaSkillRoutingTests(unittest.TestCase):
     def test_runtime_json_guard_handles_nested_indent_and_info_entities(self) -> None:
         examples = '''123. outer
      - ```json
-       {"method":"tools/call","params":{"name":"unica.runtime.execute","arguments":{"dryRun":false}}}
+       {"method":"tools/call","params":{"name":"unica.run","arguments":{"dryRun":false}}}
        ```
 123. outer
      > ```json
-     > {"method":"tools/call","params":{"name":"unica.runtime.execute","arguments":{"dryRun":false}}}
+     > {"method":"tools/call","params":{"name":"unica.run","arguments":{"dryRun":false}}}
      > ```
 ```j&#x73;on
-{"method":"tools/call","params":{"name":"unica.runtime.execute","arguments":{"dryRun":false}}}
+{"method":"tools/call","params":{"name":"unica.run","arguments":{"dryRun":false}}}
 ```'''
 
         payloads = runtime_execute_json_examples(examples)
@@ -1940,7 +1954,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
 
     def test_runtime_guidance_document_detects_decoded_tool_name(self) -> None:
         example = r'''```json
-{"method":"tools/call","params":{"name":"unica\u002eruntime.execute","arguments":{"dryRun":false}}}
+{"method":"tools/call","params":{"name":"unica\u002erun","arguments":{"dryRun":false}}}
 ```'''
 
         is_runtime_document, payloads = runtime_guidance_document(example)
@@ -1955,7 +1969,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
     {
       "method": "tools/call",
       "params": {
-        "name": "unica.runtime.execute",
+        "name": "unica.run",
         "arguments": {"operation": "build", "dryRun": false}
       }
     }
@@ -1975,13 +1989,13 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                 (
                     good,
                     '''```json
-{"method":"tools/call","params":{"name":"unica.runtime.execute","arguments":{"dryRun":true}}}
+{"method":"tools/call","params":{"name":"unica.run","arguments":{"dryRun":true}}}
 ```''',
                 ),
                 (
                     bad,
                     '''```json
-{"method":"tools/call","params":{"name":"unica.runtime.execute","arguments":{"dryRun":false}}
+{"method":"tools/call","params":{"name":"unica.run","arguments":{"dryRun":false}}
 ```''',
                 ),
             ]
@@ -2045,20 +2059,20 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         for doc, arguments in runtime_examples:
             with self.subTest(
                 path=doc.relative_to(self.repo_root()),
-                operation=arguments.get("operation"),
+                operation=arguments.get("op"),
             ):
-                self.assertIs(arguments.get("dryRun"), True)
+                # An example calls an operation the dictionary implements; a
+                # previewApply example previews, and an apply carries the
+                # revision its preview returned.
+                self.assertIn(arguments.get("op"), RUN_DICTIONARY_OPERATIONS)
+                if arguments.get("op") != "client.run":
+                    self.assertIn("dryRun", arguments)
+                if arguments.get("dryRun") is False:
+                    self.assertIn("ifRev", arguments)
 
-        # ADR-0074: applied execution is admitted, so the shipped guidance has to
-        # name the applied mode, its risk vocabulary and the durable alternative.
-        contract_tokens = (
-            "INV-MCP-RUNTIME-RECEIPT",
-            "ADR-0074",
-            "`dryRun: false`",
-            "runtime_risk_",
-            "`unica.build.*`",
-            "`unica.runtime.job.start`",
-        )
+        # The dictionary owns the contract: guidance points at `unica.run` and
+        # does not restate per-operation risk codes or dryRun/ifRev rules.
+        contract_tokens = ("`unica.run`",)
         forbidden_applied_claims = (
             r"запускай следующую необходимую операцию",
             r"`operation=init` допустима",
@@ -2075,6 +2089,27 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                     self.assertIn(token, text)
                 for claim in forbidden_applied_claims:
                     self.assertNotRegex(text, claim)
+
+    def test_shipped_guidance_names_no_retired_runtime_tool(self) -> None:
+        """#702: the wire has no `unica.runtime.execute`, so no skill may teach it."""
+        shipped_docs = (
+            list(self.skill_root().glob("**/*.md"))
+            + list(self.reference_root().glob("**/*.md"))
+            + [self.repo_root() / "plugins" / "unica" / "README.md"]
+        )
+        offenders = {}
+        for doc in sorted(shipped_docs):
+            hits = sorted(
+                {
+                    match.group(0)
+                    for match in RETIRED_RUNTIME_NAMES.finditer(
+                        doc.read_text(encoding="utf-8")
+                    )
+                }
+            )
+            if hits:
+                offenders[doc.relative_to(self.repo_root()).as_posix()] = hits
+        self.assertEqual(offenders, {})
 
 
     def test_shipped_guidance_never_routes_runtime_refusal_through_fallbacks(
@@ -2186,7 +2221,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             flags=re.DOTALL,
         )
         self.assertIsNotNone(test_first)
-        self.assertLess(test_first.start(), text.index("preview intended syntax/test"))
+        self.assertLess(test_first.start(), text.index("check syntax with `unica.check` as a separate"))
 
 
 

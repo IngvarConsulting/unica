@@ -7,16 +7,11 @@ description: "Проектирование регистров 1С. Исполь�
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.meta.info`, `unica.meta.add`, `unica.meta.edit`, `unica.code.search`, `unica.view` on the schema node, `unica.code.diagnostics`, and `unica.runtime.execute`.
-- По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
-показывает запланированную команду без побочных эффектов, а с `dryRun: false`
-исполняет классифицированную операцию и отвечает её терминальным результатом в
-том же вызове, приложив названную причину риска (`runtime_risk_*`)
-предупреждением; неклассифицированная операция по-прежнему отказывает
-`runtime_operation_unbounded` до обнаружения рабочего пространства. Preview
-исполнением не является. Работу, которую вызов ждать не должен, запускай через
-`unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
-`unica.build.*`.
+- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.meta.info`, `unica.meta.add`, `unica.meta.edit`, `unica.code.search`, `unica.view` on the schema node, `unica.code.diagnostics`, and `unica.run`.
+- Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
+контракт каждой — `argsSchema`, `execution`, `previewRequired`,
+`ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
+превью исполнением не является. Не обходи контракт прямым runner-ом.
 - Use `unica.docs` with `source: "development-standard"` for the standards about registers: 447, 477, 657, 661, 663, 664, 708, 733, 792, and diagnostics АПК:123, АПК:229, BSLLS:DenyIncompleteValues, BSLLS:VirtualTableCallWithoutParameters. These are standards, not evidence of runtime behavior; confirm the wording before citing one.
 - Use `unica.view` on the role node when the register is subordinate to a recorder or carries access restrictions.
 - Do not call internal analyzer, runtime, standards, or package adapters directly. They are hidden behind MCP `unica`.
@@ -47,7 +42,7 @@ Totals separation is the decision that pulls both ways: std664 wants it for writ
 5. Decide `EnableTotalsSplitting` against the read paths found in step 3, not in the abstract.
 6. Set `DenyIncompleteValues` on dimensions that must always carry a value, and decide `Master` deliberately: it makes record lifetime follow the master value.
 7. Create with `unica.meta.add` and refine with `unica.meta.edit`, one verifiable step at a time.
-8. Verify statically with `unica.code.diagnostics`; use `unica.runtime.execute` to preview typed syntax/test arguments and, with `dryRun: false`, to run them, report runtime behavior as unverified, and re-check the read paths that step 5 traded against.
+8. Verify statically with `unica.code.diagnostics`; check syntax with `unica.check` (test runs are outside the v0.13 surface), report runtime behavior as unverified, and re-check the read paths that step 5 traded against.
 
 ## Design rules
 

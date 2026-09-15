@@ -7,19 +7,14 @@ configuration metadata: configuration root files, catalogs, documents,
 registers, constants, enums, common modules, subsystems, command interfaces,
 templates, external processors/reports as metadata objects, and related XML.
 
-Do not use this for database build/dump/load or artifact build/export. Those are
-runtime workflows whose typed arguments can currently only be previewed by
-`v8-runner` through `unica.runtime.execute`.
+Do not use this for database build/dump/load or artifact build/export. Those
+are `unica.run` operations: `source.import`, `source.export`, `cf.import`,
+`cf.export`, `artifact.build`.
 
-По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
-показывает запланированную команду без побочных эффектов, а с `dryRun: false`
-исполняет классифицированную операцию и отвечает её терминальным результатом в
-том же вызове, приложив названную причину риска (`runtime_risk_*`)
-предупреждением; неклассифицированная операция по-прежнему отказывает
-`runtime_operation_unbounded` до обнаружения рабочего пространства. Preview
-исполнением не является. Работу, которую вызов ждать не должен, запускай через
-`unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
-`unica.build.*`.
+Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
+контракт каждой — `argsSchema`, `execution`, `previewRequired`,
+`ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
+превью исполнением не является. Не обходи контракт прямым runner-ом.
 
 ## Primary path
 
@@ -27,9 +22,8 @@ Before selecting XML metadata tools, inspect the project with
 `unica.view {}` and choose the target source-set. Native metadata tools work
 with platform XML source-sets (`sourceFormat=platform_xml`). If the selected
 source-set is EDT (`sourceFormat=edt`), do not apply platform XML edits directly;
-preview the intended runtime conversion/build arguments with `dryRun: true`, or
-ask for an explicit platform XML target. Preview does not convert or build the
-source-set.
+ask for an explicit platform XML target: Unica reads platform XML only, and
+Designer/EDT conversion is not on the v0.13 surface.
 
 The workspace itself does not have a single source format. A project can contain
 an EDT configuration source-set and a platform XML external processor/report
