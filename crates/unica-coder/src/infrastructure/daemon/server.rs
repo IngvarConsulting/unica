@@ -378,6 +378,12 @@ pub(super) enum V5ActorBoundCanonicalInvocation {
         import: Arc<super::v13_cf_import::PreparedCfImport>,
         workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
     },
+    /// Создание базы: previewApply с забором, без аргументов, известно
+    /// длинным по внешнему процессу.
+    InfobaseCreate {
+        create: Arc<super::v13_infobase_create::PreparedInfobaseCreate>,
+        workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
+    },
     Documentation {
         search: Arc<super::v13_documentation::PreparedDocumentationSearch>,
         workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
@@ -399,6 +405,9 @@ pub(super) enum V5PreparedCanonicalInvocation {
     },
     CfImport {
         import: Arc<super::v13_cf_import::PreparedCfImport>,
+    },
+    InfobaseCreate {
+        create: Arc<super::v13_infobase_create::PreparedInfobaseCreate>,
     },
     Documentation {
         search: Arc<super::v13_documentation::PreparedDocumentationSearch>,
@@ -537,6 +546,19 @@ impl V5CanonicalInvocationRuntime {
                 });
             }
         }
+        match super::v13_infobase_create::prepare(&request) {
+            super::v13_infobase_create::Preparation::NotApplicable => {}
+            super::v13_infobase_create::Preparation::Rejected(result) => {
+                return Err(V5CanonicalPrepareError::Rejected(result))
+            }
+            super::v13_infobase_create::Preparation::Ready(create) => {
+                let workspace_identity_hash = create.workspace_identity_hash();
+                return Ok(V5ActorBoundCanonicalInvocation::InfobaseCreate {
+                    create,
+                    workspace_identity_hash,
+                });
+            }
+        }
         match super::v13_documentation::prepare(&request) {
             super::v13_documentation::Preparation::NotApplicable => {}
             super::v13_documentation::Preparation::Rejected(result) => {
@@ -579,7 +601,10 @@ impl V5ActorBoundCanonicalInvocation {
     pub(super) fn response_deadline(&self) -> Option<InvocationResponseDeadline> {
         match self {
             Self::Workspace { invocation, .. } => Some(invocation.response_deadline().clone()),
-            Self::InfobaseExport { .. } | Self::ClientRun { .. } | Self::CfImport { .. } => None,
+            Self::InfobaseExport { .. }
+            | Self::ClientRun { .. }
+            | Self::CfImport { .. }
+            | Self::InfobaseCreate { .. } => None,
             // Справка не известна длинной: локальное попадание отвечает
             // сразу, сетевое доходит до седьмой секунды. Значит у неё тот же
             // cutoff, что у чтений, — захваченный при bind.
@@ -601,6 +626,10 @@ impl V5ActorBoundCanonicalInvocation {
                 ..
             }
             | Self::CfImport {
+                workspace_identity_hash,
+                ..
+            }
+            | Self::InfobaseCreate {
                 workspace_identity_hash,
                 ..
             }
@@ -631,6 +660,9 @@ impl V5ActorBoundCanonicalInvocation {
                 Ok(V5PreparedCanonicalInvocation::ClientRun { launch })
             }
             Self::CfImport { import, .. } => Ok(V5PreparedCanonicalInvocation::CfImport { import }),
+            Self::InfobaseCreate { create, .. } => {
+                Ok(V5PreparedCanonicalInvocation::InfobaseCreate { create })
+            }
             Self::Documentation { search, .. } => {
                 Ok(V5PreparedCanonicalInvocation::Documentation { search })
             }
@@ -644,9 +676,10 @@ impl V5PreparedCanonicalInvocation {
             ExecutionClass::KnownLong(KnownLongReason::ExternalProcess);
         match self {
             Self::Workspace { class, .. } => class,
-            Self::InfobaseExport { .. } | Self::ClientRun { .. } | Self::CfImport { .. } => {
-                &INFOBASE_EXPORT_CLASS
-            }
+            Self::InfobaseExport { .. }
+            | Self::ClientRun { .. }
+            | Self::CfImport { .. }
+            | Self::InfobaseCreate { .. } => &INFOBASE_EXPORT_CLASS,
             Self::Documentation { .. } => &ExecutionClass::InlineCandidate,
         }
     }
@@ -678,6 +711,7 @@ impl V5PreparedCanonicalInvocation {
             Self::InfobaseExport { export } => Ok(export.execute(cancellation)),
             Self::ClientRun { launch } => Ok(launch.execute(cancellation)),
             Self::CfImport { import } => Ok(import.execute(cancellation)),
+            Self::InfobaseCreate { create } => Ok(create.execute(cancellation)),
             Self::Documentation { search } => Ok(search.execute(cancellation)),
         }
     }
@@ -6775,6 +6809,87 @@ struct ActorLogicalReadLease {"#,
             preparations.load(Ordering::SeqCst),
             0,
             "cf.import must not enter the PlatformXml service"
+        );
+    }
+
+    #[test]
+    fn v5_infobase_create_prepares_before_source_admission_and_keeps_the_revision_gate() {
+        // A-3 зонтика #871: создание базы — previewApply с забором, без
+        // аргументов, готовится до admission PlatformXml и известно длинным по
+        // внешнему процессу; применение без `ifRev` отказывает `bad_value`.
+        let workspace = tempfile::tempdir().expect("temporary infobase.create workspace");
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\ninfobase:\n  connection: \"File=.build/infobase\"\n",
+        )
+        .expect("write infobase-only workspace descriptor");
+        let preparations = Arc::new(AtomicUsize::new(0));
+        let runtime = V5CanonicalInvocationRuntime::new(
+            Arc::new(CountingPrepareService {
+                preparations: Arc::clone(&preparations),
+            }),
+            Arc::new(TokioClock),
+        );
+        let request = |arguments: serde_json::Value| {
+            InvocationRequest::new(
+                ToolIdentity::Run,
+                arguments,
+                std::fs::canonicalize(workspace.path())
+                    .expect("canonical workspace")
+                    .to_string_lossy(),
+                7_000,
+            )
+            .expect("valid infobase.create request")
+        };
+
+        for arguments in [
+            serde_json::json!({"op": "infobase.create", "args": {}, "dryRun": true}),
+            serde_json::json!({"op": "infobase.create", "args": {}, "dryRun": false, "ifRev": "unica-infobase-create-sha256-v1:test"}),
+        ] {
+            let bound = runtime
+                .bind(request(arguments))
+                .expect("infobase.create binds without a PlatformXml source set");
+            assert!(matches!(
+                bound,
+                V5ActorBoundCanonicalInvocation::InfobaseCreate { .. }
+            ));
+            let prepared = bound.prepare().expect("infobase.create preparation");
+            assert_eq!(
+                prepared.execution_class(),
+                &ExecutionClass::KnownLong(KnownLongReason::ExternalProcess)
+            );
+        }
+
+        let unfenced = match runtime.bind(request(serde_json::json!({
+            "op": "infobase.create",
+            "args": {},
+            "dryRun": false,
+        }))) {
+            Err(V5CanonicalPrepareError::Rejected(result)) => result,
+            Ok(_) => panic!("an apply without ifRev was accepted"),
+            Err(other) => panic!("apply without ifRev returned infrastructure failure: {other:?}"),
+        };
+        assert_eq!(unfenced.diagnostics[0]["code"], "bad_value");
+        assert!(unfenced.diagnostics[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("requires ifRev"));
+        let closed = match runtime.bind(request(serde_json::json!({
+            "op": "infobase.create",
+            "args": {"connection": "File=/elsewhere"},
+            "dryRun": true,
+        }))) {
+            Err(V5CanonicalPrepareError::Rejected(result)) => result,
+            Ok(_) => panic!("a connection argument was accepted"),
+            Err(other) => {
+                panic!("connection on infobase.create returned infrastructure failure: {other:?}")
+            }
+        };
+        assert_eq!(closed.diagnostics[0]["code"], "bad_value");
+        assert_eq!(
+            preparations.load(Ordering::SeqCst),
+            0,
+            "infobase.create must not enter the PlatformXml service"
         );
     }
 

@@ -10,6 +10,7 @@ mod v13_call_graph;
 mod v13_cf_import;
 mod v13_client_run;
 mod v13_documentation;
+mod v13_infobase_create;
 mod v13_infobase_exports;
 mod v13_read_modes;
 mod v13_run_dictionary;

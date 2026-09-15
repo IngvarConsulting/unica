@@ -134,9 +134,11 @@ class V013ImplementationCoverageTests(unittest.TestCase):
         запуск клиента как опубликовано, без обязательного превью и без забора
         ревизии (вариант А развилки A-1 в #871). Пятая — `cf.import` (A-5):
         пара к `cf.export`, забор и неизменность входного файла как у
-        `infobase.import`.
+        `infobase.import`. Шестая — `infobase.create` (A-3): без аргументов,
+        квитанция — повторное превью раннера.
         """
         supported = {
+            "infobase.create",
             "cf.export",
             "cf.import",
             "infobase.export",

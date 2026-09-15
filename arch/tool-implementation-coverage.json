@@ -94,7 +94,7 @@
     },
     "unica.run": {
       "status": "partial",
-      "reason": "The closed directional nine-operation dictionary, configuration-package export and import, DT export, DT restore and the terminal client launch are implemented; the exports and both imports go through non-executing preview and revision-fenced apply, and the other four run operations remain unsupported.",
+      "reason": "The closed directional nine-operation dictionary, infobase creation, configuration-package export and import, DT export, DT restore and the terminal client launch are implemented; creation, the exports and both imports go through non-executing preview and revision-fenced apply, and the other three run operations remain unsupported.",
       "evidence": [{
         "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
         "test": "production_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"
@@ -117,9 +117,21 @@
   },
   "runOperations": {
     "infobase.create": {
-      "status": "unsupported",
-      "reason": "Infobase creation execution has not been connected to the v0.13 run adapter.",
-      "evidence": []
+      "status": "supported",
+      "reason": "Creating the empty infobase declared by v8project.yaml is implemented as previewApply over v8-runner init without arguments: the preview reads the runner's step statuses and refuses an existing infobase or a project that needs an EDT workspace, apply is fenced by ifRev built from the project file, and the receipt is the runner's own repeated preview reporting nothing left to create; the infobase state is reported as attested by the provider.",
+      "evidence": [{
+        "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
+        "test": "v5_infobase_create_prepares_before_source_admission_and_keeps_the_revision_gate"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/daemon/v13_infobase_create.rs",
+        "test": "preview_plans_the_infobase_without_creating_anything_or_naming_its_path"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/daemon/v13_infobase_create.rs",
+        "test": "apply_creates_and_takes_its_receipt_from_a_repeated_preview"
+      }, {
+        "file": "crates/unica-coder/src/infrastructure/daemon/v13_infobase_create.rs",
+        "test": "an_existing_infobase_is_refused_at_preview_and_points_to_import"
+      }]
     },
     "source.import": {
       "status": "unsupported",

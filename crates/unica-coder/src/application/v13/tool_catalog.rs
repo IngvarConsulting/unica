@@ -74,7 +74,9 @@ impl RunOperation {
 
     pub(crate) const fn description(&self) -> &'static str {
         match self.intent {
-            RunIntent::InfobaseCreate => "Create an empty target 1C infobase.",
+            RunIntent::InfobaseCreate => {
+                "Create the empty infobase declared by v8project.yaml; refused when it already exists."
+            }
             RunIntent::SourceImport => {
                 "Import workspace sources into the infobase: build or update its configuration from the attached source sets."
             }
@@ -140,6 +142,12 @@ impl RunOperation {
                     "output": {"type": "string", "description": "Workspace-relative .dt output path."}
                 },
                 "required": ["output"]
+            })),
+            RunIntent::InfobaseCreate => Some(json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {},
+                "required": []
             })),
             RunIntent::CfImport => Some(json!({
                 "type": "object",
@@ -400,7 +408,8 @@ fn run_dictionary() -> Vec<RunOperation> {
         rejects_sessions: intent == RunIntent::ClientRun,
         implemented: matches!(
             intent,
-            RunIntent::CfExport
+            RunIntent::InfobaseCreate
+                | RunIntent::CfExport
                 | RunIntent::CfImport
                 | RunIntent::InfobaseExport
                 | RunIntent::InfobaseImport
@@ -795,13 +804,14 @@ mod tests {
                 .map(|operation| operation.name())
                 .collect::<Vec<_>>(),
             [
+                "infobase.create",
                 "cf.export",
                 "cf.import",
                 "infobase.export",
                 "infobase.import",
                 "client.run"
             ],
-            "реализованы обе пары export/import на слоях cf и infobase и терминальный запуск клиента; проектный файл в словаре не числится вовсе"
+            "реализованы создание базы, обе пары export/import на слоях cf и infobase и терминальный запуск клиента; проектный файл в словаре не числится вовсе"
         );
 
         let output = &catalog.result_envelope_schema;
@@ -923,13 +933,38 @@ mod tests {
                 .map(|operation| operation.name())
                 .collect::<Vec<_>>(),
             [
+                "infobase.create",
                 "cf.export",
                 "cf.import",
                 "infobase.export",
                 "infobase.import",
                 "client.run"
             ],
-            "реализованы обе пары export/import на слоях cf и infobase и терминальный запуск клиента; проектный файл в словаре не числится вовсе"
+            "реализованы создание базы, обе пары export/import на слоях cf и infobase и терминальный запуск клиента; проектный файл в словаре не числится вовсе"
+        );
+    }
+
+    #[test]
+    fn v13_infobase_create_is_implemented_without_arguments() {
+        let catalog =
+            catalog_for(SurfaceRelease::V13).expect("v0.13 catalog must be test-loadable");
+        let create = catalog
+            .run_dictionary
+            .iter()
+            .find(|operation| operation.intent == RunIntent::InfobaseCreate)
+            .expect("infobase.create belongs to the v0.13 dictionary");
+        assert!(create.implemented);
+        assert_eq!(create.execution(), "previewApply");
+        assert_eq!(create.effects(), &["infobase"]);
+        let schema = create
+            .args_schema()
+            .expect("infobase.create publishes its args");
+        assert_eq!(schema["additionalProperties"], false);
+        assert_eq!(schema["properties"], json!({}));
+        assert_eq!(
+            schema["required"],
+            json!([]),
+            "соединение задаёт проектный файл, аргументов у создания базы нет"
         );
     }
 
