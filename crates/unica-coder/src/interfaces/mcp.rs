@@ -377,7 +377,9 @@ fn compatibility_task_exchange_error(error: V5TaskExchangeError) -> TaskToolErro
             TaskToolError::TaskNotFound
         }
         V5TaskExchangeError::Protocol(V5DaemonErrorCode::TaskExpired) => TaskToolError::TaskExpired,
-        V5TaskExchangeError::Protocol(_) => TaskToolError::TaskBackendFailed,
+        V5TaskExchangeError::Protocol(code) => {
+            TaskToolError::TaskBackendFailed(backend_detail(code))
+        }
         V5TaskExchangeError::Transport => TaskToolError::TaskTransportFailed,
         V5TaskExchangeError::SessionPoisoned => TaskToolError::TaskSessionClosed,
         V5TaskExchangeError::UnexpectedResponse => TaskToolError::TaskProtocolFailed,

@@ -17,10 +17,11 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SOURCE_ROOT = REPO_ROOT / "crates" / "unica-coder" / "src"
 
-# Потолок опускается вместе с каждым срезом D-1 (#871). Первый срез — читатели
-# `v13_read.rs`/`v13_read_port.rs`: дефекты дескриптора и нечитаемые файлы
-# набора отвечают `source_unreadable`.
-UNDETAILED_PROVIDER_UNAVAILABLE_CEILING = 157
+# Потолок опускается вместе с каждым срезом D-1 (#871): читатели
+# `v13_read.rs`/`v13_read_port.rs` (дефекты дескриптора и нечитаемые файлы
+# набора — `source_unreadable`), затем `check`/`apply` в `v13_service.rs`
+# (провайдер диагностик не отработал — `provider_absent`).
+UNDETAILED_PROVIDER_UNAVAILABLE_CEILING = 153
 
 TEST_TAIL = re.compile(r"#\[cfg\(test\)\]\s*(?:pub(?:\(crate\))?\s+)?mod\s+\w+")
 STRING_LITERAL = re.compile(r'"(?:\\.|[^"\\])*"')

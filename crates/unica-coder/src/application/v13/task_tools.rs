@@ -1,5 +1,5 @@
 use crate::domain::invocation::{DomainResult, InvocationStatus, TaskId};
-use crate::domain::refusal::RefusalCode;
+use crate::domain::refusal::{RefusalCode, RefusalDetail};
 use serde_json::{json, Map, Value};
 
 pub(crate) const DEFAULT_TASK_RESULT_WAIT_MS: u64 = 7_000;
@@ -31,7 +31,9 @@ pub(crate) enum TaskToolError {
     BadArguments,
     TaskNotFound,
     TaskExpired,
-    TaskBackendFailed,
+    /// Демон отказал по протоколу; уточнение говорит, занят он, несовместим
+    /// или сломан, и выбирает исход вместо умолчания кода.
+    TaskBackendFailed(RefusalDetail),
     TaskTransportFailed,
     TaskSessionClosed,
     TaskProtocolFailed,
@@ -46,7 +48,7 @@ impl TaskToolError {
             Self::BadArguments => RefusalCode::BadTaskArguments,
             Self::TaskNotFound => RefusalCode::TaskNotFound,
             Self::TaskExpired => RefusalCode::TaskExpired,
-            Self::TaskBackendFailed => RefusalCode::TaskBackendFailed,
+            Self::TaskBackendFailed(_) => RefusalCode::TaskBackendFailed,
             Self::TaskTransportFailed => RefusalCode::TaskTransportFailed,
             Self::TaskSessionClosed => RefusalCode::TaskSessionClosed,
             Self::TaskProtocolFailed => RefusalCode::TaskProtocolFailed,
@@ -280,22 +282,24 @@ pub(crate) fn project_task_snapshot(
 pub(crate) fn task_tool_error_result(error: TaskToolError) -> DomainResult {
     // The closed code answers through `diagnostics[]` exactly like every other
     // canonical refusal; task errors get no private `data.code` channel.
-    DomainResult::canonical_rejection(
-        None,
-        error.code(),
-        match error {
-            TaskToolError::InvalidTaskId => "Task identifier is not canonical",
-            TaskToolError::BadWaitMs => "Task wait must be within 0..=7000 milliseconds",
-            TaskToolError::BadArguments => "Task tool arguments are invalid",
-            TaskToolError::TaskNotFound => "Task was not found",
-            TaskToolError::TaskExpired => "Task has expired",
-            TaskToolError::TaskBackendFailed => "Task state is unavailable",
-            TaskToolError::TaskTransportFailed => "Task transport is unavailable",
-            TaskToolError::TaskSessionClosed => "Task session is closed",
-            TaskToolError::TaskProtocolFailed => "Task response failed validation",
-            TaskToolError::ProjectionFailed => "Task state cannot be projected safely",
-        },
-    )
+    let message = match error {
+        TaskToolError::InvalidTaskId => "Task identifier is not canonical",
+        TaskToolError::BadWaitMs => "Task wait must be within 0..=7000 milliseconds",
+        TaskToolError::BadArguments => "Task tool arguments are invalid",
+        TaskToolError::TaskNotFound => "Task was not found",
+        TaskToolError::TaskExpired => "Task has expired",
+        TaskToolError::TaskBackendFailed(_) => "Task state is unavailable",
+        TaskToolError::TaskTransportFailed => "Task transport is unavailable",
+        TaskToolError::TaskSessionClosed => "Task session is closed",
+        TaskToolError::TaskProtocolFailed => "Task response failed validation",
+        TaskToolError::ProjectionFailed => "Task state cannot be projected safely",
+    };
+    match error {
+        TaskToolError::TaskBackendFailed(detail) => {
+            DomainResult::canonical_rejection_detailed(None, detail, message)
+        }
+        other => DomainResult::canonical_rejection(None, other.code(), message),
+    }
 }
 
 #[cfg(test)]
@@ -306,6 +310,7 @@ mod tests {
         TaskToolError, DEFAULT_TASK_RESULT_WAIT_MS,
     };
     use crate::domain::invocation::{DomainResult, InvocationStatus, TaskId};
+    use crate::domain::refusal::RefusalDetail;
     use serde_json::{json, Map, Value};
 
     fn arguments(value: Value) -> Map<String, Value> {
@@ -509,11 +514,20 @@ mod tests {
             TaskToolError::InvalidTaskId,
             TaskToolError::TaskNotFound,
             TaskToolError::TaskExpired,
-            TaskToolError::TaskBackendFailed,
+            TaskToolError::TaskBackendFailed(RefusalDetail::BackendBroken),
         ] {
             let projected = task_tool_error_result(error);
             assert!(!projected.ok);
             assert_eq!(projected.diagnostics[0]["code"], error.code().as_str());
+            if let TaskToolError::TaskBackendFailed(detail) = error {
+                // The backend refusal names why: the agent chooses between
+                // retrying a busy daemon and calling a human for a broken one.
+                assert_eq!(projected.diagnostics[0]["detailCode"], detail.as_str());
+                assert_eq!(
+                    projected.diagnostics[0]["outcome"],
+                    detail.outcome().as_str()
+                );
+            }
             assert!(
                 projected.data.is_none(),
                 "a task tool refusal carries no data payload"
