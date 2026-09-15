@@ -470,7 +470,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
                     &format!("{}.{}.{}", target.as_str(), kind.as_str(), child.name),
                 )
                 .map_err(|error| {
-                    ViewError::new(RefusalCode::ProviderUnavailable, error.to_string())
+                    ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
                 })?;
                 self.verify_registered_owner(&child, admitted)?;
             }
@@ -484,8 +484,9 @@ impl<'a> LogicalViewReadAuthority<'a> {
         insert_serialized(&mut payload, "properties", &local.properties)?;
         insert_serialized(&mut payload, "declarations", &local.declarations)?;
         insert_serialized(&mut payload, "relations", &local.relations)?;
-        let collections = serde_json::to_value(&local.collections)
-            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))?;
+        let collections = serde_json::to_value(&local.collections).map_err(|error| {
+            ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+        })?;
         payload.insert("collections".to_string(), collections);
         // Предопределённые элементы — содержимое самого объекта, и писатель у
         // них есть. Без читателя агент, добавивший элемент, не может
@@ -520,8 +521,8 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 .flatten()
             {
                 let Some(name) = child.get("name").and_then(Value::as_str) else {
-                    return Err(ViewError::new(
-                        RefusalCode::ProviderUnavailable,
+                    return Err(ViewError::detailed(
+                        RefusalDetail::SourceUnreadable,
                         format!("registered {field} entry has no name"),
                     ));
                 };
@@ -530,7 +531,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
                     &format!("{}.{}.{name}", target.as_str(), kind.as_str()),
                 )
                 .map_err(|error| {
-                    ViewError::new(RefusalCode::ProviderUnavailable, error.to_string())
+                    ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
                 })?;
                 self.verify_registered_owner(&child, admitted)?;
             }
@@ -565,14 +566,14 @@ impl<'a> LogicalViewReadAuthority<'a> {
             .flatten()
         {
             let kind = item.get("kind").and_then(Value::as_str).ok_or_else(|| {
-                ViewError::new(
-                    RefusalCode::ProviderUnavailable,
+                ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
                     "registered owner has no kind",
                 )
             })?;
             let name = item.get("name").and_then(Value::as_str).ok_or_else(|| {
-                ViewError::new(
-                    RefusalCode::ProviderUnavailable,
+                ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
                     "registered owner has no name",
                 )
             })?;
@@ -582,7 +583,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             let owner =
                 MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &format!("{kind}.{name}"))
                     .map_err(|error| {
-                        ViewError::new(RefusalCode::ProviderUnavailable, error.to_string())
+                        ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
                     })?;
             self.verify_registered_owner(&owner, admitted)?;
         }
@@ -643,8 +644,8 @@ impl<'a> LogicalViewReadAuthority<'a> {
             )
             .map_err(|error| ViewError::new(error.code(), error.to_string()))?
             else {
-                return Err(ViewError::new(
-                    RefusalCode::ProviderUnavailable,
+                return Err(ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
                     "module event did not resolve to a Platform source",
                 ));
             };
@@ -682,13 +683,13 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 .rsplit_once('.')
                 .map(|(owner, _)| owner)
                 .ok_or_else(|| {
-                    ViewError::new(
-                        RefusalCode::ProviderUnavailable,
+                    ViewError::detailed(
+                        RefusalDetail::SourceUnreadable,
                         "common module owner is invalid",
                     )
                 })?;
             let owner = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, owner).map_err(
-                |error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()),
+                |error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()),
             )?;
             let descriptor = self.read.metadata_descriptor(&owner)?;
             Some(common_module_properties(&descriptor)?)
@@ -901,8 +902,8 @@ impl<'a> LogicalViewReadAuthority<'a> {
             }
             let evidence = self.owner_evidence(&current, admitted).map_err(|error| {
                 if error.code() == RefusalCode::NotFound {
-                    ViewError::new(
-                        RefusalCode::ProviderUnavailable,
+                    ViewError::detailed(
+                        RefusalDetail::SourceUnreadable,
                         format!(
                             "registered metadata owner `{}` has no descriptor",
                             current.as_str()
@@ -915,8 +916,8 @@ impl<'a> LogicalViewReadAuthority<'a> {
             if evidence.artifact_kind() != parts[end - 2]
                 || evidence.artifact_name() != Some(parts[end - 1])
             {
-                return Err(ViewError::new(
-                    RefusalCode::ProviderUnavailable,
+                return Err(ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
                     format!(
                         "metadata descriptor identity does not match `{}`",
                         current.as_str()
@@ -1221,8 +1222,8 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                     })
                 {
                     let name = item.get("name").and_then(Value::as_str).ok_or_else(|| {
-                        ViewError::new(
-                            RefusalCode::ProviderUnavailable,
+                        ViewError::detailed(
+                            RefusalDetail::SourceUnreadable,
                             "registered metadata owner has no name",
                         )
                     })?;
@@ -1231,7 +1232,7 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                         &format!("{}.{name}", branch_kind.as_str()),
                     )
                     .map_err(|error| {
-                        ViewError::new(RefusalCode::ProviderUnavailable, error.to_string())
+                        ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
                     })?;
                     self.verify_registered_owner(&owner, admitted)?;
                 }
@@ -1332,8 +1333,8 @@ impl LogicalViewReadAuthority<'_> {
             // addressable interior: addressing stops at the template.
             Ok(MetadataChildProfile::Template(_)) => Vec::new(),
             Ok(MetadataChildProfile::Form | MetadataChildProfile::Command) => {
-                return Err(ViewError::new(
-                    RefusalCode::ProviderUnavailable,
+                return Err(ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
                     "template registry points to a non-template descriptor",
                 ));
             }
@@ -1672,20 +1673,20 @@ fn common_module_properties(bytes: &[u8]) -> Result<CommonModuleProperties, View
         )
     })?;
     let document = roxmltree::Document::parse(text.trim_start_matches('\u{feff}'))
-        .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))?;
+        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))?;
     let root = document.root_element();
     let boolean = |name| -> Result<bool, ViewError> {
         let raw = xml_descendant_text(root, name).ok_or_else(|| {
-            ViewError::new(
-                RefusalCode::ProviderUnavailable,
+            ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
                 format!("common module descriptor has no {name} property"),
             )
         })?;
         match raw {
             "true" => Ok(true),
             "false" => Ok(false),
-            _ => Err(ViewError::new(
-                RefusalCode::ProviderUnavailable,
+            _ => Err(ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
                 format!("common module {name} property is not boolean"),
             )),
         }
@@ -1700,8 +1701,8 @@ fn common_module_properties(bytes: &[u8]) -> Result<CommonModuleProperties, View
         privileged: boolean("Privileged")?,
         return_values_reuse: xml_descendant_text(root, "ReturnValuesReuse")
             .ok_or_else(|| {
-                ViewError::new(
-                    RefusalCode::ProviderUnavailable,
+                ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
                     "common module descriptor has no ReturnValuesReuse property",
                 )
             })?
