@@ -13,8 +13,10 @@ autonomous server debug use case for that.
 
 Use native MCP tools through `unica`:
 
-- `unica.apply` with `form.add` creates form metadata and registration.
-- `unica.form.compile` creates `Form.xml` from JSON DSL or object metadata.
+- `unica.apply` with `form.add` scaffolds forms from the owner node and `items`:
+  metadata XML, `Form.xml`, `Module.bsl` and the owner's `<Form>` registration.
+- `unica.apply` with `form.create` scaffolds one form from its own form address
+  and `values`; both reach the same staging, so `Form.xml` is written either way.
 - `unica.form.edit` applies point changes to an existing form.
 - `unica.view` on the form node gives compact structure before editing.
 - `unica.check` on the form node (validator `form`) checks XML and structural constraints.

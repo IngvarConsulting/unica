@@ -30,69 +30,53 @@ allowed-tools:
 Если нужна операция — сообщи о пробеле контракта Unica MCP и сошлись на
 записку.
 
-## Примеры
+## Примеры дескриптора
 
-### Заимствовать один объект
+Ниже — то, что должен нести записанный дескриптор заимствованного объекта в
+наборе расширения. UUID берётся из дескриптора того же объекта у родителя.
 
-Поля, которые должен нести записанный файл:
+### Заимствованный объект метаданных
 
-```json
-{
-  "ExtensionPath": "src",
-  "ConfigPath": "C:\\cfsrc\\erp",
-  "Object": "Catalog.Контрагенты"
-}
+```xml
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <Catalog uuid="<uuid объекта в расширении>">
+    <InternalInfo/>
+    <Properties>
+      <ObjectBelonging>Adopted</ObjectBelonging>
+      <Name>Контрагенты</Name>
+      <Comment/>
+      <ExtendedConfigurationObject><uuid объекта у родителя></ExtendedConfigurationObject>
+    </Properties>
+    <ChildObjects/>
+  </Catalog>
+</MetaDataObject>
 ```
 
-### Заимствовать форму
+Имя обязано совпадать с именем у родителя, а сам объект — быть зарегистрирован
+в `ChildObjects` корня расширения.
 
-Поля, которые должен нести записанный файл:
+### Заимствованный объект с перекрытым свойством
 
-```json
-{
-  "ExtensionPath": "src",
-  "ConfigPath": "C:\\cfsrc\\erp",
-  "Object": "Catalog.Контрагенты.Form.ФормаЭлемента"
-}
+Перекрытия несёт `InternalInfo` списком, а не флагом:
+
+```xml
+<InternalInfo>
+  <xr:PropertyState>
+    <xr:Property>Synonym</xr:Property>
+    <xr:State>Extended</xr:State>
+  </xr:PropertyState>
+</InternalInfo>
 ```
 
-### Несколько объектов за раз
+Платформенной улики на эту форму у объекта метаданных пока нет: её снимает
+круговой путь из архитектурной записки Unica. Пока улики нет, считай
+перекрытие непроверенным фактом и говори об этом в ответе.
 
-Поля, которые должен нести записанный файл:
+### Заимствованная форма
 
-```json
-{
-  "ExtensionPath": "src",
-  "ConfigPath": "C:\\cfsrc\\erp",
-  "Object": "Catalog.Контрагенты ;; CommonModule.ОбщийМодуль ;; Enum.ВидыОплат"
-}
-```
-
-### Заимствовать форму с основным реквизитом
-
-Поля, которые должен нести записанный файл:
-
-```json
-{
-  "ExtensionPath": "src",
-  "ConfigPath": "C:\\cfsrc\\erp",
-  "Object": "Catalog.Номенклатура.Form.ФормаЭлемента",
-  "BorrowMainAttribute": true
-}
-```
-
-### Заимствовать форму со всеми реквизитами объекта
-
-Поля, которые должен нести записанный файл:
-
-```json
-{
-  "ExtensionPath": "src",
-  "ConfigPath": "C:\\cfsrc\\erp",
-  "Object": "Catalog.Номенклатура.Form.ФормаЭлемента",
-  "BorrowMainAttribute": "All"
-}
-```
+Дескриптор формы устроен так же: `Adopted` плюс `ExtendedConfigurationObject`
+формы родителя. Реквизиты и элементы формы заимствуются вместе с ней; выборочно
+перенести часть реквизитов поверхность не умеет — это тот же пробел контракта.
 
 ## Верификация
 

@@ -32,7 +32,7 @@ description: Создать пустой make-ready scaffold внешней об
 3. Найти source-set с `type: EXTERNAL_DATA_PROCESSORS` и передать его `path` как `OutputDir` без вложенного подкаталога. v8-runner ищет descriptors непосредственно в корне source-set.
 4. Если source-set ещё не объявлен, создать scaffold в выбранном новом каталоге, затем явно добавить этот каталог как корень Designer source-set. Проверить регистрацию через `unica.view {}`: `kind=external_processor`, `sourceFormat=platform_xml`.
 5. Передать `FormName`, только если нужна пустая управляемая форма. Без него создаются descriptor и `ObjectModule.bsl`.
-6. Сначала проверить точный список файлов через `dryRun: true`; при явном запросе пользователя повторить с `dryRun: false`.
+6. Записав файлы, проверить набор: `unica.check {}` и `unica.view {}` — превью и применение тут не при чём, операции нет.
 7. Публикацию артефакта не обещать: `artifact.build` в `unica.run` `.epf` не собирает и отвечает `unsupported_operation`.
 
 `Name` и `FormName` должны быть идентификаторами 1С. Существующие descriptor или одноимённый каталог не перезаписываются. При `format: EDT` остановиться и объяснить несовместимость, не создавать Designer XML внутри EDT source-set.
@@ -74,20 +74,6 @@ source-set:
 
 ## Примеры
 
-Preview обработки с формой:
-
-Поля, которые должен нести записанный дескриптор:
-
-```json
-{
-  "Name": "ИмпортТоваров",
-  "Synonym": "Импорт товаров",
-  "OutputDir": "src/external-processors",
-  "FormName": "ОсновнаяФорма"
-}
-```
-
-Создание после проверки preview:
 
 Поля, которые должен нести записанный дескриптор:
 
