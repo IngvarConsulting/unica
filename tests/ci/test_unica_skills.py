@@ -403,14 +403,14 @@ IN_SCOPE_TOOLS = {
     "meta-edit": "unica.apply",
     "meta-info": "unica.view",
     "form-compile": "unica.form.compile",
-    "form-edit": "unica.form.edit",
+    "form-edit": "unica.apply",
     "interface-edit": "unica.apply",
     "subsystem-compile": "unica.apply",
     "subsystem-edit": "unica.apply",
-    "dcs-compile": "unica.dcs.compile",
-    "dcs-edit": "unica.dcs.edit",
-    "mxl-compile": "unica.mxl.compile",
-    "mxl-decompile": "unica.mxl.decompile",
+    "dcs-compile": "unica.apply",
+    "dcs-edit": "unica.apply",
+    "mxl-compile": "unica.apply",
+    "mxl-decompile": "unica.view",
     "mxl-info": "unica.view",
     "role-compile": "unica.apply",
     "role-edit": "unica.apply",
@@ -827,14 +827,14 @@ TASK_EXAMPLE_ARGUMENT_KEYS = {
     "meta-edit": ["at", "ops"],
     "meta-info": ["at"],
     "form-compile": ["JsonPath", "OutputPath"],
-    "form-edit": ["FormPath", "JsonPath"],
+    "form-edit": ["at", "ops"],
     "interface-edit": ["at", "ops"],
     "subsystem-compile": ["at", "ops"],
     "subsystem-edit": ["at", "ops"],
-    "dcs-compile": ["DefinitionFile", "OutputPath"],
-    "dcs-edit": ["TemplatePath", "Operation", "Value"],
-    "mxl-compile": ["JsonPath", "OutputPath"],
-    "mxl-decompile": ["TemplatePath"],
+    "dcs-compile": ["at", "ops"],
+    "dcs-edit": ["at", "ops"],
+    "mxl-compile": ["at", "ops"],
+    "mxl-decompile": ["at"],
     # Читающий макет адресуется логически: файлового селектора у `view` нет.
     "mxl-info": ["at"],
     "role-compile": ["at", "ops"],
@@ -982,16 +982,12 @@ SCENARIO_PRESERVING_TOKENS = {
         "Шаблоны RLS",
     ],
     "dcs-compile": [
-        '"DefinitionFile": "<json>"',
-        '"Value": "<json-string>"',
-        '"name": "unica.check"',
-        '"name": "unica.view"',
+        '"templateType": "DataCompositionSchema"',
+        '"op": "query.set"',
     ],
     "dcs-edit": [
-        '"Operation": "add-field"',
-        '"Value": "Цена: decimal(15,2) ;; Количество: decimal(15,3) ;; Сумма: decimal(15,2)"',
-        '"name": "unica.check"',
-        '"name": "unica.view"',
+        '"op": "field.add"',
+        "## Чего словарь не пишет",
     ],
     # Eleven `Mode` values selected eleven reports. The typed answer carries
     # every section at once, so the scenarios are preserved by the sections the
@@ -3259,9 +3255,9 @@ CONDITIONAL_MARKER = "один из двух"
 # Скилл покидает этот список, когда его инструмент перестаёт принимать
 # файловый селектор: у канонического `view` его нет вовсе, а путь, пришедший
 # снаружи, переводит в адрес аварийный `resolve`.
-BRIDGED_SKILL_SELECTORS = {
-    "mxl-decompile": ("TemplatePath", True),
-}
+# Мостовых скиллов с двумя селекторами не осталось: чтение адресуется
+# логически, файловый путь переводит аварийный `unica.resolve`.
+BRIDGED_SKILL_SELECTORS: dict[str, tuple[str, bool]] = {}
 
 
 def _tables(text: str) -> list[list[list[str]]]:

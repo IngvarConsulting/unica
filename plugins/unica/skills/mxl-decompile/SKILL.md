@@ -1,7 +1,6 @@
 ---
 name: mxl-decompile
-description: Декомпиляция табличного документа (MXL) в JSON-определение. Используй когда нужно получить редактируемое описание существующего макета
-argument-hint: <TemplatePath>
+description: Чтение структуры макета табличного документа (MXL) через unica.view. Используй когда нужно разобрать существующий макет; обратной сборки в JSON-определение на поверхности нет
 allowed-tools:
   - Bash
   - Read
@@ -13,54 +12,52 @@ allowed-tools:
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tool `unica.mxl.decompile`; `unica` owns XML/JSON DSL work and refreshes related workspace caches after mutations.
-- Do not call internal MCP/CLI adapters directly. They are hidden behind `unica` and synchronized by the orchestrator.
-- Execution path: call MCP `unica` tool `unica.mxl.decompile`; skill-local operation scripts are not part of the workflow.
-- For mutating operations, pass `dryRun: false` only when the user explicitly requested the change; otherwise keep the default dry run.
+- Preferred path: use MCP `unica` tool `unica.view` по адресу макета.
+- Не зови внутренние адаптеры напрямую: они спрятаны за MCP `unica`.
+- Чтение не меняет исходники: `view` отвечает проекцией узла и его ревизией.
 
-Принимает Template.xml табличного документа 1С и возвращает компактное JSON-определение (DSL) в ответе MCP. Не создаёт файлов. Обратная операция к MCP `unica.mxl.compile`.
-
-## Использование
-
-```text
-/mxl-decompile <TemplatePath>
-```
-
-## Параметры
-
-| Параметр     | Обязательный | Описание            |
-|--------------|:------------:|---------------------|
-| TemplatePath | один из двух | Путь к Template.xml |
-| sourceSet    | один из двух | Имя набора исходников из `v8project.yaml` |
-| metadataPath | один из двух | Логический адрес, например `Report.<Отчёт>.Template.<Макет>` |
-
-Селектор цели ровно один: либо `sourceSet` + `metadataPath`, либо
-`TemplatePath`. Оба сразу отклоняются кодом `selector_conflict` (ADR-0049).
-
-## MCP вызов
+Макет — узел логического дерева: `<набор>:<Вид>.<Имя>.Template.<Макет>`. Узел
+макета отдаёт именованные области, параметры и наборы колонок; ветвь `Area`
+раскрывает одну область, а её тело — ячейки. Файлового селектора у чтения нет;
+путь, пришедший снаружи (из диффа, лога сборки), переводит в адрес аварийный
+`unica.resolve`.
 
 ```json
 {
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.mxl.decompile",
+    "name": "unica.view",
     "arguments": {
-      "cwd": "<workspace>",
-      "TemplatePath": "src/Reports/ОтчетПродажи/Templates/ПФ_MXL_Продажи"
+      "at": "main:Report.Продажи.Template.ПФ_MXL_Продажи"
     }
   }
 }
 ```
 
-## Рабочий процесс
+Одна область — адресом её ветви:
 
-Декомпиляция существующего макета для анализа или доработки:
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "unica.view",
+    "arguments": {
+      "at": "main:Report.Продажи.Template.ПФ_MXL_Продажи.Area.Шапка"
+    }
+  }
+}
+```
 
-1. Ассистент вызывает MCP `unica.mxl.decompile` для получения JSON из Template.xml
-2. Ассистент при необходимости сохраняет JSON сам и анализирует или модифицирует его (добавляет области, меняет стили)
-3. Ассистент вызывает MCP `unica.mxl.compile` для генерации нового Template.xml
-4. Ассистент вызывает MCP `unica.check` на узле макета для проверки
+## Чего на поверхности нет
+
+Обратной сборки макета в JSON-определение DSL **нет**: `view` отвечает своей
+проекцией узла, а не форматом, который принимал бы обратный компилятор. DSL
+ниже остаётся описанием формата для чтения, а не выходом инструмента. Если
+задача требует ровно такого JSON — сообщи это как пробел контракта Unica MCP.
+
+Правка макета идёт через `unica.apply` (`mxl.set`), см. `mxl-compile`.
 
 ## JSON-схема DSL
 
@@ -77,26 +74,9 @@ allowed-tools:
 
 Если в строке есть пустые ячейки (без параметров/текста) и все они имеют одинаковый формат — этот формат распознаётся как `rowStyle`, а пустые ячейки исключаются из вывода.
 
-## Логический адрес вместо пути
+## Адрес, а не путь
 
-`unica.mxl.decompile` принимает либо логический селектор, либо файловый путь —
-ровно один из двух. Оба сразу отклоняются кодом `selector_conflict`.
-
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.mxl.decompile",
-    "arguments": {
-      "cwd": "<workspace>",
-      "sourceSet": "<имя набора>",
-      "metadataPath": "Report.<Отчёт>.Template.<Макет>"
-    }
-  }
-}
-```
-
-Имя набора даёт `unica.view {}`, адрес — `unica.search {corpus: "names"}`, а
-`unica.resolve` переводит в адрес путь, найденный иначе. Файловый селектор сохраняется до
-отдельного среза его снятия (ADR-0049).
+Имя набора даёт `unica.view {}`, адрес по имени объекта —
+`unica.search {corpus: "names"}`, а путь, найденный иначе, переводит в адрес
+аварийный `unica.resolve`. Файлового селектора у чтения нет вовсе: узел
+адресуется логически.

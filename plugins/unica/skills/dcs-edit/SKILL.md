@@ -1,7 +1,6 @@
 ---
 name: dcs-edit
 description: Точечное редактирование схемы компоновки данных 1С (СКД). Используй когда нужно модифицировать существующую СКД — добавить поля, итоги, фильтры, параметры, изменить текст запроса
-argument-hint: <TemplatePath> -Operation <op> -Value <value>
 allowed-tools:
   - Bash
   - Read
@@ -13,64 +12,92 @@ allowed-tools:
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tool `unica.dcs.edit`; `unica` owns XML/JSON DSL work and refreshes related workspace caches after mutations.
-- Do not call internal MCP/CLI adapters directly. They are hidden behind `unica` and synchronized by the orchestrator.
-- Execution path: call MCP `unica` tool `unica.dcs.edit`; skill-local operation scripts are not part of the workflow.
-- For mutating operations, pass `dryRun: false` only when the user explicitly requested the change; otherwise keep the default dry run.
-- Vendor support guard runs inside `unica`; if it blocks a locked/read-only supported object, prefer CFE/release-support or an explicit support-state change plan instead of editing raw support metadata.
+- Preferred path: use MCP `unica` tool `unica.apply` с операциями СКД; адрес
+  цели — логический, файлового селектора у поверхности нет.
+- Не зови внутренние адаптеры напрямую: они спрятаны за MCP `unica`.
+- Всегда сначала `dryRun: true`; `dryRun: false` — только по явной просьбе
+  пользователя и только с `ifRev` из превью.
+- Словарь операций узла даёт `unica.view {at}` в секции `can`: что не названо
+  там, того поверхность не пишет.
 
-Атомарные операции модификации существующей схемы компоновки данных: добавление, удаление и модификация полей, итогов, фильтров, параметров, настроек варианта, управление структурой, замена запроса.
+Атомарные правки существующей схемы компоновки данных: поля, итоги, фильтры,
+параметры, настройки варианта, структура, текст запроса.
 
-## MCP параметры
+## Адрес и операции
 
-| Параметр | Описание |
-|----------|----------|
-| `TemplatePath` | Путь к Template.xml (или к папке — автодополнение Ext/Template.xml) |
-| `Operation` | Операция (см. список ниже) |
-| `Value` | Значение операции (shorthand-строка или текст запроса) |
-| `DataSet` | (опц.) Имя набора данных (умолч. первый) |
-| `Variant` | (опц.) Имя варианта настроек (умолч. первый) |
-| `NoSelection` | (опц.) Не добавлять поле в selection варианта |
+Цель — узел макета-схемы: `<набор>:<Вид>.<Имя>.Template.<Макет>`. Набор данных
+и вариант, когда их несколько, называются продолжением адреса.
 
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.dcs.edit",
-    "arguments": {
-      "cwd": "<workspace>",
-      "TemplatePath": "src/Reports/ОтчетПродажи/Templates/ОсновнаяСхемаКомпоновкиДанных",
-      "Operation": "set-outputParameter",
-      "Value": "Заголовок = Основной вариант",
-      "dryRun": false
-    }
-  }
-}
-```
-
-## Пакетный режим (batch)
-
-Несколько значений в одном вызове через разделитель `;;`:
+Двадцать операций словаря: `field.add`, `field.set`, `field.remove`,
+`fieldRole.set`, `calculatedField.add`, `total.add`, `parameter.add`,
+`parameter.set`, `parameter.remove`, `filter.add`, `filter.clear`,
+`selection.add`, `selection.clear`, `order.clear`,
+`conditionalAppearance.clear`, `query.set`, `query.patch`, `variant.add`,
+`structure.set`, `structure.patch`.
 
 ```json
 {
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.dcs.edit",
+    "name": "unica.apply",
     "arguments": {
-      "cwd": "<workspace>",
-      "TemplatePath": "src/Reports/ОтчетПродажи/Templates/ОсновнаяСхемаКомпоновкиДанных",
-      "Operation": "add-field",
-      "Value": "Цена: decimal(15,2) ;; Количество: decimal(15,3) ;; Сумма: decimal(15,2)",
-      "dryRun": false
+      "at": "main:Report.Продажи.Template.ОсновнаяСхема",
+      "ops": [
+        {"op": "field.add", "args": {"items": [{"dataPath": "Номенклатура", "title": "Товар"}]}}
+      ],
+      "dryRun": true
     }
   }
 }
 ```
 
-Работает для всех операций кроме `set-query`, `set-structure` и `add-dataSet`.
+Несколько правок идут одним `ops`: план собирается целиком и применяется
+атомарно — отказ любой операции отменяет весь вызов.
+
+Применение — тот же вызов с `dryRun: false` и `ifRev`, который вернуло превью:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "unica.apply",
+    "arguments": {
+      "at": "main:Report.Продажи.Template.ОсновнаяСхема",
+      "ops": [
+        {"op": "field.add", "args": {"items": [{"dataPath": "Номенклатура", "title": "Товар"}]}}
+      ],
+      "dryRun": false,
+      "ifRev": "<rev из превью>"
+    }
+  }
+}
+```
+
+Изменившаяся схема отвечает `stale_revision` и называет обе ревизии: перечитай
+превью и повтори.
+
+## Чего словарь не пишет
+
+Поверхность правит существующую схему двадцатью операциями выше. Остальное из
+прежнего DSL канонической операции **не имеет**:
+
+- наборы данных и их связи (`add-dataSet`, `add-dataSetLink`);
+- параметры данных варианта (`add-dataParameter`, `modify-dataParameter`);
+- добавление сортировки (`add-order` — есть только `order.clear`);
+- добавление условного оформления (`add-conditionalAppearance` — есть только
+  `conditionalAppearance.clear`);
+- расшифровку ресурсов (`add-drilldown`);
+- параметры вывода (`set-outputParameter`);
+- переименование и перестановку параметров (`rename-parameter`,
+  `reorder-parameters`);
+- удаление итога, вычисляемого поля и отдельного фильтра (`remove-total`,
+  `remove-calculated-field`, `remove-filter`).
+
+Если задача требует одного из них — сообщи это как пробел контракта Unica MCP
+и не подменяй его соседней операцией: `filter.clear` вместо удаления одного
+фильтра сотрёт все.
 
 ## Операции
 
