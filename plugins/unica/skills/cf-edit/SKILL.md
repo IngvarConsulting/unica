@@ -13,40 +13,48 @@ allowed-tools:
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tool `unica.cf.edit`; `unica` owns XML/JSON DSL work and refreshes related workspace caches after mutations.
+- Preferred path: use MCP `unica` tool `unica.apply` по адресу корня набора (`<набор>:Configuration`): свойства правит `props.set`, состав — `object.create`/`object.remove`, командный интерфейс — `commandVisibility.set`, `commandPlacement.set`, `commandOrder.set`.
 - Do not call internal MCP/CLI adapters directly. They are hidden behind `unica` and synchronized by the orchestrator.
-- Execution path: call MCP `unica` tool `unica.cf.edit`; skill-local operation scripts are not part of the workflow.
+- Всегда сначала `dryRun: true`; `dryRun: false` — только по явной просьбе пользователя и только с `ifRev` из превью.
 - For mutating operations, pass `dryRun: false` only when the user explicitly requested the change; otherwise keep the default dry run.
 - Vendor support guard runs inside `unica`; if it blocks a locked/read-only supported object, prefer CFE/release-support or an explicit support-state change plan instead of editing raw support metadata.
 
 Точечное редактирование Configuration.xml: свойства, состав ChildObjects, роли по умолчанию.
 
-## MCP параметры
+## Адрес и операции
 
-| Параметр | Описание |
-|----------|----------|
-| `ConfigPath` | Путь к Configuration.xml или каталогу выгрузки |
-| `Operation` | Операция (см. таблицу) |
-| `Value` | Значение для операции (batch через `;;`) |
-| `DefinitionFile` | JSON-файл с массивом операций |
-| `NoValidate` | Скрыть подробный отчёт авто-валидации; обязательная проверка корректности 8.3.27 перед фиксацией остаётся включённой |
+Цель — корень набора: `<набор>:Configuration`. Что именно словарь пишет на этом
+узле, называет `unica.view {at}` в секции `can`; ниже — те операции, которыми
+выражается предмет этого скилла:
+
+| Операция | Предмет |
+|---|---|
+| `props.set` | свойства корня: версия, поставщик, режим совместимости и прочие пары «ключ — значение» |
+| `object.create`, `object.remove` | состав конфигурации: объект метаданных заводится и снимается по имени |
+| `commandVisibility.set`, `commandPlacement.set`, `commandOrder.set` | командный интерфейс корня |
 
 ```json
 {
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.cf.edit",
+    "name": "unica.apply",
     "arguments": {
-      "cwd": "<workspace>",
-      "ConfigPath": "src/Configuration.xml",
-      "Operation": "modify-property",
-      "Value": "Version=1.0.0.1",
-      "dryRun": false
+      "at": "main:Configuration",
+      "ops": [
+        {"op": "props.set", "args": {"values": {"version": "1.0.0.1", "vendor": "Фирма"}}}
+      ],
+      "dryRun": true
     }
   }
 }
 ```
+
+Применение — тот же вызов с `dryRun: false` и `ifRev` из превью.
+
+**Роли по умолчанию, панели и стартовая страница** канонической операции не
+имеют: их правка — пробел контракта Unica MCP, сообщай о нём, а не подменяй
+соседней операцией.
 
 ## Операции
 
@@ -69,93 +77,32 @@ allowed-tools:
 
 ```json
 {
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.cf.edit",
-    "arguments": {
-      "cwd": "<workspace>",
-      "ConfigPath": "src",
-      "Operation": "modify-property",
-      "Value": "Version=1.0.0.1 ;; Vendor=Фирма 1С",
-      "dryRun": false
-    }
-  }
+  "op": "props.set",
+  "args": {"values": {"version": "1.0.0.1", "vendor": "Фирма"}}
 }
 ```
 
-### Добавить объекты
+### Добавить объект в состав
 
 ```json
 {
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.cf.edit",
-    "arguments": {
-      "cwd": "<workspace>",
-      "ConfigPath": "src",
-      "Operation": "add-childObject",
-      "Value": "Catalog.Товары ;; Document.Заказ",
-      "dryRun": false
-    }
-  }
+  "op": "object.create",
+  "args": {"values": {"kind": "Catalog", "name": "Товары"}}
 }
 ```
 
-### Удалить объект
+### Снять объект из состава
 
 ```json
 {
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.cf.edit",
-    "arguments": {
-      "cwd": "<workspace>",
-      "ConfigPath": "src",
-      "Operation": "remove-childObject",
-      "Value": "Catalog.Устаревший",
-      "dryRun": false
-    }
-  }
+  "op": "object.remove",
+  "args": {"values": {"kind": "Catalog", "name": "Товары"}}
 }
 ```
 
-### Добавить роль по умолчанию
+### Роли по умолчанию, панели, стартовая страница
 
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.cf.edit",
-    "arguments": {
-      "cwd": "<workspace>",
-      "ConfigPath": "src",
-      "Operation": "add-defaultRole",
-      "Value": "ПолныеПрава",
-      "dryRun": false
-    }
-  }
-}
-```
-
-### Заменить роли по умолчанию
-
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.cf.edit",
-    "arguments": {
-      "cwd": "<workspace>",
-      "ConfigPath": "src",
-      "Operation": "set-defaultRoles",
-      "Value": "ПолныеПрава ;; Администратор",
-      "dryRun": false
-    }
-  }
-}
-```
+Канонической операции нет — это пробел контракта Unica MCP. Прежний DSL
+выражал их значениями `add-defaultRole`, `set-panels`, `set-home-page`;
+описание формата осталось в `reference.md` как справочник, вызовом оно не
+является.

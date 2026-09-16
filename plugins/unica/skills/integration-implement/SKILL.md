@@ -14,7 +14,7 @@ description: "Реализация интеграций 1С. Используй 
 выбирай только операцию с `implemented: true` и не выдумывай аргументов
 записи с `argsSchema: null`; превью исполнением не является. Не обходи
 контракт прямым runner-ом.
-- Use `unica.form.*`, `unica.role.*`, or `unica.cfe.*` tools when the integration requires UI, rights, or extension changes.
+- Use `unica.apply` when the integration requires UI, rights, or extension changes: forms and roles are its operations, and what the dictionary does not write is a Unica MCP contract gap.
 - Do not call internal metadata, analyzer, standards, runtime, or package adapters directly. They are hidden behind MCP `unica`.
 
 ## Workflow

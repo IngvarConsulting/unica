@@ -7,8 +7,16 @@ description: Создать пустой make-ready scaffold внешней об
 
 ## MCP routing
 
-- Использовать MCP `unica` tool `unica.epf.init` для scaffold XML/BSL.
-- Не вызывать внутренние adapters и не добавлять skill-local scripts.
+- **Канонической операции создания внешней обработки на поверхности нет.** `unica.apply`
+  правит существующий узел; дескриптор внешнего объекта вне конфигурации ни
+  одна операция не заводит.
+- Сформируй дескриптор и `ObjectModule.bsl` файловыми средствами по формату
+  ниже, объяви набор нужного типа в `v8project.yaml`, затем проверь
+  `unica.check {}` и прочитай `unica.view {}`: набор обязан читаться как
+  `sourceFormat=platform_xml`.
+- Сборку `.epf` словарь тоже не публикует: `artifact.build` собирает только
+  `.cf` и `.cfe`. Сообщай это как пробел контракта, а не обходи runner-ом.
+- Чтение и проверка идут через MCP `unica` (`unica.view`, `unica.check`); внутренние adapters и skill-local scripts не вызывать.
 - Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
@@ -68,46 +76,32 @@ source-set:
 
 Preview обработки с формой:
 
+Поля, которые должен нести записанный дескриптор:
+
 ```json
 {
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.epf.init",
-    "arguments": {
-      "cwd": "<workspace>",
-      "Name": "ИмпортТоваров",
-      "Synonym": "Импорт товаров",
-      "OutputDir": "src/external-processors",
-      "FormName": "ОсновнаяФорма",
-      "dryRun": true
-    }
-  }
+  "Name": "ИмпортТоваров",
+  "Synonym": "Импорт товаров",
+  "OutputDir": "src/external-processors",
+  "FormName": "ОсновнаяФорма"
 }
 ```
 
 Создание после проверки preview:
 
+Поля, которые должен нести записанный дескриптор:
+
 ```json
 {
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.epf.init",
-    "arguments": {
-      "cwd": "<workspace>",
-      "Name": "ИмпортТоваров",
-      "Synonym": "Импорт товаров",
-      "OutputDir": "src/external-processors",
-      "FormName": "ОсновнаяФорма",
-      "dryRun": false
-    }
-  }
+  "Name": "ИмпортТоваров",
+  "Synonym": "Импорт товаров",
+  "OutputDir": "src/external-processors",
+  "FormName": "ОсновнаяФорма"
 }
 ```
 
 ## Верификация
 
-`unica.epf.init` разбирает весь сгенерированный XML до публикации. Проверить, что созданы `<Name>.xml`, `<Name>/Ext/ObjectModule.bsl` и, если запрошена форма, три файла под `<Name>/Forms/`. Форму дополнительно проверить через `unica.form.validate` с путём к её `Ext/Form.xml`. Отдельный generic Meta validator не использовать: он не принимает root `ExternalDataProcessor`. Не создавать `Configuration.xml` или platform-generated CDFI sidecar; legitimate external descriptor может называться `ConfigDumpInfo.xml`, если пользователь выбрал такое имя объекта.
+Проверь результат до того, как объявлять объект готовым. Проверить, что созданы `<Name>.xml`, `<Name>/Ext/ObjectModule.bsl` и, если запрошена форма, три файла под `<Name>/Forms/`. Форму дополнительно проверить `unica.check` по адресу её узла. Отдельный generic Meta validator не использовать: он не принимает root `ExternalDataProcessor`. Не создавать `Configuration.xml` или platform-generated CDFI sidecar; legitimate external descriptor может называться `ConfigDumpInfo.xml`, если пользователь выбрал такое имя объекта.
 
 Сборку и загрузку артефакта словарь `unica.run` не публикует: `artifact.build` отвечает `unsupported_operation` на `.epf`/`.erf`, а `cf.import` принимает только `.cf` и `.cfe`. Сообщай публикацию как пробел контракта Unica MCP.

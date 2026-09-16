@@ -391,18 +391,30 @@ def prompt_frontmatter(document: str) -> dict[str, str]:
     return fields
 
 
+# Их предмет поверхность не создаёт: корень конфигурации и расширения,
+# заимствование, перехват метода, дескриптор внешней обработки или отчёта.
+# Скилл остаётся справочником формата и обязан назвать пробел вслух.
+SKILLS_WITHOUT_A_CANONICAL_ENTRY = {
+    "cf-init",
+    "cfe-init",
+    "cfe-borrow",
+    "cfe-patch-method",
+    "epf-init",
+    "erf-init",
+}
+
 IN_SCOPE_TOOLS = {
-    "cf-edit": "unica.cf.edit",
-    "cf-init": "unica.cf.init",
-    "cfe-borrow": "unica.cfe.borrow",
-    "cfe-init": "unica.cfe.init",
-    "cfe-patch-method": "unica.cfe.patch_method",
-    "epf-init": "unica.epf.init",
-    "erf-init": "unica.erf.init",
+    "cf-edit": "unica.apply",
+    "cf-init": "unica.check",
+    "cfe-borrow": "unica.check",
+    "cfe-init": "unica.check",
+    "cfe-patch-method": "unica.check",
+    "epf-init": "unica.check",
+    "erf-init": "unica.check",
     "meta-add": "unica.apply",
     "meta-edit": "unica.apply",
     "meta-info": "unica.view",
-    "form-compile": "unica.form.compile",
+    "form-compile": "unica.apply",
     "form-edit": "unica.apply",
     "interface-edit": "unica.apply",
     "subsystem-compile": "unica.apply",
@@ -583,7 +595,7 @@ SCENARIO_SKILLS = {
     ],
     "form-events": [
         "unica.view",
-        "unica.form.edit",
+        "unica.apply",
         "unica.view",
         "unica.apply",
         "unica.check",
@@ -816,17 +828,11 @@ REPLACED_RUNTIME_SKILLS = {
 }
 
 TASK_EXAMPLE_ARGUMENT_KEYS = {
-    "cf-edit": ["ConfigPath", "Operation", "Value"],
-    "cf-init": ["Name", "OutputDir"],
-    "cfe-borrow": ["ExtensionPath", "ConfigPath", "Object"],
-    "cfe-init": ["Name", "OutputDir"],
-    "cfe-patch-method": ["ExtensionPath", "ModulePath", "MethodName"],
-    "epf-init": ["Name", "OutputDir", "FormName"],
-    "erf-init": ["Name", "OutputDir", "FormName"],
+    "cf-edit": ["at", "ops"],
     "meta-add": ["at", "ops"],
     "meta-edit": ["at", "ops"],
     "meta-info": ["at"],
-    "form-compile": ["JsonPath", "OutputPath"],
+    "form-compile": ["at", "ops"],
     "form-edit": ["at", "ops"],
     "interface-edit": ["at", "ops"],
     "subsystem-compile": ["at", "ops"],
@@ -842,11 +848,6 @@ TASK_EXAMPLE_ARGUMENT_KEYS = {
 }
 
 SCENARIO_PRESERVING_MIN_MCP_CALLS = {
-    "cf-edit": 6,
-    "cf-init": 6,
-    "cfe-borrow": 7,
-    "cfe-init": 6,
-    "cfe-patch-method": 4,
     "meta-add": 2,
     "meta-edit": 4,
     "meta-info": 3,
@@ -862,9 +863,6 @@ SCENARIO_PRESERVING_MIN_MCP_CALLS = {
 }
 
 ALLOWED_ADDITIONAL_MCP_TOOL_NAMES = {
-    "cf-init": {"unica.view", "unica.check"},
-    "cfe-borrow": {"unica.check"},
-    "cfe-init": {"unica.check"},
     "form-compile": {"unica.view", "unica.check"},
     "role-compile": {"unica.view", "unica.check"},
     "dcs-compile": {"unica.view", "unica.check"},
@@ -874,12 +872,8 @@ ALLOWED_ADDITIONAL_MCP_TOOL_NAMES = {
 
 SCENARIO_PRESERVING_TOKENS = {
     "cf-edit": [
-        '"Operation": "modify-property"',
-        '"Value": "Version=1.0.0.1 ;; Vendor=Фирма 1С"',
-        '"Operation": "add-childObject"',
-        '"Operation": "remove-childObject"',
-        '"Operation": "add-defaultRole"',
-        '"Operation": "set-defaultRoles"',
+        '"op": "props.set"',
+        '"op": "object.create"',
     ],
     "cf-init": [
         '"Name": "МояКонфигурация"',
@@ -943,9 +937,8 @@ SCENARIO_PRESERVING_TOKENS = {
         '"name": "unica.check"',
     ],
     "form-compile": [
-        '"OutputPath": "<.../TypePlural/ObjectName/Forms/FormName/Ext/Form.xml>"',
-        '"name": "unica.check"',
-        '"name": "unica.view"',
+        '"op": "form.create"',
+        '"op": "formAttribute.add"',
     ],
     # Действие стало именем операции. `hide` и `show` свелись к одному
     # `commandVisibility.set` с булевым значением: платформа хранит одно поле,
@@ -3121,9 +3114,27 @@ Use `.claude/commands/xdto.md` as the execution route.
                 if "```" in section:
                     self.assertIn('"method": "tools/call"', section)
 
+    def test_skills_without_a_canonical_entry_say_so_and_route_reading(self) -> None:
+        """Скилл, чьего предмета поверхность не пишет, обязан это назвать.
+
+        Иначе читатель примет описание формата за инструкцию к вызову и
+        отправит запрос, которого нет: молчание здесь дороже пробела.
+        """
+        for skill in sorted(SKILLS_WITHOUT_A_CANONICAL_ENTRY):
+            with self.subTest(skill=skill):
+                text = (self.skill_root() / skill / "SKILL.md").read_text(
+                    encoding="utf-8"
+                )
+                self.assertIn("канонической операции", text.lower())
+                # Словоформа не важна: важно, что пробел назван вслух.
+                self.assertRegex(text, r"пробел\w*\s+контракта")
+                self.assertIn("unica.check", text)
+
     def test_migrated_skills_use_task_parameterized_mcp_examples(self) -> None:
         generic_arguments = '"arguments": {\n      "cwd": "<workspace>"\n    }'
         for skill, tool_name in IN_SCOPE_TOOLS.items():
+            if skill in SKILLS_WITHOUT_A_CANONICAL_ENTRY:
+                continue
             with self.subTest(skill=skill):
                 text = (self.skill_root() / skill / "SKILL.md").read_text(encoding="utf-8")
                 self.assertNotIn(generic_arguments, text)

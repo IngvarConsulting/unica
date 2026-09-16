@@ -14,7 +14,7 @@ description: "Код-ревью BSL и изменений 1С. Использу�
 выбирай только операцию с `implemented: true` и не выдумывай аргументов
 записи с `argsSchema: null`; превью исполнением не является. Не обходи
 контракт прямым runner-ом.
-- Use `unica.view` at the object's logical address before reviewing code that depends on metadata shape, form structure, rights, DCS, or interfaces; a spreadsheet template is read by `unica.mxl.info`.
+- Use `unica.view` at the object's logical address before reviewing code that depends on metadata shape, form structure, rights, DCS, or interfaces; a spreadsheet template is read by `unica.view` at its template address.
 - Do not call internal analyzer, standards, runtime, or package adapters directly. They are hidden behind MCP `unica`.
 
 ## Review stance

@@ -7,7 +7,7 @@ description: "Модуль управляемой формы 1С. Использ
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.view` on the form node, `unica.form.edit`, `unica.view` on the object node, `unica.search`, `unica.apply`, `unica.check`, and `unica.run`.
+- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.view` on the form node, `unica.view` on the object node, `unica.search`, `unica.apply`, `unica.check`, and `unica.run`.
 - Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
@@ -38,7 +38,7 @@ A form module holds client and server code in one file, and the directive on eac
 2. Inspect the form with `unica.view` on the form node for the declared events, parameters, and items, and `unica.view` on the object node for the object behind it.
 3. Read the existing module with `unica.view` on the module node (its `Method` branch lists the methods) before adding to it.
 4. Count the server calls the change adds on the path of a single user action. If it adds one, name the reason.
-5. Declare any new form parameter through `unica.form.edit` before reading it in the module.
+5. Declare any new form parameter through `unica.apply` (`formAttribute.add`) before reading it in the module.
 6. Apply module changes with `unica.apply`, one verifiable step at a time, giving every new procedure exactly one directive.
 7. Verify statically with `unica.check` on the module node (test runs are outside the v0.13 surface), and require separate evidence for runtime behavior and opening the affected form.
 
