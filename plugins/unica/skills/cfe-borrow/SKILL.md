@@ -57,16 +57,30 @@ allowed-tools:
 
 ### Заимствованный объект с перекрытым свойством
 
-Перекрытия несёт `InternalInfo` списком, а не флагом:
+Перекрытия несёт `InternalInfo` списком, а не флагом. Префикс `xr` объявляется
+на корне дескриптора — фрагмент ниже без этого объявления не разбирается:
 
 ```xml
-<InternalInfo>
-  <xr:PropertyState>
-    <xr:Property>Synonym</xr:Property>
-    <xr:State>Extended</xr:State>
-  </xr:PropertyState>
-</InternalInfo>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"
+                xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20">
+  <Catalog uuid="<uuid объекта в расширении>">
+    <InternalInfo>
+      <xr:PropertyState>
+        <xr:Property>Synonym</xr:Property>
+        <xr:State>Extended</xr:State>
+      </xr:PropertyState>
+    </InternalInfo>
+    <Properties>
+      <ObjectBelonging>Adopted</ObjectBelonging>
+      <Name>Контрагенты</Name>
+      <ExtendedConfigurationObject><uuid объекта у родителя></ExtendedConfigurationObject>
+    </Properties>
+  </Catalog>
+</MetaDataObject>
 ```
+
+Платформа объявляет на корне весь свой набор пространств имён; здесь показаны
+только те два, без которых пример не читается.
 
 Платформенной улики на эту форму у объекта метаданных пока нет: её снимает
 круговой путь из архитектурной записки Unica. Пока улики нет, считай
