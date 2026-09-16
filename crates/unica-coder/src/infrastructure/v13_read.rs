@@ -626,8 +626,8 @@ impl<'a> LogicalViewReadAuthority<'a> {
         let (module_at, prefix_len) = module_prefix(route.at(), self.profile, capability)?;
         self.verify_module_owner(&module_at, capability, admitted)?;
         if capability.role() == ModuleRole::WebSocketClient {
-            return Err(ViewError::new(
-                RefusalCode::ProviderUnavailable,
+            return Err(ViewError::detailed(
+                RefusalDetail::ProviderAbsent,
                 "WebSocketClient source layout is not specified for platform profile 8.3.27",
             ));
         }
@@ -848,7 +848,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             let current_text = parts[..end].join(".");
             let current = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &current_text)
                 .map_err(|error| {
-                    ViewError::new(RefusalCode::ProviderUnavailable, error.to_string())
+                    ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
                 })?;
             if let Some((parent_address, parent_evidence)) = &parent {
                 let child_kind = parts[end - 2];
@@ -1001,11 +1001,12 @@ impl<'a> LogicalViewReadAuthority<'a> {
                     "form module address is invalid",
                 )
             })?;
-        let form = QualifiedAddress::parse(form_at)
-            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))?;
+        let form = QualifiedAddress::parse(form_at).map_err(|error| {
+            ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+        })?;
         let metadata_path =
             MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &form.logical_path()).map_err(
-                |error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()),
+                |error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()),
             )?;
         let data = self.form_data(&metadata_path, admitted)?;
         Ok(form_semantic_inputs(form_at, &FormEventEvidence::from_info(&data)).bindings)
@@ -1027,13 +1028,15 @@ impl<'a> LogicalViewReadAuthority<'a> {
         let form_at =
             QualifiedAddress::parse(&format!("{}:{}", route.at().source_set(), target.as_str()))
                 .map_err(|error| {
-                    ViewError::new(RefusalCode::ProviderUnavailable, error.to_string())
+                    ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
                 })?;
-        let module_at = QualifiedAddress::parse(&format!("{form_at}.Module.Form"))
-            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))?;
+        let module_at =
+            QualifiedAddress::parse(&format!("{form_at}.Module.Form")).map_err(|error| {
+                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+            })?;
         let capability = self.profile.module_capability(&module_at).ok_or_else(|| {
-            ViewError::new(
-                RefusalCode::ProviderUnavailable,
+            ViewError::detailed(
+                RefusalDetail::ProviderAbsent,
                 "form module capability is absent from the platform profile",
             )
         })?;
@@ -1100,8 +1103,9 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                 "source revision changed during canonical address resolution",
             ));
         }
-        QualifiedAddress::parse(projected.at())
-            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
+        QualifiedAddress::parse(projected.at()).map_err(|error| {
+            ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+        })
     }
 
     fn identity_export_path(&self, at: &QualifiedAddress) -> Result<Option<String>, ViewError> {
@@ -1291,7 +1295,7 @@ impl LogicalViewReadAuthority<'_> {
                 template.name().unwrap_or_default()
             ),
         )
-        .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))?;
+        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))?;
         let mut projected = projected;
         for (kind, count) in self.template_body_branches(&child)? {
             if count > 0 {
@@ -1400,7 +1404,7 @@ fn module_branch_owner(branch: &QualifiedAddress) -> Result<Option<MetadataAddre
     let logical = render_segments(&segments[..segments.len() - 1]);
     MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &logical)
         .map(Some)
-        .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
+        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))
 }
 
 fn identity_only_metadata_payload(kind: &str, name: &str) -> Value {
@@ -1436,7 +1440,7 @@ fn module_branch_owner_address(
     }
     MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &parent.logical_path())
         .map(Some)
-        .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
+        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))
 }
 
 fn module_owner_address(
@@ -1446,7 +1450,9 @@ fn module_owner_address(
     let segments = module_at.segments();
     if capability.role() == ModuleRole::Common {
         return MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &module_at.logical_path())
-            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()));
+            .map_err(|error| {
+                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+            });
     }
     let terminal = segments.last().ok_or_else(|| {
         ViewError::new(
@@ -1462,7 +1468,7 @@ fn module_owner_address(
     }
     let logical = render_segments(&segments[..segments.len() - 1]);
     MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &logical)
-        .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
+        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))
 }
 
 pub(crate) fn module_branch_for_parent(

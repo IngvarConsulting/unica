@@ -565,8 +565,8 @@ impl ProviderReadAuthority {
             "String" => crate::infrastructure::native_operations::meta::PredefinedCodeType::String,
             "Number" => crate::infrastructure::native_operations::meta::PredefinedCodeType::Number,
             other => {
-                return Err(ViewError::new(
-                    RefusalCode::ProviderUnavailable,
+                return Err(ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
                     format!("predefined owner CodeType `{other}` is unsupported"),
                 ))
             }
@@ -1088,16 +1088,16 @@ fn path_text(path: PathBuf) -> Result<String, ViewError> {
         match component {
             std::path::Component::Normal(value) => components.push(value),
             _ => {
-                return Err(ViewError::new(
-                    RefusalCode::ProviderUnavailable,
+                return Err(ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
                     "Platform XML export path is not a relative component path",
                 ));
             }
         }
     }
     if components.is_empty() {
-        return Err(ViewError::new(
-            RefusalCode::ProviderUnavailable,
+        return Err(ViewError::detailed(
+            RefusalDetail::SourceUnreadable,
             "Platform XML export path is empty",
         ));
     }
@@ -1110,8 +1110,8 @@ fn encode_export_path_components<'a>(
     let mut encoded = String::new();
     for component in components {
         let component = component.to_str().ok_or_else(|| {
-            ViewError::new(
-                RefusalCode::ProviderUnavailable,
+            ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
                 "Platform XML export path is not valid UTF-8",
             )
         })?;
