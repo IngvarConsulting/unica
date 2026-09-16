@@ -20,21 +20,19 @@
 use super::protocol::InvocationRequest;
 use super::v13_infobase_exports::{
     closed_workspace_relative_path, digest_optional_workspace_file, digest_required_workspace_file,
-    runner_rejection, valid_1c_identifier, CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
+    missing_runner_rejection, resolve_bundled_runner, runner_rejection, valid_1c_identifier,
+    CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
 };
 use crate::application::invocation_store::ToolIdentity;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::invocation::{DomainResult, SafeIdentityHash};
 use crate::domain::refusal::RefusalCode;
 use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::bundled_tools::{
-    bundled_tool_version, resolve_bundled_tool, BundledTool,
-};
+use crate::infrastructure::bundled_tools::BundledTool;
 use crate::infrastructure::internal_adapters::{
     ProcessCommand, ProcessOutput, ProcessRunner, SystemProcessRunner,
 };
 use crate::infrastructure::path_policy::WorkspacePathPolicy;
-use crate::infrastructure::plugin_runtime::find_plugin_root;
 use crate::infrastructure::redaction::redactor;
 use crate::infrastructure::source_roots::normalize_path_identity;
 use crate::infrastructure::workspace::discover_workspace;
@@ -374,23 +372,12 @@ fn execute_with_runner(
     runner: &dyn ProcessRunner,
     cancellation: CancellationToken,
 ) -> DomainResult {
-    let plugin_root = match find_plugin_root(&prepared.context.cwd) {
-        Some(root) => root,
-        None => {
-            return reject(
-                RefusalCode::ProviderUnavailable,
-                "Unica plugin root could not be located for the bundled v8-runner",
-            )
-        }
+    let runner_tool = match resolve_bundled_runner(&prepared.context.cwd) {
+        Ok(resolved) => resolved,
+        Err(message) => return reject_absent_runner(message),
     };
-    let tool = match resolve_bundled_tool(&plugin_root, "v8-runner", true) {
-        Ok(tool) => tool,
-        Err(error) => return reject(RefusalCode::ProviderUnavailable, redactor(&error)),
-    };
-    let runner_version = match bundled_tool_version(&plugin_root, "v8-runner") {
-        Ok(version) => version,
-        Err(error) => return reject(RefusalCode::ProviderUnavailable, redactor(&error)),
-    };
+    let tool = runner_tool.tool;
+    let runner_version = runner_tool.version;
     execute_with_resolved_runner(prepared, runner, cancellation, &tool, &runner_version)
 }
 
@@ -667,10 +654,10 @@ fn invoke_runner(
             cancellation: cancellation.clone(),
         })
         .map_err(|error| {
-            reject(
-                RefusalCode::ProviderUnavailable,
-                format!("failed to start bundled v8-runner: {}", redactor(&error)),
-            )
+            reject_absent_runner(format!(
+                "failed to start bundled v8-runner: {}",
+                redactor(&error)
+            ))
         })?;
     parse_runner_output(output)
 }
@@ -766,6 +753,12 @@ fn path_text(path: &Path) -> String {
 
 fn reject(code: RefusalCode, message: impl Into<String>) -> DomainResult {
     DomainResult::canonical_rejection(Some(OPERATION.to_string()), code, message)
+}
+
+/// Поставляемого раннера нет: маршрут один на все операции `run`, уточнение
+/// `provider_absent` назначает общий помощник.
+fn reject_absent_runner(message: impl Into<String>) -> DomainResult {
+    missing_runner_rejection(Some(OPERATION.to_string()), message)
 }
 
 #[cfg(test)]

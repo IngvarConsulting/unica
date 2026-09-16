@@ -539,36 +539,14 @@ fn execute_with_runner(
     runner: &dyn ProcessRunner,
     cancellation: CancellationToken,
 ) -> DomainResult {
-    let plugin_root = match find_plugin_root(&prepared.context.cwd) {
-        Some(root) => root,
-        None => {
-            return reject(
-                prepared.operation,
-                RefusalCode::ProviderUnavailable,
-                "Unica plugin root could not be located for the bundled v8-runner",
-            )
+    let runner_tool = match resolve_bundled_runner(&prepared.context.cwd) {
+        Ok(resolved) => resolved,
+        Err(message) => {
+            return missing_runner_rejection(Some(prepared.operation.name().to_string()), message)
         }
     };
-    let tool = match resolve_bundled_tool(&plugin_root, "v8-runner", true) {
-        Ok(tool) => tool,
-        Err(error) => {
-            return reject(
-                prepared.operation,
-                RefusalCode::ProviderUnavailable,
-                redactor(&error),
-            )
-        }
-    };
-    let runner_version = match bundled_tool_version(&plugin_root, "v8-runner") {
-        Ok(version) => version,
-        Err(error) => {
-            return reject(
-                prepared.operation,
-                RefusalCode::ProviderUnavailable,
-                redactor(&error),
-            )
-        }
-    };
+    let tool = runner_tool.tool;
+    let runner_version = runner_tool.version;
     execute_with_resolved_runner(prepared, runner, cancellation, &tool, &runner_version)
 }
 
@@ -843,9 +821,8 @@ fn invoke_runner(
     let output = match output {
         Ok(output) => output,
         Err(error) => {
-            return Err(reject(
-                prepared.operation,
-                RefusalCode::ProviderUnavailable,
+            return Err(missing_runner_rejection(
+                Some(prepared.operation.name().to_string()),
                 format!("failed to start bundled v8-runner: {}", redactor(&error)),
             ))
         }
@@ -954,6 +931,37 @@ pub(super) fn map_runner_detail(code: &str) -> Option<RefusalDetail> {
         "environment_unavailable" => Some(RefusalDetail::ProviderAbsent),
         _ => None,
     }
+}
+
+/// Поставляемый раннер, разрешённый для этого рабочего пространства.
+pub(super) struct BundledRunner {
+    pub(super) tool: BundledTool,
+    pub(super) version: String,
+}
+
+/// Разрешение поставляемого раннера. Четыре причины неудачи — корня плагина
+/// нет, бинарь не разрешается, версия не читается, процесс не стартовал —
+/// значат для вызывающего одно: поставщика нет. Поэтому маршрут один на все
+/// семь операций `run`, и починка одного из них не выдаётся за починку всех.
+pub(super) fn resolve_bundled_runner(cwd: &Path) -> Result<BundledRunner, String> {
+    let Some(plugin_root) = find_plugin_root(cwd) else {
+        return Err("Unica plugin root could not be located for the bundled v8-runner".to_string());
+    };
+    let tool =
+        resolve_bundled_tool(&plugin_root, "v8-runner", true).map_err(|error| redactor(&error))?;
+    let version =
+        bundled_tool_version(&plugin_root, "v8-runner").map_err(|error| redactor(&error))?;
+    Ok(BundledRunner { tool, version })
+}
+
+/// Отказ «поставляемого раннера нет». Уточнение `provider_absent` названо
+/// здесь один раз: словарь говорит «поставщика нет: … поставщик не стартовал»,
+/// а исход — человек над средой, а не повтор и не правка вызова.
+pub(super) fn missing_runner_rejection(
+    at: Option<String>,
+    message: impl Into<String>,
+) -> DomainResult {
+    DomainResult::canonical_rejection_detailed(at, RefusalDetail::ProviderAbsent, message)
 }
 
 /// Отказ по коду раннера: с уточнением, когда словарь его знает, иначе по коду.
@@ -1401,6 +1409,26 @@ mod tests {
         ] {
             assert_eq!(map_runner_code(code).outcome(), expected, "{code}");
         }
+    }
+
+    /// Поставляемого раннера нет — у всех семи операций `run` один ответ.
+    ///
+    /// Прежде каждая операция отвечала голым `provider_unavailable`, и агент
+    /// читал умолчание `needsHuman` без причины: «поставщик недоступен» не
+    /// отличало отсутствующий бинарь от занятой базы. Уточнение называет
+    /// причину, а маршрут один — починка одной операции из семи не выдаётся за
+    /// починку всех.
+    #[test]
+    fn an_absent_bundled_runner_names_the_missing_provider() {
+        let rejection = missing_runner_rejection(
+            Some("infobase.export".to_string()),
+            "Unica plugin root could not be located for the bundled v8-runner",
+        );
+
+        let diagnostic = &rejection.diagnostics[0];
+        assert_eq!(diagnostic["code"], "provider_unavailable");
+        assert_eq!(diagnostic["detailCode"], "provider_absent");
+        assert_eq!(diagnostic["outcome"], "needsHuman");
     }
 
     #[test]

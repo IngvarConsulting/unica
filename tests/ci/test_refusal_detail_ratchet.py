@@ -20,8 +20,10 @@ SOURCE_ROOT = REPO_ROOT / "crates" / "unica-coder" / "src"
 # Потолок опускается вместе с каждым срезом D-1 (#871): читатели
 # `v13_read.rs`/`v13_read_port.rs` (дефекты дескриптора и нечитаемые файлы
 # набора — `source_unreadable`), затем `check`/`apply` в `v13_service.rs`
-# (провайдер диагностик не отработал — `provider_absent`).
-UNDETAILED_PROVIDER_UNAVAILABLE_CEILING = 155
+# (провайдер диагностик не отработал — `provider_absent`), затем поставляемый
+# раннер во всех семи операциях `run` (корня плагина нет, бинарь не разрешён,
+# версия не читается, процесс не стартовал — `provider_absent`).
+UNDETAILED_PROVIDER_UNAVAILABLE_CEILING = 128
 
 TEST_TAIL = re.compile(r"#\[cfg\(test\)\]\s*(?:pub(?:\(crate\))?\s+)?mod\s+\w+")
 STRING_LITERAL = re.compile(r'"(?:\\.|[^"\\])*"')
