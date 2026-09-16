@@ -71,7 +71,10 @@ class DcsNamingContractTests(unittest.TestCase):
         for skill in EXPECTED_SKILLS:
             header = (skill_root / skill / "SKILL.md").read_text(encoding="utf-8")
             self.assertIn(f"name: {skill}", header)
-            self.assertIn(f"unica.dcs.{skill.removeprefix('dcs-')}", header)
+            # Имя предмета осталось DCS, а маршрут стал каноническим: работу со
+            # схемой компоновки ведёт `unica.apply`, а не снятый `unica.dcs.*`.
+            self.assertIn("unica.apply", header)
+            self.assertNotIn("unica.dcs.", header)
 
     def test_active_english_identifiers_use_dcs_and_never_dsc(self) -> None:
         self.assertEqual(naming_violations(REPO_ROOT), [])
