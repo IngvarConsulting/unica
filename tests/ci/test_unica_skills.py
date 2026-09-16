@@ -2412,7 +2412,10 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         # moved into the writer that consumes it.
         self.assertNotIn('"Raw": true', dcs_edit)
         self.assertIn("сырой текст запроса целиком", dcs_edit)
-        self.assertIn("patch-query", dcs_edit)
+        # Точечная правка запроса осталась возможностью скилла, но зовётся
+        # канонической операцией: прежнее имя DSL вызовом больше не выглядит.
+        self.assertIn("query.patch", dcs_edit)
+        self.assertNotIn("используй `patch-query`", dcs_edit)
         self.assertIn("@once", dcs_edit)
         self.assertIn("availableValue=", dcs_edit)
         self.assertIn("value=", dcs_edit)
