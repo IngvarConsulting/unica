@@ -820,6 +820,28 @@ fn borrowing_props_name_the_three_roles_of_an_extension_source_set() {
     assert!(props.get("overrides").is_none());
 }
 
+/// Заимствование не стоит второго чтения дескриптора.
+///
+/// Свойства объекта и его заимствование разбираются из одних и тех же байтов.
+/// Второе чтение того же файла стоило бы лишнего доступа и, что хуже, могло бы
+/// застать файл изменившимся между чтениями — тогда два ответа об одном
+/// объекте описывали бы разные состояния источника.
+#[test]
+fn borrowing_costs_no_second_descriptor_read() {
+    let fixture = RealReaderFixture::new();
+    fixture.borrow_catalog("Catalogs/Владельцы.xml", Some("Synonym"));
+    let authority = fixture.extension_read_authority();
+
+    assert_reader_reaches(&authority, &["main:Catalog.Владельцы"]);
+
+    assert_eq!(
+        authority.metadata_descriptor_read_count("Catalog.Владельцы"),
+        2,
+        "заимствование читается тем же дескриптором, что и свойства объекта: \
+         доказательство владельца плюс типизированная проекция, и ни чтением больше",
+    );
+}
+
 /// В наборе вида `configuration` заимствования не бывает, и `belonging: own`
 /// у каждого объекта было бы шумом.
 #[test]
@@ -3911,23 +3933,24 @@ impl RealReaderFixture {
     }
 
     /// Тот же набор, объявленный расширением: заимствование живёт только здесь.
-    fn extension_view_service(&self) -> ViewService<LogicalViewReadAuthority<'_>> {
+    fn extension_read_authority(&self) -> LogicalViewReadAuthority<'_> {
         let source_root = Arc::new(RetainedDirectoryCapability::open(&self.source).unwrap());
         let revisions = Arc::new(
             SourceRevisionService::new_reconciling_for_test(&self.context, &self.source).unwrap(),
         );
-        ViewService::new(
-            LogicalViewReadAuthority::new(
-                &self.cancellation,
-                "main",
-                "actor-fixture-extension-borrowing",
-                SourceSetKind::Extension,
-                revisions,
-                source_root,
-                PlatformProfile::v8_3_27(),
-            ),
-            ViewCursorStore::default(),
+        LogicalViewReadAuthority::new(
+            &self.cancellation,
+            "main",
+            "actor-fixture-extension-borrowing",
+            SourceSetKind::Extension,
+            revisions,
+            source_root,
+            PlatformProfile::v8_3_27(),
         )
+    }
+
+    fn extension_view_service(&self) -> ViewService<LogicalViewReadAuthority<'_>> {
+        ViewService::new(self.extension_read_authority(), ViewCursorStore::default())
     }
 
     /// Платформенная форма заимствования: `Adopted` в свойствах,

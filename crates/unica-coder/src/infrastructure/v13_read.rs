@@ -458,7 +458,8 @@ impl<'a> LogicalViewReadAuthority<'a> {
         if MetadataKind::parse(kind).is_err() {
             return self.read.identity_metadata_payload(target);
         }
-        let local = self.read.metadata_local(target)?;
+        let read = self.read.metadata_local(target)?;
+        let local = read.info;
         for (kind, children) in [
             (NodeKind::Form, &local.collections.forms),
             (NodeKind::Template, &local.collections.templates),
@@ -490,7 +491,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
         payload.insert("collections".to_string(), collections);
         // Заимствование отвечает только в наборе расширения; там оно есть у
         // всякого объекта, и «своё» — такой же ответ, как «заимствовано».
-        if let Some(borrowing) = self.read.object_borrowing(target)? {
+        if let Some(borrowing) = read.borrowing {
             payload.insert(
                 "belonging".to_string(),
                 json!(if borrowing.extends.is_some() {
