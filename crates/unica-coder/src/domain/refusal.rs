@@ -54,10 +54,6 @@ pub enum RefusalCode {
     SourceSelectionChanged,
     /// `deadline_exceeded`
     DeadlineExceeded,
-    /// `provider_deadline`
-    ProviderDeadline,
-    /// `dependency_unavailable`
-    DependencyUnavailable,
     /// `task_transport_failed`
     TaskTransportFailed,
     /// `task_session_closed`
@@ -90,8 +86,6 @@ pub enum RefusalCode {
     BadWaitMs,
     /// `bad_task_arguments`
     BadTaskArguments,
-    /// `revision_mismatch`
-    RevisionMismatch,
     /// `stale_revision`
     StaleRevision,
     /// `stale_cursor`
@@ -147,8 +141,6 @@ impl RefusalCode {
             Self::ConcurrentChange => "concurrent_change",
             Self::SourceSelectionChanged => "source_selection_changed",
             Self::DeadlineExceeded => "deadline_exceeded",
-            Self::ProviderDeadline => "provider_deadline",
-            Self::DependencyUnavailable => "dependency_unavailable",
             Self::TaskTransportFailed => "task_transport_failed",
             Self::TaskSessionClosed => "task_session_closed",
             Self::BadValue => "bad_value",
@@ -165,7 +157,6 @@ impl RefusalCode {
             Self::InvalidTaskId => "invalid_task_id",
             Self::BadWaitMs => "bad_wait_ms",
             Self::BadTaskArguments => "bad_task_arguments",
-            Self::RevisionMismatch => "revision_mismatch",
             Self::StaleRevision => "stale_revision",
             Self::StaleCursor => "stale_cursor",
             Self::ProviderLimitExceeded => "provider_limit_exceeded",
@@ -206,8 +197,6 @@ impl RefusalCode {
             Self::ConcurrentChange => Outcome::RetryAsIs,
             Self::SourceSelectionChanged => Outcome::RetryAsIs,
             Self::DeadlineExceeded => Outcome::RetryAsIs,
-            Self::ProviderDeadline => Outcome::RetryAsIs,
-            Self::DependencyUnavailable => Outcome::RetryAsIs,
             Self::TaskTransportFailed => Outcome::RetryAsIs,
             Self::TaskSessionClosed => Outcome::RetryAsIs,
             Self::BadValue => Outcome::FixCall,
@@ -224,7 +213,6 @@ impl RefusalCode {
             Self::InvalidTaskId => Outcome::FixCall,
             Self::BadWaitMs => Outcome::FixCall,
             Self::BadTaskArguments => Outcome::FixCall,
-            Self::RevisionMismatch => Outcome::FixCall,
             Self::StaleRevision => Outcome::FixCall,
             Self::StaleCursor => Outcome::FixCall,
             Self::ProviderLimitExceeded => Outcome::FixCall,
@@ -257,12 +245,10 @@ impl RefusalCode {
     }
 
     /// Весь словарь — для проверок полноты и порождения ведомостей.
-    pub const ALL: [Self; 45] = [
+    pub const ALL: [Self; 42] = [
         Self::ConcurrentChange,
         Self::SourceSelectionChanged,
         Self::DeadlineExceeded,
-        Self::ProviderDeadline,
-        Self::DependencyUnavailable,
         Self::TaskTransportFailed,
         Self::TaskSessionClosed,
         Self::BadValue,
@@ -279,7 +265,6 @@ impl RefusalCode {
         Self::InvalidTaskId,
         Self::BadWaitMs,
         Self::BadTaskArguments,
-        Self::RevisionMismatch,
         Self::StaleRevision,
         Self::StaleCursor,
         Self::ProviderLimitExceeded,
@@ -432,6 +417,30 @@ mod tests {
             RefusalCode::ALL.len(),
             "два варианта делят одно имя на проводе: словарь перестал быть словарём"
         );
+    }
+
+    /// Синонимов в словаре нет: один смысл — одно имя.
+    ///
+    /// Три пары описывали одно и то же разными кодами и разводили агента по
+    /// разным веткам зря: гонка ревизии при публикации против устаревшей
+    /// ревизии, срок чтения против срока операции, недоступная зависимость
+    /// против недоступного поставщика. Решение владельца 16.09.2026 — свести
+    /// каждую пару к одному имени; тест держит их снятыми, чтобы синоним не
+    /// вернулся под видом нового кода.
+    #[test]
+    fn the_dictionary_keeps_no_synonym_of_a_code_it_already_carries() {
+        let names: BTreeSet<&str> = RefusalCode::ALL.iter().map(|code| code.as_str()).collect();
+        for (retired, survivor) in [
+            ("revision_mismatch", "stale_revision"),
+            ("provider_deadline", "deadline_exceeded"),
+            ("dependency_unavailable", "provider_unavailable"),
+        ] {
+            assert!(
+                !names.contains(retired),
+                "`{retired}` снят как синоним `{survivor}` и в словарь не возвращается"
+            );
+            assert!(names.contains(survivor), "`{survivor}` пропал из словаря");
+        }
     }
 
     #[test]

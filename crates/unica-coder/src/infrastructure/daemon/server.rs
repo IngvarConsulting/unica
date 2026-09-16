@@ -6362,7 +6362,7 @@ struct ActorLogicalReadLease {"#,
             self.release.lock().unwrap().recv().unwrap();
             if operation.remaining().is_zero() {
                 return Err(InvocationFailure::new(
-                    "provider_deadline",
+                    "deadline_exceeded",
                     "operation budget elapsed at Task handoff",
                 ));
             }

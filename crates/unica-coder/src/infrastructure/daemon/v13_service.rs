@@ -1564,7 +1564,7 @@ fn apply_publication_error_code(kind: ApplyPublicationErrorKind) -> RefusalCode 
     match kind {
         ApplyPublicationErrorKind::Cancelled => RefusalCode::Cancelled,
         ApplyPublicationErrorKind::Deadline => RefusalCode::DeadlineExceeded,
-        ApplyPublicationErrorKind::ConcurrentRevision => RefusalCode::RevisionMismatch,
+        ApplyPublicationErrorKind::ConcurrentRevision => RefusalCode::StaleRevision,
         ApplyPublicationErrorKind::ContainmentIdentity => RefusalCode::ProviderUnavailable,
         ApplyPublicationErrorKind::ProviderPostvalidation => RefusalCode::PostconditionFailed,
         ApplyPublicationErrorKind::SourceSelectionChanged => RefusalCode::SourceSelectionChanged,
@@ -1806,7 +1806,7 @@ fn run_native_validator(
     validator: crate::application::v13::check::CheckValidator,
     context: &crate::domain::workspace::WorkspaceContext,
 ) -> Result<(bool, Vec<Value>), Box<DomainResult>> {
-    use crate::application::v13::check::{normalize_native_outcome, CheckError};
+    use crate::application::v13::check::normalize_native_outcome;
     use crate::infrastructure::native_operations::v13_analysis::{validate, validator_selector};
 
     let at = address.to_string();
@@ -1828,16 +1828,12 @@ fn run_native_validator(
                 })
                 .collect(),
         )),
-        Err(CheckError::DependencyUnavailable) => Err(Box::new(error_result_detailed(
-            Some(at),
-            RefusalDetail::ProviderAbsent,
-            "the native validator dependency is unavailable",
-        ))),
-        Err(error) => Err(Box::new(error_result(
-            Some(at),
-            error.code(),
-            error.to_string(),
-        ))),
+        // Уточнение принадлежит самой ошибке: служба не выбирает его заново и
+        // не может разойтись с кодом, который оно сужает.
+        Err(error) => Err(Box::new(match error.detail() {
+            Some(detail) => error_result_detailed(Some(at), detail, error.to_string()),
+            None => error_result(Some(at), error.code(), error.to_string()),
+        })),
     }
 }
 

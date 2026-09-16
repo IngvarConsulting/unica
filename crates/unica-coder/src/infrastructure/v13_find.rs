@@ -419,7 +419,7 @@ fn immediate_names(
                 FindBuildError::new(RefusalCode::Cancelled, "find directory build was cancelled")
             } else if deadline.remaining().is_zero() {
                 FindBuildError::new(
-                    RefusalCode::ProviderDeadline,
+                    RefusalCode::DeadlineExceeded,
                     "find directory build deadline elapsed",
                 )
             } else {
@@ -497,7 +497,7 @@ fn find_checkpoint(
     }
     if deadline.remaining().is_zero() {
         return Err(FindBuildError::new(
-            RefusalCode::ProviderDeadline,
+            RefusalCode::DeadlineExceeded,
             "find directory build deadline elapsed",
         ));
     }
@@ -829,7 +829,7 @@ mod tests {
                 &CancellationToken::new(),
             )
             .unwrap_err();
-        assert_eq!(error.code().as_str(), "provider_deadline");
+        assert_eq!(error.code().as_str(), "deadline_exceeded");
     }
 
     #[test]

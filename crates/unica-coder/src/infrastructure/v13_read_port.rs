@@ -209,7 +209,7 @@ impl ProviderReadAuthority {
                     ))
                 } else if deadline.remaining().is_zero() {
                     Err(ViewError::new(
-                        RefusalCode::ProviderDeadline,
+                        RefusalCode::DeadlineExceeded,
                         "logical read operation deadline elapsed",
                     ))
                 } else {

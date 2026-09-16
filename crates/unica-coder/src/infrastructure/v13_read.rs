@@ -213,7 +213,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
         }
         if self.deadline.remaining().is_zero() {
             return Err(ViewError::new(
-                RefusalCode::ProviderDeadline,
+                RefusalCode::DeadlineExceeded,
                 "logical read operation deadline elapsed",
             ));
         }

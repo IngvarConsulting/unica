@@ -1,5 +1,5 @@
 use crate::domain::address::QualifiedAddress;
-use crate::domain::refusal::RefusalCode;
+use crate::domain::refusal::{RefusalCode, RefusalDetail};
 use serde::Serialize;
 use std::fmt;
 
@@ -157,10 +157,23 @@ pub(crate) enum CheckError {
 }
 
 impl CheckError {
+    /// Уточнение отказа, когда код покрывает несколько исходов.
+    ///
+    /// Недоступная зависимость валидатора — это отсутствующий поставщик:
+    /// собственного кода у неё нет с тех пор, как `dependency_unavailable`
+    /// снят из словаря как синоним. Уточнение держит код при себе, поэтому
+    /// разойтись они не могут.
+    pub(crate) const fn detail(&self) -> Option<RefusalDetail> {
+        match self {
+            Self::BadValue { .. } => None,
+            Self::DependencyUnavailable => Some(RefusalDetail::ProviderAbsent),
+        }
+    }
+
     pub(crate) const fn code(&self) -> RefusalCode {
         match self {
             Self::BadValue { .. } => RefusalCode::BadValue,
-            Self::DependencyUnavailable => RefusalCode::DependencyUnavailable,
+            Self::DependencyUnavailable => RefusalDetail::ProviderAbsent.code(),
         }
     }
 }
@@ -473,7 +486,7 @@ mod tests {
             NativeCheckOutcome::unavailable("validator engine is not installed"),
         )
         .unwrap_err();
-        assert_eq!(error.code().as_str(), "dependency_unavailable");
+        assert_eq!(error.code().as_str(), "provider_unavailable");
         assert!(!error.to_string().contains("engine"));
     }
 }
