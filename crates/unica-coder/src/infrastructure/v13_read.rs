@@ -488,6 +488,29 @@ impl<'a> LogicalViewReadAuthority<'a> {
             ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
         })?;
         payload.insert("collections".to_string(), collections);
+        // Заимствование отвечает только в наборе расширения; там оно есть у
+        // всякого объекта, и «своё» — такой же ответ, как «заимствовано».
+        if let Some(borrowing) = self.read.object_borrowing(target)? {
+            payload.insert(
+                "belonging".to_string(),
+                json!(if borrowing.extends.is_some() {
+                    "borrowed"
+                } else {
+                    "own"
+                }),
+            );
+            if let Some(extends) = borrowing.extends {
+                payload.insert("extends".to_string(), json!(extends));
+                // Пустой список перекрытий — это его отсутствие: платформа не
+                // пишет `PropertyState`, когда перекрывать нечего.
+                if !borrowing.overrides.is_empty() {
+                    payload.insert(
+                        "overrides".to_string(),
+                        json!(borrowing.overrides.join(", ")),
+                    );
+                }
+            }
+        }
         // Предопределённые элементы — содержимое самого объекта, и писатель у
         // них есть. Без читателя агент, добавивший элемент, не может
         // подтвердить результат: ни счёта, ни списка, ни адреса.

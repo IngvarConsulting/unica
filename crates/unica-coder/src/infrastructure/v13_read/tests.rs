@@ -774,6 +774,68 @@ fn metadata_node_props_carry_the_observed_object_properties() {
     assert_eq!(props["kind"], json!("Catalog"));
 }
 
+/// Три роли дампа `PrintWebDAV`: заимствован с перекрытием, заимствован без
+/// перекрытия, собственный объект расширения.
+///
+/// Признак заимствования — `ExtendedConfigurationObject`, а не `Adopted`:
+/// корень `Configuration` самого расширения тоже `Adopted`, и читать его как
+/// заимствованный объект — дефект. `xr:PropertyState` несёт **список**
+/// перекрытых свойств, а не флаг: заимствованный объект без перекрытий его не
+/// несёт вовсе.
+#[test]
+fn borrowing_props_name_the_three_roles_of_an_extension_source_set() {
+    let fixture = RealReaderFixture::new();
+    fixture.borrow_catalog("Catalogs/Владельцы.xml", Some("Synonym"));
+    fixture.borrow_catalog("Documents/Order.xml", None);
+    let service = fixture.extension_view_service();
+
+    let overridden = service.view(ViewRequest::new("main:Catalog.Владельцы").unwrap());
+    assert!(overridden.ok, "{:?}", refusal_codes(&overridden));
+    let props = &overridden.data.as_ref().unwrap()["props"];
+    assert_eq!(props["belonging"], json!("borrowed"));
+    assert_eq!(
+        props["extends"],
+        json!("11111111-1111-4111-8111-111111111111")
+    );
+    assert_eq!(props["overrides"], json!("Synonym"));
+
+    let plain = service.view(ViewRequest::new("main:Document.Order").unwrap());
+    assert!(plain.ok, "{:?}", refusal_codes(&plain));
+    let props = &plain.data.as_ref().unwrap()["props"];
+    assert_eq!(props["belonging"], json!("borrowed"));
+    assert_eq!(
+        props["extends"],
+        json!("11111111-1111-4111-8111-111111111111")
+    );
+    assert!(
+        props.get("overrides").is_none(),
+        "заимствование без перекрытий ключа `overrides` не несёт: пустой список — это его отсутствие"
+    );
+
+    let own = service.view(ViewRequest::new("main:Catalog.Items").unwrap());
+    assert!(own.ok, "{:?}", refusal_codes(&own));
+    let props = &own.data.as_ref().unwrap()["props"];
+    assert_eq!(props["belonging"], json!("own"));
+    assert!(props.get("extends").is_none());
+    assert!(props.get("overrides").is_none());
+}
+
+/// В наборе вида `configuration` заимствования не бывает, и `belonging: own`
+/// у каждого объекта было бы шумом.
+#[test]
+fn a_configuration_source_set_carries_no_borrowing_props() {
+    let fixture = RealReaderFixture::new();
+    let service = fixture.view_service();
+
+    let result = service.view(ViewRequest::new("main:Catalog.Items").unwrap());
+
+    assert!(result.ok, "{:?}", refusal_codes(&result));
+    let props = &result.data.as_ref().unwrap()["props"];
+    for key in ["belonging", "extends", "overrides"] {
+        assert!(props.get(key).is_none(), "{key} в конфигурации не отвечает");
+    }
+}
+
 #[test]
 fn metadata_node_props_lay_out_the_per_kind_facts_by_role() {
     let fixture = RealReaderFixture::new();
@@ -3846,6 +3908,56 @@ impl RealReaderFixture {
 
     fn view_service(&self) -> ViewService<LogicalViewReadAuthority<'_>> {
         ViewService::new(self.read_authority(), ViewCursorStore::default())
+    }
+
+    /// Тот же набор, объявленный расширением: заимствование живёт только здесь.
+    fn extension_view_service(&self) -> ViewService<LogicalViewReadAuthority<'_>> {
+        let source_root = Arc::new(RetainedDirectoryCapability::open(&self.source).unwrap());
+        let revisions = Arc::new(
+            SourceRevisionService::new_reconciling_for_test(&self.context, &self.source).unwrap(),
+        );
+        ViewService::new(
+            LogicalViewReadAuthority::new(
+                &self.cancellation,
+                "main",
+                "actor-fixture-extension-borrowing",
+                SourceSetKind::Extension,
+                revisions,
+                source_root,
+                PlatformProfile::v8_3_27(),
+            ),
+            ViewCursorStore::default(),
+        )
+    }
+
+    /// Платформенная форма заимствования: `Adopted` в свойствах,
+    /// `ExtendedConfigurationObject` с UUID родителя после имени и, когда
+    /// свойство перекрыто, запись `xr:PropertyState` в `InternalInfo`.
+    fn borrow_catalog(&self, relative: &str, overridden: Option<&str>) {
+        let path = self.source.join(relative);
+        let text = fs::read_to_string(&path).unwrap();
+        let properties = text.find("<Properties>").unwrap();
+        let after_open = properties + "<Properties>".len();
+        let mut patched = format!(
+            "{}<ObjectBelonging>Adopted</ObjectBelonging>{}",
+            &text[..after_open],
+            &text[after_open..]
+        );
+        let name_end = patched.find("</Name>").unwrap() + "</Name>".len();
+        patched = format!(
+            "{}<ExtendedConfigurationObject>11111111-1111-4111-8111-111111111111</ExtendedConfigurationObject>{}",
+            &patched[..name_end],
+            &patched[name_end..]
+        );
+        if let Some(property) = overridden {
+            let properties = patched.find("<Properties>").unwrap();
+            patched = format!(
+                "{}<InternalInfo><xr:PropertyState><xr:Property>{property}</xr:Property><xr:State>Extended</xr:State></xr:PropertyState></InternalInfo>{}",
+                &patched[..properties],
+                &patched[properties..]
+            );
+        }
+        write(&path, &patched);
     }
 
     fn install_main_form_sources(&self, form_xml: &str, module_bsl: &str) {

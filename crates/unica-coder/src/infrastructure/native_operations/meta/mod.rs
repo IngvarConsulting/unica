@@ -148,6 +148,7 @@ pub(crate) use validation::{
 };
 pub(crate) use xml_model::{
     meta_info_child, meta_info_child_text, meta_info_children, meta_info_inner_text,
+    parse_meta_borrowing, MetaBorrowing,
 };
 
 /// The hidden v0.13 tree delegates metadata branches to the current typed

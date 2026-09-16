@@ -762,6 +762,10 @@ fn validate_reader_payload(reader: LogicalReader, payload: &Value) -> Result<(),
             "relations",
             "collections",
             "predefinedItems",
+            // Заимствование расширением: только в наборе вида `extension`.
+            "belonging",
+            "extends",
+            "overrides",
         ],
         LogicalReader::Form => &[
             "name",
@@ -958,7 +962,20 @@ fn project_metadata(
     suffix: &[AddressSegment],
 ) -> Result<NodeViewData, ViewError> {
     if suffix.is_empty() {
-        let mut props = selected_scalar_props(payload, &["kind", "synonym", "support"]);
+        let mut props = selected_scalar_props(
+            payload,
+            &[
+                "kind",
+                "synonym",
+                "support",
+                // Заимствование расширением: ключи есть только в наборе
+                // расширения и только у заимствованного объекта, кроме
+                // `belonging` — он отвечает у всякого объекта расширения.
+                "belonging",
+                "extends",
+                "overrides",
+            ],
+        );
         props.extend(metadata_property_props(payload));
         props.extend(metadata_detail_props(payload));
         // Счёт предопределённых элементов берётся из ответа читателя, а не из

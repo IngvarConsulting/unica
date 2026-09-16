@@ -30,7 +30,8 @@ use crate::infrastructure::native_operations::dcs::parse_dcs_info_xml;
 use crate::infrastructure::native_operations::form::parse_form_info_xml;
 use crate::infrastructure::native_operations::form::FormInfoData;
 use crate::infrastructure::native_operations::meta::{
-    parse_child_profile_from_bytes, parse_typed_meta_local_info,
+    parse_child_profile_from_bytes, parse_meta_borrowing, parse_typed_meta_local_info,
+    MetaBorrowing,
 };
 use crate::infrastructure::native_operations::mxl::parse_mxl_info_xml;
 use crate::infrastructure::native_operations::role::parse_role_info_xml;
@@ -525,6 +526,24 @@ impl ProviderReadAuthority {
                 .unwrap_or_else(|_| "metadata reader failed".to_string());
             ViewError::detailed(RefusalDetail::SourceUnreadable, message)
         })
+    }
+
+    /// Заимствование объекта расширением: три факта из того же дескриптора,
+    /// который уже открыт под чтение объекта.
+    ///
+    /// `None` — набор не вида `extension`: там заимствования не бывает, и
+    /// `belonging: own` у каждого объекта было бы шумом.
+    pub(crate) fn object_borrowing(
+        &self,
+        target: &MetadataAddress,
+    ) -> Result<Option<MetaBorrowing>, ViewError> {
+        if self.source_set_kind != SourceSetKind::Extension {
+            return Ok(None);
+        }
+        let descriptor = self.metadata_descriptor(target)?;
+        parse_meta_borrowing(&descriptor)
+            .map(Some)
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
     }
 
     /// Предопределённые элементы объекта.
