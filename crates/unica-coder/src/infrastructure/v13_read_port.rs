@@ -30,7 +30,8 @@ use crate::infrastructure::native_operations::dcs::parse_dcs_info_xml;
 use crate::infrastructure::native_operations::form::parse_form_info_xml;
 use crate::infrastructure::native_operations::form::FormInfoData;
 use crate::infrastructure::native_operations::meta::{
-    parse_child_profile_from_bytes, parse_typed_meta_local_info,
+    parse_child_profile_from_bytes, parse_meta_borrowing, parse_typed_meta_local_info,
+    MetaBorrowing,
 };
 use crate::infrastructure::native_operations::mxl::parse_mxl_info_xml;
 use crate::infrastructure::native_operations::role::parse_role_info_xml;
@@ -79,6 +80,13 @@ const MAX_EXTERNAL_INVENTORY_BYTES: usize = 32 * 1024 * 1024;
 /// One actor-issued read authority for one admitted source set. Hidden v0.13
 /// reads are descriptor-relative to this retained directory and revisions come
 /// from the paired actor-owned service.
+/// Один разбор дескриптора объекта: свойства и заимствование из тех же байтов.
+pub(crate) struct MetadataLocalRead {
+    pub(crate) info: MetaLocalInfo,
+    /// `None` — набор не вида `extension`: заимствования там не бывает.
+    pub(crate) borrowing: Option<MetaBorrowing>,
+}
+
 pub(crate) struct ProviderReadAuthority {
     source_set: String,
     source_set_identity: String,
@@ -512,19 +520,39 @@ impl ProviderReadAuthority {
             .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
     }
 
+    /// Локальное чтение объекта: разбор дескриптора и заимствование берутся из
+    /// одних и тех же байтов.
+    ///
+    /// Дескриптор открывается один раз. Второе чтение того же файла стоило бы
+    /// лишнего доступа и, что хуже, могло бы застать файл изменившимся между
+    /// чтениями — тогда свойства объекта и его заимствование описывали бы
+    /// разные состояния источника.
     pub(crate) fn metadata_local(
         &self,
         target: &MetadataAddress,
-    ) -> Result<MetaLocalInfo, ViewError> {
+    ) -> Result<MetadataLocalRead, ViewError> {
         let descriptor = self.metadata_descriptor(target)?;
         let support = metadata_support_status(
             self.object_support_with_descriptor(target, Some(&descriptor))?,
         );
-        parse_typed_meta_local_info(&descriptor, target, support).map_err(|failure| {
-            let message = serde_json::to_string(&failure.diagnostics)
-                .unwrap_or_else(|_| "metadata reader failed".to_string());
-            ViewError::detailed(RefusalDetail::SourceUnreadable, message)
-        })
+        // Заимствование отвечает только в наборе вида `extension`: в
+        // конфигурации его не бывает, и разбирать дескриптор ради `own` у
+        // каждого объекта незачем.
+        let borrowing = if self.source_set_kind == SourceSetKind::Extension {
+            Some(
+                parse_meta_borrowing(&descriptor)
+                    .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?,
+            )
+        } else {
+            None
+        };
+        let info =
+            parse_typed_meta_local_info(&descriptor, target, support).map_err(|failure| {
+                let message = serde_json::to_string(&failure.diagnostics)
+                    .unwrap_or_else(|_| "metadata reader failed".to_string());
+                ViewError::detailed(RefusalDetail::SourceUnreadable, message)
+            })?;
+        Ok(MetadataLocalRead { info, borrowing })
     }
 
     /// Предопределённые элементы объекта.
