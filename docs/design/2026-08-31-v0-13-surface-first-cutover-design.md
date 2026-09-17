@@ -202,5 +202,5 @@ Legacy selectors and implementation seams were cross-read from
 `arch/tool-surface.md`; target envelopes and current status from
 `crates/unica-coder/src/application/v13/tool_catalog.rs` and
 `docs/design/2026-08-23-v0-13-execution-surface-design.md`.  The detailed
-working matrices under `.superpowers/v13-surface-matrix-audit/` are the audit
+working matrices under `.session-temp/v13-surface-matrix-audit/` are the audit
 inputs for this tracked record.

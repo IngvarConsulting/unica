@@ -11,9 +11,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 class LayoutTests(unittest.TestCase):
     def test_session_scratch_is_never_tracked(self) -> None:
-        """`.superpowers/` is ignored on purpose; `git add -f` defeats that."""
-        tracked = sorted((REPO_ROOT / ".superpowers").rglob("*")) if (
-            REPO_ROOT / ".superpowers"
+        """`.session-temp/` is ignored on purpose; `git add -f` defeats that."""
+        tracked = sorted((REPO_ROOT / ".session-temp").rglob("*")) if (
+            REPO_ROOT / ".session-temp"
         ).exists() else []
         tracked_files = [
             p.relative_to(REPO_ROOT).as_posix()

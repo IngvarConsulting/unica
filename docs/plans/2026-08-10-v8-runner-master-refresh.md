@@ -385,7 +385,7 @@ Expected: both exact guard tests pass before publication.
 - [ ] **Step 4: Push and open a ready Unica PR**
 
 Before running `gh pr create`, use `apply_patch` to create the ignored working
-draft `.superpowers/v8-runner-unica-pr.md`. The body must link the immutable
+draft `.session-temp/v8-runner-unica-pr.md`. The body must link the immutable
 toolchain release and its successful run, list the three verified SHA-256
 values from Task 2, summarize the five applied upstream groups, and explicitly
 state that CDFI `#30`, dependency graph `#32`, `noBuild` MCP exposure, and
@@ -398,7 +398,7 @@ gh pr create \
   --base main \
   --head codex/v8-runner-master-refresh \
   --title "build: refresh v8-runner master snapshot" \
-  --body-file .superpowers/v8-runner-unica-pr.md
+  --body-file .session-temp/v8-runner-unica-pr.md
 ```
 
 - [ ] **Step 5: Wait for GitHub checks and report readiness without merging Unica**

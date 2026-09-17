@@ -929,10 +929,10 @@ gh pr create \
   --base main \
   --head codex/issue-297-reader-invocation \
   --title "fix(mcp): readers do not accept preview mode" \
-  --body-file .superpowers/issue-297-pr-body.md
+  --body-file .session-temp/issue-297-pr-body.md
 ```
 
-Перед командой создать игнорируемый `.superpowers/issue-297-pr-body.md` через
+Перед командой создать игнорируемый `.session-temp/issue-297-pr-body.md` через
 `apply_patch`; не добавлять его в git. PR body должен ссылаться на #297,
 ADR-0044 и proposal PR #426, явно разделять root
 cause/schema/dispatch/result/parity, перечислять red tests и финальные команды.

@@ -735,7 +735,7 @@ Expected: fast-forward update. Do not force-push merely to split the original la
 
 - [ ] **Step 3: Replace the empty PR body**
 
-Create ignored `.superpowers/pr-605-body.md` with `apply_patch` and this complete body, replacing only the final check results with the exact observed values from Task 8:
+Create ignored `.session-temp/pr-605-body.md` with `apply_patch` and this complete body, replacing only the final check results with the exact observed values from Task 8:
 
 ```markdown
 ## Что меняется
@@ -776,7 +776,7 @@ Architecture v1 побайтно замораживается в `docs/arch-v1/`
 Then run:
 
 ```bash
-gh pr edit 605 --repo IngvarConsulting/unica --body-file .superpowers/pr-605-body.md
+gh pr edit 605 --repo IngvarConsulting/unica --body-file .session-temp/pr-605-body.md
 ```
 
 - [ ] **Step 4: Wait for GitHub checks and inspect review state**
