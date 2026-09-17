@@ -6,6 +6,7 @@ check:
   - crates/unica-coder/src/infrastructure/project_health/git.rs::project_health_git_ignore_uses_staged_empty_file_not_valid_worktree_file
   - crates/unica-coder/src/domain/project_health.rs::project_health_serializes_independent_source_and_repository_readiness
   - crates/unica-coder/src/domain/project_health.rs::incomplete_repository_fact_serializes_its_check_as_not_run
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_view_bootstrap_separates_source_and_repository_readiness
 ---
 
 # Готовность репозитория подтверждается переносимыми настройками Git
@@ -14,6 +15,9 @@ check:
 Для него нужны отслеживаемые правила исключений и атрибутов, соответствующие
 виду ресурсов, допустимые окончания строк и безопасно распознанный
 `ConfigDumpInfo.xml`, подготовленный к коммиту.
+
+Корректные исходники без Git дают `ready: true`, `repositoryReady: false`
+и отдельную диагностику `git.repository_absent` в корневом `unica.check {}`.
 
 Проверяется версия правил в индексе Git. Локальные настройки и ещё
 не добавленная в индекс правка не заменяют переносимые правила.

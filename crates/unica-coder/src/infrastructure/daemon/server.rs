@@ -1384,6 +1384,16 @@ pub(crate) mod actor_capacity_tests {
         assert_eq!(data["sourceSets"], serde_json::json!([]));
         assert_eq!(data["setup"]["path"], "v8project.yaml");
         assert_eq!(data["setup"]["content"], serde_json::Value::Null);
+        for verdict in [
+            "ready",
+            "discoveredReady",
+            "repositoryReady",
+            "readinessState",
+            "checks",
+            "diagnostics",
+        ] {
+            assert_eq!(data.get(verdict), None, "{verdict} belongs to check {{}}");
+        }
         let wire = serde_json::to_string(data).unwrap();
         assert!(
             !wire.contains("unica.project."),
@@ -1405,6 +1415,17 @@ pub(crate) mod actor_capacity_tests {
         let verdict_data = verdict.data.as_ref().expect("verdict data");
         assert_eq!(verdict_data["status"], "failed");
         assert_eq!(verdict_data["ready"], false);
+        assert!(
+            verdict.rev.is_none(),
+            "root check has no source revision lease"
+        );
+        for sources in ["sources", "sourceSets"] {
+            assert_eq!(
+                verdict_data.get(sources),
+                None,
+                "{sources} belongs to view {{}}"
+            );
+        }
         assert_eq!(verdict_data["checks"], serde_json::json!([]));
         assert_eq!(verdict_data["diagnostics"].as_array().unwrap().len(), 1);
         assert_eq!(
