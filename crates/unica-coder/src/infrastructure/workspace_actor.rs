@@ -4827,6 +4827,27 @@ pub(crate) mod tests {
             .create("Nested/.build/forged.json", b"forged".to_vec())
             .unwrap_err();
         assert_eq!(error.kind(), ApplyStagingErrorKind::ContainmentIdentity);
+
+        let mut other_context = context(&root);
+        other_context.cache_root = root.join("other-cache");
+        let other_identity = WorkspaceIdentity::new(
+            &other_context,
+            [source_input("src", &root)],
+            "test-provider",
+        )
+        .unwrap();
+        let other_actor = super::WorkspaceActor::new(other_identity, other_context).unwrap();
+        let other_binding = other_actor.bind_provider_root("src", &root).unwrap();
+        let error = other_actor
+            .admit_apply(
+                &other_binding,
+                None,
+                true,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("exact .build/unica"), "{error}");
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -7309,41 +7330,51 @@ pub(crate) mod tests {
 
     #[test]
     fn apply_admission_and_dry_run_revision_observation_are_cache_tree_write_free() {
-        let fixture = actor_fixture("apply-observation-write-free", &["src"]);
-        let target = fixture.roots[0].join("Module.bsl");
-        std::fs::write(&target, b"original").unwrap();
-        let binding = fixture
-            .actor
-            .bind_provider_root("src", &fixture.roots[0])
-            .unwrap();
-        let cache_root = fixture.root.join(".build/unica");
-        assert!(!cache_root.exists());
-        let before = snapshot_tree(&cache_root);
+        for existing_cache in [false, true] {
+            let fixture = actor_fixture("apply-observation-write-free", &["src"]);
+            let target = fixture.roots[0].join("Module.bsl");
+            std::fs::write(&target, b"original").unwrap();
+            let binding = fixture
+                .actor
+                .bind_provider_root("src", &fixture.roots[0])
+                .unwrap();
+            let cache_root = fixture.root.join(".build/unica");
+            assert!(!cache_root.exists());
+            if existing_cache {
+                std::fs::create_dir_all(cache_root.join("source-revisions/empty")).unwrap();
+                std::fs::write(
+                    cache_root.join("source-revisions/keep.bin"),
+                    b"retained cache",
+                )
+                .unwrap();
+            }
+            let before = snapshot_tree(&cache_root);
 
-        let admitted = fixture
-            .actor
-            .admit_apply(
-                &binding,
-                None,
-                true,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
-            )
-            .unwrap();
-        assert_eq!(snapshot_tree(&cache_root), before);
+            let admitted = fixture
+                .actor
+                .admit_apply(
+                    &binding,
+                    None,
+                    true,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            assert_eq!(snapshot_tree(&cache_root), before);
 
-        let mut state = admitted.staged_state().unwrap();
-        state
-            .replace("Module.bsl", b"original", b"dry-run".to_vec())
-            .unwrap();
-        fixture
-            .actor
-            .publish_prepared_apply(admitted.prepare(state).unwrap())
-            .unwrap();
+            let mut state = admitted.staged_state().unwrap();
+            state
+                .replace("Module.bsl", b"original", b"dry-run".to_vec())
+                .unwrap();
+            fixture
+                .actor
+                .publish_prepared_apply(admitted.prepare(state).unwrap())
+                .unwrap();
 
-        assert_eq!(snapshot_tree(&cache_root), before);
-        assert_eq!(std::fs::read(&target).unwrap(), b"original");
-        fixture.cleanup();
+            assert_eq!(snapshot_tree(&cache_root), before);
+            assert_eq!(std::fs::read(&target).unwrap(), b"original");
+            fixture.cleanup();
+        }
     }
 
     #[test]
@@ -11221,28 +11252,31 @@ pub(crate) mod tests {
         assert_eq!(admission.support_policy_mode(), SupportPolicyMode::Deny);
         missing.cleanup();
 
-        let oversized = actor_fixture("apply-policy-mode-oversized", &["src"]);
-        std::fs::write(
-            oversized.root.join(".v8-project.json"),
-            vec![b' '; 32 * 1024 * 1024 + 1],
-        )
-        .unwrap();
-        let binding = oversized
+        let bounded = actor_fixture("apply-policy-mode-size-boundary", &["src"]);
+        let binding = bounded
             .actor
-            .bind_provider_root("src", &oversized.roots[0])
+            .bind_provider_root("src", &bounded.roots[0])
             .unwrap();
-        let admission = oversized
-            .actor
-            .admit_apply(
-                &binding,
-                None,
-                true,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
-            )
-            .unwrap();
-        assert_eq!(admission.support_policy_mode(), SupportPolicyMode::Deny);
-        oversized.cleanup();
+        for (size, expected) in [
+            (32 * 1024 * 1024, SupportPolicyMode::Off),
+            (32 * 1024 * 1024 + 1, SupportPolicyMode::Deny),
+        ] {
+            let mut bytes = br#"{"editingAllowedCheck":"off"}"#.to_vec();
+            bytes.resize(size, b' ');
+            std::fs::write(bounded.root.join(".v8-project.json"), bytes).unwrap();
+            let admission = bounded
+                .actor
+                .admit_apply(
+                    &binding,
+                    None,
+                    true,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            assert_eq!(admission.support_policy_mode(), expected, "size={size}");
+        }
+        bounded.cleanup();
 
         let unreadable = actor_fixture("apply-policy-mode-unreadable", &["src"]);
         let policy = unreadable.root.join(".v8-project.json");

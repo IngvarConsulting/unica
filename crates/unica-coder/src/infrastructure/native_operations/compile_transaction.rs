@@ -6297,6 +6297,14 @@ pub(crate) mod tests {
         let concurrent = CommitFailure::concurrent("opaque state mismatch");
         assert_eq!(concurrent.kind(), CommitFailureKind::ConcurrentModification);
 
+        let cleanup = with_cleanup_diagnostics(concurrent, vec!["temporary file remains".into()]);
+        assert_eq!(cleanup.kind(), CommitFailureKind::ConcurrentModification);
+        let cleanup = with_cleanup_diagnostics(
+            CommitFailure::provider("source unavailable"),
+            vec!["temporary file remains".into()],
+        );
+        assert_eq!(cleanup.kind(), CommitFailureKind::ProviderUnavailable);
+
         let rollback = with_rollback_diagnostics(provider, vec!["cleanup failed".into()]);
         assert_eq!(rollback.kind(), CommitFailureKind::RollbackFailed);
     }
