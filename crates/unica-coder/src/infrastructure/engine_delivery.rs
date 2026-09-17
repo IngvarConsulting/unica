@@ -505,6 +505,24 @@ mod tests {
             }
         ));
         let events = heard.events.lock().expect("events");
+        assert!(
+            !events.is_empty(),
+            "the waiting caller must receive progress"
+        );
+        assert!(events.iter().any(|event| {
+            event
+                .payload
+                .get("receivedBytes")
+                .and_then(|value| value.as_u64())
+                == Some(1024)
+                && event
+                    .payload
+                    .get("totalBytes")
+                    .and_then(|value| value.as_u64())
+                    == Some(4096)
+                && event.progress == 1024.0
+                && event.total == 4096.0
+        }));
         assert!(events.iter().all(|event| {
             event.meta_key == DELIVERY_PROGRESS_META_KEY
                 && event
