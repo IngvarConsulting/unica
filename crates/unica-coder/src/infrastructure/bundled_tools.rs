@@ -1035,6 +1035,7 @@ mod delivery_tests {
   "schemaVersion": 2,
   "tools": [
     {"name": "rlm-bsl-index", "version": "1.33.0", "artifact": "rlm-tools-bsl"},
+    {"name": "rlm-bsl-mcp", "version": "1.33.0", "artifact": "rlm-tools-bsl"},
     {"name": "v8-runner", "version": "0.4.0"}
   ]
 }"#,
@@ -1043,6 +1044,10 @@ mod delivery_tests {
 
         assert_eq!(
             artifact_for(&plugin_root, "rlm-bsl-index").as_deref(),
+            Some("rlm-tools-bsl")
+        );
+        assert_eq!(
+            artifact_for(&plugin_root, "rlm-bsl-mcp").as_deref(),
             Some("rlm-tools-bsl")
         );
         assert_eq!(
