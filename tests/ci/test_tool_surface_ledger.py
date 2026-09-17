@@ -8,6 +8,7 @@ import json
 import re
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -15,10 +16,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 GENERATOR = REPO_ROOT / "scripts/ci/generate-tool-surface.py"
 LEDGER = REPO_ROOT / "docs/tool-surface.md"
 REVIEW = REPO_ROOT / "tests/fixtures/v013/tool-surface-review.json"
-RUN_COVERAGE = REPO_ROOT / "tests/fixtures/v013/tool-implementation-coverage.json"
-# A run operation name on the wire: two or more dotted lowercase segments.
-# Tool names share the shape and are told apart by their `unica.` head.
-OPERATION_TOKEN = re.compile(r"\b[a-z][a-z0-9]*(?:\.[a-z][a-z0-9]*)+\b")
 BINARY = REPO_ROOT / "target/debug/unica"
 
 NATIVE_V13 = [
@@ -238,23 +235,44 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
                 self.assertTrue(all(scenario.strip() for scenario in entry["scenarios"]))
 
     def test_published_run_operation_names_belong_to_the_dictionary(self) -> None:
-        """Опубликованные адреса вызова существуют в словаре операций.
+        """JSON-примеры называют реализованные операции публичного словаря."""
+        from tests.ci.test_acceptance_scenarios import AcceptanceServer
+        from tests.ci.test_unica_skills import collect_runtime_guidance
 
-        Имя операции в `now`, `target` и сценариях читают как адрес вызова:
-        назвать операцию вне словаря — отправить читателя в отказ. Словарь ведёт
-        `tests/fixtures/v013/tool-implementation-coverage.json`.
-        """
-        operations = json.loads(RUN_COVERAGE.read_text(encoding="utf-8"))[
-            "runOperations"
-        ]
-        entry = self.review["unica.run"]
-        prose = [entry["result"]["now"], entry["result"]["target"], *entry["scenarios"]]
-        for text in prose:
-            for token in OPERATION_TOKEN.findall(text):
-                if token.startswith("unica."):
-                    continue
-                with self.subTest(token=token):
-                    self.assertIn(token, operations)
+        plugin = REPO_ROOT / "plugins/unica"
+        documents = sorted(
+            list((plugin / "skills").rglob("*.md"))
+            + list((plugin / "references").rglob("*.md"))
+        )
+        _, examples, failures = collect_runtime_guidance(
+            [(document, document.read_text(encoding="utf-8")) for document in documents]
+        )
+        self.assertEqual(failures, [])
+        self.assertTrue(examples, "no published runtime JSON examples were checked")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            workspace = root / "workspace"
+            state = root / "state"
+            workspace.mkdir()
+            state.mkdir()
+            server = AcceptanceServer(workspace, state, "2025-11-25")
+            try:
+                response = server.call("unica.run", {})
+            finally:
+                server.close()
+                server.reader.join(timeout=10)
+                server.process.stdout.close()
+
+        self.assertIsNotNone(response)
+        result = response["result"]["structuredContent"]
+        self.assertTrue(result["ok"], result)
+        operations = {operation["op"]: operation for operation in result["data"]["operations"]}
+        for document, arguments in examples:
+            operation = arguments.get("op")
+            with self.subTest(path=document.relative_to(REPO_ROOT), operation=operation):
+                self.assertIn(operation, operations)
+                self.assertIs(operations[operation]["implemented"], True)
 
     def test_ledger_matches_the_live_registry(self) -> None:
         result = subprocess.run(

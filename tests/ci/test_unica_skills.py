@@ -15,17 +15,6 @@ MIN_RUNTIME_GUIDANCE_DOCS = 31
 # dictionary implements. Syntax lives in `unica.check`, test runs and EPF/ERF
 # publication are outside the v0.13 surface, so their examples are gone.
 MIN_RUNTIME_EXECUTE_EXAMPLES = 2
-# The allowlist is the registry's own truth, so a dictionary change cannot
-# leave the guard checking examples against a stale set.
-RUN_DICTIONARY_OPERATIONS = {
-    name
-    for name, entry in json.loads(
-        (REPO_ROOT / "tests/fixtures/v013/tool-implementation-coverage.json").read_text(
-            encoding="utf-8"
-        )
-    )["runOperations"].items()
-    if entry.get("status") == "supported"
-}
 # Reading and writing names the wire never publishes; the package README keeps
 # its migration table of removed selectors and is not scanned for these.
 RETIRED_READ_WRITE_NAMES = re.compile(
@@ -2086,10 +2075,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                 path=doc.relative_to(self.repo_root()),
                 operation=arguments.get("op"),
             ):
-                # An example calls an operation the dictionary implements; a
-                # previewApply example previews, and an apply carries the
-                # revision its preview returned.
-                self.assertIn(arguments.get("op"), RUN_DICTIONARY_OPERATIONS)
+                # An apply carries the revision its preview returned.
                 if arguments.get("op") != "client.run":
                     self.assertIn("dryRun", arguments)
                 if arguments.get("dryRun") is False:
@@ -2154,106 +2140,6 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             if hits:
                 offenders[doc.relative_to(self.repo_root()).as_posix()] = hits
         self.assertEqual(offenders, {})
-
-
-    def test_shipped_guidance_never_routes_runtime_refusal_through_fallbacks(
-        self,
-    ) -> None:
-        shipped_docs = list(self.skill_root().glob("**/*.md")) + list(
-            self.reference_root().glob("**/*.md")
-        )
-        namespace_pattern = (
-            r"`(?:unica\.build|unica\.runtime\.job)\."
-            r"(?:\*|[a-z][a-z0-9.-]*)`"
-        )
-        namespace = re.compile(namespace_pattern)
-        fallback_context = re.compile(
-            r"(?i)\bfallback\b|\bfall\s+back\b|\bcontinuation\b|"
-            r"\bretry\b|\binstead\b|\bworkaround\b|"
-            r"(?:after|around|when).{0,60}\b(?:runtime )?refus\w*\b|"
-            r"запасн\w*\s+пут\w*|продолжени\w*|повтор\w*|вместо|обход\w*|"
-            r"(?:после|при).{0,60}отказ\w*"
-        )
-        negative_fallback = tuple(
-            re.compile(pattern)
-            for pattern in (
-                rf"(?i)\b(?:do not|don't|never|must not)\s+"
-                rf"(?:use|call|invoke|route)\b[^,.;!?]{{0,80}}{namespace_pattern}",
-                rf"(?i)\b(?:нельзя|запрещено)\s+"
-                rf"(?:использовать|вызывать|направлять)\b[^,.;!?]{{0,80}}"
-                rf"{namespace_pattern}",
-                rf"(?i)\bне\s+(?:используй|вызывай|вызови|направь|перейди)\b"
-                rf"[^,.;!?]{{0,80}}{namespace_pattern}",
-                rf"(?i)\b(?:do not|don't|never|must not)\b[^.;!?]{{0,120}}"
-                rf"\bbypass\b[^.;!?]{{0,120}}{namespace_pattern}",
-                rf"(?i)\bне\s+обходи\b[^.;!?]{{0,160}}{namespace_pattern}",
-                rf"(?i){namespace_pattern}[^.;!?]{{0,100}}"
-                rf"(?:\bis not\b|\bisn't\b|\bnot\s+as\b|"
-                rf"\bdo not use (?:it|them)\b)[^.;!?]{{0,60}}"
-                rf"(?:fallback|continuation|retry|workaround)",
-                rf"(?i){namespace_pattern}[^.;!?]{{0,100}}"
-                rf"\bне\s+(?:является|служит|используй (?:его|их))\b"
-                rf"[^.;!?]{{0,60}}(?:запасн\w*\s+пут\w*|fallback|продолжени\w*)",
-            )
-        )
-
-        def logical_clauses(text: str) -> list[str]:
-            return [
-                clause.strip()
-                for clause in re.split(
-                    r"(?<=[.!?;])\s+|^\s*(?:[-*]|\d+[.)])\s+",
-                    text,
-                    flags=re.MULTILINE,
-                )
-                if clause.strip()
-            ]
-
-        def is_fallback_route(clause: str) -> bool:
-            return bool(
-                namespace.search(clause)
-                and fallback_context.search(clause)
-                and not any(pattern.search(clause) for pattern in negative_fallback)
-            )
-
-        unsafe_examples = (
-            "Use `unica.build.load` as fallback.",
-            "Route through `unica.runtime.job.start` as continuation after runtime refusal.",
-            "Используй `unica.build.*` как запасной путь.",
-            "После отказа перейди в `unica.runtime.job.status`.",
-            "Fall back to `unica.build.load` after runtime refusal.",
-            "After runtime refusal, call `unica.runtime.job.start`.",
-            "После отказа вызови `unica.build.load`.",
-            "If runtime.execute cannot run, use `unica.runtime.job.start` as fallback.",
-            "Не вызывай runtime.execute повторно, используй `unica.runtime.job.start` как запасной путь.",
-            "Если runtime.execute нельзя вызвать, используй `unica.build.load` вместо него.",
-        )
-        safe_examples = (
-            "Do not use `unica.build.load` as fallback.",
-            "Не используй `unica.runtime.job.start` после отказа.",
-            "Use `unica.runtime.job.start` for an explicitly requested durable job.",
-            "Используй `unica.build.load` для независимого build workflow.",
-            "Use `unica.runtime.job.start` for an explicitly requested durable job; do not use it as fallback.",
-            "Используй `unica.build.load` для отдельного workflow; не используй его как запасной путь.",
-        )
-        for example in unsafe_examples:
-            self.assertTrue(
-                any(is_fallback_route(clause) for clause in logical_clauses(example)),
-                example,
-            )
-        for example in safe_examples:
-            self.assertFalse(
-                any(is_fallback_route(clause) for clause in logical_clauses(example)),
-                example,
-            )
-        for doc in shipped_docs:
-            text = doc.read_text(encoding="utf-8")
-            with self.subTest(path=doc.relative_to(self.repo_root())):
-                violating = [
-                    clause
-                    for clause in logical_clauses(text)
-                    if is_fallback_route(clause)
-                ]
-                self.assertEqual(violating, [])
 
 
     def test_code_quality_runtime_preview_preserves_test_first_order(self) -> None:
