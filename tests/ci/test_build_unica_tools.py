@@ -561,6 +561,18 @@ class BuildUnicaToolsTests(unittest.TestCase):
                 "manifest.json",
             ],
         )
+        by_delivered_path = {
+            item["deliveredPath"]: item for item in tools["runtimeFiles"]
+        }
+        for name, payload, mode, _, _ in members:
+            with self.subTest(file=name):
+                declaration = by_delivered_path[name]
+                self.assertEqual(declaration["sha256"], hashlib.sha256(payload).hexdigest())
+                self.assertEqual(declaration["size"], len(payload))
+                self.assertEqual(declaration["executable"], mode == 0o755)
+                self.assertEqual(declaration["artifact"], "rlm-tools-bsl")
+                if "path" in declaration:
+                    self.assertEqual((out_dir / declaration["path"]).read_bytes(), payload)
         self.assertEqual(
             {item["name"]: item["binaryPath"] for item in tools["tools"]},
             {
@@ -587,14 +599,6 @@ class BuildUnicaToolsTests(unittest.TestCase):
                 "rlm-bsl-index": "payload/rlm-bsl-index",
                 "rlm-bsl-mcp": "payload/rlm-bsl-mcp",
             },
-        )
-        self.assertEqual(
-            (out_dir / "bin" / "linux-x64" / "rlm-bsl-index").read_bytes(),
-            b"multidist",
-        )
-        self.assertEqual(
-            (out_dir / "bin" / "linux-x64" / "rlm-bsl-mcp").read_bytes(),
-            b"multidist",
         )
 
     def test_bundle_publication_leaves_no_partial_output_after_build_failure(self) -> None:
