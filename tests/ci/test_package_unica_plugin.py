@@ -991,6 +991,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(SystemExit, "symlink"):
                     module.copy_tracked_plugin_source(repo_root, plugin_src, root / "dest")
+            self.assertFalse((root / "dest/skills/web-test/leak.txt").exists())
 
     def write_bundle(self, root: Path, target: str, module) -> Path:
         bundle = root / f"unica-tools-{target}"

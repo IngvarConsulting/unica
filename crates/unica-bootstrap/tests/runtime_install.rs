@@ -240,6 +240,41 @@ fn ready_marker_waits_for_the_complete_runtime_file_closure() {
     );
     assert!(installed.root.join(".ready.json").is_file());
     fs::remove_dir_all(cache).expect("remove temp directory");
+
+    for (label, archive) in [
+        ("missing", tar_gz(&[("bin/linux-x64/unica", runtime)])),
+        (
+            "damaged",
+            tar_gz(&[
+                ("bin/linux-x64/unica", runtime),
+                (library_path, b"damaged-library"),
+            ]),
+        ),
+    ] {
+        let mut contract = manifest.clone();
+        contract
+            .artifacts
+            .get_mut("unica")
+            .unwrap()
+            .targets
+            .get_mut("linux-x64")
+            .unwrap()
+            .asset
+            .sha256 = sha256(&archive);
+        let cache = temp_dir(&format!("closure-{label}-library"));
+        let installer = RuntimeInstaller::new(
+            cache.clone(),
+            "0.7.0",
+            Arc::new(FakeDownloader::new(archive)),
+        );
+
+        let result = installer.ensure(&contract, HostTarget::LinuxX64);
+        let ready = contains_ready(&cache);
+        fs::remove_dir_all(cache).unwrap();
+
+        assert!(result.is_err(), "{label} library was accepted: {result:?}");
+        assert!(!ready, "{label} library published a ready marker");
+    }
 }
 
 #[test]
@@ -256,7 +291,7 @@ fn corrupt_archive_never_publishes_a_ready_runtime() {
         .expect_err("corrupt download must fail");
 
     assert!(error.to_string().contains("archive sha256"));
-    assert!(!cache.join("0.7.0/linux-x64/.ready.json").exists());
+    assert!(!contains_ready(&cache));
     fs::remove_dir_all(cache).expect("remove temp directory");
 }
 
