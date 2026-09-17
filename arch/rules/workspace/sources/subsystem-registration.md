@@ -1,8 +1,5 @@
 ---
 id: INV.SOURCE.SUBSYSTEM-REGISTRATION
-status: active
-governs: product
-decision: DEC.2026-08-18.CARRIED-RULES
 check:
   - crates/unica-coder/src/infrastructure/subsystem_topology.rs::registration_order_drives_roles_and_interface_membership
   - crates/unica-coder/src/infrastructure/subsystem_topology.rs::registered_dependency_paths_follow_registration_order_exactly
@@ -18,15 +15,23 @@ check:
   - crates/unica-coder/src/infrastructure/subsystem_topology.rs::ninth_registered_level_exceeds_the_shared_address_budget
   - crates/unica-coder/src/infrastructure/subsystem_topology.rs::complete_result_requires_a_checkpoint_after_secure_capture_and_parsing
   - crates/unica-coder/src/infrastructure/subsystem_topology.rs::registered_descriptor_symlink_is_not_followed
-scope: [source]
 ---
 
-# Топология подсистем выводится только из регистрации
+# Структура подсистем строится по регистрации в XML
 
-Единый построитель под одним удерживаемым корнем, открытым без перехода по
-символическим ссылкам, читает `Configuration.xml` и только транзитивно
-зарегистрированные дескрипторы из `Configuration/ChildObjects` и
-`Subsystem/ChildObjects`. Только они расходуют бюджеты и образуют зависимости
-формата, незарегистрированная раскладка не влияет на доказательство, каждый
-элемент `Content` имеет тип `MetadataAddress | UUID`, а каждый доказанный узел
-принадлежит ровно одной эффективной роли.
+Построитель структуры подсистем читает `Configuration.xml` и только
+дескрипторы, перечисленные в `Configuration/ChildObjects` и далее в
+`Subsystem/ChildObjects`. Чтение удерживает один корень исходников и
+не проходит через символические ссылки к зарегистрированным дескрипторам.
+Незарегистрированные файлы и каталоги не создают узлов, не расходуют бюджет
+чтения и не входят в зависимости формата.
+
+Узлы сохраняют порядок регистрации. Ссылка `Content` должна быть адресом
+метаданных или UUID; произвольная строка отклоняется. Подсистема относится
+к интерфейсной роли, только если она и все её предки включены в командный
+интерфейс; иначе она относится к функциональной роли.
+
+Результат считается полным только после чтения и проверки всей
+зарегистрированной структуры. Ошибка дескриптора, превышение ограничений
+объёма или глубины, а также отмена не превращаются в доказанное пустое дерево.
+Пустая регистрация, напротив, достаточна для пустого результата.

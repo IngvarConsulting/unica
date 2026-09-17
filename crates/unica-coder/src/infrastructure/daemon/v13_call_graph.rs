@@ -499,6 +499,9 @@ mod tests {
         );
         assert_eq!(page["limits"][0]["kind"], "unaddressablePeer");
         assert_eq!(page["limits"][0]["count"], 1);
+        assert!(page["limits"][0]["reason"]
+            .as_str()
+            .is_some_and(|reason| !reason.trim().is_empty()));
 
         // С резолвером тот же элемент получает адрес, и `limits` исчезает.
         let resolved = branch_collection(&at, CallGraphDirection::Callers, &summary, |path| {
