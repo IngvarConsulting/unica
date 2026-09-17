@@ -1308,6 +1308,26 @@ mod tests {
                 "{} description exceeds the 2 KiB client limit",
                 tool.name
             );
+            let arguments = tool.input_schema["properties"]
+                .as_object()
+                .expect("tool input declares its arguments");
+            // Conditional constraints such as `if.properties` refine an argument;
+            // descriptions belong to its declaration and nested argument objects.
+            for properties in std::iter::once(arguments)
+                .chain(object_schema_property_maps(arguments))
+            {
+                for (name, property) in properties {
+                    let description = property
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    assert!(
+                        !description.trim().is_empty(),
+                        "{} argument `{name}` has no model-facing description",
+                        tool.name
+                    );
+                }
+            }
         }
         let wire = serde_json::to_vec(&serde_json::json!({
             "jsonrpc": "2.0",

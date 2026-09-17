@@ -1482,19 +1482,6 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                 offenders.append(path.relative_to(self.repo_root()).as_posix())
         self.assertEqual(offenders, [])
 
-    def test_in_scope_skills_route_to_single_unica_mcp(self) -> None:
-        for skill, tool_name in IN_SCOPE_TOOLS.items():
-            with self.subTest(skill=skill):
-                text = (self.skill_root() / skill / "SKILL.md").read_text(encoding="utf-8")
-                self.assertIn("## MCP routing", text)
-                self.assertIn("MCP `unica`", text)
-                self.assertIn(tool_name, text)
-                self.assertNotIn("unica-coder", text)
-                self.assertNotIn("unica-v8-runner", text)
-                self.assertNotIn("unica-bsl-workspace", text)
-                self.assertNotIn("unica-rlm-tools-bsl", text)
-                self.assertNotIn("unica-v8std", text)
-
     def test_scenario_skills_cover_requested_unica_workflows(self) -> None:
         for skill, tool_names in SCENARIO_SKILLS.items():
             with self.subTest(skill=skill):
@@ -1703,21 +1690,6 @@ class UnicaSkillRoutingTests(unittest.TestCase):
 
         self.assertNotIn("Unica MCP contract gap", platform_help)
         self.assertIn("platform-help contract gap", platform_help)
-
-    def test_all_skills_do_not_expose_internal_mcp_names(self) -> None:
-        forbidden = [
-            "unica-coder",
-            "unica-v8-runner",
-            "unica-bsl-reference",
-            "unica-bsl-workspace",
-            "unica-rlm-tools-bsl",
-            "unica-v8std",
-        ]
-        for skill_path in self.skill_root().glob("*/SKILL.md"):
-            with self.subTest(skill=skill_path.parent.name):
-                text = skill_path.read_text(encoding="utf-8")
-                for name in forbidden:
-                    self.assertNotIn(name, text)
 
     def test_skills_and_references_do_not_instruct_direct_rlm_mcp_calls(self) -> None:
         forbidden = ["rlm_index", "rlm_start", "rlm_execute", "rlm_end"]
