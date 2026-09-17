@@ -2,6 +2,7 @@
 id: INV.PKG.CONCURRENT-INSTALL-ONCE
 check:
   - crates/unica-bootstrap/tests/runtime_install.rs::concurrent_installers_download_and_publish_once
+  - crates/unica-bootstrap/tests/runtime_install.rs::two_sessions_acquire_one_engine_once
 ---
 
 # Параллельные запросы используют одну установку
@@ -10,4 +11,5 @@ check:
 один готовый каталог. Архив загружается один раз; остальные вызовы используют
 результат завершённой установки.
 
-Связанный тест проверяет два вызова в отдельных потоках одного процесса.
+Проверки ядра и движка используют по два вызова в отдельных потоках одного
+процесса.
