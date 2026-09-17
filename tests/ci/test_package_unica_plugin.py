@@ -1307,16 +1307,23 @@ class PackageUnicaPluginTests(unittest.TestCase):
                     target_data["asset"]["mediaType"], "application/octet-stream"
                 )
 
-            catalog = json.loads(
-                (out_dir / "marketplace" / ".agents" / "plugins" / "marketplace.json").read_text(
-                    encoding="utf-8"
-                )
-            )
-            source = catalog["plugins"][0]["source"]
-            self.assertEqual(source["source"], "git-subdir")
-            self.assertEqual(source["ref"], release_tag)
-            self.assertEqual(source["path"], "plugins/unica")
-            self.assertNotIn("source\": \"local", json.dumps(catalog))
+            for host, catalog_path in (
+                ("codex", ".agents/plugins/marketplace.json"),
+                ("claude", ".claude-plugin/marketplace.json"),
+            ):
+                with self.subTest(host=host):
+                    catalog = json.loads(
+                        (out_dir / "marketplace" / catalog_path).read_text(encoding="utf-8")
+                    )
+                    self.assertEqual(
+                        catalog["plugins"][0]["source"],
+                        {
+                            "source": "git-subdir",
+                            "url": "https://github.com/IngvarConsulting/unica-marketplace.git",
+                            "path": "plugins/unica",
+                            "ref": release_tag,
+                        },
+                    )
             self.assertEqual(list(out_dir.glob("*.tar.gz")), [])
             self.assertEqual(list(out_dir.glob("*.zip")), [])
             package_evidence = json.loads(
