@@ -120,32 +120,6 @@ Prose resembling JSON: `"SubsystemPath": "Subsystems/Ложная/Subsystems"`.
         ).read_text(encoding="utf-8")
         self.assertNotIn("whole `Subsystems/` folder for `Mode=tree`", tool_contracts)
 
-    def test_surface_ledger_names_the_shared_registered_contract(self) -> None:
-        ledger = (
-            REPO_ROOT / "arch/tool-surface.md"
-        ).read_text(encoding="utf-8")
-        review = json.loads(
-            (
-                REPO_ROOT / "arch/tool-surface-review.json"
-            ).read_text(encoding="utf-8")
-        )["unica.subsystem.info"]
-        review_text = json.dumps(review, ensure_ascii=False)
-
-        ledger_section = ledger.split("### `unica.subsystem.info`", 1)[1].split(
-            "### `unica.subsystem.validate`", 1
-        )[0]
-        for text in (ledger_section, review_text):
-            for marker in (
-                "tree",
-                "самостоятельн",
-                "локальн",
-                "provider_unavailable",
-            ):
-                self.assertIn(marker, text)
-            self.assertNotIn("functionalSubsystems", text)
-            self.assertNotIn("interfaceSubsystems", text)
-            self.assertIn("цепоч", text)
-
     def test_bsp_address_does_not_replace_platform_xml_reference(self) -> None:
         specification = (
             REPO_ROOT
@@ -155,13 +129,6 @@ Prose resembling JSON: `"SubsystemPath": "Subsystems/Ложная/Subsystems"`.
             "Subsystem.СтандартныеПодсистемы.Subsystem.Обсуждения",
             specification,
         )
-
-
-SubsystemSurfaceContractTests.test_surface_ledger_names_the_shared_registered_contract = (
-    unittest.skip("retired v0.12 MCP surface; covered by the canonical v0.13 matrix")(
-        SubsystemSurfaceContractTests.test_surface_ledger_names_the_shared_registered_contract
-    )
-)
 
 
 if __name__ == "__main__":

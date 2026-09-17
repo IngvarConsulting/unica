@@ -34,7 +34,7 @@ ProcessCleanupResult = _WIRE_PROBE.ProcessCleanupResult
 ProcessOwnership = _WIRE_PROBE.ProcessOwnership
 
 
-TOOL_SURFACE_REVIEW_RELATIVE = Path("arch/tool-surface-review.json")
+TOOL_SURFACE_REVIEW_RELATIVE = Path("tests/fixtures/v013/tool-surface-review.json")
 CHECKOUT_MARKERS = (
     Path("Cargo.toml"),
     Path("plugins/unica/.codex-plugin/plugin.json"),

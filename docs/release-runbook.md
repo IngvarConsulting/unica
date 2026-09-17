@@ -147,8 +147,8 @@ this release does not carry.
 Engines are **named, not republished**. Their bytes live in `unica-toolchain`
 releases, and the runtime manifest points at them by address and SHA-256; the
 plugin release used to carry a second copy, 439 MB of it per release, for no
-gain. See
-[`DEC.2026-08-20.ENGINES-COME-FROM-THE-TOOLCHAIN`](../arch/decisions/2026-08-20-engines-come-from-the-toolchain.md).
+gain. The historical rationale is preserved in
+[`DEC.2026-08-20.ENGINES-COME-FROM-THE-TOOLCHAIN`](arch-v2/decisions/2026-08-20-engines-come-from-the-toolchain.md).
 
 That splits verification three ways, and each part is a job in the build:
 

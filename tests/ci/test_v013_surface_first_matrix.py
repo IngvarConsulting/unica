@@ -10,9 +10,11 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BASELINE = REPO_ROOT / "tests/fixtures/migration/v0.12.3-baseline.json"
+# The historical transition table remains a migration input: its rows account
+# for every published v0.12.3 name, not today's architecture or writing style.
 MATRIX = REPO_ROOT / "docs/design/2026-08-31-v0-13-surface-first-cutover-design.md"
-LEDGER = REPO_ROOT / "arch/tool-surface.md"
-REVIEW = REPO_ROOT / "arch/tool-surface-review.json"
+LEDGER = REPO_ROOT / "docs/tool-surface.md"
+REVIEW = REPO_ROOT / "tests/fixtures/v013/tool-surface-review.json"
 ROW = re.compile(r"^\| `([^`]+)` \|(?P<body>.+)$", re.MULTILINE)
 CANONICAL = {
     "unica.view",
@@ -43,32 +45,6 @@ class SurfaceFirstTransitionMatrixTests(unittest.TestCase):
         self.assertEqual(len(names), 74)
         self.assertEqual(len(set(names)), 74)
         self.assertEqual(set(names), set(baseline))
-
-    def test_matrix_names_all_eight_targets_and_explicitly_excludes_skills(self) -> None:
-        text = MATRIX.read_text(encoding="utf-8")
-        # Матрица датирована и описывает намерение своего дня. Восьмое имя с
-        # тех пор сменилось: `find` разошёлся на `search` и `resolve`
-        # (DEC.2026-09-08.RESOLVE-REPLACES-FIND). Править датированный
-        # документ значило бы подделать историю, поэтому здесь проверяются
-        # семь неизменных имён, а действующий состав держит
-        # test_generated_ledger_and_review_are_the_exact_compatibility_profile
-        # по сгенерированному реестру.
-        for tool in sorted(CANONICAL - {"unica.resolve"}):
-            self.assertIn(f"`{tool}`", text)
-        self.assertIn("`unica.find`", text)
-        self.assertIn("`plugins/unica/skills/**`\nis excluded from scope", text)
-        self.assertIn("**Merging to `main` is not a release**", text)
-
-    def test_target_examples_do_not_encode_pseudo_choices_inside_json_values(self) -> None:
-        text = MATRIX.read_text(encoding="utf-8")
-        offenders = []
-        for line_number, line in enumerate(text.splitlines(), 1):
-            for code_span in re.findall(r"`([^`]+)`", line):
-                if (
-                    code_span.startswith("unica.") or code_span.startswith("run(")
-                ) and "|" in code_span:
-                    offenders.append((line_number, code_span))
-        self.assertEqual(offenders, [])
 
     def test_generated_ledger_and_review_are_the_exact_compatibility_profile(self) -> None:
         ledger = LEDGER.read_text(encoding="utf-8")

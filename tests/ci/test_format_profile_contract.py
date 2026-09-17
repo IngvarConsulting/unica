@@ -3,11 +3,6 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-PROFILE_CONTRACT = ROOT / "arch/contracts/CTR.FORMAT.PLATFORM-XML-8-3-27.md"
-DESIGN = (
-    ROOT
-    / "docs/design/2026-07-23-platform-8-3-27-format-2-20-design.md"
-)
 FULL_DUMP_PUBLICATION = (
     ROOT
     / "crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs"
@@ -68,19 +63,6 @@ class FormatProfileContractTests(unittest.TestCase):
         self.assertNotIn('const TARGET_PLATFORM_LINE: &str = "8.3.27";', text)
         self.assertNotIn('const TARGET_EXPORT_FORMAT: &str = "2.20";', text)
 
-    def test_design_records_the_completed_platform_gate(self):
-        text = DESIGN.read_text(encoding="utf-8")
-        self.assertNotIn("PENDING_FINAL_PLATFORM_GATE", text)
-        self.assertIn("Final exact-platform result: `PASS`.", text)
-        self.assertIn("63 passed", text)
-        self.assertIn("432 platform commands", text)
-
-    def test_active_contract_records_the_profile_corpus(self):
-        text = PROFILE_CONTRACT.read_text(encoding="utf-8")
-        self.assertIn("id: CTR.FORMAT.PLATFORM-XML-8-3-27", text)
-        self.assertIn("8.3.27", text)
-        self.assertIn("2.20", text)
-
     def test_prompt_visible_specs_use_only_the_active_format_outside_history(self):
         specs = ROOT / "plugins/unica/references/specs"
         for name in ACTIVE_FORMAT_SPECS:
@@ -90,6 +72,7 @@ class FormatProfileContractTests(unittest.TestCase):
                 current = without_legacy_format_references(text)
                 self.assertNotIn("2.17", current)
                 self.assertNotIn("http://v8.3/", current)
+
 
 if __name__ == "__main__":
     unittest.main()

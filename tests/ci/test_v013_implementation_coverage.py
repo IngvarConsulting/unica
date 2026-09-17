@@ -9,9 +9,8 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-COVERAGE = REPO_ROOT / "arch/tool-implementation-coverage.json"
+COVERAGE = REPO_ROOT / "tests/fixtures/v013/tool-implementation-coverage.json"
 CATALOG = REPO_ROOT / "crates/unica-coder/src/application/v13/tool_catalog.rs"
-RUN_DICTIONARY_INVARIANT = REPO_ROOT / "arch/invariants/INV.APP.V13-RUN-DICTIONARY.md"
 
 SUBJECT_TOOLS = {
     "unica.view",
@@ -94,12 +93,6 @@ class V013ImplementationCoverageTests(unittest.TestCase):
         self.assertEqual(set(self.coverage["runOperations"]), catalog_run_operations())
         self.assertEqual(len(self.coverage["runOperations"]), 9)
         self.assertNotIn("query.execute", self.coverage["runOperations"])
-
-    def test_no_query_dictionary_invariant_remains_active(self) -> None:
-        front_matter = RUN_DICTIONARY_INVARIANT.read_text(encoding="utf-8").split(
-            "---", 2
-        )[1]
-        self.assertRegex(front_matter, r"(?m)^status: active$")
 
     def test_every_entry_uses_a_closed_status_and_honest_evidence(self) -> None:
         for group_name in ("subjectTools", "runOperations", "compatibilityTools"):

@@ -26,7 +26,7 @@ META_PROPERTY_REGISTRY = (
 META_OPERATION_REGISTRY = (
     REPO_ROOT / "crates/unica-coder/src/domain/metadata/operations.rs"
 )
-META_CAPABILITY_LEDGER = REPO_ROOT / "arch/meta-capability-parity.json"
+META_CAPABILITY_LEDGER = REPO_ROOT / "tests/fixtures/migration/meta-capability-parity.json"
 META_INFO_FIXTURE_MANIFEST = (
     REPO_ROOT / "tests/fixtures/platform_8_3_27/meta_info/manifest.json"
 )
@@ -148,11 +148,11 @@ class MetaSurfaceContractTests(unittest.TestCase):
         self,
     ) -> None:
         surface = (
-            REPO_ROOT / "arch/tool-surface.md"
+            REPO_ROOT / "docs/tool-surface.md"
         ).read_text(encoding="utf-8")
         surface_review = json.loads(
             (
-                REPO_ROOT / "arch/tool-surface-review.json"
+                REPO_ROOT / "tests/fixtures/v013/tool-surface-review.json"
             ).read_text(encoding="utf-8")
         )
         meta_info = (
@@ -251,11 +251,11 @@ class MetaSurfaceContractTests(unittest.TestCase):
             REPO_ROOT / "plugins/unica/skills/meta-info/SKILL.md"
         ).read_text(encoding="utf-8")
         ledger = (
-            REPO_ROOT / "arch/tool-surface.md"
+            REPO_ROOT / "docs/tool-surface.md"
         ).read_text(encoding="utf-8")
         review = json.loads(
             (
-                REPO_ROOT / "arch/tool-surface-review.json"
+                REPO_ROOT / "tests/fixtures/v013/tool-surface-review.json"
             ).read_text(encoding="utf-8")
         )["unica.meta.info"]
         ledger_section = ledger.split("### `unica.meta.info`", 1)[1].split(
@@ -276,11 +276,11 @@ class MetaSurfaceContractTests(unittest.TestCase):
         skill = (REPO_ROOT / "plugins/unica/skills/meta-info/SKILL.md").read_text(
             encoding="utf-8"
         )
-        ledger = (REPO_ROOT / "arch/tool-surface.md").read_text(
+        ledger = (REPO_ROOT / "docs/tool-surface.md").read_text(
             encoding="utf-8"
         )
         review = json.loads(
-            (REPO_ROOT / "arch/tool-surface-review.json").read_text(
+            (REPO_ROOT / "tests/fixtures/v013/tool-surface-review.json").read_text(
                 encoding="utf-8"
             )
         )["unica.meta.info"]
@@ -337,7 +337,7 @@ class MetaSurfaceContractTests(unittest.TestCase):
         self.assertTrue(donor, "retired Meta DSL type tables yielded no capabilities")
         self.assertTrue(
             META_CAPABILITY_LEDGER.exists(),
-            "arch/meta-capability-parity.json is missing",
+            "tests/fixtures/migration/meta-capability-parity.json is missing",
         )
         ledger = json.loads(META_CAPABILITY_LEDGER.read_text(encoding="utf-8"))
         self.assertIsInstance(ledger, list, "Meta capability ledger must be a JSON array")
@@ -633,7 +633,7 @@ class MetaSurfaceContractTests(unittest.TestCase):
         self.assertIn(f"{supported} поддерживаемых", compact_migration)
         self.assertIn(f"{removed} намеренно снятых", compact_migration)
         self.assertIn(
-            "../../arch/meta-capability-parity.json", migration
+            "../../tests/fixtures/migration/meta-capability-parity.json", migration
         )
 
     def test_schema_path_has_exact_lower_camel_arguments_and_typed_edit_items(self) -> None:

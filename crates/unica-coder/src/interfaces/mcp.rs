@@ -1940,8 +1940,8 @@ mod tests {
             .send(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}))
             .await;
         let legacy = client.receive().await;
-        assert!(legacy["result"]["ttlMs"].is_null(), "got {legacy}");
-        assert!(legacy["result"]["cacheScope"].is_null(), "got {legacy}");
+        assert!(legacy["result"].get("ttlMs").is_none(), "got {legacy}");
+        assert!(legacy["result"].get("cacheScope").is_none(), "got {legacy}");
         client.shutdown().await;
     }
 

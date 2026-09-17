@@ -20,7 +20,7 @@ MIN_RUNTIME_EXECUTE_EXAMPLES = 2
 RUN_DICTIONARY_OPERATIONS = {
     name
     for name, entry in json.loads(
-        (REPO_ROOT / "arch" / "tool-implementation-coverage.json").read_text(
+        (REPO_ROOT / "tests/fixtures/v013/tool-implementation-coverage.json").read_text(
             encoding="utf-8"
         )
     )["runOperations"].items()

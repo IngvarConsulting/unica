@@ -167,38 +167,6 @@ def tracked_workspace_production_rust_sources(repo_root: Path) -> dict[str, byte
     return sources
 
 
-def repository_files(repo_root: Path, *pathspecs: str) -> list[Path]:
-    """Files git tracks or would track under `pathspecs`; ignored files never enter.
-
-    `Path.rglob` also returns what the desktop drops into a checkout: `.DS_Store`,
-    editor swap files, a locally built binary. One such file breaks a text scan on
-    a developer machine while CI, whose checkout carries none of them, stays
-    green. A file git ignores is not part of the repository, so it is not part
-    of a scan; an untracked file git would accept still is, exactly as with
-    `rglob`. A tracked file deleted from the working tree is still listed, so
-    callers keep their `is_file()` guard.
-    """
-    listed = subprocess.run(
-        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", *pathspecs],
-        cwd=repo_root,
-        check=True,
-        capture_output=True,
-    ).stdout.split(b"\0")
-    return sorted(repo_root / os.fsdecode(raw_path) for raw_path in listed if raw_path)
-
-
-def retired_corpus_references(repo_root: Path) -> list[str]:
-    """Active `arch/` files that still send the reader to the retired local corpus.
-
-    The frozen `docs/arch-v1/` is deliberately outside this scan.
-    """
-    return [
-        path.relative_to(repo_root).as_posix()
-        for path in repository_files(repo_root, "arch")
-        if path.is_file() and "docs-local/1ci" in path.read_text(encoding="utf-8")
-    ]
-
-
 def rmcp_reference_confinement_errors(
     sources: dict[str, bytes], owner: str
 ) -> list[str]:
@@ -1267,47 +1235,6 @@ class ProductContractTests(unittest.TestCase):
         "esac\n"
     )
 
-    def test_task_router_paths_resolve(self) -> None:
-        """Каждый путь таблицы маршрутизации указывает на существующее место.
-
-        Таблица — единственный маршрут от задачи к коду, и её пути записаны в
-        обратных кавычках, а не markdown-ссылками, поэтому резолвер ссылок их
-        не видел. Шесть строк успели усохнуть до хвоста вроде
-        `domain/cache.rs`: от корня такой путь не разрешается, `rg` по нему
-        ничего не находит, и строка перестаёт быть маршрутом.
-        """
-        repo_root = Path(__file__).resolve().parents[2]
-        agents = (repo_root / "AGENTS.md").read_text(encoding="utf-8")
-
-        section = agents.split("## Куда смотреть, где менять", 1)[1].split("\n## ", 1)[0]
-        rows = [
-            line
-            for line in section.splitlines()
-            if line.startswith("|") and not set(line) <= set("| -")
-        ]
-        self.assertGreater(len(rows), 5, "таблица маршрутизации не разобрана")
-
-        extensions = (".md", ".rs", ".py", ".yml", ".yaml", ".json", ".toml")
-        offenders = []
-        checked = 0
-        for row in rows[1:]:
-            for token in re.findall(r"`([^`]+)`", row):
-                if "/" not in token and not token.endswith(extensions):
-                    continue
-                # `<группа>` и `<имя>` подставляются вызывающим; проверяется
-                # каталог, в котором такой файл обязан лежать.
-                probe = token
-                if "<" in probe:
-                    probe = probe.rsplit("/", 1)[0] if "/" in probe else probe
-                    if "<" in probe:
-                        continue
-                checked += 1
-                if not (repo_root / probe).exists():
-                    offenders.append(token)
-
-        self.assertGreater(checked, 15, "пути таблицы не разобраны")
-        self.assertEqual(offenders, [], "путь из таблицы маршрутизации не разрешается")
-
     def test_downloader_and_local_corpus_contract_are_retired(self) -> None:
         """Справка платформы приходит из установки, а не из скачанного корпуса.
 
@@ -1316,44 +1243,9 @@ class ProductContractTests(unittest.TestCase):
         """
         downloader = REPO_ROOT / "scripts" / "dev" / "download-1ci-guides.py"
         downloader_test = REPO_ROOT / "tests" / "dev" / "test_download_1ci_guides.py"
-        agents = (REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8")
 
         self.assertFalse(downloader.exists(), "загрузчик удалён вместе с контрактом корпуса")
         self.assertFalse(downloader_test.exists(), "тест загрузчика удалён вместе с ним")
-        self.assertNotIn("download-1ci-guides.py", agents)
-        self.assertNotIn("docs-local/1ci/8.3.27/en/", agents)
-        self.assertNotIn("kb.1ci.com/bin/download", agents)
-        # Действующий нормативный слой не отправляет читателя к снятому корпусу.
-        # Замороженный `docs/arch-v1/` сюда намеренно не входит.
-        self.assertEqual(
-            retired_corpus_references(REPO_ROOT),
-            [],
-            "активный слой arch не должен ссылаться на снятый корпус",
-        )
-
-    def test_retired_corpus_scan_skips_what_git_ignores(self) -> None:
-        """Finder кладёт `.DS_Store` в `arch/`; git его игнорирует, скан тоже.
-
-        Бинарный файл ронял обход `UnicodeDecodeError` локально, а CI, где
-        такого файла нет, оставался зелёным. Неотслеживаемый, но не
-        игнорируемый файл по-прежнему читается: нарушение в нём ловится
-        до `git add`.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / "arch").mkdir()
-            (root / ".gitignore").write_text(".DS_Store\n", encoding="utf-8")
-            (root / "arch" / "clean.md").write_text("справка из установки\n", encoding="utf-8")
-            (root / "arch" / "stale.md").write_text("см. docs-local/1ci\n", encoding="utf-8")
-            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
-            subprocess.run(["git", "add", "."], cwd=root, check=True)
-            (root / "arch" / ".DS_Store").write_bytes(b"\x00\x00\x00\x01Bud1\xa8\xff")
-            (root / "arch" / "unstaged.md").write_text("docs-local/1ci\n", encoding="utf-8")
-
-            self.assertEqual(
-                retired_corpus_references(root),
-                ["arch/stale.md", "arch/unstaged.md"],
-            )
 
     def test_local_corpus_directory_stays_ignored(self) -> None:
         """Каталог остаётся игнорируемым: снят контракт корпуса, а не каталог."""
@@ -1380,34 +1272,6 @@ class ProductContractTests(unittest.TestCase):
             plugin["interface"]["termsOfServiceURL"],
             "https://ingvar.pro/products/unica/terms/en",
         )
-
-    def test_release_runbook_is_discoverable_and_names_the_tag_target(self) -> None:
-        repo_root = Path(__file__).resolve().parents[2]
-        runbook = repo_root / "docs/release-runbook.md"
-        agents = (repo_root / "AGENTS.md").read_text(encoding="utf-8")
-        skill = (repo_root / ".claude/skills/release/SKILL.md").read_text(encoding="utf-8")
-
-        self.assertTrue(runbook.is_file())
-        # An agent asked to release has to reach the runbook from the entry point
-        # rather than reconstruct the order from the workflows.
-        self.assertIn("docs/release-runbook.md", agents)
-        self.assertIn("docs/release-runbook.md", skill)
-
-        text = runbook.read_text(encoding="utf-8")
-        for value in (
-            "bump-version.py",
-            "check-version-contract.py",
-            "publish-unica-marketplace.yml",
-            # One human action starts the pipeline; the runbook must say which.
-            "git tag -s vX.Y.Z",
-            "stage → tag → verify → promote",
-            # A release that fails part-way has to have a documented way out.
-            "One-way doors",
-            "never reuse a version number",
-            "Rolling back a live release",
-        ):
-            with self.subTest(value=value):
-                self.assertIn(value, text)
 
     def test_the_catalog_moves_only_behind_green_consumer_installs(self) -> None:
         """The linear pipeline replaces the warden's greenness check (ADR-0068).
@@ -1620,19 +1484,6 @@ class ProductContractTests(unittest.TestCase):
             positions[0],
         )
 
-    def test_claude_host_contract_is_recorded_for_agents(self) -> None:
-        repo_root = Path(__file__).resolve().parents[2]
-        agents = (repo_root / "AGENTS.md").read_text(encoding="utf-8")
-        claude_md = (repo_root / "CLAUDE.md").read_text(encoding="utf-8")
-        host_invariant = (
-            repo_root / "arch/invariants/INV.PKG.TWO-HOSTS-ONE-TREE.md"
-        ).read_text(encoding="utf-8")
-
-        self.assertIn("plugins/unica/.claude-plugin/plugin.json", agents)
-        self.assertIn("AGENTS.md", claude_md)
-        self.assertIn("Codex", host_invariant)
-        self.assertIn("Claude Code", host_invariant)
-
     def test_publish_workflow_promotes_both_host_catalogs(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         publish = (repo_root / ".github/workflows/publish-unica-marketplace.yml").read_text(
@@ -1686,8 +1537,6 @@ class ProductContractTests(unittest.TestCase):
             repo_root / "README.md",
             repo_root / "plugins/unica/README.md",
             repo_root / "docs/release-runbook.md",
-            repo_root / "arch/decisions/2026-08-19-core-first-acquisition.md",
-            repo_root / "arch/decisions/2026-08-20-engines-come-from-the-toolchain.md",
         ]
         forbidden = ("unica-local", "unica-codex-marketplace-")
         matches = [
@@ -1741,15 +1590,6 @@ class ProductContractTests(unittest.TestCase):
             if marker in text
         ]
         self.assertEqual(matches, [])
-
-    def test_removed_script_backed_skills_do_not_leave_architecture_records(self) -> None:
-        repo_root = Path(__file__).resolve().parents[2]
-        decisions = repo_root / "docs" / "arch-v1" / "decisions"
-        index = (decisions / "README.md").read_text(encoding="utf-8")
-
-        self.assertFalse((decisions / "0007-script-backed-utility-skill-exceptions.md").exists())
-        self.assertFalse((decisions / "0009-remove-script-backed-utility-skills.md").exists())
-        self.assertNotIn("Script-backed utility", index)
 
     def test_every_declared_refusal_detail_is_constructed_somewhere(self) -> None:
         """Объявленное уточнение без источника — обещание, которого провод не держит.

@@ -1,8 +1,10 @@
 # Пилот архитектурных обязательств Unica
 
 - Дата: 2026-09-17.
-- Состояние: план для согласования; перенос и создание скиллов не начаты.
-- Исходное дерево аудита: `09d8e17d`. Перед исполнением проверить актуальную базу.
+- Состояние: этапы 1–3 выполнены; десять правил ожидают вычитки владельцем.
+  Подключение скиллов и перенос `.claude/` — после этой вычитки.
+- Исходное дерево аудита: `09d8e17d`; снимок переноса: `a7f20d05`.
+  Рабочая ветка: `codex/architecture-v3-pilot`, актуальная `main` входит в базу.
 - Схема загрузки контекста: [AI_DEV.md](../../AI_DEV.md), коммит `36c68c3a`.
 
 ## Результат и граница работы
@@ -160,13 +162,13 @@ YAML служит удобству чтения и поиска. Новый ва
 ### Кандидаты пилота
 
 Это выборка для согласования, а не сводный реестр будущей архитектуры.
-Тела тестов просмотрены; перечисленные прогоны ещё не выполнялись.
+Тела тестов просмотрены; результаты прогонов приведены в конце плана.
 Исходные ID служат адресами происхождения до архивирования.
 
 | № | Обязательство | Исходная запись | Граница проверки |
 | --- | --- | --- | --- |
 | 1 | Worktree не наследует workspace основной копии | `INV.CACHE.WORKTREE-ISOLATION` | Поиск корня останавливается на `.git`-указателе |
-| 2 | Расчёт пути кеша анализатора выводит его за пределы исходников | `INV.CACHE.STATE-OUTSIDE-SOURCE` | Рассчитанный путь; не все записи всех providers |
+| 2 | Успешно рассчитанный путь кеша анализатора находится вне исходников | `INV.CACHE.STATE-OUTSIDE-SOURCE` | Рассчитанный путь; не все записи всех providers |
 | 3 | Preview индексирования не запускает builder и не пишет state | `INV.CACHE.INDEX-PREVIEW-WRITE-FREE` | Только preview индексирования |
 | 4 | Наложение настройки таймаута сохраняет исходный снимок конфигурации | `INV.APP.CONFIG-SNAPSHOT` | Неизменность исходного снимка; диапазон значений отдельно |
 | 5 | Современный MCP-ответ содержит cache-поля, legacy-ответ их не получает | `CTR.WIRE.LIST-CACHE-FIELDS` | Реальные запросы обоих вариантов протокола |
@@ -189,7 +191,7 @@ YAML служит удобству чтения и поиска. Новый ва
 | 3 | `crates/unica-coder/src/infrastructure/workspace_index.rs` | `infrastructure::workspace_index::tests::dry_run_does_not_start_indexing_or_write_state` |
 | 4 | `crates/unica-coder/src/domain/operational_config.rs` | `domain::operational_config::tests::explicit_diagnostics_timeout_is_validated_and_overlaid_immutably` |
 | 5 | `crates/unica-coder/src/interfaces/mcp.rs` | `interfaces::mcp::tests::modern_list_results_carry_required_cache_fields_and_legacy_stays_clean` |
-| 6 | `crates/unica-coder/src/interfaces/mcp.rs` | `interfaces::mcp::tests::production_mcp_surface_exposes_only_canonical_v13_tools_and_task_compatibility` |
+| 6 | `crates/unica-coder/src/interfaces/mcp.rs` | `interfaces::mcp::tests::production_mcp_surface_exposes_only_canonical_v13_tools_and_task_compatibility`; `interfaces::mcp::tests::surface_profiles_publish_eight_native_or_eleven_compatibility_tools_per_client` |
 | 7 | `tests/ci/test_rust_platform_boundary.py` | `RustPlatformBoundaryTests.test_repository_currently_complies_with_platform_boundary`; также `test_rejects_platform_constructs_outside_facade_with_stable_lines`, `test_allows_platform_constructs_only_in_facades_and_nested_platform_tests`, `test_lifetimes_labels_and_chars_do_not_hide_code` |
 | 8 | `tests/ci/test_package_unica_runtime.py` | `PackageUnicaRuntimeTests.test_runtime_archive_is_deterministic_and_target_only` |
 | 9 | `tests/ci/test_package_unica_plugin.py` | `PackageUnicaPluginTests.test_packaged_alias_resolves_the_plugin_root_for_both_hosts` |
@@ -571,3 +573,48 @@ Python-наборы запускать с зависимостями `tests/ci/r
 
 Это основание для предложенной организации. Точный состав навыков и размер
 инструкций определит пилот, а не числовой лимит из документации.
+
+## Выполнено до вычитки десятки — 2026-09-17
+
+Этапы 1–3 выполнены в `codex/architecture-v3-pilot`. Все 455 файлов прежнего
+`arch/` сверены побайтово с `a7f20d05`; отличается только архивная отметка
+в README. `docs/arch-v1/` сохранён. Три вынесенных JSON-входа не изменились;
+`docs/tool-surface.md` перегенерирован из работающего MCP. В donor-relations
+82 ссылки на прежнее описание формата заменены ссылкой на `format_profile.rs`,
+где задан профиль 8.3.27 / 2.20; наблюдения и их fingerprints сохранены.
+Исполняемых зависимостей от `docs/arch-v2/` не найдено.
+
+В `arch/rules/` десять предложений с `id` и `check`. Независимая проверка
+сузила обещание кеша до успешно рассчитанного пути и добавила к правилу
+профилей MCP существующий тест публикации. Из составных правил выделены
+отдельные ID для снимка таймаута, профилей MCP, воспроизводимости архива
+и разрешения корня плагина в POSIX.
+
+Восемь Rust-тестов и шесть Python-тестов из `check` исполнены без пропусков.
+Они наблюдают корни и пути, команды и файлы preview, исходный снимок настройки,
+ответы MCP, платформенные конструкции, байты архива и запуск из двух хостов.
+Rollback проверяется на пяти точках отказа. У legacy-проверки MCP обнаружен
+пробел: `is_null()` пропускал лишние поля со значением `null`. Временная
+подмена ответа прошла со старым assertion и упала с `.get().is_none()`;
+после удаления подмены усиленный тест прошёл. Поведение продукта не менялось.
+
+Сверка discovery: Python CI 908 → 881, `tests/arch` 132 → 0, dev 256 → 256;
+Rust 4567 → 4566. Удалены 160 тестов прежнего документооборота и его механики.
+Два CI-теста переименованы с сохранением содержательных assertions.
+Новых тестов на Markdown или отсутствие имён удалённых файлов нет.
+
+Из затронутых Python-наборов выполнены 403 теста: после исправления пропущенного
+пути в release-proof 394 прошли, девять прежних пропусков относятся к Windows
+и снятым поверхностям. Повторно выполнен весь release-proof: 23/23.
+Итоговый Rust-прогон: 9/9, включая проверку перенесённого `include_str!`.
+Прошли `cargo fmt --all -- --check`, Clippy со всеми targets/features и
+`-D warnings`, `generate-tool-surface.py --check`, `git diff --check`.
+Матрица PR содержит `ci-small` и `dev`; проверки medium исполнены явно.
+Полный межплатформенный конвейер и очередь слияния локально не запускались.
+
+Независимое ревью замечаний не оставило. В новой сессии агент нашёл правило
+по имени упавшего теста, отличил общий каталог кешей от общего состояния
+и направил правило оформления PR в процесс разработки, вне `arch/`.
+Подключение скиллов и проверка обоих хостов относятся к этапам 4–5.
+Следующий шаг — вычитка владельцем десяти формулировок; согласование плана
+не считается их принятием.
