@@ -510,6 +510,12 @@ mod tests {
             .unwrap();
         assert!(token.starts_with("vc1."));
         assert!(token[4..].parse::<usize>().is_err());
+        assert_eq!(
+            ViewCursorStore::default()
+                .read(&token, &binding, "rev-1")
+                .unwrap_err(),
+            ViewCursorError::Invalid
+        );
 
         let mut other = binding.clone();
         other.canonical_at = "main:Document.Счет.Module.Object.Body".to_string();
