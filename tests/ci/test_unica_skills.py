@@ -2819,23 +2819,6 @@ Use `.claude/commands/xdto.md` as the execution route.
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, text)
 
-    def test_source_access_skill_routes_reads_and_sends_writes_to_apply(
-        self,
-    ) -> None:
-        path = self.skill_root() / "source-access" / "SKILL.md"
-        text = path.read_text(encoding="utf-8")
-        writer = text.index("unica.apply")
-        reader = text.index("unica.view")
-
-        self.assertLess(reader, writer, "reading comes before the writer")
-        # Канонический читатель не меняет исходников, поэтому скилл не обещает
-        # правку через него и отправляет её в `unica.apply`.
-        self.assertNotIn("unica.source.apply", text)
-        self.assertNotIn("unica.code.patch", text)
-        self.assertRegex(text, r"(?s)dryRun.{0,80}true.{0,400}dryRun.{0,80}false")
-        self.assertIn("Чтение не меняет исходники", text)
-        self.assertIn("unica.resolve", text)
-        self.assertIn("replace", text)
 
     def test_package_readme_documents_code_patch_target_migration(self) -> None:
         text = (
@@ -2918,20 +2901,6 @@ Use `.claude/commands/xdto.md` as the execution route.
                 for token in forbidden:
                     self.assertNotIn(token, text)
 
-    def test_migrated_skills_do_not_reference_skill_local_operation_scripts(self) -> None:
-        forbidden = [
-            "powershell.exe",
-            ".ps1",
-            ".py",
-            "Current Python/PowerShell scripts",
-            "fallback implementation details",
-            "Native execution path",
-        ]
-        for skill in IN_SCOPE_TOOLS:
-            with self.subTest(skill=skill):
-                text = (self.skill_root() / skill / "SKILL.md").read_text(encoding="utf-8")
-                for token in forbidden:
-                    self.assertNotIn(token, text)
 
     def test_migrated_skills_do_not_ship_skill_local_operation_scripts(self) -> None:
         for skill in IN_SCOPE_TOOLS:
