@@ -411,26 +411,39 @@ fn concurrent_installers_download_and_publish_once() {
 
 #[test]
 fn the_core_installs_without_any_engine_present() {
-    // Ядро обязано подниматься само: движки уходят из стартового пути.
+    // Движок объявлен в манифесте, но установка ядра не должна его загружать.
     let runtime = b"unica-runtime";
     let archive = tar_gz(&[("bin/linux-x64/unica", runtime)]);
-    let manifest = manifest(&archive, runtime);
+    let engine = b"rlm-bsl-index";
+    let engine_archive = tar_gz(&[("bin/linux-x64/rlm-bsl-index", engine)]);
+    let manifest = manifest_with_engine(&archive, runtime, &engine_archive, engine);
     let cache = temp_dir("core-alone");
-    let downloader = Arc::new(FakeDownloader::new(archive));
+    let downloader = Arc::new(AssetDownloader::new(vec![
+        ("unica-runtime-linux-x64.tar.gz", archive),
+        ("rlm-tools-bsl-linux-x64.tar.gz", engine_archive),
+    ]));
 
-    let installed = RuntimeInstaller::new(cache.clone(), "0.7.0", downloader)
+    let installed = RuntimeInstaller::new(cache.clone(), "0.7.0", downloader.clone())
         .ensure(&manifest, HostTarget::LinuxX64)
         .expect("core installs alone");
 
-    assert!(installed.entrypoint.is_file(), "ядро должно быть на месте");
+    let entrypoint_present = installed.entrypoint.is_file();
+    let file_count = fs::read_dir(installed.root.join("bin/linux-x64"))
+        .expect("read runtime root")
+        .count();
+    let engine_present = cache.join("rlm-tools-bsl").exists();
+    fs::remove_dir_all(&cache).ok();
+
+    assert!(entrypoint_present, "ядро должно быть на месте");
     assert_eq!(
-        fs::read_dir(installed.root.join("bin/linux-x64"))
-            .expect("read runtime root")
-            .count(),
-        1,
+        file_count, 1,
         "в установке ядра нет ничего, кроме него самого"
     );
-    fs::remove_dir_all(&cache).ok();
+    assert_eq!(downloader.calls(), 1, "до запуска нужен только архив ядра");
+    assert!(
+        !engine_present,
+        "движок не должен устанавливаться вместе с ядром"
+    );
 }
 
 #[test]

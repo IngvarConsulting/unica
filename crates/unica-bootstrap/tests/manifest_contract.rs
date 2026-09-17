@@ -240,15 +240,30 @@ fn a_maintained_engine_source_is_approved_without_opening_other_origins() {
         .validate("0.7.0")
         .expect("maintained source release is approved");
 
-    let mut other = fixture_with_maintained_runner();
-    other["artifacts"]["v8-runner"]["targets"]["linux-x64"]["asset"]["url"] =
-        serde_json::json!(
-            "https://github.com/IngvarConsulting/another-project/releases/download/v0.6.0/v8-runner-linux-x64"
-        );
-    let error = parse(other)
-        .validate("0.7.0")
-        .expect_err("an unrelated Ingvar Consulting release must stay refused");
-    assert!(error.to_string().contains("release origin"), "{error}");
+    for (mut value, artifact, url) in [
+        (
+            fixture_with_maintained_runner(),
+            "v8-runner",
+            "https://github.com/IngvarConsulting/another-project/releases/download/v0.6.0/v8-runner-linux-x64",
+        ),
+        (
+            fixture_with_maintained_runner(),
+            "v8-runner",
+            "https://github.com/IngvarConsulting/unica-toolchain/releases/download/v0.7.1/v8-runner-linux-x64",
+        ),
+        (
+            fixture_with_engine(),
+            "rlm-tools-bsl",
+            "https://github.com/IngvarConsulting/v8-runner-rust/releases/download/v1.33.0/rlm-tools-bsl-linux-x64.tar.gz",
+        ),
+    ] {
+        value["artifacts"][artifact]["targets"]["linux-x64"]["asset"]["url"] =
+            serde_json::json!(url);
+        let error = parse(value)
+            .validate("0.7.0")
+            .expect_err("a release origin is approved only for its own artifact");
+        assert!(error.to_string().contains("release origin"), "{artifact} {url}: {error}");
+    }
 }
 
 #[test]

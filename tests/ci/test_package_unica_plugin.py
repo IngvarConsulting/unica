@@ -954,21 +954,22 @@ class PackageUnicaPluginTests(unittest.TestCase):
     def test_plugin_source_copy_rejects_tracked_nested_ignored_dir(self) -> None:
         module = load_package_module()
 
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            repo_root = root / "repo"
-            plugin_src = repo_root / "plugins" / "unica"
-            generated = plugin_src / "skills" / "web-test" / "__pycache__" / "script.pyc"
-            generated.parent.mkdir(parents=True)
-            generated.write_bytes(b"pyc")
+        for relative in (
+            "skills/web-test/__pycache__/script.pyc",
+            "skills/web-test/.pytest_cache/lastfailed",
+            "skills/web-test/.DS_Store",
+        ):
+            with self.subTest(path=relative), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                repo_root = root / "repo"
+                plugin_src = repo_root / "plugins" / "unica"
+                generated = plugin_src / relative
+                generated.parent.mkdir(parents=True)
+                generated.write_bytes(b"generated")
 
-            with patch.object(
-                module,
-                "git_tracked_plugin_files",
-                return_value=["skills/web-test/__pycache__/script.pyc"],
-            ):
-                with self.assertRaisesRegex(SystemExit, "source package path is generated"):
-                    module.copy_tracked_plugin_source(repo_root, plugin_src, root / "dest")
+                with patch.object(module, "git_tracked_plugin_files", return_value=[relative]):
+                    with self.assertRaisesRegex(SystemExit, "source package path is generated"):
+                        module.copy_tracked_plugin_source(repo_root, plugin_src, root / "dest")
 
     @unittest.skipIf(os.name == "nt" or not hasattr(os, "symlink"), "symlink validation is POSIX-only")
     def test_plugin_source_copy_rejects_tracked_symlink(self) -> None:
