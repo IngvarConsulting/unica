@@ -1,23 +1,10 @@
 ---
 id: INV.APP.DAEMON-INVOCATION-HANDOFF
-status: active
-governs: product
-decision: DEC.2026-09-08.DAEMON-V5-DEADLINE-OWNER
-check:
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::complete_v5_frame_near_cutoff_cannot_receive_a_fresh_response_budget
-  - crates/unica-coder/tests/daemon_receipt_ledger.rs::cutoff_during_admission_projects_exact_unbound_task
-  - crates/unica-coder/tests/daemon_receipt_ledger.rs::response_budget_is_not_receipt_identity
-  - crates/unica-coder/src/interfaces/daemon_router.rs::live_daemon_hands_inline_work_over_the_cutoff_to_a_task_the_same_attempt_completes
-  - crates/unica-coder/src/interfaces/daemon_router.rs::live_daemon_hands_a_failing_inline_attempt_over_the_cutoff_and_the_task_fails_once
-scope: [app]
 ---
 
-# Седьмая секунда разделяет direct response и durable Task
+# Границы подготовки и передачи ответа
 
-Завершение до 7000 мс может вернуть direct DomainResult. В 7000 мс
-незавершённая Invocation уже имеет durable Task; нулевой бюджет материализует её
-до execution. Конкурентные completion и handoff публикуют один terminal result
-при одном execution.
+Нулевой бюджет материализует Invocation как durable Task до execution.
 
 Подготовка result к transport не продлевает frontend deadline: разрешён один
 заранее вычтенный запас 125 мс. Результат больше 16 KiB, завершившийся при
