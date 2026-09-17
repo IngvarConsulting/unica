@@ -4282,6 +4282,9 @@ pub(crate) mod tests {
         let root = temp_root("warm-reuse");
         std::fs::create_dir_all(root.join("src")).unwrap();
         let registry = WorkspaceActorRegistry::default();
+        assert_eq!(registry.max_active(), 64);
+        assert_eq!(registry.warm_capacity, 8);
+        assert_eq!(registry.warm_ttl, Duration::from_secs(600));
         let context = context(&root);
         let first = registry
             .get_or_create(&context, [source_input("main", root.join("src"))], "p")
@@ -4300,6 +4303,41 @@ pub(crate) mod tests {
         assert!(Arc::ptr_eq(&first, &second));
         assert_eq!(registry.warm_len_for_test().unwrap(), 1);
         assert_eq!(registry.live_len_for_test().unwrap(), 1);
+
+        let main = Arc::downgrade(&second);
+        drop((first, second));
+        let mut others = Vec::new();
+        for index in 0..7 {
+            let source = root.join(format!("source-{index}"));
+            std::fs::create_dir_all(&source).unwrap();
+            let actor = registry
+                .get_or_create(&context, [source_input("main", source)], "p")
+                .unwrap();
+            others.push(Arc::downgrade(&actor));
+        }
+        // Refresh the oldest actor, then exceed the production warm capacity.
+        let reused = registry
+            .get_or_create(&context, [source_input("main", root.join("src"))], "p")
+            .unwrap();
+        assert!(Arc::ptr_eq(&main.upgrade().unwrap(), &reused));
+        drop(reused);
+        let source = root.join("extra");
+        std::fs::create_dir_all(&source).unwrap();
+        drop(
+            registry
+                .get_or_create(&context, [source_input("main", source)], "p")
+                .unwrap(),
+        );
+        assert!(
+            main.upgrade().is_some(),
+            "recently used actor must stay warm"
+        );
+        assert!(
+            others[0].upgrade().is_none(),
+            "least recently used actor must be released"
+        );
+        assert!(others[1..].iter().all(|actor| actor.upgrade().is_some()));
+        assert_eq!(registry.warm_len_for_test().unwrap(), 8);
     }
 
     #[test]
