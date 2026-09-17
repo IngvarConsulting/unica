@@ -256,9 +256,9 @@ class PackageUnicaRuntimeTests(unittest.TestCase):
             self.assertEqual(metadata["asset"]["name"], "unica-runtime-linux-x64.tar.gz")
             self.assertEqual(metadata["asset"]["sha256"], sha256(archive))
             self.assertEqual(metadata["entrypoint"], "bin/linux-x64/unica")
-            actual = {item["path"]: item["sha256"] for item in metadata["files"]}
+            actual = {item["path"]: item for item in metadata["files"]}
             self.assertEqual(
-                actual["bin/linux-x64/unica"], hashlib.sha256(b"unica").hexdigest()
+                actual["bin/linux-x64/unica"]["sha256"], hashlib.sha256(b"unica").hexdigest()
             )
             self.assertIn("third-party/manifest.json", actual)
             # Файлы движков сюда не попадают: их архив собирает тулчейн.
@@ -266,6 +266,15 @@ class PackageUnicaRuntimeTests(unittest.TestCase):
                 sorted(actual),
                 ["bin/linux-x64/unica", "third-party/manifest.json"],
             )
+            with tarfile.open(archive) as packed:
+                self.assertEqual(sorted(packed.getnames()), sorted(actual))
+                for member in packed.getmembers():
+                    self.assertTrue(member.isfile(), member.name)
+                    payload = packed.extractfile(member).read()
+                    self.assertEqual(
+                        actual[member.name]["sha256"], hashlib.sha256(payload).hexdigest()
+                    )
+                    self.assertEqual(actual[member.name]["executable"], bool(member.mode & 0o111))
 
     def test_runtime_packager_rejects_symlinked_binary(self) -> None:
         module = load_module()
