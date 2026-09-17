@@ -1102,7 +1102,16 @@ mod tests {
         let fixture = ApplySeamFixture::new();
         let admission = fixture.admission();
         let mut staged = admission.staged_state().unwrap();
+        let first_path = std::path::Path::new("Documents/First.xml");
         let second_path = std::path::Path::new("Documents/Second.xml");
+        let first_preimage = staged.read(first_path).unwrap().unwrap();
+        let first_postimage = String::from_utf8(first_preimage.clone())
+            .unwrap()
+            .replace("<Comment></Comment>", "<Comment>cancelled</Comment>")
+            .into_bytes();
+        staged
+            .replace(first_path, &first_preimage, first_postimage.clone())
+            .unwrap();
         let second_preimage = staged.read(second_path).unwrap().unwrap();
         let second_postimage = String::from_utf8(second_preimage.clone())
             .unwrap()
@@ -1110,6 +1119,9 @@ mod tests {
             .into_bytes();
         staged
             .replace(second_path, &second_preimage, second_postimage)
+            .unwrap();
+        staged
+            .replace(first_path, &first_postimage, first_preimage)
             .unwrap();
 
         assert_eq!(
@@ -1123,19 +1135,44 @@ mod tests {
         let effects = reconcile_effects(
             &staged,
             vec![
+                // The surviving duplicate arrives before its earlier sibling.
                 ProvisionalApplyEffect::single(
-                    "Documents/First.xml",
+                    second_path,
+                    crate::domain::events::DomainEvent::new(
+                        crate::domain::events::DomainEventKind::MetadataChanged,
+                        "shared",
+                    ),
+                    3,
+                ),
+                ProvisionalApplyEffect::single(
+                    first_path,
                     crate::domain::events::DomainEvent::new(
                         crate::domain::events::DomainEventKind::MetadataChanged,
                         "shared",
                     ),
                     0,
                 ),
+                ProvisionalApplyEffect::spanning(
+                    vec![first_path.to_path_buf(), second_path.to_path_buf()],
+                    crate::domain::events::DomainEvent::new(
+                        crate::domain::events::DomainEventKind::MetadataChanged,
+                        "partly-restored",
+                    ),
+                    4,
+                ),
+                ProvisionalApplyEffect::single(
+                    second_path,
+                    crate::domain::events::DomainEvent::new(
+                        crate::domain::events::DomainEventKind::MetadataChanged,
+                        "shared",
+                    ),
+                    2,
+                ),
                 ProvisionalApplyEffect::single(
                     second_path,
                     crate::domain::events::DomainEvent::new(
                         crate::domain::events::DomainEventKind::SourceSetChanged,
-                        "shared",
+                        "earlier",
                     ),
                     1,
                 ),
@@ -1147,10 +1184,16 @@ mod tests {
                 .iter()
                 .map(|event| (event.kind, event.artifact.as_str()))
                 .collect::<Vec<_>>(),
-            [(
-                crate::domain::events::DomainEventKind::SourceSetChanged,
-                "shared"
-            )]
+            [
+                (
+                    crate::domain::events::DomainEventKind::SourceSetChanged,
+                    "earlier"
+                ),
+                (
+                    crate::domain::events::DomainEventKind::MetadataChanged,
+                    "shared"
+                )
+            ]
         );
     }
 }
