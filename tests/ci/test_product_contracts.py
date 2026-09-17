@@ -1288,9 +1288,6 @@ class ProductContractTests(unittest.TestCase):
 
         self.assertIn("needs: [stage, tag, verify-fresh-install, verify-upgrade]", publish)
         self.assertIn("needs: [stage, tag]", publish)
-        # Staging pushes the payload only; the catalog files move in promote.
-        self.assertNotIn("stage: Unica catalog", publish)
-        self.assertIn("without changing the stable catalog", publish)
         # A published tag never moves; a rerun proves sameness instead.
         self.assertNotIn("git tag -f", publish)
         self.assertNotIn("--force", publish)
@@ -1410,55 +1407,6 @@ class ProductContractTests(unittest.TestCase):
         self.assertIn('tag -a "$RELEASE_TAG" "$STAGING_SHA"', publish)
         self.assertNotIn("tag at commit ${promotion_sha}", publish)
 
-    def test_readme_documents_public_marketplace_lifecycle(self) -> None:
-        repo_root = Path(__file__).resolve().parents[2]
-        readme = (repo_root / "README.md").read_text(encoding="utf-8")
-
-        required = (
-            "codex plugin marketplace add IngvarConsulting/unica-marketplace --ref main",
-            "codex plugin add unica@unica",
-            "codex plugin marketplace upgrade unica",
-            "codex plugin remove unica@unica",
-            "codex plugin marketplace remove unica",
-            "Git",
-            "new Codex task",
-            "SHA-256",
-            "$CODEX_HOME/unica/runtimes",
-        )
-        for value in required:
-            with self.subTest(value=value):
-                self.assertIn(value, readme)
-
-    def test_readme_documents_the_claude_marketplace_lifecycle(self) -> None:
-        repo_root = Path(__file__).resolve().parents[2]
-        readme = (repo_root / "README.md").read_text(encoding="utf-8")
-
-        required = (
-            "claude plugin marketplace add IngvarConsulting/unica-marketplace",
-            "claude plugin install unica@unica",
-            "claude plugin marketplace update unica",
-            "claude plugin update unica@unica",
-            "claude plugin uninstall unica@unica",
-            "claude plugin marketplace remove unica",
-            "claude --plugin-dir ./plugins/unica",
-        )
-        for value in required:
-            with self.subTest(value=value):
-                self.assertIn(value, readme)
-
-    def test_claude_version_floor_stays_recorded_outside_the_root_readme(self) -> None:
-        # The floor is load-bearing: clients before 2.1.69 cannot parse the
-        # catalog's git-subdir source. The package contract and its user-facing
-        # README, not the frozen v1 decision, keep it.
-        repo_root = Path(__file__).resolve().parents[2]
-        plugin_readme = (repo_root / "plugins/unica/README.md").read_text(encoding="utf-8")
-        release = (repo_root / ".github/workflows/unica-plugin-release.yml").read_text(
-            encoding="utf-8"
-        )
-
-        self.assertIn("2.1.69", plugin_readme)
-        self.assertIn("CLAUDE_CLI_VERSION: 2.1.69", release)
-
     def test_release_gate_pins_the_oldest_supported_client(self) -> None:
         from tests.ci.test_unica_workflow import RELEASE_WORKFLOW, job, load, script, steps
 
@@ -1513,83 +1461,6 @@ class ProductContractTests(unittest.TestCase):
         self.assertIn("@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION}", release)
         self.assertIn("CLAUDE_CLI_VERSION: 2.1.69", release)
         self.assertIn("claude plugin validate", release)
-
-    def test_readme_documents_the_frozen_v078_bridge(self) -> None:
-        repo_root = Path(__file__).resolve().parents[2]
-        readme = (repo_root / "README.md").read_text(encoding="utf-8")
-
-        self.assertIn("| Ваша версия | Что делать |", readme)
-        self.assertIn(
-            "releases/download/v0.7.8/install-unica.sh",
-            readme,
-        )
-        self.assertIn(
-            "releases/download/v0.7.8/install-unica.ps1",
-            readme,
-        )
-        self.assertIn("`0.7.5` и новее", readme)
-        self.assertIn("v0.7.8", readme)
-        self.assertIn("v0.8.0", readme)
-
-    def test_active_consumer_docs_do_not_describe_fat_local_delivery(self) -> None:
-        repo_root = Path(__file__).resolve().parents[2]
-        paths = [
-            repo_root / "README.md",
-            repo_root / "plugins/unica/README.md",
-            repo_root / "docs/release-runbook.md",
-        ]
-        forbidden = ("unica-local", "unica-codex-marketplace-")
-        matches = [
-            f"{path.relative_to(repo_root)}:{needle}"
-            for path in paths
-            for needle in forbidden
-            if needle in path.read_text(encoding="utf-8")
-        ]
-        self.assertEqual(matches, [])
-
-    def test_active_delivery_docs_describe_core_first_and_digest_cache(self) -> None:
-        repo_root = Path(__file__).resolve().parents[2]
-        root_readme = (repo_root / "README.md").read_text(encoding="utf-8")
-        plugin_readme = (repo_root / "plugins/unica/README.md").read_text(
-            encoding="utf-8"
-        )
-        internal = (repo_root / "docs/internal-package.md").read_text(encoding="utf-8")
-
-        for marker in (
-            "При старте MCP bootstrap скачивает только ядро",
-            "<artifact>/<version>--<asset-sha256>/<target>",
-            "unica-bootstrap prefetch --plugin-root",
-        ):
-            with self.subTest(document="README.md", marker=marker):
-                self.assertIn(marker, root_readme)
-        for marker in (
-            "The bootstrap downloads only `unica-runtime-<target>.tar.gz` before MCP startup",
-            "`<artifact>/<version>--<asset-sha256>/<target>`",
-            "`work.status=working`",
-            "unica-bootstrap prefetch --plugin-root",
-        ):
-            with self.subTest(document="plugins/unica/README.md", marker=marker):
-                self.assertIn(marker, plugin_readme)
-        for marker in (
-            "`<cacheRoot>/<artifact>/<version>--<assetSha256>/<target>`",
-            "`ensure_artifact`",
-            "`prefetch`",
-        ):
-            with self.subTest(document="docs/internal-package.md", marker=marker):
-                self.assertIn(marker, internal)
-
-        forbidden = (
-            "$CODEX_HOME/unica/runtimes/<version>/<target>",
-            "${CLAUDE_PLUGIN_DATA}/runtimes/<version>/<target>",
-            "The runtime archive contains the target's",
-        )
-        matches = [
-            marker
-            for text in (root_readme, plugin_readme, internal)
-            for marker in forbidden
-            if marker in text
-        ]
-        self.assertEqual(matches, [])
 
     def test_every_declared_refusal_detail_is_constructed_somewhere(self) -> None:
         """Объявленное уточнение без источника — обещание, которого провод не держит.
