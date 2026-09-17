@@ -524,30 +524,33 @@ mod tests {
     #[test]
     fn explicit_diagnostics_timeout_is_validated_and_overlaid_immutably() {
         let defaults = OperationalConfig::compiled_defaults();
-        let configured = defaults
-            .with_diagnostics_analyze_timeout(Duration::from_secs(900))
-            .expect("900 seconds is in the public diagnostics range");
-
-        assert_eq!(
-            defaults.code_diagnostics().analyze_timeout(),
-            Duration::from_secs(120)
-        );
-        assert_eq!(
-            configured.code_diagnostics().analyze_timeout(),
-            Duration::from_secs(900)
-        );
-        let diagnostic = defaults
-            .with_diagnostics_analyze_timeout(Duration::from_secs(29))
-            .expect_err("explicit timeout below the schema minimum must fail");
-        assert_eq!(
-            diagnostic.code(),
-            OperationalConfigDiagnosticCode::OutOfRange
-        );
-        assert_eq!(
-            diagnostic.source(),
-            OperationalConfigDiagnosticSource::ExplicitArgument
-        );
-        assert_eq!(diagnostic.field_path(), "timeoutSeconds");
+        for seconds in [30, 900, 3_600] {
+            let configured = defaults
+                .with_diagnostics_analyze_timeout(Duration::from_secs(seconds))
+                .expect("a timeout inside the inclusive public range must be accepted");
+            assert_eq!(
+                configured.code_diagnostics().analyze_timeout(),
+                Duration::from_secs(seconds)
+            );
+            assert_eq!(
+                defaults.code_diagnostics().analyze_timeout(),
+                Duration::from_secs(120)
+            );
+        }
+        for seconds in [29, 3_601] {
+            let diagnostic = defaults
+                .with_diagnostics_analyze_timeout(Duration::from_secs(seconds))
+                .expect_err("a timeout outside the public range must fail");
+            assert_eq!(
+                diagnostic.code(),
+                OperationalConfigDiagnosticCode::OutOfRange
+            );
+            assert_eq!(
+                diagnostic.source(),
+                OperationalConfigDiagnosticSource::ExplicitArgument
+            );
+            assert_eq!(diagnostic.field_path(), "timeoutSeconds");
+        }
     }
 
     #[test]

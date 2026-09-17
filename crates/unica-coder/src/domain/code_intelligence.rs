@@ -1369,6 +1369,10 @@ mod tests {
     fn registry_resolves_an_executable_provider_for_read_capabilities() {
         let registry = CodeIntelligenceRegistry::new(vec![
             Arc::new(FakeProvider {
+                identity: ProviderId::GitGrep.identity(),
+                capabilities: vec![ProviderCapability::Search],
+            }),
+            Arc::new(FakeProvider {
                 identity: ProviderId::Rlm.identity(),
                 capabilities: vec![
                     ProviderCapability::Search,
@@ -1376,10 +1380,6 @@ mod tests {
                     ProviderCapability::Outline,
                     ProviderCapability::ObjectProfile,
                 ],
-            }),
-            Arc::new(FakeProvider {
-                identity: ProviderId::GitGrep.identity(),
-                capabilities: vec![ProviderCapability::Search],
             }),
         ])
         .unwrap();

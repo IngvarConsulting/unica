@@ -2245,11 +2245,22 @@ mod tests {
         ]);
         let result = run(registry, &findings_request()).unwrap();
         assert_eq!(result.state, DiagnosticResultState::Partial);
-        assert_eq!(result.items.len(), 1);
+        assert!(matches!(
+            result.items.as_slice(),
+            [DiagnosticItem::Diagnostic { provider, code, message, .. }]
+                if *provider == LANGUAGE_SERVER.as_str()
+                    && code == "LS001"
+                    && message == "message LS001"
+        ));
         assert_eq!(result.providers[0].status, DiagnosticProviderStatus::Failed);
         assert_eq!(
             result.providers[0].error.as_ref().unwrap().code,
             "provider_panicked"
+        );
+        assert_eq!(result.providers[1].id, LANGUAGE_SERVER.as_str());
+        assert_eq!(
+            result.providers[1].status,
+            DiagnosticProviderStatus::Completed
         );
     }
 
