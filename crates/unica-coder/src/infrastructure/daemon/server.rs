@@ -1808,10 +1808,9 @@ pub(crate) mod actor_capacity_tests {
         assert_eq!(data["setup"]["sourceSetExample"]["type"], "CONFIGURATION");
         assert_eq!(data["setup"]["sourceSetExample"]["path"], "src");
         assert!(workspace.path().join("v8project.yaml").is_file());
-        assert!(
-            std::fs::read_to_string(workspace.path().join("v8project.yaml"))
-                .unwrap()
-                .contains("workPath: .work")
+        assert_eq!(
+            std::fs::read(workspace.path().join("v8project.yaml")).unwrap(),
+            b"workPath: .work\nformat: DESIGNER\n"
         );
     }
 

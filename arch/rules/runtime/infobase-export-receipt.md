@@ -1,6 +1,7 @@
 ---
 id: INV.RUNTIME.V13-INFOBASE-EXPORTS
 check:
+  - crates/unica-coder/src/application/v13/tool_catalog.rs::v13_infobase_exports_are_implemented_with_closed_agent_facing_arguments
   - crates/unica-coder/src/infrastructure/daemon/server.rs::v5_infobase_exports_prepare_before_source_admission_and_keep_the_revision_gate
   - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::preview_is_non_mutating_and_returns_an_apply_revision_without_raw_command
   - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::apply_repeats_preflight_and_returns_an_independent_file_receipt
@@ -17,8 +18,10 @@ check:
 Применение требует `ifRev`, повторяет preview и при несовпадении ревизии
 останавливается до исполняющего вызова раннера.
 
-Назначение задаётся внутри рабочего пространства; выбор провайдера
-не принимается в аргументах MCP. Успешный ответ раннера для другого
+Закрытая схема `cf.export` принимает `state` (`working` или `database`),
+`output` и необязательное имя `extension`; схема `infobase.export` — только
+`output`. Назначение задаётся внутри рабочего пространства; выбор
+провайдера не принимается в аргументах MCP. Успешный ответ раннера для другого
 назначения отвергается. Unica отдельно проверяет полученный файл:
 отсутствующий или пустой файл не даёт успеха, размер и SHA-256 вычисляются
 по его байтам. Командная строка, stdout и внутренние пути не входят

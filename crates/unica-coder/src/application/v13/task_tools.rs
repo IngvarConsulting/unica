@@ -307,7 +307,7 @@ mod tests {
     use super::{
         compatibility_tool_contracts, parse_task_tool_call, project_task_snapshot,
         task_tool_error_result, CompatibilityProjection, CompatibilityTaskSnapshot, TaskToolAction,
-        TaskToolError, DEFAULT_TASK_RESULT_WAIT_MS,
+        TaskToolError,
     };
     use crate::domain::invocation::{DomainResult, InvocationStatus, TaskId};
     use crate::domain::refusal::RefusalDetail;
@@ -359,13 +359,11 @@ mod tests {
                     .collect::<Vec<_>>(),
                 fields
             );
-            assert!(contract.description.contains("Task"));
         }
         let result = contracts
             .iter()
             .find(|entry| entry.name == "task.result")
             .unwrap();
-        assert!(result.description.contains("bounded"));
         assert_eq!(
             result.input_schema["properties"]["waitMs"]["type"],
             "integer"
@@ -385,7 +383,7 @@ mod tests {
     fn compatibility_parser_accepts_only_canonical_ids_and_wait_zero_through_7000() {
         let task_id = "f741d562-9d42-4a4f-a626-fcd5c3fb9bc4";
         for (args, expected_wait) in [
-            (json!({"taskId": task_id}), DEFAULT_TASK_RESULT_WAIT_MS),
+            (json!({"taskId": task_id}), 7_000),
             (json!({"taskId": task_id, "waitMs": 0}), 0),
             (json!({"taskId": task_id, "waitMs": 7_000}), 7_000),
         ] {

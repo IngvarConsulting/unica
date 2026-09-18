@@ -1,6 +1,10 @@
 ---
 id: CTR.WIRE.DAEMON-INVOCATION-PROTOCOL
 check:
+  - crates/unica-coder/tests/daemon_receipt_ledger.rs::receipt_key_is_canonicalized_identically_by_client_and_server
+  - crates/unica-coder/src/infrastructure/daemon/protocol_v5.rs::strict_decoded_submit_derives_the_frozen_application_receipt_key
+  - crates/unica-coder/src/infrastructure/daemon/client_v5.rs::partial_v5_response_bytes_cannot_replenish_client_deadline
+  - crates/unica-coder/src/infrastructure/daemon/client_v5.rs::malformed_v5_response_permanently_poisons_owner_session
   - crates/unica-coder/src/infrastructure/daemon/protocol_v5.rs::strict_v5_client_decoder_round_trips_every_closed_request_kind
   - crates/unica-coder/src/infrastructure/daemon/protocol_v5.rs::strict_v5_server_response_round_trips_the_cr0_invocation_algebra
   - crates/unica-coder/src/infrastructure/daemon/protocol_v5.rs::strict_v5_client_decoder_rejects_unknown_missing_cross_variant_and_invalid_values
@@ -23,6 +27,12 @@ check:
 и превышение предела чтения отвергаются. Прямая квитанция принимается
 только с хешем, соответствующим её конечному результату. Ошибки протокола
 передают закрытый код, без произвольного текста внутренних ошибок.
+
+Frontend и демон одинаково вычисляют ключ квитанции из `invocationId`,
+`reservedTaskId`, core identity, инструмента, хеша нормализованных аргументов
+и хеша области запроса. Фиксированный независимый пример закрепляет расчёт.
+Частичное поступление байтов не продлевает срок чтения. Некорректный ответ
+закрывает соединение: следующая операция не пишет в него новый запрос.
 
 Проверки исполняют настоящие кодеки. Интеграционная проверка запускает
 демон и проверяет handshake и обмен; часть вариантов ответа подставляется
