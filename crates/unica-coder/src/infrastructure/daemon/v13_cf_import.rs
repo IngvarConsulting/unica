@@ -1188,7 +1188,7 @@ mod tests {
                     true,
                 ),
             ],
-            b"rewritten by the provider",
+            b"changed input bytes",
         );
         let result = execute_with_resolved_runner(
             &prepared,
