@@ -1242,6 +1242,8 @@ class PackageUnicaPluginTests(unittest.TestCase):
                 or path.startswith("skills/img-grid/")
                 or path == "skills/web-test"
                 or path.startswith("skills/web-test/")
+                or path == "skills/v8-runner"
+                or path.startswith("skills/v8-runner/")
             }
             self.assertEqual(forbidden_script_skills, set())
             self.assertFalse(

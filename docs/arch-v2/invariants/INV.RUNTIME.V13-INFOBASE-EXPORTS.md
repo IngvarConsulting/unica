@@ -1,20 +1,18 @@
 ---
 id: INV.RUNTIME.V13-INFOBASE-EXPORTS
-status: active
-governs: product
-decision: DEC.2026-09-03.INFOBASE-EXPORT-RUN-SLICE
-check: crates/unica-coder/src/infrastructure/daemon/server.rs::v5_infobase_exports_prepare_before_source_admission_and_keep_the_revision_gate
-scope: [app, product, wire]
 ---
 
-# Выгрузки ИБ проходят неисполняющий preview и проверяемый apply
+# Ревизия выгрузки связывает все входы плана
 
-`cf.export` и `infobase.export` доступны без source set.
-Preview вызывает только неисполняющий `v8-runner --dry-run`, связывает выбранный
-provider, конфиги и состояние назначения с revision и не создаёт output. Apply
-повторяет такой preview, принимает только совпавший `ifRev`, затем запускает
-provider и независимо подтверждает непустой regular CF/CFE/DT внутри workspace.
-Публичный ответ не раскрывает командную строку, stdout, stderr или credentials.
-V3 и V5 обязаны подготовить эту операцию до admission PlatformXml source set и
-исполнять один и тот же `PreparedInfobaseExport`; транспорт не создаёт второй
-контракт preview/apply.
+Ревизия preview связывает выбранного провайдера, точные аргументы,
+основной и локальный конфиги, состояние назначения и версию раннера.
+Существующая проверка устаревшего применения подставляет чужую строку
+ревизии; она не доказывает влияние изменения каждого из этих входов.
+
+Остаётся общий запрет раскрывать stderr и credentials в результате
+выгрузки. Проверки публичной квитанции не перебирают все эти поля
+и источники ошибок раннера.
+
+Квитанция должна подтверждать regular-файл. Отказ для каталогов,
+символических ссылок и специальных файлов проверки выгрузки отдельно
+не исполняют.

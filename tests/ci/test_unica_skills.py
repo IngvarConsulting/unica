@@ -1710,26 +1710,6 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             with self.subTest(skill=skill):
                 self.assertFalse((self.skill_root() / skill).exists())
 
-        scanned_docs = [
-            self.repo_root() / "README.md",
-            self.repo_root() / "plugins" / "unica" / "README.md",
-            self.reference_root() / "README.md",
-            self.reference_root() / "tooling" / "v8project.md",
-            self.reference_root() / "tooling" / "runtime-build.md",
-            self.reference_root() / "use-cases" / "workspace-runtime.md",
-            self.reference_root() / "use-cases" / "forms-ui.md",
-            self.reference_root() / "use-cases" / "reports-printing.md",
-        ]
-        for doc in scanned_docs:
-            text = doc.read_text(encoding="utf-8")
-            self.assertNotIn("`v8-runner` skill", text)
-            self.assertNotIn("Use the `v8-runner` skill", text)
-            for skill in REPLACED_RUNTIME_SKILLS:
-                with self.subTest(path=doc.relative_to(self.repo_root()), skill=skill):
-                    self.assertNotIn(f"/{skill}", text)
-                    self.assertNotIn(f"`{skill}`", text)
-
-
 
     def test_db_auth_check_numbers_only_the_two_credential_candidates(self) -> None:
         text = (

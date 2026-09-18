@@ -1,0 +1,29 @@
+---
+id: INV.RUNTIME.V13-INFOBASE-EXPORTS
+check:
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::v5_infobase_exports_prepare_before_source_admission_and_keep_the_revision_gate
+  - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::preview_is_non_mutating_and_returns_an_apply_revision_without_raw_command
+  - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::apply_repeats_preflight_and_returns_an_independent_file_receipt
+  - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::stale_apply_stops_after_non_executing_preflight
+  - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::apply_rejects_a_runner_receipt_for_a_different_output
+  - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::parser_rejects_provider_controls_and_output_escape
+  - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::cfe_and_dt_invocations_use_only_their_closed_runner_arguments
+---
+
+# Успешная выгрузка базы подтверждается файлом назначения
+
+`cf.export` и `infobase.export` доступны без source set. Preview вызывает
+раннер с `--dry-run`, возвращает план с ревизией и не создаёт файл.
+Применение требует `ifRev`, повторяет preview и при несовпадении ревизии
+останавливается до исполняющего вызова раннера.
+
+Назначение задаётся внутри рабочего пространства; выбор провайдера
+не принимается в аргументах MCP. Успешный ответ раннера для другого
+назначения отвергается. Unica отдельно проверяет полученный файл:
+отсутствующий или пустой файл не даёт успеха, размер и SHA-256 вычисляются
+по его байтам. Командная строка, stdout и внутренние пути не входят
+в публичную квитанцию.
+
+Проверки используют управляемый раннер и реальные файлы; полный путь
+preview/apply проверен на CF, аргументы CFE и DT — отдельно.
+Платформа 1С в этих проверках не запускается.
