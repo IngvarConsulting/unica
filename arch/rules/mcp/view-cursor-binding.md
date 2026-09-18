@@ -5,6 +5,7 @@ check:
   - crates/unica-coder/src/application/result_store.rs::exact_revision_change_is_stale_but_tampering_and_expiry_are_invalid
   - crates/unica-coder/src/application/v13/view.rs::cursor_replay_is_bound_and_revision_change_is_stale
   - crates/unica-coder/src/application/v13/view.rs::retrying_the_same_cursor_returns_the_same_page_and_successor
+  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::cursor_retry_rejects_revision_change_during_role_canonicalization
 ---
 
 # Курсор продолжает тот же вопрос на той же ревизии

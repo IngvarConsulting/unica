@@ -5049,30 +5049,43 @@ pub(crate) mod tests {
 
     #[test]
     fn unsupported_fence_reconcile_is_bounded_to_six_passes_when_corpus_never_stabilizes() {
-        let fixture = RetainedConfirmationFixture::new(|source| {
-            fs::write(source.join("Configuration.xml"), "A").unwrap();
-        });
-        let before = fixture.service.retained_scan_count();
-        let descriptor = fixture.source.join("Configuration.xml");
-        let write_a = std::cell::Cell::new(false);
-        let _mutation = set_repeating_retained_scan_test_mutation(
-            RetainedScanTestMutationPoint::ScanStart,
-            move || {
-                let contents = if write_a.replace(!write_a.get()) {
-                    "A"
-                } else {
-                    "B"
-                };
-                fs::write(&descriptor, contents).unwrap();
-            },
-        );
+        for replace_identity in [false, true] {
+            let fixture = RetainedConfirmationFixture::new(|source| {
+                fs::write(source.join("Configuration.xml"), "A").unwrap();
+            });
+            let before = fixture.service.retained_scan_count();
+            let descriptor = fixture.source.join("Configuration.xml");
+            let replacement = fixture.workspace.path().join("replacement.xml");
+            let write_a = std::cell::Cell::new(false);
+            let _mutation = set_repeating_retained_scan_test_mutation(
+                RetainedScanTestMutationPoint::ScanStart,
+                move || {
+                    if replace_identity {
+                        // The file is replaced before enumeration: each pass is
+                        // stable on its own, but equal bytes have a new identity.
+                        fs::write(&replacement, "A").unwrap();
+                        fs::rename(&replacement, &descriptor).unwrap();
+                    } else {
+                        let contents = if write_a.replace(!write_a.get()) {
+                            "A"
+                        } else {
+                            "B"
+                        };
+                        fs::write(&descriptor, contents).unwrap();
+                    }
+                },
+            );
 
-        assert!(fixture.confirm().is_err());
-        assert_eq!(
-            fixture.service.retained_scan_count() - before,
-            6,
-            "three bounded stabilization attempts must perform exactly two passes each"
-        );
+            assert_eq!(
+                fixture.confirm().unwrap_err(),
+                "retained source revision did not stabilize during reconcile"
+            );
+            assert_eq!(
+                fixture.service.retained_scan_count() - before,
+                6,
+                "three bounded stabilization attempts must perform exactly two passes each"
+            );
+        }
     }
 
     struct RetainedConfirmationFixture {
@@ -5137,32 +5150,36 @@ pub(crate) mod tests {
         if !supports_retained_root_replacement_test() {
             return;
         }
-        let fixture = RetainedConfirmationFixture::new(|source| {
+        for replacement_content in ["A", "B"] {
+            let fixture = RetainedConfirmationFixture::new(|source| {
+                fs::write(
+                    source.join("Configuration.xml"),
+                    "<Configuration>A</Configuration>",
+                )
+                .unwrap();
+            });
+            let replacement = fixture.workspace.path().join("replacement");
+            let saved = fixture.workspace.path().join("saved");
+            fs::create_dir_all(&replacement).unwrap();
             fs::write(
-                source.join("Configuration.xml"),
-                "<Configuration>A</Configuration>",
+                replacement.join("Configuration.xml"),
+                format!("<Configuration>{replacement_content}</Configuration>"),
             )
             .unwrap();
-        });
-        let replacement = fixture.workspace.path().join("replacement");
-        let saved = fixture.workspace.path().join("saved");
-        fs::create_dir_all(&replacement).unwrap();
-        fs::write(
-            replacement.join("Configuration.xml"),
-            "<Configuration>B</Configuration>",
-        )
-        .unwrap();
-        let source = fixture.source.clone();
-        let _mutation =
-            set_retained_scan_test_mutation(RetainedScanTestMutationPoint::ScanStart, move || {
-                fs::rename(&source, &saved).unwrap();
-                fs::rename(&replacement, &source).unwrap();
-            });
+            let source = fixture.source.clone();
+            let _mutation = set_retained_scan_test_mutation(
+                RetainedScanTestMutationPoint::ScanStart,
+                move || {
+                    fs::rename(&source, &saved).unwrap();
+                    fs::rename(&replacement, &source).unwrap();
+                },
+            );
 
-        assert!(
-            fixture.confirm().is_err(),
-            "root replacement during final retained scan must invalidate the operation"
-        );
+            assert!(
+                fixture.confirm().is_err(),
+                "root replacement during final retained scan must invalidate the operation"
+            );
+        }
     }
 
     #[test]
