@@ -39,6 +39,7 @@ Preview or atomically apply typed edits to one logically addressed 1C node.
 
 - Изменить свойство через доказанную retained-публикацию `props.set`
 - Добавить, изменить и удалить атрибут с одинаковым доказуемым dry-run/real планом
+- Записать true и false в ClientOrdinaryApplication общего модуля; preview сохраняет файл и ревизию, неверный тип значения и Document получают bad_value без записи
 
 ## check
 
@@ -247,3 +248,4 @@ Inspect the workspace with no arguments, or read one logical 1C node by address.
 - Распознать существующую ИБ без исходников и предложить preview выгрузки CF или DT
 - Прочитать конфигурацию или объект метаданных по квалифицированному адресу
 - Получить наблюдаемую структуру узла и revision для последующей проверки
+- Прочитать ClientOrdinaryApplication в props.commonModule.clientOrdinaryApplication общего модуля после применения true и false через unica.apply

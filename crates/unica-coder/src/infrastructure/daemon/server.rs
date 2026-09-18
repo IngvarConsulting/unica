@@ -5561,6 +5561,132 @@ struct ActorLogicalReadLease {"#,
     }
 
     #[test]
+    fn canonical_apply_view_round_trip_common_module_ordinary_client() {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("src");
+        std::fs::create_dir_all(source.join("CommonModules/OrdinaryClient/Ext")).unwrap();
+        std::fs::create_dir_all(source.join("Documents")).unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        ).unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects><CommonModule>OrdinaryClient</CommonModule><Document>Order</Document></ChildObjects></Configuration></MetaDataObject>"#,
+        ).unwrap();
+        let descriptor = source.join("CommonModules/OrdinaryClient.xml");
+        std::fs::write(
+            &descriptor,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule uuid="11111111-1111-4111-8111-111111111111"><Properties><Name>OrdinaryClient</Name><Synonym/><Comment/><Global>false</Global><ClientManagedApplication>false</ClientManagedApplication><Server>true</Server><ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ServerCall>true</ServerCall><Privileged>false</Privileged><ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties></CommonModule></MetaDataObject>"#,
+        ).unwrap();
+        std::fs::write(
+            source.join("CommonModules/OrdinaryClient/Ext/Module.bsl"),
+            "",
+        )
+        .unwrap();
+        let document = source.join("Documents/Order.xml");
+        std::fs::write(
+            &document,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Document uuid="22222222-2222-4222-8222-222222222222"><Properties><Name>Order</Name><Synonym/><Comment/></Properties><ChildObjects/></Document></MetaDataObject>"#,
+        ).unwrap();
+        let runtime = V5CanonicalInvocationRuntime::new(
+            Arc::new(
+                crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
+            ),
+            Arc::new(TokioClock),
+        );
+        let workspace_hint = std::fs::canonicalize(workspace.path()).unwrap();
+        let call = |tool, arguments| {
+            let request =
+                InvocationRequest::new(tool, arguments, workspace_hint.to_string_lossy(), 7_000)
+                    .unwrap();
+            direct_v5(&runtime, request).unwrap()
+        };
+        let view = |at| {
+            let result = call(ToolIdentity::View, serde_json::json!({"at": at}));
+            assert!(result.ok, "{result:?}");
+            result
+        };
+        let at = "main:CommonModule.OrdinaryClient";
+        let plan = |at: &str, value: serde_json::Value| {
+            serde_json::json!({
+                "at": at,
+                "ops": [{"op": "props.set", "args": {"values": {"ClientOrdinaryApplication": value}}}],
+                "dryRun": true,
+            })
+        };
+        assert_eq!(
+            view(at).data.as_ref().unwrap()["props"]["commonModule"]["clientOrdinaryApplication"],
+            false
+        );
+        for value in [true, false] {
+            let before = std::fs::read(&descriptor).unwrap();
+            let observed = view(at);
+            let mut args = plan(at, serde_json::json!(value));
+            let preview = call(ToolIdentity::Apply, args.clone());
+            assert!(preview.ok, "props.set preview failed: {preview:?}");
+            assert_eq!(std::fs::read(&descriptor).unwrap(), before);
+            let after_preview = view(at);
+            assert_eq!(after_preview.rev, observed.rev);
+            assert_eq!(after_preview.data, observed.data);
+            args["dryRun"] = serde_json::json!(false);
+            args["ifRev"] = serde_json::json!(preview.rev.expect("preview carries the fence"));
+            let applied = call(ToolIdentity::Apply, args);
+            assert!(applied.ok, "props.set apply failed: {applied:?}");
+            assert_eq!(
+                preview.data.as_ref().unwrap()["planHash"],
+                applied.data.as_ref().unwrap()["planHash"]
+            );
+            let xml = std::fs::read_to_string(&descriptor).unwrap();
+            let parsed = roxmltree::Document::parse(xml.trim_start_matches('\u{feff}')).unwrap();
+            let properties: Vec<_> = parsed
+                .descendants()
+                .filter(|node| node.has_tag_name("ClientOrdinaryApplication"))
+                .collect();
+            assert_eq!(properties.len(), 1, "{xml}");
+            assert_eq!(
+                properties[0].text(),
+                Some(if value { "true" } else { "false" })
+            );
+            assert_eq!(
+                view(at).data.as_ref().unwrap()["props"]["commonModule"]
+                    ["clientOrdinaryApplication"],
+                value
+            );
+        }
+        for (target, value, reason) in [
+            (at, serde_json::json!("true"), "boolean"),
+            (
+                "main:Document.Order",
+                serde_json::json!(true),
+                "not supported for Document",
+            ),
+        ] {
+            let before_module = std::fs::read(&descriptor).unwrap();
+            let before_document = std::fs::read(&document).unwrap();
+            let before_view = view(target);
+            for dry_run in [true, false] {
+                let mut args = plan(target, value.clone());
+                args["dryRun"] = serde_json::json!(dry_run);
+                args["ifRev"] = serde_json::json!(before_view.rev);
+                let refused = call(ToolIdentity::Apply, args);
+                assert!(!refused.ok, "{refused:?}");
+                assert_eq!(refused.diagnostics[0]["code"], "bad_value", "{refused:?}");
+                assert!(
+                    refused.diagnostics[0]["message"]
+                        .as_str()
+                        .unwrap()
+                        .contains(reason),
+                    "{refused:?}"
+                );
+                assert_eq!(std::fs::read(&descriptor).unwrap(), before_module);
+                assert_eq!(std::fs::read(&document).unwrap(), before_document);
+                assert_eq!(view(target).rev, before_view.rev);
+            }
+        }
+    }
+
+    #[test]
     fn public_metadata_apply_keeps_dry_run_and_real_plans_identical_for_four_supported_ops() {
         let workspace = tempfile::tempdir().unwrap();
         let source = workspace.path().join("src");

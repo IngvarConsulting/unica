@@ -13,6 +13,7 @@ pub(crate) enum MetaPropertyKey {
     BasePeriod,
     ChoiceMode,
     ClientManagedApplication,
+    ClientOrdinaryApplication,
     CodeAllowedLength,
     CodeMask,
     CodeType,
@@ -147,6 +148,20 @@ pub(crate) fn diagnostic_metadata_property_is_canonical(value: &str) -> bool {
         || METADATA_PROPERTY_SPECS
             .iter()
             .any(|spec| spec.public_name == value)
+}
+
+pub(crate) fn unknown_metadata_property_message(kind: MetadataKind, name: &str) -> String {
+    let mut seen = HashSet::new();
+    let supported = METADATA_PROPERTY_SPECS
+        .iter()
+        .filter(|spec| spec.allowed_kinds.contains(&kind))
+        .filter_map(|spec| seen.insert(spec.public_name).then_some(spec.public_name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "unknown metadata property `{name}`; supported properties for {}: {supported}",
+        kind.as_str()
+    )
 }
 
 const fn enum_property(
@@ -335,6 +350,12 @@ pub(crate) const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
     property(
         "ClientManagedApplication",
         MetaPropertyKey::ClientManagedApplication,
+        MetaPropertyValueKind::Boolean,
+        COMMON_MODULE_KINDS,
+    ),
+    property(
+        "ClientOrdinaryApplication",
+        MetaPropertyKey::ClientOrdinaryApplication,
         MetaPropertyValueKind::Boolean,
         COMMON_MODULE_KINDS,
     ),
@@ -710,7 +731,7 @@ impl MetaPropertyChanges {
             if matching.is_empty() {
                 return Err(MetaDiagnostic::error(
                     MetaDiagnosticCode::InvalidArguments,
-                    format!("unknown metadata property `{}`", input.name),
+                    unknown_metadata_property_message(kind, &input.name),
                 )
                 .with_field(&field));
             }
@@ -1002,6 +1023,11 @@ mod tests {
                 &[CommonModule],
             ),
             (
+                "ClientOrdinaryApplication",
+                MetaPropertyValue::Boolean(true),
+                &[CommonModule],
+            ),
+            (
                 "CodeAllowedLength",
                 MetaPropertyValue::String("Fixed".into()),
                 &[Catalog],
@@ -1253,6 +1279,28 @@ mod tests {
 
         assert_eq!(diagnostic.code, MetaDiagnosticCode::InvalidArguments);
         assert_eq!(diagnostic.field.as_deref(), Some("values.UnknownProperty"));
+    }
+
+    #[test]
+    fn unknown_common_module_property_names_list_the_supported_alternatives() {
+        let diagnostic = MetaPropertyChanges::convert(
+            MetadataKind::CommonModule,
+            vec![MetaPropertyInput::new(
+                "ClientOrdinaryApplications",
+                MetaPropertyValue::Boolean(true),
+            )],
+        )
+        .unwrap_err();
+
+        assert_eq!(diagnostic.code, MetaDiagnosticCode::InvalidArguments);
+        assert_eq!(
+            diagnostic.message,
+            "unknown metadata property `ClientOrdinaryApplications`; supported properties for CommonModule: Synonym, Comment, ClientManagedApplication, ClientOrdinaryApplication, ExternalConnection, Global, Privileged, ReturnValuesReuse, Server, ServerCall"
+        );
+        assert_eq!(
+            diagnostic.field.as_deref(),
+            Some("values.ClientOrdinaryApplications")
+        );
     }
 
     #[test]
