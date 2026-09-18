@@ -4,12 +4,12 @@
 
 Пути в обоих столбцах даны от корня репозитория. Применимые правила ищите
 в `arch/rules/` по предмету задачи, исходникам и ссылкам `check`; прочитайте
-их до выбора решения. `<группа>` и `<имя>` подставляются по имени домена
-инструмента. Сохраняйте полные пути от корня, чтобы по ним находился файл.
+их до выбора решения. Вместо `<имя>` подставьте имя навыка.
+Сохраняйте полные пути от корня, чтобы по ним находился файл.
 
 | Задача | Что читать сначала | Где менять код |
 | --- | --- | --- |
-| Новый или изменённый публичный инструмент `unica.*` | `docs/tool-surface.md`, `crates/unica-coder/src/interfaces/mcp.rs`, `tests/fixtures/acceptance/scenario-corpus.json` | `crates/unica-coder/src/application/mod.rs` (`tools()`), `crates/unica-coder/src/application/tool_contracts.rs`, `crates/unica-coder/src/application/operation_descriptors.rs`, `crates/unica-coder/src/infrastructure/native_operations/<группа>.rs`, `plugins/unica/skills/<имя>/SKILL.md` |
+| Новый или изменённый публичный инструмент `unica.*` | `docs/tool-surface.md`, `crates/unica-coder/src/interfaces/mcp.rs`, `tests/fixtures/acceptance/scenario-corpus.json` | `crates/unica-coder/src/application/v13/tool_catalog.rs`, `crates/unica-coder/src/infrastructure/daemon/v13_service.rs`, `crates/unica-coder/src/infrastructure/native_operations/apply_families/`, `plugins/unica/skills/<имя>/SKILL.md` |
 | Изменение формата XML 1С или DSL | Нужная спецификация в `plugins/unica/references/specs/` и проверяющие её фикстуры | `crates/unica-coder/src/infrastructure/native_operations/` |
 | Кеш, состояние рабочего пространства, доменные события | Код владения состоянием и ближайшие тесты в перечисленных модулях | `crates/unica-coder/src/domain/events.rs`, `crates/unica-coder/src/domain/cache.rs`, `crates/unica-coder/src/infrastructure/workspace_state.rs`, `crates/unica-coder/src/infrastructure/workspace.rs`, `crates/unica-coder/src/infrastructure/workspace_actor.rs` |
 | Скрытый сервис рабочего пространства или задание runtime | Код жизненного цикла и тесты изоляции в перечисленных модулях | `crates/unica-coder/src/infrastructure/workspace_services.rs`, `crates/unica-coder/src/infrastructure/runtime_jobs.rs` |
@@ -24,10 +24,12 @@
 вместе с четвёртой. Читайте объединение подходящих строк, а не одну самую
 похожую.
 
-Реестр, контракты и дескрипторы в application описывают вызов инструмента.
-Его поведение, разбор аргументов и чтение/запись источников обычно находятся
-в `crates/unica-coder/src/infrastructure/native_operations/<группа>.rs`.
-Изменение объявления в application само по себе не меняет обработчик.
-Реализованные режимы и ссылки на их проверки перечислены в
-`tests/fixtures/v013/tool-implementation-coverage.json`. Типизированный ответ
+Публичный каталог и схемы задаёт
+`crates/unica-coder/src/application/v13/tool_catalog.rs`. Маршрут вызова
+прослеживайте через `crates/unica-coder/src/interfaces/mcp.rs` и
+`crates/unica-coder/src/infrastructure/daemon/v13_service.rs` к обработчику.
+Семейства `apply` находятся в
+`crates/unica-coder/src/infrastructure/native_operations/apply_families/`.
+Реализацию режима подтверждают тело обработчика и содержательные проверки,
+включая `tests/fixtures/acceptance/scenario-corpus.json`. Типизированный ответ
 сам по себе не доказывает, что операция реализована.
