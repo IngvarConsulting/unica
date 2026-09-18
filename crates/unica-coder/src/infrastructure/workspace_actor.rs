@@ -5403,10 +5403,7 @@ pub(crate) mod tests {
         );
         assert!(error.contains("recovery"), "{error}");
         assert_eq!(service.machine_state_for_test(), machine_before);
-        assert!(
-            moved.exists(),
-            "identity-bound recovery evidence was erased"
-        );
+        assert_eq!(std::fs::read(&moved).unwrap(), b"before");
         fixture.cleanup();
     }
 
@@ -5669,7 +5666,7 @@ pub(crate) mod tests {
 
         assert_eq!(result.cleanup_diagnostics().len(), 1);
         assert!(moved.exists());
-        assert!(fixture
+        let error = fixture
             .actor
             .admit_apply(
                 &binding,
@@ -5678,7 +5675,17 @@ pub(crate) mod tests {
                 ProviderDeadline::from_budget(Duration::from_secs(5)),
                 &CancellationToken::new(),
             )
-            .is_err());
+            .err()
+            .expect("cleanup residue must consume the next admission's entry budget");
+        assert!(
+            matches!(
+                &error,
+                super::ApplyAdmissionError::Other(message)
+                    if message == "retained source revision entry limit 4 exceeded"
+                        || message == "retained source revision directory cannot be read: directory exceeds the retained enumeration entry limit"
+            ),
+            "{error}"
+        );
 
         let restart_context = context(&fixture.root);
         let restart_identity = WorkspaceIdentity::new(
@@ -5691,7 +5698,7 @@ pub(crate) mod tests {
         let restarted_binding = restarted
             .bind_provider_root("src", &fixture.roots[0])
             .unwrap();
-        assert!(restarted
+        let error = restarted
             .admit_apply(
                 &restarted_binding,
                 Some(result.rev()),
@@ -5699,7 +5706,17 @@ pub(crate) mod tests {
                 ProviderDeadline::from_budget(Duration::from_secs(5)),
                 &CancellationToken::new(),
             )
-            .is_err());
+            .err()
+            .expect("cleanup residue must consume the restarted actor's entry budget");
+        assert!(
+            matches!(
+                &error,
+                super::ApplyAdmissionError::Other(message)
+                    if message == "retained source revision entry limit 4 exceeded"
+                        || message == "retained source revision directory cannot be read: directory exceeds the retained enumeration entry limit"
+            ),
+            "{error}"
+        );
         fixture.cleanup();
     }
 
