@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -29,7 +30,7 @@ def write_source(root: Path, source: str) -> None:
 
 def run_guard(root: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["python3", str(SCRIPT_PATH), "--root", str(root)],
+        [sys.executable, str(SCRIPT_PATH), "--root", str(root)],
         text=True,
         capture_output=True,
         check=False,
@@ -52,7 +53,13 @@ class ReceiptLedgerTestSupportBoundaryTests(unittest.TestCase):
                 f"{ATTR}\n#[allow(dead_code)]\nfn probe_for_test() {{}}\n"
                 f"#[cfg(any(test, feature = \"receipt-ledger-test-support\"))]\n"
                 f"/// A seed.\npub(crate) struct Seed;\n"
-                f"{ATTR}\nimpl Seed {{}}\n",
+                f"{ATTR}\nimpl Seed {{}}\n"
+                '#[cfg(\n    feature = "receipt-ledger-test-support"\n)]\n'
+                '#[allow(\n    dead_code\n)]\nfn multiline() {}\n'
+                '/* #[cfg(feature = "receipt-ledger-test-support")]\nlet comment = true; */\n'
+                'const TEXT: &str = r#"\n#[cfg(feature = "receipt-ledger-test-support")]\nlet text = true;\n"#;\n'
+                f'macro_rules! items {{ () => {{\n{ATTR}\nfn generated() {{}}\n}}; }}\n'
+                'mod inner {\n#![cfg(feature = "receipt-ledger-test-support")]\nfn f() {}\n}\n',
             )
             result = run_guard(root)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -60,6 +67,15 @@ class ReceiptLedgerTestSupportBoundaryTests(unittest.TestCase):
     def test_statement_expression_field_and_arm_fail(self) -> None:
         cases = {
             "statement": f"fn run() {{\n    {ATTR}\n    let owns = true;\n}}\n",
+            "multiline_statement": (
+                'fn run() {\n    #[cfg(\n'
+                '        feature = "receipt-ledger-test-support"\n'
+                '    )]\n    let owns = true;\n}\n'
+            ),
+            "macro_statement": (
+                'macro_rules! run { () => {\n'
+                f'    {ATTR}\n    let owns = true;\n}}; }}\n'
+            ),
             "expression": f"fn run() {{\n    call(\n        {ATTR}\n        &self.telemetry,\n    );\n}}\n",
             "field": f"struct Runtime {{\n    {ATTR}\n    telemetry: Telemetry,\n}}\n",
             "parameter": f"fn run(\n    {ATTR} telemetry: &Telemetry,\n) {{}}\n",
@@ -73,14 +89,23 @@ class ReceiptLedgerTestSupportBoundaryTests(unittest.TestCase):
                 result = run_guard(root)
                 self.assertEqual(result.returncode, 1, f"{label}: {result.stdout}")
                 self.assertIn("not an item", result.stdout)
+                if label == "multiline_statement":
+                    self.assertIn(f"{SOURCE_PATH.as_posix()}:2:", result.stdout)
 
     def test_not_feature_is_forbidden_even_on_items(self) -> None:
+        for condition in [
+            'not(feature = "receipt-ledger-test-support")',
+            'not(\n    feature = "receipt-ledger-test-support"\n)',
+        ]:
+            with self.subTest(condition=condition), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                write_source(root, f'#[cfg({condition})]\nfn production_only() {{}}\n')
+                result = run_guard(root)
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn("forbidden", result.stdout)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            write_source(
-                root,
-                '#[cfg(not(feature = "receipt-ledger-test-support"))]\nfn production_only() {}\n',
-            )
+            write_source(root, '#![cfg(not(feature = "receipt-ledger-test-support"))]\n')
             result = run_guard(root)
             self.assertEqual(result.returncode, 1, result.stdout)
             self.assertIn("forbidden", result.stdout)
@@ -94,6 +119,7 @@ class ReceiptLedgerTestSupportBoundaryTests(unittest.TestCase):
             )
             result = run_guard(root)
             self.assertEqual(result.returncode, 1, result.stdout)
+            self.assertIn("forbidden", result.stdout)
 
 
 if __name__ == "__main__":
