@@ -42,6 +42,53 @@ A form module holds client and server code in one file, and the directive on eac
 6. Apply module changes with `unica.apply`, one verifiable step at a time, giving every new procedure exactly one directive.
 7. Verify statically with `unica.check` on the module node (test runs are outside the v0.13 surface), and require separate evidence for runtime behavior and opening the affected form.
 
+## Command Availability
+
+When a handler must disable, lock, or re-enable a form command in the UI, do not
+write `Команды[ИмяКоманды].Доступность`: the form command object is not the UI
+element whose availability is shown to the user. Inspect the form first with
+`unica.view` using its qualified `at` address
+(CTR.SOURCE.LOGICAL-NODE-VIEW-SHAPE). Example calls for the form and its item
+collection:
+
+```json
+{"name": "unica.view", "arguments": {"at": "main:Catalog.Номенклатура.Form.ФормаЭлемента"}}
+```
+
+```json
+{"name": "unica.view", "arguments": {"at": "main:Catalog.Номенклатура.Form.ФормаЭлемента.Item"}}
+```
+
+A node returns `props` and `branches`; a collection page returns `items` with
+`at` addresses. Follow all nested `Item` branches using their returned addresses
+and all pages using the returned `cursor`, keeping the address and read parameters.
+The current view exposes only `tag`, `title`, `visible`, `enabled`, and `readOnly`
+in an item's `props` (`title` is `null` when no distinct title is set).
+
+To establish a link, the item's `CommandName` must match
+`Form.Command.<ИмяКоманды>` or the relevant standard-command reference.
+However, the current view does not expose `CommandName` or `binding`: the item
+tree alone cannot prove command links or that every linked item has been found.
+Do not guess links from names or titles. If the complete set of links is unconfirmed, report a
+**Unica MCP contract gap**: item reads lack command bindings; list the candidates
+and do not generate BSL with unconfirmed item names.
+
+Once links are confirmed, set availability on every related item:
+
+```bsl
+Элементы[ИмяЭлемента].Доступность = Ложь;
+```
+
+If the same command is rendered by a main command bar button, table command bar
+button, context-menu item, group button, or submenu item, update all of them or
+state that the form must be inspected further before code is generated. For table
+part standard commands, check the table's `ТолькоПросмотр` property first
+(`readOnly` in the table node's `props`):
+read-only tables usually let the platform block add, copy, delete, and move-row
+commands without duplicate manual code. Add manual blocking mainly for custom
+buttons or menu items whose handlers can still change table rows, prices,
+discounts, VAT, sorting, selection, loading, filling, or recalculation.
+
 ## Design rules
 
 - Do not branch with `#Если Сервер` or `#Если Клиент` inside a `КлиентСервер` common module — the execution context cannot be determined reliably there (std439, АПК:547). Split into `Клиент` and `Сервер` modules with the same function name and keep the shared part in `КлиентСервер`.
