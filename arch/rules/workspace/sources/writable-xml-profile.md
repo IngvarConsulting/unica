@@ -6,6 +6,7 @@ check:
   - crates/unica-coder/src/application/mod.rs::entity_spelled_supported_format_is_invalid_at_the_public_boundary
   - crates/unica-coder/src/application/mod.rs::numeric_equivalent_noncanonical_format_warns_on_read_and_blocks_public_mutator
   - crates/unica-coder/src/infrastructure/native_operations/v13_analysis.rs::newer_configuration_root_leads_with_the_format_warning
+  - tests/ci/test_acceptance_scenarios.py::AcceptanceCorpusRunTests.test_every_wire_answers_its_frozen_classes
 ---
 
 # Для редактирования нужен точный формат выгрузки
@@ -22,3 +23,7 @@ XML-сущностей.
 
 О совместимости при чтении сообщает каноническая проверка узла `unica.check`,
 а не сам читатель исходников.
+Для выгрузки `2.21` это предупреждение `platformVersionUnsupported`.
+Корень без `version` считается форматом `1.0` и получает предупреждение
+`formatMigrationAvailable`. Предварительный `apply` над такими исходниками
+отказывает с `invalid_source` и указывает несовместимый формат владельца.
