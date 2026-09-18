@@ -4773,18 +4773,25 @@ struct ActorLogicalReadLease {"#,
             );
         }
 
+        let current = call(
+            ToolIdentity::View,
+            serde_json::json!({"at": "main:Catalog.Bare"}),
+        );
+        assert!(current.ok, "{current:?}");
+        let admitted_revision = current.rev.expect("view carries the admitted revision");
+        let expected_revision = "unica-source-sha256-v1:0:stale";
         let stale = call(
             ToolIdentity::Apply,
             serde_json::json!({
                 "at": "main:Catalog.Bare",
                 "ops": [{"op": "props.set", "args": {"values": {"Comment": "x"}}}],
                 "dryRun": true,
-                "ifRev": "unica-source-sha256-v1:0:stale"
+                "ifRev": expected_revision
             }),
         );
         let stale_message = stale.diagnostics[0]["message"].as_str().unwrap();
         assert!(
-            stale_message.contains("expected") && stale_message.contains("admitted"),
+            stale_message.contains(expected_revision) && stale_message.contains(&admitted_revision),
             "the conflict names both revisions for recovery: {stale_message}"
         );
 
