@@ -1567,6 +1567,97 @@ fn a_warm_cache_makes_prefetch_download_nothing() {
 }
 
 #[test]
+fn prefetch_cli_reports_success_and_artifact_disk_failures() {
+    let host = HostTarget::current().expect("supported test host");
+    let core = b"unica-runtime";
+    let core_path = format!(
+        "bin/{}/unica{}",
+        host.as_str(),
+        if cfg!(windows) { ".exe" } else { "" }
+    );
+    let engine = b"rlm-bsl-index";
+    let engine_path = format!("bin/{}/rlm-bsl-index", host.as_str());
+    let core_archive = tar_gz(&[(&core_path, core)]);
+    let engine_archive = tar_gz(&[(&engine_path, engine)]);
+    let mut manifest = manifest_with_engine(&core_archive, core, &engine_archive, engine);
+    manifest.plugin_version = env!("CARGO_PKG_VERSION").to_owned();
+    manifest.release.tag = format!("v{}", manifest.plugin_version);
+    for target in manifest
+        .artifacts
+        .get_mut("unica")
+        .unwrap()
+        .targets
+        .values_mut()
+    {
+        target.asset.url = target
+            .asset
+            .url
+            .replace("/v0.7.0/", &format!("/{}/", manifest.release.tag));
+    }
+    let core_asset = format!("unica-runtime-{}.tar.gz", host.as_str());
+    let engine_asset = format!("rlm-tools-bsl-{}.tar.gz", host.as_str());
+    let downloader = Arc::new(AssetDownloader::new(vec![
+        (&core_asset, core_archive),
+        (&engine_asset, engine_archive),
+    ]));
+    let scratch = temp_dir("prefetch-cli");
+    let cache = scratch.join("cache");
+    let plugin = scratch.join("plugin");
+    fs::create_dir_all(&plugin).unwrap();
+    fs::write(
+        plugin.join("runtime-manifest.json"),
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
+    let installer = RuntimeInstaller::new(cache.clone(), env!("CARGO_PKG_VERSION"), downloader);
+    let delivered = installer
+        .prefetch(&manifest, host, &SilentDownload)
+        .expect("warm test cache");
+    let run_cli = || {
+        std::process::Command::new(env!("CARGO_BIN_EXE_unica-bootstrap"))
+            .args(["prefetch", "--plugin-root"])
+            .arg(&plugin)
+            .env("UNICA_RUNTIME_CACHE_DIR", &cache)
+            .env("HTTPS_PROXY", "http://127.0.0.1:9")
+            .env("HTTP_PROXY", "http://127.0.0.1:9")
+            .env("NO_PROXY", "")
+            .output()
+            .expect("run prefetch CLI")
+    };
+    let output = run_cli();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(output.status.code(), Some(0), "{stderr}");
+    for item in &delivered {
+        assert!(
+            stderr.contains(&format!("{} {} cached", item.artifact, item.version)),
+            "{stderr}"
+        );
+    }
+    for item in &delivered {
+        fs::remove_dir_all(&item.root).unwrap();
+        let partial = cache.join(".partial").join(&item.artifact);
+        if partial.exists() {
+            fs::remove_dir_all(&partial).unwrap();
+        }
+        fs::write(&partial, b"a file blocks the required directory").unwrap();
+        let output = run_cli();
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(74),
+            "{}: {stderr}",
+            item.artifact
+        );
+        assert!(stderr.contains("reason: disk"), "{stderr}");
+        fs::remove_file(partial).unwrap();
+        installer
+            .ensure_artifact(&manifest, &item.artifact, host, &SilentDownload)
+            .unwrap();
+    }
+    fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
 fn an_invalid_ready_marker_makes_prefetch_report_a_download() {
     let runtime = b"unica-runtime";
     let archive = tar_gz(&[("bin/linux-x64/unica", runtime)]);
