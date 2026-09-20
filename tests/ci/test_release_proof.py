@@ -201,7 +201,7 @@ class ReleaseProofTests(unittest.TestCase):
         self.assertNotIn("guards", self.module.render_summary(report))
 
     def test_proof_holds_no_copy_of_the_surface(self) -> None:
-        # Поверхность нормирует CTR.WIRE.TOOL-SURFACE, а показывает
+        # Поверхность нормирует arch/rules/mcp/mcp-tool-profiles.md, а показывает
         # порождаемая ведомость docs/tool-surface.md. Proof читает её, а не
         # держит четвёртую копию имён (#699).
         self.assertFalse(hasattr(self.module, "NATIVE_TOOLS"))

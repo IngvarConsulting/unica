@@ -6612,10 +6612,40 @@ struct ActorLogicalReadLease {"#,
         };
 
         assert!(result.ok, "v5 run dictionary was misclassified: {result:?}");
-        assert!(!result.data.as_ref().unwrap()["operations"]
+        let catalog = crate::application::v13::tool_catalog::catalog_for(SurfaceRelease::V13)
+            .expect("canonical catalog");
+        let operations = result.data.as_ref().unwrap()["operations"]
             .as_array()
-            .unwrap()
-            .is_empty());
+            .expect("published operations");
+        let mut published = std::collections::BTreeMap::new();
+        for operation in operations {
+            let name = operation["op"].as_str().expect("operation name");
+            assert!(
+                published.insert(name, operation).is_none(),
+                "duplicate operation {name}"
+            );
+        }
+        assert_eq!(published.len(), catalog.run_dictionary.len());
+        for operation in &catalog.run_dictionary {
+            let name = operation.name();
+            let entry = published.get(name).expect("catalog operation is published");
+            assert_eq!(entry["description"], operation.description(), "{name}");
+            assert_eq!(
+                entry["argsSchema"],
+                serde_json::json!(operation.args_schema()),
+                "{name}"
+            );
+            assert_eq!(entry["execution"], operation.execution(), "{name}");
+            assert_eq!(
+                entry["effects"],
+                serde_json::json!(operation.effects()),
+                "{name}"
+            );
+            assert_eq!(entry["implemented"], operation.implemented, "{name}");
+            let preview_apply = operation.execution() == "previewApply";
+            assert_eq!(entry["previewRequired"], preview_apply, "{name}");
+            assert_eq!(entry["ifRevRequiredOnApply"], preview_apply, "{name}");
+        }
         assert_eq!(preparations.load(Ordering::SeqCst), 0);
     }
 

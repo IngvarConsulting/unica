@@ -36,7 +36,7 @@ LIFECYCLE_SCENARIOS = (
     "restart",
     "rollback",
 )
-# The public surface is normed by CTR.WIRE.TOOL-SURFACE and shown by the
+# The public surface is normed by arch/rules/mcp/mcp-tool-profiles.md and shown by the
 # ledger its producer renders from the built binary's `tools/list`. The proof
 # reads that ledger instead of keeping a copy of the names: a copy here would
 # be a second, unregistered enforcement point that a surface change could not

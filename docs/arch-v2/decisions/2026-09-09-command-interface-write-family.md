@@ -4,9 +4,6 @@ id: DEC.2026-09-09.COMMAND-INTERFACE-WRITE-FAMILY
 
 # Остаток адресации и изоляции операций интерфейса
 
-Сохранение ролевой видимости перенесено в
-[действующее правило](../../../arch/rules/workspace/command-visibility-preservation.md).
-
 Остаётся контракт пяти операций: `commandVisibility.set`,
 `commandPlacement.set`, `commandOrder.set` и `groupOrder.set` адресуются
 к `…Subsystem.<Имя>.Interface`, а `subsystemOrder.set` — к корню
