@@ -1513,42 +1513,48 @@ mod tests {
             executions: AtomicUsize::new(0),
         });
         let daemon = LiveDaemon::start(service.clone());
-        let observed = Arc::new(Mutex::new(None));
+        let observed = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&observed);
         let owner = daemon.owner();
         let router = canonical_daemon_router_observed(
             owner,
             daemon.workspace_hint.clone(),
-            Arc::new(move |key: &ReceiptKey| *sink.lock().unwrap() = Some(key.clone())),
+            Arc::new(move |key: &ReceiptKey| sink.lock().unwrap().push(key.clone())),
         );
 
-        let result = direct_result(call(&router, None));
-        let key = observed
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("receipt key observed");
+        for _ in 0..2 {
+            let result = direct_result(call(&router, None));
+            assert_eq!(
+                result
+                    .structured_content
+                    .as_ref()
+                    .and_then(|value| value["summary"].as_str()),
+                Some("executed")
+            );
+        }
+        let keys = observed.lock().unwrap().clone();
+        assert_eq!(keys.len(), 2);
+        assert_ne!(keys[0].invocation_id(), keys[1].invocation_id());
+        assert_ne!(keys[0].reserved_task_id(), keys[1].reserved_task_id());
         let mut peer = daemon.owner();
-        let recovered = peer
-            .recover_invocation_receipt_before(key, Instant::now() + Duration::from_secs(5))
-            .expect("recover after acknowledgement");
-
+        for key in keys {
+            let recovered = peer
+                .recover_invocation_receipt_before(key, Instant::now() + Duration::from_secs(5))
+                .expect("recover after acknowledgement");
+            assert!(
+                matches!(
+                    recovered,
+                    V5ServerResponse::Invocation {
+                        outcome: V5InvocationResponse::Acknowledged { .. }
+                    }
+                ),
+                "acknowledged receipt must compact to a tombstone: {recovered:?}"
+            );
+        }
         assert_eq!(
-            result
-                .structured_content
-                .as_ref()
-                .and_then(|value| value["summary"].as_str()),
-            Some("executed")
-        );
-        assert_eq!(service.executions.load(Ordering::SeqCst), 1);
-        assert!(
-            matches!(
-                recovered,
-                V5ServerResponse::Invocation {
-                    outcome: V5InvocationResponse::Acknowledged { .. }
-                }
-            ),
-            "acknowledged receipt must compact to a tombstone: {recovered:?}"
+            service.executions.load(Ordering::SeqCst),
+            2,
+            "each new call executes once; recovery does not execute it again"
         );
         drop(peer);
         drop(router);

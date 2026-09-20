@@ -1,0 +1,15 @@
+---
+id: INV.APP.NEW-INVOCATION-IDENTITY
+check:
+  - crates/unica-coder/src/interfaces/daemon_router.rs::live_daemon_executes_once_and_compacts_the_acknowledged_receipt_to_a_tombstone
+---
+
+# Каждый новый вызов получает собственные идентификаторы
+
+Новый вызов через канонический frontend получает новые `invocationId`
+и `reservedTaskId`, даже если инструмент и аргументы совпадают с прошлым
+вызовом. Такой вызов выполняется самостоятельно.
+
+Проверка отправляет два одинаковых вызова через frontend в работающий демон.
+Чтение подтверждённых квитанций не повторяет исполнение. Восстановление
+потерянного ответа описано в [отдельном правиле](direct-response-recovery.md).
