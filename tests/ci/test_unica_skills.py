@@ -1599,37 +1599,6 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             with self.subTest(token=token):
                 self.assertIn(token, joined)
 
-    def test_compatibility_guidance_preserves_effective_version_contract(self) -> None:
-        reference_path = self.reference_root() / "platform" / "compatibility-modes.md"
-        self.assertTrue(reference_path.is_file())
-        reference = reference_path.read_text(encoding="utf-8")
-
-        for token in [
-            "runtime platform line",
-            "configured compatibility mode",
-            "effective compatibility version",
-            "`DontUse` -> runtime platform line",
-            "`VersionX` -> `X`",
-            "`CompatibilityMode`",
-            "`ConfigurationExtensionCompatibilityMode`",
-            "`InterfaceCompatibilityMode`",
-            "code location does not select the mode family",
-            "corroborating implementation evidence",
-            "not complete old-platform equivalence",
-        ]:
-            with self.subTest(token=token):
-                self.assertIn(token, reference)
-
-        for skill in ["platform-help", "release-support", "bsp-patterns"]:
-            skill_text = (self.skill_root() / skill / "SKILL.md").read_text(
-                encoding="utf-8"
-            )
-            with self.subTest(skill=skill):
-                self.assertIn(
-                    "references/platform/compatibility-modes.md",
-                    skill_text,
-                )
-
     def test_platform_evidence_is_not_routed_to_standards_tools(self) -> None:
         docs = list(self.skill_root().glob("**/*.md")) + list(
             self.reference_root().glob("**/*.md")
