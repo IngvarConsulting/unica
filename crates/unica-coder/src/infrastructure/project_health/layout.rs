@@ -1027,6 +1027,11 @@ mod tests {
     fn build_and_cache_are_independent_facts_for_a_nested_root() {
         let fixture = layout_fixture("src");
         fs::create_dir_all(fixture.context.workspace_root.join("src/.build/unica")).unwrap();
+        let sentinel = fixture
+            .context
+            .workspace_root
+            .join("src/.build/foreign-tool.data");
+        fs::write(&sentinel, b"keep these bytes").unwrap();
         let mut context = fixture.context.clone();
         context.cache_root = context.workspace_root.join("src/.build/unica");
 
@@ -1046,6 +1051,7 @@ mod tests {
             .facts
             .iter()
             .any(|fact| matches!(fact, ProjectHealthFact::GeneratedBuildPresent { .. })));
+        assert_eq!(fs::read(sentinel).unwrap(), b"keep these bytes");
     }
 
     #[test]

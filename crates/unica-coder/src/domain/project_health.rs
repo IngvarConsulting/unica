@@ -1430,6 +1430,35 @@ pub(crate) mod tests {
         assert_eq!(value["diagnostics"][0]["code"], "git.repository_absent");
         assert_eq!(value["diagnostics"][0]["count"], 1);
         assert!(value["diagnostics"][0]["remediation"]["commands"].is_array());
+
+        let clean = evaluate_project_health(snapshot_with(vec![], vec![])).unwrap();
+        assert!(clean.ready);
+        assert!(clean.repository_ready);
+
+        let report = evaluate_project_health(snapshot_with(
+            vec![ProjectHealthFact::GeneratedBuildPresent {
+                source_set: "main".into(),
+                path: "src/.build".into(),
+            }],
+            vec![],
+        ))
+        .unwrap();
+        let value = serde_json::to_value(report).unwrap();
+        assert_eq!(value["ready"], false);
+        assert_eq!(value["repositoryReady"], true);
+        assert_eq!(value["diagnostics"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            value["diagnostics"][0]["code"],
+            "source_set.generated_build_present"
+        );
+        assert_eq!(
+            value["diagnostics"][0]["paths"],
+            serde_json::json!(["src/.build"])
+        );
+        assert_eq!(
+            value["diagnostics"][0]["remediation"]["commands"],
+            serde_json::json!([])
+        );
     }
 
     #[test]

@@ -80,7 +80,7 @@
 - топология workspace и всех объявленных наборов исходников;
 - общий переносимый Git-контракт;
 - профиль Platform XML для Configuration и Extension;
-- фактические служебные пути Unica и физические `.build` внутри source root;
+- фактические служебные пути Unica;
 - правила `.gitignore`, `.gitattributes`, EOL индекса и рабочего дерева;
 - классификация `ConfigDumpInfo.xml` по staged blob;
 - необязательная рекомендация LFS для доказанных больших бинарных ресурсов;
@@ -276,7 +276,6 @@ Git-предупреждения из `GitTrackingAdapter` удаляются и
 | `source_set.format_invalid` | error | Признаки форматов противоречат друг другу | `ready` |
 | `source_set.format_unknown` | error | Формат нельзя доказать | `ready` |
 | `cache.inside_source_set` | error | Действующий cache root находится внутри source root | `ready` |
-| `source_set.generated_build_present` | error | В source root физически присутствует служебный `.build` | `ready` |
 
 `source_set.root_is_workspace` проверяет идентичность пути, а не только
 буквальный YAML. Автообнаруженный набор с корнем workspace нарушает то же
@@ -463,7 +462,7 @@ PR #473 владеет размещением кеша `bsl-analyzer` вне sou
 
 - буквальный `.`, `./`, нормализованный alias и symlink/reparse на workspace;
 - отсутствующий и выходящий наружу путь;
-- физический `.build` и cache внутри source root;
+- cache внутри source root;
 - корректно разделённые `src/cf`, `src/cfe`, `src/epf`, `src/erf`.
 
 ### Ignore
