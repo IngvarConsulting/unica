@@ -2024,6 +2024,27 @@ mod tests {
         let rejection = validate_apply(&prepared, &plan, &applied).unwrap_err();
 
         assert_eq!(rejection.diagnostics[0]["code"], "invalid_result");
+
+        // Правильный путь не делает ответ другой команды нашей квитанцией.
+        for dry_run in [true, false] {
+            let envelope = if dry_run {
+                preview_envelope(&output)
+            } else {
+                apply_envelope(&output)
+            };
+            parse_runner_output(prepared.operation, process(envelope.clone()), dry_run)
+                .expect("the requested runner command is accepted");
+            for other_command in ["infobase.dump", "cf.export"] {
+                let mut foreign = envelope.clone();
+                foreign["command"] = json!(other_command);
+                let rejection =
+                    parse_runner_output(prepared.operation, process(foreign), dry_run).unwrap_err();
+                assert_eq!(
+                    rejection.diagnostics[0]["code"], "invalid_result",
+                    "foreign command {other_command}, dry_run={dry_run}"
+                );
+            }
+        }
     }
 
     #[test]
