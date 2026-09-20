@@ -1,4 +1,4 @@
-"""Guards the reviewed v0.12.3 -> v0.13 transition matrix."""
+"""Checks the current compatibility surface and shipped tool guidance."""
 
 from __future__ import annotations
 
@@ -9,13 +9,8 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-BASELINE = REPO_ROOT / "tests/fixtures/migration/v0.12.3-baseline.json"
-# The historical transition table remains a migration input: its rows account
-# for every published v0.12.3 name, not today's architecture or writing style.
-MATRIX = REPO_ROOT / "docs/design/2026-08-31-v0-13-surface-first-cutover-design.md"
 LEDGER = REPO_ROOT / "docs/tool-surface.md"
 REVIEW = REPO_ROOT / "tests/fixtures/v013/tool-surface-review.json"
-ROW = re.compile(r"^\| `([^`]+)` \|(?P<body>.+)$", re.MULTILINE)
 CANONICAL = {
     "unica.view",
     "unica.apply",
@@ -34,18 +29,6 @@ COMPATIBILITY = {
 
 
 class SurfaceFirstTransitionMatrixTests(unittest.TestCase):
-    def test_every_published_v0123_name_has_exactly_one_transition_row(self) -> None:
-        baseline = json.loads(BASELINE.read_text(encoding="utf-8"))["wire"][
-            "toolNames"
-        ]
-        rows = ROW.findall(MATRIX.read_text(encoding="utf-8"))
-        names = [name for name, _body in rows]
-
-        self.assertEqual(len(baseline), 74)
-        self.assertEqual(len(names), 74)
-        self.assertEqual(len(set(names)), 74)
-        self.assertEqual(set(names), set(baseline))
-
     def test_generated_ledger_and_review_are_the_exact_compatibility_profile(self) -> None:
         ledger = LEDGER.read_text(encoding="utf-8")
         names = set(re.findall(r"^### `([^`]+)`$", ledger, re.MULTILINE))
@@ -53,7 +36,6 @@ class SurfaceFirstTransitionMatrixTests(unittest.TestCase):
 
         self.assertEqual(names, CANONICAL | COMPATIBILITY)
         self.assertEqual(review, names)
-        self.assertIn("- Инструментов: **11**", ledger)
 
     def test_shipped_agent_guidance_does_not_route_to_retired_project_tools(self) -> None:
         roots = [

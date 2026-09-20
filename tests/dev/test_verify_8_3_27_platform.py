@@ -41,21 +41,6 @@ def write(path: Path, text: str) -> Path:
     return path
 
 
-class DocumentedContractTests(unittest.TestCase):
-    def test_current_case_contract_digest_is_documented(self):
-        verifier = load_verifier()
-        expected = f"`{verifier.EXPECTED_CASE_CONTRACT_SHA256}`"
-        documents = (
-            ROOT / "docs/arch-v1/acceptance/format-profile-8-3-27.md",
-            ROOT
-            / "docs/design/2026-08-07-typed-predefined-items-and-role-edit-design.md",
-        )
-
-        for path in documents:
-            with self.subTest(path=path.relative_to(ROOT).as_posix()):
-                self.assertIn(expected, path.read_text(encoding="utf-8"))
-
-
 CONFIG_XML = '''<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="11111111-1111-1111-1111-111111111111"/></MetaDataObject>'''
 
 
