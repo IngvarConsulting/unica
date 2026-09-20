@@ -517,21 +517,6 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `doc-assert` — `tests/ci/test_unica_skills.py`
 - **Scope:** source, packaged, runtime
 
-### INV-MCP-PROJECT-READINESS — Готовность проекта публикуется двумя независимыми контурами
-
-- **Rule:** `unica.project.status` остаётся единственной полной читающей
-  инспекцией проекта и при достоверном снимке возвращает в типизированных
-  `data` независимые `ready` и `repositoryReady`, полные общие и адресные по
-  уникально адресуемому набору `checks[]`, а также `diagnostics[]` с `ok=true`
-  даже при найденных проблемах проекта, тогда как
-  `unica.project.map` возвращает только карту наборов исходников и не запускает
-  проверки Git.
-- **Decision:** ADR-0060
-- **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
-- **Check:** `ci-test` — `tests/ci/test_unica_mcp_smoke.py`
-- **Check:** `doc-assert` — `tests/ci/test_project_health_contract.py`
-- **Scope:** source, packaged, runtime
-
 ### INV-MCP-PREVIEW-MUTATION-ONLY — Предпросмотр принадлежит мутации
 
 - **Rule:** `ToolExecution::Read` не публикует и не принимает `dryRun` и
