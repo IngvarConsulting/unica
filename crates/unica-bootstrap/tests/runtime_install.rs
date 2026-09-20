@@ -559,23 +559,56 @@ fn seed_installation(cache: &Path, artifact: &str, version: &str, host: HostTarg
 #[test]
 fn collecting_keeps_the_newest_versions_of_each_artifact() {
     let cache = temp_dir("collect-keeps");
-    for version in ["1.0.0", "1.1.0", "1.2.0"] {
-        seed_installation(&cache, "rlm-tools-bsl", version, HostTarget::LinuxX64);
-        // Отметки времени должны различаться, иначе «свежайшие» неопределимы.
-        std::thread::sleep(std::time::Duration::from_millis(20));
+    for (version, ready_seconds, directory_seconds) in [
+        ("1.0.0", 300, 100),
+        ("1.1.0", 100, 200),
+        ("1.2.0", 200, 300),
+    ] {
+        let root = seed_installation(&cache, "rlm-tools-bsl", version, HostTarget::LinuxX64);
+        // Время готовности намеренно не совпадает с порядком имён и каталогов.
+        for (path, seconds) in [
+            (root.join(".ready.json"), ready_seconds),
+            (root.parent().unwrap().to_path_buf(), directory_seconds),
+        ] {
+            let mut options = fs::OpenOptions::new();
+            options.read(true).write(true);
+            if path.is_dir() {
+                options.write(false);
+                #[cfg(windows)]
+                {
+                    use std::os::windows::fs::OpenOptionsExt;
+                    options.custom_flags(0x0200_0000); // FILE_FLAG_BACKUP_SEMANTICS
+                    options.access_mode(0x0100); // FILE_WRITE_ATTRIBUTES for SetFileTime
+                }
+            }
+            options
+                .open(path)
+                .unwrap()
+                .set_times(fs::FileTimes::new().set_modified(
+                    std::time::SystemTime::UNIX_EPOCH
+                        + std::time::Duration::from_secs(1_600_000_000 + seconds),
+                ))
+                .expect("set installation time");
+        }
     }
-    seed_installation(&cache, "unica", "0.13.0", HostTarget::LinuxX64);
-
-    RuntimeInstaller::collect(&cache, 2).expect("collect");
+    let runtime = b"unica-runtime";
+    let archive = tar_gz(&[("bin/linux-x64/unica", runtime)]);
+    let installed = RuntimeInstaller::new(
+        cache.clone(),
+        "0.7.0",
+        Arc::new(FakeDownloader::new(archive.clone())),
+    )
+    .ensure(&manifest(&archive, runtime), HostTarget::LinuxX64)
+    .expect("install core and collect old engines");
 
     let kept = |artifact: &str, version: &str| cache.join(artifact).join(version).is_dir();
     assert!(
-        !kept("rlm-tools-bsl", "1.0.0"),
+        !kept("rlm-tools-bsl", "1.1.0"),
         "самая старая версия удаляется"
     );
-    assert!(kept("rlm-tools-bsl", "1.1.0"));
+    assert!(kept("rlm-tools-bsl", "1.0.0"));
     assert!(kept("rlm-tools-bsl", "1.2.0"));
-    assert!(kept("unica", "0.13.0"), "чужой артефакт не задет");
+    assert_eq!(fs::read(installed.entrypoint).unwrap(), runtime);
     fs::remove_dir_all(&cache).ok();
 }
 
@@ -617,6 +650,16 @@ fn collecting_does_not_touch_the_lock_and_transaction_areas() {
     // Служебные каталоги кеша артефактами не являются, и удалять их — потерять
     // блокировку у соседнего процесса.
     let cache = temp_dir("collect-service");
+    let mut service_files = Vec::new();
+    for area in [".locks", ".transactions", ".partial", ".attempts"] {
+        for entry in ["a", "b", "c"] {
+            let directory = cache.join(area).join(entry);
+            fs::create_dir_all(&directory).unwrap();
+            let path = directory.join("retained-data");
+            fs::write(&path, b"unfinished work").unwrap();
+            service_files.push(path);
+        }
+    }
     fs::create_dir_all(cache.join(".locks")).expect("locks");
     // Двух незавершённых транзакций при пределе в одну достаточно, чтобы отличить
     // пропуск служебных каталогов от их случайного попадания под лимит.
@@ -643,6 +686,12 @@ fn collecting_does_not_touch_the_lock_and_transaction_areas() {
 
     RuntimeInstaller::collect(&cache, 1).expect("collect");
 
+    for path in service_files {
+        assert_eq!(
+            fs::read(&path).expect("service data survives"),
+            b"unfinished work"
+        );
+    }
     assert!(cache.join(".locks").is_dir());
     assert!(cache.join(".transactions").join("in-flight-a").is_dir());
     assert!(cache.join(".transactions").join("in-flight-b").is_dir());
