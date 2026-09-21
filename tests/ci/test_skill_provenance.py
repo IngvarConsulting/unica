@@ -441,15 +441,7 @@ class SkillProvenanceTests(unittest.TestCase):
                 owner = scope_data["ownerSkill"]
                 self.assertEqual(entries[owner]["parityBaselineCommit"], commit)
                 self.assertNotEqual(entries[owner]["baselineCommit"], commit)
-                review = json.loads(
-                    (
-                        self.reviews_dir()
-                        / f"{scope_data['reviewId']}.json"
-                    ).read_text(encoding="utf-8")
-                )
-                self.assertEqual(review["reviewStatus"], "reviewed")
-                self.assertTrue(review["applied"])
-                self.assertEqual(review["targetCommit"], commit)
+
 
         self.assertEqual(
             upstreams["ai-rules-1c"]["baselineCommit"],

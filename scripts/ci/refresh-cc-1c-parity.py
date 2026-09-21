@@ -40,7 +40,6 @@ SNAPSHOT_NAME = "cc-1c-skills"
 BASELINE_NAME = "donor-baseline.json"
 RELATIONS_NAME = "donor-relations.json"
 PROVENANCE_RELATIVE = Path("docs/provenance/skill-upstreams.json")
-REVIEWS_RELATIVE = Path("docs/provenance/reviews")
 
 
 class RefreshError(RuntimeError):
@@ -79,11 +78,11 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(review_path)
         else:
-            tracked_review = apply_refresh(
+            applied_review = apply_refresh(
                 repo_root=args.repo_root.resolve(),
                 review_path=args.review.resolve(),
             )
-            print(tracked_review)
+            print(applied_review)
         return 0
     except (
         RefreshError,
@@ -147,7 +146,7 @@ def prepare_refresh(
     }
 
     refresh_root = (
-        repo_root / ".build" / "donor-parity-refresh" / review_id
+        repo_root / ".session-temp" / "donor-parity-refresh" / review_id
     )
     candidate_root = refresh_root / "candidate"
     staging_root = refresh_root / "candidate.tmp"
@@ -233,7 +232,6 @@ def prepare_refresh(
         target_commit=target_commit,
         affected_skills=affected_skills,
         old_baseline=old_baseline,
-        review_id=review_id,
     )
     baseline_errors = contract.validate_baseline(
         candidate_snapshot, candidate_baseline, candidate_provenance
@@ -457,7 +455,10 @@ def apply_refresh(*, repo_root: Path, review_path: Path) -> Path:
 
     review_id = review.get("reviewId")
     _validate_review_id(review_id)
-    tracked_review = repo_root / REVIEWS_RELATIVE / f"{review_id}.json"
+    applied_review = (
+        repo_root / ".session-temp" / "donor-parity-refresh"
+        / review_id / "applied-review.json"
+    )
     published_review = copy.deepcopy(review)
     published_review["applied"] = True
     _publish_atomically(
@@ -468,10 +469,10 @@ def apply_refresh(*, repo_root: Path, review_path: Path) -> Path:
             baseline_path: baseline,
             relations_path: registry,
             provenance_path: provenance,
-            tracked_review: published_review,
+            applied_review: published_review,
         },
     )
-    return tracked_review
+    return applied_review
 
 
 def build_baseline(
@@ -481,7 +482,6 @@ def build_baseline(
     target_commit: str,
     affected_skills: set[str],
     old_baseline: dict[str, Any],
-    review_id: str,
 ) -> dict[str, Any]:
     repository = upstream.get("repository")
     tracking_ref = upstream.get("trackingRef")
@@ -555,11 +555,6 @@ def build_baseline(
                 case_scopes_by_baseline_scope.get(scope, set())
             ),
             "acceptedCommit": commit,
-            "reviewId": (
-                review_id
-                if owner in affected_skills
-                else old_scope.get("reviewId")
-            ),
             "contentDigest": contract.scope_content_digest(
                 file_records, scope
             ),
