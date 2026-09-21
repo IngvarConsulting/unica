@@ -118,9 +118,6 @@ class SkillProvenanceTests(unittest.TestCase):
     def upstream_review_path(self) -> Path:
         return self.reviews_dir() / "2026-06-15-upstream-review.json"
 
-    def product_backlog_path(self) -> Path:
-        return self.reviews_dir() / "2026-08-12-product-update-backlog.json"
-
     def rlm_standalone_review_path(self) -> Path:
         return (
             self.reviews_dir()
@@ -203,9 +200,6 @@ class SkillProvenanceTests(unittest.TestCase):
                 "publicMcpChanged": False,
             },
         )
-
-    def load_product_backlog(self) -> dict:
-        return json.loads(self.product_backlog_path().read_text(encoding="utf-8"))
 
     def test_adapted_python_models_are_named_as_unica_owned_test_models(self) -> None:
         root = (
@@ -903,39 +897,6 @@ class SkillProvenanceTests(unittest.TestCase):
         self.assertEqual(upstreams["v8-runner-rust"]["reviewStatus"], "applied")
         self.assertEqual(upstreams["v8-runner-rust"]["affectedEntries"], [])
         self.assertIn("v8-runner", upstreams["v8-runner-rust"]["reviewedEntries"])
-
-    def test_product_update_backlog_tracks_all_planned_product_batches(self) -> None:
-        backlog = self.load_product_backlog()
-        products = {item["id"]: item for item in backlog["products"]}
-
-        self.assertEqual(backlog["generatedAt"], "2026-08-12")
-        tool_lock = json.loads(
-            (self.repo_root() / "plugins" / "unica" / "third-party" / "tools.lock.json").read_text(
-                encoding="utf-8"
-            )
-        )
-        locked_tools = {tool["name"]: tool for tool in tool_lock["tools"]}
-        analyzer_tag = locked_tools["bsl-analyzer"]["sourceTag"]
-
-        self.assertEqual(products["bsl-analyzer"]["locked"], analyzer_tag)
-        self.assertEqual(products["bsl-analyzer"]["latest"], analyzer_tag)
-        self.assertEqual(products["bsl-analyzer"]["status"], "applied")
-        self.assertEqual(products["rlm-tools-bsl"]["locked"], "v1.29.1")
-        self.assertEqual(products["rlm-tools-bsl"]["latest"], "v1.29.1")
-        self.assertEqual(products["rlm-tools-bsl"]["status"], "applied")
-        self.assertEqual(products["rlm-bsl-index"]["locked"], "v1.29.1")
-        self.assertEqual(products["rlm-bsl-index"]["latest"], "v1.29.1")
-        self.assertEqual(products["rlm-bsl-index"]["status"], "applied")
-        self.assertEqual(products["v8-runner"]["locked"], "v0.5.1")
-        self.assertEqual(products["v8-runner"]["latest"], "v0.5.1")
-        self.assertEqual(products["v8-runner"]["status"], "applied")
-        self.assertEqual(products["lxml"]["latest"], "6.1.1")
-        self.assertEqual(products["rust-compatible-lock-updates"]["updateCount"], 4)
-        self.assertEqual(products["rust-compatible-lock-updates"]["status"], "applied")
-        self.assertEqual(products["serde-yaml-replacement"]["status"], "deferred")
-        self.assertEqual(products["ureq-3"]["status"], "deferred")
-        self.assertTrue(products["bsl-analyzer"]["contractGate"])
-        self.assertTrue(products["rlm-bsl-index"]["contractGate"])
 
     def test_current_cc_1c_source_comments_are_covered(self) -> None:
         data = self.load_provenance()

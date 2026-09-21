@@ -280,6 +280,15 @@ Two things the gate does not stop, and you should not attempt:
   the prerelease would make the stable release look like a rollback, and both
   `stage` and `promote` would refuse it — the release after it could not ship.
 
+## Explicit runtime verification
+
+`unica-bootstrap verify` installs the runtime if needed, checks the skill
+package and probes the MCP protocol and tool list. The ordinary bootstrap
+launch does not repeat this probe. The command currently passes a 20-second
+waiting budget; this is not a deadline for the whole installation and all
+protocol exchanges. See the [verification contract](../arch/rules/distribution/bootstrap-protocol-verification.md)
+for the checks and their limits.
+
 ## One-way doors
 
 Two things can never be taken back once published, because other artifacts
