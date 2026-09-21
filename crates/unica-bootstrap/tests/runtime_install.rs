@@ -613,6 +613,44 @@ fn collecting_keeps_the_newest_versions_of_each_artifact() {
 }
 
 #[test]
+fn collecting_failure_does_not_fail_a_successful_installation() {
+    struct CacheGuard(PathBuf);
+    impl Drop for CacheGuard {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    let cache = CacheGuard(temp_dir("collect-failure"));
+    for version in ["1.0.0", "1.1.0", "1.2.0"] {
+        seed_installation(&cache.0, "rlm-tools-bsl", version, HostTarget::LinuxX64);
+        // A directory cannot be opened as a writable delivery-lock file.
+        // Block every candidate so the failure does not depend on mtime order.
+        fs::create_dir_all(
+            cache
+                .0
+                .join(".locks")
+                .join(format!("rlm-tools-bsl-{version}-linux-x64.lock")),
+        )
+        .expect("block obsolete engine lock");
+    }
+    RuntimeInstaller::collect(&cache.0, 2).expect_err("collection must actually fail");
+
+    let runtime = b"unica-runtime";
+    let archive = tar_gz(&[("bin/linux-x64/unica", runtime)]);
+    let installed = RuntimeInstaller::new(
+        cache.0.clone(),
+        "0.7.0",
+        Arc::new(FakeDownloader::new(archive.clone())),
+    )
+    .ensure(&manifest(&archive, runtime), HostTarget::LinuxX64)
+    .expect("cache collection failure must not cancel the installed core");
+
+    assert_eq!(fs::read(installed.entrypoint).unwrap(), runtime);
+    RuntimeInstaller::collect(&cache.0, 2)
+        .expect_err("the same collection fault must still be present after installation");
+}
+
+#[test]
 fn collecting_does_not_remove_a_version_owned_by_an_active_delivery_lock() {
     let cache = temp_dir("collect-active-lock");
     for version in ["1.0.0", "1.1.0"] {
