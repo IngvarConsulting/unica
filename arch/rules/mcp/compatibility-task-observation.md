@@ -7,6 +7,7 @@ check:
   - crates/unica-coder/src/interfaces/mcp.rs::v13_compatibility_task_tools_are_profile_gated_durable_and_replay_free
   - crates/unica-coder/src/interfaces/mcp.rs::compatibility_get_and_cancel_do_not_replace_open_frontend_cutoff_with_125ms
   - crates/unica-coder/src/interfaces/mcp.rs::compatibility_get_and_cancel_share_one_absolute_cutoff_across_connect_and_exchange
+gap: https://github.com/IngvarConsulting/unica/issues/928
 ---
 
 # Compatibility Task возвращает сохранённое состояние без нового исполнения
@@ -30,6 +31,10 @@ check:
 он дополнительно ограничен `waitMs + 125 мс`; более ранний срок хоста
 сильнее. Прошедшее время уменьшает ожидание демона. Поздний ответ
 не публикуется, а его соединение закрывается для повторного использования.
+Срок проверяется и после разбора ответа: если он истёк при разборе,
+корректность полученных данных уже не меняет причину отказа.
+Проверка этого случая для корректного и некорректного ответа пока отсутствует;
+разрыв учтён в `gap`.
 
 Проверка сочетает MCP-вызовы с управляемыми обработчиками и сокетами
 с настоящим перезапуском runtime v5 поверх сохранённого состояния.
