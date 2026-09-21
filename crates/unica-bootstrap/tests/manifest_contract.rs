@@ -67,6 +67,26 @@ fn valid_manifest_selects_the_requested_target() {
 }
 
 #[test]
+fn loading_a_manifest_rejects_an_unknown_artifact_role() {
+    for role in ["core", "engine", "future-resource"] {
+        let mut value = fixture();
+        value["artifacts"]["unica"]["role"] = serde_json::json!(role);
+        let path = std::env::temp_dir().join(format!("unica-role-{}.json", uuid::Uuid::new_v4()));
+        std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        let result = RuntimeManifest::load(&path);
+        std::fs::remove_file(&path).unwrap();
+
+        if role == "future-resource" {
+            let error = result.expect_err("an unknown role must not get a default meaning");
+            assert_eq!(error.failure(), Failure::Configuration);
+        } else {
+            result
+                .expect("known role must deserialize; artifact placement is validated separately");
+        }
+    }
+}
+
+#[test]
 fn manifest_rejects_plugin_version_mismatch_before_target_selection() {
     let manifest = parse(fixture());
 

@@ -144,11 +144,11 @@ release they would be a third copy of facts already in `tools.lock.json` at the
 source tag and in the published plugin's `runtime-manifest.json`, naming an asset
 this release does not carry.
 
-Engines are **named, not republished**. Their bytes live in `unica-toolchain`
-releases, and the runtime manifest points at them by address and SHA-256; the
-plugin release used to carry a second copy, 439 MB of it per release, for no
-gain. The historical rationale is preserved in
-[`DEC.2026-08-20.ENGINES-COME-FROM-THE-TOOLCHAIN`](arch-v2/decisions/2026-08-20-engines-come-from-the-toolchain.md).
+The plugin release references engine assets by URL and SHA-256 without
+republishing them. `v8-runner` comes from releases of
+`IngvarConsulting/v8-runner-rust`; other engines come from
+`IngvarConsulting/unica-toolchain`, as specified by the
+[engine source rule](../arch/rules/distribution/engine-release-origins.md).
 
 That splits verification three ways, and each part is a job in the build:
 
