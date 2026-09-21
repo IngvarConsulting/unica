@@ -60,20 +60,12 @@ codex plugin remove unica@unica
 codex plugin marketplace remove unica
 ```
 
-## DCS naming migration
+## Data composition schemas
 
-The release containing [issue #158](https://github.com/IngvarConsulting/unica/issues/158)
-atomically replaces the transliterated `skd` domain with the official
-**Data Composition System (`dcs`)** term. There is no deprecated alias:
-
-| Removed contract | Canonical contract |
-| --- | --- |
-| `unica.skd.compile` | `unica.dcs.compile` |
-| `unica.skd.edit` | `unica.dcs.edit` |
-| `unica.skd.info` | `unica.dcs.info`, itself later retired for `unica.view` |
-| `skd-compile/edit/info` | `dcs-compile/edit` |
-
-The operation arguments and `DataCompositionSchema` XML format are unchanged.
+Use [dcs-compile](skills/dcs-compile/SKILL.md) to create a schema and
+[dcs-edit](skills/dcs-edit/SKILL.md) to modify it. Both use `unica.apply`
+with preview and the resulting revision for application. The XML format is
+described in the [DataCompositionSchema specification](references/specs/1c-dcs-spec.md).
 
 ## Read-only output migration
 
