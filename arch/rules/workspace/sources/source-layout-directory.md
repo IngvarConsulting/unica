@@ -5,7 +5,7 @@ check:
   - crates/unica-coder/src/infrastructure/v13_find.rs::a_file_path_resolves_back_to_its_object_address
   - crates/unica-coder/src/infrastructure/v13_find.rs::a_synonym_resolves_to_its_object
   - crates/unica-coder/src/infrastructure/v13_find.rs::the_directory_holds_objects_and_never_code_symbols_or_inner_nodes
-  - crates/unica-coder/src/infrastructure/v13_find.rs::the_directory_refuses_to_grow_past_its_entry_bound
+  - crates/unica-coder/src/infrastructure/v13_find.rs::the_directory_refuses_to_exceed_resource_bounds
   - crates/unica-coder/src/infrastructure/v13_find.rs::the_directory_observes_cancellation
   - crates/unica-coder/src/infrastructure/v13_find.rs::the_directory_observes_its_operation_deadline
   - crates/unica-coder/src/infrastructure/v13_find.rs::an_external_root_publishes_its_owner_and_never_the_dump_sidecar
@@ -26,6 +26,7 @@ check:
 `ConfigDumpInfo.xml` и вымышленный путь выгрузки конфигурации не выдаются
 за внешний объект.
 
-Построение справочника ограничено числом записей. Превышение даёт
+Построение справочника ограничено числом наборов исходников, числом записей
+и суммарным объёмом фактов. Превышение даёт
 `provider_limit_exceeded`, отмена — `cancelled`, истечение переданного
 срока — `deadline_exceeded`.
