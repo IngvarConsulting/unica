@@ -2,7 +2,6 @@
 
 - Snapshot date: `2026-08-03`
 - Scope: screening only; no external materials transferred
-- Governing design: `docs/design/2026-08-03-issue-186-research-slicing-design.md`
 
 ## Method
 
