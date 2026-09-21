@@ -271,8 +271,8 @@ impl DocumentationProvider for V8StdDocumentationProvider {
         }
         let query = normalized_query(&request.query);
         let cache_key = (self.endpoint.clone(), query.clone(), request.limit);
-        // Кеш читается ПОСЛЕ политики и отмены: запрет отвечает запретом, а
-        // не вчерашним успехом (ADR-0037 п.5).
+        // Запрет поставщика действует и на кеш (INV.APP.DOCUMENTATION-DENIED-CACHE).
+        // Отмена также проверена до чтения кеша.
         let cached_body = {
             let cache = V8STD_SEARCH_CACHE
                 .lock()
@@ -542,11 +542,15 @@ mod tests {
     }
 
     /// Запрет политики не читает кеш: `policy-denied` означает «обращение
-    /// запрещено», а не «ответим вчерашним» (ADR-0037 п.5).
+    /// запрещено», включая уже полученные данные.
     #[test]
     fn policy_deny_does_not_answer_from_the_search_cache() {
         let (mut provider, http) = provider(NetworkAccess::Allow, Ok(LIVE_BODY.to_string()));
-        provider.search(&request(), &context());
+        let warm = provider.search(&request(), &context());
+        assert!(
+            !warm[0].hits.is_empty(),
+            "the cached response contains results"
+        );
         assert_eq!(http.calls.load(Ordering::SeqCst), 1, "кеш прогрет");
         provider.network = NetworkAccess::Deny;
         let denied = provider.search(&request(), &context());
@@ -560,6 +564,10 @@ mod tests {
             ),
             "запрет не подменяется кешированным успехом: {:?}",
             denied[0].status
+        );
+        assert!(
+            denied[0].hits.is_empty(),
+            "denied provider must not expose cached hits"
         );
         assert_eq!(http.calls.load(Ordering::SeqCst), 1, "сеть не тронута");
     }
