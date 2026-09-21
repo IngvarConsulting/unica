@@ -1274,7 +1274,7 @@ class ProductContractTests(unittest.TestCase):
         )
 
     def test_the_catalog_moves_only_behind_green_consumer_installs(self) -> None:
-        """The linear pipeline replaces the warden's greenness check (ADR-0068).
+        """The linear pipeline replaces the warden's greenness check.
 
         The marketplace default branch has no protection rules, so the job
         ordering here is the only thing standing between unverified bytes and

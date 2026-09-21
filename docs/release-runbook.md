@@ -49,7 +49,7 @@ unverified today. What keeps the tag trustworthy is write access and the
 repository's tag protection rules; keep those protections on. The marketplace
 tag is created by the pipeline: it is the ref the catalog resolves, and
 nothing verifies its signature — the runbook used to ask for a second signed
-tag, and ADR-0068 retired it.
+tag. The linear pipeline removed that wait.
 
 There is no scheduler and no waiting window: a failed stage is a red run
 attached to the release tag, and the catalog stays where it was. Rerunning the

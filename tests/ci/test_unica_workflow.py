@@ -868,7 +868,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertGreaterEqual(all_scripts(self.publish).count("gh auth setup-git"), 2)
 
     def test_publication_is_one_linear_pass_ordered_by_needs(self) -> None:
-        """ADR-0068: stage → tag → verify → promote, no pull requests, no warden.
+        """Publication order: stage → tag → verify → promote, no pull requests, no warden.
 
         The order is the contract: the anchor tag exists before the install
         checks run, and the catalog moves only behind their green result. A

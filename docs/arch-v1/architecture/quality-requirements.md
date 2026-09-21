@@ -325,7 +325,7 @@
   остановиться молча, не существует: отказ любой ступени — красный прогон,
   привязанный к тегу релиза, каталог остаётся на прежней версии, и повторный
   запуск всего конвейера идемпотентно продолжает публикацию.
-- **Decision:** ADR-0076, ADR-0068
+- **Decision:** ADR-0076
 - **Check:** `ci-test` — `tests/ci/test_unica_workflow.py`
 - **Check:** `doc-assert` — `tests/ci/test_product_contracts.py`
 - **Scope:** release
