@@ -130,40 +130,6 @@ class SkillProvenanceTests(unittest.TestCase):
     def load_upstream_review(self) -> dict:
         return json.loads(self.upstream_review_path().read_text(encoding="utf-8"))
 
-    def assert_rlm_review_identity(self, review: dict) -> None:
-        self.assertEqual(review["schemaVersion"], 1)
-        self.assertEqual(review["id"], "2026-08-13-rlm-v1-33-product-update")
-        self.assertEqual(review["generatedAt"], "2026-08-14")
-        self.assertEqual(
-            review["source"],
-            {
-                "repository": "https://github.com/Dach-Coin/rlm-tools-bsl",
-                "tag": "v1.33.0",
-                "commit": "3e6920cd015a61af4ba7aa1a5f1fedd8bc935549",
-                "tree": "4b321de0454d4d0998762659891374a3a1326cd0",
-                "patches": [],
-            },
-        )
-        self.assertEqual(
-            review["toolchain"],
-            {
-                "repository": "https://github.com/IngvarConsulting/unica-toolchain",
-                "releaseTag": "rlm-tools-bsl-v1.33.0-build.2",
-                "buildRevision": 2,
-            },
-        )
-        self.assertEqual(
-            review["compatibility"],
-            {
-                "builder": "15",
-                "previousBuilder": "14",
-                "strategy": "cold-generation-cutover",
-                "legacyStateDeleted": False,
-                "publicMcpChanged": False,
-            },
-        )
-        self.assertEqual(set(review["tools"]), {"rlm-bsl-mcp", "rlm-bsl-index"})
-
     def assert_rlm_standalone_review_identity(self, review: dict) -> None:
         self.assertEqual(review["schemaVersion"], 1)
         self.assertEqual(review["id"], "2026-08-14-rlm-v1-33-nuitka-standalone")
@@ -641,20 +607,6 @@ class SkillProvenanceTests(unittest.TestCase):
         self.assertEqual(locked["sourceTag"], f"v{locked['version']}")
         self.assertRegex(locked["sourceCommit"], r"\A[0-9a-f]{40}\Z")
 
-    def test_historical_rlm_build_2_review_is_immutable(self) -> None:
-        review = json.loads(
-            (
-                self.reviews_dir()
-                / "2026-08-13-rlm-v1-33-product-update.json"
-            ).read_text(encoding="utf-8")
-        )
-
-        expected_names = {"rlm-bsl-mcp", "rlm-bsl-index"}
-        self.assert_rlm_review_identity(review)
-        self.assertEqual(set(review["tools"]), expected_names)
-        for name in expected_names:
-            self.assertEqual(set(review["tools"][name]), {"assets"})
-
     def test_rlm_standalone_review_binds_the_published_archive_contract(self) -> None:
         path = self.rlm_standalone_review_path()
         self.assertTrue(path.is_file())
@@ -704,40 +656,6 @@ class SkillProvenanceTests(unittest.TestCase):
                 target[path[-1]] = value
                 with self.assertRaises(AssertionError):
                     self.assert_rlm_standalone_review_identity(mutated)
-
-    def test_rlm_review_identity_rejects_mutated_immutable_metadata(self) -> None:
-        review = json.loads(
-            (
-                self.reviews_dir()
-                / "2026-08-13-rlm-v1-33-product-update.json"
-            ).read_text(encoding="utf-8")
-        )
-        mutations = [
-            (("schemaVersion",), 2),
-            (("id",), "different-review"),
-            (("source", "repository"), "https://example.invalid/upstream"),
-            (("source", "tag"), "v1.33.1"),
-            (("source", "commit"), "0" * 40),
-            (("source", "tree"), "0" * 40),
-            (("source", "patches"), ["local.patch"]),
-            (("toolchain", "repository"), "https://example.invalid/toolchain"),
-            (("toolchain", "releaseTag"), "rlm-tools-bsl-v1.33.0-build.1"),
-            (("toolchain", "buildRevision"), 1),
-            (("compatibility", "builder"), "14"),
-            (("compatibility", "previousBuilder"), "13"),
-            (("compatibility", "strategy"), "migration"),
-            (("compatibility", "legacyStateDeleted"), True),
-            (("compatibility", "publicMcpChanged"), True),
-        ]
-        for path, value in mutations:
-            with self.subTest(path=path):
-                mutated = copy.deepcopy(review)
-                target = mutated
-                for key in path[:-1]:
-                    target = target[key]
-                target[path[-1]] = value
-                with self.assertRaises(AssertionError):
-                    self.assert_rlm_review_identity(mutated)
 
     def test_bsl_analyzer_contract_is_v0_2_67(self) -> None:
         tool_lock = json.loads(

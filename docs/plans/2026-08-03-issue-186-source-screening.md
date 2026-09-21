@@ -311,7 +311,6 @@ At minimum reconcile `comol/ai_rules_1c` against:
 ```text
 spec/provenance/skill-upstreams.json
 plugins/unica/ATTRIBUTIONS.md
-docs/provenance/reviews/2026-07-22-ai-rules-idea-provenance-correction.json
 tests/ci/test_skill_provenance.py
 ```
 
