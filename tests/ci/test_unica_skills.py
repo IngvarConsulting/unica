@@ -2897,7 +2897,7 @@ class PlatformHelpRoutingTests(unittest.TestCase):
         self.assertNotIn("unica.documentation.get", names)
 
     def test_routes_configuration_domain_questions_to_configuration_help(self) -> None:
-        # ADR-0034: доменный вопрос о самой конфигурации закрывает её
+        # Доменный вопрос о самой конфигурации закрывает её
         # встроенная справка, а не справка платформы. На канонической
         # поверхности этот источник пока отвечает отказом, и скилл обязан
         # назвать и сам источник, и названную причину его недоступности,
