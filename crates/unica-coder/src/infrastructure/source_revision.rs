@@ -5183,62 +5183,78 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn review_final_confirmation_rejects_nested_directory_replacement_after_retention() {
+    fn review_final_confirmation_rechecks_replaced_nested_directory() {
         if !supports_retained_root_replacement_test() {
             return;
         }
-        let fixture = RetainedConfirmationFixture::new(|source| {
-            fs::create_dir_all(source.join("Catalogs")).unwrap();
-            fs::write(source.join("Configuration.xml"), "<Configuration/>").unwrap();
-            fs::write(source.join("Catalogs/Items.xml"), "<Catalog>A</Catalog>").unwrap();
-        });
-        let nested = fixture.source.join("Catalogs");
-        let replacement = fixture.workspace.path().join("replacement");
-        let saved = fixture.workspace.path().join("saved");
-        fs::create_dir_all(&replacement).unwrap();
-        fs::write(replacement.join("Items.xml"), "<Catalog>B</Catalog>").unwrap();
-        let _mutation = set_retained_scan_test_mutation(
-            RetainedScanTestMutationPoint::BeforeDirectoryRecursion,
-            move || {
-                fs::rename(&nested, &saved).unwrap();
-                fs::rename(&replacement, &nested).unwrap();
-            },
-        );
+        for replacement_content in ["A", "B"] {
+            let fixture = RetainedConfirmationFixture::new(|source| {
+                fs::create_dir_all(source.join("Catalogs")).unwrap();
+                fs::write(source.join("Configuration.xml"), "<Configuration/>").unwrap();
+                fs::write(source.join("Catalogs/Items.xml"), "<Catalog>A</Catalog>").unwrap();
+            });
+            let nested = fixture.source.join("Catalogs");
+            let replacement = fixture.workspace.path().join("replacement");
+            let saved = fixture.workspace.path().join("saved");
+            fs::create_dir_all(&replacement).unwrap();
+            fs::write(
+                replacement.join("Items.xml"),
+                format!("<Catalog>{replacement_content}</Catalog>"),
+            )
+            .unwrap();
+            let _mutation = set_retained_scan_test_mutation(
+                RetainedScanTestMutationPoint::BeforeDirectoryRecursion,
+                move || {
+                    fs::rename(&nested, &saved).unwrap();
+                    fs::rename(&replacement, &nested).unwrap();
+                },
+            );
 
-        assert!(
-            fixture.confirm().is_err(),
-            "nested directory replacement during final scan must invalidate"
-        );
+            let confirmed = fixture.confirm();
+            assert_eq!(
+                confirmed.is_ok(),
+                replacement_content == "A",
+                "replacement content {replacement_content}: {confirmed:?}"
+            );
+        }
     }
 
     #[test]
-    fn review_final_confirmation_rejects_file_replacement_after_retention() {
+    fn review_final_confirmation_rechecks_replaced_file() {
         if !supports_retained_root_replacement_test() {
             return;
         }
-        let fixture = RetainedConfirmationFixture::new(|source| {
+        for replacement_content in ["A", "B"] {
+            let fixture = RetainedConfirmationFixture::new(|source| {
+                fs::write(
+                    source.join("Configuration.xml"),
+                    "<Configuration>A</Configuration>",
+                )
+                .unwrap();
+            });
+            let descriptor = fixture.source.join("Configuration.xml");
+            let replacement = fixture.workspace.path().join("replacement.xml");
+            let saved = fixture.workspace.path().join("saved.xml");
             fs::write(
-                source.join("Configuration.xml"),
-                "<Configuration>A</Configuration>",
+                &replacement,
+                format!("<Configuration>{replacement_content}</Configuration>"),
             )
             .unwrap();
-        });
-        let descriptor = fixture.source.join("Configuration.xml");
-        let replacement = fixture.workspace.path().join("replacement.xml");
-        let saved = fixture.workspace.path().join("saved.xml");
-        fs::write(&replacement, "<Configuration>B</Configuration>").unwrap();
-        let _mutation = set_retained_scan_test_mutation(
-            RetainedScanTestMutationPoint::BeforeFileHash,
-            move || {
-                fs::rename(&descriptor, &saved).unwrap();
-                fs::rename(&replacement, &descriptor).unwrap();
-            },
-        );
+            let _mutation = set_retained_scan_test_mutation(
+                RetainedScanTestMutationPoint::BeforeFileHash,
+                move || {
+                    fs::rename(&descriptor, &saved).unwrap();
+                    fs::rename(&replacement, &descriptor).unwrap();
+                },
+            );
 
-        assert!(
-            fixture.confirm().is_err(),
-            "file replacement during final retained scan must invalidate"
-        );
+            let confirmed = fixture.confirm();
+            assert_eq!(
+                confirmed.is_ok(),
+                replacement_content == "A",
+                "replacement content {replacement_content}: {confirmed:?}"
+            );
+        }
     }
 
     #[test]

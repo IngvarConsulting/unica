@@ -3,8 +3,8 @@ id: INV.SOURCE.RETAINED-LOGICAL-PUBLICATION
 check:
   - crates/unica-coder/src/infrastructure/source_revision.rs::retained_snapshot_reuses_a_clean_fence_and_reconciles_once_after_change
   - crates/unica-coder/src/infrastructure/source_revision.rs::review_final_confirmation_rejects_root_replacement_during_retained_scan
-  - crates/unica-coder/src/infrastructure/source_revision.rs::review_final_confirmation_rejects_nested_directory_replacement_after_retention
-  - crates/unica-coder/src/infrastructure/source_revision.rs::review_final_confirmation_rejects_file_replacement_after_retention
+  - crates/unica-coder/src/infrastructure/source_revision.rs::review_final_confirmation_rechecks_replaced_nested_directory
+  - crates/unica-coder/src/infrastructure/source_revision.rs::review_final_confirmation_rechecks_replaced_file
   - crates/unica-coder/src/infrastructure/source_revision.rs::review_final_confirmation_rejects_membership_added_after_enumeration
   - crates/unica-coder/src/infrastructure/source_revision.rs::review_final_confirmation_rejects_in_place_change_after_hash
   - crates/unica-coder/src/infrastructure/source_revision.rs::unsupported_fence_stable_operation_lease_scans_at_admission_and_confirmation
@@ -19,6 +19,11 @@ check:
 исходников. Подмена корня, изменение состава каталога или прочитанных байтов
 во время этой проверки отклоняет результат. Это включает замену вложенного
 каталога или файла экземпляром с другим содержимым.
+Если заменён вложенный каталог или файл, но логические пути, состав дерева
+и учитываемые байты остались прежними, результат разрешён после повторного
+подтверждения новых экземпляров. Срок и число попыток не увеличиваются.
+Это относится только к чтению: проверки перед записью не ослабляются,
+а совпадение байтов не разрешает подмену корня, ссылки или выход за границы.
 Проверки подмены открытого каталога выполняются на ОС, которые её допускают.
 
 Если платформенное наблюдение подтверждает отсутствие изменений,
