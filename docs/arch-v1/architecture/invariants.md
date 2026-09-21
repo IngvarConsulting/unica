@@ -97,17 +97,6 @@ Unica. Каждая запись формулирует одно нормати�
 
 ## PRODUCT — границы продукта
 
-### INV-PRODUCT-SINGLE-PLUGIN-TREE — Один каталог плагина обслуживает двух хостов
-
-- **Rule:** Unica поставляется как один каталог плагина, который обслуживает и
-  Codex, и Claude Code; `.mcp.json`, `skills/`, справочники и граница MCP
-  остаются нейтральными к хосту, и только каталоги манифестов `.codex-plugin/`
-  и `.claude-plugin/` зависят от хоста.
-- **Decision:** ADR-0012
-- **Check:** `ci-test` — `tests/ci/test_package_unica_plugin.py`
-- **Check:** `doc-assert` — `tests/ci/test_product_contracts.py`
-- **Scope:** source, packaged
-
 ### INV-PRODUCT-DEVELOPER-OPERATIONS — Публичная поверхность моделирует операции разработчика
 
 - **Rule:** Публичные скиллы и инструменты `unica.*` моделируют операции
