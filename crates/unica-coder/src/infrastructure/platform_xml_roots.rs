@@ -333,13 +333,22 @@ mod tests {
 
     #[test]
     fn unregistered_roots_have_no_policies() {
-        assert_eq!(
-            platform_xml_publication_policy("http://example.invalid/unknown", "Anything"),
-            None
-        );
-        assert_eq!(
-            platform_xml_owner_policy("http://example.invalid/unknown", "Anything"),
-            None
-        );
+        for (namespace, local_name) in [
+            ("http://example.invalid/unknown", "Anything"),
+            ("http://example.invalid/unknown", "MetaDataObject"),
+            ("http://v8.1c.ru/8.3/MDClasses", "Anything"),
+            ("http://v8.1c.ru/8.3/MDClasses", "Form"),
+        ] {
+            assert_eq!(
+                platform_xml_publication_policy(namespace, local_name),
+                None,
+                "{{{namespace}}}{local_name} must not inherit a publication policy"
+            );
+            assert_eq!(
+                platform_xml_owner_policy(namespace, local_name),
+                None,
+                "{{{namespace}}}{local_name} must not inherit an owner policy"
+            );
+        }
     }
 }
