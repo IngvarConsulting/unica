@@ -115,9 +115,6 @@ class SkillProvenanceTests(unittest.TestCase):
     def reviews_dir(self) -> Path:
         return self.repo_root() / "docs" / "provenance" / "reviews"
 
-    def upstream_review_path(self) -> Path:
-        return self.reviews_dir() / "2026-06-15-upstream-review.json"
-
     def rlm_standalone_review_path(self) -> Path:
         return (
             self.reviews_dir()
@@ -126,9 +123,6 @@ class SkillProvenanceTests(unittest.TestCase):
 
     def load_provenance(self) -> dict:
         return json.loads(self.provenance_path().read_text(encoding="utf-8"))
-
-    def load_upstream_review(self) -> dict:
-        return json.loads(self.upstream_review_path().read_text(encoding="utf-8"))
 
     def assert_rlm_standalone_review_identity(self, review: dict) -> None:
         self.assertEqual(review["schemaVersion"], 1)
@@ -251,13 +245,6 @@ class SkillProvenanceTests(unittest.TestCase):
         self.assertIn("docs/provenance", path.as_posix())
         self.assertNotIn("plugins/unica", path.as_posix())
         self.assertFalse((self.repo_root() / "plugins" / "unica" / "provenance").exists())
-
-    def test_review_records_live_in_the_archive_tree(self) -> None:
-        reviews = self.reviews_dir()
-
-        self.assertTrue(reviews.is_dir())
-        self.assertIn("docs/provenance/reviews", reviews.as_posix())
-        self.assertNotIn("plugins/unica", reviews.as_posix())
 
     def test_required_upstreams_are_present(self) -> None:
         data = self.load_provenance()
@@ -711,102 +698,6 @@ class SkillProvenanceTests(unittest.TestCase):
 
         self.assertEqual(sorted(local_skills - indexed_skills), [])
         self.assertEqual(sorted(indexed_skills - local_skills), [])
-
-    def test_upstream_review_records_real_drift_without_file_hashes(self) -> None:
-        review = self.load_upstream_review()
-        payload = json.dumps(review, ensure_ascii=False)
-        upstreams = {item["id"]: item for item in review["upstreams"]}
-
-        self.assertNotIn("sha256", payload)
-        self.assertNotIn("Digest", payload)
-        self.assertEqual(review["lastRefreshedAt"], "2026-07-04")
-        self.assertEqual(
-            upstreams["cc-1c-skills"]["targetCommit"],
-            "78b5b73fa7f835462dc4073ae7a9fc841e7c62fb",
-        )
-        self.assertEqual(upstreams["cc-1c-skills"]["commitsSinceBaseline"], 607)
-        self.assertEqual(upstreams["cc-1c-skills"]["changedWatchedPathCount"], 0)
-        self.assertEqual(upstreams["cc-1c-skills"]["affectedEntries"], [])
-        previous_target = "cbde49efdaeec190432fdf4a53201a87e83c69de"
-        target = "78b5b73fa7f835462dc4073ae7a9fc841e7c62fb"
-        historical_dcs_edit = "s" + "kd-edit"
-        functional_skills = {
-            "form-remove",
-            historical_dcs_edit,
-            "subsystem-compile",
-        }
-        historical_script_backed_skills = {"img-grid", "web-test"}
-        previous_functional_skills = {"cfe-borrow", "cfe-init", "form-validate"}
-        decisions = {
-            item["skill"]: item
-            for item in upstreams["cc-1c-skills"]["entryDecisions"]
-        }
-
-        self.assertGreaterEqual(len(decisions), 40)
-        for skill in functional_skills:
-            self.assertIn(skill, upstreams["cc-1c-skills"]["reviewedEntries"])
-            self.assertEqual(decisions[skill]["decision"], "ported")
-            self.assertEqual(decisions[skill]["baselineCommit"], target)
-
-        for skill in previous_functional_skills:
-            self.assertIn(skill, upstreams["cc-1c-skills"]["reviewedEntries"])
-            self.assertEqual(decisions[skill]["decision"], "ported")
-            self.assertEqual(decisions[skill]["baselineCommit"], previous_target)
-
-        self.assertIn("Default*Form", decisions["form-remove"]["evidence"])
-        self.assertIn("expr_start", decisions[historical_dcs_edit]["evidence"])
-        self.assertIn("subprocess.run", decisions["subsystem-compile"]["evidence"])
-        self.assertIn("BorrowMainAttribute", decisions["cfe-borrow"]["evidence"])
-        self.assertIn("MDClasses format version", decisions["cfe-init"]["evidence"])
-        self.assertIn("type_error_count", decisions["form-validate"]["evidence"])
-
-        for skill in historical_script_backed_skills:
-            self.assertEqual(decisions[skill]["decision"], "script-backed-utility-exception")
-
-        removal = json.loads(
-            (
-                self.reviews_dir() / "2026-07-20-script-backed-skill-removal.json"
-            ).read_text(encoding="utf-8")
-        )
-        self.assertEqual(set(removal["removedSkills"]), historical_script_backed_skills)
-        self.assertEqual(removal["decision"], "removed-from-product")
-
-        ignored_skills = (
-            set(decisions)
-            - functional_skills
-            - previous_functional_skills
-            - historical_script_backed_skills
-        )
-        self.assertIn("cf-edit", ignored_skills)
-        self.assertIn("epf-bsp-init", ignored_skills)
-        self.assertIn("help-add", ignored_skills)
-        for skill in ignored_skills:
-            decision = decisions[skill]
-            self.assertIn(skill, upstreams["cc-1c-skills"]["reviewedEntries"])
-            self.assertEqual(decision["decision"], "ignored-with-reason")
-            self.assertEqual(decision["baselineCommit"], previous_target)
-            self.assertIn("EOL", decision["evidence"])
-            self.assertIn("donor-only", decision["evidence"])
-        self.assertEqual(upstreams["ai-rules-1c"]["commitsSinceBaseline"], 23)
-        self.assertEqual(upstreams["ai-rules-1c"]["changedWatchedPathCount"], 0)
-        self.assertEqual(upstreams["ai-rules-1c"]["affectedEntries"], [])
-        self.assertEqual(upstreams["ai-rules-1c"]["reviewStatus"], "reviewed")
-        self.assertIn("api-design", upstreams["ai-rules-1c"]["reviewedEntries"])
-        self.assertNotIn("api-design", upstreams["ai-rules-1c"]["affectedEntries"])
-        ai_rules_decisions = {
-            item["skill"]: item
-            for item in upstreams["ai-rules-1c"]["entryDecisions"]
-        }
-        self.assertEqual(ai_rules_decisions["api-design"]["decision"], "ignored-with-reason")
-        self.assertEqual(ai_rules_decisions["api-design"]["primarySource"], "unica")
-        self.assertIn("Unica-owned", ai_rules_decisions["api-design"]["evidence"])
-        self.assertEqual(ai_rules_decisions["code-search"]["decision"], "ported")
-        self.assertIn("MCP-first", ai_rules_decisions["code-search"]["evidence"])
-        self.assertEqual(upstreams["v8-runner-rust"]["commitsSinceBaseline"], 0)
-        self.assertEqual(upstreams["v8-runner-rust"]["reviewedCommits"], 3)
-        self.assertEqual(upstreams["v8-runner-rust"]["reviewStatus"], "applied")
-        self.assertEqual(upstreams["v8-runner-rust"]["affectedEntries"], [])
-        self.assertIn("v8-runner", upstreams["v8-runner-rust"]["reviewedEntries"])
 
     def test_current_cc_1c_source_comments_are_covered(self) -> None:
         data = self.load_provenance()

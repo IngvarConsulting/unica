@@ -53,7 +53,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
         self.assert_classification(
             [
                 "docs/provenance/skill-upstreams.json",
-                "docs/provenance/reviews/2026-06-15-upstream-review.json",
+                "docs/provenance/reviews/historical-review.json",
             ],
         )
 

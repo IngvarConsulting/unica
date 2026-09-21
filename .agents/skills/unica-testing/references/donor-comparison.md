@@ -43,7 +43,9 @@
 5. Выполни `apply` только после разбора кандидата. Он сверяет данные и commit,
    обновляет снимок, manifest, relations и provenance вместе. Обновление
    `parityBaselineCommit` не принимает остальные материалы донора:
-   общий `baselineCommit` относится к отдельному объёму проверки.
+   общий `baselineCommit` относится к отдельному объёму проверки. Передвигай
+   его после разбора изменений и их адаптации либо явного решения не переносить.
+   Свежий HEAD донора сам по себе не становится принятым baseline.
 6. Проверь затронутые сравнения, `tests.ci.test_donor_parity_contract` и
    `tests.ci.test_refresh_cc_1c_parity`, затем проверку происхождения
    `python3.12 scripts/ci/check-skill-upstreams.py`.
