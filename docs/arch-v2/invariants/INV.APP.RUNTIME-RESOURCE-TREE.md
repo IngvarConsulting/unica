@@ -2,13 +2,10 @@
 id: INV.APP.RUNTIME-RESOURCE-TREE
 ---
 
-# Механизм владения runtime и общий бюджет очистки
+# Остаток общего срока очистки и исходного каталога задания
 
-Windows Job Object либо Unix bundled-runner capability из retained unreaped
-leader и установленного Unica child-only inherited lifetime sentinel dynamic FD
-определяют owned tree. Sentinel сохраняется текущим pinned runner без отдельного
-handshake/acknowledgement. Cancellation и drop завершают tree, reap и оба output reader в
-одном абсолютном monotonic bounded окне; Drop не создаёт второе окно.
+Отмена и освобождение объекта процесса завершают дерево процессов,
+ожидание их выхода и оба потока вывода в одном общем ограниченном окне.
 
 Один исходный job-directory capability принимается до initial spawn либо до
 принятия attach process ownership и переносится через normal и fallback

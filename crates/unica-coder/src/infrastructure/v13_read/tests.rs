@@ -4184,10 +4184,10 @@ pub(crate) fn configuration_level_rights_are_readable_role_objects() {
     let rights_path = fixture.source.join("Roles/SalesReader/Ext/Rights.xml");
     let rights = fs::read_to_string(&rights_path).unwrap().replacen(
         "</Rights>",
-        "<object><name>Configuration.CorpusConfiguration</name><right><name>Administration</name><value>true</value></right><right><name>ThinClient</name><value>true</value></right></object></Rights>",
+        "<object><name>Configuration.CorpusConfiguration</name><right><name>Administration</name><value>true</value></right><right><name>ThinClient</name><value>true</value></right><right><name>FutureConfigurationReadCapability</name><value>true</value></right><right><name>FutureConfigurationWriteCapability</name><value>false</value></right></object></Rights>",
         1,
     );
-    fs::write(&rights_path, rights).unwrap();
+    fs::write(&rights_path, &rights).unwrap();
     let service = fixture.view_service();
 
     let role = service.view(ViewRequest::new("main:Role.SalesReader").unwrap());
@@ -4199,7 +4199,9 @@ pub(crate) fn configuration_level_rights_are_readable_role_objects() {
     let data = right.data.as_ref().unwrap();
     assert_eq!(data["kind"], "Right");
     assert_eq!(data["props"]["objectKind"], "Configuration");
-    assert_eq!(data["props"]["allowedCount"], 2);
+    assert_eq!(data["props"]["allowedCount"], 3);
+    assert_eq!(data["props"]["deniedCount"], 1);
+    assert_eq!(fs::read_to_string(&rights_path).unwrap(), rights);
 
     let authority = fixture.read_authority();
     let index = ReaderReach::new(vec![("main", &authority)]);
