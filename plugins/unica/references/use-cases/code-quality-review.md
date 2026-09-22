@@ -15,9 +15,10 @@ with object-specific info tools, source search, syntax checks, and focused tests
 Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
-выбирай только операцию с `implemented: true` и не выдумывай аргументов
-записи с `argsSchema: null`; превью исполнением не является. Не обходи
-контракт прямым runner-ом.
+при `implemented: true` используй опубликованную `argsSchema`; при
+`support.state: limited` разрешено только подмножество `support.supportedArgs`.
+При `support.state: unavailable` остановись; не выдумывай аргументов при
+`argsSchema: null`. Превью исполнением не является. Не обходи контракт прямым runner-ом.
 
 - Inspect metadata shape with `unica.view` on the object node before changing code that
   depends on objects, forms, roles, or reports.

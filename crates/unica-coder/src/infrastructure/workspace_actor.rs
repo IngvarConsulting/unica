@@ -5675,8 +5675,7 @@ pub(crate) mod tests {
                 ProviderDeadline::from_budget(Duration::from_secs(5)),
                 &CancellationToken::new(),
             )
-            .err()
-            .expect("cleanup residue must consume the next admission's entry budget");
+            .expect_err("cleanup residue must consume the next admission's entry budget");
         assert!(
             matches!(
                 &error,
@@ -5706,8 +5705,7 @@ pub(crate) mod tests {
                 ProviderDeadline::from_budget(Duration::from_secs(5)),
                 &CancellationToken::new(),
             )
-            .err()
-            .expect("cleanup residue must consume the restarted actor's entry budget");
+            .expect_err("cleanup residue must consume the restarted actor's entry budget");
         assert!(
             matches!(
                 &error,

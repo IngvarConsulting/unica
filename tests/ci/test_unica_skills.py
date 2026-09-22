@@ -1827,13 +1827,13 @@ class UnicaSkillRoutingTests(unittest.TestCase):
     def test_indented_runtime_example_needs_if_rev_inside_arguments(self) -> None:
         outside = (
             '    {"ifRev": "note", "params": {"name": "unica.run", '
-            '"arguments": {"op": "cf.import", "dryRun": false}}}\n'
+            '"arguments": {"op": "upload", "dryRun": false}}}\n'
         )
         with self.assertRaisesRegex(ValueError, "applies without ifRev"):
             reject_indented_applied_runtime_examples(outside)
         inside = (
             '    {"params": {"name": "unica.run", "arguments": '
-            '{"op": "cf.import", "dryRun": false, "ifRev": "unica-cf-import-sha256-v1:abc"}}}\n'
+            '{"op": "upload", "dryRun": false, "ifRev": "unica-cf-import-sha256-v1:abc"}}}\n'
         )
         reject_indented_applied_runtime_examples(inside)
 
@@ -1921,7 +1921,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                 operation=arguments.get("op"),
             ):
                 # An apply carries the revision its preview returned.
-                if arguments.get("op") != "client.run":
+                if arguments.get("op") != "launch":
                     self.assertIn("dryRun", arguments)
                 if arguments.get("dryRun") is False:
                     self.assertIn("ifRev", arguments)
@@ -2297,6 +2297,7 @@ Use `.claude/commands/xdto.md` as the execution route.
         )
 
         self.assertIn(".claude", guarded)
+
 
 
 

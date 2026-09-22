@@ -11,10 +11,11 @@ description: "Анализ журнала регистрации и технол
 - Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
-выбирай только операцию с `implemented: true` и не выдумывай аргументов
-записи с `argsSchema: null`; превью исполнением не является. Не обходи
-контракт прямым runner-ом.
-- Check syntax with `unica.check` and launch a client through `unica.run` (`client.run`); test runs are outside the v0.13 surface, and neither call is verification or a substitute for log evidence.
+при `implemented: true` используй опубликованную `argsSchema`; при
+`support.state: limited` разрешено только подмножество `support.supportedArgs`.
+При `support.state: unavailable` остановись; не выдумывай аргументов при
+`argsSchema: null`. Превью исполнением не является. Не обходи контракт прямым runner-ом.
+- Check syntax with `unica.check` and launch a client through `unica.run` (`launch`); test runs are outside the v0.13 surface, and neither call is verification or a substitute for log evidence.
 - Do not call internal runtime, analyzer, standards, or package adapters directly. They are hidden behind MCP `unica`.
 
 ## Inputs

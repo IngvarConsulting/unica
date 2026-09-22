@@ -1,5 +1,5 @@
 #![allow(clippy::result_large_err)]
-//! `client.run` — единственная терминальная операция словаря `run`: запуск
+//! `launch` — единственная терминальная операция словаря `run`: запуск
 //! клиента или конфигуратора 1С. Вариант А развилки A-1 зонтика #871:
 //! вызов как опубликовано — `execution: terminal`, `run {op, args}` запускает
 //! сразу, `dryRun: true` допускается как необязательный неисполняющий план,
@@ -13,6 +13,7 @@
 //! соединения: у выгрузок то же правило (`INV.RUNTIME.V13-INFOBASE-EXPORTS`).
 
 use super::protocol::InvocationRequest;
+use super::runner_011::Runner011ProcessRunner;
 use super::v13_infobase_exports::{
     closed_workspace_relative_path, digest_optional_workspace_file, digest_required_workspace_file,
     missing_runner_rejection, resolve_bundled_runner, runner_rejection, CONFIG_NAME,
@@ -24,9 +25,7 @@ use crate::domain::invocation::{DomainResult, SafeIdentityHash};
 use crate::domain::refusal::RefusalCode;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::BundledTool;
-use crate::infrastructure::internal_adapters::{
-    ProcessCommand, ProcessOutput, ProcessRunner, SystemProcessRunner,
-};
+use crate::infrastructure::internal_adapters::{ProcessCommand, ProcessOutput, ProcessRunner};
 use crate::infrastructure::redaction::redactor;
 use crate::infrastructure::workspace::discover_workspace;
 use serde_json::{json, Map, Value};
@@ -34,7 +33,7 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-pub(super) const OPERATION: &str = "client.run";
+pub(super) const OPERATION: &str = "launch";
 /// Имя команды в конверте раннера: у `launch` оно не совпадает с именем
 /// операции словаря, в отличие от семейства `infobase`.
 const RUNNER_COMMAND: &str = "launch";
@@ -120,14 +119,14 @@ impl PreparedClientRun {
             Some(_) => {
                 return Err(reject(
                     RefusalCode::BadValue,
-                    "client.run dryRun must be boolean",
+                    "launch dryRun must be boolean",
                 ))
             }
         };
         if arguments.get("ifRev").is_some() {
             return Err(reject(
                 RefusalCode::BadValue,
-                "client.run is terminal and takes no ifRev: it changes neither sources nor the infobase",
+                "launch is terminal and takes no ifRev: it changes neither sources nor the infobase",
             ));
         }
         let context =
@@ -153,7 +152,7 @@ impl PreparedClientRun {
     }
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        execute_with_runner(self, &SystemProcessRunner, cancellation)
+        execute_with_runner(self, &Runner011ProcessRunner, cancellation)
     }
 }
 
@@ -165,7 +164,7 @@ fn parse_launch_arguments(
     if let Some(unknown) = args.keys().find(|key| !ACCEPTED.contains(&key.as_str())) {
         return Err(reject(
             RefusalCode::BadValue,
-            format!("client.run does not accept `{unknown}`; the closed args are clientMode, execute, waitForExit and waitTimeoutMs"),
+            format!("launch does not accept `{unknown}`; the closed args are clientMode, execute, waitForExit and waitTimeoutMs"),
         ));
     }
     let mode = args
@@ -175,7 +174,7 @@ fn parse_launch_arguments(
         .ok_or_else(|| {
             reject(
                 RefusalCode::BadValue,
-                "client.run clientMode must be one of designer, thin, thick, ordinary",
+                "launch clientMode must be one of designer, thin, thick, ordinary",
             )
         })?;
     let execute = match args.get("execute") {
@@ -184,14 +183,11 @@ fn parse_launch_arguments(
             if mode == ClientMode::Designer {
                 return Err(reject(
                     RefusalCode::BadValue,
-                    "client.run execute needs an enterprise client: designer runs no external processor",
+                    "launch execute needs an enterprise client: designer runs no external processor",
                 ));
             }
             let relative = closed_workspace_relative_path(value).map_err(|reason| {
-                reject(
-                    RefusalCode::BadValue,
-                    format!("client.run execute {reason}"),
-                )
+                reject(RefusalCode::BadValue, format!("launch execute {reason}"))
             })?;
             let has_processor_extension = relative
                 .extension()
@@ -204,7 +200,7 @@ fn parse_launch_arguments(
             if !has_processor_extension {
                 return Err(reject(
                     RefusalCode::BadValue,
-                    "client.run execute must name an .epf or .erf external processor",
+                    "launch execute must name an .epf or .erf external processor",
                 ));
             }
             // Превью раннера существование файла не проверяет: оно составит
@@ -214,13 +210,13 @@ fn parse_launch_arguments(
                 Ok(Some(_)) => {
                     return Err(reject(
                         RefusalCode::BadValue,
-                        "client.run execute names an empty file",
+                        "launch execute names an empty file",
                     ))
                 }
                 Ok(None) => {
                     return Err(reject(
                         RefusalCode::BadValue,
-                        "client.run execute names a file that does not exist in the workspace",
+                        "launch execute names a file that does not exist in the workspace",
                     ))
                 }
                 Err(error) => return Err(reject(RefusalCode::BadValue, error)),
@@ -230,7 +226,7 @@ fn parse_launch_arguments(
         Some(_) => {
             return Err(reject(
                 RefusalCode::BadValue,
-                "client.run execute must be a workspace-relative path",
+                "launch execute must be a workspace-relative path",
             ))
         }
     };
@@ -240,7 +236,7 @@ fn parse_launch_arguments(
         Some(_) => {
             return Err(reject(
                 RefusalCode::BadValue,
-                "client.run waitForExit must be boolean",
+                "launch waitForExit must be boolean",
             ))
         }
     };
@@ -253,7 +249,7 @@ fn parse_launch_arguments(
                 .ok_or_else(|| {
                     reject(
                         RefusalCode::BadValue,
-                        format!("client.run waitTimeoutMs must be an integer from 1 to {WAIT_TIMEOUT_MAX_MS}"),
+                        format!("launch waitTimeoutMs must be an integer from 1 to {WAIT_TIMEOUT_MAX_MS}"),
                     )
                 })?,
         ),
@@ -265,19 +261,19 @@ fn parse_launch_arguments(
         (true, false, _) => {
             return Err(reject(
                 RefusalCode::BadValue,
-                "client.run waitForExit requires waitTimeoutMs",
+                "launch waitForExit requires waitTimeoutMs",
             ))
         }
         (false, true, _) => {
             return Err(reject(
                 RefusalCode::BadValue,
-                "client.run waitTimeoutMs requires waitForExit: true",
+                "launch waitTimeoutMs requires waitForExit: true",
             ))
         }
         (true, true, false) => {
             return Err(reject(
                 RefusalCode::BadValue,
-                "client.run waitForExit needs execute: only an external processor session has an exit to wait for",
+                "launch waitForExit needs execute: only an external processor session has an exit to wait for",
             ))
         }
         _ => {}
@@ -319,7 +315,7 @@ fn execute_with_resolved_runner(
         return result;
     }
     if cancellation.is_cancelled() {
-        return reject(RefusalCode::Cancelled, "client.run cancelled before launch");
+        return reject(RefusalCode::Cancelled, "launch cancelled before launch");
     }
     let envelope = match invoke_runner(prepared, tool, runner, &cancellation) {
         Ok(envelope) => envelope,
@@ -352,7 +348,7 @@ fn execute_with_resolved_runner(
             );
         }
         let mut result = DomainResult::success(format!(
-            "client.run planned a {} session without launching a client",
+            "launch planned a {} session without launching a client",
             prepared.arguments.mode.as_str()
         ));
         result.data = Some(json!({
@@ -410,17 +406,17 @@ fn execute_with_resolved_runner(
     };
     let summary = match &waited {
         Some(waited) if waited["timedOut"] == true => format!(
-            "client.run ran the processor in a {} session and gave up waiting after {} ms",
+            "launch ran the processor in a {} session and gave up waiting after {} ms",
             prepared.arguments.mode.as_str(),
             prepared.arguments.wait_timeout_ms.unwrap_or_default()
         ),
         Some(waited) => format!(
-            "client.run ran the processor in a {} session; it exited with code {}",
+            "launch ran the processor in a {} session; it exited with code {}",
             prepared.arguments.mode.as_str(),
             waited["exitCode"]
         ),
         None => format!(
-            "client.run launched a {} session (pid {pid})",
+            "launch launched a {} session (pid {pid})",
             prepared.arguments.mode.as_str()
         ),
     };

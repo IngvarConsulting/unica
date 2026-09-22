@@ -3,7 +3,6 @@ id: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
 check:
   - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::arguments_are_closed_and_each_refusal_names_the_fix
   - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::preview_of_an_extension_set_passes_the_extension_and_the_set
-  - crates/unica-coder/src/infrastructure/daemon/server.rs::v5_source_export_prepares_before_source_admission_and_keeps_the_revision_gate
   - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::preview_names_the_target_inside_the_workspace_without_writing
   - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::preview_refuses_a_target_outside_the_workspace_an_undeclared_set_or_a_write
   - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::apply_repeats_the_preview_and_counts_the_exported_files_itself
@@ -12,6 +11,10 @@ gap: https://github.com/IngvarConsulting/unica/issues/950
 ---
 
 # Выгрузка исходников подтверждает согласованную цель
+
+Правило относится к сохранённому внутреннему обработчику `source.export`.
+Это имя снято с публичной поверхности. `pull` пока недоступен:
+проверки старой выгрузки не доказывают сохранность локальных правок при pull.
 
 Аргументы `source.export` — `mode` (`full` или `incremental`),
 необязательные `sourceSet` и `extension`. Выбор отдельных объектов

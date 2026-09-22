@@ -1,7 +1,6 @@
 ---
 id: INV.WIRE.CF-IMPORT-KEEPS-ITS-SOURCE-INTACT
 check:
-  - crates/unica-coder/src/infrastructure/daemon/server.rs::v5_cf_import_prepares_before_source_admission_and_keeps_the_revision_gate
   - crates/unica-coder/src/infrastructure/daemon/v13_cf_import.rs::arguments_are_closed_and_each_refusal_names_the_fix
   - crates/unica-coder/src/infrastructure/daemon/v13_cf_import.rs::preview_names_the_source_and_the_target_without_touching_the_infobase
   - crates/unica-coder/src/infrastructure/daemon/v13_cf_import.rs::preview_refuses_a_plan_for_another_artifact_or_one_that_applied
@@ -12,6 +11,11 @@ gap: https://github.com/IngvarConsulting/unica/issues/950
 ---
 
 # Импорт конфигурации сохраняет входной файл
+
+Правило относится к сохранённому внутреннему обработчику `cf.import`.
+Это имя снято с публичной поверхности. `upload` пока недоступен: старый
+раннер после загрузки также применяет конфигурацию к БД, а целевой upload
+должен останавливаться после загрузки основной конфигурации.
 
 `cf.import` принимает непустой CF или CFE внутри рабочего пространства;
 для CFE требуется имя расширения, для CF оно запрещено. Режим загрузки

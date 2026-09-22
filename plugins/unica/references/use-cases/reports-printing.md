@@ -5,9 +5,9 @@
 Use this when the user needs reports, DCS/DCS schemas, tabular document layouts,
 print forms, BSP external processing registration, or EPF/ERF build/export.
 
-`cf.import` and `artifact.build` in `unica.run` take `.cf`/`.cfe` only.
-External processors and reports live in external source-sets: `source.import`
-and `source.export` move their sources, and their publication as `.epf`/`.erf`
+`upload` and `make` in `unica.run` take `.cf`/`.cfe` only.
+External processors and reports live in external source-sets. Target `push`
+and `pull` source transfer is unavailable with runner 0.11, and their publication as `.epf`/`.erf`
 is outside the v0.13 surface.
 
 ## Primary path
@@ -15,9 +15,10 @@ is outside the v0.13 surface.
 Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
-выбирай только операцию с `implemented: true` и не выдумывай аргументов
-записи с `argsSchema: null`; превью исполнением не является. Не обходи
-контракт прямым runner-ом.
+при `implemented: true` используй опубликованную `argsSchema`; при
+`support.state: limited` разрешено только подмножество `support.supportedArgs`.
+При `support.state: unavailable` остановись; не выдумывай аргументов при
+`argsSchema: null`. Превью исполнением не является. Не обходи контракт прямым runner-ом.
 
 - `unica.dcs.*` for DCS/DCS schema info, compile, edit, and validation.
 - `unica.mxl.*` for MXL info, compile, decompile, and validation.
@@ -27,8 +28,7 @@ Runtime идёт через `unica.run`: вызов без `op` отдаёт с�
   `unica.epf.init` or `unica.erf.init`
   and do not synthesize `Configuration.xml` or a platform-generated CDFI sidecar.
 - `epf-bsp-init` and `epf-bsp-add-command` for BSP registration code.
-- `unica.run` moves external source-set sources with `source.import` and
-  `source.export`; it does not publish an `.epf`/`.erf` artifact.
+- `unica.run` currently refuses source `push` and `pull`; it also does not publish an `.epf`/`.erf` artifact.
 
 Declare the generated directory in `v8project.yaml` as
 `EXTERNAL_DATA_PROCESSORS` or `EXTERNAL_REPORTS` under `format: DESIGNER` and

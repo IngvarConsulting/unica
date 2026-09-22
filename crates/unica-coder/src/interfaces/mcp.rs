@@ -1313,8 +1313,8 @@ mod tests {
                 .expect("tool input declares its arguments");
             // Conditional constraints such as `if.properties` refine an argument;
             // descriptions belong to its declaration and nested argument objects.
-            for properties in std::iter::once(arguments)
-                .chain(object_schema_property_maps(arguments))
+            for properties in
+                std::iter::once(arguments).chain(object_schema_property_maps(arguments))
             {
                 for (name, property) in properties {
                     let description = property

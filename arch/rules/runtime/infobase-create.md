@@ -1,7 +1,6 @@
 ---
 id: INV.WIRE.INFOBASE-CREATE-ONLY-CREATES-AN-ABSENT-ONE
 check:
-  - crates/unica-coder/src/infrastructure/daemon/server.rs::v5_infobase_create_prepares_before_source_admission_and_keeps_the_revision_gate
   - crates/unica-coder/src/infrastructure/daemon/v13_infobase_create.rs::preview_plans_the_infobase_without_creating_anything_or_naming_its_path
   - crates/unica-coder/src/infrastructure/daemon/v13_infobase_create.rs::an_existing_infobase_is_refused_at_preview_and_points_to_import
   - crates/unica-coder/src/infrastructure/daemon/v13_infobase_create.rs::a_project_that_needs_an_edt_workspace_is_refused
@@ -12,6 +11,10 @@ gap: https://github.com/IngvarConsulting/unica/issues/950
 ---
 
 # Создание базы подтверждается повторным опросом раннера
+
+Ниже описан сохранённый внутренний обработчик прежнего создания базы.
+Публичный `infobase.create` пока недоступен: эти проверки не доказывают
+новую семантику создания с исходниками и памятью синхронизации раннера 1.0.
 
 `infobase.create` берёт соединение из проектного файла и не принимает
 аргументов соединения. Операция доступна без исходников, требует preview

@@ -1,6 +1,7 @@
 ---
 id: INV.RUNTIME.V13-INFOBASE-EXPORTS
 check:
+  - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::runner_011_provider_receipt_replaces_selection_for_all_three_operations
   - crates/unica-coder/src/application/v13/tool_catalog.rs::v13_infobase_exports_are_implemented_with_closed_agent_facing_arguments
   - crates/unica-coder/src/infrastructure/daemon/server.rs::v5_infobase_exports_prepare_before_source_admission_and_keep_the_revision_gate
   - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::preview_is_non_mutating_and_returns_an_apply_revision_without_raw_command
@@ -14,13 +15,18 @@ gap: https://github.com/IngvarConsulting/unica/issues/974
 
 # Успешная выгрузка базы подтверждается файлом назначения
 
-`cf.export` и `infobase.export` доступны без source set. Preview вызывает
+Квитанция раннера использует `provider` с выбранным исполнителем
+и происхождением выбора. Снятый `selection` и выдуманный список кандидатов
+не являются входом контракта. Публичная проекция не раскрывает пути override
+и пояснения о пропущенных кандидатах.
+
+`download` и `infobase.dump` доступны без source set. Preview вызывает
 раннер с `--dry-run`, возвращает план с ревизией и не создаёт файл.
 Применение требует `ifRev`, повторяет preview и при несовпадении ревизии
 останавливается до исполняющего вызова раннера.
 
-Закрытая схема `cf.export` принимает `state` (`working` или `database`),
-`output` и необязательное имя `extension`; схема `infobase.export` — только
+Закрытая схема `download` принимает `state` (`working` или `database`),
+`output` и необязательное имя `extension`; схема `infobase.dump` — только
 `output`. Назначение задаётся внутри рабочего пространства; выбор
 провайдера не принимается в аргументах MCP. Успешный ответ раннера для другого
 назначения отвергается. Unica отдельно проверяет полученный файл:
@@ -29,9 +35,9 @@ gap: https://github.com/IngvarConsulting/unica/issues/974
 в публичную квитанцию.
 
 Поле `command` в ответе preview и применения должно называть вызванную
-команду раннера. Например, для `cf.export` это
+команду раннера. Например, для `download` это
 `infobase.configuration.export`; ответ с `infobase.dump` или с публичным
-именем `cf.export` отклоняется как `invalid_result`.
+именем `download` отклоняется как `invalid_result`.
 
 Проверки используют управляемый раннер и реальные файлы; полный путь
 preview/apply проверен на CF, аргументы CFE и DT — отдельно.

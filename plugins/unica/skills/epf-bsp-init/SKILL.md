@@ -16,9 +16,10 @@ allowed-tools:
 - Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
-выбирай только операцию с `implemented: true` и не выдумывай аргументов
-записи с `argsSchema: null`; превью исполнением не является. Не обходи
-контракт прямым runner-ом.
+при `implemented: true` используй опубликованную `argsSchema`; при
+`support.state: limited` разрешено только подмножество `support.supportedArgs`.
+При `support.state: unavailable` остановись; не выдумывай аргументов при
+`argsSchema: null`. Превью исполнением не является. Не обходи контракт прямым runner-ом.
 
 ## Usage
 
@@ -212,13 +213,14 @@ allowed-tools:
 - Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
-выбирай только операцию с `implemented: true` и не выдумывай аргументов
-записи с `argsSchema: null`; превью исполнением не является. Не обходи
-контракт прямым runner-ом.
+при `implemented: true` используй опубликованную `argsSchema`; при
+`support.state: limited` разрешено только подмножество `support.supportedArgs`.
+При `support.state: unavailable` остановись; не выдумывай аргументов при
+`argsSchema: null`. Превью исполнением не является. Не обходи контракт прямым runner-ом.
 
 - Добавить ещё команду: `/epf-bsp-add-command`
 - Добавить форму: `unica.apply` с операцией `form.add` (словарь операций отдаёт `unica.view` в секции `can`)
 - Добавить макет: `/meta-edit` (операция `add` по коллекции `templates`)
 - Для runtime-сборки сначала запросить словарь `unica.run {}` и использовать
-  `artifact.build` только когда операция помечена `implemented: true`; не
+  `make` только когда операция помечена `implemented: true`; не
   угадывать аргументы при `argsSchema: null` и не считать preview собранным `.epf`.

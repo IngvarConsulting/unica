@@ -1,7 +1,6 @@
 ---
 id: INV.WIRE.SOURCE-IMPORT-APPLIES-THE-PREVIEWED-MODES
 check:
-  - crates/unica-coder/src/infrastructure/daemon/server.rs::v5_source_import_prepares_before_source_admission_and_keeps_the_revision_gate
   - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::preview_plans_every_declared_source_set_with_its_mode_without_dispatching_designer
   - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::preview_of_one_source_set_with_full_rebuild_asks_the_runner_for_exactly_that
   - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::preview_refuses_other_sets_a_dispatched_designer_and_edt_sources
@@ -11,6 +10,10 @@ gap: https://github.com/IngvarConsulting/unica/issues/950
 ---
 
 # Импорт исходников подтверждает состав и режимы своего плана
+
+Правило относится к сохранённому внутреннему обработчику `source.import`.
+Это имя снято с публичной поверхности. Обычный `push` пока недоступен:
+описанные ниже проверки не доказывают его целевую семантику раннера 1.0.
 
 Preview `source.import` не запускает конфигуратор и называет каждый
 выбранный набор исходников с режимом `full` или `partial`. Без `sourceSet`

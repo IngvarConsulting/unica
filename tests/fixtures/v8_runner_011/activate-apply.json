@@ -1,0 +1,28 @@
+{
+  "ok": true,
+  "command": "extensions",
+  "duration_ms": 7058,
+  "data": {
+    "provider": {
+      "selected": "ibcmd",
+      "origin": {
+        "kind": "override",
+        "file": "v8project.yaml"
+      }
+    },
+    "ok": true,
+    "provider_dispatched": true,
+    "steps": [
+      {
+        "target": "UnicaRunnerProbe",
+        "action": "activate",
+        "ok": true,
+        "message": null,
+        "duration_ms": 7058
+      }
+    ],
+    "duration_ms": 7058
+  },
+  "warnings": [],
+  "steps": []
+}

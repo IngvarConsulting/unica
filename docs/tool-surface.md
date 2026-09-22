@@ -136,11 +136,12 @@ List canonical runtime operations and their invocation contract, or preview/exec
 | `args` | object | нет | Typed arguments for the selected operation. |
 | `dryRun` | boolean | нет | Required by previewApply operations: true returns a non-mutating plan and revision; false requires ifRev and applies that plan. |
 | `ifRev` | string | нет | Revision returned by a prior preview of the same previewApply operation; required when dryRun is false. |
-| `op` | string | нет | Canonical operation name; omit to list operation status. |
+| `infobase` | string | нет | Named infobase; defaults to origin. The runner 0.11 adapter supports only origin. |
+| `op` | string | нет | Runner 1.0 operation name; omit to list the target dictionary and adapter support. |
 
-**Результат сейчас:** Вызов без `op` до source admission возвращает закрытый словарь направленных runtime-намерений, каждому из которых нужна платформа или база; весь словарь реализован — `infobase.create`, `source.import`, `source.export`, `artifact.build`, `cf.export`, `cf.import`, `infobase.export`, `infobase.import` и `client.run`; создание, обмен с исходниками, сборка, выгрузки и загрузки используют неисполняющий preview v8-runner, revision-fenced apply и независимую квитанцию файла, а терминальный `client.run` запускает клиента сразу с необязательным превью и без забора (отвечают типизированным `data`)
+**Результат сейчас:** Словарь раннера 1.0 через типизированный unica.run: download, make, infobase.dump, infobase.restore, launch, extensions.list, extensions.set. Push допускает только удаление расширения; отправка исходников, pull, upload, apply, reset и infobase.create недоступны на адаптере 0.11. Доступность и схемы публикуются вместе; другая база не подменяется origin. (отвечают типизированным `data`)
 
-**Целевой контракт:** Нереализованных операций ноль; дальше — семейство операций над расширениями базы отдельным решением словаря
+**Целевой контракт:** Неполностью реализованных операций шесть: один ограниченный push и пять недоступных режима; обновление адаптера должно сохранить смысл публичных запросов.
 
 **Сценарии:**
 

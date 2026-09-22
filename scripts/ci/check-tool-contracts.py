@@ -157,12 +157,17 @@ def validate_v8_runner_failed_partial_receipt(
     # что раннер отказал до платформы, а ошибку подписал платформенной.
     data = closed_mapping(
         root["data"],
-        {"ok", "provider_dispatched", "steps", "duration_ms"},
+        {"ok", "provider_dispatched", "provider", "steps", "duration_ms"},
         "build data",
     )
     error = closed_mapping(root["error"], {"code", "kind", "message"}, "runner error")
     if data is None or error is None:
         return errors
+    receipt = data["provider"]
+    if not isinstance(receipt, dict) or receipt.get("selected") != "designer":
+        errors.append("partial-load receipt must name the selected designer provider")
+    elif not isinstance(receipt.get("origin"), dict) or receipt["origin"].get("kind") not in {"default", "override"}:
+        errors.append("partial-load receipt must name its provider origin")
     for label, duration in [
         ("failure envelope", root["duration_ms"]),
         ("build data", data["duration_ms"]),
@@ -317,7 +322,7 @@ fn main() {
                 [
                     f"workPath: '{yaml_path(work_path)}'",
                     "format: DESIGNER",
-                    "builder: DESIGNER",
+                    "providers: {build: designer, make: designer}",
                     "infobase:",
                     f"  connection: 'File={yaml_path(infobase_path)}'",
                     "build:",
@@ -701,7 +706,7 @@ fn main() {{
                 [
                     f"workPath: '{yaml_path(work_path)}'",
                     "format: DESIGNER",
-                    "builder: DESIGNER",
+                    "providers: {build: designer, make: designer}",
                     "infobase:",
                     f"  connection: 'File={yaml_path(infobase_path)}'",
                     "source-set:",
@@ -848,7 +853,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     f"workPath: '{yaml_path(work_path)}'",
                     "execution_timeout: 30000",
                     "format: DESIGNER",
-                    "builder: DESIGNER",
+                    "providers: {build: designer, make: designer}",
                     "infobase:",
                     f"  connection: 'File={yaml_path(infobase_path)}'",
                     "source-set:",

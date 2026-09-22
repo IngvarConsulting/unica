@@ -11,9 +11,10 @@ description: "Размещение кода 1С по модулям. Испол�
 - Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
-выбирай только операцию с `implemented: true` и не выдумывай аргументов
-записи с `argsSchema: null`; превью исполнением не является. Не обходи
-контракт прямым runner-ом.
+при `implemented: true` используй опубликованную `argsSchema`; при
+`support.state: limited` разрешено только подмножество `support.supportedArgs`.
+При `support.state: unavailable` остановись; не выдумывай аргументов при
+`argsSchema: null`. Превью исполнением не является. Не обходи контракт прямым runner-ом.
 - Use `unica.docs` with `source: "development-standard"` for the standards about module hosting: 455, 469, 474, 486, 556, 679, 697, 724, 746, and diagnostics АПК:73, АПК:80, АПК:85, АПК:90, АПК:125, АПК:363, АПК:435-439, АПК:444, АПК:1245. These are standards, not evidence of runtime behavior; confirm the wording before citing one.
 - Use `unica.view` on the role node when the module enters privileged mode or carries the privileged flag.
 - Do not call internal analyzer, runtime, standards, or package adapters directly. They are hidden behind MCP `unica`.
