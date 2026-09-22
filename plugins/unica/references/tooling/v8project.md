@@ -110,8 +110,7 @@ has global `format: EDT`.
 ## Autodetected source-sets
 
 A workspace without `v8project.yaml` still gets a source map. Autodetection
-looks only in a closed catalog of layouts (ADR-0075,
-`INV-SOURCE-AUTODETECT-CATALOG`) and never competes with the file: one declared
+looks only in a closed catalog of layouts and never competes with the file: one declared
 source-set replaces autodetection entirely.
 
 | Layout | Source-set |

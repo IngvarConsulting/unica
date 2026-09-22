@@ -581,18 +581,6 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `tests/ci/test_product_contracts.py`
 - **Scope:** source
 
-### INV-APP-SUPPORT-STATE — Состояние поддержки читается по логической цели
-
-- **Rule:** Предметные читатели получают состояние поддержки только через
-  доменный `SupportStateReader` по логической цели (`ResolvedTarget` либо
-  `ResolvedSubsystemTarget`); отсутствие реализации поставщика и недоступность
-  свидетельства являются ошибками, а не состоянием `notSupported`, и
-  физическая раскладка marker-а остаётся внутри инфраструктуры конкретного
-  поставщика.
-- **Decision:** ADR-0054
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/application_ports.rs`
-- **Scope:** source, runtime
-
 ### INV-APP-CONFIG-SNAPSHOT — Конфигурация вызова изолирована рабочим пространством
 
 - **Rule:** Для `unica.code.search`, `unica.code.definition`,
@@ -837,21 +825,6 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/project_sources.rs`
 - **Check:** `doc-assert` — `tests/ci/test_unica_skills.py`
 - **Scope:** runtime, source
-
-### INV-SOURCE-AUTODETECT-CATALOG — Автообнаружение идёт по закрытому каталогу раскладок
-
-- **Rule:** Рабочее пространство без `v8project.yaml` получает наборы исходников
-  только из закрытого каталога раскладок, общего для обоих маршрутов дискавери
-  вместе со списком маркеров корня: и сам каталог раскладки, и его записи
-  считаются кандидатами, только когда они настоящие каталоги, открытые без
-  перехода по ссылке, а определённо непригодное пропускается вместо обрыва —
-  ошибкой остаётся лишь отказ, оставивший вопрос без ответа; набор называется именем
-  держащего его каталога дословно, имя `main` остаётся за базовой
-  конфигурацией, пока она его занимает, и сам листинг каталога фиксируется в
-  записи о происхождении карты как вход дискавери.
-- **Decision:** ADR-0075
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/project_sources.rs`
-- **Scope:** source, runtime
 
 ### INV-SOURCE-PLATFORM-XML-ONLY — Нативные операции с XML требуют формата platform XML
 

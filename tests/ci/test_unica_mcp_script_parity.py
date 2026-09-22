@@ -1759,7 +1759,7 @@ LOGICAL_READER_TARGETS: dict[str, dict[str, Any]] = {
     "unica.cf.validate": {"address": None},
 }
 
-# ADR-0054: path-form examples of support-aware readers must still resolve to
+# Path-form examples of support-aware readers must still resolve to
 # registered logical owners. Keep the public selector form under test while
 # routing the synthetic execution through the same objects as logical examples.
 REGISTERED_SUPPORT_READER_PATHS: dict[str, tuple[str, str]] = {
