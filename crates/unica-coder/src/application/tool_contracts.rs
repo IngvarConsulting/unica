@@ -824,7 +824,7 @@ fn diagnostics_input_schema() -> Value {
 }
 
 /// The closed tagged union of `unica.xdto.edit` operations, placed
-/// directly in `properties.operations.items` per ADR-0025 §4 — no
+/// directly in `properties.operations.items` in the legacy schema — no
 /// `allOf`/`if`/`then`/`$ref`, every variant closed and naming its own
 /// required fields. Field semantics are exactly what the package writer read
 /// before the array form; only the shape moved.
@@ -3643,7 +3643,7 @@ pub(crate) mod tests {
 
     /// The published, host-visible operation union.
     ///
-    /// ADR-0025 keeps the union kind-agnostic so it survives a host that renders
+    /// The legacy schema keeps the union kind-agnostic so it survives a host that renders
     /// `properties` alone; per-kind legality is the writer's, which answers
     /// `unsupported_kind` naming the exact field.
     fn metadata_operation_union(schema: &Value) -> &Value {
@@ -5814,7 +5814,7 @@ pub(crate) mod tests {
         // Публикуемый `pattern` читает ECMA-262, где `\p{...}` без флага `u`
         // не класс символов. Наружу поэтому уходит сегментная форма соседних
         // `meta.*`-схем: она ловит форму адреса, а идентификатор 1С остаётся
-        // за парсером — тем же разделением обязанностей, что и в ADR-0025.
+        // за парсером.
         for (field, invalid) in [
             ("metadataPath", "Role.123"),
             ("objectName", "Catalog.123"),

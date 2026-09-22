@@ -5,7 +5,7 @@
 
 ## Контекст
 
-ADR-0025 закрепил четыре предметных инструмента `unica.meta.*`, закрытый union
+Прежний контракт закрепил четыре предметных инструмента `unica.meta.*`, закрытый union
 из пяти вариантов операций и логический адрес `sourceSet + metadataPath`.
 Чтение `predefinedItems` уже входит в `unica.meta.info`, но записывающего
 представления для предопределённых элементов нет. Полный компилятор объекта или
@@ -35,7 +35,7 @@ writer-а выбирал `Rights.xml` физическим путём, прин�
    для `ChartOfCharacteristicTypes`; `accountType`, `offBalance`, `order`,
    `accountingFlags`, `extDimensionTypes` для `ChartOfAccounts`;
    `actionPeriodIsBase` для `ChartOfCalculationTypes`.
-   Публикуемая inline-схема операций остаётся установленным ADR-0025
+   Публикуемая inline-схема операций остаётся установленным прежде
    независимым от владельца надмножеством. Закрытое доменное преобразование
    сужает его по `kind` для `meta.add` и корню `metadataPath` для `meta.edit`,
    отклоняя поле другого владельца как `unsupported_kind`; условные ветви и

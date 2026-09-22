@@ -20,7 +20,7 @@ XML, строят preview и публикуются через общую тра
 `unica.meta.info` уже умеет явно читать `predefinedItems`, но
 `unica.meta.edit` не представляет их структурой. Возвращать удалённые
 `upsert-predefined`, строковые `Operation/Value` или `DefinitionFile` означало
-бы создать вторую алгебру рядом с пятью принятыми вариантами ADR-0025.
+бы создать вторую алгебру рядом с пятью принятыми вариантами прежней схемы.
 
 Для роли физический селектор `RightsPath` раскрывает раскладку выгрузки,
 top-level `ObjectName/Name/Value` не допускает атомарной последовательности, а
@@ -53,7 +53,7 @@ top-level `ObjectName/Name/Value` не допускает атомарной п�
 | `ChartOfAccounts` | `accountType`, `offBalance`, `order`, `accountingFlags`, `extDimensionTypes` |
 | `ChartOfCalculationTypes` | `actionPeriodIsBase` |
 
-Inline-схема операций по ADR-0025 остаётся независимым от владельца закрытым
+Inline-схема операций прежнего контракта остаётся независимым от владельца закрытым
 надмножеством: она отсекает неизвестные поля и неверные типы, а сочетание поля с
 конкретным `kind` или корнем `metadataPath` проверяет доменное преобразование с
 `unsupported_kind`. Owner-specific `allOf`/`if`/`then` в схему не возвращаются.

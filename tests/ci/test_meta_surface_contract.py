@@ -671,7 +671,7 @@ class MetaSurfaceContractTests(unittest.TestCase):
             ),
         )
 
-        # ADR-0025: the operation union is published directly as
+        # The legacy operation union is published directly as
         # `properties.operations.items`, so a host that renders only
         # `properties` still sees the discriminated variants. It carries no
         # conditional composition and no owner-kind branching.
