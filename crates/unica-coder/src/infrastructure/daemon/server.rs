@@ -361,6 +361,10 @@ pub(super) enum V5ActorBoundCanonicalInvocation {
         invocation: Box<ActorBoundInvocation>,
         service: Arc<dyn CanonicalInvocationService>,
     },
+    Extensions {
+        extensions: Arc<super::v13_extensions::PreparedExtensions>,
+        workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
+    },
     InfobaseExport {
         export: Arc<super::v13_infobase_exports::PreparedInfobaseExport>,
         workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
@@ -414,6 +418,9 @@ pub(super) enum V5PreparedCanonicalInvocation {
         invocation: Box<ActorBoundInvocation>,
         class: ExecutionClass,
         service: Arc<dyn CanonicalInvocationService>,
+    },
+    Extensions {
+        extensions: Arc<super::v13_extensions::PreparedExtensions>,
     },
     InfobaseExport {
         export: Arc<super::v13_infobase_exports::PreparedInfobaseExport>,
@@ -533,6 +540,19 @@ impl V5CanonicalInvocationRuntime {
         }
         if let Some(result) = super::v13_run_dictionary::execute_run_dictionary(&request) {
             return Err(V5CanonicalPrepareError::Direct(Box::new(result)));
+        }
+        match super::v13_extensions::prepare(&request) {
+            super::v13_extensions::Preparation::NotApplicable => {}
+            super::v13_extensions::Preparation::Rejected(result) => {
+                return Err(V5CanonicalPrepareError::Rejected(result))
+            }
+            super::v13_extensions::Preparation::Ready(extensions) => {
+                let workspace_identity_hash = extensions.workspace_identity_hash();
+                return Ok(V5ActorBoundCanonicalInvocation::Extensions {
+                    extensions,
+                    workspace_identity_hash,
+                });
+            }
         }
         match super::v13_infobase_exports::prepare(&request) {
             super::v13_infobase_exports::Preparation::NotApplicable => {}
@@ -667,7 +687,8 @@ impl V5ActorBoundCanonicalInvocation {
     pub(super) fn response_deadline(&self) -> Option<InvocationResponseDeadline> {
         match self {
             Self::Workspace { invocation, .. } => Some(invocation.response_deadline().clone()),
-            Self::InfobaseExport { .. }
+            Self::Extensions { .. }
+            | Self::InfobaseExport { .. }
             | Self::ClientRun { .. }
             | Self::CfImport { .. }
             | Self::InfobaseCreate { .. }
@@ -686,7 +707,11 @@ impl V5ActorBoundCanonicalInvocation {
     pub(super) fn workspace_identity_hash(&self) -> &crate::domain::invocation::SafeIdentityHash {
         match self {
             Self::Workspace { invocation, .. } => invocation.workspace_identity_hash(),
-            Self::InfobaseExport {
+            Self::Extensions {
+                workspace_identity_hash,
+                ..
+            }
+            | Self::InfobaseExport {
                 workspace_identity_hash,
                 ..
             }
@@ -734,6 +759,9 @@ impl V5ActorBoundCanonicalInvocation {
                     service,
                 })
             }
+            Self::Extensions { extensions, .. } => {
+                Ok(V5PreparedCanonicalInvocation::Extensions { extensions })
+            }
             Self::InfobaseExport { export, .. } => {
                 Ok(V5PreparedCanonicalInvocation::InfobaseExport { export })
             }
@@ -766,7 +794,8 @@ impl V5PreparedCanonicalInvocation {
             ExecutionClass::KnownLong(KnownLongReason::ExternalProcess);
         match self {
             Self::Workspace { class, .. } => class,
-            Self::InfobaseExport { .. }
+            Self::Extensions { .. }
+            | Self::InfobaseExport { .. }
             | Self::ClientRun { .. }
             | Self::CfImport { .. }
             | Self::InfobaseCreate { .. }
@@ -801,6 +830,7 @@ impl V5PreparedCanonicalInvocation {
                     )
                 })?
             }
+            Self::Extensions { extensions } => Ok(extensions.execute(cancellation)),
             Self::InfobaseExport { export } => Ok(export.execute(cancellation)),
             Self::ClientRun { launch } => Ok(launch.execute(cancellation)),
             Self::CfImport { import } => Ok(import.execute(cancellation)),
@@ -1305,6 +1335,49 @@ pub(crate) mod actor_capacity_tests {
             prepared.execution_class(),
             ExecutionClass::KnownLong(KnownLongReason::ExternalProcess)
         ));
+    }
+
+    #[test]
+    fn extension_operations_bind_before_source_admission_as_known_long_tasks() {
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\ninfobase:\n  connection: 'File=base'\n",
+        )
+        .unwrap();
+        for (op, args) in [
+            ("extension.list", serde_json::json!({})),
+            ("extension.info", serde_json::json!({"name":"Test"})),
+            (
+                "extension.create",
+                serde_json::json!({"name":"Test","namePrefix":"T_"}),
+            ),
+            ("extension.delete", serde_json::json!({"name":"Test"})),
+            (
+                "extension.activate",
+                serde_json::json!({"name":"Test","active":true}),
+            ),
+        ] {
+            let runtime = bootstrap_runtime();
+            let request = InvocationRequest::new(
+                ToolIdentity::Run,
+                serde_json::json!({"op":op,"args":args,"dryRun":true}),
+                workspace.path().display().to_string(),
+                7_000,
+            )
+            .unwrap();
+            let bound = runtime
+                .bind(request)
+                .expect("extension admission without a source set");
+            assert!(matches!(
+                bound,
+                V5ActorBoundCanonicalInvocation::Extensions { .. }
+            ));
+            assert_eq!(
+                bound.prepare().unwrap().execution_class(),
+                &ExecutionClass::KnownLong(KnownLongReason::ExternalProcess)
+            );
+        }
     }
 
     #[test]

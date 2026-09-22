@@ -52,7 +52,6 @@ source-set:
 workPath: build/runtime
 execution_timeout: 300000
 format: DESIGNER
-builder: DESIGNER
 infobase:
   connection: 'File=build/ib'
 source-set:

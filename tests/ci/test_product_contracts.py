@@ -921,6 +921,7 @@ class ProductContractTests(unittest.TestCase):
                 # ответа `build`; `platform_failure` удостоверяет, что
                 # провайдер был вызван, — значит здесь он обязан быть `true`.
                 "provider_dispatched": True,
+                "provider": {"selected": "designer", "origin": {"kind": "default"}},
                 "steps": [
                     {
                         "source_set": "main",

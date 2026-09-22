@@ -2,8 +2,8 @@
 id: CTR.WIRE.TOOL-SURFACE
 status: active
 governs: product
-version: 6
-decision: DEC.2026-09-03.INFOBASE-EXPORT-RUN-SLICE
+version: 7
+decision: DEC.2026-09-22.INSTALLED-EXTENSIONS-AND-RUNNER-RECEIPTS
 producer: scripts/ci/generate-tool-surface.py
 consumers: [review, docs]
 check: crates/unica-coder/src/interfaces/mcp.rs::production_mcp_surface_exposes_only_canonical_v13_tools_and_task_compatibility
@@ -24,7 +24,7 @@ scope: [wire]
 аргументы описаны; compatibility payload ограничен 16 KiB.
 
 `unica.run` без `op` доступен до source admission и возвращает закрытый словарь
-из двенадцати направленных runtime-намерений вместе с назначением, `effects`,
+направленных runtime-намерений и операций установленных расширений вместе с назначением, `effects`,
 режимом `execution`, честным `implemented` и требованиями preview/fence.
 Имена отдельно выражают source build, CF/CFE configuration transfer и DT
 infobase transfer. Реализованная операция также сообщает точную `argsSchema`;
@@ -36,3 +36,7 @@ applied-вызов связывается с preview через `ifRev`.
 admission. Их schema не принимает выбор provider: v8-runner выбирает Designer
 или ibcmd и возвращает этот выбор данными preview. Apply повторяет preview,
 сверяет `ifRev` и публикует проверенную квитанцию CF/CFE/DT через Task transport.
+
+`extension.list/info/create/delete/activate` используют previewApply через
+раннер с квитанцией provider. Чтение состава запускает платформенный сеанс;
+create регистрирует пустое расширение, CFE загружается через cf.import.

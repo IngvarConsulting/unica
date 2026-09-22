@@ -47,6 +47,11 @@ pub(crate) enum RunIntent {
     InfobaseExport,
     InfobaseImport,
     ClientRun,
+    ExtensionList,
+    ExtensionInfo,
+    ExtensionCreate,
+    ExtensionDelete,
+    ExtensionActivate,
 }
 
 #[derive(Debug)]
@@ -69,6 +74,11 @@ impl RunOperation {
             RunIntent::InfobaseExport => "infobase.export",
             RunIntent::InfobaseImport => "infobase.import",
             RunIntent::ClientRun => "client.run",
+            RunIntent::ExtensionList => "extension.list",
+            RunIntent::ExtensionInfo => "extension.info",
+            RunIntent::ExtensionCreate => "extension.create",
+            RunIntent::ExtensionDelete => "extension.delete",
+            RunIntent::ExtensionActivate => "extension.activate",
         }
     }
 
@@ -98,6 +108,11 @@ impl RunOperation {
             RunIntent::InfobaseImport => {
                 "Import a DT transfer file as the infobase; the mode states whether an absent infobase is created or the data of an existing one is discarded."
             }
+            RunIntent::ExtensionList => "Read installed extensions through a previewed platform session. Name prefixes are not reported by the platform.",
+            RunIntent::ExtensionInfo => "Read one installed extension by its platform name through a previewed session.",
+            RunIntent::ExtensionCreate => "Register an empty extension in the infobase. Import CFE contents separately with cf.import.",
+            RunIntent::ExtensionDelete => "Delete the named extension from the infobase.",
+            RunIntent::ExtensionActivate => "Set the named installed extension active or inactive.",
             RunIntent::ClientRun => "Launch an interactive 1C client session.",
         }
     }
@@ -120,11 +135,28 @@ impl RunOperation {
             | RunIntent::CfImport
             | RunIntent::InfobaseImport => &["infobase"],
             RunIntent::ClientRun => &["clientSession"],
+            RunIntent::ExtensionList | RunIntent::ExtensionInfo => &["infobaseRead"],
+            RunIntent::ExtensionCreate
+            | RunIntent::ExtensionDelete
+            | RunIntent::ExtensionActivate => &["infobase"],
         }
     }
 
     pub(crate) fn args_schema(&self) -> Option<Value> {
         match self.intent {
+            RunIntent::ExtensionList => {
+                Some(json!({"type":"object","additionalProperties":false,"properties":{}}))
+            }
+            RunIntent::ExtensionInfo | RunIntent::ExtensionDelete => Some(
+                json!({"type":"object","additionalProperties":false,"required":["name"],"properties":{"name":{"type":"string","description":"Installed extension name, a 1C identifier."}}}),
+            ),
+            RunIntent::ExtensionActivate => Some(
+                json!({"type":"object","additionalProperties":false,"required":["name","active"],"properties":{"name":{"type":"string","description":"Installed extension name, a 1C identifier."},"active":{"type":"boolean","description":"True to activate; false to deactivate without deleting."}}}),
+            ),
+            RunIntent::ExtensionCreate => Some(
+                json!({"type":"object","additionalProperties":false,"required":["name","namePrefix"],"properties":{"name":{"type":"string","description":"Name for the new empty extension, a 1C identifier."},"namePrefix":{"type":"string","description":"Prefix for added objects, a 1C identifier."},"synonym":{"type":"string","description":"Optional synonym in NStr format."},"purpose":{"type":"string","enum":["customization","add-on","patch"],"description":"Optional platform extension purpose."}}}),
+            ),
+
             RunIntent::CfExport => Some(json!({
                 "type": "object",
                 "additionalProperties": false,
@@ -428,6 +460,11 @@ fn run_dictionary() -> Vec<RunOperation> {
         RunIntent::InfobaseExport,
         RunIntent::InfobaseImport,
         RunIntent::ClientRun,
+        RunIntent::ExtensionList,
+        RunIntent::ExtensionInfo,
+        RunIntent::ExtensionCreate,
+        RunIntent::ExtensionDelete,
+        RunIntent::ExtensionActivate,
     ]
     .into_iter()
     .map(|intent| RunOperation {
@@ -444,6 +481,11 @@ fn run_dictionary() -> Vec<RunOperation> {
                 | RunIntent::InfobaseExport
                 | RunIntent::InfobaseImport
                 | RunIntent::ClientRun
+                | RunIntent::ExtensionList
+                | RunIntent::ExtensionInfo
+                | RunIntent::ExtensionCreate
+                | RunIntent::ExtensionDelete
+                | RunIntent::ExtensionActivate
         ),
         intent,
     })
@@ -568,6 +610,27 @@ mod tests {
     /// Роль объявлена закрытым набором и **без умолчания**: отсутствие роли
     /// не равно `lexical`, оно означает поиск силами самой Unica, без
     /// внешнего провайдера и без его цены.
+    #[test]
+    fn extension_operations_are_previewed_tasks_with_closed_arguments() {
+        let catalog = catalog_for(crate::application::tool_contracts::SurfaceRelease::V13).unwrap();
+        for name in [
+            "extension.list",
+            "extension.info",
+            "extension.create",
+            "extension.delete",
+            "extension.activate",
+        ] {
+            let op = catalog
+                .run_dictionary
+                .iter()
+                .find(|op| op.name() == name)
+                .expect("extension operation in dictionary");
+            assert!(op.implemented);
+            assert_eq!(op.execution(), "previewApply");
+            assert_eq!(op.args_schema().unwrap()["additionalProperties"], false);
+        }
+    }
+
     #[test]
     fn search_publishes_three_provider_roles_and_stays_literal_without_one() {
         let catalog = catalog_for(SurfaceRelease::V13).expect("canonical catalog");
@@ -813,6 +876,11 @@ mod tests {
                 RunIntent::InfobaseExport,
                 RunIntent::InfobaseImport,
                 RunIntent::ClientRun,
+                RunIntent::ExtensionList,
+                RunIntent::ExtensionInfo,
+                RunIntent::ExtensionCreate,
+                RunIntent::ExtensionDelete,
+                RunIntent::ExtensionActivate,
             ]
         );
         assert!(catalog
@@ -842,7 +910,12 @@ mod tests {
                 "cf.import",
                 "infobase.export",
                 "infobase.import",
-                "client.run"
+                "client.run",
+                "extension.list",
+                "extension.info",
+                "extension.create",
+                "extension.delete",
+                "extension.activate",
             ],
             "реализован весь словарь: создание базы, все три пары export/import, сборка артефакта и терминальный запуск клиента; проектный файл в словаре не числится вовсе"
         );
@@ -941,6 +1014,11 @@ mod tests {
                 "infobase.export",
                 "infobase.import",
                 "client.run",
+                "extension.list",
+                "extension.info",
+                "extension.create",
+                "extension.delete",
+                "extension.activate",
             ],
             "словарь `run` различает сборку исходников, перенос конфигурации и перенос базы целиком — и не держит операции, которым платформа не нужна"
         );
@@ -974,7 +1052,12 @@ mod tests {
                 "cf.import",
                 "infobase.export",
                 "infobase.import",
-                "client.run"
+                "client.run",
+                "extension.list",
+                "extension.info",
+                "extension.create",
+                "extension.delete",
+                "extension.activate",
             ],
             "реализован весь словарь: создание базы, все три пары export/import, сборка артефакта и терминальный запуск клиента; проектный файл в словаре не числится вовсе"
         );
@@ -1109,8 +1192,17 @@ mod tests {
         // глагол считается относительно базы — `export` наружу, `import`
         // внутрь. Одно направление не называется двумя словами
         // (DEC.2026-09-15.RUN-NAMES-READ-AS-LAYER-AND-DIRECTION).
-        const LAYERS: [&str; 5] = ["infobase", "cf", "source", "artifact", "client"];
-        const VERBS: [&str; 5] = ["create", "export", "import", "build", "run"];
+        const LAYERS: [&str; 6] = [
+            "infobase",
+            "cf",
+            "source",
+            "artifact",
+            "client",
+            "extension",
+        ];
+        const VERBS: [&str; 9] = [
+            "create", "export", "import", "build", "run", "list", "info", "delete", "activate",
+        ];
         const RETIRED_VERBS: [&str; 4] = ["dump", "restore", "load", "convert"];
         let catalog =
             catalog_for(SurfaceRelease::V13).expect("v0.13 catalog must be test-loadable");
@@ -1155,6 +1247,11 @@ mod tests {
                 "infobase.export",
                 "infobase.import",
                 "client.run",
+                "extension.list",
+                "extension.info",
+                "extension.create",
+                "extension.delete",
+                "extension.activate",
             ]
         );
     }

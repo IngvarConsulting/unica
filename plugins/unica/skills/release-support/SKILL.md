@@ -35,6 +35,22 @@ Support-state checks come from `unica.view` on the configuration root (`support`
 4. Run `unica.check` on the changed modules; build and update go through `unica.run` (`source.import`, `artifact.build`, `cf.import`) with a preview and its `ifRev`; test runs are outside the v0.13 surface, so record them as unverified unless separate evidence is supplied.
 5. Produce a release readiness note: blocking findings, migration steps, rollback boundary, manual checks, and Unica MCP contract gaps.
 
+## Installed extensions
+
+Исходники расширения и расширение, установленное в базе, — разные предметы.
+Состав базы спрашивай через `unica.run` с `op: "extension.list"`, `args: {}`,
+`dryRun: true`, затем повтори с `dryRun: false` и полученным `ifRev`.
+Для одного расширения — `extension.info` с `args: {"name": "ИмяРасширения"}`.
+Превью платформу не запускает и состав базы не читает; исполнение открывает сеанс.
+Поля inventory приходят от платформы, порядок не гарантирован. Префикс имени
+читается из исходников расширения после `source.export`, в inventory его нет.
+
+`extension.create` регистрирует пустое расширение (`name`, `namePrefix`,
+необязательные `synonym` в NStr и `purpose`). Содержимое CFE устанавливается
+или обновляется через `cf.import` с `extension`. `extension.activate` принимает
+`name` и boolean `active`; `extension.delete` — `name`. Каждая операция требует
+своего preview и `ifRev`; выключение активности не равно удалению.
+
 ## Review checklist
 
 - Поставка и поддержка are explicit release decisions, not hidden in generated churn.

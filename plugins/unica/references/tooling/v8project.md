@@ -30,7 +30,6 @@ For a new repository with no workspace, call `unica.view {}` first. Оно
 workPath: 'build'
 execution_timeout: 300000
 format: DESIGNER
-builder: DESIGNER
 infobase:
   connection: 'File=build/ib'
 source-set:
@@ -60,7 +59,17 @@ connections also require the documented `infobase.dbms` block.
 `v8project.local.yaml` is loaded automatically next to the primary config. It
 may override local-only `workPath`, `infobase`, `tools`, `tests`, and `mcp`
 settings. It is not selectable by a call and must not redefine shared
-`source-set`, `format`, `builder`, or `execution_timeout`.
+`source-set`, `format`, or `execution_timeout`.
+
+## Runner 0.11 migration
+
+The top-level `builder` key is rejected. Remove it to use the runner's per-operation
+provider defaults. If the project requires a particular executor, declare it in
+`providers`, for example `providers: {build: designer, dump: designer}`.
+Names are lowercase (`designer`, `agent`, `ibcmd`); the runner validates each
+operation/provider pair. Do not mechanically replace `builder` with one global
+provider: each operation has its own supported executors. Keep machine-specific
+overrides in `v8project.local.yaml`. Unica does not rewrite existing project files.
 
 ## Strict platform resolution
 

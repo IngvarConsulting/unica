@@ -527,7 +527,7 @@ fn inspect_infobase_target(
     })
 }
 
-fn read_yaml_config(
+pub(super) fn read_yaml_config(
     workspace_root: &std::path::Path,
     name: &str,
 ) -> Result<Option<serde_yaml::Value>, String> {

@@ -113,6 +113,11 @@ pub(super) fn run_dictionary_result() -> DomainResult {
                     | RunIntent::CfImport
                     | RunIntent::InfobaseExport
                     | RunIntent::InfobaseImport
+                    | RunIntent::ExtensionList
+                    | RunIntent::ExtensionInfo
+                    | RunIntent::ExtensionCreate
+                    | RunIntent::ExtensionDelete
+                    | RunIntent::ExtensionActivate
             );
             json!({
                 "op": operation.name(),

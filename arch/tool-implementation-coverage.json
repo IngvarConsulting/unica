@@ -94,7 +94,7 @@
     },
     "unica.run": {
       "status": "partial",
-      "reason": "The closed directional nine-operation dictionary is implemented in full: infobase creation, source import and export, artifact build, configuration-package export and import, DT export, DT restore and the terminal client launch; all but the terminal launch go through non-executing preview and revision-fenced apply.",
+      "reason": "The directional runtime operations and all five installed-extension operations are implemented; all except client.run require non-executing preview and revision-fenced apply.",
       "evidence": [{
         "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
         "test": "production_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"
@@ -116,6 +116,76 @@
     }
   },
   "runOperations": {
+    "extension.list": {
+      "status": "supported",
+      "reason": "Installed-extension operation via the pinned runner: non-executing preview, configuration/arguments/provider revision fence, bounded typed result; infobase facts are attested by the provider.",
+      "evidence": [
+        {
+          "file": "crates/unica-coder/src/infrastructure/daemon/v13_extensions.rs",
+          "test": "all_extension_operations_preview_then_apply_with_a_provider_receipt"
+        },
+        {
+          "file": "crates/unica-coder/src/infrastructure/daemon/v13_extensions.rs",
+          "test": "changed_args_config_version_or_provider_never_pass_the_extension_fence"
+        }
+      ]
+    },
+    "extension.info": {
+      "status": "supported",
+      "reason": "Installed-extension operation via the pinned runner: non-executing preview, configuration/arguments/provider revision fence, bounded typed result; infobase facts are attested by the provider.",
+      "evidence": [
+        {
+          "file": "crates/unica-coder/src/infrastructure/daemon/v13_extensions.rs",
+          "test": "all_extension_operations_preview_then_apply_with_a_provider_receipt"
+        },
+        {
+          "file": "crates/unica-coder/src/infrastructure/daemon/v13_extensions.rs",
+          "test": "changed_args_config_version_or_provider_never_pass_the_extension_fence"
+        }
+      ]
+    },
+    "extension.create": {
+      "status": "supported",
+      "reason": "Installed-extension operation via the pinned runner: non-executing preview, configuration/arguments/provider revision fence, bounded typed result; infobase facts are attested by the provider.",
+      "evidence": [
+        {
+          "file": "crates/unica-coder/src/infrastructure/daemon/v13_extensions.rs",
+          "test": "all_extension_operations_preview_then_apply_with_a_provider_receipt"
+        },
+        {
+          "file": "crates/unica-coder/src/infrastructure/daemon/v13_extensions.rs",
+          "test": "changed_args_config_version_or_provider_never_pass_the_extension_fence"
+        }
+      ]
+    },
+    "extension.delete": {
+      "status": "supported",
+      "reason": "Installed-extension operation via the pinned runner: non-executing preview, configuration/arguments/provider revision fence, bounded typed result; infobase facts are attested by the provider.",
+      "evidence": [
+        {
+          "file": "crates/unica-coder/src/infrastructure/daemon/v13_extensions.rs",
+          "test": "all_extension_operations_preview_then_apply_with_a_provider_receipt"
+        },
+        {
+          "file": "crates/unica-coder/src/infrastructure/daemon/v13_extensions.rs",
+          "test": "changed_args_config_version_or_provider_never_pass_the_extension_fence"
+        }
+      ]
+    },
+    "extension.activate": {
+      "status": "supported",
+      "reason": "Installed-extension operation via the pinned runner: non-executing preview, configuration/arguments/provider revision fence, bounded typed result; infobase facts are attested by the provider.",
+      "evidence": [
+        {
+          "file": "crates/unica-coder/src/infrastructure/daemon/v13_extensions.rs",
+          "test": "all_extension_operations_preview_then_apply_with_a_provider_receipt"
+        },
+        {
+          "file": "crates/unica-coder/src/infrastructure/daemon/v13_extensions.rs",
+          "test": "changed_args_config_version_or_provider_never_pass_the_extension_fence"
+        }
+      ]
+    },
     "infobase.create": {
       "status": "supported",
       "reason": "Creating the empty infobase declared by v8project.yaml is implemented as previewApply over v8-runner init without arguments: the preview reads the runner's step statuses and refuses an existing infobase or a project that needs an EDT workspace, apply is fenced by ifRev built from the project file, and the receipt is the runner's own repeated preview reporting nothing left to create; the infobase state is reported as attested by the provider.",
