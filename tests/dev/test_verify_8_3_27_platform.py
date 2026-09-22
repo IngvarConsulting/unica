@@ -629,7 +629,7 @@ class PlatformAliasedModuleTests(unittest.TestCase):
 
 class SemanticDirectoryTests(unittest.TestCase):
     def test_xdto_package_is_captured_as_xml_despite_its_bin_extension(self):
-        """ADR-0024 names `XDTOPackages/<Name>/Ext/Package.bin` as text XML with
+        """The package grammar names `XDTOPackages/<Name>/Ext/Package.bin` as text XML with
         root `{http://v8.1c.ru/8.1/xdto}package`. Classifying sources by suffix
         alone drops it out of the XML snapshot the corpus declares it in."""
         verifier = load_verifier()
@@ -648,7 +648,7 @@ class SemanticDirectoryTests(unittest.TestCase):
             self.assertNotIn("XDTOPackages/Corpus/Ext/Package.bin", non_xml_payloads)
 
     def test_package_bin_outside_the_xdto_layout_stays_non_xml(self):
-        """ADR-0024 grants the exception to `XDTOPackages/<Name>/Ext/Package.bin`
+        """The package grammar grants the exception to `XDTOPackages/<Name>/Ext/Package.bin`
         and to nothing else, so a file that merely shares the name keeps its
         binary classification instead of entering XML validation."""
         verifier = load_verifier()

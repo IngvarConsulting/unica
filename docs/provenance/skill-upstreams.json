@@ -760,7 +760,7 @@
           ],
           "baselineCommit": "2067778ba3bad527bd1e5850304d1c82acb81fc8",
           "decision": "ported",
-          "decisionReason": "Ported the approved logical read/edit subset and evidence-backed package grammar into native Rust and a single public MCP; broader donor tools remain outside ADR-0024."
+          "decisionReason": "Ported the approved logical read/edit subset and evidence-backed package grammar into native Rust and a single public MCP; broader donor tools remain outside this imported subset."
         }
       ],
       "lastAdaptedLocalCommit": "795505f2243cf3c93a95918467f99135af758e1b",
