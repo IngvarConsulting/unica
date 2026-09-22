@@ -424,33 +424,6 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `crates/unica-coder/src/interfaces/mcp.rs`
 - **Scope:** source, runtime
 
-### INV-MCP-CODE-SEARCH-ROLES — Поиск наблюдаем и адресуется логически
-
-- **Rule:** `unica.code.search` принимает ровно один селектор: канонический
-  непустой `sourceSet` с необязательным `metadataPath` либо переходный
-  `sourceDir`; после ошибки логического разрешения резервного перехода к
-  физическому селектору нет.
-  Поиск параллельно запускает роли `semantic`, `symbol`, `lexical`, возвращает
-  их в этом порядке с отдельным изменяемым `provider`, ждёт терминального
-  состояния каждой роли в пределах общего срока и не сравнивает локальные
-  оценки. Секция типизированно сообщает полноту, способ ранжирования, порядок,
-  точность счёта и обязательную общую причину завершения: `null` только для
-  `ok`/`empty`, иначе согласованный со статусом закрытый код и признак
-  возможности повтора; ожидание индекса после срока является допускающим
-  повтор `dependencyPending`, а не постоянной недоступностью. `empty` означает
-  только доказанный точный ноль, а
-  `limitReached` и `timedOut` сохраняют неполный префикс. Попадание содержит логическое
-  `addressed` либо ограниченное набором `unaddressable` местоположение. При
-  наличии маркера уведомлений ход и контрольные уведомления публикуются через
-  MCP;
-  отмена не возвращает частичный успех.
-- **Decision:** ADR-0056, ADR-0058
-- **Check:** `ci-test` — `crates/unica-coder/src/application/code_intelligence.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/application/tool_contracts.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/interfaces/mcp.rs`
-- **Check:** `ci-test` — `tests/ci/test_release_assessment.py`
-- **Scope:** runtime, packaged
-
 ### INV-MCP-OUTLINE-DATA — Outline возвращает типизированные данные
 
 - **Rule:** Успешный `unica.code.outline` публикует доказанную структуру модуля
@@ -650,7 +623,7 @@ Unica. Каждая запись формулирует одно нормати�
   вызовы не разрешают `OperationalConfig` и не читают `[operational]`; отдельные
   потребители сетевой политики документации и стандартов продолжают читать те
   же файлы по `INV-APP-DOCUMENTATION-NETWORK-POLICY`.
-- **Decision:** ADR-0040, ADR-0056, ADR-0058, ADR-0063
+- **Decision:** ADR-0040, ADR-0063
 - **Check:** `ci-test` — `crates/unica-coder/src/application/operational_config.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/domain/operational_config.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/operational_config.rs`
@@ -788,36 +761,6 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/workspace.rs`
 - **Check:** `ci-test` — `crates/unica-coder/tests/platform/code_intelligence_symlinked_workspace.rs`
 - **Scope:** runtime
-
-### INV-CACHE-RLM-REVISION — Готовность RLM привязана к доверенной ревизии
-
-- **Rule:** Для нормализованной пары рабочего пространства и корня исходников
-  скрытый сервис владеет одним `SourceRevisionService` с монотонным поколением,
-  версионированным SHA-256 и состояниями `Trusted`, `Reconciling`, `Untrusted`.
-  На поддерживаемой локальной файловой системе macOS тёплый снимок использует
-  доказанный событийный барьер и не обходит дерево; точное событие файла читает
-  только изменённый файл и обновляет карту корпуса. Холодный старт, неточное событие
-  каталога и потеря доверия выполняют полное согласование только там, где
-  следующий барьер может доказать непрерывность. Платформа или файловая система
-  без доказуемого барьера оставляет ревизию недоверенной, а семантический поиск
-  недоступным; повторные обходы не служат доказательством свежести. Барьер
-  отсекает то же, что и обход корпуса: служебный каталог `.build` и корень
-  кеша, лежащий строго внутри корня исходников, — кеши самой Unica лежат
-  внутри корня исходников, и барьер, сообщающий об изменениях, которых нет в
-  карте корпуса, никогда не сходится; путь-скоупированный пробел наблюдателя,
-  чьё поддерево не достигает неотсечённого корпуса, доверие не роняет. Маркер
-  готовности индекса хранит полную ревизию,
-  прежний маркер только с числом считается устаревшим, сборка или обновление
-  сверяет
-  ревизию перед публикацией, а RLM-ответ принимается только при одинаковой
-  доверенной ревизии до и после исполнения.
-- **Decision:** ADR-0057
-- **Check:** `ci-test` — `crates/unica-coder/src/domain/source_revision.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/source_revision.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform/source_revision_fence.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/workspace_index.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/workspace_services.rs`
-- **Scope:** source, runtime
 
 ### INV-CACHE-RUNTIME-ROOT-ORDER — Разрешение корня кеша runtime детерминировано
 
