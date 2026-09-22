@@ -5214,7 +5214,7 @@ pub(crate) mod tests {
             assert_eq!(
                 confirmed.is_ok(),
                 replacement_content == "A",
-                "replacement content {replacement_content}: {confirmed:?}"
+                "confirmation must accept equal content and reject changed content (fixture {replacement_content})"
             );
         }
     }
@@ -5252,7 +5252,7 @@ pub(crate) mod tests {
             assert_eq!(
                 confirmed.is_ok(),
                 replacement_content == "A",
-                "replacement content {replacement_content}: {confirmed:?}"
+                "confirmation must accept equal content and reject changed content (fixture {replacement_content})"
             );
         }
     }
