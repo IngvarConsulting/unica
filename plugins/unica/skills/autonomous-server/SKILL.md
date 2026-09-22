@@ -11,17 +11,18 @@ description: "Автономный сервер отладки 1С. Исполь
 - Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
-выбирай только операцию с `implemented: true` и не выдумывай аргументов
-записи с `argsSchema: null`; превью исполнением не является. Не обходи
-контракт прямым runner-ом.
+при `implemented: true` используй опубликованную `argsSchema`; при
+`support.state: limited` разрешено только подмножество `support.supportedArgs`.
+При `support.state: unavailable` остановись; не выдумывай аргументов при
+`argsSchema: null`. Превью исполнением не является. Не обходи контракт прямым runner-ом.
 - Do not call internal runtime, server, analyzer, or package adapters directly. They are hidden behind MCP `unica`.
 
 ## Workflow
 
 1. Identify the debug target: HTTP service, web service, web client scenario, client MCP session, or isolated infobase startup.
 2. Map project source-sets with `unica.view {}`; inspect HTTP/WebService metadata with `unica.view` on the object node and handlers with `unica.search`.
-3. Check the workspace with `unica.check {}`, then prepare the contour through `unica.run`: `infobase.create`, then `source.import`; each step is previewed with `dryRun: true` and applied with the `ifRev` the preview returned.
-4. Launch the client with `client.run` (`clientMode=thin`), then stop: an MCP client mode and a web-client URL are not on the v0.13 surface.
+3. Check the workspace with `unica.check {}`. The target bootstrap sequence is `infobase.create` then `push`, but both creation and source sending are unavailable with runner 0.11. Report this gap; use an existing prepared infobase for supported operations.
+4. Launch the client with `launch` (`clientMode=thin`), then stop: an MCP client mode and a web-client URL are not on the v0.13 surface.
 5. If the user independently provides a web URL, report it as the hand-off point for an external browser-testing tool; otherwise report that no public MCP `unica` operation currently produces a web-client URL.
 6. Analyze server artifacts: startup command/result, URL, source-set, platform mode, handler metadata, diagnostics, event log or technological log files if provided.
 
@@ -48,7 +49,7 @@ description: "Автономный сервер отладки 1С. Исполь
   "params": {
     "name": "unica.run",
     "arguments": {
-      "op": "client.run",
+      "op": "launch",
       "args": {
         "clientMode": "thin"
       }

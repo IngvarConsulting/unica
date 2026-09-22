@@ -3,6 +3,7 @@
 //! Even inventory starts a platform session, so every operation is previewApply.
 
 use super::protocol::InvocationRequest;
+use super::runner_011::Runner011ProcessRunner;
 use super::v13_infobase_exports::{
     digest_optional_workspace_file, digest_required_workspace_file, missing_runner_rejection,
     resolve_bundled_runner, runner_rejection, valid_1c_identifier, validate_provider_receipt,
@@ -14,9 +15,7 @@ use crate::domain::invocation::{DomainResult, SafeIdentityHash};
 use crate::domain::refusal::RefusalCode;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::BundledTool;
-use crate::infrastructure::internal_adapters::{
-    ProcessCommand, ProcessRunner, SystemProcessRunner,
-};
+use crate::infrastructure::internal_adapters::{ProcessCommand, ProcessRunner};
 use crate::infrastructure::redaction::redactor;
 use crate::infrastructure::workspace::discover_workspace;
 use serde_json::{json, Map, Value};
@@ -27,42 +26,34 @@ use std::sync::Arc;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Operation {
     List,
-    Info,
-    Create,
     Delete,
     Activate,
 }
 impl Operation {
     fn parse(name: &str) -> Option<Self> {
         match name {
-            "extension.list" => Some(Self::List),
-            "extension.info" => Some(Self::Info),
-            "extension.create" => Some(Self::Create),
-            "extension.delete" => Some(Self::Delete),
-            "extension.activate" => Some(Self::Activate),
+            "extensions.list" => Some(Self::List),
+            "push" => Some(Self::Delete),
+            "extensions.set" => Some(Self::Activate),
             _ => None,
         }
     }
     const fn name(self) -> &'static str {
         match self {
-            Self::List => "extension.list",
-            Self::Info => "extension.info",
-            Self::Create => "extension.create",
-            Self::Delete => "extension.delete",
-            Self::Activate => "extension.activate",
+            Self::List => "extensions.list",
+            Self::Delete => "push",
+            Self::Activate => "extensions.set",
         }
     }
     const fn command(self) -> &'static str {
         match self {
             Self::List => "list",
-            Self::Info => "info",
-            Self::Create => "create",
             Self::Delete => "delete",
             Self::Activate => "activate",
         }
     }
     const fn reads(self) -> bool {
-        matches!(self, Self::List | Self::Info)
+        matches!(self, Self::List)
     }
 }
 
@@ -147,7 +138,7 @@ impl PreparedExtensions {
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
         match resolve_bundled_runner(&self.context.cwd) {
             Ok(resolved) => self.execute_with(
-                &SystemProcessRunner,
+                &Runner011ProcessRunner,
                 &resolved.tool,
                 &resolved.version,
                 cancellation,
@@ -181,7 +172,9 @@ impl PreparedExtensions {
             .map_err(|error| self.fail(RefusalCode::InvalidState, error))?;
             let Some(config) = config else { continue };
             let Some(infobase) = config
-                .get("infobase")
+                .get("infobases")
+                .and_then(|v| v.get("origin"))
+                .or_else(|| config.get("infobase"))
                 .and_then(serde_yaml::Value::as_mapping)
             else {
                 continue;
@@ -223,12 +216,15 @@ impl PreparedExtensions {
         )
     }
 
-    fn requested(&self) -> Value {
-        if self.operation == Operation::List {
-            json!({"kind":"all"})
+    fn extension_name(&self) -> &Value {
+        &self.args[if self.operation == Operation::Delete {
+            "delete"
         } else {
-            json!({"kind":"named", "name":self.args["name"]})
-        }
+            "name"
+        }]
+    }
+    fn requested(&self) -> Value {
+        json!({"kind":"all"})
     }
     fn action(&self) -> &str {
         if self.operation == Operation::Activate && self.args["active"] == false {
@@ -261,15 +257,14 @@ impl PreparedExtensions {
             "extensions".into(),
             self.operation.command().into(),
         ];
-        for (key, flag) in [
-            ("name", "--name"),
-            ("namePrefix", "--name-prefix"),
-            ("synonym", "--synonym"),
-            ("purpose", "--purpose"),
-        ] {
-            if let Some(value) = self.args.get(key).and_then(Value::as_str) {
-                args.extend([flag.into(), value.into()]);
-            }
+        if self.operation != Operation::List {
+            args.extend([
+                "--name".into(),
+                self.extension_name()
+                    .as_str()
+                    .expect("validated name")
+                    .into(),
+            ]);
         }
         if let Some(active) = self.args.get("active").and_then(Value::as_bool) {
             args.extend(["--active".into(), if active { "yes" } else { "no" }.into()]);
@@ -379,20 +374,13 @@ impl PreparedExtensions {
                         ));
                     }
                 }
-                if self.operation == Operation::Info
-                    && (items.len() != 1 || items[0]["name"] != self.args["name"])
-                {
-                    return Err(invalid(
-                        "extension info did not return exactly the named extension",
-                    ));
-                }
             }
         } else {
             let steps = data["steps"]
                 .as_array()
                 .ok_or_else(|| invalid("extension change has no steps"))?;
             if steps.len() != 1
-                || steps[0]["target"] != self.args["name"]
+                || steps[0]["target"] != *self.extension_name()
                 || steps[0]["action"] != self.action()
                 || steps[0]["ok"] != true
             {
@@ -439,7 +427,7 @@ impl PreparedExtensions {
         }
         let encoded = serde_json::to_vec(&json!({"op":self.operation.name(),"args":self.args,"inputs":before,"workspace":self.workspace_identity_hash().as_str(),"runnerVersion":version,"provider":receipt})).expect("revision serializes");
         let revision = format!("unica-extension-sha256-v1:{:x}", Sha256::digest(encoded));
-        let plan = json!({"op":self.operation.name(),"args":self.args,"target":target,"provider":receipt["selected"],"providerOrigin":receipt["origin"]["kind"],"requiresPlatform":true});
+        let plan = json!({"op":self.operation.name(),"args":self.args,"target":target,"provider":receipt["selected"],"providerOrigin":receipt["origin"]["kind"],"requiresPlatform":true,"deletesExtensionData":self.operation == Operation::Delete});
         if self.dry_run {
             let mut result =
                 DomainResult::success("extension operation planned without starting the platform");
@@ -478,11 +466,11 @@ impl PreparedExtensions {
             );
             data["namePrefixAvailable"] = json!(false);
         } else {
-            data["name"] = self.args["name"].clone();
+            data["name"] = self.extension_name().clone();
             data["action"] = json!(self.action());
-            result
-                .changed
-                .push(json!({"infobase":true,"extension":self.args["name"],"kind":self.action()}));
+            result.changed.push(
+                json!({"infobase":true,"extension":self.extension_name(),"kind":self.action()}),
+            );
         }
         result.data = Some(data);
         result.rev = Some(revision);
@@ -492,41 +480,23 @@ impl PreparedExtensions {
 fn validate_arguments(op: Operation, args: &Map<String, Value>) -> Result<(), &'static str> {
     let allowed: &[&str] = match op {
         Operation::List => &[],
-        Operation::Info | Operation::Delete => &["name"],
-        Operation::Create => &["name", "namePrefix", "synonym", "purpose"],
+        Operation::Delete => &["delete"],
         Operation::Activate => &["name", "active"],
     };
     if args.keys().any(|key| !allowed.contains(&key.as_str())) {
-        return Err("unknown argument for extension operation");
+        return Err("unsupported argument for runner 0.11 extension operation");
     }
     if op != Operation::List
         && !args
-            .get("name")
+            .get(if op == Operation::Delete {
+                "delete"
+            } else {
+                "name"
+            })
             .and_then(Value::as_str)
             .is_some_and(|v| v.len() <= 256 && valid_1c_identifier(v))
     {
-        return Err("name must be a bounded 1C identifier");
-    }
-    if op == Operation::Create {
-        if !args
-            .get("namePrefix")
-            .and_then(Value::as_str)
-            .is_some_and(|v| v.len() <= 256 && valid_1c_identifier(v))
-        {
-            return Err("namePrefix must be a bounded 1C identifier");
-        }
-        if args
-            .get("purpose")
-            .is_some_and(|v| !matches!(v.as_str(), Some("customization" | "add-on" | "patch")))
-        {
-            return Err("purpose must be customization, add-on or patch");
-        }
-        if args.get("synonym").is_some_and(|v| {
-            !v.as_str()
-                .is_some_and(|s| !s.contains('\0') && s.len() <= 4096)
-        }) {
-            return Err("synonym must be bounded NStr text");
-        }
+        return Err("extension name must be a bounded 1C identifier");
     }
     if op == Operation::Activate && !args.get("active").is_some_and(Value::is_boolean) {
         return Err("active must be boolean");
@@ -605,11 +575,8 @@ mod tests {
         .unwrap();
         let args = match op {
             Operation::List => json!({}),
-            Operation::Create => {
-                json!({"name":"Тест","namePrefix":"Т_","purpose":"patch","synonym":"ru='Тест'"})
-            }
             Operation::Activate => json!({"name":"Тест","active":false}),
-            _ => json!({"name":"Тест"}),
+            _ => json!({"delete":"Тест"}),
         };
         let request = InvocationRequest::new(
             ToolIdentity::Run,
@@ -646,14 +613,22 @@ mod tests {
         json!({"ok":true,"command":"extensions","data":data})
     }
     #[test]
+    fn delete_preview_explicitly_names_the_extension_data_loss() {
+        let root = tempfile::tempdir().unwrap();
+        let prepared = fixture(root.path(), Operation::Delete);
+        let result = prepared.execute_with(
+            &SequenceRunner::new(vec![envelope(&prepared, true)]),
+            &tool(root.path()),
+            "0.11.0",
+            CancellationToken::new(),
+        );
+        assert!(result.ok);
+        assert_eq!(result.data.unwrap()["plan"]["deletesExtensionData"], true);
+    }
+
+    #[test]
     fn all_extension_operations_preview_then_apply_with_a_provider_receipt() {
-        for op in [
-            Operation::List,
-            Operation::Info,
-            Operation::Create,
-            Operation::Delete,
-            Operation::Activate,
-        ] {
+        for op in [Operation::List, Operation::Delete, Operation::Activate] {
             let root = tempfile::tempdir().unwrap();
             let mut prepared = fixture(root.path(), op);
             let tool = tool(root.path());
@@ -680,12 +655,6 @@ mod tests {
             if op == Operation::Activate {
                 assert!(calls[1].args.windows(2).any(|v| v == ["--active", "no"]));
             }
-            if op == Operation::Create {
-                assert!(calls[1]
-                    .args
-                    .windows(2)
-                    .any(|v| v == ["--name-prefix", "Т_"]));
-            }
             if op.reads() {
                 assert_eq!(
                     result.data.as_ref().unwrap()["extensions"][0]["safeMode"],
@@ -699,7 +668,7 @@ mod tests {
     fn changed_args_config_version_or_provider_never_pass_the_extension_fence() {
         for change in ["args", "config", "local", "version", "provider"] {
             let root = tempfile::tempdir().unwrap();
-            let mut p = fixture(root.path(), Operation::Create);
+            let mut p = fixture(root.path(), Operation::Activate);
             let tool = tool(root.path());
             let preview = envelope(&p, true);
             p.if_rev = p
@@ -714,7 +683,8 @@ mod tests {
             let mut new_preview = preview;
             match change {
                 "args" => {
-                    p.args.insert("namePrefix".into(), json!("Другой_"));
+                    p.args.insert("active".into(), json!(true));
+                    new_preview["data"]["steps"][0]["action"] = json!("activate");
                 }
                 "config" => std::fs::write(
                     root.path().join(CONFIG_NAME),
@@ -744,13 +714,7 @@ mod tests {
     #[test]
     fn extension_contract_rejects_wrong_subject_action_and_false_execution_claims() {
         let root = tempfile::tempdir().unwrap();
-        for op in [
-            Operation::List,
-            Operation::Info,
-            Operation::Create,
-            Operation::Delete,
-            Operation::Activate,
-        ] {
+        for op in [Operation::List, Operation::Delete, Operation::Activate] {
             let p = fixture(root.path(), op);
             let mut wrong = envelope(&p, true);
             wrong["data"]["provider_dispatched"] = json!(true);
@@ -766,11 +730,8 @@ mod tests {
             }
             assert!(p.validate(&wrong, false).is_err());
         }
-        let p = fixture(root.path(), Operation::Info);
+        let p = fixture(root.path(), Operation::List);
         let mut wrong = envelope(&p, false);
-        wrong["data"]["extensions"][0]["name"] = json!("Other");
-        assert!(p.validate(&wrong, false).is_err());
-        wrong = envelope(&p, false);
         wrong["data"]["extensions"] = json!([record(), record()]);
         assert!(p.validate(&wrong, false).is_err());
         wrong = envelope(&p, false);
@@ -782,8 +743,6 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         for (op, args) in [
             (Operation::List, json!({"name":"X"})),
-            (Operation::Info, json!({})),
-            (Operation::Create, json!({"name":"X","namePrefix":"-bad"})),
             (Operation::Activate, json!({"name":"X","active":"yes"})),
             (Operation::Delete, json!({"name":"X","all":true})),
         ] {
@@ -792,7 +751,7 @@ mod tests {
         for (dry, rev) in [(false, None), (true, Some("rev"))] {
             let req = InvocationRequest::new(
                 ToolIdentity::Run,
-                json!({"op":"extension.list","args":{},"dryRun":dry,"ifRev":rev}),
+                json!({"op":"extensions.list","args":{},"dryRun":dry,"ifRev":rev}),
                 root.path().display().to_string(),
                 7_000,
             )
@@ -876,17 +835,20 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         for (op, label) in [
             (Operation::List, "list-final"),
-            (Operation::Info, "info"),
-            (Operation::Create, "create"),
             (Operation::Delete, "delete"),
             (Operation::Activate, "deactivate"),
         ] {
             let mut p = fixture(root.path(), op);
             if op != Operation::List {
-                p.args.insert("name".into(), json!("UnicaRunnerProbe"));
-            }
-            if op == Operation::Create {
-                p.args.insert("namePrefix".into(), json!("URP_"));
+                p.args.insert(
+                    if op == Operation::Delete {
+                        "delete"
+                    } else {
+                        "name"
+                    }
+                    .into(),
+                    json!("UnicaRunnerProbe"),
+                );
             }
             for preview in [true, false] {
                 let phase = if preview { "preview" } else { "apply" };

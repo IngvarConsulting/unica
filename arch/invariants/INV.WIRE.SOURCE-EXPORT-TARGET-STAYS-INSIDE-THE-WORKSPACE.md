@@ -1,8 +1,8 @@
 ---
 id: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
-status: active
+status: superseded
 governs: product
-decision: DEC.2026-09-15.SOURCE-EXPORT-COUNTS-ITS-TARGET
+decision: DEC.2026-09-22.RUNNER-ONE-TARGET-VOCABULARY
 check:
   - crates/unica-coder/src/infrastructure/daemon/server.rs::v5_source_export_prepares_before_source_admission_and_keeps_the_revision_gate
   - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::preview_refuses_a_target_outside_the_workspace_an_undeclared_set_or_a_write

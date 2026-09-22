@@ -1,7 +1,7 @@
 #![allow(clippy::result_large_err)]
-//! `artifact.build` — сборка файла конфигурации `.cf` или расширения `.cfe`
+//! `make` — сборка файла конфигурации `.cf` или расширения `.cfe`
 //! из исходников рабочего пространства силами `v8-runner make` (A-7 зонтика
-//! #871). В отличие от `cf.export`, который выносит конфигурацию из базы, тут
+//! #871). В отличие от `download`, который выносит конфигурацию из базы, тут
 //! источник — исходники, а база служит раннеру временной площадкой.
 //!
 //! Аргументы закрыты: `output` — относительный путь к `.cf` или `.cfe` внутри
@@ -18,6 +18,7 @@
 //! квитанцию: размер и дайджест файла. Путь к платформе наружу не идёт.
 
 use super::protocol::InvocationRequest;
+use super::runner_011::Runner011ProcessRunner;
 use super::v13_infobase_exports::{
     closed_workspace_relative_path, digest_optional_workspace_file, digest_required_workspace_file,
     missing_runner_rejection, resolve_bundled_runner, runner_rejection, valid_1c_identifier,
@@ -29,9 +30,7 @@ use crate::domain::invocation::{DomainResult, SafeIdentityHash};
 use crate::domain::refusal::RefusalCode;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::BundledTool;
-use crate::infrastructure::internal_adapters::{
-    ProcessCommand, ProcessOutput, ProcessRunner, SystemProcessRunner,
-};
+use crate::infrastructure::internal_adapters::{ProcessCommand, ProcessOutput, ProcessRunner};
 use crate::infrastructure::path_policy::WorkspacePathPolicy;
 use crate::infrastructure::redaction::redactor;
 use crate::infrastructure::source_roots::normalize_path_identity;
@@ -41,7 +40,7 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-pub(super) const OPERATION: &str = "artifact.build";
+pub(super) const OPERATION: &str = "make";
 /// Имя команды в конверте раннера: словарь читается как слой и направление,
 /// раннер называет свои команды по-своему.
 const RUNNER_COMMAND: &str = "make";
@@ -118,7 +117,7 @@ impl PreparedArtifactBuild {
             .ok_or_else(|| {
                 reject(
                     RefusalCode::BadValue,
-                    "artifact.build requires dryRun: true to preview or dryRun: false with ifRev to apply",
+                    "make requires dryRun: true to preview or dryRun: false with ifRev to apply",
                 )
             })?;
         let if_rev = match arguments.get("ifRev") {
@@ -127,20 +126,20 @@ impl PreparedArtifactBuild {
             Some(_) => {
                 return Err(reject(
                     RefusalCode::BadValue,
-                    "artifact.build ifRev must be non-empty text",
+                    "make ifRev must be non-empty text",
                 ))
             }
         };
         if dry_run && if_rev.is_some() {
             return Err(reject(
                 RefusalCode::BadValue,
-                "artifact.build preview does not accept ifRev; apply the revision returned by this preview",
+                "make preview does not accept ifRev; apply the revision returned by this preview",
             ));
         }
         if !dry_run && if_rev.is_none() {
             return Err(reject(
                 RefusalCode::BadValue,
-                "artifact.build apply requires ifRev from a prior dryRun preview",
+                "make apply requires ifRev from a prior dryRun preview",
             ));
         }
         let context =
@@ -167,7 +166,7 @@ impl PreparedArtifactBuild {
     }
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        execute_with_runner(self, &SystemProcessRunner, cancellation)
+        execute_with_runner(self, &Runner011ProcessRunner, cancellation)
     }
 }
 
@@ -179,7 +178,7 @@ fn parse_build_arguments(
     if let Some(unknown) = args.keys().find(|key| !ACCEPTED.contains(&key.as_str())) {
         return Err(reject(
             RefusalCode::BadValue,
-            format!("artifact.build does not accept `{unknown}`; the closed args are output, sourceSet and extension"),
+            format!("make does not accept `{unknown}`; the closed args are output, sourceSet and extension"),
         ));
     }
     let source_set = match args.get("sourceSet") {
@@ -188,7 +187,7 @@ fn parse_build_arguments(
         Some(_) => {
             return Err(reject(
                 RefusalCode::BadValue,
-                format!("artifact.build sourceSet must be the name of a source set declared in v8project.yaml: up to {SOURCE_SET_NAME_MAX} letters, digits, `_`, `-` or `.`"),
+                format!("make sourceSet must be the name of a source set declared in v8project.yaml: up to {SOURCE_SET_NAME_MAX} letters, digits, `_`, `-` or `.`"),
             ))
         }
     };
@@ -198,7 +197,7 @@ fn parse_build_arguments(
         Some(_) => {
             return Err(reject(
                 RefusalCode::BadValue,
-                "artifact.build extension must be a non-empty 1C identifier",
+                "make extension must be a non-empty 1C identifier",
             ))
         }
     };
@@ -206,18 +205,9 @@ fn parse_build_arguments(
         .get("output")
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| {
-            reject(
-                RefusalCode::BadValue,
-                "artifact.build output must be non-empty text",
-            )
-        })?;
-    let output_relative = closed_workspace_relative_path(output).map_err(|message| {
-        reject(
-            RefusalCode::BadValue,
-            format!("artifact.build output {message}"),
-        )
-    })?;
+        .ok_or_else(|| reject(RefusalCode::BadValue, "make output must be non-empty text"))?;
+    let output_relative = closed_workspace_relative_path(output)
+        .map_err(|message| reject(RefusalCode::BadValue, format!("make output {message}")))?;
     let kind = match output_relative
         .extension()
         .and_then(|value| value.to_str())
@@ -229,13 +219,13 @@ fn parse_build_arguments(
         Some("epf" | "erf") => {
             return Err(reject(
                 RefusalCode::UnsupportedOperation,
-                "artifact.build builds .cf and .cfe files; external processors and reports publish into a directory and are not published in v0.13",
+                "make builds .cf and .cfe files; external processors and reports publish into a directory and are not published in v0.13",
             ))
         }
         _ => {
             return Err(reject(
                 RefusalCode::BadValue,
-                "artifact.build output must end in .cf for a configuration or .cfe for an extension",
+                "make output must end in .cf for a configuration or .cfe for an extension",
             ))
         }
     };
@@ -243,13 +233,15 @@ fn parse_build_arguments(
         (ArtifactKind::Cfe, false) => {
             return Err(reject(
                 RefusalCode::BadValue,
-                "artifact.build output .cfe requires extension: the name the infobase knows it by",
+                "make output .cfe requires extension: the name the infobase knows it by",
             ))
         }
-        (ArtifactKind::Cf, true) => return Err(reject(
-            RefusalCode::BadValue,
-            "artifact.build extension is only for a .cfe output; a .cf is the main configuration",
-        )),
+        (ArtifactKind::Cf, true) => {
+            return Err(reject(
+                RefusalCode::BadValue,
+                "make extension is only for a .cfe output; a .cf is the main configuration",
+            ))
+        }
         _ => {}
     }
     let root_context = WorkspaceContext {
@@ -314,7 +306,7 @@ fn capture_inputs(prepared: &PreparedArtifactBuild) -> Result<StableInputs, Doma
             return Err(reject(
                 RefusalCode::BadValue,
                 format!(
-                    "artifact.build sourceSet `{source_set}` is not declared in v8project.yaml; declared source sets: {}",
+                    "make sourceSet `{source_set}` is not declared in v8project.yaml; declared source sets: {}",
                     declared.join(", ")
                 ),
             ));
@@ -389,10 +381,7 @@ fn execute_with_resolved_runner(
     runner_version: &str,
 ) -> DomainResult {
     if cancellation.is_cancelled() {
-        return reject(
-            RefusalCode::Cancelled,
-            "artifact.build cancelled before preflight",
-        );
+        return reject(RefusalCode::Cancelled, "make cancelled before preflight");
     }
     let before = match capture_inputs(prepared) {
         Ok(inputs) => inputs,
@@ -413,13 +402,13 @@ fn execute_with_resolved_runner(
     if before != after {
         return reject(
             RefusalCode::ConcurrentChange,
-            "artifact.build inputs changed during preview; run dryRun: true again",
+            "make inputs changed during preview; run dryRun: true again",
         );
     }
     let revision = plan_revision(prepared, &before, runner_version, &source_set);
     if prepared.dry_run {
         let mut result = DomainResult::success(format!(
-            "artifact.build planned building the {} from source set `{source_set}` without publishing anything",
+            "make planned building the {} from source set `{source_set}` without publishing anything",
             prepared.arguments.kind.suffix()
         ));
         result.data = Some(json!({
@@ -457,7 +446,7 @@ fn execute_with_resolved_runner(
         return reject(
             RefusalCode::StaleRevision,
             format!(
-                "artifact.build plan or environment changed after preview: expected rev {revision}, ifRev {}; run dryRun: true again",
+                "make plan or environment changed after preview: expected rev {revision}, ifRev {}; run dryRun: true again",
                 prepared.if_rev.as_deref().unwrap_or("absent")
             ),
         );
@@ -465,7 +454,7 @@ fn execute_with_resolved_runner(
     if cancellation.is_cancelled() {
         return reject(
             RefusalCode::Cancelled,
-            "artifact.build cancelled before provider launch",
+            "make cancelled before provider launch",
         );
     }
     let applied = match invoke_runner(prepared, tool, runner, &cancellation, false) {
@@ -514,7 +503,7 @@ fn execute_with_resolved_runner(
         "sha256": sha256,
     });
     let mut result = DomainResult::success(format!(
-        "artifact.build built the {} from source set `{source_set}` and independently verified it",
+        "make built the {} from source set `{source_set}` and independently verified it",
         prepared.arguments.kind.suffix()
     ));
     result.data = Some(json!({

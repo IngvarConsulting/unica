@@ -1,6 +1,6 @@
 #![allow(clippy::result_large_err)]
-//! `source.export` — выгрузка базы в набор исходников рабочего пространства
-//! силами `v8-runner dump` (A-6 зонтика #871). Пара к `source.import`: тот
+//! `pull` — выгрузка базы в набор исходников рабочего пространства
+//! силами `v8-runner dump` (A-6 зонтика #871). Пара к `push`: тот
 //! вносит исходники в базу, этот выносит базу в исходники.
 //!
 //! Аргументы закрыты: `mode` — `full` или `incremental`; `sourceSet` — имя
@@ -17,6 +17,7 @@
 //! строка наружу не идут.
 
 use super::protocol::InvocationRequest;
+use super::runner_011::Runner011ProcessRunner;
 use super::v13_infobase_exports::{
     digest_optional_workspace_file, digest_required_workspace_file, missing_runner_rejection,
     resolve_bundled_runner, runner_rejection, valid_1c_identifier, CONFIG_NAME, LOCAL_CONFIG_NAME,
@@ -28,9 +29,7 @@ use crate::domain::invocation::{DomainResult, SafeIdentityHash};
 use crate::domain::refusal::RefusalCode;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::BundledTool;
-use crate::infrastructure::internal_adapters::{
-    ProcessCommand, ProcessOutput, ProcessRunner, SystemProcessRunner,
-};
+use crate::infrastructure::internal_adapters::{ProcessCommand, ProcessOutput, ProcessRunner};
 use crate::infrastructure::redaction::redactor;
 use crate::infrastructure::source_roots::normalize_path_identity;
 use crate::infrastructure::workspace::discover_workspace;
@@ -39,7 +38,7 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-pub(super) const OPERATION: &str = "source.export";
+pub(super) const OPERATION: &str = "pull";
 /// Имя команды в конверте раннера: словарь читается как слой и направление,
 /// раннер называет свои команды по-своему.
 const RUNNER_COMMAND: &str = "dump";
@@ -124,7 +123,7 @@ impl PreparedSourceExport {
             .ok_or_else(|| {
                 reject(
                     RefusalCode::BadValue,
-                    "source.export requires dryRun: true to preview or dryRun: false with ifRev to apply",
+                    "pull requires dryRun: true to preview or dryRun: false with ifRev to apply",
                 )
             })?;
         let if_rev = match arguments.get("ifRev") {
@@ -133,20 +132,20 @@ impl PreparedSourceExport {
             Some(_) => {
                 return Err(reject(
                     RefusalCode::BadValue,
-                    "source.export ifRev must be non-empty text",
+                    "pull ifRev must be non-empty text",
                 ))
             }
         };
         if dry_run && if_rev.is_some() {
             return Err(reject(
                 RefusalCode::BadValue,
-                "source.export preview does not accept ifRev; apply the revision returned by this preview",
+                "pull preview does not accept ifRev; apply the revision returned by this preview",
             ));
         }
         if !dry_run && if_rev.is_none() {
             return Err(reject(
                 RefusalCode::BadValue,
-                "source.export apply requires ifRev from a prior dryRun preview",
+                "pull apply requires ifRev from a prior dryRun preview",
             ));
         }
         let context =
@@ -173,7 +172,7 @@ impl PreparedSourceExport {
     }
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        execute_with_runner(self, &SystemProcessRunner, cancellation)
+        execute_with_runner(self, &Runner011ProcessRunner, cancellation)
     }
 }
 
@@ -182,7 +181,7 @@ fn parse_export_arguments(args: &Map<String, Value>) -> Result<ExportArguments, 
     if let Some(unknown) = args.keys().find(|key| !ACCEPTED.contains(&key.as_str())) {
         return Err(reject(
             RefusalCode::BadValue,
-            format!("source.export does not accept `{unknown}`; the closed args are mode, sourceSet and extension"),
+            format!("pull does not accept `{unknown}`; the closed args are mode, sourceSet and extension"),
         ));
     }
     let mode = args
@@ -192,7 +191,7 @@ fn parse_export_arguments(args: &Map<String, Value>) -> Result<ExportArguments, 
         .ok_or_else(|| {
             reject(
                 RefusalCode::BadValue,
-                "source.export mode must be `full` or `incremental`; object-scoped partial export is not published",
+                "pull mode must be `full` or `incremental`; object-scoped partial export is not published",
             )
         })?;
     let source_set = match args.get("sourceSet") {
@@ -201,7 +200,7 @@ fn parse_export_arguments(args: &Map<String, Value>) -> Result<ExportArguments, 
         Some(_) => {
             return Err(reject(
                 RefusalCode::BadValue,
-                format!("source.export sourceSet must be the name of a source set declared in v8project.yaml: up to {SOURCE_SET_NAME_MAX} letters, digits, `_`, `-` or `.`"),
+                format!("pull sourceSet must be the name of a source set declared in v8project.yaml: up to {SOURCE_SET_NAME_MAX} letters, digits, `_`, `-` or `.`"),
             ))
         }
     };
@@ -211,7 +210,7 @@ fn parse_export_arguments(args: &Map<String, Value>) -> Result<ExportArguments, 
         Some(_) => {
             return Err(reject(
                 RefusalCode::BadValue,
-                "source.export extension must be a non-empty 1C identifier",
+                "pull extension must be a non-empty 1C identifier",
             ))
         }
     };
@@ -262,7 +261,7 @@ fn capture_inputs(prepared: &PreparedSourceExport) -> Result<StableInputs, Domai
             return Err(reject(
                 RefusalCode::BadValue,
                 format!(
-                    "source.export sourceSet `{source_set}` is not declared in v8project.yaml; declared source sets: {}",
+                    "pull sourceSet `{source_set}` is not declared in v8project.yaml; declared source sets: {}",
                     declared.join(", ")
                 ),
             ));
@@ -342,10 +341,7 @@ fn execute_with_resolved_runner(
     runner_version: &str,
 ) -> DomainResult {
     if cancellation.is_cancelled() {
-        return reject(
-            RefusalCode::Cancelled,
-            "source.export cancelled before preflight",
-        );
+        return reject(RefusalCode::Cancelled, "pull cancelled before preflight");
     }
     let before = match capture_inputs(prepared) {
         Ok(inputs) => inputs,
@@ -375,13 +371,13 @@ fn execute_with_resolved_runner(
     if before != after {
         return reject(
             RefusalCode::ConcurrentChange,
-            "source.export inputs changed during preview; run dryRun: true again",
+            "pull inputs changed during preview; run dryRun: true again",
         );
     }
     let revision = plan_revision(prepared, &before, runner_version, &plan);
     if prepared.dry_run {
         let mut result = DomainResult::success(format!(
-            "source.export planned a {} export of source set `{}` without writing anything",
+            "pull planned a {} export of source set `{}` without writing anything",
             prepared.arguments.mode.as_str(),
             plan.source_set
         ));
@@ -418,7 +414,7 @@ fn execute_with_resolved_runner(
         return reject(
             RefusalCode::StaleRevision,
             format!(
-                "source.export plan or environment changed after preview: expected rev {revision}, ifRev {}; run dryRun: true again",
+                "pull plan or environment changed after preview: expected rev {revision}, ifRev {}; run dryRun: true again",
                 prepared.if_rev.as_deref().unwrap_or("absent")
             ),
         );
@@ -426,7 +422,7 @@ fn execute_with_resolved_runner(
     if cancellation.is_cancelled() {
         return reject(
             RefusalCode::Cancelled,
-            "source.export cancelled before provider launch",
+            "pull cancelled before provider launch",
         );
     }
     let applied = match invoke_runner(prepared, tool, runner, &cancellation, false) {
@@ -464,7 +460,7 @@ fn execute_with_resolved_runner(
     };
     let state = if plan.existed { "replaced" } else { "created" };
     let mut result = DomainResult::success(format!(
-        "source.export exported source set `{}` ({} mode); the target holds {files} files",
+        "pull exported source set `{}` ({} mode); the target holds {files} files",
         plan.source_set,
         prepared.arguments.mode.as_str()
     ));

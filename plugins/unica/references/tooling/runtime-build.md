@@ -11,11 +11,31 @@
 Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
-выбирай только операцию с `implemented: true` и не выдумывай аргументов
-записи с `argsSchema: null`; превью исполнением не является. Не обходи
-контракт прямым runner-ом.
+при `implemented: true` используй опубликованную `argsSchema`; при
+`support.state: limited` разрешено только подмножество `support.supportedArgs`.
+При `support.state: unavailable` остановись; не выдумывай аргументов при
+`argsSchema: null`. Превью исполнением не является. Не обходи контракт прямым runner-ом.
 
-**Два режима запуска:**
+Пример превью поддержанной выгрузки CF из основной конфигурации базы:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "unica.run",
+    "arguments": {
+      "op": "download",
+      "args": {"output": "dist/main.cf", "state": "working"},
+      "dryRun": true
+    }
+  }
+}
+```
+
+После проверки превью повтори запрос с `dryRun: false` и полученным `ifRev`.
+
+**Режимы запуска платформы:**
 
 | Режим | Назначение |
 |-------|-----------|
@@ -134,56 +154,10 @@ Runtime идёт через `unica.run`: вызов без `op` отдаёт с�
 
 #### Режимы выгрузки
 
-> Ниже приведён низкоуровневый синтаксис платформы, а не рекомендуемый путь
-> Unica. Не направляй incremental/partial/CDFI-only команды прямо в
-> Git-visible source root: они допустимы только во временный private staging,
-> принадлежащий runtime-слою. Синхронный full dump (`mode=full`) для DESIGNER
-> `CONFIGURATION`/`EXTENSION` исполняется с названным риском записи без ограниченного восстановления: его applied path проходит через внешний private stage Unica,
-> платформа независимо фиксируется на exact 8.3.27.x, XML проверяется на raw
-> `version="2.20"` до целой публикации. На Windows, macOS и Linux verified
-> transactional publication определяет этот synchronous full dump, но
-> постпроцессинг не имеет доказанного terminal-receipt bound. Владельцем контракта публикации остаётся ADR-0016;
-> `INV-SOURCE-BOUND-PREIMAGES` и `INV-SOURCE-ROLLBACK-VISIBLE` описывают
-> проверяемую транзакцию, а OS-зависимая реализация остаётся за
-> `INV-PLATFORM-OS-BEHIND-FACADE`.
->
-> Async full и applied external source-set несут тот же риск публикации. Неполные режимы
-> дополнительно не имеют безопасного merge receipt. На Windows Unica через
-> no-follow handles проверяет локальную системную установку: trusted owner и DACL
-> защищают install tree от изменения запускающим non-elevated пользователем, а
-> ancestry — от удаления, замены и перенаправления компонентов пути. На macOS и
-> Linux проверяются физические DESIGNER-маркеры, exact sibling
-> `ibcmd --version` и root-owned, link-free install tree без group/world write и
-> ACL. Secret-bearing effective config отделён от сохраняемого recovery.
-> Пользовательская или изменяемая установка отклоняется до `ibcmd` и
-> `v8-runner`; прочие Unix fail-closed.
-
-**Полная выгрузка** — все объекты конфигурации:
-```
-1cv8.exe DESIGNER /F <база> /DisableStartupDialogs /DumpConfigToFiles "C:\src\config" /Out log.txt
-```
-
-**Инкрементальная выгрузка** — только изменённые объекты:
-```
-1cv8.exe DESIGNER /F <база> /DisableStartupDialogs /DumpConfigToFiles "C:\runtime\private-staging\config" -update -force /Out log.txt
-```
-
-Инкрементальная выгрузка с отслеживанием изменений:
-```
-1cv8.exe DESIGNER /F <база> /DisableStartupDialogs /DumpConfigToFiles "C:\runtime\private-staging\config" -update -getChanges "changes.txt" -configDumpInfoForChanges "C:\runtime\ib-state\ConfigDumpInfo.xml" /Out log.txt
-```
-
-**Частичная выгрузка** — выбранные объекты по списку:
-```
-1cv8.exe DESIGNER /F <база> /DisableStartupDialogs /DumpConfigToFiles "C:\runtime\private-staging\config" -listFile "dump_objects.txt" /Out log.txt
-```
-
-**Обновление ConfigDumpInfo.xml** — без выгрузки файлов:
-```
-1cv8.exe DESIGNER /F <база> /DisableStartupDialogs /DumpConfigToFiles "C:\runtime\ib-state" -configDumpInfoOnly /Out log.txt
-```
-
-#### Параметры выгрузки
+> Ниже приведён низкоуровневый справочник платформы. Целевой `pull`
+> имеет статус unavailable с адаптером 0.11: старый full dump не обеспечивает
+> защиту локальных изменений и поколений. Не используй эти параметры как
+> обход отказа `unica.run`. См. `INV.RUNTIME.RUNNER-ONE-CAPABILITIES`.
 
 | Параметр | Описание |
 |----------|----------|
@@ -304,43 +278,9 @@ Documents/РеализацияТоваровУслуг/Forms/ФормаДоку�
 
 ## Сборка и разборка внешних обработок (EPF/ERF)
 
-Внешние обработки и отчёты в словаре `unica.run` сборкой не публикуются:
-`artifact.build` собирает только `.cf` и `.cfe`, а `.epf`/`.erf` в `output`
-отвечают `unsupported_operation`; `cf.import` их тоже не принимает. Исходники
-внешнего набора движутся как исходники: `source.export` выгружает набор,
-объявленный в `v8project.yaml` с типом `EXTERNAL_DATA_PROCESSORS` или
-`EXTERNAL_REPORTS`, `source.import` загружает его в базу. Публикацию
-`.epf`/`.erf` сообщай как пробел контракта Unica MCP.
-
-### Выгрузка внешних исходников
-
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.run",
-    "arguments": {
-      "op": "source.export",
-      "args": {
-        "mode": "full",
-        "sourceSet": "external-processors"
-      },
-      "dryRun": true
-    }
-  }
-}
-```
-
-Для внешних отчётов используй `sourceSet: "external-reports"`. Превью отвечает
-`rev`; применение — тот же вызов с `dryRun: false` и `ifRev` из превью.
-
-### Примечания
-
-- `cf.import` принимает `.cf` и `.cfe`; `.epf` и `.erf` — нет.
-- Внешние source-set должны быть объявлены в `v8project.yaml` с типами `EXTERNAL_DATA_PROCESSORS` или `EXTERNAL_REPORTS`.
-- Dump требует базу с конфигурацией, содержащей используемые типы. Dump в пустой базе может потерять ссылочные типы (`CatalogRef.XXX` превращается в `xs:string`).
-- Категории колонок регистров (Dimension/Resource/Attribute) зависят от Form.xml и конфигурации базы; при round-trip через неподходящую базу привязки полей формы могут не сохраниться.
+`make` поддерживает только `.cf` и `.cfe`. Публикация `.epf`/`.erf`
+через Unica MCP пока недоступна. `push`, `pull` и `upload` для внешних
+наборов также unavailable: не подменяй их низкоуровневыми командами.
 
 ## Запуск в режиме предприятия
 
@@ -396,22 +336,10 @@ Legitimate metadata descriptor (включая external EPF/ERF) объекта 
 - `-configDumpInfoOnly` — обновить только этот файл без выгрузки объектов
 - `-updateConfigDumpInfo` — обновить файл после частичной загрузки (`/LoadConfigFromFiles`)
 
-Платформа предоставляет параметры для использования вспомогательного CDFI при
-сравнении, но управление приватным CDFI для пары `source-set + ИБ` относится к
- runtime-слою. На Windows, macOS и Linux синхронный full dump (`mode=full`) для
-DESIGNER `CONFIGURATION`/`EXTENSION` исполняется с названным риском; его verified transactional
-publication Unica перенаправляет выбранный source-set во внешний private
-stage, платформа проверяется как exact 8.3.27.x, а version-bearing XML roots —
-как raw `2.20`; только затем целое дерево публикуется с проверкой preimage и
-rollback (ADR-0016, `INV-PLATFORM-OS-BEHIND-FACADE`). До реализации private
-state и shadow publication в `alkoleft/v8-runner-rust#30`
-`mode=incremental|partial` исполняется, но доверять его результату вслепую
-нельзя: закреплённый runner не возвращает точные processed paths/hashes и не
-выполняет divergence-safe merge, поэтому расхождение обнаруживается только
-сравнением исходников после прогона.
-Будущий applied-маршрут сможет принять только системную установку платформы,
-неизменяемую для вызывающего пользователя; сейчас любой applied-вызов
-останавливается ещё до проверки или исполнения установки.
+Платформа использует CDFI для сравнения исходников. Управление приватным
+состоянием и защита от расхождения поколений принадлежат раннеру. До
+проверенного адаптера 1.0 операции `pull` и загрузка исходников через `push`
+недоступны; успешный старый dump не доказывает их целевой контракт.
 
 ## Выбор платформы 1С
 

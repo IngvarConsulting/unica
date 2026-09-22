@@ -1,10 +1,10 @@
 ---
 id: DEC.2026-09-15.RUN-NAMES-READ-AS-LAYER-AND-DIRECTION
-status: active
+status: superseded
 governs: product
 realized: crates/unica-coder/src/application/v13/tool_catalog.rs::v13_run_names_read_as_layer_and_direction
 supersedes: []
-superseded-by: null
+superseded-by: DEC.2026-09-22.RUNNER-ONE-TARGET-VOCABULARY
 establishes: [INV.WIRE.RUN-NAMES-ARE-LAYER-AND-DIRECTION]
 changes: [CTR.WIRE.TOOL-SURFACE, INV.SURFACE.RUN-INTENTS-DIRECTIONAL, INV.RUNTIME.V13-INFOBASE-EXPORTS]
 design: docs/plans/2026-09-04-run-operations-requirements.md

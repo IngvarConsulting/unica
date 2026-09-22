@@ -92,7 +92,7 @@ class V013ImplementationCoverageTests(unittest.TestCase):
         self.assertEqual(set(self.coverage["subjectTools"]), SUBJECT_TOOLS)
         self.assertEqual(set(self.coverage["compatibilityTools"]), COMPATIBILITY_TOOLS)
         self.assertEqual(set(self.coverage["runOperations"]), catalog_run_operations())
-        self.assertEqual(len(self.coverage["runOperations"]), 14)
+        self.assertEqual(len(self.coverage["runOperations"]), 13)
         self.assertNotIn("query.execute", self.coverage["runOperations"])
 
     def test_no_query_dictionary_invariant_remains_active(self) -> None:
@@ -127,38 +127,11 @@ class V013ImplementationCoverageTests(unittest.TestCase):
                         )
 
     def test_runtime_truth_supports_the_infobase_family_and_the_client_launch(self) -> None:
-        """Имя перечисляет состав, поэтому меняется вместе с ним.
-
-        Прежнее имя обещало «ровно две выгрузки», затем тройку с парной загрузкой.
-        Четвёртая — `client.run`, единственная терминальная операция словаря:
-        запуск клиента как опубликовано, без обязательного превью и без забора
-        ревизии (вариант А развилки A-1 в #871). Пятая — `cf.import` (A-5):
-        пара к `cf.export`, забор и неизменность входного файла как у
-        `infobase.import`. Шестая — `infobase.create` (A-3): без аргументов,
-        квитанция — повторное превью раннера. Седьмая — `source.import` (A-4):
-        режимы шагов раннера как забор от изменившихся исходников. Восьмая —
-        `source.export` (A-6): квитанция — пересчёт файлов в цели. Девятая —
-        `artifact.build` (A-7): словарь реализован целиком.
-        """
-        supported = {
-            "infobase.create",
-            "source.import",
-            "source.export",
-            "artifact.build",
-            "cf.export",
-            "cf.import",
-            "infobase.export",
-            "infobase.import",
-            "client.run",
-            "extension.list",
-            "extension.info",
-            "extension.create",
-            "extension.delete",
-            "extension.activate",
-        }
+        """The pinned adapter exposes only its proven target semantics."""
+        supported = {"make", "download", "infobase.dump", "infobase.restore", "launch", "extensions.list", "extensions.set"}
         for name, entry in self.coverage["runOperations"].items():
             with self.subTest(operation=name):
-                expected = "supported" if name in supported else "unsupported"
+                expected = "supported" if name in supported else "partial" if name == "push" else "unsupported"
                 self.assertEqual(entry["status"], expected)
         self.assertNotIn("syntax.check", self.coverage["runOperations"])
         self.assertNotIn("test.run", self.coverage["runOperations"])

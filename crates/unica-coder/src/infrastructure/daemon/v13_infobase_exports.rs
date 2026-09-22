@@ -3,6 +3,7 @@
 // that value intact avoids a second error model at this adapter boundary.
 
 use super::protocol::InvocationRequest;
+use super::runner_011::Runner011ProcessRunner;
 use crate::application::invocation_store::ToolIdentity;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::invocation::{DomainResult, SafeIdentityHash};
@@ -11,9 +12,7 @@ use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::{
     bundled_tool_version, resolve_bundled_tool, BundledTool,
 };
-use crate::infrastructure::internal_adapters::{
-    ProcessCommand, ProcessOutput, ProcessRunner, SystemProcessRunner,
-};
+use crate::infrastructure::internal_adapters::{ProcessCommand, ProcessOutput, ProcessRunner};
 use crate::infrastructure::path_policy::WorkspacePathPolicy;
 use crate::infrastructure::platform::filesystem::{
     open_absolute_directory_path_nofollow, open_directory_child_nofollow,
@@ -44,18 +43,18 @@ enum ExportOperation {
 impl ExportOperation {
     fn parse(value: &str) -> Option<Self> {
         match value {
-            "cf.export" => Some(Self::Configuration),
-            "infobase.export" => Some(Self::Infobase),
-            "infobase.import" => Some(Self::Restore),
+            "download" => Some(Self::Configuration),
+            "infobase.dump" => Some(Self::Infobase),
+            "infobase.restore" => Some(Self::Restore),
             _ => None,
         }
     }
 
     const fn name(self) -> &'static str {
         match self {
-            Self::Configuration => "cf.export",
-            Self::Infobase => "infobase.export",
-            Self::Restore => "infobase.import",
+            Self::Configuration => "download",
+            Self::Infobase => "infobase.dump",
+            Self::Restore => "infobase.restore",
         }
     }
 
@@ -134,7 +133,7 @@ struct ExportArguments {
     /// применением в обоих случаях, поэтому слот один.
     named_file_relative: PathBuf,
     named_file: PathBuf,
-    /// Присутствует только у `infobase.import`.
+    /// Присутствует только у `infobase.restore`.
     restore_mode: Option<RestoreMode>,
 }
 
@@ -256,7 +255,7 @@ impl PreparedInfobaseExport {
     }
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        execute_with_runner(self, &SystemProcessRunner, cancellation)
+        execute_with_runner(self, &Runner011ProcessRunner, cancellation)
     }
 }
 
@@ -287,7 +286,7 @@ fn parse_export_arguments(
                 return Err(reject(
                     operation,
                     RefusalCode::BadValue,
-                    "cf.export state must be `working` or `database`",
+                    "download state must be `working` or `database`",
                 ))
             }
         },
@@ -305,7 +304,7 @@ fn parse_export_arguments(
                     return Err(reject(
                         operation,
                         RefusalCode::BadValue,
-                        "infobase.import mode must be `create` for an absent infobase or `replace` to discard the data of an existing one",
+                        "infobase.restore mode must be `create` for an absent infobase or `replace` to discard the data of an existing one",
                     ))
                 }
             }
@@ -319,7 +318,7 @@ fn parse_export_arguments(
             return Err(reject(
                 operation,
                 RefusalCode::BadValue,
-                "cf.export extension must be a non-empty 1C identifier",
+                "download extension must be a non-empty 1C identifier",
             ))
         }
     };
@@ -951,6 +950,7 @@ pub(super) fn resolve_bundled_runner(cwd: &Path) -> Result<BundledRunner, String
         resolve_bundled_tool(&plugin_root, "v8-runner", true).map_err(|error| redactor(&error))?;
     let version =
         bundled_tool_version(&plugin_root, "v8-runner").map_err(|error| redactor(&error))?;
+    super::runner_011::check_version(&version)?;
     Ok(BundledRunner { tool, version })
 }
 
@@ -1404,7 +1404,7 @@ mod tests {
     #[test]
     fn an_absent_bundled_runner_names_the_missing_provider() {
         let rejection = missing_runner_rejection(
-            Some("infobase.export".to_string()),
+            Some("infobase.dump".to_string()),
             "Unica plugin root could not be located for the bundled v8-runner",
         );
 

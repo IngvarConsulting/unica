@@ -1,8 +1,8 @@
 ---
 id: INV.WIRE.RUN-NAMES-ARE-LAYER-AND-DIRECTION
-status: active
+status: superseded
 governs: product
-decision: DEC.2026-09-22.INSTALLED-EXTENSIONS-AND-RUNNER-RECEIPTS
+decision: DEC.2026-09-22.RUNNER-ONE-TARGET-VOCABULARY
 check:
   - crates/unica-coder/src/application/v13/tool_catalog.rs::v13_run_names_read_as_layer_and_direction
   - crates/unica-coder/src/application/v13/tool_catalog.rs::v13_run_dictionary_has_twelve_directional_runtime_intents

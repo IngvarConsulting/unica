@@ -1993,13 +1993,13 @@ class UnicaSkillRoutingTests(unittest.TestCase):
     def test_indented_runtime_example_needs_if_rev_inside_arguments(self) -> None:
         outside = (
             '    {"ifRev": "note", "params": {"name": "unica.run", '
-            '"arguments": {"op": "cf.import", "dryRun": false}}}\n'
+            '"arguments": {"op": "upload", "dryRun": false}}}\n'
         )
         with self.assertRaisesRegex(ValueError, "applies without ifRev"):
             reject_indented_applied_runtime_examples(outside)
         inside = (
             '    {"params": {"name": "unica.run", "arguments": '
-            '{"op": "cf.import", "dryRun": false, "ifRev": "unica-cf-import-sha256-v1:abc"}}}\n'
+            '{"op": "upload", "dryRun": false, "ifRev": "unica-cf-import-sha256-v1:abc"}}}\n'
         )
         reject_indented_applied_runtime_examples(inside)
 
@@ -2090,7 +2090,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                 # previewApply example previews, and an apply carries the
                 # revision its preview returned.
                 self.assertIn(arguments.get("op"), RUN_DICTIONARY_OPERATIONS)
-                if arguments.get("op") != "client.run":
+                if arguments.get("op") != "launch":
                     self.assertIn("dryRun", arguments)
                 if arguments.get("dryRun") is False:
                     self.assertIn("ifRev", arguments)
@@ -2737,84 +2737,14 @@ Use `.claude/commands/xdto.md` as the execution route.
         self.assertIn(".claude", guarded)
 
 
-    def test_verified_full_dump_documents_its_publication_risk_contract(self) -> None:
-        docs = [
-            self.reference_root() / "tooling" / "runtime-build.md",
-            self.reference_root() / "tooling" / "v8project.md",
-        ]
-        required = {
-            "Windows": re.compile(r"\bWindows\b", re.IGNORECASE),
-            "macOS": re.compile(r"\bmacOS\b", re.IGNORECASE),
-            "Linux": re.compile(r"\bLinux\b", re.IGNORECASE),
-            "synchronous": re.compile(
-                r"\b(?:synchronous|синхронн\w*)\b",
-                re.IGNORECASE,
-            ),
-            "full dump": re.compile(
-                r"(?:\bfull\s+dump\b|\bmode\s*=\s*full\b)",
-                re.IGNORECASE,
-            ),
-            "CONFIGURATION": re.compile(r"\bCONFIGURATION\b"),
-            "EXTENSION": re.compile(r"\bEXTENSION\b"),
-            "verified transactional publication": re.compile(
-                r"\bverified\s+transactional\s+publication\b",
-                re.IGNORECASE,
-            ),
-        }
-        # Публикация полного дампа исполняется и несёт названный риск записи без
-        # ограниченного восстановления (ADR-0074), поэтому абзац контракта
-        # обязан говорить о риске, а не о былом отказе.
-        publication_risk = re.compile(
-            r"(?:bounded recovery|proved (?:terminal )?receipt|ограниченн\w*\s+восстановлени\w*|"
-            r"названн\w*\s+риск\w*|named risk)",
-            re.I,
-        )
-
-        def markdown_paragraphs(text: str) -> list[str]:
-            return re.split(r"\n(?:[ \t]*|>[ \t]*)\n", text)
-
-        def contract_paragraphs(text: str) -> list[str]:
-            return [
-                paragraph
-                for paragraph in markdown_paragraphs(text)
-                if all(pattern.search(paragraph) for pattern in required.values())
-                and publication_risk.search(paragraph)
-            ]
-
-        def contract_errors(text: str) -> list[str]:
-            errors = []
-            if not contract_paragraphs(text):
-                errors.append("missing complete full dump publication-risk paragraph")
-            return errors
-
-        document_texts = {
-            path: path.read_text(encoding="utf-8")
-            for path in docs
-        }
-        for path in docs:
-            with self.subTest(document=path.name):
-                self.assertEqual([], contract_errors(document_texts[path]))
-
-        mixed_claims = (
-            "On Windows, macOS, and Linux, synchronous full dump mode=full for "
-            "CONFIGURATION and EXTENSION runs with a named risk while verified "
-            "transactional publication lacks bounded recovery."
-        )
-        self.assertEqual(
-            [],
-            contract_errors(mixed_claims),
-            "the full-dump contract must combine publication and lifecycle scope",
-        )
-
-        for path, text in document_texts.items():
-            complete_paragraphs = contract_paragraphs(text)
-            for missing, pattern in required.items():
-                mutated = text
-                for paragraph in complete_paragraphs:
-                    mutated_paragraph = pattern.sub("", paragraph)
-                    mutated = mutated.replace(paragraph, mutated_paragraph, 1)
-                with self.subTest(document=path.name, missing=missing):
-                    self.assertTrue(contract_errors(mutated), missing)
+    def test_target_pull_guidance_does_not_offer_the_legacy_full_dump_route(self) -> None:
+        for name in ("runtime-build.md", "v8project.md"):
+            text = (self.reference_root() / "tooling" / name).read_text(encoding="utf-8")
+            with self.subTest(document=name):
+                self.assertIn("pull", text)
+                self.assertIn("unavailable", text)
+                self.assertNotIn('"mode": "full"', text)
+                self.assertNotIn("исполняется с названным риском", text)
 
     def test_code_patch_skill_uses_only_logical_configuration_and_extension_targets(
         self,

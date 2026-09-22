@@ -2,14 +2,14 @@
 id: INV.RUNTIME.V13-INFOBASE-EXPORTS
 status: active
 governs: product
-decision: DEC.2026-09-03.INFOBASE-EXPORT-RUN-SLICE
+decision: DEC.2026-09-22.RUNNER-ONE-TARGET-VOCABULARY
 check: crates/unica-coder/src/infrastructure/daemon/server.rs::v5_infobase_exports_prepare_before_source_admission_and_keep_the_revision_gate
 scope: [app, product, wire]
 ---
 
 # Выгрузки ИБ проходят неисполняющий preview и проверяемый apply
 
-`cf.export` и `infobase.export` доступны без source set.
+`download` и `infobase.dump` доступны без source set.
 Preview вызывает только неисполняющий `v8-runner --dry-run`, связывает выбранный
 provider, конфиги и состояние назначения с revision и не создаёт output. Apply
 повторяет такой preview, принимает только совпавший `ifRev`, затем запускает

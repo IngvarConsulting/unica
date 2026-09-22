@@ -1,8 +1,8 @@
 ---
 id: INV.WIRE.SOURCE-IMPORT-APPLIES-THE-PREVIEWED-MODES
-status: active
+status: superseded
 governs: product
-decision: DEC.2026-09-15.SOURCE-IMPORT-FENCES-THE-PLAN-BY-ITS-MODES
+decision: DEC.2026-09-22.RUNNER-ONE-TARGET-VOCABULARY
 check:
   - crates/unica-coder/src/infrastructure/daemon/server.rs::v5_source_import_prepares_before_source_admission_and_keeps_the_revision_gate
   - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::preview_plans_every_declared_source_set_with_its_mode_without_dispatching_designer

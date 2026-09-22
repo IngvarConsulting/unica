@@ -2,7 +2,7 @@
 id: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
 status: active
 governs: product
-decision: DEC.2026-09-15.CLIENT-RUN-IS-TERMINAL-WITHOUT-A-FENCE
+decision: DEC.2026-09-22.RUNNER-ONE-TARGET-VOCABULARY
 check:
   - crates/unica-coder/src/infrastructure/daemon/server.rs::v5_client_run_binds_before_source_admission_without_a_revision_gate
   - crates/unica-coder/src/infrastructure/daemon/v13_client_run.rs::preview_names_the_platform_without_dispatching_or_exposing_the_command

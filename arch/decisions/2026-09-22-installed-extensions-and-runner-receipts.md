@@ -1,10 +1,10 @@
 ---
 id: DEC.2026-09-22.INSTALLED-EXTENSIONS-AND-RUNNER-RECEIPTS
-status: active
+status: superseded
 governs: product
 realized: crates/unica-coder/src/infrastructure/daemon/v13_extensions.rs::all_extension_operations_preview_then_apply_with_a_provider_receipt
 supersedes: []
-superseded-by: null
+superseded-by: DEC.2026-09-22.RUNNER-ONE-TARGET-VOCABULARY
 establishes: [INV.APP.V13-RUN-DICTIONARY, INV.WIRE.RUN-NAMES-ARE-LAYER-AND-DIRECTION, CTR.WIRE.TOOL-SURFACE, INV.RUNTIME.EXTENSION-OPERATIONS, INV.RUNTIME.RUNNER-PROVIDER-RECEIPT]
 changes: [CTR.WIRE.TOOL-SURFACE]
 design: docs/design/2026-09-22-runner-011-extensions-design.md

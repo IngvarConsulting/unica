@@ -1,7 +1,7 @@
 #![allow(clippy::result_large_err)]
-//! `cf.import` — загрузка файла конфигурации `.cf` или расширения `.cfe` из
+//! `upload` — загрузка файла конфигурации `.cf` или расширения `.cfe` из
 //! рабочего пространства в базу силами `v8-runner load` (A-5 зонтика #871).
-//! Пара к `cf.export`: тот выносит конфигурацию из базы в файл, этот вносит
+//! Пара к `download`: тот выносит конфигурацию из базы в файл, этот вносит
 //! файл в базу.
 //!
 //! Аргументы закрыты: `input` — относительный путь к `.cf` или `.cfe` внутри
@@ -17,6 +17,7 @@
 //! платформе, журналу и командная строка наружу не идут.
 
 use super::protocol::InvocationRequest;
+use super::runner_011::Runner011ProcessRunner;
 use super::v13_infobase_exports::{
     closed_workspace_relative_path, digest_optional_workspace_file, digest_required_workspace_file,
     missing_runner_rejection, resolve_bundled_runner, runner_rejection, valid_1c_identifier,
@@ -28,9 +29,7 @@ use crate::domain::invocation::{DomainResult, SafeIdentityHash};
 use crate::domain::refusal::RefusalCode;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::BundledTool;
-use crate::infrastructure::internal_adapters::{
-    ProcessCommand, ProcessOutput, ProcessRunner, SystemProcessRunner,
-};
+use crate::infrastructure::internal_adapters::{ProcessCommand, ProcessOutput, ProcessRunner};
 use crate::infrastructure::path_policy::WorkspacePathPolicy;
 use crate::infrastructure::redaction::redactor;
 use crate::infrastructure::source_roots::normalize_path_identity;
@@ -40,7 +39,7 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-pub(super) const OPERATION: &str = "cf.import";
+pub(super) const OPERATION: &str = "upload";
 /// Имя команды в конверте раннера: словарь читается как слой и направление,
 /// раннер называет свои команды по-своему.
 const RUNNER_COMMAND: &str = "load";
@@ -126,7 +125,7 @@ impl PreparedCfImport {
             .ok_or_else(|| {
                 reject(
                     RefusalCode::BadValue,
-                    "cf.import requires dryRun: true to preview or dryRun: false with ifRev to apply",
+                    "upload requires dryRun: true to preview or dryRun: false with ifRev to apply",
                 )
             })?;
         let if_rev = match arguments.get("ifRev") {
@@ -135,20 +134,20 @@ impl PreparedCfImport {
             Some(_) => {
                 return Err(reject(
                     RefusalCode::BadValue,
-                    "cf.import ifRev must be non-empty text",
+                    "upload ifRev must be non-empty text",
                 ))
             }
         };
         if dry_run && if_rev.is_some() {
             return Err(reject(
                 RefusalCode::BadValue,
-                "cf.import preview does not accept ifRev; apply the revision returned by this preview",
+                "upload preview does not accept ifRev; apply the revision returned by this preview",
             ));
         }
         if !dry_run && if_rev.is_none() {
             return Err(reject(
                 RefusalCode::BadValue,
-                "cf.import apply requires ifRev from a prior dryRun preview",
+                "upload apply requires ifRev from a prior dryRun preview",
             ));
         }
         let context =
@@ -175,7 +174,7 @@ impl PreparedCfImport {
     }
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        execute_with_runner(self, &SystemProcessRunner, cancellation)
+        execute_with_runner(self, &Runner011ProcessRunner, cancellation)
     }
 }
 
@@ -187,7 +186,7 @@ fn parse_import_arguments(
     if let Some(unknown) = args.keys().find(|key| !ACCEPTED.contains(&key.as_str())) {
         return Err(reject(
             RefusalCode::BadValue,
-            format!("cf.import does not accept `{unknown}`; the closed args are input and extension, and the only mode is load"),
+            format!("upload does not accept `{unknown}`; the closed args are input and extension, and the only mode is load"),
         ));
     }
     let extension = match args.get("extension") {
@@ -196,7 +195,7 @@ fn parse_import_arguments(
         Some(_) => {
             return Err(reject(
                 RefusalCode::BadValue,
-                "cf.import extension must be a non-empty 1C identifier",
+                "upload extension must be a non-empty 1C identifier",
             ))
         }
     };
@@ -204,14 +203,9 @@ fn parse_import_arguments(
         .get("input")
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| {
-            reject(
-                RefusalCode::BadValue,
-                "cf.import input must be non-empty text",
-            )
-        })?;
+        .ok_or_else(|| reject(RefusalCode::BadValue, "upload input must be non-empty text"))?;
     let input_relative = closed_workspace_relative_path(input)
-        .map_err(|message| reject(RefusalCode::BadValue, format!("cf.import input {message}")))?;
+        .map_err(|message| reject(RefusalCode::BadValue, format!("upload input {message}")))?;
     let kind = match input_relative
         .extension()
         .and_then(|value| value.to_str())
@@ -223,7 +217,7 @@ fn parse_import_arguments(
         _ => {
             return Err(reject(
                 RefusalCode::BadValue,
-                "cf.import input must end in .cf for a configuration or .cfe for an extension",
+                "upload input must end in .cf for a configuration or .cfe for an extension",
             ))
         }
     };
@@ -233,13 +227,15 @@ fn parse_import_arguments(
         (ArtifactKind::Cfe, false) => {
             return Err(reject(
                 RefusalCode::BadValue,
-                "cf.import input .cfe requires extension: the name the infobase will know it by",
+                "upload input .cfe requires extension: the name the infobase will know it by",
             ))
         }
-        (ArtifactKind::Cf, true) => return Err(reject(
-            RefusalCode::BadValue,
-            "cf.import extension is only for a .cfe input; a .cf replaces the main configuration",
-        )),
+        (ArtifactKind::Cf, true) => {
+            return Err(reject(
+                RefusalCode::BadValue,
+                "upload extension is only for a .cfe input; a .cf replaces the main configuration",
+            ))
+        }
         _ => {}
     }
     let root_context = WorkspaceContext {
@@ -260,13 +256,13 @@ fn parse_import_arguments(
         Ok(Some(_)) => {
             return Err(reject(
                 RefusalCode::BadValue,
-                "cf.import input names an empty file",
+                "upload input names an empty file",
             ))
         }
         Ok(None) => {
             return Err(reject(
                 RefusalCode::BadValue,
-                "cf.import input names a file that does not exist in the workspace",
+                "upload input names a file that does not exist in the workspace",
             ))
         }
         Err(error) => return Err(reject(RefusalCode::BadValue, error)),
@@ -310,7 +306,7 @@ fn capture_inputs(prepared: &PreparedCfImport) -> Result<StableInputs, DomainRes
             .ok_or_else(|| {
                 reject(
                     RefusalCode::InvalidState,
-                    "cf.import input disappeared from the workspace",
+                    "upload input disappeared from the workspace",
                 )
             })?;
     Ok(StableInputs {
@@ -343,10 +339,7 @@ fn execute_with_resolved_runner(
     runner_version: &str,
 ) -> DomainResult {
     if cancellation.is_cancelled() {
-        return reject(
-            RefusalCode::Cancelled,
-            "cf.import cancelled before preflight",
-        );
+        return reject(RefusalCode::Cancelled, "upload cancelled before preflight");
     }
     let before = match capture_inputs(prepared) {
         Ok(inputs) => inputs,
@@ -366,13 +359,13 @@ fn execute_with_resolved_runner(
     if before != after {
         return reject(
             RefusalCode::ConcurrentChange,
-            "cf.import inputs changed during preview; run dryRun: true again",
+            "upload inputs changed during preview; run dryRun: true again",
         );
     }
     let revision = plan_revision(prepared, &before, runner_version);
     if prepared.dry_run {
         let mut result = DomainResult::success(format!(
-            "cf.import planned loading the {} without touching the infobase",
+            "upload planned loading the {} without touching the infobase",
             prepared.arguments.kind.target_kind()
         ));
         result.data = Some(json!({
@@ -402,7 +395,7 @@ fn execute_with_resolved_runner(
         return reject(
             RefusalCode::StaleRevision,
             format!(
-                "cf.import plan or environment changed after preview: expected rev {revision}, ifRev {}; run dryRun: true again",
+                "upload plan or environment changed after preview: expected rev {revision}, ifRev {}; run dryRun: true again",
                 prepared.if_rev.as_deref().unwrap_or("absent")
             ),
         );
@@ -410,7 +403,7 @@ fn execute_with_resolved_runner(
     if cancellation.is_cancelled() {
         return reject(
             RefusalCode::Cancelled,
-            "cf.import cancelled before provider launch",
+            "upload cancelled before provider launch",
         );
     }
     let applied = match invoke_runner(prepared, tool, runner, &cancellation, false) {
@@ -446,7 +439,7 @@ fn execute_with_resolved_runner(
     // базу без платформы — нет: её состояние здесь засвидетельствовано
     // провайдером, и источник признания назван прямо.
     let mut result = DomainResult::success(format!(
-        "cf.import loaded the {} from the named file; the infobase state is attested by the provider",
+        "upload loaded the {} from the named file; the infobase state is attested by the provider",
         prepared.arguments.kind.target_kind()
     ));
     result.data = Some(json!({

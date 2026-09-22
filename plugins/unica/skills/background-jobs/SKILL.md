@@ -11,9 +11,10 @@ description: "Фоновые и регламентные задания 1С. И�
 - Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
-выбирай только операцию с `implemented: true` и не выдумывай аргументов
-записи с `argsSchema: null`; превью исполнением не является. Не обходи
-контракт прямым runner-ом.
+при `implemented: true` используй опубликованную `argsSchema`; при
+`support.state: limited` разрешено только подмножество `support.supportedArgs`.
+При `support.state: unavailable` остановись; не выдумывай аргументов при
+`argsSchema: null`. Превью исполнением не является. Не обходи контракт прямым runner-ом.
 - Use `unica.view` on the role node when job behavior depends on user context or permissions.
 - Do not call internal runtime, analyzer, standards, or package adapters directly. They are hidden behind MCP `unica`.
 
@@ -29,7 +30,7 @@ description: "Фоновые и регламентные задания 1С. И�
 2. Find entry points with `unica.search`; inspect related metadata with `unica.view` on the object node and project layout with `unica.view {}`.
 3. Define execution contract: parameters, user context, transaction scope, idempotency key, lock strategy, timeout, retry count, and logging fields.
 4. Check failure behavior before implementation: duplicate launch, partial write, stale lock, external service failure, session termination, and restart after crash.
-5. Run `unica.check` on the module node; launch a client through `unica.run` (`client.run`) when the diagnosis needs one, and record runtime verification as unavailable unless separate evidence is supplied: test runs are outside the v0.13 surface.
+5. Run `unica.check` on the module node; launch a client through `unica.run` (`launch`) when the diagnosis needs one, and record runtime verification as unavailable unless separate evidence is supplied: test runs are outside the v0.13 surface.
 6. For diagnosis, build a timeline from ЖР/ТЖ and map the first failure back to module code.
 
 ## Review checklist

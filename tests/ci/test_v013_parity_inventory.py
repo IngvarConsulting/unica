@@ -139,14 +139,18 @@ NATIVE_ENTRIES = {"view", "apply", "resolve", "search", "check", "diff", "run", 
 OPERATION_ENTRIES = {"apply", "run"}
 RUN_OPERATIONS = {
     "infobase.create",
-    "source.import",
-    "source.export",
-    "artifact.build",
-    "cf.export",
-    "cf.import",
-    "infobase.export",
-    "infobase.import",
-    "client.run",
+    "push",
+    "pull",
+    "make",
+    "download",
+    "upload",
+    "infobase.dump",
+    "infobase.restore",
+    "launch",
+    "extensions.list",
+    "extensions.set",
+    "apply",
+    "reset",
 }
 DISPOSITIONS = {"mapped", "absorbed", "transport-replaced", "removed"}
 RUNTIME_JOB_NAMES = {
@@ -667,17 +671,17 @@ class V013ParityInventoryTest(unittest.TestCase):
         mappable_index = 0
         mapped_legacy_run_variants = (
             ("operation=init", "infobase.create"),
-            ("operation=build", "source.import"),
-            ("operation=dump", "source.export"),
-            ("operation=make", "artifact.build"),
-            ("operation=launch", "client.run"),
+            ("operation=build", "push"),
+            ("operation=dump", "pull"),
+            ("operation=make", "make"),
+            ("operation=launch", "launch"),
         )
         removed_legacy_run_variants = (
             (
                 "operation=convert",
                 "v0.13 run dictionary publishes no successor: Designer/EDT "
                 "conversion needs EDT, which Unica does not read, and the old "
-                "dump-format migration goes through source.export",
+                "dump-format migration goes through pull",
             ),
             (
                 "operation=config-init",
@@ -707,10 +711,14 @@ class V013ParityInventoryTest(unittest.TestCase):
             ),
         )
         new_run_capabilities = (
-            "cf.export",
-            "cf.import",
-            "infobase.export",
-            "infobase.import",
+            "extensions.list",
+            "extensions.set",
+            "apply",
+            "reset",
+            "download",
+            "upload",
+            "infobase.dump",
+            "infobase.restore",
         )
         non_run_entries = ("view", "apply", "resolve", "search", "check", "diff", "docs")
         for index, legacy_tool in enumerate(IMMUTABLE_BASELINE_NAMES):
@@ -847,7 +855,7 @@ class V013ParityInventoryTest(unittest.TestCase):
 
         self.assertEqual(
             variants["operation=make"]["successor"],
-            {"entry": "run", "operation": "artifact.build"},
+            {"entry": "run", "operation": "make"},
         )
         # `config-init` наследника в `run` не имеет: проектный файл заводит
         # человек, а создание набора исходников пишет файлы и принадлежит
@@ -986,7 +994,7 @@ class V013ParityInventoryTest(unittest.TestCase):
             {
                 "caseId": "run-artifact-build-new",
                 "entry": "run",
-                "operation": "artifact.build",
+                "operation": "make",
                 "mode": "direct",
                 "fixture": self.fixture,
                 "expected": {"outcome": "ok"},
@@ -994,8 +1002,8 @@ class V013ParityInventoryTest(unittest.TestCase):
         ]
         documents[EXPECTED_SHARDS[0]]["newCapabilities"] = [
             {
-                "capabilityId": "run.artifact.build.new",
-                "successor": {"entry": "run", "operation": "artifact.build"},
+                "capabilityId": "run.make.new",
+                "successor": {"entry": "run", "operation": "make"},
                 "caseIds": ["run-artifact-build-new"],
                 "rationale": "Synthetic new capability without a legacy predecessor.",
             }
@@ -1314,14 +1322,18 @@ class V013ParityInventoryTest(unittest.TestCase):
     def test_every_run_operation_is_the_literal_test_oracle(self) -> None:
         expected = (
             "infobase.create",
-            "source.import",
-            "source.export",
-            "artifact.build",
-            "cf.export",
-            "cf.import",
-            "infobase.export",
-            "infobase.import",
-            "client.run",
+            "push",
+            "pull",
+            "make",
+            "download",
+            "upload",
+            "infobase.dump",
+            "infobase.restore",
+            "launch",
+            "extensions.list",
+            "extensions.set",
+            "apply",
+            "reset",
         )
         self.assertEqual(RUN_OPERATIONS, set(expected))
         for operation in expected:
@@ -1648,7 +1660,7 @@ class V013ParityInventoryTest(unittest.TestCase):
         case = next(
             case
             for case in documents[EXPECTED_SHARDS[1]]["cases"]
-            if case.get("operation") == "client.run"
+            if case.get("operation") == "launch"
         )
         case["operation"] = "infobase.create"
         owning_variant = next(

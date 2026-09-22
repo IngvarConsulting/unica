@@ -2,8 +2,8 @@
 id: CTR.WIRE.TOOL-SURFACE
 status: active
 governs: product
-version: 7
-decision: DEC.2026-09-22.INSTALLED-EXTENSIONS-AND-RUNNER-RECEIPTS
+version: 8
+decision: DEC.2026-09-22.RUNNER-ONE-TARGET-VOCABULARY
 producer: scripts/ci/generate-tool-surface.py
 consumers: [review, docs]
 check: crates/unica-coder/src/interfaces/mcp.rs::production_mcp_surface_exposes_only_canonical_v13_tools_and_task_compatibility
@@ -23,20 +23,18 @@ scope: [wire]
 пространства или `at` для логического чтения. Все tools и опубликованные
 аргументы описаны; compatibility payload ограничен 16 KiB.
 
-`unica.run` без `op` доступен до source admission и возвращает закрытый словарь
-направленных runtime-намерений и операций установленных расширений вместе с назначением, `effects`,
-режимом `execution`, честным `implemented` и требованиями preview/fence.
-Имена отдельно выражают source build, CF/CFE configuration transfer и DT
-infobase transfer. Реализованная операция также сообщает точную `argsSchema`;
-для ещё не реализованных операций это поле равно `null`, чтобы модель не
-угадывала будущий контракт. Операции `previewApply` принимают `dryRun`;
-applied-вызов связывается с preview через `ifRev`.
+`unica.run` без `op` доступен до source admission и возвращает целевой словарь
+раннера 1.0 с описанием, `argsSchema`, `effects`, `execution`, `implemented`,
+требованиями preview/fence и `support`. `support.state` — supported, limited
+или unavailable; ограниченная операция называет `supportedArgs`, адаптер и
+причину ограничения. `implemented` не равен готовности платформы в окружении.
+Цель выбирается верхнеуровневым `infobase`, сейчас поддержана только origin;
+другая цель отклоняется без подмены. `unica.apply` и runtime-операция `apply`
+относятся к разным предметам.
 
-`cf.export` и `infobase.export` реализованы до source
-admission. Их schema не принимает выбор provider: v8-runner выбирает Designer
-или ibcmd и возвращает этот выбор данными preview. Apply повторяет preview,
-сверяет `ifRev` и публикует проверенную квитанцию CF/CFE/DT через Task transport.
-
-`extension.list/info/create/delete/activate` используют previewApply через
-раннер с квитанцией provider. Чтение состава запускает платформенный сеанс;
-create регистрирует пустое расширение, CFE загружается через cf.import.
+`download`, `infobase.dump`, `infobase.restore`, `make`, `launch`,
+`extensions.list` и `extensions.set` исполняются в пределах закрытых схем
+адаптера 0.11. `push` поддерживает только `delete` установленного расширения.
+Остальные режимы целевого каталога отвечают отказом до платформенного запуска.
+PreviewApply использует явный dryRun и ifRev; terminal launch сохраняет свой
+режим. Сырые CLI-аргументы, stdout/stderr и пароли в успех не публикуются.

@@ -14,17 +14,19 @@ subsystems, interfaces, and templates.
 
 Use the package-selected MCP runtime surface directly. In v0.13, call
 `unica.run {}` first and select only an operation whose dictionary entry says
-`implemented: true`; do not infer arguments for planned operations whose
+`implemented: true`, or exactly the subset declared by `support.state: limited` and `support.supportedArgs`; refuse unavailable operations. Do not infer arguments for operations whose
 `argsSchema` is `null`.
 
 Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
-выбирай только операцию с `implemented: true` и не выдумывай аргументов
-записи с `argsSchema: null`; превью исполнением не является. Не обходи
-контракт прямым runner-ом.
+при `implemented: true` используй опубликованную `argsSchema`; при
+`support.state: limited` разрешено только подмножество `support.supportedArgs`.
+При `support.state: unavailable` остановись; не выдумывай аргументов при
+`argsSchema: null`. Превью исполнением не является. Не обходи контракт прямым runner-ом.
 
-After clone or workspace initialization, and before `source.import` or `source.export`, first
+Source sending and pulling are currently unavailable with runner 0.11.
+For source readiness independently of runtime availability, first
 call `unica.check {}`. It returns `status`, `ready`, `repositoryReady`,
 `checks[]` and `diagnostics[]` — the verdict on the workspace. The facts it
 judges live in `unica.view {}`: `sourceSets` (possibly an empty array),
@@ -72,15 +74,18 @@ source-set path itself has no stronger structural evidence.
 
 | Intent | `unica.run` operation |
 | --- | --- |
-| Create the infobase named in `infobase.connection` | `infobase.create` (no arguments) |
-| Load declared sources into the infobase | `source.import`, optional `sourceSet`, `fullRebuild` |
-| Export sources from the infobase into a declared set | `source.export`, `mode=full` or `mode=incremental`, optional `sourceSet`, `extension` |
-| Export the configuration or an extension as `.cf`/`.cfe` | `cf.export`, `state=working` or `state=database`, `output`, optional `extension` |
-| Load a `.cf`/`.cfe` into the infobase | `cf.import`, `input`, `extension` for `.cfe` |
-| Build a `.cf`/`.cfe` from sources | `artifact.build`, `output`, optional `sourceSet`, `extension`; `.epf`/`.erf` are not published |
-| Export the whole infobase as `.dt` | `infobase.export`, `output` |
-| Load a `.dt` | `infobase.import`, `input`, `mode=create` or `mode=replace` |
-| Launch a 1C client | `client.run`, `clientMode`, optional `execute`, `waitForExit`, `waitTimeoutMs`; terminal, no preview required |
+| Create an infobase with its source/sync baseline | `infobase.create` — unavailable with runner 0.11 |
+| Send sources / delete an extension | `push` — only `args: {"delete": "InstalledName"}` is supported with runner 0.11; sending sources is unavailable |
+| Bring database changes into sources with local-work protection | `pull` — unavailable with runner 0.11 |
+| Export the configuration or an extension as `.cf`/`.cfe` | `download`, `state=working` or `state=database`, `output`, optional `extension` |
+| Load a `.cf`/`.cfe` into the working configuration only | `upload` — unavailable: runner 0.11 load also applies the database configuration |
+| Build a `.cf`/`.cfe` from sources | `make`, `output`, optional `sourceSet`, `extension`; `.epf`/`.erf` are not published |
+| Export the whole infobase as `.dt` | `infobase.dump`, `output` |
+| Load a `.dt` | `infobase.restore`, `input`, `mode=create` or `mode=replace` |
+| Launch a 1C client | `launch`, `clientMode`, optional `execute`, `waitForExit`, `waitTimeoutMs`; terminal, no preview required |
+| Inspect installed extensions | `extensions.list`, empty args; preview/apply opens a platform session |
+| Change installed extension activity | `extensions.set`, `name`, boolean `active`; other properties are unavailable |
+| Apply or discard pending configuration changes | `apply`, `reset` — unavailable with runner 0.11 |
 
 A previewApply operation is applied with the `ifRev` its preview returned; a
 changed workspace or plan answers `stale_revision` or `concurrent_change`

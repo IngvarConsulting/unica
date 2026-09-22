@@ -94,7 +94,7 @@
     },
     "unica.run": {
       "status": "partial",
-      "reason": "The directional runtime operations and all five installed-extension operations are implemented; all except client.run require non-executing preview and revision-fenced apply.",
+      "reason": "Runner 1.0 vocabulary: seven supported closed schemas, push delete only; source synchronization, upload without implicit database apply, apply/reset and target create remain unavailable.",
       "evidence": [{
         "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
         "test": "production_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools"
@@ -116,7 +116,7 @@
     }
   },
   "runOperations": {
-    "extension.list": {
+    "extensions.list": {
       "status": "supported",
       "reason": "Installed-extension operation via the pinned runner: non-executing preview, configuration/arguments/provider revision fence, bounded typed result; infobase facts are attested by the provider.",
       "evidence": [
@@ -130,49 +130,7 @@
         }
       ]
     },
-    "extension.info": {
-      "status": "supported",
-      "reason": "Installed-extension operation via the pinned runner: non-executing preview, configuration/arguments/provider revision fence, bounded typed result; infobase facts are attested by the provider.",
-      "evidence": [
-        {
-          "file": "crates/unica-coder/src/infrastructure/daemon/v13_extensions.rs",
-          "test": "all_extension_operations_preview_then_apply_with_a_provider_receipt"
-        },
-        {
-          "file": "crates/unica-coder/src/infrastructure/daemon/v13_extensions.rs",
-          "test": "changed_args_config_version_or_provider_never_pass_the_extension_fence"
-        }
-      ]
-    },
-    "extension.create": {
-      "status": "supported",
-      "reason": "Installed-extension operation via the pinned runner: non-executing preview, configuration/arguments/provider revision fence, bounded typed result; infobase facts are attested by the provider.",
-      "evidence": [
-        {
-          "file": "crates/unica-coder/src/infrastructure/daemon/v13_extensions.rs",
-          "test": "all_extension_operations_preview_then_apply_with_a_provider_receipt"
-        },
-        {
-          "file": "crates/unica-coder/src/infrastructure/daemon/v13_extensions.rs",
-          "test": "changed_args_config_version_or_provider_never_pass_the_extension_fence"
-        }
-      ]
-    },
-    "extension.delete": {
-      "status": "supported",
-      "reason": "Installed-extension operation via the pinned runner: non-executing preview, configuration/arguments/provider revision fence, bounded typed result; infobase facts are attested by the provider.",
-      "evidence": [
-        {
-          "file": "crates/unica-coder/src/infrastructure/daemon/v13_extensions.rs",
-          "test": "all_extension_operations_preview_then_apply_with_a_provider_receipt"
-        },
-        {
-          "file": "crates/unica-coder/src/infrastructure/daemon/v13_extensions.rs",
-          "test": "changed_args_config_version_or_provider_never_pass_the_extension_fence"
-        }
-      ]
-    },
-    "extension.activate": {
+    "extensions.set": {
       "status": "supported",
       "reason": "Installed-extension operation via the pinned runner: non-executing preview, configuration/arguments/provider revision fence, bounded typed result; infobase facts are attested by the provider.",
       "evidence": [
@@ -187,142 +145,158 @@
       ]
     },
     "infobase.create": {
-      "status": "supported",
-      "reason": "Creating the empty infobase declared by v8project.yaml is implemented as previewApply over v8-runner init without arguments: the preview reads the runner's step statuses and refuses an existing infobase or a project that needs an EDT workspace, apply is fenced by ifRev built from the project file, and the receipt is the runner's own repeated preview reporting nothing left to create; the infobase state is reported as attested by the provider.",
-      "evidence": [{
-        "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
-        "test": "v5_infobase_create_prepares_before_source_admission_and_keeps_the_revision_gate"
-      }, {
-        "file": "crates/unica-coder/src/infrastructure/daemon/v13_infobase_create.rs",
-        "test": "preview_plans_the_infobase_without_creating_anything_or_naming_its_path"
-      }, {
-        "file": "crates/unica-coder/src/infrastructure/daemon/v13_infobase_create.rs",
-        "test": "apply_creates_and_takes_its_receipt_from_a_repeated_preview"
-      }, {
-        "file": "crates/unica-coder/src/infrastructure/daemon/v13_infobase_create.rs",
-        "test": "an_existing_infobase_is_refused_at_preview_and_points_to_import"
-      }]
+      "status": "unsupported",
+      "reason": "Runner 0.11 does not implement the required runner 1.0 semantics; refused before source admission or process execution.",
+      "evidence": [
+        {
+          "file": "crates/unica-coder/src/infrastructure/daemon/v13_run_dictionary.rs",
+          "test": "runner_one_refuses_unsupported_semantics_and_old_names_before_admission"
+        }
+      ]
     },
-    "source.import": {
-      "status": "supported",
-      "reason": "Importing workspace sources into the infobase is implemented as previewApply over v8-runner build: the preview plans one step per declared source set (or the one named by sourceSet) with the runner's full or partial mode without dispatching Designer, apply is fenced by ifRev built from the project file, the declared composition and the planned modes, a different composition or mode at apply is refused as a concurrent change, and the infobase state is reported as attested by the provider.",
-      "evidence": [{
-        "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
-        "test": "v5_source_import_prepares_before_source_admission_and_keeps_the_revision_gate"
-      }, {
-        "file": "crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs",
-        "test": "preview_plans_every_declared_source_set_with_its_mode_without_dispatching_designer"
-      }, {
-        "file": "crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs",
-        "test": "apply_repeats_the_preview_and_attributes_the_infobase_state_to_the_provider"
-      }, {
-        "file": "crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs",
-        "test": "apply_refuses_a_stale_revision_and_a_plan_that_changed_underneath"
-      }]
+    "push": {
+      "status": "partial",
+      "reason": "Only explicit delete of an installed extension is implemented; source sending and its generation contract remain unavailable.",
+      "evidence": [
+        {
+          "file": "crates/unica-coder/src/infrastructure/daemon/v13_extensions.rs",
+          "test": "all_extension_operations_preview_then_apply_with_a_provider_receipt"
+        },
+        {
+          "file": "crates/unica-coder/src/infrastructure/daemon/v13_run_dictionary.rs",
+          "test": "runner_one_refuses_unsupported_semantics_and_old_names_before_admission"
+        }
+      ]
     },
-    "source.export": {
-      "status": "supported",
-      "reason": "Exporting the infobase into a workspace source set is implemented as previewApply over v8-runner dump in full or incremental mode: the preview names the declared source set, the mode and a target inside the workspace without writing, apply is fenced by ifRev built from the project file, the declared composition, the arguments and the target, and Unica verifies the export by counting the files in the target rather than trusting the provider.",
-      "evidence": [{
-        "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
-        "test": "v5_source_export_prepares_before_source_admission_and_keeps_the_revision_gate"
-      }, {
-        "file": "crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs",
-        "test": "preview_names_the_target_inside_the_workspace_without_writing"
-      }, {
-        "file": "crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs",
-        "test": "apply_repeats_the_preview_and_counts_the_exported_files_itself"
-      }, {
-        "file": "crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs",
-        "test": "preview_refuses_a_target_outside_the_workspace_an_undeclared_set_or_a_write"
-      }]
+    "pull": {
+      "status": "unsupported",
+      "reason": "Runner 0.11 does not implement the required runner 1.0 semantics; refused before source admission or process execution.",
+      "evidence": [
+        {
+          "file": "crates/unica-coder/src/infrastructure/daemon/v13_run_dictionary.rs",
+          "test": "runner_one_refuses_unsupported_semantics_and_old_names_before_admission"
+        }
+      ]
     },
-    "artifact.build": {
+    "make": {
       "status": "supported",
       "reason": "Building a CF or CFE from workspace sources is implemented as previewApply over v8-runner make: the output is confined to the workspace before the runner is called, .epf and .erf are refused as unsupported in v0.13, the preview names the artifact kind, source set and output without publishing, apply is fenced by ifRev built from the project file, the declared composition, the arguments and the output digest, and Unica verifies the built file by size and digest rather than trusting the provider.",
-      "evidence": [{
-        "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
-        "test": "v5_artifact_build_prepares_before_source_admission_and_keeps_the_revision_gate"
-      }, {
-        "file": "crates/unica-coder/src/infrastructure/daemon/v13_artifact_build.rs",
-        "test": "preview_names_the_artifact_and_the_set_without_publishing"
-      }, {
-        "file": "crates/unica-coder/src/infrastructure/daemon/v13_artifact_build.rs",
-        "test": "apply_repeats_the_preview_and_returns_an_independent_file_receipt"
-      }, {
-        "file": "crates/unica-coder/src/infrastructure/daemon/v13_artifact_build.rs",
-        "test": "arguments_are_closed_and_each_refusal_names_the_fix"
-      }]
+      "evidence": [
+        {
+          "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
+          "test": "v5_artifact_build_prepares_before_source_admission_and_keeps_the_revision_gate"
+        },
+        {
+          "file": "crates/unica-coder/src/infrastructure/daemon/v13_artifact_build.rs",
+          "test": "preview_names_the_artifact_and_the_set_without_publishing"
+        },
+        {
+          "file": "crates/unica-coder/src/infrastructure/daemon/v13_artifact_build.rs",
+          "test": "apply_repeats_the_preview_and_returns_an_independent_file_receipt"
+        },
+        {
+          "file": "crates/unica-coder/src/infrastructure/daemon/v13_artifact_build.rs",
+          "test": "arguments_are_closed_and_each_refusal_names_the_fix"
+        }
+      ]
     },
-    "cf.export": {
+    "download": {
       "status": "supported",
       "reason": "Working/database main configuration and named extension export use v8-runner provider selection, non-executing preview, revision-fenced apply, and independent artifact verification.",
-      "evidence": [{
-        "file": "crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs",
-        "test": "apply_repeats_preflight_and_returns_an_independent_file_receipt"
-      }, {
-        "file": "crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs",
-        "test": "cfe_and_dt_invocations_use_only_their_closed_runner_arguments"
-      }]
+      "evidence": [
+        {
+          "file": "crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs",
+          "test": "apply_repeats_preflight_and_returns_an_independent_file_receipt"
+        },
+        {
+          "file": "crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs",
+          "test": "cfe_and_dt_invocations_use_only_their_closed_runner_arguments"
+        }
+      ]
     },
-    "cf.import": {
-      "status": "supported",
-      "reason": "Importing a workspace CF or CFE into the infobase is implemented as previewApply over v8-runner load: the preview names the source file, the target kind and the fixed load mode without applying anything, apply is fenced by ifRev built from the project file and the file digest, the source must stay intact through the load, and the infobase state is reported as attested by the provider.",
-      "evidence": [{
-        "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
-        "test": "v5_cf_import_prepares_before_source_admission_and_keeps_the_revision_gate"
-      }, {
-        "file": "crates/unica-coder/src/infrastructure/daemon/v13_cf_import.rs",
-        "test": "preview_names_the_source_and_the_target_without_touching_the_infobase"
-      }, {
-        "file": "crates/unica-coder/src/infrastructure/daemon/v13_cf_import.rs",
-        "test": "apply_repeats_the_preview_and_attributes_the_infobase_state_to_the_provider"
-      }, {
-        "file": "crates/unica-coder/src/infrastructure/daemon/v13_cf_import.rs",
-        "test": "apply_refuses_a_provider_that_touched_the_source_or_reported_nothing_applied"
-      }]
+    "upload": {
+      "status": "unsupported",
+      "reason": "Runner 0.11 load implicitly runs update_db_cfg, whereas target upload must stop at the working configuration.",
+      "evidence": [
+        {
+          "file": "crates/unica-coder/src/application/v13/tool_catalog.rs",
+          "test": "target_upload_does_not_advertise_the_legacy_implicit_database_apply"
+        }
+      ]
     },
-    "infobase.export": {
+    "infobase.dump": {
       "status": "supported",
       "reason": "Full DT export uses v8-runner provider selection, non-executing preview, revision-fenced apply, and independent artifact verification.",
-      "evidence": [{
-        "file": "crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs",
-        "test": "cfe_and_dt_invocations_use_only_their_closed_runner_arguments"
-      }, {
-        "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
-        "test": "infobase_export_is_task_admitted_without_platform_xml_source_sets"
-      }]
+      "evidence": [
+        {
+          "file": "crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs",
+          "test": "cfe_and_dt_invocations_use_only_their_closed_runner_arguments"
+        },
+        {
+          "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
+          "test": "infobase_export_is_task_admitted_without_platform_xml_source_sets"
+        }
+      ]
     },
-    "infobase.import": {
+    "infobase.restore": {
       "status": "supported",
       "reason": "DT restore states which irreversible change is allowed, uses the same provider selection and revision-fenced apply as the exports, and attributes the resulting infobase state to the provider because it is not verifiable without the platform.",
-      "evidence": [{
-        "file": "crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs",
-        "test": "restore_preview_names_the_source_and_the_mode_without_touching_the_infobase"
-      }, {
-        "file": "crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs",
-        "test": "restore_apply_attributes_the_infobase_state_to_the_provider"
-      }, {
-        "file": "crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs",
-        "test": "restore_arguments_require_a_stated_mode_and_a_dt_input"
-      }]
+      "evidence": [
+        {
+          "file": "crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs",
+          "test": "restore_preview_names_the_source_and_the_mode_without_touching_the_infobase"
+        },
+        {
+          "file": "crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs",
+          "test": "restore_apply_attributes_the_infobase_state_to_the_provider"
+        },
+        {
+          "file": "crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs",
+          "test": "restore_arguments_require_a_stated_mode_and_a_dt_input"
+        }
+      ]
     },
-    "client.run": {
+    "launch": {
       "status": "supported",
       "reason": "Terminal launch of a 1C client is implemented as published: the call launches at once, dryRun is an optional non-executing preview from v8-runner, no revision fence; closed args are clientMode, execute, waitForExit and waitTimeoutMs, and the answer names the selected platform without exposing the command line.",
-      "evidence": [{
-        "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
-        "test": "v5_client_run_binds_before_source_admission_without_a_revision_gate"
-      }, {
-        "file": "crates/unica-coder/src/infrastructure/daemon/v13_client_run.rs",
-        "test": "preview_names_the_platform_without_dispatching_or_exposing_the_command"
-      }, {
-        "file": "crates/unica-coder/src/infrastructure/daemon/v13_client_run.rs",
-        "test": "launch_reports_the_session_the_provider_attests"
-      }, {
-        "file": "crates/unica-coder/src/infrastructure/daemon/v13_client_run.rs",
-        "test": "arguments_are_closed_and_each_refusal_names_the_fix"
-      }]
+      "evidence": [
+        {
+          "file": "crates/unica-coder/src/infrastructure/daemon/server.rs",
+          "test": "v5_client_run_binds_before_source_admission_without_a_revision_gate"
+        },
+        {
+          "file": "crates/unica-coder/src/infrastructure/daemon/v13_client_run.rs",
+          "test": "preview_names_the_platform_without_dispatching_or_exposing_the_command"
+        },
+        {
+          "file": "crates/unica-coder/src/infrastructure/daemon/v13_client_run.rs",
+          "test": "launch_reports_the_session_the_provider_attests"
+        },
+        {
+          "file": "crates/unica-coder/src/infrastructure/daemon/v13_client_run.rs",
+          "test": "arguments_are_closed_and_each_refusal_names_the_fix"
+        }
+      ]
+    },
+    "apply": {
+      "status": "unsupported",
+      "reason": "Runner 0.11 does not implement the required runner 1.0 semantics; refused before source admission or process execution.",
+      "evidence": [
+        {
+          "file": "crates/unica-coder/src/infrastructure/daemon/v13_run_dictionary.rs",
+          "test": "runner_one_refuses_unsupported_semantics_and_old_names_before_admission"
+        }
+      ]
+    },
+    "reset": {
+      "status": "unsupported",
+      "reason": "Runner 0.11 does not implement the required runner 1.0 semantics; refused before source admission or process execution.",
+      "evidence": [
+        {
+          "file": "crates/unica-coder/src/infrastructure/daemon/v13_run_dictionary.rs",
+          "test": "runner_one_refuses_unsupported_semantics_and_old_names_before_admission"
+        }
+      ]
     }
   },
   "compatibilityTools": {

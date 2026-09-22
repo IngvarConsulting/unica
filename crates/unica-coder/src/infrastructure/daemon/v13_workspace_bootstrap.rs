@@ -453,7 +453,7 @@ fn bootstrap_result(
         result.next.push(next_action(
             "unica.run",
             object([
-                ("op", Value::String("cf.export".to_string())),
+                ("op", Value::String("download".to_string())),
                 (
                     "args",
                     object([
@@ -468,7 +468,7 @@ fn bootstrap_result(
         result.next.push(next_action(
             "unica.run",
             object([
-                ("op", Value::String("infobase.export".to_string())),
+                ("op", Value::String("infobase.dump".to_string())),
                 (
                     "args",
                     object([("output", Value::String("dist/base.dt".to_string()))]),
@@ -560,7 +560,11 @@ fn yaml_infobase_connection(
     let Some(mapping) = root.as_mapping() else {
         return Err(format!("{source} document root must be a mapping"));
     };
-    let Some(infobase) = mapping.get(serde_yaml::Value::String("infobase".to_string())) else {
+    let Some(infobase) = mapping
+        .get(serde_yaml::Value::from("infobases"))
+        .and_then(|v| v.get("origin"))
+        .or_else(|| mapping.get(serde_yaml::Value::from("infobase")))
+    else {
         return Ok(None);
     };
     let Some(infobase) = infobase.as_mapping() else {

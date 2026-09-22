@@ -1,8 +1,8 @@
 ---
 id: INV.WIRE.INFOBASE-CREATE-ONLY-CREATES-AN-ABSENT-ONE
-status: active
+status: superseded
 governs: product
-decision: DEC.2026-09-15.INFOBASE-CREATE-TAKES-ITS-RECEIPT-FROM-THE-RUNNER
+decision: DEC.2026-09-22.RUNNER-ONE-TARGET-VOCABULARY
 check:
   - crates/unica-coder/src/infrastructure/daemon/server.rs::v5_infobase_create_prepares_before_source_admission_and_keeps_the_revision_gate
   - crates/unica-coder/src/infrastructure/daemon/v13_infobase_create.rs::an_existing_infobase_is_refused_at_preview_and_points_to_import
