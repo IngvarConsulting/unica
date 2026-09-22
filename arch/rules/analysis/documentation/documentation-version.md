@@ -10,6 +10,7 @@ check:
   - crates/unica-coder/src/infrastructure/kb_1ci.rs::kb_a_build_pin_is_answered_by_its_family_guide_with_a_disclosure
   - crates/unica-coder/src/infrastructure/kb_1ci.rs::kb_a_build_pin_of_an_absent_family_is_still_refused
   - crates/unica-coder/src/infrastructure/kb_1ci.rs::kb_provider_names_available_versions_when_the_requested_one_is_absent
+gap: https://github.com/IngvarConsulting/unica/issues/597
 ---
 
 # Справка называет выбранную версию и допустимые подстановки
@@ -26,3 +27,8 @@ check:
 База знаний может ответить на сборку `8.3.27.2074` руководством её семейства
 `8.3.27`. Попадание называет версию руководства, предупреждение — обе версии.
 Чужое семейство не подставляется; отказ перечисляет доступные версии.
+
+Если выбранная локальная установка не содержит нужной справки, Unica
+сообщает об этом и называет доступные установки со справкой. Материал другой
+версии в ответ не подставляется; закреплённая для выполнения версия платформы
+не меняется. Проверка отказа с перечнем альтернатив остаётся в `gap`.
