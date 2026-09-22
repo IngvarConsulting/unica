@@ -89,7 +89,7 @@ const MXL_INFO_ARGS: &[&str] = &[
 const CFE_DIFF_ARGS: &[&str] = &["ExtensionPath", "extensionPath", "ConfigPath", "configPath"];
 const XDTO_INFO_ARGS: &[&str] = &["sourceSet", "metadataPath", "typeName", "limit", "cursor"];
 const XDTO_EDIT_ARGS: &[&str] = &["sourceSet", "metadataPath", "operations"];
-/// ADR-0071: the closed camelCase tags of the `operations` union, in the
+/// The closed camelCase tags of the `operations` union, in the
 /// order the schema publishes their variants.
 const XDTO_EDIT_OPS: &[&str] = &[
     "addValueType",
@@ -823,7 +823,7 @@ fn diagnostics_input_schema() -> Value {
     })
 }
 
-/// ADR-0071: the closed tagged union of `unica.xdto.edit` operations, placed
+/// The closed tagged union of `unica.xdto.edit` operations, placed
 /// directly in `properties.operations.items` per ADR-0025 §4 — no
 /// `allOf`/`if`/`then`/`$ref`, every variant closed and naming its own
 /// required fields. Field semantics are exactly what the package writer read
@@ -1138,7 +1138,7 @@ fn validate_xdto_arguments(tool: ToolSpec, args: &Map<String, Value>) -> Result<
     Ok(())
 }
 
-/// One element of the `unica.xdto.edit` operations union (ADR-0071). Every
+/// One element of the `unica.xdto.edit` operations union. Every
 /// message names the failing element as `operations[<index>]` so a rejected
 /// batch points at the exact operation.
 fn validate_xdto_operation_item(tool_name: &str, index: usize, item: &Value) -> Result<(), String> {
@@ -2800,7 +2800,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "limit",
-        "Cap on how much one call returns, counted in the entities that tool answers with and never in printed lines: meta.info section items (default 20), xdto.info package types, code.search hits (20 per role), code.definition definitions (50), code.graph nodes, code.diagnostics findings, standards and documentation results. On `unica.source.read` alone the unit is bytes, because that tool returns one bounded byte range. The eight narrowed native XML readers answer with every section at once and publish no `limit` (ADR-0048).",
+        "Cap on how much one call returns, counted in the entities that tool answers with and never in printed lines: meta.info section items (default 20), xdto.info package types, code.search hits (20 per role), code.definition definitions (50), code.graph nodes, code.diagnostics findings, standards and documentation results. On `unica.source.read` alone the unit is bytes, because that tool returns one bounded byte range. The eight narrowed native XML readers answer with every section at once and publish no `limit`.",
     ),
     (
         "maxErrors",
@@ -2864,7 +2864,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "name",
-        "Subject name whose meaning is tool-scoped: the object being created by `cf.init`, `cfe.init`, `epf.init` and `erf.init`, and the required BSL method to locate on `unica.code.definition`. The eight narrowed native XML readers no longer take it: they answer with every section at once, so there is nothing left for it to drill into (ADR-0048).",
+        "Subject name whose meaning is tool-scoped: the object being created by `cf.init`, `cfe.init`, `epf.init` and `erf.init`, and the required BSL method to locate on `unica.code.definition`. The eight narrowed native XML readers no longer take it: they answer with every section at once, so there is nothing left for it to drill into.",
     ),
     (
         "namePrefix",
@@ -3967,8 +3967,8 @@ pub(crate) mod tests {
     /// #290, требование 1: у каждого мутатора есть объявленная стратегия
     /// предпросмотра, и она выводится из реестра, а не из растущего набора
     /// исключений по имени операции. Читатель стратегии не имеет — предпросмотр
-    /// ему не адресован (ADR-0044).
-    /// ADR-0073 §5: переходный список замкнут и только сокращается. Паритет
+    /// ему не адресован.
+    /// Переходный список замкнут и только сокращается. Паритет
     /// выживших закреплён их собственными тестами: meta.edit —
     /// `typed_edit_preview_bytes_equal_the_applied_post_image` и квитанции,
     /// form.edit — `form_edit_preview_apply_and_no_op_validate_the_projected_form`,
@@ -3994,7 +3994,7 @@ pub(crate) mod tests {
                 "interface-edit",
                 "subsystem-edit",
             ],
-            "ADR-0073 §5: the transitional list is approved item by item"
+            "the transitional list is approved item by item"
         );
         let mut sorted = PREVIEW_GATED_OPERATIONS.to_vec();
         sorted.sort_unstable();
@@ -4005,7 +4005,7 @@ pub(crate) mod tests {
         );
         assert!(
             !PREVIEW_GATED_OPERATIONS.contains(&"cf-init"),
-            "cf.init previews honestly (ADR-0073)"
+            "cf.init previews honestly"
         );
         let mutating_operations = tools()
             .into_iter()

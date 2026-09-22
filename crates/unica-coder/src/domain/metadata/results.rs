@@ -248,7 +248,7 @@ pub(crate) struct MetaMutationData {
     pub(crate) metadata_path: MetadataAddress,
     pub(crate) changed: bool,
     pub(crate) publication_plan: Vec<MetaPublicationPlanEntry>,
-    /// ADR-0073: затронутые пути рабочего пространства — план в предпросмотре
+    /// Затронутые пути рабочего пространства — план в предпросмотре
     /// и фактическая квитанция в применении; конверт `changes`/`artifacts`
     /// строится отсюда же.
     pub(crate) changed_paths: Vec<MetaChangedPath>,

@@ -322,7 +322,6 @@ Unica. Каждая запись формулирует одно нормати�
   недостижимый из-за обязательного соседа, не публикуется, ограничение объёма
   ответа режет по сущностям контракта, а опубликованный и принимаемый наборы
   типизированных читателей закреплены таблицей.
-- **Decision:** ADR-0048
 - **Check:** `ci-test` — `crates/unica-coder/src/application/tool_contracts.rs`
 - **Scope:** runtime
 
@@ -407,7 +406,6 @@ Unica. Каждая запись формулирует одно нормати�
   исполняется только как `InvocationMode::Read`; `ToolExecution::Mutation`
   выводит `Preview` при отсутствующем или истинном `dryRun` и `Apply` только
   при `dryRun: false`.
-- **Decision:** ADR-0044
 - **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
 - **Check:** `ci-test` — `tests/ci/test_unica_mcp_script_parity.py`
 - **Scope:** source, runtime, packaged
@@ -536,7 +534,7 @@ Unica. Каждая запись формулирует одно нормати�
   вызов: мутация успешно исполняется через предпросмотр MCP, а читатель — как
   настоящее чтение MCP над детерминированной фикстурой или локальным подставным
   поставщиком без записи в рабочее пространство и зависимости от живой сети.
-- **Decision:** ADR-0005, ADR-0044
+- **Decision:** ADR-0005
 - **Check:** `ci-test` — `tests/ci/test_unica_mcp_script_parity.py`
 - **Scope:** source, packaged
 

@@ -1544,8 +1544,8 @@ impl CompileTransaction {
     }
 
     /// Полный план изменений транзакции: созданные, обновлённые и удаляемые
-    /// пути — единственный источник для структурной квитанции мутации
-    /// (ADR-0073). Порядок детерминирован: create, update, remove; внутри —
+    /// пути — единственный источник для структурной квитанции мутации.
+    /// Порядок детерминирован: create, update, remove; внутри —
     /// по пути.
     pub(crate) fn planned_changes(&self) -> Vec<(PlannedChangeKind, PathBuf)> {
         let mut changes = Vec::new();
@@ -2134,7 +2134,7 @@ impl CompileTransaction {
         );
     }
 
-    /// ADR-0073: предпросмотр вызывает ту же семантическую проверку плановых
+    /// Предпросмотр вызывает ту же семантическую проверку плановых
     /// байтов, что применение выполняет перед публикацией.
     pub(crate) fn semantic_preflight(&self) -> Result<(), String> {
         for create in &self.creates {
