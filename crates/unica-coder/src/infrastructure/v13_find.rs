@@ -684,14 +684,21 @@ mod tests {
         assert_eq!(entry.placed_path(), Some("Configuration.xml"));
     }
 
-    #[cfg(unix)]
     #[test]
     fn linked_configuration_descriptor_is_not_admitted_by_prefix_read() {
+        use crate::infrastructure::platform::testing::{
+            create_file_link_fixture_for_test, FileLinkFixtureOutcome,
+        };
+
         let fixture = Fixture::new();
         let descriptor = fixture.source.join("Configuration.xml");
         let physical = fixture.source.join("physical-configuration.xml");
         std::fs::rename(&descriptor, &physical).unwrap();
-        std::os::unix::fs::symlink(&physical, &descriptor).unwrap();
+        match create_file_link_fixture_for_test(&physical, &descriptor).unwrap() {
+            FileLinkFixtureOutcome::Created => {}
+            FileLinkFixtureOutcome::Unsupported
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => return,
+        }
 
         let index = fixture.directory();
         assert!(index.locate_address("main:Configuration").is_none());
