@@ -223,7 +223,8 @@ CRLF и состоянием описателя `Extended`, которого т�
 
 ## Матрица чтения `unica.meta.info`
 
-Отдельный read-профиль ADR-0047 закреплён манифестом
+[Профиль чтения](../../../arch/rules/workspace/sources/metadata-read-profile.md)
+закреплён манифестом
 `tests/fixtures/platform_8_3_27/meta_info/manifest.json`. Его множество видов
 точно совпадает с `MetadataKind::ALL`: основной случай каждого из 23 видов
 строится тем же каноническим шаблоном, который участвует в platform-gated

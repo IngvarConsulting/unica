@@ -26,11 +26,6 @@ Unica. Каждая запись формулирует одно нормати�
 
 ## Как устроен реестр
 
-Этот раздел описывает формат обоих реестров корпуса: реестра инвариантов
-(`INV-*`, этот файл) и реестра требований к качеству (`REQ-*`,
-[требования к качеству](quality-requirements.md)). Документ с требованиями
-ссылается сюда и не повторяет формат.
-
 Каждая запись оформлена одинаково. Заголовок записи —
 `### <ID> — <короткое имя>`, где тире это U+2014, окружённое пробелами. Сразу
 за заголовком идёт пустая строка и затем четыре поля-булета. Порядок ниже —
@@ -204,22 +199,6 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/meta/edit.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/application/metadata.rs`
 - **Check:** `ci-test` — `tests/ci/test_meta_surface_contract.py`
-- **Scope:** source, packaged, runtime
-
-### INV-MCP-META-INFO-COVERAGE — `meta.info` имеет отдельный полный профиль чтения
-
-- **Rule:** `unica.meta.info` возвращает обязательный `details`, вариант которого
-  связан с одним из всех 23 значений `kind`; общие свойства и наблюдаемые типы
-  читаются профилями, не расширяющими право записи. Отслеживаемый манифест
-  совпадает с `MetadataKind::ALL` и связывает основной профиль 8.3.27/2.20 с
-  одиннадцатью граничными примерами и независимыми матрицами маршрутов свойств
-  и коллекций; неизвестное свойство или дочерний объект не пропускается молча,
-  а даёт `provider_unavailable`. Недоказанная вложенная
-  коллекция равна `null` с диагностикой, доказанно пустая равна `[]`,
-  расширенное имя типа публикуется без префикса XML.
-- **Decision:** ADR-0047
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/meta/info_projection_tests.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/application/meta_info_surface_tests.rs`
 - **Scope:** source, packaged, runtime
 
 ### INV-MCP-EVENT-SOURCE — Источник подписки является типизированным отношением

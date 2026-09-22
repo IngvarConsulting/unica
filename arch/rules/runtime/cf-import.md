@@ -8,6 +8,7 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/v13_cf_import.rs::apply_repeats_the_preview_and_attributes_the_infobase_state_to_the_provider
   - crates/unica-coder/src/infrastructure/daemon/v13_cf_import.rs::stale_apply_stops_after_the_non_executing_preflight
   - crates/unica-coder/src/infrastructure/daemon/v13_cf_import.rs::apply_refuses_a_provider_that_touched_the_source_or_reported_nothing_applied
+gap: https://github.com/IngvarConsulting/unica/issues/950
 ---
 
 # Импорт конфигурации сохраняет входной файл
@@ -19,6 +20,11 @@ check:
 совместимость до применения неизвестной: `compatibilityKnownBeforeApply: false`.
 Применение доступно без допуска исходников, но требует `ifRev` своего preview; несовпадение
 останавливает вызов до исполняющего запуска раннера.
+
+Ревизия preview связывает проектный файл, SHA-256 входного файла, версию
+раннера и цель импорта. Изменение этих входов требует нового preview;
+прежний `ifRev` не разрешает исполняющий запуск. Состояние самой базы
+этой ревизией не фиксируется.
 
 Успех допускается, только если раннер подтвердил применение, а входной
 файл остался байт в байт прежним, в том числе при подмене без изменения

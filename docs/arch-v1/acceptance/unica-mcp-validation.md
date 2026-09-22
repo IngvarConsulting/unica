@@ -58,14 +58,10 @@ a real Platform XML fixture and rejects the three retired names as unknown
 tools. This is the runtime acceptance for `INV-MCP-META-SURFACE`; the exact
 registry and schema projection is owned by its named contract test.
 
-The `unica.meta.info` response additionally satisfies
-`INV-MCP-META-INFO-COVERAGE`: `kind` is paired with a mandatory typed `details`
-variant for all 23 metadata kinds, read properties do not grant writer rights,
-and malformed nested HTTP/WebService or newly routed child collections are
-`null` with a diagnostic instead of looking complete. The tracked manifest
-contains 11 edge fixtures plus independent property/collection route matrices;
-multilingual declarations preserve `{language, content}` pairs. The
-fixture/profile guard is exercised by:
+The [XML metadata read profile](../../../arch/rules/workspace/sources/metadata-read-profile.md)
+uses fixtures for all 23 metadata kinds and independent property/collection
+route matrices. This checks the reader profile, not the retired public
+`meta.info` response. The fixture/profile guard is exercised by:
 
 ```sh
 cargo test -p unica-coder manifest_and_profile_cover_every_platform_gated_metadata_kind -- --test-threads=1

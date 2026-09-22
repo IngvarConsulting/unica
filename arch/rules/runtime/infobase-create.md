@@ -8,6 +8,7 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/v13_infobase_create.rs::apply_creates_and_takes_its_receipt_from_a_repeated_preview
   - crates/unica-coder/src/infrastructure/daemon/v13_infobase_create.rs::apply_refuses_a_stale_revision_and_an_infobase_created_elsewhere
   - crates/unica-coder/src/infrastructure/daemon/v13_infobase_create.rs::apply_refuses_a_receipt_that_still_plans_to_create
+gap: https://github.com/IngvarConsulting/unica/issues/950
 ---
 
 # Создание базы подтверждается повторным опросом раннера
@@ -18,6 +19,10 @@ check:
 создание отсутствующей базы (`planned`), без запуска платформы. Существующая
 база получает отказ с указанием на `infobase.import`; запланированное
 EDT-пространство также отклоняется.
+
+Ревизия preview связывает проектный файл, его локальное дополнение
+и версию раннера. Если любой из этих входов изменился, прежний `ifRev`
+не разрешает создание: нужен новый preview.
 
 Если при применении раннер сообщает, что база уже появилась и создание
 пропущено, ответ — `concurrent_change`. Успех требует повторного preview,
