@@ -2580,18 +2580,15 @@ class PlatformHelpRoutingTests(unittest.TestCase):
 
 
     def test_filters_platform_questions_by_source_kind(self) -> None:
-        # ADR-0032 п.5: вопрос об API платформы зовётся с фильтром по смыслу
+        # Вопрос об API платформы задаётся с фильтром по смыслу
         # источника, а не полагается на то, что секция стандартов не помешает.
         # На канонической поверхности фильтр — скаляр `source`.
         self.assertIn('"source": "platform-help"', self.text)
 
 
     def test_confirms_answers_with_the_opened_document(self) -> None:
-        # ADR-0029 п.4 требовал доказывать ответ текстом открытой страницы.
-        # Канонический провод инструмента, открывающего страницу по
-        # `documentId`, не публикует, поэтому правило вырождается в честную
-        # границу: скилл несёт только исполнимые вызовы и обязан назвать, что
-        # фрагмент страницей не является.
+        # Страница открывается через unica.docs с локатором в query.
+        # Примеры используют этот вход, а не снятый documentation.get.
         calls = [
             json.loads(block)
             for block in re.findall(r"```json\n(.*?)\n```", self.text, flags=re.S)

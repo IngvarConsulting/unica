@@ -1,4 +1,4 @@
-//! Поставщик `v8std` за общим контрактом документации (ADR-0032 п.4).
+//! Поставщик `v8std` за общим контрактом документации.
 //!
 //! Движок один на поставщика и фасады: тот же endpoint, тот же JSON-RPC
 //! вызов `v8std_search` через `HttpClient`, что и у `unica.standards.*`.
@@ -21,11 +21,10 @@ pub const BUILTIN_STANDARDS_ENDPOINT: &str = "https://ai.v8std.ru/mcp";
 
 /// Попадание стандарта не имеет версии платформы: стандарт говорит, как
 /// принято писать, и не свидетельствует о поведении платформы. Wire-маркер
-/// вместо пустой строки: обязательность применимой версии у попадания —
-/// ADR-0029 п.8, и «неверсионируемо» — честное значение, а пустота — нет.
+/// вместо пустой строки честно показывает отсутствие привязки к версии.
 pub const UNVERSIONED: &str = "unversioned";
 
-/// Цепочка endpoint из проектной записки («Настройка»): `unica.local.toml`,
+/// Цепочка endpoint: `unica.local.toml`,
 /// затем `unica.toml` (оба уже сведены внутри политики), затем переменная
 /// окружения `UNICA_STANDARDS_MCP_URL`, затем встроенное умолчание.
 pub fn resolve_standards_endpoint(policy: &DocumentationPolicy) -> String {
@@ -49,9 +48,9 @@ pub struct V8StdDocumentationProvider {
     pub network: NetworkAccess,
     pub http: Arc<dyn HttpClient + Send + Sync>,
     /// Токен вызова MCP: сетевой поставщик проверяет его перед обращением,
-    /// отмена не публикует результатов (ADR-0032 п.10).
+    /// отмена не публикует результатов.
     pub cancellation: crate::domain::cancellation::CancellationToken,
-    /// Срок жизни кеша поиска стандартов в памяти процесса (ADR-0037 п.5).
+    /// Срок жизни кеша поиска стандартов в памяти процесса.
     pub search_cache_ttl: std::time::Duration,
 }
 
@@ -210,8 +209,8 @@ impl DocumentationProvider for V8StdDocumentationProvider {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
-        // Успешный «документ» без текста — не доказательство: планка
-        // ADR-0029 п.4 держится на тексте открытой страницы.
+        // Успешный «документ» без текста не подтверждает ответ:
+        // для этого нужен текст открытой страницы.
         if text.trim().is_empty() {
             return Some(Err(format!(
                 "страница стандарта {document_id:?} не несёт текста"
@@ -401,7 +400,7 @@ impl DocumentationProvider for V8StdDocumentationProvider {
                     .unwrap_or_default()
                     .to_string(),
                 // У стандарта нет версии платформы: маркер, а не пустота и не
-                // выдуманная версия (обязательность поля — ADR-0029 п.8).
+                // выдуманная версия: поле должно честно называть применимость.
                 applicable_version: UNVERSIONED.to_string(),
             });
         }
@@ -512,7 +511,7 @@ mod tests {
     }
 
     /// Повторный одинаковый запрос сессии отвечается кешем процесса, без
-    /// второго обращения к серверу (ADR-0037 п.5).
+    /// второго обращения к серверу.
     #[test]
     fn a_repeated_search_answers_from_the_process_cache() {
         let (provider, http) = provider(NetworkAccess::Allow, Ok(LIVE_BODY.to_string()));
@@ -694,8 +693,7 @@ mod tests {
     }
 
     /// Отмена вызова MCP приоритетна и для сервера стандартов: отменённый
-    /// вызов не трогает сеть и отвечает диагностикой, а не результатом
-    /// (ADR-0032 п.10).
+    /// вызов не трогает сеть и отвечает диагностикой, а не результатом.
     #[test]
     fn v8std_cancellation_stops_before_the_network_for_search_and_get() {
         let (mut cancelled, http) = provider(NetworkAccess::Allow, Ok(LIVE_BODY.to_string()));
@@ -802,8 +800,8 @@ mod tests {
             "отказ обязан назвать причину, получено {error}"
         );
 
-        // Страница без body_markdown: успешный «документ» с пустым текстом —
-        // не доказательство, а обман планки ADR-0029 п.4.
+        // Страница без body_markdown не подтверждает ответ:
+        // нужен текст страницы, одного статуса found недостаточно.
         let empty_page = r#"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\"found\": true, \"page\": {\"title\": \"Пустой\", \"url\": \"https://v8std.ru/std/1/\"}}"}]}}"#;
         let (provider_empty, _http) = provider(NetworkAccess::Allow, Ok(empty_page.to_string()));
         let error = provider_empty
