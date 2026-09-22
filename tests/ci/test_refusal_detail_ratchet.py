@@ -25,7 +25,7 @@ SOURCE_ROOT = REPO_ROOT / "crates" / "unica-coder" / "src"
 # версия не читается, процесс не стартовал — `provider_absent`), затем разбор
 # адреса и содержимого дескриптора у читателей (`source_unreadable`) и два
 # пробела профиля платформы (`provider_absent`).
-UNDETAILED_PROVIDER_UNAVAILABLE_CEILING = 107
+UNDETAILED_PROVIDER_UNAVAILABLE_CEILING = 106
 
 TEST_TAIL = re.compile(r"#\[cfg\(test\)\]\s*(?:pub(?:\(crate\))?\s+)?mod\s+\w+")
 STRING_LITERAL = re.compile(r'"(?:\\.|[^"\\])*"')

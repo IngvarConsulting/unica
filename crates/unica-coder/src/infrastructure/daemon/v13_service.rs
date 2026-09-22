@@ -2016,18 +2016,16 @@ fn enforce_view_page_budget(result: DomainResult, at: &str) -> DomainResult {
     if !result.ok || result.page.is_none() {
         return result;
     }
-    match serde_json::to_vec(&result) {
-        Ok(bytes) if bytes.len() <= crate::application::v13::view::PAGE_BYTES => result,
-        Ok(_) => error_result(
+    let bytes =
+        serde_json::to_vec(&result).expect("a domain result containing JSON values serializes");
+    if bytes.len() <= crate::application::v13::view::PAGE_BYTES {
+        result
+    } else {
+        error_result(
             Some(at.to_string()),
             RefusalCode::ResultTooLarge,
             "projected view page exceeds the 64 KiB page budget",
-        ),
-        Err(error) => error_result(
-            Some(at.to_string()),
-            RefusalCode::ProviderUnavailable,
-            error.to_string(),
-        ),
+        )
     }
 }
 

@@ -409,9 +409,7 @@ fn prepare_pages(
                 binding,
             )?;
             let bytes = serde_json::to_vec(&probe)
-                .map_err(|error| {
-                    ViewError::new(RefusalCode::ProviderUnavailable, error.to_string())
-                })?
+                .expect("a domain result containing JSON values serializes")
                 .len();
             if bytes > PAGE_BYTES {
                 if page_items.is_empty() {
@@ -448,7 +446,7 @@ fn prepare_pages(
         binding,
     )?;
     if serde_json::to_vec(&first_probe)
-        .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))?
+        .expect("a domain result containing JSON values serializes")
         .len()
         > PAGE_BYTES
     {
