@@ -177,6 +177,8 @@ pub(crate) struct DomainResult {
     pub(crate) rev: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) cursor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) page: Option<Value>,
 }
 
 impl DomainResult {
@@ -193,6 +195,7 @@ impl DomainResult {
             next: Vec::new(),
             rev: None,
             cursor: None,
+            page: None,
         }
     }
 
@@ -316,6 +319,7 @@ mod tests {
             next: vec![json!({"op": "view"})],
             rev: Some("rev-2".to_string()),
             cursor: Some("cursor-2".to_string()),
+            page: Some(json!({"stoppedBy": "limit"})),
         };
 
         let serialized = serde_json::to_value(result).expect("serialize domain result");
@@ -333,6 +337,7 @@ mod tests {
                 "next",
                 "rev",
                 "cursor",
+                "page",
             ]
         );
         for forbidden in ["set", "sourceState", "fileExists", "job", "work"] {

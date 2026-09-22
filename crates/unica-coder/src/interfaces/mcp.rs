@@ -2094,6 +2094,7 @@ mod tests {
             next: vec![json!({"op": "view"})],
             rev: Some("rev-7".into()),
             cursor: Some("cursor-2".into()),
+            page: None,
         }
     }
 

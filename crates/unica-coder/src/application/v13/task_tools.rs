@@ -477,6 +477,7 @@ mod tests {
             next: Vec::new(),
             rev: Some("rev-7".into()),
             cursor: None,
+            page: None,
         };
         let mut completed = snapshot(InvocationStatus::Completed);
         completed.result = Some(subject.clone());

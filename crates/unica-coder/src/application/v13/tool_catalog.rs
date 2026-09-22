@@ -265,7 +265,8 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                         json!({
                             "at": logical_address(),
                             "filter": data_object("Optional projection such as sections; valid only with at."),
-                            "limit": limit("Maximum child items to return; valid only with at."),
+                            "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20,
+                                "description": "Maximum child items per addressed view page; the 64 KiB response budget may stop earlier."},
                             "cursor": cursor("Continuation cursor from an earlier addressed view."),
                         }),
                         json!([]),
@@ -488,6 +489,9 @@ fn result_envelope_schema() -> Value {
             "next": {"type": "array", "minItems": 1, "items": {}},
             "rev": {"type": "string"},
             "cursor": cursor("Opaque continuation cursor issued by this result stream."),
+            "page": {"type": "object", "additionalProperties": false,
+                "properties": {"stoppedBy": {"type": "string", "enum": ["limit", "bytes", "complete"]}},
+                "required": ["stoppedBy"]},
         },
         "required": ["ok", "summary"],
     })
@@ -782,6 +786,8 @@ mod tests {
             assert_eq!(limit["type"], "integer");
             assert_eq!(limit["minimum"], 1);
         }
+        assert_eq!(input_field(&catalog.tools, "view", "limit")["default"], 20);
+        assert_eq!(input_field(&catalog.tools, "view", "limit")["maximum"], 50);
         assert_field_type(&catalog.tools, "view", "cursor", "string");
         assert_data_object(
             input_field(&catalog.tools, "view", "filter"),
@@ -968,7 +974,8 @@ mod tests {
                 "artifacts",
                 "next",
                 "rev",
-                "cursor"
+                "cursor",
+                "page"
             ]
         );
         for forbidden in ["set", "sourceState", "fileExists", "job", "work"] {

@@ -236,9 +236,9 @@ Inspect the workspace with no arguments, or read one logical 1C node by address.
 | `at` | string | нет | Qualified logical address: <sourceSet>:<Kind>[.<Name>...]. Omit only for workspace bootstrap where allowed. |
 | `cursor` | string | нет | Continuation cursor from an earlier addressed view. |
 | `filter` | object | нет | Optional projection such as sections; valid only with at. |
-| `limit` | integer | нет | Maximum child items to return; valid only with at. |
+| `limit` | integer | нет | Maximum child items per addressed view page; the 64 KiB response budget may stop earlier. |
 
-**Результат сейчас:** Без аргументов `data` описывает workspace, `v8project.yaml`, source sets, infobase target, readiness и только релевантный setup; infobase-only workspace получает точные preview-продолжения CF и DT; с квалифицированным `at` содержит типизированную проекцию логического узла, revision, bounded cursor и закрытые секции `props`/`branches`/`can`/`limits`/`items` (отвечают типизированным `data`)
+**Результат сейчас:** Без аргументов `data` описывает workspace, `v8project.yaml`, source sets, infobase target, readiness и только релевантный setup; infobase-only workspace получает точные preview-продолжения CF и DT; обычная адресная коллекция `view` возвращает до 20 элементов по умолчанию (максимум 50) и до 64 КиБ полного ответа, `page.stoppedBy` называет `limit`, `bytes` или `complete`, курсор продолжает ту же ревизию; ветвь графа вызовов пока не проходит через этот бюджет; с квалифицированным `at` узел содержит закрытые секции `props`/`branches`/`can`/`limits`/`items` (отвечают типизированным `data`)
 
 **Целевой контракт:** Расширять проекции через закрытые `filter`, не возвращая физические пути
 

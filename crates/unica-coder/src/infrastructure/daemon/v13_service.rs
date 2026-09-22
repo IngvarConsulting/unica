@@ -15,7 +15,7 @@ use crate::application::v13::apply::parse_request as parse_apply_request;
 use crate::application::v13::find::{FindIndex, FindRequest};
 use crate::application::v13::resolve::{ResolveRequest, ResolvedLines, ResolvedSource};
 use crate::application::v13::tool_catalog::catalog_for;
-use crate::application::v13::view::{ViewRequest, ViewService};
+use crate::application::v13::view::{ViewError, ViewRequest, ViewService};
 use crate::domain::address::{NodeKind, QualifiedAddress};
 use crate::domain::apply::OperationRegistry;
 use crate::domain::call_graph_identity::{CallGraphIdentity, CallGraphIdentityError};
@@ -436,8 +436,6 @@ impl CanonicalV13ReadService {
                 Err(refusal) => *refusal,
             };
         }
-        let mut result =
-            ViewService::with_shared_cursors(authority, Arc::clone(&self.cursors)).view(request);
         let sections = arguments
             .get("filter")
             .and_then(Value::as_object)
@@ -447,6 +445,15 @@ impl CanonicalV13ReadService {
                 .iter()
                 .any(|section| section.as_str() == Some(CALL_GRAPH_SECTION))
         });
+        let service = ViewService::with_shared_cursors(authority, Arc::clone(&self.cursors));
+        let mut result = if let Some(sections) = sections.filter(|_| !call_graph_requested) {
+            service.view_projected(request, &|data| {
+                project_view_sections(data, sections)
+                    .map_err(|error| ViewError::new(error.code(), error.to_string()))
+            })
+        } else {
+            service.view(request)
+        };
         if call_graph_requested && result.ok {
             let is_method = result
                 .data
@@ -473,7 +480,7 @@ impl CanonicalV13ReadService {
                 Err(refusal) => return *refusal,
             }
         }
-        if result.ok {
+        if result.ok && call_graph_requested {
             if let (Some(data), Some(sections)) = (result.data.as_ref(), sections) {
                 match project_view_sections(data, sections) {
                     Ok(projected) => result.data = Some(projected),
@@ -483,7 +490,7 @@ impl CanonicalV13ReadService {
                 }
             }
         }
-        result
+        enforce_view_page_budget(result, at)
     }
 
     /// Сводка графа вызовов для одного метода.
@@ -2003,6 +2010,27 @@ fn error_result(at: Option<String>, code: RefusalCode, message: impl Into<String
     DomainResult::canonical_rejection(at, code, message)
 }
 
+fn enforce_view_page_budget(result: DomainResult, at: &str) -> DomainResult {
+    // The application measures the projected collection before cutting it.
+    // Keep this final guard for any later enrichment of the public envelope.
+    if !result.ok || result.page.is_none() {
+        return result;
+    }
+    match serde_json::to_vec(&result) {
+        Ok(bytes) if bytes.len() <= crate::application::v13::view::PAGE_BYTES => result,
+        Ok(_) => error_result(
+            Some(at.to_string()),
+            RefusalCode::ResultTooLarge,
+            "projected view page exceeds the 64 KiB page budget",
+        ),
+        Err(error) => error_result(
+            Some(at.to_string()),
+            RefusalCode::ProviderUnavailable,
+            error.to_string(),
+        ),
+    }
+}
+
 /// Отказ с уточнением там, где один код покрывает несколько исходов.
 fn error_result_detailed(
     at: Option<String>,
@@ -2034,6 +2062,32 @@ fn view_error_result(
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
+    #[test]
+    fn computed_can_section_cannot_push_a_view_page_past_64_kib() {
+        let at = "main:Catalog.Товары";
+        let mut result =
+            crate::domain::invocation::DomainResult::success("logical collection page resolved");
+        result.at = Some(at.to_string());
+        result.rev = Some("rev-1".to_string());
+        result.page = Some(json!({"stoppedBy": "complete"}));
+        let data = json!({"at": at, "kind": "Catalog", "title": "Товары", "items": [
+            {"name": "А".repeat(32_600)}
+        ]});
+        result.data = Some(data.clone());
+        assert!(
+            serde_json::to_vec(&result).unwrap().len() <= crate::application::v13::view::PAGE_BYTES
+        );
+        result.data = Some(super::project_view_sections(&data, &json!(["items", "can"])).unwrap());
+        assert!(
+            serde_json::to_vec(&result).unwrap().len() > crate::application::v13::view::PAGE_BYTES
+        );
+        let checked = super::enforce_view_page_budget(result, at);
+        assert!(!checked.ok);
+        assert_eq!(checked.diagnostics[0]["code"], "result_too_large");
+    }
+
     #[test]
     fn logical_read_operation_budget_outlives_task_handoff_and_completes_once() {
         crate::infrastructure::daemon::server::actor_capacity_tests::assert_operation_budget_survives_handoff_and_completes_once(
