@@ -14,7 +14,7 @@
 - Keep OS-dependent production code under `crates/unica-coder/src/infrastructure/platform/` (`INV-PLATFORM-OS-BEHIND-FACADE`, ADR-0009).
 - Keep platform tests beside the adapters or under `crates/unica-coder/tests/platform/` (`INV-PLATFORM-COLOCATED-TESTS`).
 - Do not add a bypass flag, unsafe publication mode, or new public MCP argument/result field.
-- Preserve the existing platform `8.3.27`, export format `2.20` write gate (ADR-0016).
+- Preserve the existing platform `8.3.27`, export format `2.20` write gate ([writable XML profile](../../arch/rules/workspace/sources/writable-xml-profile.md)).
 - Create private Windows objects with their final protected DACL; do not create permissively and tighten afterward.
 - After the initial absolute anchor capture, every security-sensitive child
   create, open, remove, and rename on Windows must be relative to a retained

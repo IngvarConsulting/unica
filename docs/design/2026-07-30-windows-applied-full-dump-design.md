@@ -22,7 +22,7 @@ two guarantees that were implemented only for Unix:
 The public operation, dump format, validation profile, and publication
 transaction already exist. Supporting Windows implements the platform half of
 the existing contract under ADR-0009; it does not change the public MCP surface,
-the writable format selected by ADR-0016, or the ownership of workspace state.
+the writable format selected by [writable XML profile](../../arch/rules/workspace/sources/writable-xml-profile.md), or the ownership of workspace state.
 
 ## Goals
 

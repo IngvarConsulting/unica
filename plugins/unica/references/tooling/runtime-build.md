@@ -142,10 +142,8 @@ Runtime идёт через `unica.run`: вызов без `op` отдаёт с�
 > платформа независимо фиксируется на exact 8.3.27.x, XML проверяется на raw
 > `version="2.20"` до целой публикации. На Windows, macOS и Linux verified
 > transactional publication определяет этот synchronous full dump, но
-> постпроцессинг не имеет доказанного terminal-receipt bound. Владельцем контракта публикации остаётся ADR-0016;
-> `INV-SOURCE-BOUND-PREIMAGES` и `INV-SOURCE-ROLLBACK-VISIBLE` описывают
-> проверяемую транзакцию, а OS-зависимая реализация остаётся за
-> `INV-PLATFORM-OS-BEHIND-FACADE`.
+> постпроцессинг не имеет доказанного terminal-receipt bound. Пробел привязки preview к исходным данным описан
+> в [#950](https://github.com/IngvarConsulting/unica/issues/950).
 >
 > Async full и applied external source-set несут тот же риск публикации. Неполные режимы
 > дополнительно не имеют безопасного merge receipt. На Windows Unica через
@@ -403,7 +401,8 @@ DESIGNER `CONFIGURATION`/`EXTENSION` исполняется с названны�
 publication Unica перенаправляет выбранный source-set во внешний private
 stage, платформа проверяется как exact 8.3.27.x, а version-bearing XML roots —
 как raw `2.20`; только затем целое дерево публикуется с проверкой preimage и
-rollback (ADR-0016, `INV-PLATFORM-OS-BEHIND-FACADE`). До реализации private
+rollback. Пробел привязки preview к исходным данным — в
+[#950](https://github.com/IngvarConsulting/unica/issues/950). До реализации private
 state и shadow publication в `alkoleft/v8-runner-rust#30`
 `mode=incremental|partial` исполняется, но доверять его результату вслепую
 нельзя: закреплённый runner не возвращает точные processed paths/hashes и не

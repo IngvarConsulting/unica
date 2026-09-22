@@ -155,9 +155,8 @@ directory named `main` keeps it.
 Syntax checks are `unica.check`; test runs and Designer/EDT conversion are not
 operations of the dictionary. A previewApply operation is applied with the
 `ifRev` its preview returned; a changed workspace or plan answers
-`stale_revision` or `concurrent_change` instead of applying. ADR-0016
-continues to own the future full-dump publication contract; its transaction
-guarantees do not make the current applied route executable.
+`stale_revision` or `concurrent_change` instead of applying. The remaining gap in binding preview to its inputs is tracked in
+[issue #950](https://github.com/IngvarConsulting/unica/issues/950).
 
 On Windows, macOS, and Linux, synchronous full dump (`mode=full`) for DESIGNER
 `CONFIGURATION` and `EXTENSION` source-sets runs applied and answers with a named
