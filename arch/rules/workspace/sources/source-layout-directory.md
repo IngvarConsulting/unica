@@ -11,6 +11,7 @@ check:
   - crates/unica-coder/src/infrastructure/v13_find.rs::an_external_root_publishes_its_owner_and_never_the_dump_sidecar
   - crates/unica-coder/src/infrastructure/v13_find.rs::a_file_that_is_not_an_owner_descriptor_never_becomes_an_object
   - crates/unica-coder/src/infrastructure/v13_find.rs::a_descriptor_whose_attributes_start_on_a_new_line_is_still_an_object
+  - crates/unica-coder/src/infrastructure/v13_find.rs::large_configuration_descriptor_still_has_a_layout_address
 ---
 
 # Справочник раскладки связывает объект с его местом в исходниках

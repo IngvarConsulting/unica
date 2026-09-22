@@ -1098,6 +1098,39 @@ impl RetainedDirectoryCapability {
         max_bytes: usize,
     ) -> io::Result<Vec<u8>> {
         use std::io::Read;
+
+        let mut file = self.open_relative_regular_nofollow(relative)?;
+        let limit = u64::try_from(max_bytes)
+            .unwrap_or(u64::MAX)
+            .saturating_add(1);
+        let mut bytes = Vec::new();
+        file.by_ref().take(limit).read_to_end(&mut bytes)?;
+        if bytes.len() > max_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("relative file exceeds the {max_bytes}-byte read limit"),
+            ));
+        }
+        Ok(bytes)
+    }
+
+    /// Read only the descriptor head, even when the file itself is larger.
+    /// Keep the same retained, no-follow traversal as a complete bounded read.
+    pub(crate) fn read_relative_regular_prefix(
+        &self,
+        relative: &Path,
+        max_bytes: usize,
+    ) -> io::Result<Vec<u8>> {
+        use std::io::Read;
+
+        let file = self.open_relative_regular_nofollow(relative)?;
+        let mut bytes = Vec::new();
+        file.take(u64::try_from(max_bytes).unwrap_or(u64::MAX))
+            .read_to_end(&mut bytes)?;
+        Ok(bytes)
+    }
+
+    fn open_relative_regular_nofollow(&self, relative: &Path) -> io::Result<fs::File> {
         use std::path::Component;
 
         let mut components = relative.components().peekable();
@@ -1122,19 +1155,7 @@ impl RetainedDirectoryCapability {
                 file = Some(open_regular_child_nofollow(&directory, name)?);
             }
         }
-        let mut file = file.expect("non-empty relative path has a final component");
-        let limit = u64::try_from(max_bytes)
-            .unwrap_or(u64::MAX)
-            .saturating_add(1);
-        let mut bytes = Vec::new();
-        file.by_ref().take(limit).read_to_end(&mut bytes)?;
-        if bytes.len() > max_bytes {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("relative file exceeds the {max_bytes}-byte read limit"),
-            ));
-        }
-        Ok(bytes)
+        Ok(file.expect("non-empty relative path has a final component"))
     }
 
     /// Enumerates the immediate members of this exact retained directory.
