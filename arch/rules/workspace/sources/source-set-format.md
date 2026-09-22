@@ -1,6 +1,7 @@
 ---
 id: INV.SOURCE.MULTI-FORMAT-WORKSPACE
 check:
+  - crates/unica-coder/src/infrastructure/tool_context.rs::native_platform_xml_source_format_public_gate_is_closed_over_public_operations
   - crates/unica-coder/src/infrastructure/project_sources.rs::detects_edt_configuration_and_platform_external_processor_source_sets
   - crates/unica-coder/src/infrastructure/project_sources.rs::controlled_discovery_accepts_uppercase_external_xml_extension
   - crates/unica-coder/src/infrastructure/project_sources.rs::conflicting_markers_inside_one_source_set_are_invalid_not_mixed
@@ -14,3 +15,8 @@ check:
 
 Если внутри одного набора найдены противоречащие маркеры формата,
 он получает состояние `Invalid`, а не смешанный формат.
+
+Нативному обработчику XML нужен подходящий формат выбранного набора:
+EDT и неоднозначный формат отклоняются. Проверка общего допуска обработчиков
+покрывает физически адресованные операции; отказ нынешней MCP-поверхности
+для проекта только с EDT описан [отдельным правилом](../../mcp/admission-refusal.md).

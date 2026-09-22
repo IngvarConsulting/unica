@@ -347,7 +347,7 @@ Unica. Каждая запись формулирует одно нормати�
 - **Rule:** `UnicaApplication` владеет публичным реестром инструментов,
   диспетчеризацией вызовов и порождением доменных событий; новый обработчик
   инструмента входит в систему через диспетчеризацию application и никак иначе.
-- **Decision:** ADR-0002, ADR-0003
+- **Decision:** ADR-0002
 - **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
 - **Scope:** source, runtime
 
@@ -367,7 +367,7 @@ Unica. Каждая запись формулирует одно нормати�
   пространства через `ApplicationPorts` и никогда не импортируют слой
   interfaces, поэтому адаптер не может отрисовать ответ MCP и по дороге наружу
   обойти отчёт о кеше, который ведёт слой application.
-- **Decision:** ADR-0002, ADR-0003
+- **Decision:** ADR-0002
 - **Check:** `guard-script` — `scripts/ci/check-rust-platform-boundary.py`
 - **Check:** `ci-test` — `tests/ci/test_rust_platform_boundary.py`
 - **Scope:** source, runtime
@@ -408,7 +408,7 @@ Unica. Каждая запись формулирует одно нормати�
   логической инвалидацией по доменным событиям, а поставщик владеет реализацией
   жизненного цикла своего индекса, процесса и сессии; модель не согласовывает
   свежесть между движками, и оркестратор не читает частное хранилище поставщика.
-- **Decision:** ADR-0003, ADR-0001
+- **Decision:** ADR-0001
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/workspace_state.rs`
 - **Check:** `ci-test` — `tests/ci/test_product_contracts.py`
 - **Scope:** runtime
@@ -418,7 +418,6 @@ Unica. Каждая запись формулирует одно нормати�
 - **Rule:** Каждая изменяющая операция порождает типизированные доменные
   события, и эти события отображаются на имена инвалидированных и обновлённых
   кешей, о которых сообщается вызывающему.
-- **Decision:** ADR-0003
 - **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
 - **Check:** `ci-test` — `tests/ci/test_unica_mcp_smoke.py`
 - **Scope:** runtime
@@ -429,7 +428,6 @@ Unica. Каждая запись формулирует одно нормати�
   `<workspaceRoot>/.build/unica` и переопределяется переменной
   `UNICA_CACHE_DIR`, а записи о скрытых сервисах рабочего пространства пишутся
   под тем корнем, который действует.
-- **Decision:** ADR-0003
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/workspace.rs`
 - **Check:** `ci-test` — `crates/unica-coder/tests/platform/issue_89_workspace_service.rs`
 - **Scope:** runtime
@@ -445,7 +443,6 @@ Unica. Каждая запись формулирует одно нормати�
 
 - **Rule:** Вызов в режиме сухого прогона сообщает о своём влиянии на кеш и не
   пишет ни состояние рабочего пространства, ни индекс, ни запись о сервисе.
-- **Decision:** ADR-0003
 - **Check:** `ci-test` — `tests/ci/test_unica_mcp_smoke.py`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/workspace_index.rs`
 - **Scope:** runtime
@@ -460,7 +457,6 @@ Unica. Каждая запись формулирует одно нормати�
   использует тот же механизм точного исходного образа и атомарной замены,
   поэтому конкурентный план либо сохраняет объединённый эффект после повторного
   планирования, либо явно отказывает, но не затирает чужую инвалидацию.
-- **Decision:** ADR-0003
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/workspace_state.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/compile_transaction.rs`
 - **Scope:** runtime
@@ -472,7 +468,6 @@ Unica. Каждая запись формулирует одно нормати�
   дерево git изолировано и от основной рабочей копии, и от любого другого
   рабочего дерева, а код, читающий состояние git, разрешает `.git` и как
   каталог, и как файл-указатель.
-- **Decision:** ADR-0003
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/workspace.rs`
 - **Check:** `ci-test` — `crates/unica-coder/tests/platform/code_intelligence_symlinked_workspace.rs`
 - **Scope:** runtime
@@ -492,173 +487,6 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `crates/unica-bootstrap/tests/runtime_install.rs`
 - **Check:** `ci-test` — `tests/ci/test_package_unica_plugin.py`
 - **Scope:** packaged, runtime
-
-## SOURCE — наборы исходников рабочего пространства
-
-### INV-SOURCE-ROOT-SEPARATION — Корень исходников отделён от рабочего пространства
-
-- **Rule:** Полная инспекция считает каждый уникально адресуемый корень набора
-  исходников строгим потомком корня рабочего пространства, поэтому равенство
-  после нормализации или разрешения физической идентичности, включая `path: .`,
-  `./` и ссылочный псевдоним, даёт одну первичную ошибку
-  `source_set.root_is_workspace`, закрывает `ready` и не порождает производные
-  ошибки о служебных путях внутри того же корня.
-- **Decision:** ADR-0060
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/project_health/layout.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
-- **Check:** `ci-test` — `crates/unica-coder/tests/platform/project_health.rs`
-- **Scope:** source, runtime
-
-### INV-SOURCE-PORTABLE-GIT — Переносимость Git доказывается содержимым репозитория
-
-- **Rule:** `repositoryReady` вычисляется отдельно от `ready` и требует
-  отслеживаемых правил исключений, ролевой классификации атрибутов и окончаний
-  строк выгрузки платформы и безопасной классификации подготовленного
-  `ConfigDumpInfo.xml`; локальные правила не считаются переносимыми, а отдельное
-  хранилище больших файлов предлагается только как необязательная подсказка и
-  не меняет ни один флаг.
-- **Decision:** ADR-0060
-- **Check:** `ci-test` — `crates/unica-coder/src/domain/project_health.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/project_health/git.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/project_health/resources.rs`
-- **Check:** `ci-test` — `crates/unica-coder/tests/platform/project_health.rs`
-- **Scope:** source, runtime
-
-### INV-SOURCE-PER-SET-FORMAT — Формат — свойство набора исходников
-
-- **Rule:** `unica.project.map` сообщает `sourceSets[]`, и каждая запись несёт
-  собственный `sourceFormat`, потому что формат исходников — свойство
-  отдельного набора, а не всего рабочего пространства.
-- **Decision:** ADR-0006
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/project_sources.rs`
-- **Check:** `doc-assert` — `tests/ci/test_unica_skills.py`
-- **Scope:** runtime, source
-
-### INV-SOURCE-UNAMBIGUOUS-SET — Один набор исходников не бывает двух форматов сразу
-
-- **Rule:** Противоречащие друг другу признаки формата внутри одного набора
-  исходников делают его недопустимым или неоднозначным; набор никогда не
-  сообщает смешанный формат.
-- **Decision:** ADR-0006
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/project_sources.rs`
-- **Scope:** runtime
-
-### INV-SOURCE-MULTI-FORMAT-WORKSPACE — В рабочем пространстве может действовать несколько форматов
-
-- **Rule:** Одно рабочее пространство может содержать несколько наборов
-  исходников с разными действующими форматами — например, конфигурацию в формате
-  EDT рядом с внешними обработками и отчётами в формате platform XML.
-- **Decision:** ADR-0006
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/project_sources.rs`
-- **Check:** `doc-assert` — `tests/ci/test_unica_skills.py`
-- **Scope:** runtime, source
-
-### INV-SOURCE-PLATFORM-XML-ONLY — Нативные операции с XML требуют формата platform XML
-
-- **Rule:** Нативная операция над метаданными в формате platform XML сначала
-  разрешает набор исходников, у которого `sourceFormat` равен `platform_xml`, и
-  лишь затем трогает XML-файлы; если разрешённый набор оказался в формате EDT,
-  недопустимым или неоднозначным, операция отклоняется типизированной ошибкой.
-- **Decision:** ADR-0006
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/tool_context.rs`
-- **Scope:** runtime
-
-### INV-SOURCE-SINGLE-RESOLVED-ROOT — Выбор корня исходников детерминирован и общий
-
-- **Rule:** Непустой `sourceDir` разрешается относительно рабочего каталога
-  запроса, иначе побеждает набор исходников с именем `main`, а за ним —
-  единственный набор исходников конфигурации; разрешённый корень нормализуется,
-  остаётся внутри рабочего пространства и служит тем же корнем для анализатора,
-  индекса и идентичности сервиса. Этот выбор не сужает карту проекта:
-  `unica.project.map` публикует все наборы, а `unica.project.status` проверяет
-  каждый уникально адресуемый набор. Группа с повторяющимся именем получает
-  одну диагностику рабочего пространства с полным `count` и не создаёт
-  неразличимые проверки с `sourceSet`, потому что этот ключ не различает записи
-  этой группы.
-- **Decision:** ADR-0006, ADR-0060
-- **Check:** `ci-test` — `crates/unica-coder/tests/platform/issue_89_workspace_service.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/tool_context.rs`
-- **Check:** `ci-test` — `tests/ci/test_project_health_contract.py`
-- **Scope:** source, runtime
-
-### INV-SOURCE-SUBSYSTEM-TOPOLOGY — Публичные проекции подсистем выводятся из регистрации
-
-- **Rule:** Единый построитель под одним удерживаемым корнем, открытым без
-  перехода по символическим ссылкам, читает `Configuration.xml` и только транзитивно зарегистрированные
-  дескрипторы из `Configuration/ChildObjects` и `Subsystem/ChildObjects`: только они
-  расходуют бюджеты и образуют зависимости формата, а незарегистрированная раскладка не
-  влияет на доказательство. Каждый элемент `Content` имеет тип `MetadataAddress | UUID`,
-  и `meta.info` публикует только членства текущего дескриптора, сопоставляя обе его
-  идентичности. `subsystem.info` публикует только дерево с адресами `SubsystemAddress` в
-  диалекте БСП, выведенными из физического пути под доказанным корнем, а
-  каждый доказанный узел принадлежит ровно одной эффективной роли. Недопустимый элемент,
-  ошибка, отмена, истечение срока или неполное чтение не публикуются как пустая
-  доказанная проекция, а сбор зависимостей формата не зависит от снятого `Mode`.
-- **Decision:** ADR-0036
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/subsystem.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/application/meta_info_surface_tests.rs`
-- **Scope:** source, runtime
-
-### INV-SOURCE-OBSERVED-EOL — Перевод строки наблюдается в источнике, а не назначается
-
-- **Rule:** Снимок исходного текста классифицирует переводы строк как `None`
-  (ни одного), `Uniform` (единственный вид — LF, CRLF или одиночный CR) или
-  `Mixed` с точным счётчиком каждого вида и отдельно запоминает завершающий
-  перевод строки; политика `Preserve` берёт локальный перевод строки, при его
-  отсутствии — единый профиль источника, а на смешанном профиле и на источнике
-  вовсе без переводов строк отказывает; политики `Lf` и `CrLf` профиль
-  игнорируют, политика `Repository` пока не разрешается никогда; источник без
-  единого перевода строки writer обслуживает явной политикой `Lf`, а источник с
-  одиночными CR — отказом `unica.code.patch`, поэтому глобальной нормализации
-  переводов строк не происходит ни при каком исходе.
-- **Decision:** n/a
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/text_snapshot.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/code.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/meta/edit.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/metadata_operations.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_xml_resources.rs`
-- **Scope:** runtime
-
-### INV-SOURCE-ATOMIC-PUBLISH — Мутация источника публикуется атомарно после проверки
-
-- **Rule:** Изменяющая операция сначала собирает точный образ файла после записи
-  и проверяет его целиком в памяти — включая повторный разбор и применение
-  собственного diff, результат которого обязан побайтно совпасть с образом, — и
-  только затем публикует его через промежуточный файл и атомарную замену;
-  провал проверки, занятый путь промежуточного файла и любая ошибка публикации
-  оставляют исходные байты нетронутыми.
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/text_snapshot.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/code.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_xml_resources.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/compile_transaction.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/single_file_publisher.rs`
-- **Scope:** runtime
-
-### INV-SOURCE-WRITE-CONTAINMENT — Запись не выходит за корень рабочего пространства
-
-- **Rule:** Путь, в который инструмент собирается писать, проходит через
-  `WorkspacePathPolicy::resolve_write`: относительный путь разрешается от
-  рабочего каталога запроса, `.` и `..` сворачиваются лексически, результат
-  обязан остаться под корнем рабочего пространства, а ближайший существующий
-  предок дополнительно канонизируется и тоже обязан остаться под ним, поэтому
-  и лексический выход за корень, и выход через символическую ссылку отклоняются
-  до записи первого байта.
-- **Decision:** n/a
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/path_policy.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/tool_context.rs`
-- **Scope:** runtime
-
-### INV-SOURCE-BOUND-PREIMAGES — Мутация привязана к байтам, из которых выведена
-
-- **Rule:** Для изменяющего вызова публичная предпроверка повторяется внутри
-  обработчика по фактическим зависимостям XML, байты, из которых выведена
-  мутация, привязываются к транзакции компиляции как точные преобразы, а
-  сотрудничающие пишущие операции Unica берут одни и те же кооперативные
-  блокировки публикации, поэтому изменение отклоняется, если наблюдённые байты
-  разошлись между планированием и публикацией.
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/compile_transaction.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/format_guard.rs`
-- **Scope:** runtime
 
 ## PKG — упаковка и поставка
 
