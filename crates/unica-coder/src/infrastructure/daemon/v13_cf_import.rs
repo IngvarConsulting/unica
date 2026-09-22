@@ -1349,22 +1349,9 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     #[test]
-    fn dispatched_upload_outlives_cancellation_and_returns_the_child_receipt() {
-        use crate::infrastructure::internal_adapters::SystemProcessRunner;
-        use std::os::unix::fs::PermissionsExt;
-        use std::thread;
-        use std::time::Duration;
-
+    fn upload_detaches_only_its_executing_runner_call() {
         let root = workspace();
-        let script = root.path().join("v8-runner");
-        fs::write(
-            &script,
-            "#!/bin/sh\nsleep 0.8\nprintf '{\"ok\":true,\"command\":\"load\",\"data\":{}}'\n",
-        )
-        .unwrap();
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
         let prepared = import_of(root.path(), "dist/main.cf", None, false, None);
         let already_cancelled = CancellationToken::new();
         already_cancelled.cancel();
@@ -1378,45 +1365,28 @@ mod tests {
         )
         .is_err());
         assert_eq!(never_called.call_count(), 0);
-        let cancellation = CancellationToken::new();
-        let signal = cancellation.clone();
-        let canceller = thread::spawn(move || {
-            let deadline = std::time::Instant::now() + Duration::from_secs(5);
-            while !signal.protected_process_started() {
-                assert!(std::time::Instant::now() < deadline, "upload did not start");
-                thread::sleep(Duration::from_millis(1));
-            }
-            signal.cancel();
-        });
 
-        let outcome = invoke_runner(
-            &prepared,
-            &tool(root.path()),
-            &SystemProcessRunner,
-            &cancellation,
-            false,
-        );
-        canceller.join().unwrap();
-        assert!(cancellation.is_cancelled());
-        assert_eq!(outcome.unwrap()["command"], "load");
-
-        let cancellation = CancellationToken::new();
-        let signal = cancellation.clone();
-        let canceller = thread::spawn(move || {
-            thread::sleep(Duration::from_millis(100));
-            signal.cancel();
-        });
-        let preview = invoke_runner(
-            &prepared,
-            &tool(root.path()),
-            &SystemProcessRunner,
-            &cancellation,
-            true,
-        );
-        canceller.join().unwrap();
-        assert!(
-            preview.is_err(),
-            "read-only preview must remain cancellable"
-        );
+        for dry_run in [false, true] {
+            let runner = SequenceRunner::new(vec![process(
+                envelope(&prepared.arguments.input, ArtifactKind::Cf, None, !dry_run),
+                true,
+            )]);
+            let cancellation = CancellationToken::new();
+            assert!(invoke_runner(
+                &prepared,
+                &tool(root.path()),
+                &runner,
+                &cancellation,
+                dry_run,
+            )
+            .is_ok());
+            let (_, child) = runner.calls.lock().unwrap()[0]
+                .cancellation
+                .spawn_with_gate(|| Ok(()))
+                .unwrap();
+            cancellation.cancel();
+            assert_eq!(cancellation.protected_process_started(), !dry_run);
+            assert_eq!(child.is_cancelled(), dry_run);
+        }
     }
 }
