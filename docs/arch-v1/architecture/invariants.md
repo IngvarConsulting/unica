@@ -145,40 +145,6 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/application_ports.rs`
 - **Scope:** packaged, runtime
 
-## SKILL — маршрутизация скиллов
-
-### INV-SKILL-DOCUMENTED-PREVIEW — Изменяющие инструкции по умолчанию ведут через предпросмотр
-
-- **Rule:** Инструкции скиллов держат путь предпросмотра на виду на
-  разрушительных и неполных маршрутах: скилл `meta-remove` документирует вызов
-  с `"dryRun": true`, а каждая документированная инкрементальная, частичная или
-  относящаяся к внешнему набору исходников выгрузка записана как
-  вызов-предпросмотр.
-- **Decision:** ADR-0005
-- **Check:** `ci-test` — `tests/ci/test_unica_skills.py`
-- **Scope:** source, packaged
-
-### INV-SKILL-EXECUTABLE-EXAMPLES — Примеры в скиллах — исполнимые вызовы MCP
-
-- **Rule:** Каждый пример `tools/call` в скилле — настоящий параметризованный
-  вызов: мутация успешно исполняется через предпросмотр MCP, а читатель — как
-  настоящее чтение MCP над детерминированной фикстурой или локальным подставным
-  поставщиком без записи в рабочее пространство и зависимости от живой сети.
-- **Decision:** ADR-0005
-- **Check:** `ci-test` — `tests/ci/test_unica_mcp_script_parity.py`
-- **Scope:** source, packaged
-
-### INV-SKILL-REACHABLE-REFERENCES — Справочный документ поставки назван скиллом
-
-- **Rule:** Каждый документ каталога `plugins/unica/references`, попадающий в
-  поставку, назван хотя бы одним `SKILL.md` напрямую либо достижим от
-  названного по цепочке ссылок между справочными документами; непокрытый на
-  сегодня остаток перечислен поимённо списком долга в проверке, и этот список
-  может только сокращаться.
-- **Decision:** n/a
-- **Check:** `ci-test` — `tests/ci/test_reference_reachability.py`
-- **Scope:** source, packaged
-
 ## APP — границы слоёв приложения
 
 ### INV-APP-NO-SCRIPT-BACKEND — В runtime нет скриптового бэкенда
@@ -224,22 +190,6 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/workspace.rs`
 - **Check:** `ci-test` — `crates/unica-coder/tests/platform/code_intelligence_symlinked_workspace.rs`
 - **Scope:** runtime
-
-### INV-CACHE-RUNTIME-ROOT-ORDER — Разрешение корня кеша runtime детерминировано
-
-- **Rule:** `unica-bootstrap` разрешает корень кеша runtime в фиксированном
-  порядке — `UNICA_RUNTIME_CACHE_DIR` берётся как есть, если в нём не осталось
-  неразвёрнутой подстроки `${`, затем `<CLAUDE_PLUGIN_DATA>/runtimes`, затем
-  `<CODEX_HOME>/unica/runtimes`, затем `<HOME или USERPROFILE>/.codex/unica/runtimes`,
-  а когда не задано ни одно из значений, завершается ошибкой — и публикует
-  каждый проверенный артефакт атомарно под
-  `<cacheRoot>/<artifact>/<version>--<assetSha256>/<target>`; ни версия плагина,
-  ни одна семантическая версия без SHA-256 не отождествляют разные байты.
-- **Decision:** ADR-0012, ADR-0014
-- **Check:** `ci-test` — `crates/unica-bootstrap/src/host/runtime_cache.rs`
-- **Check:** `ci-test` — `crates/unica-bootstrap/tests/runtime_install.rs`
-- **Check:** `ci-test` — `tests/ci/test_package_unica_plugin.py`
-- **Scope:** packaged, runtime
 
 ## PLATFORM — платформенный фасад
 
