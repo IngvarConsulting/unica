@@ -1189,33 +1189,6 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `crates/unica-coder/src/application/meta_info_surface_tests.rs`
 - **Scope:** source, runtime
 
-### INV-SOURCE-READER-SELECTOR — Предметный читатель принимает ровно один селектор цели
-
-- **Rule:** Предметный читатель в переходном состоянии публикует логический
-  селектор `sourceSet` с `metadataPath` там, где инструмент его читает, и своё
-  файловое поле двумя взаимоисключающими ветвями схемы, принимает ровно один из
-  них, отклоняет одновременную передачу обоих стабильным `selector_conflict` до
-  вызова обработчика и отвечает на логический вызов теми же типизированными
-  данными, что на файловый.
-- **Decision:** ADR-0065
-- **Check:** `ci-test` — `crates/unica-coder/src/application/tool_contracts.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/logical_selector.rs`
-- **Scope:** source, runtime
-
-### INV-SOURCE-READER-MIGRATION — Режим миграции читателя объявлен явно
-
-- **Rule:** Каждый предметный читатель мигрирует физический селектор только в
-  явно выбранном режиме `bridge` или `directSwitch`: `bridge` сохраняет
-  взаимоисключающие логический и файловый входы до отдельного снятия, а
-  `directSwitch` требует поинструментного решения и атомарной смены всего
-  публичного контура; единственный действующий прямой переход принадлежит
-  `unica.code.diagnostics`, остальные читатели остаются в режиме `bridge`.
-- **Decision:** ADR-0065
-- **Check:** `ci-test` — `tests/ci/test_architecture_registry.py`
-- **Check:** `doc-assert` — `tests/ci/test_unica_skills.py`
-- **Check:** `ci-test` — `crates/unica-coder/src/application/tool_contracts.rs`
-- **Scope:** source, packaged, runtime
-
 ### INV-SOURCE-WRITE-TARGET-KIND — Писатель принимает только терминал модуля
 
 - **Rule:** Разрешение цели выполняется под явной политикой вида: политика

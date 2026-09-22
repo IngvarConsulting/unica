@@ -4410,7 +4410,7 @@ pub(crate) mod tests {
     /// here, and so does letting a reader fall back to the historical catch-all.
     /// Published names are canonical (ADR-0019 collapses path aliases in
     /// `tools/list`); accepted names include the aliases validation still takes.
-    /// Six of them are also ADR-0049 bridges, so their logical selector belongs
+    /// Six of them are also logical-address bridges, so their logical selector belongs
     /// to the pinned set: losing it would be as invisible as losing the path.
     #[test]
     fn every_narrowed_reader_publishes_its_exact_argument_set() {

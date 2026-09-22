@@ -1063,7 +1063,7 @@ def _source_workspace(root: Path) -> None:
         (root / source_set / "CommonModules/Shared/Ext/Module.bsl").write_bytes(
             ("\ufeffProcedure " + module + "()\r\nEndProcedure\r\n").encode("utf-8")
         )
-    # ADR-0049: a subject reader must be reachable by address end to end, so
+    # A subject reader must be reachable by address end to end, so
     # the smoke workspace carries one registered object with an attached body.
     (root / "src/Roles/SmokeRole/Ext").mkdir(parents=True)
     (root / "src/Roles/SmokeRole.xml").write_text(
@@ -2110,7 +2110,7 @@ def _exercise_reader_bridge(
 ) -> int:
     """An address found by `unica.source.resolve` reaches a subject reader.
 
-    This is the whole point of ADR-0049: the caller never has to know that a
+    The caller never has to know that a
     role's rights live two directories below its descriptor.
     """
     resolved = _call(session, request_id, "unica.source.resolve", {

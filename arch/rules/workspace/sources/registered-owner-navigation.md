@@ -9,6 +9,7 @@ check:
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::external_parent_childobjects_are_the_only_nested_owner_authority
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::unregistered_top_level_descriptors_cannot_enter_any_typed_reader_family
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::object_commands_are_registered_inline_without_descriptor_files
+  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::add_in_templates_stop_addressing_at_the_template_without_reading_the_payload
 ---
 
 # Файл становится логическим объектом только через регистрацию владельца
@@ -25,3 +26,7 @@ check:
 
 Команда регистрируется в `ChildObjects` владельца и не требует отдельного
 XML-дескриптора. Её встроенное описание может задавать отображаемое имя.
+
+Зарегистрированный макет AddIn с корректным дескриптором доступен как узел
+макета. Для этого Unica не разбирает его бинарное содержимое и не объявляет
+внутренних ветвей.
