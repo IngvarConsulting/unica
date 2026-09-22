@@ -1162,7 +1162,7 @@ fn assert_partial_is_stable(workspace: &TempWorkspace, kind: &str, name: &str) {
 
 /// Упакованный сервер стартует с рабочим каталогом в корне плагина
 /// (`cwd: "."` в `.mcp.json`), поэтому рабочее пространство адресуется только
-/// аргументом вызова: ADR-0006 §4 и ADR-0053 §2.
+/// аргументом вызова, а не рабочим каталогом процесса.
 #[test]
 fn metadata_operations_address_the_workspace_through_cwd_from_outside() {
     let workspace = create_configuration_workspace("cwd-argument");

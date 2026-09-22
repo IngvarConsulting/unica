@@ -626,7 +626,7 @@ class MetaSurfaceContractTests(unittest.TestCase):
         }
         # `cwd` адресует рабочее пространство и обязателен на всей поверхности:
         # упакованный сервер стартует в каталоге плагина (ADR-0006 §4), а
-        # наследовать рабочий каталог вызова запрещено (ADR-0053 §2).
+        # наследовать рабочий каталог вызова запрещено.
         expected_properties = {
             "Info": {"cwd", "sourceSet", "metadataPath", "sections", "limit"},
             "Add": {"cwd", "sourceSet", "kind", "name", "operations", "dryRun"},
