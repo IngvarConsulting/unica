@@ -1,6 +1,7 @@
 ---
 id: INV.APP.RUNTIME-RESOURCE-TREE
 check:
+  - crates/unica-coder/src/infrastructure/platform/process.rs::runtime_sentinel_preserves_a_meaningful_inherited_fd198
   - crates/unica-coder/src/infrastructure/runtime_jobs.rs::system_runtime_job_keeps_resource_owned_after_leader_exit_until_descendant_dies
   - crates/unica-coder/src/infrastructure/runtime_jobs.rs::worker_supervises_initial_retained_ownership_until_proven_terminal
   - crates/unica-coder/src/infrastructure/runtime_jobs.rs::worker_supervises_fallback_retained_ownership_until_proven_terminal
@@ -37,3 +38,6 @@ check:
 
 После потери подтверждённого права на Unix-группу процессов отмена и
 освобождение объекта не посылают сигналы по её прежнему числовому идентификатору.
+
+В Unix служебный дескриптор наблюдения за потомками не заменяет уже открытый
+дескриптор, унаследованный запускаемым процессом.
