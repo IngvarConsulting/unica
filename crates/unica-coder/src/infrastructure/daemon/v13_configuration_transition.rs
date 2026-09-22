@@ -201,7 +201,12 @@ impl PreparedConfigurationTransition {
                     CancellationToken::new()
                 },
             })
-            .map_err(|error| self.fail(RefusalCode::ProviderUnavailable, redactor(&error)))?;
+            .map_err(|error| {
+                super::v13_infobase_exports::missing_runner_rejection(
+                    Some(self.operation.name().into()),
+                    redactor(&error),
+                )
+            })?;
         if output.stdout_truncated
             || output.stdout_had_invalid_utf8
             || output.timed_out
@@ -392,6 +397,31 @@ mod tests {
     fn envelope(p: &PreparedConfigurationTransition, preview: bool) -> Value {
         json!({"ok":true,"command":p.operation.name(),"data":{"dry_run":preview,"extension":p.extension,"provider_dispatched":!preview,"completed":!preview,"provider":{"selected":"designer","origin":{"kind":"default"}},"status":"succeeded","interruption":null,"warnings":[]}})
     }
+    #[test]
+    fn runner_start_failure_identifies_the_absent_provider() {
+        struct UnavailableRunner;
+        impl ProcessRunner for UnavailableRunner {
+            fn run(&self, _: &ProcessCommand) -> Result<ProcessOutput, String> {
+                Err("runner could not start".into())
+            }
+        }
+        for operation in [Transition::Apply, Transition::Reset] {
+            let root = tempfile::tempdir().unwrap();
+            let prepared = fixture(root.path(), operation, None);
+            let result = prepared.execute_with(
+                &UnavailableRunner,
+                &tool(root.path()),
+                "0.11.1",
+                CancellationToken::new(),
+            );
+            assert!(!result.ok);
+            assert_eq!(result.diagnostics[0]["code"], "provider_unavailable");
+            assert_eq!(result.diagnostics[0]["detailCode"], "provider_absent");
+            assert!(result.rev.is_none());
+            assert!(result.changed.is_empty());
+        }
+    }
+
     #[test]
     fn transitions_apply_only_the_previewed_target_and_never_lose_the_force_flag() {
         for op in [Transition::Apply, Transition::Reset] {
