@@ -4282,6 +4282,9 @@ pub(crate) mod tests {
         let root = temp_root("warm-reuse");
         std::fs::create_dir_all(root.join("src")).unwrap();
         let registry = WorkspaceActorRegistry::default();
+        assert_eq!(registry.max_active(), 64);
+        assert_eq!(registry.warm_capacity, 8);
+        assert_eq!(registry.warm_ttl, Duration::from_secs(600));
         let context = context(&root);
         let first = registry
             .get_or_create(&context, [source_input("main", root.join("src"))], "p")
@@ -4300,6 +4303,41 @@ pub(crate) mod tests {
         assert!(Arc::ptr_eq(&first, &second));
         assert_eq!(registry.warm_len_for_test().unwrap(), 1);
         assert_eq!(registry.live_len_for_test().unwrap(), 1);
+
+        let main = Arc::downgrade(&second);
+        drop((first, second));
+        let mut others = Vec::new();
+        for index in 0..7 {
+            let source = root.join(format!("source-{index}"));
+            std::fs::create_dir_all(&source).unwrap();
+            let actor = registry
+                .get_or_create(&context, [source_input("main", source)], "p")
+                .unwrap();
+            others.push(Arc::downgrade(&actor));
+        }
+        // Refresh the oldest actor, then exceed the production warm capacity.
+        let reused = registry
+            .get_or_create(&context, [source_input("main", root.join("src"))], "p")
+            .unwrap();
+        assert!(Arc::ptr_eq(&main.upgrade().unwrap(), &reused));
+        drop(reused);
+        let source = root.join("extra");
+        std::fs::create_dir_all(&source).unwrap();
+        drop(
+            registry
+                .get_or_create(&context, [source_input("main", source)], "p")
+                .unwrap(),
+        );
+        assert!(
+            main.upgrade().is_some(),
+            "recently used actor must stay warm"
+        );
+        assert!(
+            others[0].upgrade().is_none(),
+            "least recently used actor must be released"
+        );
+        assert!(others[1..].iter().all(|actor| actor.upgrade().is_some()));
+        assert_eq!(registry.warm_len_for_test().unwrap(), 8);
     }
 
     #[test]
@@ -4789,6 +4827,27 @@ pub(crate) mod tests {
             .create("Nested/.build/forged.json", b"forged".to_vec())
             .unwrap_err();
         assert_eq!(error.kind(), ApplyStagingErrorKind::ContainmentIdentity);
+
+        let mut other_context = context(&root);
+        other_context.cache_root = root.join("other-cache");
+        let other_identity = WorkspaceIdentity::new(
+            &other_context,
+            [source_input("src", &root)],
+            "test-provider",
+        )
+        .unwrap();
+        let other_actor = super::WorkspaceActor::new(other_identity, other_context).unwrap();
+        let other_binding = other_actor.bind_provider_root("src", &root).unwrap();
+        let error = other_actor
+            .admit_apply(
+                &other_binding,
+                None,
+                true,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("exact .build/unica"), "{error}");
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -5344,10 +5403,7 @@ pub(crate) mod tests {
         );
         assert!(error.contains("recovery"), "{error}");
         assert_eq!(service.machine_state_for_test(), machine_before);
-        assert!(
-            moved.exists(),
-            "identity-bound recovery evidence was erased"
-        );
+        assert_eq!(std::fs::read(&moved).unwrap(), b"before");
         fixture.cleanup();
     }
 
@@ -5610,7 +5666,7 @@ pub(crate) mod tests {
 
         assert_eq!(result.cleanup_diagnostics().len(), 1);
         assert!(moved.exists());
-        assert!(fixture
+        let error = fixture
             .actor
             .admit_apply(
                 &binding,
@@ -5619,7 +5675,16 @@ pub(crate) mod tests {
                 ProviderDeadline::from_budget(Duration::from_secs(5)),
                 &CancellationToken::new(),
             )
-            .is_err());
+            .expect_err("cleanup residue must consume the next admission's entry budget");
+        assert!(
+            matches!(
+                &error,
+                super::ApplyAdmissionError::Other(message)
+                    if message == "retained source revision entry limit 4 exceeded"
+                        || message == "retained source revision directory cannot be read: directory exceeds the retained enumeration entry limit"
+            ),
+            "{error}"
+        );
 
         let restart_context = context(&fixture.root);
         let restart_identity = WorkspaceIdentity::new(
@@ -5632,7 +5697,7 @@ pub(crate) mod tests {
         let restarted_binding = restarted
             .bind_provider_root("src", &fixture.roots[0])
             .unwrap();
-        assert!(restarted
+        let error = restarted
             .admit_apply(
                 &restarted_binding,
                 Some(result.rev()),
@@ -5640,7 +5705,16 @@ pub(crate) mod tests {
                 ProviderDeadline::from_budget(Duration::from_secs(5)),
                 &CancellationToken::new(),
             )
-            .is_err());
+            .expect_err("cleanup residue must consume the restarted actor's entry budget");
+        assert!(
+            matches!(
+                &error,
+                super::ApplyAdmissionError::Other(message)
+                    if message == "retained source revision entry limit 4 exceeded"
+                        || message == "retained source revision directory cannot be read: directory exceeds the retained enumeration entry limit"
+            ),
+            "{error}"
+        );
         fixture.cleanup();
     }
 
@@ -7271,41 +7345,51 @@ pub(crate) mod tests {
 
     #[test]
     fn apply_admission_and_dry_run_revision_observation_are_cache_tree_write_free() {
-        let fixture = actor_fixture("apply-observation-write-free", &["src"]);
-        let target = fixture.roots[0].join("Module.bsl");
-        std::fs::write(&target, b"original").unwrap();
-        let binding = fixture
-            .actor
-            .bind_provider_root("src", &fixture.roots[0])
-            .unwrap();
-        let cache_root = fixture.root.join(".build/unica");
-        assert!(!cache_root.exists());
-        let before = snapshot_tree(&cache_root);
+        for existing_cache in [false, true] {
+            let fixture = actor_fixture("apply-observation-write-free", &["src"]);
+            let target = fixture.roots[0].join("Module.bsl");
+            std::fs::write(&target, b"original").unwrap();
+            let binding = fixture
+                .actor
+                .bind_provider_root("src", &fixture.roots[0])
+                .unwrap();
+            let cache_root = fixture.root.join(".build/unica");
+            assert!(!cache_root.exists());
+            if existing_cache {
+                std::fs::create_dir_all(cache_root.join("source-revisions/empty")).unwrap();
+                std::fs::write(
+                    cache_root.join("source-revisions/keep.bin"),
+                    b"retained cache",
+                )
+                .unwrap();
+            }
+            let before = snapshot_tree(&cache_root);
 
-        let admitted = fixture
-            .actor
-            .admit_apply(
-                &binding,
-                None,
-                true,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
-            )
-            .unwrap();
-        assert_eq!(snapshot_tree(&cache_root), before);
+            let admitted = fixture
+                .actor
+                .admit_apply(
+                    &binding,
+                    None,
+                    true,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            assert_eq!(snapshot_tree(&cache_root), before);
 
-        let mut state = admitted.staged_state().unwrap();
-        state
-            .replace("Module.bsl", b"original", b"dry-run".to_vec())
-            .unwrap();
-        fixture
-            .actor
-            .publish_prepared_apply(admitted.prepare(state).unwrap())
-            .unwrap();
+            let mut state = admitted.staged_state().unwrap();
+            state
+                .replace("Module.bsl", b"original", b"dry-run".to_vec())
+                .unwrap();
+            fixture
+                .actor
+                .publish_prepared_apply(admitted.prepare(state).unwrap())
+                .unwrap();
 
-        assert_eq!(snapshot_tree(&cache_root), before);
-        assert_eq!(std::fs::read(&target).unwrap(), b"original");
-        fixture.cleanup();
+            assert_eq!(snapshot_tree(&cache_root), before);
+            assert_eq!(std::fs::read(&target).unwrap(), b"original");
+            fixture.cleanup();
+        }
     }
 
     #[test]
@@ -11183,28 +11267,31 @@ pub(crate) mod tests {
         assert_eq!(admission.support_policy_mode(), SupportPolicyMode::Deny);
         missing.cleanup();
 
-        let oversized = actor_fixture("apply-policy-mode-oversized", &["src"]);
-        std::fs::write(
-            oversized.root.join(".v8-project.json"),
-            vec![b' '; 32 * 1024 * 1024 + 1],
-        )
-        .unwrap();
-        let binding = oversized
+        let bounded = actor_fixture("apply-policy-mode-size-boundary", &["src"]);
+        let binding = bounded
             .actor
-            .bind_provider_root("src", &oversized.roots[0])
+            .bind_provider_root("src", &bounded.roots[0])
             .unwrap();
-        let admission = oversized
-            .actor
-            .admit_apply(
-                &binding,
-                None,
-                true,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
-            )
-            .unwrap();
-        assert_eq!(admission.support_policy_mode(), SupportPolicyMode::Deny);
-        oversized.cleanup();
+        for (size, expected) in [
+            (32 * 1024 * 1024, SupportPolicyMode::Off),
+            (32 * 1024 * 1024 + 1, SupportPolicyMode::Deny),
+        ] {
+            let mut bytes = br#"{"editingAllowedCheck":"off"}"#.to_vec();
+            bytes.resize(size, b' ');
+            std::fs::write(bounded.root.join(".v8-project.json"), bytes).unwrap();
+            let admission = bounded
+                .actor
+                .admit_apply(
+                    &binding,
+                    None,
+                    true,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            assert_eq!(admission.support_policy_mode(), expected, "size={size}");
+        }
+        bounded.cleanup();
 
         let unreadable = actor_fixture("apply-policy-mode-unreadable", &["src"]);
         let policy = unreadable.root.join(".v8-project.json");

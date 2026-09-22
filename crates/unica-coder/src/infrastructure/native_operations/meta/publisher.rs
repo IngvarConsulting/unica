@@ -1048,7 +1048,7 @@ fn already_exists(target: &crate::domain::source_target::MetadataAddress) -> Met
     .into()
 }
 
-/// ADR-0073: структурная квитанция мутации — полный план транзакции,
+/// Структурная квитанция мутации — полный план транзакции,
 /// приведённый к путям рабочего пространства (разделитель — `/`).
 pub(super) fn transaction_changed_paths(
     transaction: &CompileTransaction,

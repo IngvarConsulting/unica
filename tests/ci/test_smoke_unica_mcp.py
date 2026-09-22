@@ -1634,7 +1634,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             manifest = root / "plugins/unica/.codex-plugin/plugin.json"
             manifest.parent.mkdir(parents=True)
             manifest.write_text("{}\n", encoding="utf-8")
-            review_path = root / "arch/tool-surface-review.json"
+            review_path = root / "tests/fixtures/v013/tool-surface-review.json"
             review_path.parent.mkdir(parents=True)
             review_path.write_text(
                 json.dumps({"unica.xdto.info": {}, "unica.xdto.edit": {}}),
@@ -1656,7 +1656,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         module = load_module()
         with tempfile.TemporaryDirectory() as directory:
             outer = Path(directory)
-            unrelated = outer / "arch/tool-surface-review.json"
+            unrelated = outer / "tests/fixtures/v013/tool-surface-review.json"
             unrelated.parent.mkdir(parents=True)
             unrelated.write_text(
                 json.dumps({"unica.source.read": {}}),
@@ -1833,7 +1833,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                     name = message["params"]["name"]
                     args = message["params"]["arguments"]
                     if name == "unica.role.info":
-                        # ADR-0049 bridge: the stub answers the three
+                        # The stub answers the three
                         # outcomes the smoke asserts and nothing else.
                         if "sourceSet" in args and "RightsPath" in args:
                             payload = operation_result(
@@ -1948,7 +1948,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             root = Path(directory)
             server = root / "server.py"
             server.write_text(server_source, encoding="utf-8")
-            review_path = root / "arch/tool-surface-review.json"
+            review_path = root / "tests/fixtures/v013/tool-surface-review.json"
             review_path.parent.mkdir(parents=True)
             review_path.write_text(
                 json.dumps({name: {} for name in sorted(expected_tools)}),

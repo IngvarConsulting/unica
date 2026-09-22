@@ -951,8 +951,8 @@ impl XdtoEditOperation {
         }
     }
 
-    /// The writer keeps its historical kebab-case dispatch keys: ADR-0071
-    /// changed the published payload shape, not the write semantics.
+    /// The writer uses kebab-case dispatch keys for the same operations
+    /// that the typed payload names with camelCase tags.
     fn writer_key(self) -> &'static str {
         match self {
             Self::AddValueType => "add-value-type",
@@ -1012,7 +1012,7 @@ pub(crate) struct XdtoProjectedChange {
     replacement_byte_count: usize,
 }
 
-/// The effect of one element of the `operations` array (ADR-0071). Byte
+/// The effect of one element of the `operations` array. Byte
 /// ranges in `change` are relative to the document state the operation was
 /// applied to — operations are sequential, so element `i` sees the text
 /// produced by element `i - 1`.
@@ -1591,7 +1591,7 @@ fn edit(
             ));
         }
         let operations = parse_operations(args)?;
-        // ADR-0071: operations apply in order against the accumulated text, so
+        // Operations apply in order against the accumulated text, so
         // element `i` sees what element `i - 1` produced; the file is written
         // once after the whole batch plans cleanly.
         let mut effects: Vec<XdtoOperationEffect> = Vec::new();

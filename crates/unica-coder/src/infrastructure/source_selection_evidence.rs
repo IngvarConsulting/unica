@@ -2324,6 +2324,25 @@ pub(crate) mod tests {
 
     #[test]
     pub(crate) fn actor_admission_rejects_aggregate_exact_byte_budget() {
+        let defaults = SelectionEvidenceBudgets::actor_admission();
+        assert_eq!(
+            [
+                defaults.exact_bytes,
+                defaults.exact_work_bytes,
+                defaults.evidence_records,
+                defaults.enumerated_members,
+                defaults.unique_directories,
+                defaults.route_and_name_bytes,
+            ],
+            [
+                32 * 1024 * 1024,
+                32 * 1024 * 1024,
+                65_536,
+                16_384,
+                128,
+                8 * 1024 * 1024
+            ]
+        );
         let root = configured_workspace("unica-source-selection-byte-budget");
         let _budgets = install_actor_selection_test_budgets(ActorSelectionTestBudgets {
             exact_bytes: 32,
@@ -2972,6 +2991,26 @@ pub(crate) mod tests {
         assert_eq!(
             error,
             "project source-map actor observation changed within one pass: marker.xml"
+        );
+
+        let root = configured_workspace("unica-source-selection-two-pass-change");
+        let config = root.path().join("v8project.yaml");
+        let mut first = std::fs::read(&config).unwrap();
+        first.extend_from_slice(b"# first\n");
+        write(&config, &first);
+        let later = String::from_utf8(first.clone())
+            .unwrap()
+            .replace("# first", "# later")
+            .into_bytes();
+        assert_eq!(first.len(), later.len());
+        let _read_hook = install_regular_exact_after_read_hook(move || write(&config, later));
+
+        let error = discover_project_source_admission(root.path(), &mut checkpoint)
+            .expect_err("two different observations of the same source map were accepted");
+
+        assert_eq!(
+            error,
+            "project source-map changed during retained actor admission"
         );
     }
 

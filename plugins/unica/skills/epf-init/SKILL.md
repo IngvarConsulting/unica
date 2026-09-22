@@ -14,16 +14,17 @@ description: Создать пустой make-ready scaffold внешней об
   ниже, объяви набор нужного типа в `v8project.yaml`, затем проверь
   `unica.check {}` и прочитай `unica.view {}`: набор обязан читаться как
   `sourceFormat=platform_xml`.
-- Сборку `.epf` словарь тоже не публикует: `artifact.build` собирает только
+- Сборку `.epf` словарь тоже не публикует: `make` собирает только
   `.cf` и `.cfe`. Сообщай это как пробел контракта, а не обходи runner-ом.
 - Чтение и проверка идут через MCP `unica` (`unica.view`, `unica.check`); внутренние adapters и skill-local scripts не вызывать.
 - Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
-выбирай только операцию с `implemented: true` и не выдумывай аргументов
-записи с `argsSchema: null`; превью исполнением не является. Не обходи
-контракт прямым runner-ом.
-- Сборку `.epf`/`.erf` из исходников словарь `unica.run` не публикует: `artifact.build` собирает только `.cf` и `.cfe`. Сообщай это как пробел контракта, а не обходи runner-ом.
+при `implemented: true` используй опубликованную `argsSchema`; при
+`support.state: limited` разрешено только подмножество `support.supportedArgs`.
+При `support.state: unavailable` остановись; не выдумывай аргументов при
+`argsSchema: null`. Превью исполнением не является. Не обходи контракт прямым runner-ом.
+- Сборку `.epf`/`.erf` из исходников словарь `unica.run` не публикует: `make` собирает только `.cf` и `.cfe`. Сообщай это как пробел контракта, а не обходи runner-ом.
 
 ## Порядок работы
 
@@ -33,7 +34,7 @@ description: Создать пустой make-ready scaffold внешней об
 4. Если source-set ещё не объявлен, создать scaffold в выбранном новом каталоге, затем явно добавить этот каталог как корень Designer source-set. Проверить регистрацию через `unica.view {}`: `kind=external_processor`, `sourceFormat=platform_xml`.
 5. Передать `FormName`, только если нужна пустая управляемая форма. Без него создаются descriptor и `ObjectModule.bsl`.
 6. Записав файлы, проверить набор: `unica.check {}` и `unica.view {}` — превью и применение тут не при чём, операции нет.
-7. Публикацию артефакта не обещать: `artifact.build` в `unica.run` `.epf` не собирает и отвечает `unsupported_operation`.
+7. Публикацию артефакта не обещать: `make` в `unica.run` `.epf` не собирает и отвечает `unsupported_operation`.
 
 `Name` и `FormName` должны быть идентификаторами 1С. Существующие descriptor или одноимённый каталог не перезаписываются. При `format: EDT` остановиться и объяснить несовместимость, не создавать Designer XML внутри EDT source-set.
 
@@ -52,7 +53,6 @@ source-set:
 workPath: build/runtime
 execution_timeout: 300000
 format: DESIGNER
-builder: DESIGNER
 infobase:
   connection: 'File=build/ib'
 source-set:
@@ -90,4 +90,4 @@ source-set:
 
 Проверь результат до того, как объявлять объект готовым. Проверить, что созданы `<Name>.xml`, `<Name>/Ext/ObjectModule.bsl` и, если запрошена форма, три файла под `<Name>/Forms/`. Форму дополнительно проверить `unica.check` по адресу её узла. Отдельный generic Meta validator не использовать: он не принимает root `ExternalDataProcessor`. Не создавать `Configuration.xml` или platform-generated CDFI sidecar; legitimate external descriptor может называться `ConfigDumpInfo.xml`, если пользователь выбрал такое имя объекта.
 
-Сборку и загрузку артефакта словарь `unica.run` не публикует: `artifact.build` отвечает `unsupported_operation` на `.epf`/`.erf`, а `cf.import` принимает только `.cf` и `.cfe`. Сообщай публикацию как пробел контракта Unica MCP.
+Сборку и загрузку артефакта словарь `unica.run` не публикует: `make` отвечает `unsupported_operation` на `.epf`/`.erf`, а `upload` принимает только `.cf` и `.cfe`. Сообщай публикацию как пробел контракта Unica MCP.

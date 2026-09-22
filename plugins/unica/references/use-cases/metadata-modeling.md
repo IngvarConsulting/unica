@@ -8,15 +8,16 @@ registers, constants, enums, common modules, subsystems, command interfaces,
 templates, external processors/reports as metadata objects, and related XML.
 
 Do not use this for database build/dump/load or artifact build/export. Those
-are `unica.run` operations: `source.import`, `source.export`, `cf.import`,
-`cf.export`, `artifact.build`.
+are `unica.run` operations: `push`, `pull`, `upload`,
+`download`, `make`.
 
 Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
-выбирай только операцию с `implemented: true` и не выдумывай аргументов
-записи с `argsSchema: null`; превью исполнением не является. Не обходи
-контракт прямым runner-ом.
+при `implemented: true` используй опубликованную `argsSchema`; при
+`support.state: limited` разрешено только подмножество `support.supportedArgs`.
+При `support.state: unavailable` остановись; не выдумывай аргументов при
+`argsSchema: null`. Превью исполнением не является. Не обходи контракт прямым runner-ом.
 
 ## Primary path
 

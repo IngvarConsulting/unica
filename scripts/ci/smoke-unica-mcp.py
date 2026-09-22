@@ -34,7 +34,7 @@ ProcessCleanupResult = _WIRE_PROBE.ProcessCleanupResult
 ProcessOwnership = _WIRE_PROBE.ProcessOwnership
 
 
-TOOL_SURFACE_REVIEW_RELATIVE = Path("arch/tool-surface-review.json")
+TOOL_SURFACE_REVIEW_RELATIVE = Path("tests/fixtures/v013/tool-surface-review.json")
 CHECKOUT_MARKERS = (
     Path("Cargo.toml"),
     Path("plugins/unica/.codex-plugin/plugin.json"),
@@ -212,7 +212,7 @@ def _input_schema_shape_error(value: object) -> str | None:
 def _code_search_output_schema_shape_error(value: object) -> str | None:
     if not isinstance(value, dict) or value.get("type") != "object":
         return "must declare an object envelope"
-    # ADR-0023: typed provider-neutral payload is carried by OperationResult.data.
+    # Typed provider-neutral payload is carried by OperationResult.data.
     required = value.get("required")
     if not isinstance(required, list) or "data" not in required:
         return "must require data"
@@ -1063,7 +1063,7 @@ def _source_workspace(root: Path) -> None:
         (root / source_set / "CommonModules/Shared/Ext/Module.bsl").write_bytes(
             ("\ufeffProcedure " + module + "()\r\nEndProcedure\r\n").encode("utf-8")
         )
-    # ADR-0049: a subject reader must be reachable by address end to end, so
+    # A subject reader must be reachable by address end to end, so
     # the smoke workspace carries one registered object with an attached body.
     (root / "src/Roles/SmokeRole/Ext").mkdir(parents=True)
     (root / "src/Roles/SmokeRole.xml").write_text(
@@ -2110,7 +2110,7 @@ def _exercise_reader_bridge(
 ) -> int:
     """An address found by `unica.source.resolve` reaches a subject reader.
 
-    This is the whole point of ADR-0049: the caller never has to know that a
+    The caller never has to know that a
     role's rights live two directories below its descriptor.
     """
     resolved = _call(session, request_id, "unica.source.resolve", {

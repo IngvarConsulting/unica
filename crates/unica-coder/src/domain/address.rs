@@ -233,7 +233,7 @@ impl NodeKind {
     /// Безымянный вид единственен у своего владельца, поэтому имени у него нет
     /// и занимать под него сегмент нельзя: следующий сегмент — это уже вид.
     /// Терминальный вид без имени — другое: это адрес ветки, и он допустим у
-    /// любого вида. См. `DEC.2026-09-07.NAMELESS-KINDS-IN-ADDRESS`.
+    /// любого вида. См. `arch/rules/mcp/qualified-logical-address.md`.
     pub(crate) const fn takes_name(self) -> bool {
         !matches!(self, Self::Configuration | Self::Interface)
     }

@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -429,15 +430,16 @@ def prepare_upstream_review(
     index_file: Path = DEFAULT_INDEX,
     cache_dir: Path | None = None,
     lock_file: Path | None = None,
-    review_id: str = "2026-06-15-upstream-review",
+    review_id: str | None = None,
 ) -> dict:
     report = check_upstreams(repo_root, index_file, cache_dir, lock_file)
     if report.errors:
         raise RuntimeError("; ".join(report.errors))
+    generated_at = datetime.now(timezone.utc).date().isoformat()
     return {
         "schemaVersion": 1,
-        "id": review_id,
-        "generatedAt": "2026-06-15",
+        "id": review_id or f"{generated_at}-upstream-review",
+        "generatedAt": generated_at,
         "purpose": (
             "Manual upstream drift review. The report starts from the donor baseline that matches "
             "the last local Unica skill adaptation, not from the current donor head."
@@ -503,7 +505,7 @@ def main() -> None:
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--prepare-baseline-review", action="store_true")
     parser.add_argument("--prepare-upstream-review", action="store_true")
-    parser.add_argument("--review-id", default="2026-06-15-upstream-review")
+    parser.add_argument("--review-id")
     parser.add_argument("--format", choices=["text", "json"], default="text")
     args = parser.parse_args()
 

@@ -49,22 +49,9 @@ class RunTestsSeamTests(unittest.TestCase):
             python,
             [
                 ["python", runner_script, "-s", "tests/ci", "--durations", "20"],
-                ["python", runner_script, "-s", "tests/arch"],
                 ["python", runner_script, "-s", "tests/dev", "--durations", "20"],
             ],
         )
-
-    def test_arch_suite_is_discovered_without_a_top_level_directory(self) -> None:
-        """Модули `tests/arch` — не пакет: `-t .` сломал бы их импорт."""
-        module = load_module()
-
-        arch = next(
-            command
-            for command in module.commands("all", "python", interpreter="python")
-            if "tests/arch" in command
-        )
-
-        self.assertNotIn("-t", arch)
 
     def test_all_ecosystems_keep_rust_before_python(self) -> None:
         module = load_module()
@@ -75,7 +62,7 @@ class RunTestsSeamTests(unittest.TestCase):
         self.assertEqual([command[0] for command in planned[:2]], ["cargo", "cargo"])
         self.assertTrue(all(command[0] == "python" for command in planned[2:]))
         self.assertTrue(all(command[1].endswith("run-unittest.py") for command in planned[2:]))
-        self.assertEqual(len(planned), 5)
+        self.assertEqual(len(planned), 4)
 
     def test_results_directory_turns_emission_on_for_python_suites(self) -> None:
         """Без `--results` набор идёт как раньше; с ним пишет результаты и знает раннер."""
@@ -263,7 +250,7 @@ class GateProfileTests(unittest.TestCase):
         self.assertEqual(names, ["unica-coder::case", "unica-coder::daemon_receipt_ledger::case"])
 
     def test_every_gate_runs_every_python_suite_while_all_suites_are_small(self) -> None:
-        """Отбора пока нет: все наборы `small`, и любые ворота гоняют все три."""
+        """Отбора пока нет: все наборы `small`, и любые ворота гоняют оба набора."""
         module = load_module()
 
         for gate in module.PROFILES:
@@ -280,13 +267,13 @@ class GateProfileTests(unittest.TestCase):
         module = load_module()
         results = Path(tempfile.mkdtemp(prefix="plan-py-"))
 
-        code = module.main(["--profile", "pr", "--ecosystem", "python", "--suite", "tests/arch", "--plan-only", "--results", str(results), "--runner", "ubuntu-latest"])
+        code = module.main(["--profile", "pr", "--ecosystem", "python", "--suite", "tests/dev", "--plan-only", "--results", str(results), "--runner", "ubuntu-latest"])
 
         self.assertEqual(code, 0)
         self.assertTrue((results / "run.json").is_file())
         planned = [entry for entry in json.loads((results / "plan.json").read_text(encoding="utf-8")) if entry.get("ecosystem") == "python"]
         self.assertGreater(len(planned), 50)
-        self.assertTrue(all(entry["suite"] == "tests/arch" for entry in planned))
+        self.assertTrue(all(entry["suite"] == "tests/dev" for entry in planned))
         self.assertTrue(all(entry["id"].count(".") >= 2 and entry["subSuite"] and entry["size"] for entry in planned))
 
     def test_size_lanes_split_a_suite_by_the_sizes_the_gate_admits(self) -> None:
@@ -306,9 +293,9 @@ class GateProfileTests(unittest.TestCase):
         # Матрица ворот: полосатый набор — по размерам, остальные — одной джобой.
         self.assertEqual(
             [entry["slug"] for entry in module.python_matrix("queue")],
-            ["ci-small", "ci-medium", "arch", "dev"],
+            ["ci-small", "ci-medium", "dev"],
         )
-        self.assertEqual([entry["slug"] for entry in module.python_matrix("pr")], ["ci-small", "arch", "dev"])
+        self.assertEqual([entry["slug"] for entry in module.python_matrix("pr")], ["ci-small", "dev"])
         for entry in module.python_matrix("main"):
             self.assertEqual(entry["slug"], module.python_slug(entry["suite"], entry["lane"]))
 
@@ -321,7 +308,7 @@ class GateProfileTests(unittest.TestCase):
             with self.subTest(suite=suite):
                 only = module.python_commands("main", "python3", suite=suite)
                 self.assertEqual(only, [command for command in every if command[3] == suite])
-        self.assertEqual(module.commands("main", "python", "python3", suite="tests/arch"), module.python_commands("main", "python3", suite="tests/arch"))
+        self.assertEqual(module.commands("main", "python", "python3", suite="tests/dev"), module.python_commands("main", "python3", suite="tests/dev"))
         with self.assertRaises(ValueError):
             module.python_commands("main", "python3", suite="tests/nowhere")
         # Rust от набора не зависит: `--suite` сужает только Python.

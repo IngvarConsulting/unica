@@ -561,7 +561,7 @@ def response_output_size(stdout: str, stderr: str, payload: dict[str, Any] | Non
 def project_source_sets(payload: dict[str, Any] | None) -> list[dict[str, Any]]:
     """Read the source sets from the typed result.
 
-    ADR-0023 moved the map out of `stdout`, where it used to be a JSON string
+    The typed result contract moved the map out of `stdout`, where it used to be a JSON string
     inside the JSON envelope; `data` is the only place it lives now.
     """
 

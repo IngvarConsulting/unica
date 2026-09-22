@@ -1,0 +1,35 @@
+{
+  "ok": true,
+  "command": "extensions",
+  "duration_ms": 6765,
+  "data": {
+    "provider": {
+      "selected": "ibcmd",
+      "origin": {
+        "kind": "override",
+        "file": "v8project.yaml"
+      }
+    },
+    "ok": true,
+    "provider_dispatched": true,
+    "requested": {
+      "kind": "named",
+      "name": "UnicaRunnerProbe"
+    },
+    "extensions": [
+      {
+        "name": "UnicaRunnerProbe",
+        "active": true,
+        "purpose": "patch",
+        "safe_mode": true,
+        "unsafe_action_protection": true,
+        "used_in_distributed_infobase": false,
+        "scope": "infobase",
+        "hash_sum": "bhL3p2okJhUifODexTMj5L9elx8="
+      }
+    ],
+    "duration_ms": 6765
+  },
+  "warnings": [],
+  "steps": []
+}

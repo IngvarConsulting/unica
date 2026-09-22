@@ -1,6 +1,6 @@
 #![allow(clippy::result_large_err)]
-//! `source.import` — импорт исходников рабочего пространства в базу силами
-//! `v8-runner build` (A-4 зонтика #871). Пара к `source.export`: тот выносит
+//! `push` — импорт исходников рабочего пространства в базу силами
+//! `v8-runner build` (A-4 зонтика #871). Пара к `pull`: тот выносит
 //! базу в исходники, этот вносит исходники в базу.
 //!
 //! Аргументы закрыты: `sourceSet` — имя одного объявленного набора (без него
@@ -16,6 +16,7 @@
 //! идёт.
 
 use super::protocol::InvocationRequest;
+use super::runner_011::Runner011ProcessRunner;
 use super::v13_infobase_exports::{
     digest_optional_workspace_file, digest_required_workspace_file, missing_runner_rejection,
     resolve_bundled_runner, runner_rejection, CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
@@ -26,9 +27,7 @@ use crate::domain::invocation::{DomainResult, SafeIdentityHash};
 use crate::domain::refusal::RefusalCode;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::BundledTool;
-use crate::infrastructure::internal_adapters::{
-    ProcessCommand, ProcessOutput, ProcessRunner, SystemProcessRunner,
-};
+use crate::infrastructure::internal_adapters::{ProcessCommand, ProcessOutput, ProcessRunner};
 use crate::infrastructure::redaction::redactor;
 use crate::infrastructure::workspace::discover_workspace;
 use serde_json::{json, Map, Value};
@@ -36,7 +35,7 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-pub(super) const OPERATION: &str = "source.import";
+pub(super) const OPERATION: &str = "push";
 /// Имя команды в конверте раннера: словарь читается как слой и направление,
 /// раннер называет свои команды по-своему.
 const RUNNER_COMMAND: &str = "build";
@@ -89,7 +88,7 @@ impl PreparedSourceImport {
             .ok_or_else(|| {
                 reject(
                     RefusalCode::BadValue,
-                    "source.import requires dryRun: true to preview or dryRun: false with ifRev to apply",
+                    "push requires dryRun: true to preview or dryRun: false with ifRev to apply",
                 )
             })?;
         let if_rev = match arguments.get("ifRev") {
@@ -98,20 +97,20 @@ impl PreparedSourceImport {
             Some(_) => {
                 return Err(reject(
                     RefusalCode::BadValue,
-                    "source.import ifRev must be non-empty text",
+                    "push ifRev must be non-empty text",
                 ))
             }
         };
         if dry_run && if_rev.is_some() {
             return Err(reject(
                 RefusalCode::BadValue,
-                "source.import preview does not accept ifRev; apply the revision returned by this preview",
+                "push preview does not accept ifRev; apply the revision returned by this preview",
             ));
         }
         if !dry_run && if_rev.is_none() {
             return Err(reject(
                 RefusalCode::BadValue,
-                "source.import apply requires ifRev from a prior dryRun preview",
+                "push apply requires ifRev from a prior dryRun preview",
             ));
         }
         let context =
@@ -138,7 +137,7 @@ impl PreparedSourceImport {
     }
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        execute_with_runner(self, &SystemProcessRunner, cancellation)
+        execute_with_runner(self, &Runner011ProcessRunner, cancellation)
     }
 }
 
@@ -147,7 +146,9 @@ fn parse_import_arguments(args: &Map<String, Value>) -> Result<ImportArguments, 
     if let Some(unknown) = args.keys().find(|key| !ACCEPTED.contains(&key.as_str())) {
         return Err(reject(
             RefusalCode::BadValue,
-            format!("source.import does not accept `{unknown}`; the closed args are sourceSet and fullRebuild"),
+            format!(
+                "push does not accept `{unknown}`; the closed args are sourceSet and fullRebuild"
+            ),
         ));
     }
     let source_set = match args.get("sourceSet") {
@@ -156,7 +157,7 @@ fn parse_import_arguments(args: &Map<String, Value>) -> Result<ImportArguments, 
         Some(_) => {
             return Err(reject(
                 RefusalCode::BadValue,
-                format!("source.import sourceSet must be the name of a source set declared in v8project.yaml: up to {SOURCE_SET_NAME_MAX} letters, digits, `_`, `-` or `.`"),
+                format!("push sourceSet must be the name of a source set declared in v8project.yaml: up to {SOURCE_SET_NAME_MAX} letters, digits, `_`, `-` or `.`"),
             ))
         }
     };
@@ -166,7 +167,7 @@ fn parse_import_arguments(args: &Map<String, Value>) -> Result<ImportArguments, 
         Some(_) => {
             return Err(reject(
                 RefusalCode::BadValue,
-                "source.import fullRebuild must be boolean",
+                "push fullRebuild must be boolean",
             ))
         }
     };
@@ -217,7 +218,7 @@ fn capture_inputs(prepared: &PreparedSourceImport) -> Result<StableInputs, Domai
             return Err(reject(
                 RefusalCode::BadValue,
                 format!(
-                    "source.import sourceSet `{source_set}` is not declared in v8project.yaml; declared source sets: {}",
+                    "push sourceSet `{source_set}` is not declared in v8project.yaml; declared source sets: {}",
                     declared.join(", ")
                 ),
             ));
@@ -364,7 +365,7 @@ fn planned_steps(envelope: &Value) -> Result<Vec<PlannedStep>, DomainResult> {
             if step["mode"] == "edt_export" {
                 reject(
                     RefusalCode::InvalidState,
-                    format!("source set `{source_set}` is declared in a format that needs EDT; source.import serves Designer sources only"),
+                    format!("source set `{source_set}` is declared in a format that needs EDT; push serves Designer sources only"),
                 )
             } else {
                 reject(
@@ -386,10 +387,7 @@ fn execute_with_resolved_runner(
     runner_version: &str,
 ) -> DomainResult {
     if cancellation.is_cancelled() {
-        return reject(
-            RefusalCode::Cancelled,
-            "source.import cancelled before preflight",
-        );
+        return reject(RefusalCode::Cancelled, "push cancelled before preflight");
     }
     let before = match capture_inputs(prepared) {
         Ok(inputs) => inputs,
@@ -410,13 +408,13 @@ fn execute_with_resolved_runner(
     if before != after {
         return reject(
             RefusalCode::ConcurrentChange,
-            "source.import inputs changed during preview; run dryRun: true again",
+            "push inputs changed during preview; run dryRun: true again",
         );
     }
     let revision = plan_revision(prepared, &before, runner_version, &plan);
     if prepared.dry_run {
         let mut result = DomainResult::success(format!(
-            "source.import planned importing {} without touching the infobase",
+            "push planned importing {} without touching the infobase",
             subject_summary(&plan)
         ));
         result.data = Some(json!({
@@ -446,7 +444,7 @@ fn execute_with_resolved_runner(
         return reject(
             RefusalCode::StaleRevision,
             format!(
-                "source.import plan or environment changed after preview: expected rev {revision}, ifRev {}; run dryRun: true again",
+                "push plan or environment changed after preview: expected rev {revision}, ifRev {}; run dryRun: true again",
                 prepared.if_rev.as_deref().unwrap_or("absent")
             ),
         );
@@ -454,7 +452,7 @@ fn execute_with_resolved_runner(
     if cancellation.is_cancelled() {
         return reject(
             RefusalCode::Cancelled,
-            "source.import cancelled before provider launch",
+            "push cancelled before provider launch",
         );
     }
     let applied = match invoke_runner(prepared, tool, runner, &cancellation, false) {
@@ -476,14 +474,14 @@ fn execute_with_resolved_runner(
         // который одобрен: исходники или проектный файл сменились после превью.
         return reject(
             RefusalCode::ConcurrentChange,
-            "source.import performed a different plan than previewed: the sources changed between preview and apply; run dryRun: true again",
+            "push performed a different plan than previewed: the sources changed between preview and apply; run dryRun: true again",
         );
     }
     // **Улику о состоянии базы Unica не подделывает.** База живёт за
     // соединением, и её состояние здесь засвидетельствовано провайдером, а не
     // проверено нами; источник признания назван прямо.
     let mut result = DomainResult::success(format!(
-        "source.import imported {}; the infobase state is attested by the provider",
+        "push imported {}; the infobase state is attested by the provider",
         subject_summary(&plan)
     ));
     result.data = Some(json!({

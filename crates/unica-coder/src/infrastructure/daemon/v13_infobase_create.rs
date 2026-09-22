@@ -1,6 +1,6 @@
 #![allow(clippy::result_large_err)]
 //! `infobase.create` — создание пустой базы по соединению из `v8project.yaml`
-//! силами `v8-runner init` (A-3 зонтика #871). Пара к `infobase.import`: тот
+//! силами `v8-runner init` (A-3 зонтика #871). Пара к `infobase.restore`: тот
 //! наполняет базу из DT, этот заводит пустую.
 //!
 //! Аргументов нет: соединение задаёт проектный файл, и словарь его не
@@ -16,6 +16,7 @@
 //! платформе и командная строка наружу не идут.
 
 use super::protocol::InvocationRequest;
+use super::runner_011::Runner011ProcessRunner;
 use super::v13_infobase_exports::{
     digest_optional_workspace_file, digest_required_workspace_file, missing_runner_rejection,
     resolve_bundled_runner, runner_rejection, CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
@@ -26,9 +27,7 @@ use crate::domain::invocation::{DomainResult, SafeIdentityHash};
 use crate::domain::refusal::RefusalCode;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::BundledTool;
-use crate::infrastructure::internal_adapters::{
-    ProcessCommand, ProcessOutput, ProcessRunner, SystemProcessRunner,
-};
+use crate::infrastructure::internal_adapters::{ProcessCommand, ProcessOutput, ProcessRunner};
 use crate::infrastructure::redaction::redactor;
 use crate::infrastructure::workspace::discover_workspace;
 use serde_json::{json, Value};
@@ -136,7 +135,7 @@ impl PreparedInfobaseCreate {
     }
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        execute_with_runner(self, &SystemProcessRunner, cancellation)
+        execute_with_runner(self, &Runner011ProcessRunner, cancellation)
     }
 }
 
@@ -393,10 +392,10 @@ fn validate_preview(envelope: &Value) -> Result<(), DomainResult> {
         StepStatus::Planned => {}
         StepStatus::Skipped => {
             // Существующая база — не «нечего делать», а отказ: план создания
-            // применять нельзя, а замена содержимого — дело `infobase.import`.
+            // применять нельзя, а замена содержимого — дело `infobase.restore`.
             return Err(reject(
                 RefusalCode::InvalidState,
-                "the infobase at the configured connection already exists; infobase.create only creates an absent one, use infobase.import with mode replace to overwrite its data",
+                "the infobase at the configured connection already exists; infobase.create only creates an absent one, use infobase.restore with mode replace to overwrite its data",
             ));
         }
         StepStatus::Ok | StepStatus::Failed => {
@@ -721,7 +720,7 @@ mod tests {
         assert!(result.diagnostics[0]["message"]
             .as_str()
             .unwrap()
-            .contains("infobase.import with mode replace"));
+            .contains("infobase.restore with mode replace"));
         assert!(result.rev.is_none());
     }
 

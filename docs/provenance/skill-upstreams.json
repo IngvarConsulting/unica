@@ -126,7 +126,6 @@
       "contractPaths": [
         "crates/unica-coder/src/application/tool_contracts.rs",
         "crates/unica-coder/src/infrastructure/native_operations/role.rs",
-        "arch/contracts/CTR.WIRE.TOOL-SURFACE.md",
         "tests/ci/test_unica_skills.py"
       ]
     }
@@ -752,8 +751,6 @@
             "tests/fixtures/xdto/enterprise-data-minimal"
           ],
           "contractPaths": [
-            "arch/contracts/CTR.FORMAT.PLATFORM-XML-8-3-27.md",
-            "arch/contracts/CTR.WIRE.TOOL-SURFACE.md",
             "crates/unica-coder/src/application/tool_contracts.rs",
             "crates/unica-coder/src/infrastructure/native_operations/xdto.rs",
             "crates/unica-coder/tests/format_8_3_27_xml_corpus.rs",
@@ -763,7 +760,7 @@
           ],
           "baselineCommit": "2067778ba3bad527bd1e5850304d1c82acb81fc8",
           "decision": "ported",
-          "decisionReason": "Ported the approved logical read/edit subset and evidence-backed package grammar into native Rust and a single public MCP; broader donor tools remain outside ADR-0024."
+          "decisionReason": "Ported the approved logical read/edit subset and evidence-backed package grammar into native Rust and a single public MCP; broader donor tools remain outside this imported subset."
         }
       ],
       "lastAdaptedLocalCommit": "795505f2243cf3c93a95918467f99135af758e1b",

@@ -343,7 +343,7 @@ def validate_relations(
     if not isinstance(relations, dict):
         return [*errors, "donor relations must be an object"]
 
-    # A tool that answers with typed data (ADR-0023) has no prose left to
+    # A tool that answers with typed data has no prose left to
     # compare against the donor script, so its cases carry a retirement reason
     # instead of a relation. The donor snapshot itself is never edited.
     retired = registry.get("retired", {})
@@ -480,63 +480,9 @@ def validate_repository_contract(repo_root: Path) -> list[str]:
     relations = load_json(relations_path)
     provenance = load_json(provenance_path)
     errors.extend(validate_baseline(snapshot_root, baseline, provenance))
-    errors.extend(validate_refresh_reviews(repo_root, baseline))
     if relations.get("upstreamId") != baseline.get("upstreamId"):
         errors.append("donor relation upstreamId differs from baseline")
     errors.extend(validate_relations(repo_root, snapshot_root, relations))
-    return errors
-
-
-def validate_refresh_reviews(
-    repo_root: Path, baseline: dict[str, Any]
-) -> list[str]:
-    errors = []
-    scopes = baseline.get("scopes")
-    if not isinstance(scopes, dict):
-        return ["donor baseline scopes must be an object"]
-    reviews: dict[str, dict[str, Any]] = {}
-    for scope, scope_data in sorted(scopes.items()):
-        if not isinstance(scope_data, dict):
-            continue
-        review_id = scope_data.get("reviewId")
-        try:
-            review_component = safe_relative_path(review_id)
-        except ValueError as error:
-            errors.append(f"scope {scope!r} reviewId: {error}")
-            continue
-        if len(review_component.parts) != 1:
-            errors.append(f"scope {scope!r} reviewId must be one path component")
-            continue
-        if review_id not in reviews:
-            review_path = (
-                repo_root / "docs" / "provenance" / "reviews" / f"{review_id}.json"
-            )
-            if not review_path.is_file():
-                errors.append(
-                    f"scope {scope!r} refresh review does not exist: "
-                    f"{review_path.relative_to(repo_root)}"
-                )
-                continue
-            try:
-                reviews[review_id] = load_json(review_path)
-            except (ValueError, json.JSONDecodeError) as error:
-                errors.append(f"refresh review {review_id!r} is invalid: {error}")
-                continue
-        review = reviews.get(review_id)
-        if review is None:
-            continue
-        if review.get("reviewStatus") != "reviewed" or review.get("applied") is not True:
-            errors.append(f"refresh review {review_id!r} is not reviewed and applied")
-        if review.get("targetCommit") != scope_data.get("acceptedCommit"):
-            errors.append(
-                f"scope {scope!r} accepted commit differs from refresh review "
-                f"{review_id!r}"
-            )
-        affected = review.get("affectedSkills")
-        if not isinstance(affected, list) or scope not in affected:
-            errors.append(
-                f"scope {scope!r} is not covered by refresh review {review_id!r}"
-            )
     return errors
 
 

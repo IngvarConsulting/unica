@@ -47,6 +47,10 @@ pub(crate) enum RunIntent {
     InfobaseExport,
     InfobaseImport,
     ClientRun,
+    ExtensionList,
+    ExtensionActivate,
+    ConfigurationApply,
+    ConfigurationReset,
 }
 
 #[derive(Debug)]
@@ -61,36 +65,40 @@ impl RunOperation {
     pub(crate) const fn name(&self) -> &'static str {
         match self.intent {
             RunIntent::InfobaseCreate => "infobase.create",
-            RunIntent::SourceImport => "source.import",
-            RunIntent::SourceExport => "source.export",
-            RunIntent::ArtifactBuild => "artifact.build",
-            RunIntent::CfExport => "cf.export",
-            RunIntent::CfImport => "cf.import",
-            RunIntent::InfobaseExport => "infobase.export",
-            RunIntent::InfobaseImport => "infobase.import",
-            RunIntent::ClientRun => "client.run",
+            RunIntent::SourceImport => "push",
+            RunIntent::SourceExport => "pull",
+            RunIntent::ArtifactBuild => "make",
+            RunIntent::CfExport => "download",
+            RunIntent::CfImport => "upload",
+            RunIntent::InfobaseExport => "infobase.dump",
+            RunIntent::InfobaseImport => "infobase.restore",
+            RunIntent::ClientRun => "launch",
+            RunIntent::ExtensionList => "extensions.list",
+            RunIntent::ExtensionActivate => "extensions.set",
+            RunIntent::ConfigurationApply => "apply",
+            RunIntent::ConfigurationReset => "reset",
         }
     }
 
     pub(crate) const fn description(&self) -> &'static str {
         match self.intent {
             RunIntent::InfobaseCreate => {
-                "Create the empty infobase declared by v8project.yaml; refused when it already exists."
+                "Create an absent infobase from project sources and establish its synchronization baseline. Requires runner 1.0."
             }
             RunIntent::SourceImport => {
-                "Import workspace sources into the infobase: build or update its configuration from the attached source sets."
+                "Push source sets with generation protection, or delete an installed extension. Runner 0.11 supports only explicit delete."
             }
             RunIntent::SourceExport => {
-                "Export the infobase into a workspace source set."
+                "Pull infobase changes into sources while protecting local work. Requires runner 1.0; old dump is not an equivalent."
             }
             RunIntent::ArtifactBuild => {
-                "Build a CF, CFE, EPF, or ERF artifact from attached sources."
+                "Build a CF or CFE artifact from attached sources. EPF and ERF are unavailable with the runner 0.11 adapter."
             }
             RunIntent::CfExport => {
                 "Export the working configuration, the database configuration, or an extension out of the infobase to a CF or CFE file."
             }
             RunIntent::CfImport => {
-                "Import a CF or CFE file into the infobase as its configuration or extension."
+                "Upload a CF or CFE into the working configuration without applying the database configuration."
             }
             RunIntent::InfobaseExport => {
                 "Export the complete infobase to a DT transfer file; this is not a backup."
@@ -98,7 +106,22 @@ impl RunOperation {
             RunIntent::InfobaseImport => {
                 "Import a DT transfer file as the infobase; the mode states whether an absent infobase is created or the data of an existing one is discarded."
             }
+            RunIntent::ExtensionList => "Read installed extensions through a previewed platform session. Name prefixes are not reported by the platform.",
+            RunIntent::ExtensionActivate => "Set the named installed extension active or inactive.",
+            RunIntent::ConfigurationApply => "Apply the working configuration to the database configuration; unlike unica.apply this changes the infobase.",
+            RunIntent::ConfigurationReset => "Discard pending configuration changes in the infobase, restoring its database configuration.",
             RunIntent::ClientRun => "Launch an interactive 1C client session.",
+        }
+    }
+
+    pub(crate) const fn support_reason(&self) -> Option<&'static str> {
+        match self.intent {
+            RunIntent::CfImport => Some("runner 0.11 load implicitly applies the database configuration; target upload must not apply it"),
+            RunIntent::SourceImport => Some("runner 0.11 supports only delete; sending sources requires generation protection and extension creation from runner 1.0"),
+            RunIntent::SourceExport => Some("runner 0.11 dump does not implement the local-work protection of pull"),
+            RunIntent::InfobaseCreate => Some("runner 0.11 init does not establish the runner 1.0 source and synchronization contract"),
+            RunIntent::ConfigurationApply | RunIntent::ConfigurationReset => Some("no verified standalone implementation in the runner 0.11 adapter"),
+            _ => None,
         }
     }
 
@@ -120,11 +143,25 @@ impl RunOperation {
             | RunIntent::CfImport
             | RunIntent::InfobaseImport => &["infobase"],
             RunIntent::ClientRun => &["clientSession"],
+            RunIntent::ExtensionList => &["infobaseRead"],
+            RunIntent::ExtensionActivate
+            | RunIntent::ConfigurationApply
+            | RunIntent::ConfigurationReset => &["infobase"],
         }
     }
 
     pub(crate) fn args_schema(&self) -> Option<Value> {
         match self.intent {
+            RunIntent::ExtensionList => {
+                Some(json!({"type":"object","additionalProperties":false,"properties":{}}))
+            }
+            RunIntent::ExtensionActivate => Some(
+                json!({"type":"object","additionalProperties":false,"required":["name","active"],"properties":{"name":{"type":"string","description":"Installed extension name, a 1C identifier."},"active":{"type":"boolean","description":"True to activate; false to deactivate without deleting."}}}),
+            ),
+            RunIntent::ConfigurationApply | RunIntent::ConfigurationReset => Some(
+                json!({"type":"object","additionalProperties":false,"properties":{"sourceSet":{"type":"string"}}}),
+            ),
+
             RunIntent::CfExport => Some(json!({
                 "type": "object",
                 "additionalProperties": false,
@@ -159,24 +196,12 @@ impl RunOperation {
                 },
                 "required": ["output"]
             })),
-            RunIntent::SourceExport => Some(json!({
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                    "mode": {"type": "string", "enum": ["full", "incremental"], "description": "Export everything, or only what changed since the runner's last export; object-scoped partial export is not published."},
-                    "sourceSet": {"type": "string", "description": "Name of one source set declared in v8project.yaml; omit for the configuration source set."},
-                    "extension": {"type": "string", "description": "Extension name the runner requires for an extension source set; must match the set."}
-                },
-                "required": ["mode"]
-            })),
-            RunIntent::SourceImport => Some(json!({
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                    "sourceSet": {"type": "string", "description": "Name of one source set declared in v8project.yaml; omit to import every declared source set."},
-                    "fullRebuild": {"type": "boolean", "default": false, "description": "Clear the runner's change cache and import everything instead of the changed files only."}
-                }
-            })),
+            RunIntent::SourceExport => Some(
+                json!({"type":"object","additionalProperties":false,"properties":{"sourceSet":{"type":"string"},"force":{"type":"boolean"},"all":{"type":"boolean"}}}),
+            ),
+            RunIntent::SourceImport => Some(
+                json!({"type":"object","additionalProperties":false,"properties":{"sourceSet":{"type":"string"},"full":{"type":"boolean"},"force":{"type":"boolean"},"noApply":{"type":"boolean"},"delete":{"type":"string","description":"Installed extension platform name to delete, including its data. Exclusive with source sending options."}}}),
+            ),
             RunIntent::CfImport => Some(json!({
                 "type": "object",
                 "additionalProperties": false,
@@ -325,7 +350,8 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                     description: "List canonical runtime operations and their invocation contract, or preview/execute one implemented operation.",
                     input_schema: schema(
                         json!({
-                            "op": {"type": "string", "description": "Canonical operation name; omit to list operation status."},
+                            "op": {"type": "string", "description": "Runner 1.0 operation name; omit to list the target dictionary and adapter support."},
+                            "infobase": {"type":"string", "description":"Named infobase; defaults to origin. The runner 0.11 adapter supports only origin."},
                             "args": data_object("Typed arguments for the selected operation."),
                             "dryRun": {"type": "boolean", "description": "Required by previewApply operations: true returns a non-mutating plan and revision; false requires ifRev and applies that plan."},
                             "ifRev": {"type": "string", "description": "Revision returned by a prior preview of the same previewApply operation; required when dryRun is false."},
@@ -428,24 +454,25 @@ fn run_dictionary() -> Vec<RunOperation> {
         RunIntent::InfobaseExport,
         RunIntent::InfobaseImport,
         RunIntent::ClientRun,
+        RunIntent::ExtensionList,
+        RunIntent::ExtensionActivate,
+        RunIntent::ConfigurationApply,
+        RunIntent::ConfigurationReset,
     ]
     .into_iter()
     .map(|intent| RunOperation {
+        intent,
         terminal: intent == RunIntent::ClientRun,
         rejects_sessions: intent == RunIntent::ClientRun,
-        implemented: matches!(
+        implemented: !matches!(
             intent,
-            RunIntent::InfobaseCreate
+            RunIntent::CfImport
+                | RunIntent::InfobaseCreate
                 | RunIntent::SourceImport
                 | RunIntent::SourceExport
-                | RunIntent::ArtifactBuild
-                | RunIntent::CfExport
-                | RunIntent::CfImport
-                | RunIntent::InfobaseExport
-                | RunIntent::InfobaseImport
-                | RunIntent::ClientRun
+                | RunIntent::ConfigurationApply
+                | RunIntent::ConfigurationReset
         ),
-        intent,
     })
     .collect()
 }
@@ -473,6 +500,59 @@ fn result_envelope_schema() -> Value {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn target_upload_does_not_advertise_the_legacy_implicit_database_apply() {
+        let catalog =
+            super::catalog_for(crate::application::tool_contracts::SurfaceRelease::V13).unwrap();
+        let upload = catalog
+            .run_dictionary
+            .iter()
+            .find(|op| op.name() == "upload")
+            .unwrap();
+        assert!(!upload.implemented, "runner 0.11 load always runs update_db_cfg, whereas target upload must stop at the working configuration");
+    }
+    #[test]
+    fn runner_one_vocabulary_replaces_the_previous_public_dictionary() {
+        let catalog =
+            super::catalog_for(crate::application::tool_contracts::SurfaceRelease::V13).unwrap();
+        let names = catalog
+            .run_dictionary
+            .iter()
+            .map(|op| op.name())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            names,
+            [
+                "infobase.create",
+                "push",
+                "pull",
+                "make",
+                "download",
+                "upload",
+                "infobase.dump",
+                "infobase.restore",
+                "launch",
+                "extensions.list",
+                "extensions.set",
+                "apply",
+                "reset"
+            ]
+            .into_iter()
+            .collect()
+        );
+        for name in ["push", "pull", "apply", "reset", "infobase.create"] {
+            let op = catalog
+                .run_dictionary
+                .iter()
+                .find(|op| op.name() == name)
+                .unwrap();
+            assert!(
+                !op.implemented,
+                "{name} must not claim full 1.0 semantics with runner 0.11"
+            );
+        }
+    }
+
     use super::{catalog_for, FindProjection, RunIntent, SearchProjection};
     use crate::application::tool_contracts::SurfaceRelease;
     use serde_json::{json, Value};
@@ -569,6 +649,21 @@ mod tests {
     /// не равно `lexical`, оно означает поиск силами самой Unica, без
     /// внешнего провайдера и без его цены.
     #[test]
+    fn extension_operations_are_previewed_tasks_with_closed_arguments() {
+        let catalog = catalog_for(crate::application::tool_contracts::SurfaceRelease::V13).unwrap();
+        for name in ["extensions.list", "extensions.set"] {
+            let op = catalog
+                .run_dictionary
+                .iter()
+                .find(|op| op.name() == name)
+                .expect("extension operation in dictionary");
+            assert!(op.implemented);
+            assert_eq!(op.execution(), "previewApply");
+            assert_eq!(op.args_schema().unwrap()["additionalProperties"], false);
+        }
+    }
+
+    #[test]
     fn search_publishes_three_provider_roles_and_stays_literal_without_one() {
         let catalog = catalog_for(SurfaceRelease::V13).expect("canonical catalog");
         let role = input_field(&catalog.tools, "search", "role");
@@ -645,7 +740,7 @@ mod tests {
             &catalog.tools,
             "run",
             json!([]),
-            &["op", "args", "dryRun", "ifRev"],
+            &["op", "infobase", "args", "dryRun", "ifRev"],
         );
         assert_schema(
             &catalog.tools,
@@ -813,6 +908,10 @@ mod tests {
                 RunIntent::InfobaseExport,
                 RunIntent::InfobaseImport,
                 RunIntent::ClientRun,
+                RunIntent::ExtensionList,
+                RunIntent::ExtensionActivate,
+                RunIntent::ConfigurationApply,
+                RunIntent::ConfigurationReset,
             ]
         );
         assert!(catalog
@@ -823,7 +922,7 @@ mod tests {
             .run_dictionary
             .iter()
             .find(|operation| operation.intent == RunIntent::ClientRun)
-            .expect("client.run belongs to the v0.13 dictionary");
+            .expect("launch belongs to the v0.13 dictionary");
         assert!(client_run.terminal);
         assert!(client_run.rejects_sessions);
         assert_eq!(
@@ -834,17 +933,15 @@ mod tests {
                 .map(|operation| operation.name())
                 .collect::<Vec<_>>(),
             [
-                "infobase.create",
-                "source.import",
-                "source.export",
-                "artifact.build",
-                "cf.export",
-                "cf.import",
-                "infobase.export",
-                "infobase.import",
-                "client.run"
+                "make",
+                "download",
+                "infobase.dump",
+                "infobase.restore",
+                "launch",
+                "extensions.list",
+                "extensions.set"
             ],
-            "реализован весь словарь: создание базы, все три пары export/import, сборка артефакта и терминальный запуск клиента; проектный файл в словаре не числится вовсе"
+            "only operations whose target semantics are proven on runner 0.11 are executable"
         );
 
         let output = &catalog.result_envelope_schema;
@@ -933,14 +1030,18 @@ mod tests {
             names,
             [
                 "infobase.create",
-                "source.import",
-                "source.export",
-                "artifact.build",
-                "cf.export",
-                "cf.import",
-                "infobase.export",
-                "infobase.import",
-                "client.run",
+                "push",
+                "pull",
+                "make",
+                "download",
+                "upload",
+                "infobase.dump",
+                "infobase.restore",
+                "launch",
+                "extensions.list",
+                            "extensions.set",
+                "apply",
+                "reset",
             ],
             "словарь `run` различает сборку исходников, перенос конфигурации и перенос базы целиком — и не держит операции, которым платформа не нужна"
         );
@@ -966,17 +1067,15 @@ mod tests {
                 .map(|operation| operation.name())
                 .collect::<Vec<_>>(),
             [
-                "infobase.create",
-                "source.import",
-                "source.export",
-                "artifact.build",
-                "cf.export",
-                "cf.import",
-                "infobase.export",
-                "infobase.import",
-                "client.run"
+                "make",
+                "download",
+                "infobase.dump",
+                "infobase.restore",
+                "launch",
+                "extensions.list",
+                "extensions.set"
             ],
-            "реализован весь словарь: создание базы, все три пары export/import, сборка артефакта и терминальный запуск клиента; проектный файл в словаре не числится вовсе"
+            "only operations whose target semantics are proven on runner 0.11 are executable"
         );
     }
 
@@ -988,71 +1087,55 @@ mod tests {
             .run_dictionary
             .iter()
             .find(|operation| operation.intent == RunIntent::ArtifactBuild)
-            .expect("artifact.build belongs to the v0.13 dictionary");
+            .expect("make belongs to the v0.13 dictionary");
         assert!(build.implemented);
         assert_eq!(build.execution(), "previewApply");
         assert_eq!(build.effects(), &["workspaceFiles"]);
-        let schema = build
-            .args_schema()
-            .expect("artifact.build publishes its args");
+        let schema = build.args_schema().expect("make publishes its args");
         assert_eq!(schema["additionalProperties"], false);
         assert_eq!(schema["required"], json!(["output"]));
         assert!(
             catalog
                 .run_dictionary
                 .iter()
-                .all(|operation| operation.implemented),
-            "словарь реализован целиком"
+                .filter(|operation| operation.implemented)
+                .count()
+                == 7,
+            "only the proven runner 0.11 subset is implemented"
         );
     }
 
     #[test]
     fn v13_source_export_is_implemented_with_a_closed_mode_set_and_extension() {
-        let catalog =
-            catalog_for(SurfaceRelease::V13).expect("v0.13 catalog must be test-loadable");
-        let export = catalog
+        let catalog = catalog_for(SurfaceRelease::V13).unwrap();
+        let op = catalog
             .run_dictionary
             .iter()
-            .find(|operation| operation.intent == RunIntent::SourceExport)
-            .expect("source.export belongs to the v0.13 dictionary");
-        assert!(export.implemented);
-        assert_eq!(export.execution(), "previewApply");
-        assert_eq!(export.effects(), &["infobaseRead", "workspaceFiles"]);
-        let schema = export
-            .args_schema()
-            .expect("source.export publishes its args");
-        assert_eq!(schema["additionalProperties"], false);
-        assert_eq!(schema["required"], json!(["mode"]));
-        assert_eq!(
-            schema["properties"]["mode"]["enum"],
-            json!(["full", "incremental"]),
-            "частичная выгрузка по объектам за словарём"
-        );
+            .find(|op| op.name() == "pull")
+            .unwrap();
+        assert!(!op.implemented);
+        assert!(op.support_reason().unwrap().contains("protection"));
+        assert_eq!(op.args_schema().unwrap()["additionalProperties"], false);
+        assert!(op.args_schema().unwrap()["properties"]
+            .get("mode")
+            .is_none());
     }
 
     #[test]
     fn v13_source_import_is_implemented_with_closed_source_set_and_full_rebuild() {
-        let catalog =
-            catalog_for(SurfaceRelease::V13).expect("v0.13 catalog must be test-loadable");
-        let import = catalog
+        let catalog = catalog_for(SurfaceRelease::V13).unwrap();
+        let op = catalog
             .run_dictionary
             .iter()
-            .find(|operation| operation.intent == RunIntent::SourceImport)
-            .expect("source.import belongs to the v0.13 dictionary");
-        assert!(import.implemented);
-        assert_eq!(import.execution(), "previewApply");
-        assert_eq!(import.effects(), &["infobase"]);
-        let schema = import
-            .args_schema()
-            .expect("source.import publishes its args");
-        assert_eq!(schema["additionalProperties"], false);
-        assert_eq!(
-            schema["properties"]
-                .as_object()
-                .map(|properties| properties.keys().cloned().collect::<Vec<_>>()),
-            Some(vec!["sourceSet".to_string(), "fullRebuild".to_string()])
-        );
-        assert!(schema.get("required").is_none());
+            .find(|op| op.name() == "push")
+            .unwrap();
+        assert!(!op.implemented);
+        assert!(op.args_schema().unwrap()["properties"]
+            .get("delete")
+            .is_some());
+        assert!(op.args_schema().unwrap()["properties"]
+            .get("fullRebuild")
+            .is_none());
     }
 
     #[test]
@@ -1064,7 +1147,7 @@ mod tests {
             .iter()
             .find(|operation| operation.intent == RunIntent::InfobaseCreate)
             .expect("infobase.create belongs to the v0.13 dictionary");
-        assert!(create.implemented);
+        assert!(!create.implemented);
         assert_eq!(create.execution(), "previewApply");
         assert_eq!(create.effects(), &["infobase"]);
         let schema = create
@@ -1087,11 +1170,11 @@ mod tests {
             .run_dictionary
             .iter()
             .find(|operation| operation.intent == RunIntent::CfImport)
-            .expect("cf.import belongs to the v0.13 dictionary");
-        assert!(import.implemented);
+            .expect("upload belongs to the v0.13 dictionary");
+        assert!(!import.implemented);
         assert_eq!(import.execution(), "previewApply");
         assert_eq!(import.effects(), &["infobase"]);
-        let schema = import.args_schema().expect("cf.import publishes its args");
+        let schema = import.args_schema().expect("upload publishes its args");
         assert_eq!(schema["additionalProperties"], false);
         assert_eq!(schema["required"], json!(["input"]));
         assert_eq!(
@@ -1105,58 +1188,23 @@ mod tests {
 
     #[test]
     fn v13_run_names_read_as_layer_and_direction() {
-        // Имя операции — `<слой>.<глагол>`: слой называет, с чем работаем,
-        // глагол считается относительно базы — `export` наружу, `import`
-        // внутрь. Одно направление не называется двумя словами
-        // (DEC.2026-09-15.RUN-NAMES-READ-AS-LAYER-AND-DIRECTION).
-        const LAYERS: [&str; 5] = ["infobase", "cf", "source", "artifact", "client"];
-        const VERBS: [&str; 5] = ["create", "export", "import", "build", "run"];
-        const RETIRED_VERBS: [&str; 4] = ["dump", "restore", "load", "convert"];
-        let catalog =
-            catalog_for(SurfaceRelease::V13).expect("v0.13 catalog must be test-loadable");
-        let names = catalog
-            .run_dictionary
-            .iter()
-            .map(|operation| operation.name())
-            .collect::<Vec<_>>();
-        for name in &names {
-            let (layer, verb) = name
-                .split_once('.')
-                .unwrap_or_else(|| panic!("{name} is not `<layer>.<verb>`"));
-            assert!(LAYERS.contains(&layer), "{name}: unknown layer `{layer}`");
-            assert!(VERBS.contains(&verb), "{name}: unknown verb `{verb}`");
-            assert!(
-                !RETIRED_VERBS.contains(&verb),
-                "{name}: `{verb}` names a direction the dictionary already spells as export/import"
-            );
+        runner_one_vocabulary_replaces_the_previous_public_dictionary();
+        let catalog = catalog_for(SurfaceRelease::V13).unwrap();
+        for old in [
+            "source.import",
+            "source.export",
+            "cf.import",
+            "cf.export",
+            "artifact.build",
+            "client.run",
+            "extension.list",
+            "extension.info",
+            "extension.create",
+            "extension.delete",
+            "extension.activate",
+        ] {
+            assert!(catalog.run_dictionary.iter().all(|op| op.name() != old));
         }
-        // Каждый слой, который выгружается из базы, загружается в неё тем же
-        // словом: у `export` есть парный `import`, и наоборот.
-        for layer in ["infobase", "cf", "source"] {
-            for (verb, pair) in [("export", "import"), ("import", "export")] {
-                let name = format!("{layer}.{verb}");
-                let paired = format!("{layer}.{pair}");
-                assert_eq!(
-                    names.contains(&name.as_str()),
-                    names.contains(&paired.as_str()),
-                    "{name} needs {paired}"
-                );
-            }
-        }
-        assert_eq!(
-            names,
-            [
-                "infobase.create",
-                "source.import",
-                "source.export",
-                "artifact.build",
-                "cf.export",
-                "cf.import",
-                "infobase.export",
-                "infobase.import",
-                "client.run",
-            ]
-        );
     }
 
     #[test]
@@ -1218,7 +1266,7 @@ mod tests {
             .run_dictionary
             .iter()
             .find(|operation| operation.intent == RunIntent::ClientRun)
-            .expect("client.run belongs to the dictionary");
+            .expect("launch belongs to the dictionary");
         assert!(client_run.implemented);
         assert_eq!(client_run.execution(), "terminal");
         assert_eq!(client_run.effects(), ["clientSession"]);

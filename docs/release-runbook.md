@@ -49,7 +49,7 @@ unverified today. What keeps the tag trustworthy is write access and the
 repository's tag protection rules; keep those protections on. The marketplace
 tag is created by the pipeline: it is the ref the catalog resolves, and
 nothing verifies its signature — the runbook used to ask for a second signed
-tag, and ADR-0068 retired it.
+tag. The linear pipeline removed that wait.
 
 There is no scheduler and no waiting window: a failed stage is a red run
 attached to the release tag, and the catalog stays where it was. Rerunning the
@@ -144,11 +144,11 @@ release they would be a third copy of facts already in `tools.lock.json` at the
 source tag and in the published plugin's `runtime-manifest.json`, naming an asset
 this release does not carry.
 
-Engines are **named, not republished**. Their bytes live in `unica-toolchain`
-releases, and the runtime manifest points at them by address and SHA-256; the
-plugin release used to carry a second copy, 439 MB of it per release, for no
-gain. See
-[`DEC.2026-08-20.ENGINES-COME-FROM-THE-TOOLCHAIN`](../arch/decisions/2026-08-20-engines-come-from-the-toolchain.md).
+The plugin release references engine assets by URL and SHA-256 without
+republishing them. `v8-runner` comes from releases of
+`IngvarConsulting/v8-runner-rust`; other engines come from
+`IngvarConsulting/unica-toolchain`, as specified by the
+[engine source rule](../arch/rules/distribution/engine-release-origins.md).
 
 That splits verification three ways, and each part is a job in the build:
 
@@ -279,6 +279,15 @@ Two things the gate does not stop, and you should not attempt:
   with `sort -V`, which ranks `v0.13.0-rc.1` *above* `v0.13.0`. A catalog naming
   the prerelease would make the stable release look like a rollback, and both
   `stage` and `promote` would refuse it — the release after it could not ship.
+
+## Explicit runtime verification
+
+`unica-bootstrap verify` installs the runtime if needed, checks the skill
+package and probes the MCP protocol and tool list. The ordinary bootstrap
+launch does not repeat this probe. The command currently passes a 20-second
+waiting budget; this is not a deadline for the whole installation and all
+protocol exchanges. See the [verification contract](../arch/rules/distribution/bootstrap-protocol-verification.md)
+for the checks and their limits.
 
 ## One-way doors
 

@@ -713,21 +713,55 @@ mod tests {
     }
 
     #[test]
-    fn the_directory_refuses_to_grow_past_its_entry_bound() {
+    fn the_directory_refuses_to_exceed_resource_bounds() {
         let fixture = Fixture::new();
         let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
-        let error = WorkspaceFindDirectoryBuilder::with_document_limit(1)
-            .build(
-                &[LayoutFindSource::new(
-                    "main",
-                    SourceSetKind::Configuration,
-                    &root,
-                )],
+        let build = |builder: &WorkspaceFindDirectoryBuilder, count: usize| {
+            let names = (0..count)
+                .map(|index| format!("source{index}"))
+                .collect::<Vec<_>>();
+            let sources = names
+                .iter()
+                .map(|name| LayoutFindSource::new(name, SourceSetKind::Configuration, &root))
+                .collect::<Vec<_>>();
+            builder.build(
+                &sources,
                 ProviderDeadline::from_budget(Duration::from_secs(7)),
                 &CancellationToken::new(),
             )
-            .unwrap_err();
-        assert_eq!(error.code().as_str(), "provider_limit_exceeded");
+        };
+        let index = build(
+            &WorkspaceFindDirectoryBuilder::default(),
+            super::MAX_SOURCE_SETS,
+        )
+        .expect("the source-set limit itself must remain usable");
+        let found = index.find(FindRequest::new("source0:Catalog.Валюты").unwrap());
+        assert!(!found.is_nearest());
+        assert!(found
+            .candidates()
+            .iter()
+            .any(|candidate| candidate.at() == "source0:Catalog.Валюты"));
+
+        for (label, builder, count) in [
+            (
+                "source sets",
+                WorkspaceFindDirectoryBuilder::default(),
+                super::MAX_SOURCE_SETS + 1,
+            ),
+            (
+                "entries",
+                WorkspaceFindDirectoryBuilder::with_document_limit(1),
+                1,
+            ),
+            (
+                "fact bytes",
+                WorkspaceFindDirectoryBuilder::with_limits(super::DEFAULT_MAX_DOCUMENTS, 1),
+                1,
+            ),
+        ] {
+            let error = build(&builder, count).expect_err(label);
+            assert_eq!(error.code().as_str(), "provider_limit_exceeded", "{label}");
+        }
     }
 
     #[test]

@@ -1544,8 +1544,8 @@ impl CompileTransaction {
     }
 
     /// Полный план изменений транзакции: созданные, обновлённые и удаляемые
-    /// пути — единственный источник для структурной квитанции мутации
-    /// (ADR-0073). Порядок детерминирован: create, update, remove; внутри —
+    /// пути — единственный источник для структурной квитанции мутации.
+    /// Порядок детерминирован: create, update, remove; внутри —
     /// по пути.
     pub(crate) fn planned_changes(&self) -> Vec<(PlannedChangeKind, PathBuf)> {
         let mut changes = Vec::new();
@@ -2134,7 +2134,7 @@ impl CompileTransaction {
         );
     }
 
-    /// ADR-0073: предпросмотр вызывает ту же семантическую проверку плановых
+    /// Предпросмотр вызывает ту же семантическую проверку плановых
     /// байтов, что применение выполняет перед публикацией.
     pub(crate) fn semantic_preflight(&self) -> Result<(), String> {
         for create in &self.creates {
@@ -6296,6 +6296,14 @@ pub(crate) mod tests {
 
         let concurrent = CommitFailure::concurrent("opaque state mismatch");
         assert_eq!(concurrent.kind(), CommitFailureKind::ConcurrentModification);
+
+        let cleanup = with_cleanup_diagnostics(concurrent, vec!["temporary file remains".into()]);
+        assert_eq!(cleanup.kind(), CommitFailureKind::ConcurrentModification);
+        let cleanup = with_cleanup_diagnostics(
+            CommitFailure::provider("source unavailable"),
+            vec!["temporary file remains".into()],
+        );
+        assert_eq!(cleanup.kind(), CommitFailureKind::ProviderUnavailable);
 
         let rollback = with_rollback_diagnostics(provider, vec!["cleanup failed".into()]);
         assert_eq!(rollback.kind(), CommitFailureKind::RollbackFailed);

@@ -116,10 +116,10 @@ fn prefetch_names_its_reason_when_there_is_nothing_to_prefetch() {
         stderr.contains("runtime-manifest.json"),
         "отказ обязан назвать место: {stderr}"
     );
-    assert_ne!(
+    assert_eq!(
         output.status.code(),
-        Some(1),
-        "код выхода различает причину, а не сваливает всё в единицу: {stderr}"
+        Some(78),
+        "отсутствующий манифест — ошибка конфигурации: {stderr}"
     );
 
     fs::remove_dir_all(scratch).ok();
@@ -129,16 +129,28 @@ fn prefetch_names_its_reason_when_there_is_nothing_to_prefetch() {
 fn a_development_checkout_has_nothing_to_prefetch_and_says_so() {
     // В дереве разработки инструменты собираются на месте, и манифест это
     // объявляет. Молчаливый успех здесь соврал бы: образ уехал бы пустым.
-    let plugin_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/unica");
-
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("clock")
         .as_nanos();
-    let cache = std::env::temp_dir().join(format!(
+    let scratch = std::env::temp_dir().join(format!(
         "unica-bootstrap-prefetch-development-{}-{nonce}",
         std::process::id()
     ));
+    let plugin_root = scratch.join("plugin");
+    let cache = scratch.join("cache");
+    fs::create_dir_all(&plugin_root).unwrap();
+    fs::write(
+        plugin_root.join("runtime-manifest.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "schemaVersion": 2,
+            "pluginVersion": "0.8.0",
+            "development": true,
+            "source": { "repository": "https://github.com/IngvarConsulting/unica", "commit": "workspace" },
+            "release": { "repository": "https://github.com/IngvarConsulting/unica", "tag": "workspace" },
+            "artifacts": {}
+        })).unwrap(),
+    ).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_unica-bootstrap"))
         .arg("prefetch")
         .arg("--plugin-root")
@@ -148,10 +160,14 @@ fn a_development_checkout_has_nothing_to_prefetch_and_says_so() {
         .expect("bootstrap process must start");
 
     let stderr = String::from_utf8(output.stderr).expect("stderr must be UTF-8");
-    assert!(!output.status.success(), "unexpected success: {stderr}");
+    assert_eq!(
+        output.status.code(),
+        Some(78),
+        "configuration refusal: {stderr}"
+    );
     assert!(
-        stderr.contains("development"),
+        stderr.contains("is a development manifest: it publishes no artifacts"),
         "отказ обязан назвать причину: {stderr}"
     );
-    fs::remove_dir_all(cache).ok();
+    fs::remove_dir_all(scratch).unwrap();
 }

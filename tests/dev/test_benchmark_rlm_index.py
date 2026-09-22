@@ -477,6 +477,26 @@ class BenchmarkRlmIndexTests(unittest.TestCase):
             tool["assets"]["darwin-arm64"]["sha256"],
         )
 
+    def test_benchmark_rejects_changed_archive_identity(self) -> None:
+        original = json.loads(MODULE.TOOLS_LOCK.read_text(encoding="utf-8"))
+        mutations = {
+            "assetName": "another.tar.gz",
+            "sha256": "0" * 64,
+            "size": 1,
+            "archiveBinary": "another-executable",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            lock_path = Path(directory) / "tools.lock.json"
+            for key, value in mutations.items():
+                with self.subTest(field=key):
+                    lock = copy.deepcopy(original)
+                    tool = next(t for t in lock["tools"] if t["name"] == "rlm-bsl-index")
+                    tool["assets"]["darwin-arm64"][key] = value
+                    lock_path.write_text(json.dumps(lock), encoding="utf-8")
+                    with patch.object(MODULE, "TOOLS_LOCK", lock_path):
+                        with self.assertRaisesRegex(RuntimeError, "archive identity"):
+                            MODULE._locked_packaged_index_sha256()
+
     def test_summary_rejects_the_packaged_build_2_executable_digest(self) -> None:
         documents = self.paired_documents()
         documents[0]["executableSha256"] = (

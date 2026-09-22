@@ -919,8 +919,7 @@ impl CfeBorrowWritePlan {
     }
 
     /// Identity the descriptor at `path` already carries, or an empty one when
-    /// there is nothing there yet. ADR-0050 makes this the single source of the
-    /// policy for every borrowed descriptor, object and form alike.
+    /// there is nothing there yet. Both object and form borrowing use this reader.
     fn existing_identity(
         &mut self,
         path: &Path,
@@ -1330,8 +1329,8 @@ pub(crate) fn cfe_borrow_object_shell(
 ///
 /// `cfe.borrow` rewrites the whole descriptor on every call, so without this a
 /// second borrow of the same object minted all of it again and moved an
-/// identity that the extension and its callers may already reference. ADR-0050
-/// makes a borrow idempotent instead: a value read from the existing
+/// identity that the extension and its callers may already reference.
+/// To preserve that identity, a value read from the existing
 /// descriptor reuses what is there, and the default value — what a first borrow
 /// gets — mints fresh.
 #[derive(Clone, Debug, Default)]
@@ -1361,7 +1360,8 @@ impl CfeBorrowIdentity {
             for generated in meta_info_children(internal_info, "GeneratedType") {
                 // Each identifier is preserved on its own: a descriptor that
                 // lost one of them must keep the other, or reissuing both would
-                // move an identity that is still referenced (ADR-0050 §3).
+                // move an identity that is still referenced. Rejecting damaged
+                // descriptors instead of repairing them remains a gap in #935/#931.
                 let Some(name) = generated.attribute("name") else {
                     continue;
                 };
@@ -8449,7 +8449,7 @@ pub(crate) mod tests {
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
-    /// ADR-0050. A borrowed descriptor is issued its identity once, so
+    /// With an unchanged parent, a descriptor keeps its identity, so
     /// borrowing the same object again leaves the descriptor byte-identical
     /// and publishes nothing — the write plan already reports an identical
     /// image as no change.
@@ -8501,9 +8501,9 @@ pub(crate) mod tests {
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
-    /// Review of #440. A partially damaged descriptor must keep what it still
-    /// has: reissuing both identifiers because one is missing would move a
-    /// `TypeId` that is still referenced (ADR-0050 §3).
+    /// Legacy behavior: borrowing accepts a damaged identifier pair.
+    /// This test records the gap in #935/#931; the target behavior rejects
+    /// the damaged descriptor without attempting to repair it.
     #[test]
     fn borrow_cfe_keeps_a_surviving_identifier_when_its_pair_is_missing() {
         for (kept, dropped) in [("TypeId", "ValueId"), ("ValueId", "TypeId")] {

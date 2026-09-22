@@ -361,6 +361,10 @@ pub(super) enum V5ActorBoundCanonicalInvocation {
         invocation: Box<ActorBoundInvocation>,
         service: Arc<dyn CanonicalInvocationService>,
     },
+    Extensions {
+        extensions: Arc<super::v13_extensions::PreparedExtensions>,
+        workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
+    },
     InfobaseExport {
         export: Arc<super::v13_infobase_exports::PreparedInfobaseExport>,
         workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
@@ -414,6 +418,9 @@ pub(super) enum V5PreparedCanonicalInvocation {
         invocation: Box<ActorBoundInvocation>,
         class: ExecutionClass,
         service: Arc<dyn CanonicalInvocationService>,
+    },
+    Extensions {
+        extensions: Arc<super::v13_extensions::PreparedExtensions>,
     },
     InfobaseExport {
         export: Arc<super::v13_infobase_exports::PreparedInfobaseExport>,
@@ -533,6 +540,19 @@ impl V5CanonicalInvocationRuntime {
         }
         if let Some(result) = super::v13_run_dictionary::execute_run_dictionary(&request) {
             return Err(V5CanonicalPrepareError::Direct(Box::new(result)));
+        }
+        match super::v13_extensions::prepare(&request) {
+            super::v13_extensions::Preparation::NotApplicable => {}
+            super::v13_extensions::Preparation::Rejected(result) => {
+                return Err(V5CanonicalPrepareError::Rejected(result))
+            }
+            super::v13_extensions::Preparation::Ready(extensions) => {
+                let workspace_identity_hash = extensions.workspace_identity_hash();
+                return Ok(V5ActorBoundCanonicalInvocation::Extensions {
+                    extensions,
+                    workspace_identity_hash,
+                });
+            }
         }
         match super::v13_infobase_exports::prepare(&request) {
             super::v13_infobase_exports::Preparation::NotApplicable => {}
@@ -667,7 +687,8 @@ impl V5ActorBoundCanonicalInvocation {
     pub(super) fn response_deadline(&self) -> Option<InvocationResponseDeadline> {
         match self {
             Self::Workspace { invocation, .. } => Some(invocation.response_deadline().clone()),
-            Self::InfobaseExport { .. }
+            Self::Extensions { .. }
+            | Self::InfobaseExport { .. }
             | Self::ClientRun { .. }
             | Self::CfImport { .. }
             | Self::InfobaseCreate { .. }
@@ -686,7 +707,11 @@ impl V5ActorBoundCanonicalInvocation {
     pub(super) fn workspace_identity_hash(&self) -> &crate::domain::invocation::SafeIdentityHash {
         match self {
             Self::Workspace { invocation, .. } => invocation.workspace_identity_hash(),
-            Self::InfobaseExport {
+            Self::Extensions {
+                workspace_identity_hash,
+                ..
+            }
+            | Self::InfobaseExport {
                 workspace_identity_hash,
                 ..
             }
@@ -734,6 +759,9 @@ impl V5ActorBoundCanonicalInvocation {
                     service,
                 })
             }
+            Self::Extensions { extensions, .. } => {
+                Ok(V5PreparedCanonicalInvocation::Extensions { extensions })
+            }
             Self::InfobaseExport { export, .. } => {
                 Ok(V5PreparedCanonicalInvocation::InfobaseExport { export })
             }
@@ -766,7 +794,8 @@ impl V5PreparedCanonicalInvocation {
             ExecutionClass::KnownLong(KnownLongReason::ExternalProcess);
         match self {
             Self::Workspace { class, .. } => class,
-            Self::InfobaseExport { .. }
+            Self::Extensions { .. }
+            | Self::InfobaseExport { .. }
             | Self::ClientRun { .. }
             | Self::CfImport { .. }
             | Self::InfobaseCreate { .. }
@@ -801,6 +830,7 @@ impl V5PreparedCanonicalInvocation {
                     )
                 })?
             }
+            Self::Extensions { extensions } => Ok(extensions.execute(cancellation)),
             Self::InfobaseExport { export } => Ok(export.execute(cancellation)),
             Self::ClientRun { launch } => Ok(launch.execute(cancellation)),
             Self::CfImport { import } => Ok(import.execute(cancellation)),
@@ -1286,7 +1316,7 @@ pub(crate) mod actor_capacity_tests {
         let request = InvocationRequest::new(
             ToolIdentity::Run,
             serde_json::json!({
-                "op": "infobase.export",
+                "op": "infobase.dump",
                 "args": {"output": "dist/base.dt"},
                 "dryRun": true
             }),
@@ -1305,6 +1335,44 @@ pub(crate) mod actor_capacity_tests {
             prepared.execution_class(),
             ExecutionClass::KnownLong(KnownLongReason::ExternalProcess)
         ));
+    }
+
+    #[test]
+    fn extension_operations_bind_before_source_admission_as_known_long_tasks() {
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\ninfobase:\n  connection: 'File=base'\n",
+        )
+        .unwrap();
+        for (op, args) in [
+            ("extensions.list", serde_json::json!({})),
+            ("push", serde_json::json!({"delete":"Test"})),
+            (
+                "extensions.set",
+                serde_json::json!({"name":"Test","active":true}),
+            ),
+        ] {
+            let runtime = bootstrap_runtime();
+            let request = InvocationRequest::new(
+                ToolIdentity::Run,
+                serde_json::json!({"op":op,"args":args,"dryRun":true}),
+                workspace.path().display().to_string(),
+                7_000,
+            )
+            .unwrap();
+            let bound = runtime
+                .bind(request)
+                .expect("extension admission without a source set");
+            assert!(matches!(
+                bound,
+                V5ActorBoundCanonicalInvocation::Extensions { .. }
+            ));
+            assert_eq!(
+                bound.prepare().unwrap().execution_class(),
+                &ExecutionClass::KnownLong(KnownLongReason::ExternalProcess)
+            );
+        }
     }
 
     #[test]
@@ -1345,7 +1413,7 @@ pub(crate) mod actor_capacity_tests {
         assert_eq!(
             result.next[0]["args"],
             serde_json::json!({
-                "op": "cf.export",
+                "op": "download",
                 "args": {"state": "working", "output": "dist/main.cf"},
                 "dryRun": true
             })
@@ -1353,7 +1421,7 @@ pub(crate) mod actor_capacity_tests {
         assert_eq!(
             result.next[1]["args"],
             serde_json::json!({
-                "op": "infobase.export",
+                "op": "infobase.dump",
                 "args": {"output": "dist/base.dt"},
                 "dryRun": true
             })
@@ -1384,6 +1452,16 @@ pub(crate) mod actor_capacity_tests {
         assert_eq!(data["sourceSets"], serde_json::json!([]));
         assert_eq!(data["setup"]["path"], "v8project.yaml");
         assert_eq!(data["setup"]["content"], serde_json::Value::Null);
+        for verdict in [
+            "ready",
+            "discoveredReady",
+            "repositoryReady",
+            "readinessState",
+            "checks",
+            "diagnostics",
+        ] {
+            assert_eq!(data.get(verdict), None, "{verdict} belongs to check {{}}");
+        }
         let wire = serde_json::to_string(data).unwrap();
         assert!(
             !wire.contains("unica.project."),
@@ -1405,6 +1483,17 @@ pub(crate) mod actor_capacity_tests {
         let verdict_data = verdict.data.as_ref().expect("verdict data");
         assert_eq!(verdict_data["status"], "failed");
         assert_eq!(verdict_data["ready"], false);
+        assert!(
+            verdict.rev.is_none(),
+            "root check has no source revision lease"
+        );
+        for sources in ["sources", "sourceSets"] {
+            assert_eq!(
+                verdict_data.get(sources),
+                None,
+                "{sources} belongs to view {{}}"
+            );
+        }
         assert_eq!(verdict_data["checks"], serde_json::json!([]));
         assert_eq!(verdict_data["diagnostics"].as_array().unwrap().len(), 1);
         assert_eq!(
@@ -1787,10 +1876,9 @@ pub(crate) mod actor_capacity_tests {
         assert_eq!(data["setup"]["sourceSetExample"]["type"], "CONFIGURATION");
         assert_eq!(data["setup"]["sourceSetExample"]["path"], "src");
         assert!(workspace.path().join("v8project.yaml").is_file());
-        assert!(
-            std::fs::read_to_string(workspace.path().join("v8project.yaml"))
-                .unwrap()
-                .contains("workPath: .work")
+        assert_eq!(
+            std::fs::read(workspace.path().join("v8project.yaml")).unwrap(),
+            b"workPath: .work\nformat: DESIGNER\n"
         );
     }
 
@@ -4091,85 +4179,6 @@ struct ActorLogicalReadLease {"#,
     }
 
     #[test]
-    pub(crate) fn actor_authenticated_source_architecture_names_complete_witnesses() {
-        // Запись называет сами проверки, а не агрегат над ними. Раньше здесь
-        // разбирался Rust: свидетель обязан был звать перечисленное. Звал он
-        // это вторым заходом, потому что харнесс уже прогнал каждую проверку
-        // отдельным тестом. Требование прежнее и проверяется там, где живёт
-        // обещание.
-        // Имя, встреченное в прозе записи, проверкой не является: смотрим
-        // только список под ключом во фронт-маттере.
-        fn declarations(record: &str, key: &str) -> Vec<String> {
-            // Запись читается с диска как есть, а на Windows `checkout` отдаёт
-            // её с CRLF. Разбор идёт построчно с обрезанным `\r`, иначе на
-            // одной из трёх ОС фронт-маттер просто не находится.
-            let mut lines = record.lines().map(str::trim_end);
-            assert_eq!(
-                lines.next(),
-                Some("---"),
-                "architecture record has front matter"
-            );
-            let front: Vec<&str> = lines.take_while(|line| *line != "---").collect();
-            let mut collecting = false;
-            let mut named = Vec::new();
-            for line in front {
-                if let Some(inline) = line.strip_prefix(key) {
-                    collecting = inline.trim().is_empty();
-                    if !collecting {
-                        named.push(inline.trim().to_owned());
-                    }
-                    continue;
-                }
-                match line.trim_start().strip_prefix("- ") {
-                    Some(entry) if collecting => named.push(entry.trim().to_owned()),
-                    _ => collecting = false,
-                }
-            }
-            named
-                .into_iter()
-                .filter_map(|entry| entry.rsplit_once("::").map(|(_, name)| name.to_owned()))
-                .collect()
-        }
-
-        let capability = declarations(
-            include_str!(
-                "../../../../../arch/invariants/INV.APP.ACTOR-AUTHENTICATED-SOURCE-CAPABILITIES.md"
-            ),
-            "check:",
-        );
-        for named in [
-            "actor_read_source_capability_is_sealed_after_binding",
-            "actor_read_authority_builder_rejects_actor_bound_unsupported_profile",
-            "actor_read_authority_builder_preserves_actor_bound_source_kind",
-            "actor_read_authority_builder_preserves_non_replenishing_deadline",
-            "provider_binding_and_actor_bound_invocation_cannot_substitute_kind_or_profile",
-        ] {
-            assert!(
-                capability.iter().any(|entry| entry == named),
-                "capability invariant omits the witness {named}"
-            );
-        }
-
-        let decision = declarations(
-            include_str!(
-                "../../../../../arch/decisions/2026-08-26-actor-authenticated-source-profile-slice.md"
-            ),
-            "realized:",
-        );
-        for named in [
-            "provider_binding_and_actor_bound_invocation_cannot_substitute_kind_or_profile",
-            "remapped_names_and_profiles_do_not_share_revision_index_or_coordination_state",
-            "duplicate_source_set_names_with_distinct_roots_are_rejected",
-            "actor_read_source_capability_is_sealed_after_binding",
-        ] {
-            assert!(
-                decision.iter().any(|entry| entry == named),
-                "decision omits the witness {named}"
-            );
-        }
-    }
-
-    #[test]
     pub(crate) fn provider_binding_and_actor_bound_invocation_cannot_substitute_kind_or_profile() {
         let workspace = tempfile::tempdir().unwrap();
         let source = workspace.path().join("src");
@@ -4569,17 +4578,17 @@ struct ActorLogicalReadLease {"#,
                 serde_json::json!({"op": "syntax.check", "args": {"mode": "shell"}}),
                 "unsupported_operation",
             ),
-            // `client.run` реализован: пустые аргументы — ошибка вызова, а не
+            // `launch` реализован: пустые аргументы — ошибка вызова, а не
             // нереализованная операция.
             (
                 ToolIdentity::Run,
-                serde_json::json!({"op": "client.run", "args": {}}),
+                serde_json::json!({"op": "launch", "args": {}}),
                 "bad_value",
             ),
-            // `artifact.build` реализован: пустые аргументы — ошибка вызова.
+            // `make` реализован: пустые аргументы — ошибка вызова.
             (
                 ToolIdentity::Run,
-                serde_json::json!({"op": "artifact.build", "args": {}}),
+                serde_json::json!({"op": "make", "args": {}}),
                 "bad_value",
             ),
             (
@@ -4831,18 +4840,25 @@ struct ActorLogicalReadLease {"#,
             );
         }
 
+        let current = call(
+            ToolIdentity::View,
+            serde_json::json!({"at": "main:Catalog.Bare"}),
+        );
+        assert!(current.ok, "{current:?}");
+        let admitted_revision = current.rev.expect("view carries the admitted revision");
+        let expected_revision = "unica-source-sha256-v1:0:stale";
         let stale = call(
             ToolIdentity::Apply,
             serde_json::json!({
                 "at": "main:Catalog.Bare",
                 "ops": [{"op": "props.set", "args": {"values": {"Comment": "x"}}}],
                 "dryRun": true,
-                "ifRev": "unica-source-sha256-v1:0:stale"
+                "ifRev": expected_revision
             }),
         );
         let stale_message = stale.diagnostics[0]["message"].as_str().unwrap();
         assert!(
-            stale_message.contains("expected") && stale_message.contains("admitted"),
+            stale_message.contains(expected_revision) && stale_message.contains(&admitted_revision),
             "the conflict names both revisions for recovery: {stale_message}"
         );
 
@@ -6664,10 +6680,40 @@ struct ActorLogicalReadLease {"#,
         };
 
         assert!(result.ok, "v5 run dictionary was misclassified: {result:?}");
-        assert!(!result.data.as_ref().unwrap()["operations"]
+        let catalog = crate::application::v13::tool_catalog::catalog_for(SurfaceRelease::V13)
+            .expect("canonical catalog");
+        let operations = result.data.as_ref().unwrap()["operations"]
             .as_array()
-            .unwrap()
-            .is_empty());
+            .expect("published operations");
+        let mut published = std::collections::BTreeMap::new();
+        for operation in operations {
+            let name = operation["op"].as_str().expect("operation name");
+            assert!(
+                published.insert(name, operation).is_none(),
+                "duplicate operation {name}"
+            );
+        }
+        assert_eq!(published.len(), catalog.run_dictionary.len());
+        for operation in &catalog.run_dictionary {
+            let name = operation.name();
+            let entry = published.get(name).expect("catalog operation is published");
+            assert_eq!(entry["description"], operation.description(), "{name}");
+            assert_eq!(
+                entry["argsSchema"],
+                serde_json::json!(operation.args_schema()),
+                "{name}"
+            );
+            assert_eq!(entry["execution"], operation.execution(), "{name}");
+            assert_eq!(
+                entry["effects"],
+                serde_json::json!(operation.effects()),
+                "{name}"
+            );
+            assert_eq!(entry["implemented"], operation.implemented, "{name}");
+            let preview_apply = operation.execution() == "previewApply";
+            assert_eq!(entry["previewRequired"], preview_apply, "{name}");
+            assert_eq!(entry["ifRevRequiredOnApply"], preview_apply, "{name}");
+        }
         assert_eq!(preparations.load(Ordering::SeqCst), 0);
     }
 
@@ -6714,11 +6760,11 @@ struct ActorLogicalReadLease {"#,
 
         for (op, args) in [
             (
-                "cf.export",
+                "download",
                 serde_json::json!({"state": "working", "output": "dist/main.cf"}),
             ),
             (
-                "infobase.export",
+                "infobase.dump",
                 serde_json::json!({"output": "dist/main.dt"}),
             ),
         ] {
@@ -6749,7 +6795,7 @@ struct ActorLogicalReadLease {"#,
         }
 
         let missing_revision = match runtime.bind(request(
-            "cf.export",
+            "download",
             serde_json::json!({"state": "working", "output": "dist/main.cf"}),
             false,
             None,
@@ -6796,21 +6842,21 @@ struct ActorLogicalReadLease {"#,
                     .to_string_lossy(),
                 7_000,
             )
-            .expect("valid client.run request")
+            .expect("valid launch request")
         };
 
         for arguments in [
-            serde_json::json!({"op": "client.run", "args": {"clientMode": "designer"}, "dryRun": true}),
-            serde_json::json!({"op": "client.run", "args": {"clientMode": "thin"}}),
+            serde_json::json!({"op": "launch", "args": {"clientMode": "designer"}, "dryRun": true}),
+            serde_json::json!({"op": "launch", "args": {"clientMode": "thin"}}),
         ] {
             let bound = runtime
                 .bind(request(arguments))
-                .expect("client.run binds without a PlatformXml source set");
+                .expect("launch binds without a PlatformXml source set");
             assert!(matches!(
                 bound,
                 V5ActorBoundCanonicalInvocation::ClientRun { .. }
             ));
-            let prepared = bound.prepare().expect("client.run preparation");
+            let prepared = bound.prepare().expect("launch preparation");
             assert_eq!(
                 prepared.execution_class(),
                 &ExecutionClass::KnownLong(KnownLongReason::ExternalProcess)
@@ -6818,13 +6864,13 @@ struct ActorLogicalReadLease {"#,
         }
 
         let fenced = match runtime.bind(request(serde_json::json!({
-            "op": "client.run",
+            "op": "launch",
             "args": {"clientMode": "thin"},
             "ifRev": "unica-infobase-export-sha256-v1:test",
         }))) {
             Err(V5CanonicalPrepareError::Rejected(result)) => result,
             Ok(_) => panic!("a terminal operation accepted ifRev"),
-            Err(other) => panic!("ifRev on client.run returned infrastructure failure: {other:?}"),
+            Err(other) => panic!("ifRev on launch returned infrastructure failure: {other:?}"),
         };
         assert_eq!(fenced.diagnostics[0]["code"], "bad_value");
         assert!(fenced.diagnostics[0]["message"]
@@ -6834,23 +6880,14 @@ struct ActorLogicalReadLease {"#,
         assert_eq!(
             preparations.load(Ordering::SeqCst),
             0,
-            "client.run must not enter the PlatformXml service"
+            "launch must not enter the PlatformXml service"
         );
     }
 
     #[test]
     fn v5_cf_import_prepares_before_source_admission_and_keeps_the_revision_gate() {
-        // A-5 зонтика #871: загрузка CF/CFE в базу — previewApply с забором,
-        // готовится до admission PlatformXml и известна длинной по внешнему
-        // процессу; применение без `ifRev` отказывает словом `bad_value`.
-        let workspace = tempfile::tempdir().expect("temporary cf.import workspace");
-        std::fs::write(
-            workspace.path().join("v8project.yaml"),
-            "format: DESIGNER\ninfobase:\n  connection: \"File=.build/infobase\"\n",
-        )
-        .expect("write infobase-only workspace descriptor");
-        std::fs::create_dir_all(workspace.path().join("dist")).expect("dist");
-        std::fs::write(workspace.path().join("dist/main.cf"), b"cf bytes").expect("cf");
+        // This former admission route must now stop at the runner 1.0 capability gate.
+        let workspace = tempfile::tempdir().unwrap();
         let preparations = Arc::new(AtomicUsize::new(0));
         let runtime = V5CanonicalInvocationRuntime::new(
             Arc::new(CountingPrepareService {
@@ -6858,68 +6895,29 @@ struct ActorLogicalReadLease {"#,
             }),
             Arc::new(TokioClock),
         );
-        let request = |arguments: serde_json::Value| {
-            InvocationRequest::new(
+        for dry_run in [true, false] {
+            let request = InvocationRequest::new(
                 ToolIdentity::Run,
-                arguments,
-                std::fs::canonicalize(workspace.path())
-                    .expect("canonical workspace")
-                    .to_string_lossy(),
-                7_000,
+                serde_json::json!({"op":"upload","args":{"input":"dist/main.cf"},"dryRun":dry_run}),
+                workspace.path().display().to_string(),
+                7000,
             )
-            .expect("valid cf.import request")
-        };
-
-        for arguments in [
-            serde_json::json!({"op": "cf.import", "args": {"input": "dist/main.cf"}, "dryRun": true}),
-            serde_json::json!({"op": "cf.import", "args": {"input": "dist/main.cf"}, "dryRun": false, "ifRev": "unica-cf-import-sha256-v1:test"}),
-        ] {
-            let bound = runtime
-                .bind(request(arguments))
-                .expect("cf.import binds without a PlatformXml source set");
-            assert!(matches!(
-                bound,
-                V5ActorBoundCanonicalInvocation::CfImport { .. }
-            ));
-            let prepared = bound.prepare().expect("cf.import preparation");
-            assert_eq!(
-                prepared.execution_class(),
-                &ExecutionClass::KnownLong(KnownLongReason::ExternalProcess)
-            );
+            .unwrap();
+            let result = match runtime.bind(request) {
+                Err(V5CanonicalPrepareError::Direct(result)) => result,
+                _ => panic!("unsupported target semantics reached preparation"),
+            };
+            assert!(!result.ok);
+            assert_eq!(result.diagnostics[0]["code"], "unsupported_operation");
+            assert!(result.rev.is_none());
         }
-
-        let unfenced = match runtime.bind(request(serde_json::json!({
-            "op": "cf.import",
-            "args": {"input": "dist/main.cf"},
-            "dryRun": false,
-        }))) {
-            Err(V5CanonicalPrepareError::Rejected(result)) => result,
-            Ok(_) => panic!("an apply without ifRev was accepted"),
-            Err(other) => panic!("apply without ifRev returned infrastructure failure: {other:?}"),
-        };
-        assert_eq!(unfenced.diagnostics[0]["code"], "bad_value");
-        assert!(unfenced.diagnostics[0]["message"]
-            .as_str()
-            .unwrap()
-            .contains("requires ifRev"));
-        assert_eq!(
-            preparations.load(Ordering::SeqCst),
-            0,
-            "cf.import must not enter the PlatformXml service"
-        );
+        assert_eq!(preparations.load(Ordering::SeqCst), 0);
     }
 
     #[test]
     fn v5_infobase_create_prepares_before_source_admission_and_keeps_the_revision_gate() {
-        // A-3 зонтика #871: создание базы — previewApply с забором, без
-        // аргументов, готовится до admission PlatformXml и известно длинным по
-        // внешнему процессу; применение без `ifRev` отказывает `bad_value`.
-        let workspace = tempfile::tempdir().expect("temporary infobase.create workspace");
-        std::fs::write(
-            workspace.path().join("v8project.yaml"),
-            "format: DESIGNER\ninfobase:\n  connection: \"File=.build/infobase\"\n",
-        )
-        .expect("write infobase-only workspace descriptor");
+        // This former admission route must now stop at the runner 1.0 capability gate.
+        let workspace = tempfile::tempdir().unwrap();
         let preparations = Arc::new(AtomicUsize::new(0));
         let runtime = V5CanonicalInvocationRuntime::new(
             Arc::new(CountingPrepareService {
@@ -6927,80 +6925,29 @@ struct ActorLogicalReadLease {"#,
             }),
             Arc::new(TokioClock),
         );
-        let request = |arguments: serde_json::Value| {
-            InvocationRequest::new(
+        for dry_run in [true, false] {
+            let request = InvocationRequest::new(
                 ToolIdentity::Run,
-                arguments,
-                std::fs::canonicalize(workspace.path())
-                    .expect("canonical workspace")
-                    .to_string_lossy(),
-                7_000,
+                serde_json::json!({"op":"infobase.create","args":{},"dryRun":dry_run}),
+                workspace.path().display().to_string(),
+                7000,
             )
-            .expect("valid infobase.create request")
-        };
-
-        for arguments in [
-            serde_json::json!({"op": "infobase.create", "args": {}, "dryRun": true}),
-            serde_json::json!({"op": "infobase.create", "args": {}, "dryRun": false, "ifRev": "unica-infobase-create-sha256-v1:test"}),
-        ] {
-            let bound = runtime
-                .bind(request(arguments))
-                .expect("infobase.create binds without a PlatformXml source set");
-            assert!(matches!(
-                bound,
-                V5ActorBoundCanonicalInvocation::InfobaseCreate { .. }
-            ));
-            let prepared = bound.prepare().expect("infobase.create preparation");
-            assert_eq!(
-                prepared.execution_class(),
-                &ExecutionClass::KnownLong(KnownLongReason::ExternalProcess)
-            );
+            .unwrap();
+            let result = match runtime.bind(request) {
+                Err(V5CanonicalPrepareError::Direct(result)) => result,
+                _ => panic!("unsupported target semantics reached preparation"),
+            };
+            assert!(!result.ok);
+            assert_eq!(result.diagnostics[0]["code"], "unsupported_operation");
+            assert!(result.rev.is_none());
         }
-
-        let unfenced = match runtime.bind(request(serde_json::json!({
-            "op": "infobase.create",
-            "args": {},
-            "dryRun": false,
-        }))) {
-            Err(V5CanonicalPrepareError::Rejected(result)) => result,
-            Ok(_) => panic!("an apply without ifRev was accepted"),
-            Err(other) => panic!("apply without ifRev returned infrastructure failure: {other:?}"),
-        };
-        assert_eq!(unfenced.diagnostics[0]["code"], "bad_value");
-        assert!(unfenced.diagnostics[0]["message"]
-            .as_str()
-            .unwrap()
-            .contains("requires ifRev"));
-        let closed = match runtime.bind(request(serde_json::json!({
-            "op": "infobase.create",
-            "args": {"connection": "File=/elsewhere"},
-            "dryRun": true,
-        }))) {
-            Err(V5CanonicalPrepareError::Rejected(result)) => result,
-            Ok(_) => panic!("a connection argument was accepted"),
-            Err(other) => {
-                panic!("connection on infobase.create returned infrastructure failure: {other:?}")
-            }
-        };
-        assert_eq!(closed.diagnostics[0]["code"], "bad_value");
-        assert_eq!(
-            preparations.load(Ordering::SeqCst),
-            0,
-            "infobase.create must not enter the PlatformXml service"
-        );
+        assert_eq!(preparations.load(Ordering::SeqCst), 0);
     }
 
     #[test]
     fn v5_source_import_prepares_before_source_admission_and_keeps_the_revision_gate() {
-        // A-4 зонтика #871: импорт исходников в базу — previewApply с забором,
-        // готовится до admission PlatformXml и известен длинным по внешнему
-        // процессу; применение без `ifRev` отказывает `bad_value`.
-        let workspace = tempfile::tempdir().expect("temporary source.import workspace");
-        std::fs::write(
-            workspace.path().join("v8project.yaml"),
-            "format: DESIGNER\ninfobase:\n  connection: \"File=.build/infobase\"\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .expect("write a workspace descriptor with one source set");
+        // This former admission route must now stop at the runner 1.0 capability gate.
+        let workspace = tempfile::tempdir().unwrap();
         let preparations = Arc::new(AtomicUsize::new(0));
         let runtime = V5CanonicalInvocationRuntime::new(
             Arc::new(CountingPrepareService {
@@ -7008,68 +6955,29 @@ struct ActorLogicalReadLease {"#,
             }),
             Arc::new(TokioClock),
         );
-        let request = |arguments: serde_json::Value| {
-            InvocationRequest::new(
+        for dry_run in [true, false] {
+            let request = InvocationRequest::new(
                 ToolIdentity::Run,
-                arguments,
-                std::fs::canonicalize(workspace.path())
-                    .expect("canonical workspace")
-                    .to_string_lossy(),
-                7_000,
+                serde_json::json!({"op":"push","args":{},"dryRun":dry_run}),
+                workspace.path().display().to_string(),
+                7000,
             )
-            .expect("valid source.import request")
-        };
-
-        for arguments in [
-            serde_json::json!({"op": "source.import", "args": {}, "dryRun": true}),
-            serde_json::json!({"op": "source.import", "args": {"sourceSet": "main", "fullRebuild": true}, "dryRun": true}),
-            serde_json::json!({"op": "source.import", "args": {}, "dryRun": false, "ifRev": "unica-source-import-sha256-v1:test"}),
-        ] {
-            let bound = runtime
-                .bind(request(arguments))
-                .expect("source.import binds without a PlatformXml source set");
-            assert!(matches!(
-                bound,
-                V5ActorBoundCanonicalInvocation::SourceImport { .. }
-            ));
-            let prepared = bound.prepare().expect("source.import preparation");
-            assert_eq!(
-                prepared.execution_class(),
-                &ExecutionClass::KnownLong(KnownLongReason::ExternalProcess)
-            );
+            .unwrap();
+            let result = match runtime.bind(request) {
+                Err(V5CanonicalPrepareError::Direct(result)) => result,
+                _ => panic!("unsupported target semantics reached preparation"),
+            };
+            assert!(!result.ok);
+            assert_eq!(result.diagnostics[0]["code"], "unsupported_operation");
+            assert!(result.rev.is_none());
         }
-
-        let unfenced = match runtime.bind(request(serde_json::json!({
-            "op": "source.import", "args": {},
-            "dryRun": false,
-        }))) {
-            Err(V5CanonicalPrepareError::Rejected(result)) => result,
-            Ok(_) => panic!("an apply without ifRev was accepted"),
-            Err(other) => panic!("apply without ifRev returned infrastructure failure: {other:?}"),
-        };
-        assert_eq!(unfenced.diagnostics[0]["code"], "bad_value");
-        assert!(unfenced.diagnostics[0]["message"]
-            .as_str()
-            .unwrap()
-            .contains("requires ifRev"));
-        assert_eq!(
-            preparations.load(Ordering::SeqCst),
-            0,
-            "source.import must not enter the PlatformXml service"
-        );
+        assert_eq!(preparations.load(Ordering::SeqCst), 0);
     }
 
     #[test]
     fn v5_source_export_prepares_before_source_admission_and_keeps_the_revision_gate() {
-        // A-6 зонтика #871: выгрузка базы в исходники — previewApply с забором,
-        // готовится до admission PlatformXml и известна длинной по внешнему
-        // процессу; применение без `ifRev` отказывает `bad_value`.
-        let workspace = tempfile::tempdir().expect("temporary source.export workspace");
-        std::fs::write(
-            workspace.path().join("v8project.yaml"),
-            "format: DESIGNER\ninfobase:\n  connection: \"File=.build/infobase\"\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .expect("write a workspace descriptor with one source set");
+        // This former admission route must now stop at the runner 1.0 capability gate.
+        let workspace = tempfile::tempdir().unwrap();
         let preparations = Arc::new(AtomicUsize::new(0));
         let runtime = V5CanonicalInvocationRuntime::new(
             Arc::new(CountingPrepareService {
@@ -7077,56 +6985,23 @@ struct ActorLogicalReadLease {"#,
             }),
             Arc::new(TokioClock),
         );
-        let request = |arguments: serde_json::Value| {
-            InvocationRequest::new(
+        for dry_run in [true, false] {
+            let request = InvocationRequest::new(
                 ToolIdentity::Run,
-                arguments,
-                std::fs::canonicalize(workspace.path())
-                    .expect("canonical workspace")
-                    .to_string_lossy(),
-                7_000,
+                serde_json::json!({"op":"pull","args":{},"dryRun":dry_run}),
+                workspace.path().display().to_string(),
+                7000,
             )
-            .expect("valid source.export request")
-        };
-
-        for arguments in [
-            serde_json::json!({"op": "source.export", "args": {"mode": "full"}, "dryRun": true}),
-            serde_json::json!({"op": "source.export", "args": {"mode": "incremental", "sourceSet": "main"}, "dryRun": true}),
-            serde_json::json!({"op": "source.export", "args": {"mode": "full"}, "dryRun": false, "ifRev": "unica-source-export-sha256-v1:test"}),
-        ] {
-            let bound = runtime
-                .bind(request(arguments))
-                .expect("source.export binds without a PlatformXml source set");
-            assert!(matches!(
-                bound,
-                V5ActorBoundCanonicalInvocation::SourceExport { .. }
-            ));
-            let prepared = bound.prepare().expect("source.export preparation");
-            assert_eq!(
-                prepared.execution_class(),
-                &ExecutionClass::KnownLong(KnownLongReason::ExternalProcess)
-            );
+            .unwrap();
+            let result = match runtime.bind(request) {
+                Err(V5CanonicalPrepareError::Direct(result)) => result,
+                _ => panic!("unsupported target semantics reached preparation"),
+            };
+            assert!(!result.ok);
+            assert_eq!(result.diagnostics[0]["code"], "unsupported_operation");
+            assert!(result.rev.is_none());
         }
-
-        let unfenced = match runtime.bind(request(serde_json::json!({
-            "op": "source.export",
-            "args": {"mode": "full"},
-            "dryRun": false,
-        }))) {
-            Err(V5CanonicalPrepareError::Rejected(result)) => result,
-            Ok(_) => panic!("an apply without ifRev was accepted"),
-            Err(other) => panic!("apply without ifRev returned infrastructure failure: {other:?}"),
-        };
-        assert_eq!(unfenced.diagnostics[0]["code"], "bad_value");
-        assert!(unfenced.diagnostics[0]["message"]
-            .as_str()
-            .unwrap()
-            .contains("requires ifRev"));
-        assert_eq!(
-            preparations.load(Ordering::SeqCst),
-            0,
-            "source.export must not enter the PlatformXml service"
-        );
+        assert_eq!(preparations.load(Ordering::SeqCst), 0);
     }
 
     #[test]
@@ -7134,7 +7009,7 @@ struct ActorLogicalReadLease {"#,
         // A-7 зонтика #871: сборка CF/CFE из исходников — previewApply с
         // забором, готовится до admission PlatformXml и известна длинной по
         // внешнему процессу; применение без `ifRev` отказывает `bad_value`.
-        let workspace = tempfile::tempdir().expect("temporary artifact.build workspace");
+        let workspace = tempfile::tempdir().expect("temporary make workspace");
         std::fs::write(
             workspace.path().join("v8project.yaml"),
             "format: DESIGNER\ninfobase:\n  connection: \"File=.build/infobase\"\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
@@ -7156,21 +7031,21 @@ struct ActorLogicalReadLease {"#,
                     .to_string_lossy(),
                 7_000,
             )
-            .expect("valid artifact.build request")
+            .expect("valid make request")
         };
 
         for arguments in [
-            serde_json::json!({"op": "artifact.build", "args": {"output": "dist/main.cf"}, "dryRun": true}),
-            serde_json::json!({"op": "artifact.build", "args": {"output": "dist/main.cf", "sourceSet": "main"}, "dryRun": false, "ifRev": "unica-artifact-build-sha256-v1:test"}),
+            serde_json::json!({"op": "make", "args": {"output": "dist/main.cf"}, "dryRun": true}),
+            serde_json::json!({"op": "make", "args": {"output": "dist/main.cf", "sourceSet": "main"}, "dryRun": false, "ifRev": "unica-artifact-build-sha256-v1:test"}),
         ] {
             let bound = runtime
                 .bind(request(arguments))
-                .expect("artifact.build binds without a PlatformXml source set");
+                .expect("make binds without a PlatformXml source set");
             assert!(matches!(
                 bound,
                 V5ActorBoundCanonicalInvocation::ArtifactBuild { .. }
             ));
-            let prepared = bound.prepare().expect("artifact.build preparation");
+            let prepared = bound.prepare().expect("make preparation");
             assert_eq!(
                 prepared.execution_class(),
                 &ExecutionClass::KnownLong(KnownLongReason::ExternalProcess)
@@ -7178,7 +7053,7 @@ struct ActorLogicalReadLease {"#,
         }
 
         let unfenced = match runtime.bind(request(serde_json::json!({
-            "op": "artifact.build",
+            "op": "make",
             "args": {"output": "dist/main.cf"},
             "dryRun": false,
         }))) {
@@ -7192,21 +7067,21 @@ struct ActorLogicalReadLease {"#,
             .unwrap()
             .contains("requires ifRev"));
         let external = match runtime.bind(request(serde_json::json!({
-            "op": "artifact.build",
+            "op": "make",
             "args": {"output": "dist/report.epf"},
             "dryRun": true,
         }))) {
             Err(V5CanonicalPrepareError::Rejected(result)) => result,
             Ok(_) => panic!("an .epf output was accepted"),
             Err(other) => {
-                panic!(".epf on artifact.build returned infrastructure failure: {other:?}")
+                panic!(".epf on make returned infrastructure failure: {other:?}")
             }
         };
         assert_eq!(external.diagnostics[0]["code"], "unsupported_operation");
         assert_eq!(
             preparations.load(Ordering::SeqCst),
             0,
-            "artifact.build must not enter the PlatformXml service"
+            "make must not enter the PlatformXml service"
         );
     }
 

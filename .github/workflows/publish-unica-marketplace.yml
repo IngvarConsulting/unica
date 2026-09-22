@@ -1,6 +1,6 @@
 name: Publish Unica Marketplace
 
-# The linear delivery pipeline (ADR-0068). One human action — the signed
+# The linear delivery pipeline. One human action — the signed
 # source tag — starts the build; this workflow runs after it and carries the
 # release to consumers in one pass: stage the payload, create the resolve
 # anchor tag, verify the candidate the way a consumer installs it, and only

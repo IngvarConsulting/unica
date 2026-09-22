@@ -19,8 +19,8 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-REVIEW_PATH = REPO_ROOT / "arch/tool-surface-review.json"
-LEDGER_PATH = REPO_ROOT / "arch/tool-surface.md"
+REVIEW_PATH = REPO_ROOT / "tests/fixtures/v013/tool-surface-review.json"
+LEDGER_PATH = REPO_ROOT / "docs/tool-surface.md"
 DEFAULT_BINARY = REPO_ROOT / "target/debug/unica"
 
 # Above this count a tool is publishing the shared XML/DSL argument list rather
@@ -29,8 +29,8 @@ DEFAULT_BINARY = REPO_ROOT / "target/debug/unica"
 SHARED_ARGUMENT_THRESHOLD = 20
 
 # Состояние контракта — явное поле ревью, а не догадка по тексту: считать
-# метрику разбором свободной прозы значит повторить ошибку, от которой
-# `CTR.WIRE.TOOL-SURFACE` отделяет механическую ведомость и ручное ревью.
+# метрику разбором свободной прозы значит смешивать механическую ведомость
+# с ручным ревью.
 CONTRACT_STATES = {
     "typed": "Отвечают типизированным `data`",
     "partial": "Типизированы частично: часть результата всё ещё текст",
@@ -344,12 +344,11 @@ def render(tools: list[dict], review: dict) -> str:
     out.append(
         "Порождается `scripts/ci/generate-tool-surface.py` из `tools/list`"
         " собранного бинаря. Руками правится только"
-        " [`tool-surface-review.json`](tool-surface-review.json): контракт"
+        " [`tool-surface-review.json`](../tests/fixtures/v013/tool-surface-review.json): контракт"
         " результата и сценарии. Имена, описания и аргументы принадлежат"
         " реестру v0.13 в"
         " `crates/unica-coder/src/application/v13/tool_catalog.rs`; здесь они"
-        " лишь показаны рядом"
-        " (`CTR.WIRE.TOOL-SURFACE`)."
+        " лишь показаны рядом."
     )
     out.append("")
     out.append(

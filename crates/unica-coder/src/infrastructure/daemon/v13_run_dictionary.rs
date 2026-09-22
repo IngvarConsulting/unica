@@ -32,7 +32,7 @@ pub(super) fn execute_run_dictionary(request: &InvocationRequest) -> Option<Doma
                 .iter()
                 .any(|operation| operation.name() == op)
             {
-                None
+                reject_unavailable_run_before_admission(request)
             } else {
                 Some(reject_run_operation(
                     op,
@@ -61,6 +61,13 @@ pub(super) fn reject_unavailable_run_before_admission(
         }
         None => return None,
     };
+    if request
+        .arguments()
+        .get("infobase")
+        .is_some_and(|v| v.as_str() != Some("origin"))
+    {
+        return Some(reject_run_operation(op, "runner 0.11 adapter supports only the named infobase origin; no fallback to another target"));
+    }
     if is_test_seam_operation(op) {
         return None;
     }
@@ -71,9 +78,22 @@ pub(super) fn reject_unavailable_run_before_admission(
         .find(|operation| operation.name() == op)
     {
         Some(operation) if operation.implemented => None,
-        Some(_) => Some(reject_run_operation(
+        Some(operation)
+            if operation.intent == RunIntent::SourceImport
+                && request
+                    .arguments()
+                    .get("args")
+                    .and_then(Value::as_object)
+                    .is_some_and(|args| args.get("delete").is_some_and(Value::is_string)) =>
+        {
+            None
+        }
+        Some(operation) => Some(reject_run_operation(
             op,
-            format!("canonical run operation `{op}` is not implemented yet"),
+            operation
+                .support_reason()
+                .unwrap_or("operation is unavailable")
+                .to_string(),
         )),
         None => Some(reject_run_operation(
             op,
@@ -113,6 +133,10 @@ pub(super) fn run_dictionary_result() -> DomainResult {
                     | RunIntent::CfImport
                     | RunIntent::InfobaseExport
                     | RunIntent::InfobaseImport
+                    | RunIntent::ExtensionList
+                    | RunIntent::ConfigurationApply
+                    | RunIntent::ConfigurationReset
+                    | RunIntent::ExtensionActivate
             );
             json!({
                 "op": operation.name(),
@@ -121,6 +145,7 @@ pub(super) fn run_dictionary_result() -> DomainResult {
                 "execution": operation.execution(),
                 "effects": operation.effects(),
                 "implemented": operation.implemented,
+                "support": {"adapter":"v8-runner/0.11.0", "state": if operation.implemented {"supported"} else if operation.intent == RunIntent::SourceImport {"limited"} else {"unavailable"}, "reason":operation.support_reason(), "supportedInfobases":["origin"], "supportedArgs": if operation.intent == RunIntent::SourceImport {json!({"delete":"installed extension name"})} else {Value::Null}},
                 "terminal": operation.terminal,
                 "rejectsSessions": operation.rejects_sessions,
                 "previewRequired": preview_required,
@@ -139,4 +164,69 @@ fn reject_run_operation(op: &str, message: impl Into<String>) -> DomainResult {
         RefusalCode::UnsupportedOperation,
         message,
     )
+}
+
+#[cfg(test)]
+mod runner_one_tests {
+    use super::*;
+    #[test]
+    fn runner_one_refuses_unsupported_semantics_and_old_names_before_admission() {
+        for (op, args) in [
+            ("push", json!({})),
+            ("push", json!({"force":true})),
+            ("pull", json!({"force":true})),
+            ("apply", json!({})),
+            ("upload", json!({"input":"x.cf"})),
+            ("reset", json!({})),
+            ("infobase.create", json!({})),
+            ("source.import", json!({})),
+            ("extension.create", json!({"name":"X"})),
+            ("extension.info", json!({"name":"X"})),
+        ] {
+            let request = InvocationRequest::new(
+                ToolIdentity::Run,
+                json!({"op":op,"args":args,"dryRun":true}),
+                "/workspace-does-not-exist",
+                7000,
+            )
+            .unwrap();
+            let result =
+                execute_run_dictionary(&request).expect("refused before workspace or process");
+            assert!(!result.ok, "{op}");
+            assert_eq!(result.diagnostics[0]["code"], "unsupported_operation");
+            assert!(result.rev.is_none());
+        }
+    }
+    #[test]
+    fn runner_one_never_redirects_an_unsupported_infobase_to_origin() {
+        let request = InvocationRequest::new(ToolIdentity::Run,json!({"op":"download","infobase":"production","args":{"state":"working","output":"x.cf"},"dryRun":true}),"/workspace-does-not-exist",7000).unwrap();
+        let result = execute_run_dictionary(&request).unwrap();
+        assert!(!result.ok);
+        assert!(result.summary.contains("no fallback"));
+    }
+    #[test]
+    fn limited_delete_and_known_operations_reach_their_typed_parsers() {
+        for (op, args) in [
+            ("push", json!({"delete":"Patch"})),
+            ("extensions.set", json!({"name":"Patch","active":false})),
+            ("download", json!({"state":"working","output":"x.cf"})),
+        ] {
+            let request = InvocationRequest::new(
+                ToolIdentity::Run,
+                json!({"op":op,"infobase":"origin","args":args,"dryRun":true}),
+                "/workspace",
+                7000,
+            )
+            .unwrap();
+            assert!(execute_run_dictionary(&request).is_none());
+        }
+        let dictionary = run_dictionary_result();
+        let operations = dictionary.data.as_ref().unwrap()["operations"]
+            .as_array()
+            .unwrap();
+        let push = operations.iter().find(|v| v["op"] == "push").unwrap();
+        assert_eq!(push["implemented"], false);
+        assert_eq!(push["support"]["state"], "limited");
+        assert!(push["support"]["supportedArgs"].get("delete").is_some());
+    }
 }

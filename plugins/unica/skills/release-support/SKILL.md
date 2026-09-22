@@ -11,9 +11,10 @@ description: "Поддержка поставки и обновлений 1С. �
 - Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
 `ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
-выбирай только операцию с `implemented: true` и не выдумывай аргументов
-записи с `argsSchema: null`; превью исполнением не является. Не обходи
-контракт прямым runner-ом.
+при `implemented: true` используй опубликованную `argsSchema`; при
+`support.state: limited` разрешено только подмножество `support.supportedArgs`.
+При `support.state: unavailable` остановись; не выдумывай аргументов при
+`argsSchema: null`. Превью исполнением не является. Не обходи контракт прямым runner-ом.
 - Use `unica.view` on the role node, `unica.view` on the schema node, or form/meta tools when release risk is localized to rights, reports, forms, or metadata objects.
 - Do not call internal package, metadata, analyzer, standards, or runtime adapters directly. They are hidden behind MCP `unica`.
 
@@ -32,8 +33,27 @@ Support-state checks come from `unica.view` on the configuration root (`support`
 1. Identify release scope: vendor update, extension change, merge branch, support-state change, hotfix, migration, or integration contract change.
 2. Map source-sets with `unica.view {}`; inspect the configuration root with `unica.view <set>:Configuration`, extensions with `unica.diff` between the extension and configuration sets, `unica.view` on the object node, and `unica.search`.
 3. List compatibility risks: metadata rename/delete, changed roles, changed integration contracts, data migrations, scheduled jobs, query behavior, BSP hooks, and extension interceptors.
-4. Run `unica.check` on the changed modules; build and update go through `unica.run` (`source.import`, `artifact.build`, `cf.import`) with a preview and its `ifRev`; test runs are outside the v0.13 surface, so record them as unverified unless separate evidence is supplied.
+4. Run `unica.check` on the changed modules; build and update go through `unica.run` (`make`; `upload` and source `push` are unavailable with runner 0.11) with a preview and its `ifRev`; test runs are outside the v0.13 surface, so record them as unverified unless separate evidence is supplied.
 5. Produce a release readiness note: blocking findings, migration steps, rollback boundary, manual checks, and Unica MCP contract gaps.
+
+## Installed extensions
+
+Исходники расширения и расширение, установленное в базе, — разные предметы.
+Состав базы спрашивай через `unica.run` с `op: "extensions.list"`, `args: {}`,
+`dryRun: true`, затем повтори с `dryRun: false` и полученным `ifRev`.
+Для одного расширения выбери запись по имени из результата списка.
+Превью платформу не запускает и состав базы не читает; исполнение открывает сеанс.
+Поля inventory приходят от платформы, порядок не гарантирован. Префикс имени
+читается из имеющихся исходников расширения, в inventory его нет.
+
+`extensions.set` принимает `name` и boolean `active`; остальные свойства
+адаптер 0.11 не поддерживает. Удаление — `push` с `args: {"delete": "Имя"}`;
+оно удаляет и данные расширения, требует своего preview и `ifRev`.
+Режим удаления нельзя совмещать с отправкой исходников. Выключение активности
+не равно удалению. Отдельного публичного создания пустого расширения нет:
+целевая модель создаёт его первой отправкой, которая пока недоступна.
+`upload` пока недоступен: старый load не только загружает, но и обновляет
+конфигурацию БД. Не заменяй эту операцию прямым запуском раннера.
 
 ## Review checklist
 

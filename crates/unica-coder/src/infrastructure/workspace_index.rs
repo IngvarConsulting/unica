@@ -2537,6 +2537,11 @@ mod tests {
 
     #[test]
     fn rlm_coordination_paths_separate_source_roots_under_the_pair_root() {
+        use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind};
+        use crate::infrastructure::workspace_actor::{
+            WorkspaceActor, WorkspaceIdentity, WorkspaceSourceSetInput,
+        };
+
         let context = test_context("separate-coordination-roots");
         let first_source = context.workspace_root.join("src/configuration");
         let second_source = context.workspace_root.join("src/extension");
@@ -2568,6 +2573,67 @@ mod tests {
         );
         assert_ne!(first_status, second_status);
         assert_ne!(first_lock, second_lock);
+
+        let runner = RecordingIndexRunner::default();
+        let mut args = Map::new();
+        args.insert(
+            "sourceDir".to_string(),
+            Value::String(first_source.to_str().unwrap().to_string()),
+        );
+        for (index, (name, profile)) in [
+            ("main", "program"),
+            ("renamed", "program"),
+            ("main", "program-and-service"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let identity = WorkspaceIdentity::new(
+                &context,
+                [WorkspaceSourceSetInput::new(
+                    name,
+                    &first_source,
+                    SourceSetKind::Configuration,
+                    SourceFormat::PlatformXml,
+                    SourceProfile::platform_xml_8_3_27_format_2_20(),
+                )],
+                profile,
+            )
+            .unwrap();
+            let actor = WorkspaceActor::new(identity, context.clone()).unwrap();
+            let binding = actor.bind_provider_root(name, &first_source).unwrap();
+            let service = actor.index_service(&binding, &runner).unwrap();
+            let report = service.start_for_workspace_cancellable(
+                &context,
+                &args,
+                false,
+                &CancellationToken::new(),
+            );
+
+            assert_eq!(
+                runner.backgrounds.borrow().len(),
+                index + 1,
+                "another actor scope blocked index start for {name}/{profile}: {report:?}"
+            );
+        }
+
+        let backgrounds = runner.backgrounds.borrow();
+        for (index, job) in backgrounds.iter().enumerate() {
+            assert!(job.lock_path.is_file());
+            let status: Value =
+                serde_json::from_slice(&fs::read(&job.status_path).unwrap()).unwrap();
+            assert_eq!(status["status"], "building");
+            for previous in &backgrounds[..index] {
+                assert_ne!(job.lock_path, previous.lock_path);
+                assert_ne!(job.status_path, previous.status_path);
+                assert_ne!(
+                    index_command_env(&job.primary, "RLM_INDEX_DIR"),
+                    index_command_env(&previous.primary, "RLM_INDEX_DIR")
+                );
+            }
+        }
+        drop(backgrounds);
+        drop(runner);
         cleanup(&context);
     }
 

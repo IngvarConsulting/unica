@@ -8,6 +8,16 @@ use std::time::UNIX_EPOCH;
 pub(crate) fn discover_workspace(
     requested_cwd: Option<PathBuf>,
 ) -> Result<WorkspaceContext, String> {
+    discover_workspace_with_cache_override(
+        requested_cwd,
+        env::var("UNICA_CACHE_DIR").map(PathBuf::from).ok(),
+    )
+}
+
+fn discover_workspace_with_cache_override(
+    requested_cwd: Option<PathBuf>,
+    cache_override: Option<PathBuf>,
+) -> Result<WorkspaceContext, String> {
     let cwd = requested_cwd.unwrap_or(
         env::current_dir().map_err(|err| format!("failed to read current directory: {err}"))?,
     );
@@ -19,9 +29,7 @@ pub(crate) fn discover_workspace(
             .join(cwd)
     };
     let workspace_root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
-    let cache_root = env::var("UNICA_CACHE_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| workspace_root.join(".build").join("unica"));
+    let cache_root = cache_override.unwrap_or_else(|| workspace_root.join(".build").join("unica"));
     let workspace_epoch = workspace_fingerprint(&workspace_root);
     Ok(WorkspaceContext {
         cwd,
@@ -116,7 +124,7 @@ fn hash_path(hasher: &mut DefaultHasher, root: &Path, rel: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::discover_workspace;
+    use super::{discover_workspace, discover_workspace_with_cache_override};
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -179,7 +187,7 @@ mod tests {
         std::fs::create_dir_all(&nested).unwrap();
         std::fs::write(workspace.join("v8project.yaml"), "format: DESIGNER\n").unwrap();
 
-        let context = discover_workspace(Some(nested)).unwrap();
+        let context = discover_workspace_with_cache_override(Some(nested), None).unwrap();
 
         assert_eq!(context.workspace_root, workspace);
         assert_eq!(
