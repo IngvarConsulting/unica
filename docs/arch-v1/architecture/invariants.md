@@ -92,98 +92,17 @@ Unica. Каждая запись формулирует одно нормати�
 
 ## PRODUCT — границы продукта
 
-### INV-PRODUCT-DEVELOPER-OPERATIONS — Публичная поверхность моделирует операции разработчика
-
-- **Rule:** Публичные скиллы и инструменты `unica.*` моделируют операции
-  разработчика 1С:Предприятия; вопросы инфраструктуры и упаковки в поверхность,
-  которую видит модель, не попадают.
-- **Decision:** ADR-0001, ADR-0005
-- **Check:** `ci-test` — `tests/ci/test_unica_skills.py`
-- **Scope:** source, packaged, runtime
-
-### INV-PRODUCT-NO-ENGINE-ROUTING — Встроенные движки не попадают в маршрутизацию, видимую модели
-
-- **Rule:** Скиллы и справочники, которые видит модель, не должны предписывать
-  ей вызывать встроенные низкоуровневые движки напрямую или называть их
-  MCP-серверами; доменный инструмент можно упомянуть по смыслу, но никогда — как
-  цель вызова.
-- **Decision:** ADR-0001, ADR-0005, ADR-0006
-- **Check:** `ci-test` — `tests/ci/test_unica_skills.py`
-- **Scope:** source, packaged, runtime
-
-### INV-PRODUCT-PACKAGE-PARITY — Сгенерированный пакет — полноценная поставка
-
-- **Rule:** Каждый публичный контракт, который выполняется в исходном дереве,
-  выполняется и в сгенерированном пакете для маркетплейса, а проверка на уровне
-  пакета обязательна дополнительно к проверке на уровне исходников.
-- **Decision:** ADR-0001
-- **Check:** `ci-test` — `tests/ci/test_package_unica_plugin.py`
-- **Check:** `release-gate` — `scripts/ci/smoke-unica-bootstrap.py`
-- **Scope:** packaged, release
-
 ### INV-PRODUCT-TOOL-VERSION-SOURCE — У версий встроенных инструментов один источник
 
 - **Rule:** `plugins/unica/third-party/tools.lock.json` — источник версий
   встроенных инструментов, а запись о происхождении встроенного инструмента
   ссылается на него через `toolLockRef` вместо того, чтобы нести собственную
   версию или базовый коммит.
-- **Decision:** ADR-0006
 - **Check:** `ci-test` — `tests/ci/test_skill_provenance.py`
 - **Check:** `guard-script` — `scripts/ci/check-skill-upstreams.py`
 - **Scope:** source, packaged, ci
 
 ## MCP — публичная MCP-поверхность
-
-
-### INV-MCP-NO-ENGINE-SERVERS — `unica` — единственный MCP-сервер, видимый модели
-
-- **Rule:** Внутренние движки (сборка и runtime, анализ BSL, индекс кода,
-  стандарты, операции с XML и DSL) доступны только через внутренние адаптеры и
-  никогда не регистрируются как отдельные публичные MCP-серверы.
-- **Decision:** ADR-0001, ADR-0006
-- **Check:** `ci-test` — `tests/ci/test_package_unica_plugin.py`
-- **Check:** `ci-test` — `tests/ci/test_unica_skills.py`
-- **Scope:** source, packaged, runtime
-
-### INV-MCP-SINGLE-ENTRY — Единственный публичный MCP-сервер
-
-- **Rule:** `plugins/unica/.mcp.json` объявляет ровно одну запись `mcpServers`
-  с именем `unica` — и в исходном дереве, и в любом сгенерированном пакете.
-- **Decision:** ADR-0001
-- **Check:** `ci-test` — `tests/ci/test_package_unica_plugin.py`
-- **Scope:** source, packaged
-
-### INV-MCP-SERVER-NAME — Имя сервера в протоколе
-
-- **Rule:** `initialize` возвращает `serverInfo.name = "unica"`.
-- **Decision:** ADR-0001
-- **Check:** `ci-test` — `tests/ci/test_unica_mcp_smoke.py`
-- **Check:** `ci-test` — `crates/unica-coder/src/interfaces/mcp.rs`
-- **Scope:** runtime
-
-### INV-MCP-NAMESPACE — Публичные инструменты живут в пространстве имён `unica.*`
-
-- **Rule:** Публичный набор инструментов адресуется именами вида
-  `unica.<group>.<operation>`, и упакованный runtime отдаёт под этим именем
-  каждый обязательный инструмент `unica.*`, не отдавая удалённый псевдоним.
-- **Decision:** ADR-0001
-- **Check:** `ci-test` — `tests/ci/test_unica_mcp_smoke.py`
-- **Check:** `release-gate` — `scripts/ci/smoke-unica-mcp.py`
-- **Scope:** runtime, packaged, release
-
-### INV-MCP-DATA-DRIVEN-SCHEMA — Контракты инструментов заданы данными и свободны от адаптеров
-
-- **Rule:** Имена и описания инструментов берутся из реестра `ToolSpec` в
-  `application/mod.rs`, входные схемы — из `application/tool_contracts.rs`
-  поверх `application/operation_descriptors.rs`, транспорт только собирает эти
-  три источника вместе, обязательные пути публикуются в верхнем `required` под
-  каноническими именами без алиасов, и ни одна публичная схема инструмента не
-  показывает сырые аргументы адаптера.
-- **Decision:** ADR-0001, ADR-0013, ADR-0019
-- **Check:** `ci-test` — `crates/unica-coder/src/interfaces/mcp.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/application/tool_contracts.rs`
-- **Scope:** runtime
 
 ### INV-MCP-REACHABLE-ARGS — Инструмент публикует только достижимый аргумент
 
@@ -195,21 +114,6 @@ Unica. Каждая запись формулирует одно нормати�
   типизированных читателей закреплены таблицей.
 - **Check:** `ci-test` — `crates/unica-coder/src/application/tool_contracts.rs`
 - **Scope:** runtime
-
-### INV-MCP-SDK-TRANSPORT — Транспортом владеет официальный Rust SDK
-
-- **Rule:** Публичный stdio-сервер — это реализация `rmcp::ServerHandler` в
-  `interfaces/mcp.rs`, которая обслуживает оба жизненных цикла SDK —
-  `initialize` и прямой первый запрос ревизии `2026-07-28`
-  (`server/discover`, `tools/list`, `tools/call`) — из реестра слоя
-  application, причём и типы `rmcp`, и макросы инструментов из SDK не выходят
-  за пределы этого модуля.
-- **Decision:** ADR-0013, ADR-0002
-- **Check:** `ci-test` — `crates/unica-coder/src/interfaces/mcp.rs`
-- **Check:** `manual` — ни один скрипт-страж не знает имени крейта, поэтому
-  ревью подтверждает, что импорты `rmcp` и макросы инструментов из SDK остаются
-  внутри `crates/unica-coder/src/interfaces/mcp.rs`
-- **Scope:** source, runtime
 
 ### INV-MCP-BOUNDED-ADMISSION — Приём вызовов ограничен, отмена кооперативна
 
@@ -241,72 +145,7 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/application_ports.rs`
 - **Scope:** packaged, runtime
 
-### INV-MCP-SURFACE-SYNC — Изменения публичной поверхности синхронны
-
-- **Rule:** Добавление, удаление или переименование публичного MCP-инструмента
-  меняет одним набором изменений реестр в Rust, стенд паритета, раздел `Решение`
-  записи ADR-владельца, выведенное поле `Rule` записи реестра и названную в ней
-  проверку; план приёмки может быть таким свидетельством проверки, но не заменой
-  владельца.
-- **Decision:** ADR-0001, ADR-0005
-- **Check:** `ci-test` — `tests/ci/test_unica_mcp_script_parity.py`
-- **Check:** `guard-script` — `scripts/ci/check-architecture-sync.py`
-- **Check:** `ci-test` — `tests/ci/test_architecture_sync_guard.py`
-- **Scope:** source, packaged
-
-### INV-MCP-PREVIEW-MUTATION-ONLY — Предпросмотр принадлежит мутации
-
-- **Rule:** `ToolExecution::Read` не публикует и не принимает `dryRun` и
-  исполняется только как `InvocationMode::Read`; `ToolExecution::Mutation`
-  выводит `Preview` при отсутствующем или истинном `dryRun` и `Apply` только
-  при `dryRun: false`.
-- **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
-- **Check:** `ci-test` — `tests/ci/test_unica_mcp_script_parity.py`
-- **Scope:** source, runtime, packaged
-
-
 ## SKILL — маршрутизация скиллов
-
-### INV-SKILL-DECLARED-ROUTING — Скиллы маршрутизируются через MCP `unica`
-
-- **Rule:** Каждый скилл, на который распространяется правило, документирует
-  свою маршрутизацию через MCP `unica` и называет инструмент `unica.*`, который
-  вызывает.
-- **Decision:** ADR-0005
-- **Check:** `ci-test` — `tests/ci/test_unica_skills.py`
-- **Scope:** source, packaged
-
-### INV-SKILL-NO-ADAPTER-TARGETS — Скиллы не называют внутренние серверы-адаптеры
-
-- **Rule:** Скиллы и справочники, которые видит модель, не должны называть
-  внутренние MCP-серверы адаптеров или их идентификаторы инструментов как цели
-  маршрутизации.
-- **Decision:** ADR-0001, ADR-0005
-- **Check:** `ci-test` — `tests/ci/test_unica_skills.py`
-- **Scope:** source, packaged
-
-### INV-SKILL-NO-SCRIPT-ROUTE — Локальные для скилла скрипты операций не возвращаются
-
-- **Rule:** Скиллы не должны поставлять или упоминать локальные для скилла файлы
-  операций на Python, PowerShell или shell как путь исполнения; переход на
-  нативные обработчики `unica.*` завершён, и возвращение такого пути требует
-  решения, заменяющего действующее.
-- **Decision:** ADR-0004, ADR-0005
-- **Check:** `ci-test` — `tests/ci/test_unica_skills.py`
-- **Scope:** source, packaged, runtime
-
-### INV-SKILL-SCRIPTS-AS-FIXTURES — Эталонные модели существуют только как тестовые фикстуры
-
-- **Rule:** Адаптированные скрипты операций существуют только как принадлежащие
-  Unica эталонные модели в
-  `tests/fixtures/unica_mcp_script_parity/unica_reference_models`,
-  отревьюированный снимок донора — только в
-  `tests/fixtures/unica_mcp_script_parity/cc-1c-skills`, и ни одно из этих
-  деревьев не попадает в пакет и не доступно во время исполнения.
-- **Decision:** ADR-0004
-- **Check:** `ci-test` — `tests/ci/test_unica_skills.py`
-- **Check:** `ci-test` — `tests/ci/test_package_unica_plugin.py`
-- **Scope:** source, packaged
 
 ### INV-SKILL-DOCUMENTED-PREVIEW — Изменяющие инструкции по умолчанию ведут через предпросмотр
 
@@ -342,36 +181,6 @@ Unica. Каждая запись формулирует одно нормати�
 
 ## APP — границы слоёв приложения
 
-### INV-APP-DISPATCH-OWNERSHIP — Слой application владеет диспетчеризацией и доменными событиями
-
-- **Rule:** `UnicaApplication` владеет публичным реестром инструментов,
-  диспетчеризацией вызовов и порождением доменных событий; новый обработчик
-  инструмента входит в систему через диспетчеризацию application и никак иначе.
-- **Decision:** ADR-0002
-- **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
-- **Scope:** source, runtime
-
-### INV-APP-THIN-TRANSPORT — Транспорт только отображает протокол на вызовы application
-
-- **Rule:** `interfaces::mcp` обслуживает `tools/list` из
-  `UnicaApplication::tools()`, направляет каждый `tools/call` через
-  `call_tool_cancellable` и возвращает как текст инструмента конверт результата,
-  собранный слоем application, а не собственную структуру.
-- **Decision:** ADR-0002, ADR-0013
-- **Check:** `ci-test` — `crates/unica-coder/src/interfaces/mcp.rs`
-- **Scope:** source, runtime
-
-### INV-APP-NO-ADAPTER-BYPASS — Адаптеры идут к рабочему пространству через порты application
-
-- **Rule:** Адаптеры инфраструктуры обращаются к состоянию рабочего
-  пространства через `ApplicationPorts` и никогда не импортируют слой
-  interfaces, поэтому адаптер не может отрисовать ответ MCP и по дороге наружу
-  обойти отчёт о кеше, который ведёт слой application.
-- **Decision:** ADR-0002
-- **Check:** `guard-script` — `scripts/ci/check-rust-platform-boundary.py`
-- **Check:** `ci-test` — `tests/ci/test_rust_platform_boundary.py`
-- **Scope:** source, runtime
-
 ### INV-APP-NO-SCRIPT-BACKEND — В runtime нет скриптового бэкенда
 
 - **Rule:** В `unica-coder` нет отката на файлы операций во время исполнения: ни
@@ -381,16 +190,6 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `tests/ci/test_package_unica_plugin.py`
 - **Scope:** source, runtime
 
-### INV-APP-DEPENDENCY-DIRECTION — Направление зависимостей между слоями закреплено проверкой
-
-- **Rule:** `domain` не импортирует ни `application`, ни `infrastructure`, ни
-  `interfaces` и не обращается к файловой системе и процессам, а `application`
-  не импортирует ни `infrastructure`, ни `interfaces`.
-- **Decision:** ADR-0009, ADR-0002
-- **Check:** `guard-script` — `scripts/ci/check-rust-platform-boundary.py`
-- **Check:** `ci-test` — `tests/ci/test_rust_platform_boundary.py`
-- **Scope:** source
-
 ### INV-APP-NO-DIRECT-GIT — Application не запускает git напрямую
 
 - **Rule:** Продуктивный код в `crates/unica-coder/src/application` никогда не
@@ -399,53 +198,7 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `tests/ci/test_product_contracts.py`
 - **Scope:** source
 
-
 ## CACHE — состояние рабочего пространства и кеш
-
-### INV-CACHE-ORCHESTRATOR-OWNED — Состоянием рабочего пространства владеет оркестратор
-
-- **Rule:** Оркестратор `unica` владеет состоянием рабочего пространства и
-  логической инвалидацией по доменным событиям, а поставщик владеет реализацией
-  жизненного цикла своего индекса, процесса и сессии; модель не согласовывает
-  свежесть между движками, и оркестратор не читает частное хранилище поставщика.
-- **Decision:** ADR-0001
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/workspace_state.rs`
-- **Check:** `ci-test` — `tests/ci/test_product_contracts.py`
-- **Scope:** runtime
-
-### INV-CACHE-REPORTED-EFFECTS — Изменяющие операции порождают типизированные доменные события
-
-- **Rule:** Каждая изменяющая операция порождает типизированные доменные
-  события, и эти события отображаются на имена инвалидированных и обновлённых
-  кешей, о которых сообщается вызывающему.
-- **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
-- **Check:** `ci-test` — `tests/ci/test_unica_mcp_smoke.py`
-- **Scope:** runtime
-
-### INV-CACHE-WORKSPACE-ROOT — Корень изменчивого кеша можно переопределить
-
-- **Rule:** Корень изменчивого кеша по умолчанию равен
-  `<workspaceRoot>/.build/unica` и переопределяется переменной
-  `UNICA_CACHE_DIR`, а записи о скрытых сервисах рабочего пространства пишутся
-  под тем корнем, который действует.
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/workspace.rs`
-- **Check:** `ci-test` — `crates/unica-coder/tests/platform/issue_89_workspace_service.rs`
-- **Scope:** runtime
-
-### INV-CACHE-PROVIDER-STATE-OUTSIDE-SOURCE — Постоянное состояние поставщика не индексирует само себя
-
-- **Rule:** Постоянное состояние `RLM` выводится из нормализованных `workspaceRoot + sourceRoot`, остаётся вне индексируемого `sourceRoot`, изолирует разные рабочие пространства, `worktree` и корни исходников и передаётся одинаково индексатору и читающему процессу.
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/workspace_index.rs`
-- **Check:** `ci-test` — `crates/unica-coder/tests/platform/issue_89_workspace_service.rs`
-- **Scope:** runtime
-
-### INV-CACHE-WRITE-FREE-PREVIEW — Сухой прогон сообщает о последствиях, не записывая состояние
-
-- **Rule:** Вызов в режиме сухого прогона сообщает о своём влиянии на кеш и не
-  пишет ни состояние рабочего пространства, ни индекс, ни запись о сервисе.
-- **Check:** `ci-test` — `tests/ci/test_unica_mcp_smoke.py`
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/workspace_index.rs`
-- **Scope:** runtime
 
 ### INV-CACHE-PERSISTED-STALENESS — Применённое изменение запоминает инвалидированный им кеш
 
@@ -488,133 +241,7 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `tests/ci/test_package_unica_plugin.py`
 - **Scope:** packaged, runtime
 
-## PKG — упаковка и поставка
-
-### INV-PKG-UNTRACKED-BUILD-OUTPUT — Собранные бинарники не попадают под контроль версий
-
-- **Rule:** Собранные бинарники и прочие генерируемые пути пакета никогда не
-  отслеживаются в исходном дереве, а упаковка завершается ошибкой, если
-  отслеживаемый файл оказался внутри генерируемого пути или является
-  символической ссылкой.
-- **Check:** `ci-test` — `tests/ci/test_package_unica_plugin.py`
-- **Scope:** source, packaged
-
-### INV-PKG-THIN-PACKAGE — Публичный пакет маркетплейса тонкий
-
-- **Rule:** Опубликованный пакет несёт только файлы плагина и три небольших
-  бинарника bootstrap; его `.mcp.json` запускает ядро через ограниченный
-  командой shell-алиас Git, который определяет корень плагина для обоих хостов и
-  передаёт его в `bootstrap/launch.sh`, и пакет никогда не зависит ни от полного
-  runtime, ни от матрицы команд под каждую целевую платформу.
-- **Decision:** ADR-0012
-- **Check:** `ci-test` — `tests/ci/test_package_unica_plugin.py`
-- **Scope:** packaged, release
-
-### INV-PKG-VERIFIED-ATOMIC-INSTALL — Получение runtime проверяется контрольной суммой и атомарно
-
-- **Rule:** Bootstrap получает закреплённый артефакт своей цели, сверяет
-  SHA-256 доставляемого ассета и каждый материализованный файл — с записанными
-  суммой, размером и режимом, и только после этого публикует артефакт атомарно;
-  повреждённая доставка, выход за staging, ссылка, потерянный или необъявленный
-  файл никогда не становятся готовым ядром или движком.
-- **Check:** `ci-test` — `crates/unica-bootstrap/tests/runtime_install.rs`
-- **Check:** `ci-test` — `tests/ci/test_package_unica_runtime.py`
-- **Check:** `release-gate` — `scripts/ci/verify-release-assets.py`
-- **Scope:** packaged, release, runtime
-
-### INV-PKG-TOOL-CLOSURE — Многофайловый инструмент входит в runtime полностью
-
-- **Rule:** Многофайловый сторонний инструмент доставляется только как полная
-  полезная нагрузка закреплённого артефакта: сборщик сверяет внешний
-  SHA-256, безопасно извлекает только обычные файлы в изолированный staging,
-  проверяет внутренние идентичности исходника и цели, точки входа, точный набор
-  файлов, SHA-256, размеры и режимы, а манифест поставки перечисляет каждый файл
-  с относительным соседством. Небезопасная запись, ссылка, повтор пути,
-  коллизия, потерянная зависимость или необъявленный файл прекращает сборку или
-  доставку до публикации готового корня.
-- **Check:** `ci-test` — `tests/ci/test_build_unica_tools.py`
-- **Check:** `ci-test` — `tests/ci/test_package_unica_runtime.py`
-- **Check:** `ci-test` — `crates/unica-bootstrap/tests/runtime_install.rs`
-- **Scope:** source, packaged, release, runtime
-
-### INV-PKG-BINARY-NAME — Публичный бинарник runtime называется `unica`
-
-- **Rule:** Встроенный публичный бинарник, собираемый из Cargo-воркспейса,
-  называется `unica` и записан под этим именем в
-  `plugins/unica/third-party/tools.lock.json`.
-- **Decision:** ADR-0001
-- **Check:** `guard-script` — `scripts/ci/check-version-contract.py`
-- **Check:** `ci-test` — `tests/ci/test_build_unica_tools.py`
-- **Scope:** source, packaged
-
-### INV-PKG-VERSION-LOCKSTEP — Оба манифеста хостов несут одну версию
-
-- **Rule:** `plugins/unica/.codex-plugin/plugin.json` и
-  `plugins/unica/.claude-plugin/plugin.json` оба существуют и объявляют ту же
-  версию, что Cargo-воркспейс и запись `unica` в `tools.lock.json`; манифест
-  Claude не объявляет ни `skills`, ни `mcpServers`, потому что и то и другое
-  обнаруживается по умолчанию.
-- **Decision:** ADR-0012
-- **Check:** `guard-script` — `scripts/ci/check-version-contract.py`
-- **Check:** `ci-test` — `tests/ci/test_version_contract.py`
-- **Check:** `ci-test` — `tests/ci/test_package_unica_plugin.py`
-- **Check:** `ci-test` — `crates/unica-bootstrap/src/host/plugin_manifest.rs`
-- **Scope:** source, packaged
-
-### INV-PKG-OLDEST-CLIENT-KEYS — Манифесты и каталоги не выходят за нижнюю границу клиента
-
-- **Rule:** Манифесты хостов и записи каталогов используют только те ключи,
-  которые принимает самый старый поддерживаемый клиент, а оба каталога хостов
-  закрепляют один и тот же неизменяемый тег релиза с типом источника,
-  адресующим подкаталог.
-- **Decision:** ADR-0012
-- **Check:** `ci-test` — `tests/ci/test_package_unica_plugin.py`
-- **Check:** `doc-assert` — `tests/ci/test_product_contracts.py`
-- **Scope:** packaged, release
-
-### INV-PKG-DEV-ONLY-PACKAGE — Локальная отладочная упаковка существует только для разработки
-
-- **Rule:** Локальный отладочный пакет запускает бинарник `bin/<target>/unica`
-  (`unica.exe` на `win-x64`) для текущего хоста напрямую, а не через полезную
-  нагрузку bootstrap — по относительному пути с `cwd` в Codex и через
-  `${CLAUDE_PLUGIN_ROOT}` без `cwd` в Claude Code, — собирается только под
-  текущую целевую платформу и регистрирует свой каталог Codex под именем
-  `unica-dev`, чтобы этот каталог нельзя было принять за опубликованный.
-- **Check:** `ci-test` — `tests/ci/test_package_unica_plugin.py`
-- **Scope:** source
-
-### INV-PKG-NO-INTERNAL-MATERIAL — Внутренние материалы сопровождения не уезжают в поставку
-
-- **Rule:** Пакет плагина несёт только то, что нужно потребителю в момент работы:
-  записи о происхождении апстримов, датированные записи ревью и внутренняя
-  документация об устройстве пакета и конвейера живут вне `plugins/unica/` и в
-  собранный плагин не попадают.
-- **Check:** `ci-test` — `tests/ci/test_package_unica_plugin.py`
-- **Scope:** source, packaged
-
-### INV-PKG-ATTRIBUTION-COVERAGE — Атрибуция остаётся полной и доступной
-
-- **Rule:** У каждого встроенного инструмента, адаптированного источника скилла
-  и упакованного стороннего ресурса есть запись об атрибуции, а страница
-  атрибуции связана ссылкой и из репозитория, и из README в пакете.
-- **Decision:** n/a
-- **Check:** `guard-script` — `scripts/ci/check-attributions.py`
-- **Check:** `ci-test` — `tests/ci/test_attributions.py`
-- **Scope:** source, packaged
-
 ## PLATFORM — платформенный фасад
-
-### INV-PLATFORM-OS-BEHIND-FACADE — Зависящий от ОС код живёт за платформенными фасадами
-
-- **Rule:** Зависящий от ОС продуктивный код существует только под
-  `crates/unica-coder/src/infrastructure/platform/**` и
-  `crates/unica-bootstrap/src/platform/**`; поведение файловой системы, путей,
-  процессов и точек входа попадает в остальной код через эти фасады в виде
-  платформенно-нейтральных типов.
-- **Decision:** ADR-0009
-- **Check:** `guard-script` — `scripts/ci/check-rust-platform-boundary.py`
-- **Check:** `ci-test` — `tests/ci/test_rust_platform_boundary.py`
-- **Scope:** source
 
 ### INV-PLATFORM-NO-PATH-EXEMPTIONS — У платформенного стража нет исключений по путям
 
@@ -630,52 +257,7 @@ Unica. Каждая запись формулирует одно нормати�
   проверяет на буквальный унаследованный путь до слияния
 - **Scope:** source
 
-### INV-PLATFORM-COLOCATED-TESTS — Платформенные тесты лежат рядом со своими адаптерами
-
-- **Rule:** Зависящие от платформы тесты лежат рядом со своими адаптерами или
-  под `crates/<crate>/tests/platform/**`, но никогда — как платформенный
-  тестовый файл верхнего уровня.
-- **Decision:** ADR-0009
-- **Check:** `ci-test` — `tests/ci/test_rust_platform_boundary.py`
-- **Scope:** source, ci
-
-### INV-PLATFORM-NO-ORPHAN-PROCESSES — Дочерние процессы удерживаются целыми деревьями
-
-- **Rule:** Дочерние процессы анализатора, индекса и runtime удерживаются
-  целыми деревьями — Job Object с завершением по закрытию на Windows и отдельная
-  группа процессов на Unix, — поэтому отмена, тайм-аут, остановка или отказ
-  сессии завершают всё дерево за ограниченное время ожидания.
-- **Decision:** ADR-0006, ADR-0009
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform/process.rs`
-- **Check:** `ci-test` — `crates/unica-coder/tests/platform/issue_89_workspace_service.rs`
-- **Scope:** runtime
-
 ## HOST — host-фасад
-
-### INV-HOST-NEUTRAL-ORCHESTRATOR — Оркестратор нейтрален к хосту
-
-- **Rule:** `crates/unica-coder/src/**` не содержит ни одного host-маркера —
-  ни имени хоста, ни каталога манифеста `.codex-plugin` или `.claude-plugin`, ни
-  переменных окружения `CODEX_HOME`, `CLAUDE_PLUGIN_DATA` и
-  `CLAUDE_PLUGIN_ROOT`, — поэтому домен, приложение, инфраструктура и
-  интерфейсный слой не знают, какой хост запустил процесс.
-- **Decision:** ADR-0014, ADR-0012
-- **Check:** `guard-script` — `scripts/ci/check-rust-platform-boundary.py`
-- **Check:** `ci-test` — `tests/ci/test_rust_platform_boundary.py`
-- **Scope:** source
-
-### INV-HOST-KNOWLEDGE-BEHIND-FACADE — Знание о хосте живёт за host-фасадом
-
-- **Rule:** Host-специфичное продуктивное поведение существует только под
-  `crates/unica-bootstrap/src/host/**`, а host-специфичные тесты — дополнительно
-  под `crates/<crate>/tests/host/**`; в остальной код это поведение попадает
-  через host-нейтральные типы фасада, и host-нейтральный override
-  `UNICA_RUNTIME_CACHE_DIR` остаётся вне описаний конкретных хостов.
-- **Decision:** ADR-0014
-- **Check:** `guard-script` — `scripts/ci/check-rust-platform-boundary.py`
-- **Check:** `ci-test` — `crates/unica-bootstrap/src/host/runtime_cache.rs`
-- **Check:** `ci-test` — `crates/unica-bootstrap/src/host/plugin_manifest.rs`
-- **Scope:** source, runtime
 
 ### INV-HOST-UNIFORM-CALL-SITES — Добавление хоста не меняет мест вызова
 
