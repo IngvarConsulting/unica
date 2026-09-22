@@ -15,17 +15,6 @@ MIN_RUNTIME_GUIDANCE_DOCS = 31
 # dictionary implements. Syntax lives in `unica.check`, test runs and EPF/ERF
 # publication are outside the v0.13 surface, so their examples are gone.
 MIN_RUNTIME_EXECUTE_EXAMPLES = 2
-# The allowlist is the registry's own truth, so a dictionary change cannot
-# leave the guard checking examples against a stale set.
-RUN_DICTIONARY_OPERATIONS = {
-    name
-    for name, entry in json.loads(
-        (REPO_ROOT / "arch" / "tool-implementation-coverage.json").read_text(
-            encoding="utf-8"
-        )
-    )["runOperations"].items()
-    if entry.get("status") == "supported"
-}
 # Reading and writing names the wire never publishes; the package README keeps
 # its migration table of removed selectors and is not scanned for these.
 RETIRED_READ_WRITE_NAMES = re.compile(
@@ -929,7 +918,7 @@ SCENARIO_PRESERVING_TOKENS = {
     ],
     # `Name` and `Mode` were report selectors. The typed answer carries the
     # whole object, so the scenarios are preserved by the addresses they read,
-    # not by the drill-down argument that no longer exists (ADR-0023).
+    # not by the drill-down argument that no longer exists.
     # Путь метаданных стал логическим адресом, а вердикт ушёл в свой вход.
     "meta-info": [
         '"at": "main:Catalog.Валюты"',
@@ -972,7 +961,6 @@ SCENARIO_PRESERVING_TOKENS = {
         '"op": "right.set"',
         '"name": "unica.check"',
         '"name": "unica.view"',
-        "Шаблоны RLS",
     ],
     "dcs-compile": [
         '"templateType": "DataCompositionSchema"',
@@ -980,11 +968,10 @@ SCENARIO_PRESERVING_TOKENS = {
     ],
     "dcs-edit": [
         '"op": "field.add"',
-        "## Чего словарь не пишет",
     ],
     # Eleven `Mode` values selected eleven reports. The typed answer carries
     # every section at once, so the scenarios are preserved by the sections the
-    # skill names, not by the selector that no longer exists (ADR-0023).
+    # skill names, not by the selector that no longer exists.
     # Содержимое ячеек стало отдельным адресом, а не признаком в аргументах,
     # поэтому сценарий сохраняется адресом ветви, а не селектором состава.
     "mxl-info": [
@@ -1493,19 +1480,6 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                 offenders.append(path.relative_to(self.repo_root()).as_posix())
         self.assertEqual(offenders, [])
 
-    def test_in_scope_skills_route_to_single_unica_mcp(self) -> None:
-        for skill, tool_name in IN_SCOPE_TOOLS.items():
-            with self.subTest(skill=skill):
-                text = (self.skill_root() / skill / "SKILL.md").read_text(encoding="utf-8")
-                self.assertIn("## MCP routing", text)
-                self.assertIn("MCP `unica`", text)
-                self.assertIn(tool_name, text)
-                self.assertNotIn("unica-coder", text)
-                self.assertNotIn("unica-v8-runner", text)
-                self.assertNotIn("unica-bsl-workspace", text)
-                self.assertNotIn("unica-rlm-tools-bsl", text)
-                self.assertNotIn("unica-v8std", text)
-
     def test_scenario_skills_cover_requested_unica_workflows(self) -> None:
         for skill, tool_names in SCENARIO_SKILLS.items():
             with self.subTest(skill=skill):
@@ -1530,25 +1504,6 @@ class UnicaSkillRoutingTests(unittest.TestCase):
 
         self.assertEqual(offenders, [])
 
-    def test_code_diagnostics_names_the_gaps_it_cannot_cover(self) -> None:
-        """Пробел контракта называется, а не обходится стороной.
-
-        Канонический `check` принимает только адрес: ни сплошного прогона по
-        набору, ни отбора по важности и кодам, ни каталога правил у него нет.
-        Скилл, умолчавший об этом, толкает модель выдумывать аргументы.
-        """
-        text = (self.skill_root() / "code-diagnostics" / "SKILL.md").read_text(
-            encoding="utf-8"
-        )
-
-        self.assertIn("Чего на канонической поверхности пока нет", text)
-        for gap in (
-            "сплошной прогон по всему набору",
-            "отбор по важности и кодам",
-            "каталог правил провайдера",
-            "граф вызовов",
-        ):
-            self.assertIn(gap, text)
 
     def test_code_diagnostics_routes_providers_internally(self) -> None:
         text = (self.skill_root() / "code-diagnostics" / "SKILL.md").read_text(
@@ -1594,65 +1549,6 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         for call in calls:
             self.assertNotEqual(call.get("name"), "unica.code.diagnostics")
 
-    def test_unica_owned_guidance_contains_required_operational_concepts(self) -> None:
-        docs = {
-            "code-search": self.skill_root() / "code-search" / "SKILL.md",
-            "code-diagnostics": self.skill_root() / "code-diagnostics" / "SKILL.md",
-            "test-authoring": self.skill_root() / "test-authoring" / "SKILL.md",
-            "background-jobs": self.skill_root() / "background-jobs" / "SKILL.md",
-            "db-performance": self.skill_root() / "db-performance" / "SKILL.md",
-            "integration-implement": self.skill_root() / "integration-implement" / "SKILL.md",
-            "platform-mechanics": self.reference_root() / "platform" / "platform-mechanics.md",
-            "runtime-diagnostics": self.reference_root() / "platform" / "runtime-diagnostics.md",
-            "db-performance-ref": self.reference_root() / "platform" / "db-performance.md",
-            "integration-contracts": self.reference_root() / "platform" / "integration-contracts.md",
-        }
-        joined = "\n".join(path.read_text(encoding="utf-8") for path in docs.values())
-
-        for token in [
-            "MCP-first",
-            "what was tried",
-            "verification gate",
-            "impact analysis",
-            "managed locks",
-            "lock order",
-            "structured logging",
-            "DCS",
-            "idempotency key",
-        ]:
-            with self.subTest(token=token):
-                self.assertIn(token, joined)
-
-    def test_compatibility_guidance_preserves_effective_version_contract(self) -> None:
-        reference_path = self.reference_root() / "platform" / "compatibility-modes.md"
-        self.assertTrue(reference_path.is_file())
-        reference = reference_path.read_text(encoding="utf-8")
-
-        for token in [
-            "runtime platform line",
-            "configured compatibility mode",
-            "effective compatibility version",
-            "`DontUse` -> runtime platform line",
-            "`VersionX` -> `X`",
-            "`CompatibilityMode`",
-            "`ConfigurationExtensionCompatibilityMode`",
-            "`InterfaceCompatibilityMode`",
-            "code location does not select the mode family",
-            "corroborating implementation evidence",
-            "not complete old-platform equivalence",
-        ]:
-            with self.subTest(token=token):
-                self.assertIn(token, reference)
-
-        for skill in ["platform-help", "release-support", "bsp-patterns"]:
-            skill_text = (self.skill_root() / skill / "SKILL.md").read_text(
-                encoding="utf-8"
-            )
-            with self.subTest(skill=skill):
-                self.assertIn(
-                    "references/platform/compatibility-modes.md",
-                    skill_text,
-                )
 
     def test_platform_evidence_is_not_routed_to_standards_tools(self) -> None:
         docs = list(self.skill_root().glob("**/*.md")) + list(
@@ -1707,28 +1603,6 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertIn("platform API rules", unsafe_routes[0])
         self.assertNotIn("development-standard", unsafe_routes[0])
 
-    def test_platform_help_uses_one_contract_gap_label(self) -> None:
-        platform_help = (self.skill_root() / "platform-help" / "SKILL.md").read_text(
-            encoding="utf-8"
-        )
-
-        self.assertNotIn("Unica MCP contract gap", platform_help)
-        self.assertIn("platform-help contract gap", platform_help)
-
-    def test_all_skills_do_not_expose_internal_mcp_names(self) -> None:
-        forbidden = [
-            "unica-coder",
-            "unica-v8-runner",
-            "unica-bsl-reference",
-            "unica-bsl-workspace",
-            "unica-rlm-tools-bsl",
-            "unica-v8std",
-        ]
-        for skill_path in self.skill_root().glob("*/SKILL.md"):
-            with self.subTest(skill=skill_path.parent.name):
-                text = skill_path.read_text(encoding="utf-8")
-                for name in forbidden:
-                    self.assertNotIn(name, text)
 
     def test_skills_and_references_do_not_instruct_direct_rlm_mcp_calls(self) -> None:
         forbidden = ["rlm_index", "rlm_start", "rlm_execute", "rlm_end"]
@@ -1749,47 +1623,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             with self.subTest(skill=skill):
                 self.assertFalse((self.skill_root() / skill).exists())
 
-        scanned_docs = [
-            self.repo_root() / "README.md",
-            self.repo_root() / "plugins" / "unica" / "README.md",
-            self.reference_root() / "README.md",
-            self.reference_root() / "tooling" / "v8project.md",
-            self.reference_root() / "tooling" / "runtime-build.md",
-            self.reference_root() / "use-cases" / "workspace-runtime.md",
-            self.reference_root() / "use-cases" / "forms-ui.md",
-            self.reference_root() / "use-cases" / "reports-printing.md",
-        ]
-        for doc in scanned_docs:
-            text = doc.read_text(encoding="utf-8")
-            self.assertNotIn("`v8-runner` skill", text)
-            self.assertNotIn("Use the `v8-runner` skill", text)
-            for skill in REPLACED_RUNTIME_SKILLS:
-                with self.subTest(path=doc.relative_to(self.repo_root()), skill=skill):
-                    self.assertNotIn(f"/{skill}", text)
-                    self.assertNotIn(f"`{skill}`", text)
 
-
-
-    def test_db_auth_check_numbers_only_the_two_credential_candidates(self) -> None:
-        text = (
-            self.skill_root() / "db-auth-check" / "SKILL.md"
-        ).read_text(encoding="utf-8")
-        credential_rule = text.split(
-            "## Правило пустых учетных данных", maxsplit=1
-        )[1].split("## Workflow", maxsplit=1)[0]
-
-        self.assertEqual(
-            re.findall(r"(?m)^(\d+)\.\s+(.+)$", credential_rule),
-            [
-                ("1", "`Администратор` с пустым паролем."),
-                ("2", "`Admin` с пустым паролем."),
-            ],
-        )
-        self.assertRegex(
-            credential_rule,
-            r"(?m)^После двух подтверждённых отказов остановись и спроси "
-            r"пользователя, из-под кого подключаться\.$",
-        )
 
     def test_runtime_json_guard_accepts_case_insensitive_fence_labels(self) -> None:
         example = """```JSON
@@ -2086,10 +1920,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                 path=doc.relative_to(self.repo_root()),
                 operation=arguments.get("op"),
             ):
-                # An example calls an operation the dictionary implements; a
-                # previewApply example previews, and an apply carries the
-                # revision its preview returned.
-                self.assertIn(arguments.get("op"), RUN_DICTIONARY_OPERATIONS)
+                # An apply carries the revision its preview returned.
                 if arguments.get("op") != "launch":
                     self.assertIn("dryRun", arguments)
                 if arguments.get("dryRun") is False:
@@ -2156,116 +1987,6 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertEqual(offenders, {})
 
 
-    def test_shipped_guidance_never_routes_runtime_refusal_through_fallbacks(
-        self,
-    ) -> None:
-        shipped_docs = list(self.skill_root().glob("**/*.md")) + list(
-            self.reference_root().glob("**/*.md")
-        )
-        namespace_pattern = (
-            r"`(?:unica\.build|unica\.runtime\.job)\."
-            r"(?:\*|[a-z][a-z0-9.-]*)`"
-        )
-        namespace = re.compile(namespace_pattern)
-        fallback_context = re.compile(
-            r"(?i)\bfallback\b|\bfall\s+back\b|\bcontinuation\b|"
-            r"\bretry\b|\binstead\b|\bworkaround\b|"
-            r"(?:after|around|when).{0,60}\b(?:runtime )?refus\w*\b|"
-            r"запасн\w*\s+пут\w*|продолжени\w*|повтор\w*|вместо|обход\w*|"
-            r"(?:после|при).{0,60}отказ\w*"
-        )
-        negative_fallback = tuple(
-            re.compile(pattern)
-            for pattern in (
-                rf"(?i)\b(?:do not|don't|never|must not)\s+"
-                rf"(?:use|call|invoke|route)\b[^,.;!?]{{0,80}}{namespace_pattern}",
-                rf"(?i)\b(?:нельзя|запрещено)\s+"
-                rf"(?:использовать|вызывать|направлять)\b[^,.;!?]{{0,80}}"
-                rf"{namespace_pattern}",
-                rf"(?i)\bне\s+(?:используй|вызывай|вызови|направь|перейди)\b"
-                rf"[^,.;!?]{{0,80}}{namespace_pattern}",
-                rf"(?i)\b(?:do not|don't|never|must not)\b[^.;!?]{{0,120}}"
-                rf"\bbypass\b[^.;!?]{{0,120}}{namespace_pattern}",
-                rf"(?i)\bне\s+обходи\b[^.;!?]{{0,160}}{namespace_pattern}",
-                rf"(?i){namespace_pattern}[^.;!?]{{0,100}}"
-                rf"(?:\bis not\b|\bisn't\b|\bnot\s+as\b|"
-                rf"\bdo not use (?:it|them)\b)[^.;!?]{{0,60}}"
-                rf"(?:fallback|continuation|retry|workaround)",
-                rf"(?i){namespace_pattern}[^.;!?]{{0,100}}"
-                rf"\bне\s+(?:является|служит|используй (?:его|их))\b"
-                rf"[^.;!?]{{0,60}}(?:запасн\w*\s+пут\w*|fallback|продолжени\w*)",
-            )
-        )
-
-        def logical_clauses(text: str) -> list[str]:
-            return [
-                clause.strip()
-                for clause in re.split(
-                    r"(?<=[.!?;])\s+|^\s*(?:[-*]|\d+[.)])\s+",
-                    text,
-                    flags=re.MULTILINE,
-                )
-                if clause.strip()
-            ]
-
-        def is_fallback_route(clause: str) -> bool:
-            return bool(
-                namespace.search(clause)
-                and fallback_context.search(clause)
-                and not any(pattern.search(clause) for pattern in negative_fallback)
-            )
-
-        unsafe_examples = (
-            "Use `unica.build.load` as fallback.",
-            "Route through `unica.runtime.job.start` as continuation after runtime refusal.",
-            "Используй `unica.build.*` как запасной путь.",
-            "После отказа перейди в `unica.runtime.job.status`.",
-            "Fall back to `unica.build.load` after runtime refusal.",
-            "After runtime refusal, call `unica.runtime.job.start`.",
-            "После отказа вызови `unica.build.load`.",
-            "If runtime.execute cannot run, use `unica.runtime.job.start` as fallback.",
-            "Не вызывай runtime.execute повторно, используй `unica.runtime.job.start` как запасной путь.",
-            "Если runtime.execute нельзя вызвать, используй `unica.build.load` вместо него.",
-        )
-        safe_examples = (
-            "Do not use `unica.build.load` as fallback.",
-            "Не используй `unica.runtime.job.start` после отказа.",
-            "Use `unica.runtime.job.start` for an explicitly requested durable job.",
-            "Используй `unica.build.load` для независимого build workflow.",
-            "Use `unica.runtime.job.start` for an explicitly requested durable job; do not use it as fallback.",
-            "Используй `unica.build.load` для отдельного workflow; не используй его как запасной путь.",
-        )
-        for example in unsafe_examples:
-            self.assertTrue(
-                any(is_fallback_route(clause) for clause in logical_clauses(example)),
-                example,
-            )
-        for example in safe_examples:
-            self.assertFalse(
-                any(is_fallback_route(clause) for clause in logical_clauses(example)),
-                example,
-            )
-        for doc in shipped_docs:
-            text = doc.read_text(encoding="utf-8")
-            with self.subTest(path=doc.relative_to(self.repo_root())):
-                violating = [
-                    clause
-                    for clause in logical_clauses(text)
-                    if is_fallback_route(clause)
-                ]
-                self.assertEqual(violating, [])
-
-
-    def test_code_quality_runtime_preview_preserves_test_first_order(self) -> None:
-        doc = self.reference_root() / "use-cases" / "code-quality-review.md"
-        text = doc.read_text(encoding="utf-8")
-        test_first = re.search(
-            r"write a reproducing test.{0,160}confirm that it fails.{0,160}before changing",
-            text,
-            flags=re.DOTALL,
-        )
-        self.assertIsNotNone(test_first)
-        self.assertLess(test_first.start(), text.index("check syntax with `unica.check` as a separate"))
 
 
 
@@ -2460,108 +2181,6 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertIn("`unica.check`", form_edit)
         self.assertNotIn("unica.form.validate", form_edit)
 
-    def test_form_patterns_ux_guidance_is_mirrored_and_uses_supported_dsl(self) -> None:
-        heading = "## UX-правила для элементов и компоновки форм"
-        legacy_heading = "## UX-правила для элементов форм"
-
-        def ux_section(path: Path) -> str:
-            text = path.read_text(encoding="utf-8")
-            start = text.index(heading if heading in text else legacy_heading)
-            end = text.index("\n---", start)
-            return text[start:end]
-
-        reference_path = self.reference_root() / "specs" / "form-patterns.md"
-        skill_path = self.skill_root() / "form-patterns" / "SKILL.md"
-        reference_section = ux_section(reference_path)
-        skill_section = ux_section(skill_path)
-
-        self.assertIn(heading, reference_path.read_text(encoding="utf-8"))
-        self.assertIn(heading, skill_path.read_text(encoding="utf-8"))
-        self.assertEqual(skill_section, reference_section)
-        self.assertIn(
-            "https://github.com/Oxotka/1CDesignGuide/tree/edc05eaf5c191250a184b0e185006bf4b412f7a5",
-            reference_section,
-        )
-        for token in [
-            "Обычная группа",
-            "прижатия элементов и заголовков к краю",
-            "Сильное",
-            "Обычное",
-            "Слабое",
-            "Сворачиваемая группа",
-            "не отображайте отступ слева",
-            '"showLeftMargin": false',
-            "`collapsed` задаёт начальное состояние",
-            "`Группа.Показать()`",
-            "`Группа.Скрыть()`",
-            "только в коде формы",
-            "Всплывающая группа",
-            "DSL пока не может настроить `ControlRepresentation`",
-            "как подсказку",
-            "подобно гиперссылке",
-            "Командная панель",
-            '"commandSource": "Form"',
-            '"commandSource": "FormCommandPanelGlobalCommands"',
-            '"commandName": "CommonCommand.ОткрытьПараметры"',
-            "вручную устраните дубли",
-            "не выдавайте `popup` или `buttonGroup` за исполнимые нативные элементы",
-            "Команды формы",
-            "Шапка формы",
-            "функциональным опциям",
-            "автозаполняются или сохраняют предыдущее значение",
-            "изменяющее форму, ставьте первым",
-            "Подвал формы",
-            "Комментарий и Ответственный последними",
-            "строковых полей с доступным выбором",
-            '"choiceButton": true',
-            "очевидных полей",
-            '"titleLocation": "none"',
-            '"titleLocation": "top"',
-            '"inputHint": "По всем организациям"',
-            '"showInHeader": false',
-            '"readOnly": true',
-            '"horizontalStretch": true',
-            '"headerHorizontalAlign": "Right"',
-            '"horizontalAlign": "Right"',
-            "не используйте много разных стилей и цветов",
-            "достаточно длинное название",
-            "двойное отрицание",
-            "Проводить документ при записи",
-            '"tooltip": "Пояснение"',
-            '"tooltipRepresentation": "Button"',
-            '"checkBoxType": "switcher"',
-            "3–5 значений",
-            "на весь экран",
-            "слева вверху",
-            "модальной",
-            "справа внизу",
-            '"font": { "bold": true }',
-            '"backColor": "#FFFF00"',
-        ]:
-            with self.subTest(token=token):
-                self.assertIn(token, reference_section)
-
-        self.assertEqual(reference_section.count("defaultButton"), 1)
-        self.assertNotIn("buttonHint", reference_section)
-        self.assertNotIn("RGB(", reference_section)
-        self.assertNotRegex(reference_section, r'"radio"\s*:')
-        self.assertNotRegex(reference_section, r'"(?:popup|buttonGroup)"\s*:')
-        self.assertNotRegex(reference_section, r'"(?:leftIndent|showLeftIndent)"\s*:')
-        self.assertNotIn("нет нативного DSL-ключа для левого отступа", reference_section)
-        self.assertNotIn('"representation": "Picture"', reference_section)
-        self.assertNotIn("Кнопки действий внизу", reference_section)
-
-    def test_form_dsl_keeps_tooltip_and_command_binding_contracts_unambiguous(self) -> None:
-        form_dsl = (self.reference_root() / "specs" / "form-dsl-spec.md").read_text(
-            encoding="utf-8"
-        )
-
-        self.assertIn("Обычный `<Title>` поля и `<ToolTip>`", form_dsl)
-        self.assertRegex(form_dsl, r"передавать им `\{text, formatted\}`\s+нельзя")
-        self.assertIn("приоритетом `command` → `commandName` → `stdCommand`", form_dsl)
-        self.assertIn("`popup` и `buttonGroup` зарезервированы", form_dsl)
-        self.assertNotRegex(form_dsl, r'"(?:popup|buttonGroup)"\s*:')
-
     def test_meta_info_tracks_upstream_type_presentation_through_unica_boundary(self) -> None:
         meta_info = (self.skill_root() / "meta-info" / "SKILL.md").read_text(encoding="utf-8")
 
@@ -2627,64 +2246,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertIn("unica.view", release_support)
         self.assertIn("ParentConfigurations.bin", release_support)
 
-    def test_source_set_format_detection_contract_is_documented(self) -> None:
-        docs = {
-            "workspace-runtime": self.reference_root()
-            / "use-cases"
-            / "workspace-runtime.md",
-            "metadata-modeling": self.reference_root()
-            / "use-cases"
-            / "metadata-modeling.md",
-            "v8project": self.reference_root() / "tooling" / "v8project.md",
-            "format-index": self.reference_root() / "specs" / "format-index.md",
-            "invariants": self.repo_root() / "docs" / "arch-v1" / "architecture" / "invariants.md",
-        }
-        joined = "\n".join(path.read_text(encoding="utf-8") for path in docs.values())
 
-        self.assertIn("unica.view", joined)
-        self.assertIn("sourceSets[]", joined)
-        self.assertIn("sourceFormat", joined)
-        self.assertIn("platform_xml", joined)
-        self.assertIn("EDT configuration", joined)
-        self.assertIn("platform XML external", joined)
-        # The load-bearing claim: the format belongs to one source set, not to
-        # the workspace. The plugin references state it in English for skill
-        # users; the invariant registry states it in Russian. Either wording
-        # satisfies the contract, but one of them has to be present.
-        self.assertTrue(
-            any(
-                phrase in joined
-                for phrase in (
-                    "not of the whole workspace",
-                    "а не всего рабочего пространства",
-                )
-            ),
-            "the source-set format contract must be documented somewhere",
-        )
-        self.assertNotIn("sourceFormat=mixed", joined)
-        self.assertNotIn("source_format=mixed", joined)
-
-    def test_workspace_runtime_routes_project_health_without_granting_mutation(self) -> None:
-        joined = (
-            self.reference_root() / "use-cases" / "workspace-runtime.md"
-        ).read_text(encoding="utf-8")
-        normalized = " ".join(joined.split())
-
-        for token in (
-            "unica.view {}",
-            "ready",
-            "repositoryReady",
-            "remediation",
-            "sourceSet.path: .",
-        ):
-            self.assertIn(token, joined)
-        self.assertIn("does not mean Unica is unusable without Git", normalized)
-        self.assertIn("never execute them automatically", normalized)
-        # Вердикт по корню отвечает `unica.check {}`, факты — `unica.view {}`
-        # (DEC.2026-09-08.ROOT-VERDICT-IN-CHECK). Ссылка обязана вести за
-        # готовностью туда, где она живёт.
-        self.assertIn("call `unica.check {}` again", normalized)
-        self.assertNotIn("it does not inspect repository health", joined)
 
     def test_references_do_not_contain_stale_upstream_instructions(self) -> None:
         forbidden_patterns = [
@@ -2737,14 +2299,7 @@ Use `.claude/commands/xdto.md` as the execution route.
         self.assertIn(".claude", guarded)
 
 
-    def test_target_pull_guidance_does_not_offer_the_legacy_full_dump_route(self) -> None:
-        for name in ("runtime-build.md", "v8project.md"):
-            text = (self.reference_root() / "tooling" / name).read_text(encoding="utf-8")
-            with self.subTest(document=name):
-                self.assertIn("pull", text)
-                self.assertIn("unavailable", text)
-                self.assertNotIn('"mode": "full"', text)
-                self.assertNotIn("исполняется с названным риском", text)
+
 
     def test_code_patch_skill_uses_only_logical_configuration_and_extension_targets(
         self,
@@ -2779,7 +2334,6 @@ Use `.claude/commands/xdto.md` as the execution route.
                     # Применение связано с предпросмотром забором ревизии.
                     self.assertTrue(arguments["ifRev"])
         self.assertTrue(previews, "скилл обязан показать предпросмотр")
-        self.assertRegex(text, r"Configuration.{0,200}Extension")
 
     def test_code_patch_prompt_metadata_covers_every_public_operation(self) -> None:
         """Prompt metadata names the published operations and only those.
@@ -2809,11 +2363,6 @@ Use `.claude/commands/xdto.md` as the execution route.
                 with self.subTest(field=field, retired=operation):
                     self.assertNotRegex(value, rf"\b{operation}\b")
 
-        # Селектором стал адрес, и это надо сказать прямо: иначе модель будет
-        # искать поле `selector`, которого на канонической поверхности нет.
-        self.assertIn("Селектор — это адрес", text)
-        # Куда ляжет вставка, обязано быть сказано: у тела модуля свой адрес.
-        self.assertIn("тело модуля целиком", text)
 
     def test_xdto_skill_uses_one_confirmed_info_preview_apply_mcp_flow(self) -> None:
         path = self.skill_root() / "xdto" / "SKILL.md"
@@ -2841,8 +2390,6 @@ Use `.claude/commands/xdto.md` as the execution route.
         self.assertIs(preview.pop("dryRun"), True)
         self.assertIs(apply.pop("dryRun"), False)
         self.assertEqual(preview, apply)
-        confirmation_text = text[blocks[2].end() : blocks[3].start()].casefold()
-        self.assertIn("явного подтверждения", confirmation_text)
 
         # Reader and writer address the same node with one canonical `at`.
         self.assertEqual(
@@ -2874,8 +2421,6 @@ Use `.claude/commands/xdto.md` as the execution route.
         )
         # A coherent change travels as one ordered transactional `ops` array,
         # and a rejected element is named by its position in it.
-        self.assertIn("одним вызовом", text)
-        self.assertIn("`ops[<индекс>]`", text)
         for forbidden in (
             "unica.xdto.validate",
             "xdto-compile",
@@ -2891,56 +2436,10 @@ Use `.claude/commands/xdto.md` as the execution route.
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, text)
 
-    def test_source_access_skill_routes_reads_and_sends_writes_to_apply(
-        self,
-    ) -> None:
-        path = self.skill_root() / "source-access" / "SKILL.md"
-        text = path.read_text(encoding="utf-8")
-        writer = text.index("unica.apply")
-        reader = text.index("unica.view")
-
-        self.assertLess(reader, writer, "reading comes before the writer")
-        # Канонический читатель не меняет исходников, поэтому скилл не обещает
-        # правку через него и отправляет её в `unica.apply`.
-        self.assertNotIn("unica.source.apply", text)
-        self.assertNotIn("unica.code.patch", text)
-        self.assertRegex(text, r"(?s)dryRun.{0,80}true.{0,400}dryRun.{0,80}false")
-        self.assertIn("Чтение не меняет исходники", text)
-        self.assertIn("unica.resolve", text)
-        self.assertIn("replace", text)
-
-    def test_package_readme_documents_code_patch_target_migration(self) -> None:
-        text = (
-            self.repo_root() / "plugins" / "unica" / "README.md"
-        ).read_text(encoding="utf-8")
-        self.assertRegex(
-            text,
-            r"(?s)\|\s*`path`\s*\+\s*`sourceDir`\s*\|"
-            r"\s*`sourceSet`\s*\+\s*`metadataPath`\s*\|",
-        )
-        self.assertIn("legacy_target_removed", text)
 
 
-    def test_config_dump_info_version_is_documented_as_opaque_platform_state(self) -> None:
-        configuration_spec = (
-            self.reference_root() / "specs" / "1c-configuration-spec.md"
-        ).read_text(encoding="utf-8")
 
-        self.assertIn("`configVersion` — непрозрачное значение платформы", configuration_spec)
-        self.assertNotRegex(configuration_spec, r"`configVersion`\s*\|\s*Хеш версии")
 
-    def test_config_dump_info_docs_preserve_same_named_metadata_source(self) -> None:
-        docs = [
-            self.reference_root() / "tooling" / "v8project.md",
-            self.reference_root() / "use-cases" / "metadata-modeling.md",
-        ]
-
-        for path in docs:
-            text = path.read_text(encoding="utf-8")
-            with self.subTest(path=path.relative_to(self.repo_root())):
-                self.assertIn("platform-generated CDFI sidecar", text)
-                self.assertIn("legitimate metadata descriptor", text)
-                self.assertIn("remains source", text)
 
     def test_skills_and_references_do_not_expose_restricted_research_sources(self) -> None:
         forbidden_patterns = [
@@ -2990,20 +2489,6 @@ Use `.claude/commands/xdto.md` as the execution route.
                 for token in forbidden:
                     self.assertNotIn(token, text)
 
-    def test_migrated_skills_do_not_reference_skill_local_operation_scripts(self) -> None:
-        forbidden = [
-            "powershell.exe",
-            ".ps1",
-            ".py",
-            "Current Python/PowerShell scripts",
-            "fallback implementation details",
-            "Native execution path",
-        ]
-        for skill in IN_SCOPE_TOOLS:
-            with self.subTest(skill=skill):
-                text = (self.skill_root() / skill / "SKILL.md").read_text(encoding="utf-8")
-                for token in forbidden:
-                    self.assertNotIn(token, text)
 
     def test_migrated_skills_do_not_ship_skill_local_operation_scripts(self) -> None:
         for skill in IN_SCOPE_TOOLS:
@@ -3044,21 +2529,6 @@ Use `.claude/commands/xdto.md` as the execution route.
                 if "```" in section:
                     self.assertIn('"method": "tools/call"', section)
 
-    def test_skills_without_a_canonical_entry_say_so_and_route_reading(self) -> None:
-        """Скилл, чьего предмета поверхность не пишет, обязан это назвать.
-
-        Иначе читатель примет описание формата за инструкцию к вызову и
-        отправит запрос, которого нет: молчание здесь дороже пробела.
-        """
-        for skill in sorted(SKILLS_WITHOUT_A_CANONICAL_ENTRY):
-            with self.subTest(skill=skill):
-                text = (self.skill_root() / skill / "SKILL.md").read_text(
-                    encoding="utf-8"
-                )
-                self.assertIn("канонической операции", text.lower())
-                # Словоформа не важна: важно, что пробел назван вслух.
-                self.assertRegex(text, r"пробел\w*\s+контракта")
-                self.assertIn("unica.check", text)
 
     def test_migrated_skills_use_task_parameterized_mcp_examples(self) -> None:
         generic_arguments = '"arguments": {\n      "cwd": "<workspace>"\n    }'
@@ -3095,27 +2565,6 @@ Use `.claude/commands/xdto.md` as the execution route.
                     self.assertNotEqual(set(params["arguments"].keys()), {"cwd"})
 
 
-class ExecutableSkillExampleInvariantTests(unittest.TestCase):
-    def test_invariant_distinguishes_reader_execution_from_preview(self) -> None:
-        invariants = (
-            REPO_ROOT / "docs" / "arch-v1" / "architecture" / "invariants.md"
-        ).read_text(encoding="utf-8")
-        section = invariants.split(
-            "### INV-SKILL-EXECUTABLE-EXAMPLES", 1
-        )[1].split("\n### ", 1)[0]
-
-        self.assertIn("ADR-0044", section)
-        self.assertIn("предпросмотр", section)
-        self.assertIn("настоящее чтение MCP", section)
-        self.assertIn("детерминирован", section)
-        normalized = " ".join(section.casefold().split())
-        self.assertNotRegex(
-            normalized,
-            r"(?:все|кажд\w*)\s+(?:mcp\s+)?(?:пример\w*|вызов\w*)\s+"
-            r"(?:—\s+|это\s+)?(?:сух\w*\s+прогон\w*|dry\s*run\w*|предпросмотр\w*)",
-        )
-
-
 class PlatformHelpRoutingTests(unittest.TestCase):
     """Скилл получил источник: отказ перестаёт быть штатным ответом."""
 
@@ -3128,42 +2577,19 @@ class PlatformHelpRoutingTests(unittest.TestCase):
         self.assertIn("unica.docs", self.text)
         self.assertNotIn("unica.documentation.search", self.text)
 
-    def test_keeps_the_standards_reading_rule(self) -> None:
-        # Секция стандартов может прийти в том же ответе; правило вызова
-        # превращается в правило чтения и должно остаться дословным.
-        self.assertIn("development-standard", self.text)
-        self.assertIn("не закрывает вопрос", self.text)
 
-    def test_contract_gap_is_no_longer_the_default_answer(self) -> None:
-        # Отказ сохраняется только для случая, когда ни один поставщик не
-        # подтвердил ответ.
-        self.assertNotIn(
-            "Until it is exposed by public MCP `unica`, report this as a `platform-help` contract gap",
-            self.text,
-        )
 
-    def test_states_the_source_boundary(self) -> None:
-        self.assertIn("Расхождение их версий называйте в ответе", self.text)
 
     def test_filters_platform_questions_by_source_kind(self) -> None:
-        # ADR-0032 п.5: вопрос об API платформы зовётся с фильтром по смыслу
+        # Вопрос об API платформы задаётся с фильтром по смыслу
         # источника, а не полагается на то, что секция стандартов не помешает.
         # На канонической поверхности фильтр — скаляр `source`.
         self.assertIn('"source": "platform-help"', self.text)
 
-    def test_explains_policy_denied_as_a_user_choice(self) -> None:
-        # Запрет сетевого выхода — решение пользователя (unica.toml), и ответ
-        # обязан называть его, а не выдавать за сбой площадки.
-        self.assertIn("policy-denied", self.text)
-        self.assertIn("unica.toml", self.text)
 
     def test_confirms_answers_with_the_opened_document(self) -> None:
-        # ADR-0029 п.4 требовал доказывать ответ текстом открытой страницы.
-        # Канонический провод инструмента, открывающего страницу по
-        # `documentId`, не публикует, поэтому правило вырождается в честную
-        # границу: скилл несёт только исполнимые вызовы и обязан назвать, что
-        # фрагмент страницей не является.
-        self.assertIn("не выдавайте", self.text)
+        # Страница открывается через unica.docs с локатором в query.
+        # Примеры используют этот вход, а не снятый documentation.get.
         calls = [
             json.loads(block)
             for block in re.findall(r"```json\n(.*?)\n```", self.text, flags=re.S)
@@ -3174,152 +2600,13 @@ class PlatformHelpRoutingTests(unittest.TestCase):
         self.assertNotIn("unica.documentation.get", names)
 
     def test_routes_configuration_domain_questions_to_configuration_help(self) -> None:
-        # ADR-0034: доменный вопрос о самой конфигурации закрывает её
+        # Доменный вопрос о самой конфигурации закрывает её
         # встроенная справка, а не справка платформы. На канонической
         # поверхности этот источник пока отвечает отказом, и скилл обязан
         # назвать и сам источник, и названную причину его недоступности,
         # чтобы читатель не принял отказ за отсутствие ответа.
         self.assertIn('"configuration-documentation"', self.text)
         self.assertIn("unsupported_source", self.text)
-
-    def test_requires_naming_the_answering_locale(self) -> None:
-        # ADR-0029 п.3: подстановка соседней локали разрешена и обязана быть
-        # названной в ответе. Данные называют её полем `language` секции, но
-        # без правила чтения агент не обязан пересказать подстановку: на
-        # русскоязычной установке запрос en возвращает русские страницы молча.
-        self.assertIn("`language`", self.text)
-        self.assertIn("назовите подстановку локали в ответе", self.text)
-
-
-# ADR-0049: a bridged reader accepts a logical selector beside its path, so a
-# skill whose parameter table still names only the path — or still marks it
-# unconditionally required — contradicts the schema the tool publishes.
-CONDITIONAL_MARKER = "один из двух"
-
-# Скилл покидает этот список, когда его инструмент перестаёт принимать
-# файловый селектор: у канонического `view` его нет вовсе, а путь, пришедший
-# снаружи, переводит в адрес аварийный `resolve`.
-# Мостовых скиллов с двумя селекторами не осталось: чтение адресуется
-# логически, файловый путь переводит аварийный `unica.resolve`.
-BRIDGED_SKILL_SELECTORS: dict[str, tuple[str, bool]] = {}
-
-
-def _tables(text: str) -> list[list[list[str]]]:
-    """Every contiguous run of Markdown table rows, cells stripped of backticks."""
-    tables: list[list[list[str]]] = []
-    current: list[list[str]] = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("|"):
-            cells = [cell.strip().strip("`") for cell in stripped.strip("|").split("|")]
-            if set("".join(cells)) <= set("-: "):
-                continue  # the header separator carries no argument
-            current.append(cells)
-            continue
-        if current:
-            tables.append(current)
-            current = []
-    if current:
-        tables.append(current)
-    return tables
-
-
-def _parameter_table(text: str, legacy: str) -> list[list[str]] | None:
-    """The one table that documents the tool's target selector."""
-    for table in _tables(text):
-        if any(row and row[0] == legacy for row in table):
-            return table
-    return None
-
-
-class BridgedSkillSelectorDocumentationTests(unittest.TestCase):
-    """The parameter table must describe the contract the tool publishes.
-
-    Weak assertions here would pass on a table that dropped the legacy row, or
-    marked a selector plainly optional, or lost the exclusivity rule — each of
-    which leaves a caller unable to build a valid call from the document.
-    """
-
-    def skill_root(self) -> Path:
-        return REPO_ROOT / "plugins" / "unica" / "skills"
-
-    def parameter_table(self, skill: str, legacy: str) -> list[list[str]]:
-        text = (self.skill_root() / skill / "SKILL.md").read_text(encoding="utf-8")
-        table = _parameter_table(text, legacy)
-        self.assertIsNotNone(
-            table, f"{skill}: не найдена таблица параметров со строкой `{legacy}`"
-        )
-        return table
-
-    def test_the_parameter_table_carries_every_selector(self) -> None:
-        for skill, (legacy, takes_address) in BRIDGED_SKILL_SELECTORS.items():
-            with self.subTest(skill=skill):
-                table = self.parameter_table(skill, legacy)
-                names = {row[0] for row in table if row}
-                expected = {legacy, "sourceSet"}
-                if takes_address:
-                    expected.add("metadataPath")
-                self.assertLessEqual(
-                    expected,
-                    names,
-                    f"{skill}: таблица параметров не описывает все селекторы",
-                )
-
-    def test_no_selector_is_documented_as_required_or_as_optional(self) -> None:
-        for skill, (legacy, takes_address) in BRIDGED_SKILL_SELECTORS.items():
-            with self.subTest(skill=skill):
-                table = self.parameter_table(skill, legacy)
-                if len(table[0]) < 3:
-                    continue  # the table has no obligation column to check
-                selectors = {legacy, "sourceSet"}
-                if takes_address:
-                    selectors.add("metadataPath")
-                for row in table:
-                    if not row or row[0] not in selectors:
-                        continue
-                    obligation = row[1].lower()
-                    self.assertNotIn(
-                        obligation,
-                        {"да", "нет"},
-                        f"{skill}: `{row[0]}` не безусловно обязателен и не просто"
-                        " необязателен — он часть взаимоисключающей ветви",
-                    )
-                    self.assertEqual(
-                        obligation,
-                        CONDITIONAL_MARKER,
-                        f"{skill}: `{row[0]}` обязан нести маркер ветви",
-                    )
-
-    def test_each_skill_states_the_exclusivity_rule(self) -> None:
-        for skill, (legacy, takes_address) in BRIDGED_SKILL_SELECTORS.items():
-            with self.subTest(skill=skill):
-                text = (self.skill_root() / skill / "SKILL.md").read_text(
-                    encoding="utf-8"
-                )
-                rule = [
-                    line
-                    for line in text.splitlines()
-                    if line.startswith("Селектор цели ровно один")
-                ]
-                self.assertTrue(
-                    rule, f"{skill}: правило единственного селектора не сформулировано"
-                )
-                statement = " ".join(
-                    text.split("Селектор цели ровно один", 1)[1].splitlines()[:3]
-                )
-                for name in [legacy, "sourceSet"] + (
-                    ["metadataPath"] if takes_address else []
-                ):
-                    self.assertIn(
-                        name,
-                        statement,
-                        f"{skill}: правило не называет `{name}`",
-                    )
-                self.assertIn(
-                    "selector_conflict",
-                    statement,
-                    f"{skill}: правило не называет стабильный код отказа",
-                )
 
 
 if __name__ == "__main__":

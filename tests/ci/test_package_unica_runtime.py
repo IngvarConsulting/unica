@@ -256,9 +256,9 @@ class PackageUnicaRuntimeTests(unittest.TestCase):
             self.assertEqual(metadata["asset"]["name"], "unica-runtime-linux-x64.tar.gz")
             self.assertEqual(metadata["asset"]["sha256"], sha256(archive))
             self.assertEqual(metadata["entrypoint"], "bin/linux-x64/unica")
-            actual = {item["path"]: item["sha256"] for item in metadata["files"]}
+            actual = {item["path"]: item for item in metadata["files"]}
             self.assertEqual(
-                actual["bin/linux-x64/unica"], hashlib.sha256(b"unica").hexdigest()
+                actual["bin/linux-x64/unica"]["sha256"], hashlib.sha256(b"unica").hexdigest()
             )
             self.assertIn("third-party/manifest.json", actual)
             # Файлы движков сюда не попадают: их архив собирает тулчейн.
@@ -266,6 +266,15 @@ class PackageUnicaRuntimeTests(unittest.TestCase):
                 sorted(actual),
                 ["bin/linux-x64/unica", "third-party/manifest.json"],
             )
+            with tarfile.open(archive) as packed:
+                self.assertEqual(sorted(packed.getnames()), sorted(actual))
+                for member in packed.getmembers():
+                    self.assertTrue(member.isfile(), member.name)
+                    payload = packed.extractfile(member).read()
+                    self.assertEqual(
+                        actual[member.name]["sha256"], hashlib.sha256(payload).hexdigest()
+                    )
+                    self.assertEqual(actual[member.name]["executable"], bool(member.mode & 0o111))
 
     def test_runtime_packager_rejects_symlinked_binary(self) -> None:
         module = load_module()
@@ -293,42 +302,56 @@ class PackageUnicaRuntimeTests(unittest.TestCase):
     def test_runtime_packager_rejects_missing_extra_and_metadata_drift(self) -> None:
         module = load_module()
 
-        mutations = {
-            "missing": lambda bundle: (
-                bundle / "bin" / "linux-x64" / "libpython3.12.so.1.0"
-            ).unlink(),
-            "extra": lambda bundle: (
-                bundle / "bin" / "linux-x64" / "rlm-tools-bsl"
-            ).write_bytes(b"legacy"),
-            "digest": lambda bundle: (
-                bundle / "bin" / "linux-x64" / "libpython3.12.so.1.0"
-            ).write_bytes(b"drifted-payloa"),
-        }
-        for label, mutate in mutations.items():
+        for label, expected_error in (
+            ("missing", "missing"),
+            ("extra", "unexpected"),
+            ("digest", "checksum mismatch"),
+            ("size", "size mismatch"),
+        ):
             with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 bundle = make_bundle(root)
-                mutate(bundle)
-                with self.assertRaisesRegex(
-                    SystemExit,
-                    "missing|unexpected|checksum|size|file set",
-                ):
+                library = bundle / "bin" / "linux-x64" / "libpython3.12.so.1.0"
+                if label == "missing":
+                    library.unlink()
+                elif label == "extra":
+                    (library.parent / "rlm-tools-bsl").write_bytes(b"legacy")
+                elif label == "digest":
+                    library.write_bytes(b"drifted-payloa")
+                else:
+                    manifest_path = bundle / "tools.json"
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    declaration = next(
+                        item
+                        for item in manifest["runtimeFiles"]
+                        if item["path"] == library.relative_to(bundle).as_posix()
+                    )
+                    declaration["size"] += 1
+                    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+                with self.assertRaisesRegex(SystemExit, expected_error):
                     module.package_runtime(bundle, root / "out")
 
     @unittest.skipIf(os.name == "nt", "Windows does not preserve POSIX execute bits")
     def test_runtime_packager_rejects_mode_drift(self) -> None:
         module = load_module()
-        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        bundle = make_bundle(root)
-        library = bundle / "bin" / "linux-x64" / "libpython3.12.so.1.0"
-        library.chmod(library.stat().st_mode | stat.S_IXUSR)
+        for label in ("gained-executable", "lost-executable"):
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                bundle = make_bundle(root)
+                if label == "gained-executable":
+                    library = bundle / "bin" / "linux-x64" / "libpython3.12.so.1.0"
+                    library.chmod(library.stat().st_mode | stat.S_IXUSR)
+                else:
+                    binary = bundle / "bin" / "linux-x64" / "unica"
+                    binary.chmod(binary.stat().st_mode & ~0o111)
 
-        with self.assertRaisesRegex(SystemExit, "mode|executable"):
-            module.package_runtime(bundle, root / "out")
+                with self.assertRaisesRegex(SystemExit, "mode|executable"):
+                    module.package_runtime(bundle, root / "out")
 
     def test_runtime_packager_rejects_duplicate_and_out_of_closure_tool_paths(self) -> None:
         module = load_module()
-        for label in ("duplicate", "outside", "wrong-target"):
+        for label in ("duplicate", "duplicate-tool", "outside", "wrong-target"):
             with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 bundle = make_bundle(root)
@@ -336,6 +359,10 @@ class PackageUnicaRuntimeTests(unittest.TestCase):
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                 if label == "duplicate":
                     manifest["runtimeFiles"].append(dict(manifest["runtimeFiles"][0]))
+                elif label == "duplicate-tool":
+                    first, second = manifest["tools"][:2]
+                    second["binaryPath"] = first["binaryPath"]
+                    second["sha256"] = first["sha256"]
                 elif label == "outside":
                     manifest["tools"][0]["binaryPath"] = "bin/linux-x64/not-declared"
                 else:

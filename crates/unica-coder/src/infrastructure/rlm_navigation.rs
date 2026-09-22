@@ -1117,6 +1117,7 @@ mod tests {
             );
             assert!(!outcome.errors[0].contains("secret"), "{outcome:?}");
             assert!(outcome.stdout.is_none(), "{outcome:?}");
+            assert!(outcome.artifacts.is_empty(), "{outcome:?}");
             assert!(result.data.is_none());
         }
     }

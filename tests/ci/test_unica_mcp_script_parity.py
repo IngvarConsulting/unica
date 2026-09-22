@@ -107,7 +107,7 @@ DOCUMENTED_READER_TOOL_NAMES = {
 TYPED_CONTRACT_TOOL_NAMES = {
     name
     for name, review in json.loads(
-        (REPO_ROOT / "arch/tool-surface-review.json").read_text(encoding="utf-8")
+        (REPO_ROOT / "tests/fixtures/v013/tool-surface-review.json").read_text(encoding="utf-8")
     ).items()
     if review["result"]["contract"] == "typed"
 }
@@ -434,7 +434,7 @@ MUTATING_FORM_DCS_PARITY_TOOLS = {
 }
 
 # A tool that answers with typed data has no prose to compare against the
-# reference model, so it leaves this stand as it migrates (ADR-0023). The stand
+# reference model, so it leaves this stand as it migrates. The stand
 # itself is scheduled for redesign; until then this list records what left and
 # why, instead of scenarios quietly disappearing.
 TYPED_RESULT_TOOLS = {
@@ -579,7 +579,7 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
     # asserted directly against the tool by the Rust test
     # `cfe_patch_method_rejects_unsupported_v1_interception_shapes_atomically`.
     # This guard checked the retired parity scenarios' arguments instead, so it
-    # left the stand with unica.cfe.patch_method (ADR-0023).
+    # left the stand with unica.cfe.patch_method.
 
     def test_rust_registry_parity_list_matches_python_parity_harness(self) -> None:
         app_mod = (REPO_ROOT / "crates" / "unica-coder" / "src" / "application" / "mod.rs").read_text(
@@ -663,7 +663,7 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
                     self.assertTrue(any(scenario.compare_files for scenario in scenarios))
 
     def test_every_documented_dcs_edit_operation_stays_under_test(self) -> None:
-        # unica.dcs.edit left the scenario stand for typed data (ADR-0023), so
+        # unica.dcs.edit left the scenario stand for typed data, so
         # the "no documented operation goes untested" guard now points at the
         # tests that live with the tool instead of at retired scenarios.
         dcs_rs = (
@@ -1190,7 +1190,7 @@ def run_cc_python_script(
 
 
 # Donor cases compare tool stdout against the cc-1c reference scripts. A tool
-# that migrated to typed data (ADR-0023) has no prose left to compare, so it
+# that migrated to typed data has no prose left to compare, so it
 # leaves this stand the same way it leaves the scenario stand. `cfe-borrow`
 # left with unica.cfe.borrow; the donor snapshot itself is untouched.
 CC_CASE_TOOLS = {
@@ -1741,7 +1741,7 @@ def write_named_subsystem_fixture(target: Path, name: str, child: str | None = N
     )
 
 
-# ADR-0049: a bridged reader may select its target logically. Such an example
+# A bridged reader may select its target logically. Such an example
 # carries no path to substitute, so the harness materialises a registered,
 # addressable object instead and points the example at it.
 LOGICAL_READER_TARGETS: dict[str, dict[str, Any]] = {
@@ -1759,7 +1759,7 @@ LOGICAL_READER_TARGETS: dict[str, dict[str, Any]] = {
     "unica.cf.validate": {"address": None},
 }
 
-# ADR-0054: path-form examples of support-aware readers must still resolve to
+# Path-form examples of support-aware readers must still resolve to
 # registered logical owners. Keep the public selector form under test while
 # routing the synthetic execution through the same objects as logical examples.
 REGISTERED_SUPPORT_READER_PATHS: dict[str, tuple[str, str]] = {
@@ -1933,7 +1933,7 @@ EndProcedure
         handled.add(tool_name)
         arguments = example.payload["params"]["arguments"]
 
-        # ADR-0049: a logical example carries a selector, not a path, so the
+        # A logical example carries a selector, not a path, so the
         # path substitution below has nothing to work on.
         if "sourceSet" in arguments and tool_name in LOGICAL_READER_TARGETS:
             prepare_logical_reader_example(arguments, tool_name)

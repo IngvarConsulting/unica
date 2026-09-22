@@ -1240,6 +1240,10 @@ mod tests {
         let data = result.data.as_ref().unwrap();
         assert_eq!(data["artifact"]["path"], "dist/main.cf");
         assert_eq!(data["artifact"]["size"], 8);
+        assert_eq!(
+            data["artifact"]["sha256"],
+            "949a1f41c225a214233e51f1afb728b03e6add23ac0df2bfd40c09d56057ccbe"
+        );
         assert_eq!(data["sourceSet"], "main");
         assert_eq!(result.changed[0]["path"], "dist/main.cf");
         assert_eq!(result.changed[0]["kind"], "created");
@@ -1277,62 +1281,72 @@ mod tests {
         assert_eq!(runner.call_count(), 1);
         assert!(!prepared.arguments.output.exists());
 
-        let preview = build_of(root.path(), "dist/main.cf", None, None, true, None);
-        let revision = run(
-            root.path(),
-            &preview,
-            &SequenceRunner::new(vec![process(
-                envelope(
-                    &preview.arguments.output,
-                    ArtifactKind::Cf,
-                    "main",
-                    None,
-                    false,
-                ),
-                true,
-            )]),
-        )
-        .rev
-        .unwrap();
-        let prepared = build_of(
-            root.path(),
-            "dist/main.cf",
-            None,
-            None,
-            false,
-            Some(revision),
-        );
-        let runner = SequenceRunner::new(vec![
-            process(
-                envelope(
-                    &prepared.arguments.output,
-                    ArtifactKind::Cf,
-                    "main",
-                    None,
-                    false,
-                ),
-                true,
-            ),
-            process(
-                envelope(
-                    &prepared.arguments.output,
-                    ArtifactKind::Cf,
-                    "main",
-                    None,
+        for published in [None, Some(&b""[..])] {
+            let root = workspace();
+            let preview = build_of(root.path(), "dist/main.cf", None, None, true, None);
+            let revision = run(
+                root.path(),
+                &preview,
+                &SequenceRunner::new(vec![process(
+                    envelope(
+                        &preview.arguments.output,
+                        ArtifactKind::Cf,
+                        "main",
+                        None,
+                        false,
+                    ),
+                    true,
+                )]),
+            )
+            .rev
+            .unwrap();
+            let prepared = build_of(
+                root.path(),
+                "dist/main.cf",
+                None,
+                None,
+                false,
+                Some(revision),
+            );
+            let outputs = vec![
+                process(
+                    envelope(
+                        &prepared.arguments.output,
+                        ArtifactKind::Cf,
+                        "main",
+                        None,
+                        false,
+                    ),
                     true,
                 ),
-                true,
-            ),
-        ]);
-        let result = run(root.path(), &prepared, &runner);
-        assert_eq!(
-            result.diagnostics[0]["code"], "invalid_result",
-            "{result:?}"
-        );
-        assert!(result.diagnostics[0]["message"]
-            .as_str()
-            .unwrap()
-            .contains("artifact is missing"));
+                process(
+                    envelope(
+                        &prepared.arguments.output,
+                        ArtifactKind::Cf,
+                        "main",
+                        None,
+                        true,
+                    ),
+                    true,
+                ),
+            ];
+            let runner = match published {
+                Some(bytes) => SequenceRunner::publishing(outputs, bytes),
+                None => SequenceRunner::new(outputs),
+            };
+            let result = run(root.path(), &prepared, &runner);
+            assert_eq!(
+                result.diagnostics[0]["code"], "invalid_result",
+                "{result:?}"
+            );
+            assert!(result.diagnostics[0]["message"].as_str().unwrap().contains(
+                if published.is_some() {
+                    "artifact is empty"
+                } else {
+                    "artifact is missing"
+                }
+            ));
+        }
     }
 
     #[test]

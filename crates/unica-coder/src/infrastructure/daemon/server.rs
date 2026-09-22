@@ -1482,6 +1482,16 @@ pub(crate) mod actor_capacity_tests {
         assert_eq!(data["sourceSets"], serde_json::json!([]));
         assert_eq!(data["setup"]["path"], "v8project.yaml");
         assert_eq!(data["setup"]["content"], serde_json::Value::Null);
+        for verdict in [
+            "ready",
+            "discoveredReady",
+            "repositoryReady",
+            "readinessState",
+            "checks",
+            "diagnostics",
+        ] {
+            assert_eq!(data.get(verdict), None, "{verdict} belongs to check {{}}");
+        }
         let wire = serde_json::to_string(data).unwrap();
         assert!(
             !wire.contains("unica.project."),
@@ -1503,6 +1513,17 @@ pub(crate) mod actor_capacity_tests {
         let verdict_data = verdict.data.as_ref().expect("verdict data");
         assert_eq!(verdict_data["status"], "failed");
         assert_eq!(verdict_data["ready"], false);
+        assert!(
+            verdict.rev.is_none(),
+            "root check has no source revision lease"
+        );
+        for sources in ["sources", "sourceSets"] {
+            assert_eq!(
+                verdict_data.get(sources),
+                None,
+                "{sources} belongs to view {{}}"
+            );
+        }
         assert_eq!(verdict_data["checks"], serde_json::json!([]));
         assert_eq!(verdict_data["diagnostics"].as_array().unwrap().len(), 1);
         assert_eq!(
@@ -1885,10 +1906,9 @@ pub(crate) mod actor_capacity_tests {
         assert_eq!(data["setup"]["sourceSetExample"]["type"], "CONFIGURATION");
         assert_eq!(data["setup"]["sourceSetExample"]["path"], "src");
         assert!(workspace.path().join("v8project.yaml").is_file());
-        assert!(
-            std::fs::read_to_string(workspace.path().join("v8project.yaml"))
-                .unwrap()
-                .contains("workPath: .work")
+        assert_eq!(
+            std::fs::read(workspace.path().join("v8project.yaml")).unwrap(),
+            b"workPath: .work\nformat: DESIGNER\n"
         );
     }
 
@@ -4189,85 +4209,6 @@ struct ActorLogicalReadLease {"#,
     }
 
     #[test]
-    pub(crate) fn actor_authenticated_source_architecture_names_complete_witnesses() {
-        // Запись называет сами проверки, а не агрегат над ними. Раньше здесь
-        // разбирался Rust: свидетель обязан был звать перечисленное. Звал он
-        // это вторым заходом, потому что харнесс уже прогнал каждую проверку
-        // отдельным тестом. Требование прежнее и проверяется там, где живёт
-        // обещание.
-        // Имя, встреченное в прозе записи, проверкой не является: смотрим
-        // только список под ключом во фронт-маттере.
-        fn declarations(record: &str, key: &str) -> Vec<String> {
-            // Запись читается с диска как есть, а на Windows `checkout` отдаёт
-            // её с CRLF. Разбор идёт построчно с обрезанным `\r`, иначе на
-            // одной из трёх ОС фронт-маттер просто не находится.
-            let mut lines = record.lines().map(str::trim_end);
-            assert_eq!(
-                lines.next(),
-                Some("---"),
-                "architecture record has front matter"
-            );
-            let front: Vec<&str> = lines.take_while(|line| *line != "---").collect();
-            let mut collecting = false;
-            let mut named = Vec::new();
-            for line in front {
-                if let Some(inline) = line.strip_prefix(key) {
-                    collecting = inline.trim().is_empty();
-                    if !collecting {
-                        named.push(inline.trim().to_owned());
-                    }
-                    continue;
-                }
-                match line.trim_start().strip_prefix("- ") {
-                    Some(entry) if collecting => named.push(entry.trim().to_owned()),
-                    _ => collecting = false,
-                }
-            }
-            named
-                .into_iter()
-                .filter_map(|entry| entry.rsplit_once("::").map(|(_, name)| name.to_owned()))
-                .collect()
-        }
-
-        let capability = declarations(
-            include_str!(
-                "../../../../../arch/invariants/INV.APP.ACTOR-AUTHENTICATED-SOURCE-CAPABILITIES.md"
-            ),
-            "check:",
-        );
-        for named in [
-            "actor_read_source_capability_is_sealed_after_binding",
-            "actor_read_authority_builder_rejects_actor_bound_unsupported_profile",
-            "actor_read_authority_builder_preserves_actor_bound_source_kind",
-            "actor_read_authority_builder_preserves_non_replenishing_deadline",
-            "provider_binding_and_actor_bound_invocation_cannot_substitute_kind_or_profile",
-        ] {
-            assert!(
-                capability.iter().any(|entry| entry == named),
-                "capability invariant omits the witness {named}"
-            );
-        }
-
-        let decision = declarations(
-            include_str!(
-                "../../../../../arch/decisions/2026-08-26-actor-authenticated-source-profile-slice.md"
-            ),
-            "realized:",
-        );
-        for named in [
-            "provider_binding_and_actor_bound_invocation_cannot_substitute_kind_or_profile",
-            "remapped_names_and_profiles_do_not_share_revision_index_or_coordination_state",
-            "duplicate_source_set_names_with_distinct_roots_are_rejected",
-            "actor_read_source_capability_is_sealed_after_binding",
-        ] {
-            assert!(
-                decision.iter().any(|entry| entry == named),
-                "decision omits the witness {named}"
-            );
-        }
-    }
-
-    #[test]
     pub(crate) fn provider_binding_and_actor_bound_invocation_cannot_substitute_kind_or_profile() {
         let workspace = tempfile::tempdir().unwrap();
         let source = workspace.path().join("src");
@@ -4929,18 +4870,25 @@ struct ActorLogicalReadLease {"#,
             );
         }
 
+        let current = call(
+            ToolIdentity::View,
+            serde_json::json!({"at": "main:Catalog.Bare"}),
+        );
+        assert!(current.ok, "{current:?}");
+        let admitted_revision = current.rev.expect("view carries the admitted revision");
+        let expected_revision = "unica-source-sha256-v1:0:stale";
         let stale = call(
             ToolIdentity::Apply,
             serde_json::json!({
                 "at": "main:Catalog.Bare",
                 "ops": [{"op": "props.set", "args": {"values": {"Comment": "x"}}}],
                 "dryRun": true,
-                "ifRev": "unica-source-sha256-v1:0:stale"
+                "ifRev": expected_revision
             }),
         );
         let stale_message = stale.diagnostics[0]["message"].as_str().unwrap();
         assert!(
-            stale_message.contains("expected") && stale_message.contains("admitted"),
+            stale_message.contains(expected_revision) && stale_message.contains(&admitted_revision),
             "the conflict names both revisions for recovery: {stale_message}"
         );
 
@@ -6762,10 +6710,40 @@ struct ActorLogicalReadLease {"#,
         };
 
         assert!(result.ok, "v5 run dictionary was misclassified: {result:?}");
-        assert!(!result.data.as_ref().unwrap()["operations"]
+        let catalog = crate::application::v13::tool_catalog::catalog_for(SurfaceRelease::V13)
+            .expect("canonical catalog");
+        let operations = result.data.as_ref().unwrap()["operations"]
             .as_array()
-            .unwrap()
-            .is_empty());
+            .expect("published operations");
+        let mut published = std::collections::BTreeMap::new();
+        for operation in operations {
+            let name = operation["op"].as_str().expect("operation name");
+            assert!(
+                published.insert(name, operation).is_none(),
+                "duplicate operation {name}"
+            );
+        }
+        assert_eq!(published.len(), catalog.run_dictionary.len());
+        for operation in &catalog.run_dictionary {
+            let name = operation.name();
+            let entry = published.get(name).expect("catalog operation is published");
+            assert_eq!(entry["description"], operation.description(), "{name}");
+            assert_eq!(
+                entry["argsSchema"],
+                serde_json::json!(operation.args_schema()),
+                "{name}"
+            );
+            assert_eq!(entry["execution"], operation.execution(), "{name}");
+            assert_eq!(
+                entry["effects"],
+                serde_json::json!(operation.effects()),
+                "{name}"
+            );
+            assert_eq!(entry["implemented"], operation.implemented, "{name}");
+            let preview_apply = operation.execution() == "previewApply";
+            assert_eq!(entry["previewRequired"], preview_apply, "{name}");
+            assert_eq!(entry["ifRevRequiredOnApply"], preview_apply, "{name}");
+        }
         assert_eq!(preparations.load(Ordering::SeqCst), 0);
     }
 

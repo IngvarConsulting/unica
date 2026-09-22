@@ -550,6 +550,36 @@ mod tests {
         );
         assert_eq!(second.data.as_ref().unwrap()["items"][0]["line"], 3);
         assert!(second.cursor.is_none());
+
+        let methods = "main:Document.Заказ.Module.Object.Method";
+        let mut authority = FixtureAuthority::new();
+        authority.revisions.get_mut().unwrap().insert(
+            methods.to_string(),
+            ViewSourceSnapshot {
+                source_set_identity: "main:source-id".to_string(),
+                revision: "rev-1".to_string(),
+            },
+        );
+        authority.views.insert(
+            methods.to_string(),
+            NodeViewData::Collection(CollectionView::new(
+                NodeView::new(methods, "Method", "Методы модуля", Map::new()),
+                vec![json!({"name": "Первая"}), json!({"name": "Вторая"})],
+            )),
+        );
+        let service = ViewService::new(authority, ViewCursorStore::default());
+        let request = || ViewRequest::new(methods).unwrap().with_limit(1).unwrap();
+        let first = service.view(request());
+        assert_eq!(
+            first.data.as_ref().unwrap()["items"],
+            json!([{"name": "Первая"}])
+        );
+        let second = service.view(request().with_cursor(first.cursor.unwrap()));
+        assert_eq!(
+            second.data.as_ref().unwrap()["items"],
+            json!([{"name": "Вторая"}])
+        );
+        assert!(second.cursor.is_none());
     }
 
     #[test]

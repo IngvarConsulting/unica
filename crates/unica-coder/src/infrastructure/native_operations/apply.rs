@@ -924,6 +924,24 @@ pub(crate) mod tests {
             !error.contains(&cache.display().to_string()),
             "cache authority diagnostic exposed its absolute root: {error}"
         );
+
+        let foreign_authority =
+            crate::infrastructure::workspace_actor::apply_writer_authority_for_test();
+        for (source_authority, cache_authority) in [
+            (foreign_authority.clone(), authority.clone()),
+            (authority.clone(), foreign_authority),
+        ] {
+            let source = staged_with_authority(&root.join("source"), source_authority)
+                .finalize()
+                .unwrap();
+            let cache = staged_with_authority(&cache, cache_authority)
+                .finalize()
+                .unwrap();
+            let error = source
+                .close_with_workspace_cache_participant(cache, &cache_participant)
+                .unwrap_err();
+            assert!(error.contains("one actor authority"), "{error}");
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 

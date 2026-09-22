@@ -71,7 +71,7 @@ pub(crate) struct RuntimeRiskNotice {
     pub(crate) message: String,
 }
 
-/// ADR-0074: a classified applied operation is warned about and executed; an
+/// A classified applied operation is warned about and executed; an
 /// unclassified one still fails closed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RuntimeRiskOutcome {

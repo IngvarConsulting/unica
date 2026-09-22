@@ -89,7 +89,7 @@ const MXL_INFO_ARGS: &[&str] = &[
 const CFE_DIFF_ARGS: &[&str] = &["ExtensionPath", "extensionPath", "ConfigPath", "configPath"];
 const XDTO_INFO_ARGS: &[&str] = &["sourceSet", "metadataPath", "typeName", "limit", "cursor"];
 const XDTO_EDIT_ARGS: &[&str] = &["sourceSet", "metadataPath", "operations"];
-/// ADR-0071: the closed camelCase tags of the `operations` union, in the
+/// The closed camelCase tags of the `operations` union, in the
 /// order the schema publishes their variants.
 const XDTO_EDIT_OPS: &[&str] = &[
     "addValueType",
@@ -823,8 +823,8 @@ fn diagnostics_input_schema() -> Value {
     })
 }
 
-/// ADR-0071: the closed tagged union of `unica.xdto.edit` operations, placed
-/// directly in `properties.operations.items` per ADR-0025 §4 — no
+/// The closed tagged union of `unica.xdto.edit` operations, placed
+/// directly in `properties.operations.items` in the legacy schema — no
 /// `allOf`/`if`/`then`/`$ref`, every variant closed and naming its own
 /// required fields. Field semantics are exactly what the package writer read
 /// before the array form; only the shape moved.
@@ -1138,7 +1138,7 @@ fn validate_xdto_arguments(tool: ToolSpec, args: &Map<String, Value>) -> Result<
     Ok(())
 }
 
-/// One element of the `unica.xdto.edit` operations union (ADR-0071). Every
+/// One element of the `unica.xdto.edit` operations union. Every
 /// message names the failing element as `operations[<index>]` so a rejected
 /// batch points at the exact operation.
 fn validate_xdto_operation_item(tool_name: &str, index: usize, item: &Value) -> Result<(), String> {
@@ -2262,7 +2262,7 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
             if operation == "form-edit" {
                 names.push("definition");
             }
-            // ADR-0070: the deferred-capable readers publish the continuation
+            // the deferred-capable readers publish the continuation
             // vocabulary alongside their own arguments.
             if super::deferred_delivery::supports_operation(operation) {
                 names.extend(super::deferred_delivery::CONTINUATION_ARGS);
@@ -2642,7 +2642,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "delivery",
-        "Deferred continuation only: `\"full\"` asks for the whole stored snapshot; it expresses the caller's intent and proves no human confirmation (ADR-0070)",
+        "Deferred continuation only: `\"full\"` asks for the whole stored snapshot; it expresses the caller's intent and proves no human confirmation",
     ),
     (
         "page",
@@ -2650,7 +2650,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "resultRef",
-        "Continuation reference issued by a deferred manifest of the same tool: the call is served from the immutable stored snapshot without re-reading the source (ADR-0070)",
+        "Continuation reference issued by a deferred manifest of the same tool: the call is served from the immutable stored snapshot without re-reading the source",
     ),
     (
         "documentId",
@@ -2800,7 +2800,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "limit",
-        "Cap on how much one call returns, counted in the entities that tool answers with and never in printed lines: meta.info section items (default 20), xdto.info package types, code.search hits (20 per role), code.definition definitions (50), code.graph nodes, code.diagnostics findings, standards and documentation results. On `unica.source.read` alone the unit is bytes, because that tool returns one bounded byte range. The eight narrowed native XML readers answer with every section at once and publish no `limit` (ADR-0048).",
+        "Cap on how much one call returns, counted in the entities that tool answers with and never in printed lines: meta.info section items (default 20), xdto.info package types, code.search hits (20 per role), code.definition definitions (50), code.graph nodes, code.diagnostics findings, standards and documentation results. On `unica.source.read` alone the unit is bytes, because that tool returns one bounded byte range. The eight narrowed native XML readers answer with every section at once and publish no `limit`.",
     ),
     (
         "maxErrors",
@@ -2864,7 +2864,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "name",
-        "Subject name whose meaning is tool-scoped: the object being created by `cf.init`, `cfe.init`, `epf.init` and `erf.init`, and the required BSL method to locate on `unica.code.definition`. The eight narrowed native XML readers no longer take it: they answer with every section at once, so there is nothing left for it to drill into (ADR-0048).",
+        "Subject name whose meaning is tool-scoped: the object being created by `cf.init`, `cfe.init`, `epf.init` and `erf.init`, and the required BSL method to locate on `unica.code.definition`. The eight narrowed native XML readers no longer take it: they answer with every section at once, so there is nothing left for it to drill into.",
     ),
     (
         "namePrefix",
@@ -3643,7 +3643,7 @@ pub(crate) mod tests {
 
     /// The published, host-visible operation union.
     ///
-    /// ADR-0025 keeps the union kind-agnostic so it survives a host that renders
+    /// The legacy schema keeps the union kind-agnostic so it survives a host that renders
     /// `properties` alone; per-kind legality is the writer's, which answers
     /// `unsupported_kind` naming the exact field.
     fn metadata_operation_union(schema: &Value) -> &Value {
@@ -3967,8 +3967,8 @@ pub(crate) mod tests {
     /// #290, требование 1: у каждого мутатора есть объявленная стратегия
     /// предпросмотра, и она выводится из реестра, а не из растущего набора
     /// исключений по имени операции. Читатель стратегии не имеет — предпросмотр
-    /// ему не адресован (ADR-0044).
-    /// ADR-0073 §5: переходный список замкнут и только сокращается. Паритет
+    /// ему не адресован.
+    /// Переходный список замкнут и только сокращается. Паритет
     /// выживших закреплён их собственными тестами: meta.edit —
     /// `typed_edit_preview_bytes_equal_the_applied_post_image` и квитанции,
     /// form.edit — `form_edit_preview_apply_and_no_op_validate_the_projected_form`,
@@ -3994,7 +3994,7 @@ pub(crate) mod tests {
                 "interface-edit",
                 "subsystem-edit",
             ],
-            "ADR-0073 §5: the transitional list is approved item by item"
+            "the transitional list is approved item by item"
         );
         let mut sorted = PREVIEW_GATED_OPERATIONS.to_vec();
         sorted.sort_unstable();
@@ -4005,7 +4005,7 @@ pub(crate) mod tests {
         );
         assert!(
             !PREVIEW_GATED_OPERATIONS.contains(&"cf-init"),
-            "cf.init previews honestly (ADR-0073)"
+            "cf.init previews honestly"
         );
         let mutating_operations = tools()
             .into_iter()
@@ -4277,6 +4277,106 @@ pub(crate) mod tests {
             );
         }
     }
+    // Call on a cloned schema before existing write_canonical. Only schema nodes
+    // lose annotations; const/default/enum values and property names are data.
+    fn remove_schema_descriptions(schema: &mut Value) {
+        let Value::Object(object) = schema else {
+            return;
+        };
+        object.remove("description");
+        for (keyword, value) in object {
+            match keyword.as_str() {
+                "properties" | "patternProperties" | "$defs" | "definitions"
+                | "dependentSchemas" => {
+                    if let Value::Object(schemas) = value {
+                        for child in schemas.values_mut() {
+                            remove_schema_descriptions(child);
+                        }
+                    }
+                }
+                "allOf" | "anyOf" | "oneOf" | "prefixItems" => {
+                    if let Value::Array(schemas) = value {
+                        for child in schemas {
+                            remove_schema_descriptions(child);
+                        }
+                    }
+                }
+                "items" => match value {
+                    Value::Array(schemas) => {
+                        for child in schemas {
+                            remove_schema_descriptions(child);
+                        }
+                    }
+                    child => remove_schema_descriptions(child),
+                },
+                "additionalProperties"
+                | "unevaluatedProperties"
+                | "additionalItems"
+                | "unevaluatedItems"
+                | "contains"
+                | "propertyNames"
+                | "not"
+                | "if"
+                | "then"
+                | "else"
+                | "contentSchema" => remove_schema_descriptions(value),
+                "dependencies" => {
+                    if let Value::Object(dependencies) = value {
+                        for dependency in dependencies.values_mut() {
+                            if dependency.is_object() {
+                                remove_schema_descriptions(dependency);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn native_schema_fingerprint_ignores_annotations_but_keeps_description_fields() {
+        let schema = json!({
+            "type": "object", "description": "Old wording",
+            "properties": {
+                "description": {"type": "string", "description": "Explain the field"},
+                "payload": {"const": {"description": "literal data"}}
+            },
+            "required": ["description"],
+            "allOf": [{"description": "Nested wording", "minProperties": 1}]
+        });
+        let mut edited = schema.clone();
+        edited["description"] = json!("Clear wording");
+        edited["properties"]["description"]["description"] = json!("Clear field wording");
+        edited["allOf"][0]["description"] = json!("Clear nested wording");
+        assert_eq!(
+            native_mutation_schema_signature(&schema),
+            native_mutation_schema_signature(&edited)
+        );
+
+        let mut type_changed = schema.clone();
+        type_changed["properties"]["description"]["type"] = json!("integer");
+        assert_ne!(
+            native_mutation_schema_signature(&schema),
+            native_mutation_schema_signature(&type_changed)
+        );
+        let mut removed = schema.clone();
+        removed["properties"]
+            .as_object_mut()
+            .unwrap()
+            .remove("description");
+        assert_ne!(
+            native_mutation_schema_signature(&schema),
+            native_mutation_schema_signature(&removed)
+        );
+        let mut constant_changed = schema.clone();
+        constant_changed["properties"]["payload"]["const"]["description"] = json!("changed data");
+        assert_ne!(
+            native_mutation_schema_signature(&schema),
+            native_mutation_schema_signature(&constant_changed)
+        );
+    }
+
     fn native_mutation_schema_signature(schema: &Value) -> String {
         fn write_canonical(value: &Value, output: &mut Vec<u8>) {
             match value {
@@ -4309,7 +4409,9 @@ pub(crate) mod tests {
         }
 
         let mut canonical = Vec::new();
-        write_canonical(schema, &mut canonical);
+        let mut contract = schema.clone();
+        remove_schema_descriptions(&mut contract);
+        write_canonical(&contract, &mut canonical);
         let mut hash = 0xcbf29ce484222325u64;
         for byte in &canonical {
             hash ^= u64::from(*byte);
@@ -4410,7 +4512,7 @@ pub(crate) mod tests {
     /// here, and so does letting a reader fall back to the historical catch-all.
     /// Published names are canonical (ADR-0019 collapses path aliases in
     /// `tools/list`); accepted names include the aliases validation still takes.
-    /// Six of them are also ADR-0049 bridges, so their logical selector belongs
+    /// Six of them are also logical-address bridges, so their logical selector belongs
     /// to the pinned set: losing it would be as invisible as losing the path.
     #[test]
     fn every_narrowed_reader_publishes_its_exact_argument_set() {
@@ -4496,73 +4598,67 @@ pub(crate) mod tests {
             (operation.to_string(), signature.to_string())
         }
         let expected = BTreeMap::from([
-            ("unica.cf.edit", entry("cf-edit", "31012:c433a35b86123a36")),
-            ("unica.cf.init", entry("cf-init", "32089:0adf6331c7be5f72")),
+            ("unica.cf.edit", entry("cf-edit", "4058:96bdb1efa6421e58")),
+            ("unica.cf.init", entry("cf-init", "4144:cfbc31105f029ec5")),
             (
                 "unica.cfe.borrow",
-                entry("cfe-borrow", "31053:bb2e7d985f70383a"),
+                entry("cfe-borrow", "4096:0051396e4b9591db"),
             ),
-            (
-                "unica.cfe.init",
-                entry("cfe-init", "30548:ec3c61499046f415"),
-            ),
+            ("unica.cfe.init", entry("cfe-init", "3995:a6660e876399a229")),
             (
                 "unica.cfe.patch_method",
-                entry("cfe-patch-method", "32365:5d187f43c2801228"),
+                entry("cfe-patch-method", "4598:547d7d1c2a7f4683"),
             ),
             (
                 "unica.code.patch",
-                entry("code-patch", "2877:b3b8e19fa0225043"),
+                entry("code-patch", "1042:989b04365351871e"),
             ),
             (
                 "unica.dcs.compile",
-                entry("dcs-compile", "31915:a8ee0ccb9a4f7adb"),
+                entry("dcs-compile", "4108:b0f80a2146d2dc5f"),
             ),
-            (
-                "unica.dcs.edit",
-                entry("dcs-edit", "31022:1d9ca0e0aa704416"),
-            ),
-            ("unica.epf.init", entry("epf-init", "1729:02a6a6ebaf86d9f6")),
-            ("unica.erf.init", entry("erf-init", "1729:02a6a6ebaf86d9f6")),
+            ("unica.dcs.edit", entry("dcs-edit", "4070:d972ebcbd6eb3275")),
+            ("unica.epf.init", entry("epf-init", "301:609ff516112efe75")),
+            ("unica.erf.init", entry("erf-init", "301:609ff516112efe75")),
             (
                 "unica.form.compile",
-                entry("form-compile", "31012:4d7a9d32f187d4c6"),
+                entry("form-compile", "4045:c3e209b3bc3e1df2"),
             ),
             (
                 "unica.form.edit",
-                entry("form-edit", "31888:5af3464cbc2e5c75"),
+                entry("form-edit", "4594:62307fb707529224"),
             ),
             (
                 "unica.interface.edit",
-                entry("interface-edit", "31120:06b17ade8eb3689a"),
+                entry("interface-edit", "4070:d659e259820c903f"),
             ),
             (
                 "unica.meta.add",
-                entry("metadata:Add", "27646:331032f4d1cfefb7"),
+                entry("metadata:Add", "24119:a94996440f7672d2"),
             ),
             (
                 "unica.meta.edit",
-                entry("metadata:Edit", "28145:c93c0b516cc77cf1"),
+                entry("metadata:Edit", "24739:f399a882e705c429"),
             ),
             (
                 "unica.mxl.compile",
-                entry("mxl-compile", "31983:ae7b7812eb5925d5"),
+                entry("mxl-compile", "4137:7b48252d9a57a0d6"),
             ),
             (
                 "unica.role.compile",
-                entry("role-compile", "31930:f59bf82faf49adf6"),
+                entry("role-compile", "4137:278664daf24e8eae"),
             ),
             (
                 "unica.role.edit",
-                entry("role-edit", "2468:5f8ba12273760906"),
+                entry("role-edit", "2037:bd64c73af768496a"),
             ),
             (
                 "unica.subsystem.compile",
-                entry("subsystem-compile", "31669:fb368aaf922dd419"),
+                entry("subsystem-compile", "4093:63b27fd38abfb192"),
             ),
             (
                 "unica.subsystem.edit",
-                entry("subsystem-edit", "31036:da501d27d5b085d5"),
+                entry("subsystem-edit", "4070:12e9e6b5eb9a0dbb"),
             ),
         ]);
         assert_eq!(actual, expected);
@@ -5814,7 +5910,7 @@ pub(crate) mod tests {
         // Публикуемый `pattern` читает ECMA-262, где `\p{...}` без флага `u`
         // не класс символов. Наружу поэтому уходит сегментная форма соседних
         // `meta.*`-схем: она ловит форму адреса, а идентификатор 1С остаётся
-        // за парсером — тем же разделением обязанностей, что и в ADR-0025.
+        // за парсером.
         for (field, invalid) in [
             ("metadataPath", "Role.123"),
             ("objectName", "Catalog.123"),

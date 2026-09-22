@@ -110,7 +110,7 @@ fn create_configuration_workspace(label: &str) -> TempWorkspace {
     workspace
 }
 
-/// Минимальные `operations`, делающие объект целостным по ADR-0030.
+/// Минимальные `operations`, делающие объект целостным.
 ///
 /// Виды без записи в таблице условий не требуют ничего, и инструмент за них
 /// ничего не придумывает, поэтому здесь для них пусто.
@@ -222,7 +222,7 @@ fn call_edit(
 #[test]
 fn add_refuses_an_incoherent_object_and_names_what_the_platform_requires() {
     // 8.3.27 принимает такой дескриптор как документ и отвергает как объект
-    // конфигурации, поэтому отказ выдаётся на входе (ADR-0030).
+    // конфигурации, поэтому отказ выдаётся на входе.
     let workspace = create_configuration_workspace("incoherent-register");
     let mut args = add_args(workspace.path(), "InformationRegister", "Prices", false);
     args.remove("operations");
@@ -1162,7 +1162,7 @@ fn assert_partial_is_stable(workspace: &TempWorkspace, kind: &str, name: &str) {
 
 /// Упакованный сервер стартует с рабочим каталогом в корне плагина
 /// (`cwd: "."` в `.mcp.json`), поэтому рабочее пространство адресуется только
-/// аргументом вызова: ADR-0006 §4 и ADR-0053 §2.
+/// аргументом вызова, а не рабочим каталогом процесса.
 #[test]
 fn metadata_operations_address_the_workspace_through_cwd_from_outside() {
     let workspace = create_configuration_workspace("cwd-argument");

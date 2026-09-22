@@ -1429,7 +1429,19 @@ mod tests {
                     crate::domain::project_health::DiagnosticScope::Repository
                 )
         }));
-        assert!(crate::domain::project_health::evaluate_project_health(snapshot).is_ok());
+        let report = crate::domain::project_health::evaluate_project_health(snapshot).unwrap();
+        let diagnostics: Vec<_> = report
+            .diagnostics
+            .iter()
+            .filter(|item| item.code == "source_set.name_ambiguous")
+            .collect();
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            diagnostics[0].scope,
+            crate::domain::project_health::DiagnosticScope::Workspace
+        );
+        assert_eq!(diagnostics[0].count, 2);
+        assert!(diagnostics[0].source_set.is_none());
     }
 
     #[test]

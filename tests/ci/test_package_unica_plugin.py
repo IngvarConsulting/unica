@@ -649,12 +649,6 @@ class PackageUnicaPluginTests(unittest.TestCase):
             repo_root / "README.md",
             repo_root / "plugins" / "unica" / "README.md",
             repo_root / "docs" / "internal-package.md",
-            repo_root / "docs" / "arch-v1" / "acceptance" / "unica-mcp-validation.md",
-            repo_root / "docs" / "arch-v1" / "architecture" / "runtime.md",
-            repo_root / "docs" / "arch-v1" / "architecture" / "deployment.md",
-            repo_root / "docs" / "arch-v1" / "architecture" / "change-checklist.md",
-            repo_root / "docs" / "arch-v1" / "decisions" / "0001-edinyy-publichnyy-mcp-unica.md",
-            repo_root / "docs" / "arch-v1" / "decisions" / "0004-legacy-skill-scripts-are-migration-debt.md",
         ]
         forbidden = ("run-unica.sh", "run-tool.sh", "run-tool.ps1", "run-bsl-analyzer.sh", "run-v8-runner.sh")
 
@@ -954,21 +948,22 @@ class PackageUnicaPluginTests(unittest.TestCase):
     def test_plugin_source_copy_rejects_tracked_nested_ignored_dir(self) -> None:
         module = load_package_module()
 
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            repo_root = root / "repo"
-            plugin_src = repo_root / "plugins" / "unica"
-            generated = plugin_src / "skills" / "web-test" / "__pycache__" / "script.pyc"
-            generated.parent.mkdir(parents=True)
-            generated.write_bytes(b"pyc")
+        for relative in (
+            "skills/web-test/__pycache__/script.pyc",
+            "skills/web-test/.pytest_cache/lastfailed",
+            "skills/web-test/.DS_Store",
+        ):
+            with self.subTest(path=relative), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                repo_root = root / "repo"
+                plugin_src = repo_root / "plugins" / "unica"
+                generated = plugin_src / relative
+                generated.parent.mkdir(parents=True)
+                generated.write_bytes(b"generated")
 
-            with patch.object(
-                module,
-                "git_tracked_plugin_files",
-                return_value=["skills/web-test/__pycache__/script.pyc"],
-            ):
-                with self.assertRaisesRegex(SystemExit, "source package path is generated"):
-                    module.copy_tracked_plugin_source(repo_root, plugin_src, root / "dest")
+                with patch.object(module, "git_tracked_plugin_files", return_value=[relative]):
+                    with self.assertRaisesRegex(SystemExit, "source package path is generated"):
+                        module.copy_tracked_plugin_source(repo_root, plugin_src, root / "dest")
 
     @unittest.skipIf(os.name == "nt" or not hasattr(os, "symlink"), "symlink validation is POSIX-only")
     def test_plugin_source_copy_rejects_tracked_symlink(self) -> None:
@@ -991,6 +986,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(SystemExit, "symlink"):
                     module.copy_tracked_plugin_source(repo_root, plugin_src, root / "dest")
+            self.assertFalse((root / "dest/skills/web-test/leak.txt").exists())
 
     def write_bundle(self, root: Path, target: str, module) -> Path:
         bundle = root / f"unica-tools-{target}"
@@ -1240,6 +1236,8 @@ class PackageUnicaPluginTests(unittest.TestCase):
                 or path.startswith("skills/img-grid/")
                 or path == "skills/web-test"
                 or path.startswith("skills/web-test/")
+                or path == "skills/v8-runner"
+                or path.startswith("skills/v8-runner/")
             }
             self.assertEqual(forbidden_script_skills, set())
             self.assertFalse(
@@ -1306,16 +1304,23 @@ class PackageUnicaPluginTests(unittest.TestCase):
                     target_data["asset"]["mediaType"], "application/octet-stream"
                 )
 
-            catalog = json.loads(
-                (out_dir / "marketplace" / ".agents" / "plugins" / "marketplace.json").read_text(
-                    encoding="utf-8"
-                )
-            )
-            source = catalog["plugins"][0]["source"]
-            self.assertEqual(source["source"], "git-subdir")
-            self.assertEqual(source["ref"], release_tag)
-            self.assertEqual(source["path"], "plugins/unica")
-            self.assertNotIn("source\": \"local", json.dumps(catalog))
+            for host, catalog_path in (
+                ("codex", ".agents/plugins/marketplace.json"),
+                ("claude", ".claude-plugin/marketplace.json"),
+            ):
+                with self.subTest(host=host):
+                    catalog = json.loads(
+                        (out_dir / "marketplace" / catalog_path).read_text(encoding="utf-8")
+                    )
+                    self.assertEqual(
+                        catalog["plugins"][0]["source"],
+                        {
+                            "source": "git-subdir",
+                            "url": "https://github.com/IngvarConsulting/unica-marketplace.git",
+                            "path": "plugins/unica",
+                            "ref": release_tag,
+                        },
+                    )
             self.assertEqual(list(out_dir.glob("*.tar.gz")), [])
             self.assertEqual(list(out_dir.glob("*.zip")), [])
             package_evidence = json.loads(

@@ -233,8 +233,19 @@ class RustPlatformBoundaryTests(unittest.TestCase):
             "let store = crate :: infrastructure :: Store::new();\n"
             "let cli = super :: interfaces :: Cli::new();\n",
         )
+        infrastructure_diagnostics = checker.check_source(
+            "crates/unica-coder/src/infrastructure/store.rs",
+            "use crate::interfaces::Cli;\n",
+        )
 
         self.assertEqual(len(domain_diagnostics), 3)
+        self.assertEqual(
+            infrastructure_diagnostics,
+            [
+                "crates/unica-coder/src/infrastructure/store.rs:1: "
+                "infrastructure must not reference crate::interfaces",
+            ],
+        )
         self.assertEqual(
             application_diagnostics,
             [

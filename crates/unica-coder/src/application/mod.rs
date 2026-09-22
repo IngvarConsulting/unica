@@ -132,7 +132,7 @@ pub enum PreviewStrategy {
     PlannedCommand,
 }
 
-/// ADR-0073 §5: закрытый переходный список — типизированные мутаторы, чей
+/// Закрытый переходный список — типизированные мутаторы, чей
 /// предпросмотр ещё отвечает общим успехом без предметных данных. Список
 /// только сокращается; новый мутатор обязан родиться с честным предпросмотром.
 /// Судьбы: `dcs-edit` — срез #377, `subsystem-edit` — #380, `interface-edit` —
@@ -930,7 +930,7 @@ fn call_tool_with_runtime_admission(
     let mode = InvocationMode::from_validated_args(spec, args)?;
     tool_contracts::validate_tool_argument_semantics(spec, args, mode)?;
     let dry_run = mode.is_preview();
-    // ADR-0070: a continuation call is served from the immutable snapshot and
+    // a continuation call is served from the immutable snapshot and
     // must not re-read the source, so it short-circuits before workspace
     // discovery and the reader dispatch.
     if mode == InvocationMode::Read && deferred_delivery::supports(&spec) {
@@ -938,7 +938,7 @@ fn call_tool_with_runtime_admission(
             return Ok(result);
         }
     }
-    // ADR-0074: a classified applied operation executes and carries its named
+    // A classified applied operation executes and carries its named
     // risk into the result; only an unclassified one still fails closed.
     let mut applied_risk = None;
     if runtime_admission == RuntimeAdmissionPolicy::Enforce
@@ -1571,7 +1571,7 @@ fn deferred_failure_result(spec: ToolSpec, code: &str, message: &str) -> Operati
     }
 }
 
-/// ADR-0070: serves a continuation call from the stored snapshot. `None`
+/// serves a continuation call from the stored snapshot. `None`
 /// means the call is an ordinary read and proceeds to the reader.
 fn try_deferred_continuation(
     spec: ToolSpec,
@@ -1628,7 +1628,7 @@ fn try_deferred_continuation(
     }
 }
 
-/// ADR-0070: an oversized successful typed read is published as a deferred
+/// an oversized successful typed read is published as a deferred
 /// manifest while the full snapshot goes to the bounded store.
 fn defer_oversized_typed_read(
     spec: ToolSpec,
@@ -3896,8 +3896,8 @@ pub(crate) mod tests {
     #[test]
     fn an_admission_refusal_names_the_missing_engine_too() {
         // #549 просил, чтобы отказ допуска не маскировал отсутствие бинаря.
-        // Сам маршрут из дефекта закрыт раньше: ADR-0074 пустил
-        // классифицированные операции исполняться с названным риском, а
+        // Сам маршрут из дефекта закрыт раньше: теперь
+        // классифицированные операции исполняются с названным риском, а
         // неклассифицированную аргументы до допуска не доносят. Отказ остаётся
         // достижим изнутри, и вторая причина в нём названа.
         let missing = crate::domain::engine::MissingEngine::new(
@@ -7382,9 +7382,10 @@ pub(crate) mod tests {
 
     #[test]
     fn tool_specs_match_reviewed_result_contracts() {
-        let review: Value =
-            serde_json::from_str(include_str!("../../../../arch/tool-surface-review.json"))
-                .expect("tool-surface review is valid JSON");
+        let review: Value = serde_json::from_str(include_str!(
+            "../../../../tests/fixtures/v013/tool-surface-review.json"
+        ))
+        .expect("tool-surface review is valid JSON");
         let review = review
             .as_object()
             .expect("tool-surface review is a tool-name object");

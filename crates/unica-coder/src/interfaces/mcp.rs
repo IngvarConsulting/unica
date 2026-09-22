@@ -1308,6 +1308,26 @@ mod tests {
                 "{} description exceeds the 2 KiB client limit",
                 tool.name
             );
+            let arguments = tool.input_schema["properties"]
+                .as_object()
+                .expect("tool input declares its arguments");
+            // Conditional constraints such as `if.properties` refine an argument;
+            // descriptions belong to its declaration and nested argument objects.
+            for properties in
+                std::iter::once(arguments).chain(object_schema_property_maps(arguments))
+            {
+                for (name, property) in properties {
+                    let description = property
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    assert!(
+                        !description.trim().is_empty(),
+                        "{} argument `{name}` has no model-facing description",
+                        tool.name
+                    );
+                }
+            }
         }
         let wire = serde_json::to_vec(&serde_json::json!({
             "jsonrpc": "2.0",
@@ -1724,7 +1744,7 @@ mod tests {
 
         let response = client.receive().await;
         assert_eq!(response["id"], "runtime-refusal", "{response}");
-        // ADR-0074: the applied call is no longer refused before discovery, so
+        // The applied call is no longer refused before discovery, so
         // this fixture answers with the missing bundled runner instead. What the
         // test still pins is the shape: one terminal answer, no input echoed.
         let serialized = response.to_string();
@@ -1940,8 +1960,8 @@ mod tests {
             .send(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}))
             .await;
         let legacy = client.receive().await;
-        assert!(legacy["result"]["ttlMs"].is_null(), "got {legacy}");
-        assert!(legacy["result"]["cacheScope"].is_null(), "got {legacy}");
+        assert!(legacy["result"].get("ttlMs").is_none(), "got {legacy}");
+        assert!(legacy["result"].get("cacheScope").is_none(), "got {legacy}");
         client.shutdown().await;
     }
 

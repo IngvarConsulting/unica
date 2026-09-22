@@ -382,17 +382,6 @@ fn canonical_stdio_hands_the_project_file_recipe_without_an_initialize_operation
     mcp.finish();
 }
 
-// Снятый контракт `source.attach` назван в реестре этим именем, и
-// `DEC.2026-09-02.RUN-INITIALIZATION-CONTRACT` ссылается на него как на свою
-// улику. Продуктовое решение не правят, а заменяют, поэтому имя остаётся, а
-// уликой под ним служит доказательство того, что предмета контракта больше
-// нет.
-#[test]
-#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
-fn canonical_stdio_previews_and_applies_autodetected_source_attachment_before_admission() {
-    canonical_stdio_hands_the_project_file_recipe_without_an_initialize_operation();
-}
-
 // Исключение из отключённого яруса: живой процесс — единственное место, где
 // видно, как рекомендация ведёт себя на смешанных форматах.
 #[test]

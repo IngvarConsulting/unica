@@ -12,7 +12,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BASELINE_PATH = REPO_ROOT / "tests" / "fixtures" / "migration" / "v0.12.3-baseline.json"
-SURFACE_LEDGER = REPO_ROOT / "arch" / "tool-surface.md"
+SURFACE_LEDGER = REPO_ROOT / "docs" / "tool-surface.md"
 SCRIPT = REPO_ROOT / "scripts" / "ci" / "release-proof.py"
 
 
@@ -201,8 +201,8 @@ class ReleaseProofTests(unittest.TestCase):
         self.assertNotIn("guards", self.module.render_summary(report))
 
     def test_proof_holds_no_copy_of_the_surface(self) -> None:
-        # Поверхность нормирует CTR.WIRE.TOOL-SURFACE, а показывает
-        # порождаемая ведомость arch/tool-surface.md. Proof читает её, а не
+        # Поверхность нормирует arch/rules/mcp/mcp-tool-profiles.md, а показывает
+        # порождаемая ведомость docs/tool-surface.md. Proof читает её, а не
         # держит четвёртую копию имён (#699).
         self.assertFalse(hasattr(self.module, "NATIVE_TOOLS"))
         self.assertFalse(hasattr(self.module, "COMPATIBILITY_TOOLS"))

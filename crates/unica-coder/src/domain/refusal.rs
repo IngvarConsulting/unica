@@ -5,8 +5,8 @@
 //! [`RefusalCode`]. Исход — метод кода, поэтому вторым словарём он не
 //! становится и разойтись с кодами не может.
 //!
-//! Раскладка кодов по исходам обоснована в
-//! `docs/design/2026-09-04-canonical-surface-distribution-design.md`.
+//! Форма отказа и смысл исходов описаны в
+//! `arch/rules/mcp/refusal-channel.md`.
 
 /// Что делать дальше: кто действует следующим и над чем.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

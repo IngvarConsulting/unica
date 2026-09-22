@@ -2173,16 +2173,20 @@ fn the_command_interface_shows_every_order_it_holds() {
         r#"<?xml version="1.0" encoding="utf-8"?>
 <CommandInterface xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20">
 	<CommandsOrder>
+		<Command name="Catalog.Items.StandardCommand.Zeta">
+			<CommandGroup>NavigationPanelImportant</CommandGroup>
+		</Command>
 		<Command name="Catalog.Items.StandardCommand.OpenList">
 			<CommandGroup>NavigationPanelImportant</CommandGroup>
 		</Command>
 	</CommandsOrder>
 	<SubsystemsOrder>
+		<Subsystem>Subsystem.Zeta</Subsystem>
 		<Subsystem>Subsystem.Sales</Subsystem>
 	</SubsystemsOrder>
 	<GroupsOrder>
-		<Group>NavigationPanelImportant</Group>
 		<Group>NavigationPanelSeeAlso</Group>
+		<Group>NavigationPanelImportant</Group>
 	</GroupsOrder>
 </CommandInterface>
 "#,
@@ -2203,36 +2207,40 @@ fn the_command_interface_shows_every_order_it_holds() {
             .cloned()
     };
     assert_eq!(branch("Group").unwrap()["count"], 2, "{branches:?}");
-    assert_eq!(branch("Subsystem").unwrap()["count"], 1, "{branches:?}");
+    assert_eq!(branch("Subsystem").unwrap()["count"], 2, "{branches:?}");
 
     // Группы идут в объявленном порядке, и пустая группа остаётся видимой:
     // порядок объявляется отдельно от наполнения.
     let groups = service.view(ViewRequest::new(&format!("{at}.Group")).unwrap());
     assert!(groups.ok, "{:?}", refusal_codes(&groups));
     let items = groups.data.as_ref().unwrap()["items"].as_array().unwrap();
-    assert_eq!(items[0]["title"], "NavigationPanelImportant");
-    assert_eq!(items[0]["commands"], 1);
-    assert_eq!(items[1]["title"], "NavigationPanelSeeAlso");
-    assert_eq!(items[1]["commands"], 0);
+    assert_eq!(items[0]["title"], "NavigationPanelSeeAlso");
+    assert_eq!(items[0]["commands"], 0);
+    assert_eq!(items[1]["title"], "NavigationPanelImportant");
+    assert_eq!(items[1]["commands"], 2);
 
     // Внутри группы — её команды в порядке `CommandsOrder`.
     let one =
         service.view(ViewRequest::new(&format!("{at}.Group.NavigationPanelImportant")).unwrap());
     assert!(one.ok, "{:?}", refusal_codes(&one));
     let ordered = one.data.as_ref().unwrap()["items"].as_array().unwrap();
-    assert_eq!(ordered.len(), 1);
-    assert_eq!(ordered[0]["order"], 1);
     assert_eq!(
-        ordered[0]["command"],
-        "Catalog.Items.StandardCommand.OpenList"
+        ordered,
+        &vec![
+            json!({"order": 1, "command": "Catalog.Items.StandardCommand.Zeta"}),
+            json!({"order": 2, "command": "Catalog.Items.StandardCommand.OpenList"}),
+        ]
     );
 
     // Ссылка платформы дополняется до адреса, по которому можно спуститься.
     let children = service.view(ViewRequest::new(&format!("{at}.Subsystem")).unwrap());
     assert!(children.ok, "{:?}", refusal_codes(&children));
     assert_eq!(
-        children.data.as_ref().unwrap()["items"][0]["at"],
-        "main:Subsystem.Sales"
+        children.data.as_ref().unwrap()["items"],
+        json!([
+            {"order": 1, "at": "main:Subsystem.Zeta"},
+            {"order": 2, "at": "main:Subsystem.Sales"},
+        ])
     );
 
     // Группы, которой в порядке нет, не существует и для чтения.
@@ -4176,10 +4184,10 @@ pub(crate) fn configuration_level_rights_are_readable_role_objects() {
     let rights_path = fixture.source.join("Roles/SalesReader/Ext/Rights.xml");
     let rights = fs::read_to_string(&rights_path).unwrap().replacen(
         "</Rights>",
-        "<object><name>Configuration.CorpusConfiguration</name><right><name>Administration</name><value>true</value></right><right><name>ThinClient</name><value>true</value></right></object></Rights>",
+        "<object><name>Configuration.CorpusConfiguration</name><right><name>Administration</name><value>true</value></right><right><name>ThinClient</name><value>true</value></right><right><name>FutureConfigurationReadCapability</name><value>true</value></right><right><name>FutureConfigurationWriteCapability</name><value>false</value></right></object></Rights>",
         1,
     );
-    fs::write(&rights_path, rights).unwrap();
+    fs::write(&rights_path, &rights).unwrap();
     let service = fixture.view_service();
 
     let role = service.view(ViewRequest::new("main:Role.SalesReader").unwrap());
@@ -4191,7 +4199,9 @@ pub(crate) fn configuration_level_rights_are_readable_role_objects() {
     let data = right.data.as_ref().unwrap();
     assert_eq!(data["kind"], "Right");
     assert_eq!(data["props"]["objectKind"], "Configuration");
-    assert_eq!(data["props"]["allowedCount"], 2);
+    assert_eq!(data["props"]["allowedCount"], 3);
+    assert_eq!(data["props"]["deniedCount"], 1);
+    assert_eq!(fs::read_to_string(&rights_path).unwrap(), rights);
 
     let authority = fixture.read_authority();
     let index = ReaderReach::new(vec![("main", &authority)]);

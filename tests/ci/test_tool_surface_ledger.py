@@ -8,35 +8,14 @@ import json
 import re
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GENERATOR = REPO_ROOT / "scripts/ci/generate-tool-surface.py"
-LEDGER = REPO_ROOT / "arch/tool-surface.md"
-REVIEW = REPO_ROOT / "arch/tool-surface-review.json"
-RESULT_CONTRACT_INVARIANT = (
-    REPO_ROOT / "arch/invariants/INV.SURFACE.RESULT-CONTRACTS-MATCH-REVIEW.md"
-)
-RUN_COVERAGE = REPO_ROOT / "arch/tool-implementation-coverage.json"
-# A run operation name on the wire: two or more dotted lowercase segments.
-# Tool names share the shape and are told apart by their `unica.` head.
-OPERATION_TOKEN = re.compile(r"\b[a-z][a-z0-9]*(?:\.[a-z][a-z0-9]*)+\b")
-# Счёт в плане написан словом, и сравнивать его надо словом же. Таблица
-# закрыта размером словаря: больше его операций не бывает.
-RUSSIAN_NUMERALS = {
-    0: "ноль",
-    1: "одну",
-    2: "две",
-    3: "три",
-    4: "четыре",
-    5: "пять",
-    6: "шесть",
-    7: "семь",
-    8: "восемь",
-    9: "девять",
-    10: "десять",
-}
+LEDGER = REPO_ROOT / "docs/tool-surface.md"
+REVIEW = REPO_ROOT / "tests/fixtures/v013/tool-surface-review.json"
 BINARY = REPO_ROOT / "target/debug/unica"
 
 NATIVE_V13 = [
@@ -255,35 +234,45 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
                 self.assertGreaterEqual(len(entry["scenarios"]), 1)
                 self.assertTrue(all(scenario.strip() for scenario in entry["scenarios"]))
 
-    def test_the_published_run_prose_counts_the_dictionary_it_describes(self) -> None:
-        """Счёт в прозе поверхности держится на словаре, а не на памяти.
+    def test_published_run_operation_names_belong_to_the_dictionary(self) -> None:
+        """JSON-примеры называют реализованные операции публичного словаря."""
+        from tests.ci.test_acceptance_scenarios import AcceptanceServer
+        from tests.ci.test_unica_skills import collect_runtime_guidance
 
-        Имя операции в `now`, `target` и сценариях читают как адрес вызова:
-        назвать операцию вне словаря — отправить читателя в отказ. Счёт
-        нереализованных операций в плане устаревает так же молча, как счёт в
-        прозе правила (#798), и его надо считать, а не помнить. Словарь ведёт
-        `arch/tool-implementation-coverage.json`.
-        """
-        operations = json.loads(RUN_COVERAGE.read_text(encoding="utf-8"))[
-            "runOperations"
-        ]
-        entry = self.review["unica.run"]
-        prose = [entry["result"]["now"], entry["result"]["target"], *entry["scenarios"]]
-        for text in prose:
-            for token in OPERATION_TOKEN.findall(text):
-                if token.startswith("unica."):
-                    continue
-                with self.subTest(token=token):
-                    self.assertIn(token, operations)
+        plugin = REPO_ROOT / "plugins/unica"
+        documents = sorted(
+            list((plugin / "skills").rglob("*.md"))
+            + list((plugin / "references").rglob("*.md"))
+        )
+        _, examples, failures = collect_runtime_guidance(
+            [(document, document.read_text(encoding="utf-8")) for document in documents]
+        )
+        self.assertEqual(failures, [])
+        self.assertTrue(examples, "no published runtime JSON examples were checked")
 
-        unimplemented = sum(
-            1 for entry in operations.values() if entry["status"] != "supported"
-        )
-        self.assertIn(
-            RUSSIAN_NUMERALS[unimplemented],
-            entry["result"]["target"],
-            "план называет счёт нереализованных операций словом",
-        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            workspace = root / "workspace"
+            state = root / "state"
+            workspace.mkdir()
+            state.mkdir()
+            server = AcceptanceServer(workspace, state, "2025-11-25")
+            try:
+                response = server.call("unica.run", {})
+            finally:
+                server.close()
+                server.reader.join(timeout=10)
+                server.process.stdout.close()
+
+        self.assertIsNotNone(response)
+        result = response["result"]["structuredContent"]
+        self.assertTrue(result["ok"], result)
+        operations = {operation["op"]: operation for operation in result["data"]["operations"]}
+        for document, arguments in examples:
+            operation = arguments.get("op")
+            with self.subTest(path=document.relative_to(REPO_ROOT), operation=operation):
+                self.assertIn(operation, operations)
+                self.assertIs(operations[operation]["implemented"], True)
 
     def test_ledger_matches_the_live_registry(self) -> None:
         result = subprocess.run(
@@ -305,27 +294,11 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
             self.assertIn(f"- {title}: **{states[state]}**", text)
         self.assertIn("в границах работы: **0**", text)
 
-    def test_typed_result_invariant_names_the_registry_contract_check(self) -> None:
-        text = RESULT_CONTRACT_INVARIANT.read_text(encoding="utf-8")
-        self.assertIn("id: INV.SURFACE.RESULT-CONTRACTS-MATCH-REVIEW", text)
-        self.assertIn("decision: DEC.2026-08-18.CARRIED-RULES", text)
-        self.assertIn(
-            "check: crates/unica-coder/src/application/mod.rs::tool_specs_match_reviewed_result_contracts",
-            text,
-        )
-        application_tests = (
-            REPO_ROOT / "crates/unica-coder/src/application/mod.rs"
-        ).read_text(encoding="utf-8")
-        self.assertRegex(
-            application_tests,
-            r"fn\s+tool_specs_match_reviewed_result_contracts\s*\(",
-        )
-
 
 class SurfaceCopiesAgreeTests(unittest.TestCase):
     """Копии имён поверхности вне check контракта обязаны совпадать с ведомостью.
 
-    Ведомость порождается из бинаря, и её сверяет `CTR.WIRE.TOOL-SURFACE`.
+    Ведомость порождается из бинаря, и её сверяет test_ledger_matches_the_live_registry.
     Остальные списки — ожидание этого теста и константа бутстрапа — не
     проверки контракта, а его потребители; расхождение обязано ломаться здесь,
     одним сообщением, называющим оба места (#699).

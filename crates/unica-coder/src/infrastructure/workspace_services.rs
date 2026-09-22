@@ -3209,8 +3209,8 @@ impl Drop for PersistentMcpSession {
     }
 }
 
-/// A persistent session outlives the tool call that started it, by design
-/// (ADR-0006). While its working directory sits inside the source tree, the
+/// A persistent session outlives the tool call that started it.
+/// While its working directory sits inside the source tree, the
 /// process holds that tree open, and `git worktree remove` fails long after the
 /// call returned (#204). The tree is addressed by `--source-dir` as an absolute
 /// path, so the working directory carries no information — it only holds.

@@ -857,9 +857,9 @@ class V013ParityInventoryTest(unittest.TestCase):
             variants["operation=make"]["successor"],
             {"entry": "run", "operation": "make"},
         )
-        # `config-init` наследника в `run` не имеет: проектный файл заводит
-        # человек, а создание набора исходников пишет файлы и принадлежит
-        # `apply` (DEC.2026-09-09.PROJECT-CONFIG-IS-HANDWRITTEN).
+        # `config-init` наследника в `run` не имеет: проектный файл создаётся
+        # файловыми средствами вызывающего. Границу словаря задаёт
+        # arch/rules/mcp/run-operation-names.md.
         for legacy_variant in (
             "operation=config-init",
             "operation=load",

@@ -1,4 +1,4 @@
-//! Deferred delivery of oversized typed reader results (ADR-0070).
+//! Deferred delivery of oversized typed reader results.
 //!
 //! The application layer owns the threshold and the manifest; the bounded
 //! snapshot store lives in infrastructure. A continuation call re-enters the
@@ -12,7 +12,7 @@ use serde_json::{json, Map, Value};
 use super::result_store::{unix_ms_now, ResultStore, SnapshotIdentity, StoredView};
 
 /// Serialized `OperationResult.data` above this many bytes is delivered as a
-/// deferred manifest (ADR-0070: ~16 KiB ≈ 4 000 o200k_base tokens).
+/// deferred manifest (~16 KiB ≈ 4 000 o200k_base tokens).
 pub const DEFAULT_THRESHOLD_BYTES: usize = 16 * 1024;
 
 const CONTINUATION_PAGE_SIZE: usize = 50;

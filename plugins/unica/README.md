@@ -60,97 +60,28 @@ codex plugin remove unica@unica
 codex plugin marketplace remove unica
 ```
 
-## DCS naming migration
+## Data composition schemas
 
-The release containing [issue #158](https://github.com/IngvarConsulting/unica/issues/158)
-atomically replaces the transliterated `skd` domain with the official
-**Data Composition System (`dcs`)** term. There is no deprecated alias:
+Use [dcs-compile](skills/dcs-compile/SKILL.md) to create a schema and
+[dcs-edit](skills/dcs-edit/SKILL.md) to modify it. Both use `unica.apply`
+with preview and the resulting revision for application. The XML format is
+described in the [DataCompositionSchema specification](references/specs/1c-dcs-spec.md).
 
-| Removed contract | Canonical contract |
-| --- | --- |
-| `unica.skd.compile` | `unica.dcs.compile` |
-| `unica.skd.edit` | `unica.dcs.edit` |
-| `unica.skd.info` | `unica.dcs.info`, itself later retired for `unica.view` |
-| `skd-compile/edit/info` | `dcs-compile/edit` |
+## Reading and changing source objects
 
-The operation arguments and `DataCompositionSchema` XML format are unchanged.
+Find logical addresses with `unica.search` using `corpus: "names"`.
+Use `unica.resolve` when a physical path arrived from outside Unica.
+Addresses have the form `<sourceSet>:<Kind>.<Name>...`; Unica resolves
+physical source files internally.
 
-## Read-only output migration
+Read a node with `unica.view` and validate it with `unica.check`, passing
+its address in `at`. Results are returned in the MCP response. To change
+an object, preview its operations with `unica.apply`, review the result,
+and apply using the returned revision.
 
-The release containing [issue #191](https://github.com/IngvarConsulting/unica/issues/191)
-removes caller-controlled file sinks from read-only MCP tools. The affected
-`info`/`validate` tools no longer accept `OutFile` or `outFile`, and
-`unica.mxl.decompile` no longer accepts `OutputPath` or `outputPath`. There is
-no compatibility alias: these arguments are rejected as contract errors.
-
-Reports, exact raw DCS queries, and the MXL JSON DSL are returned in the MCP
-response. Consumers must read `stdout`/structured response data instead of
-reading a file created by Unica. If a durable artifact is needed, the caller
-must save the returned value explicitly outside the read-only tool contract.
-
-## Logical source target migration
-
-Tools migrate to one logical target, one merge request at a time. There is no
-deprecated alias:
-
-| Tool | Removed selector | Canonical selector |
-| --- | --- | --- |
-| `unica.code.patch` | `path` + `sourceDir` | `sourceSet` + `metadataPath` |
-| `unica.meta.info` | `ObjectPath` / `Path` | `sourceSet` + `metadataPath` |
-
-Calls that still pass a removed field fail with `legacy_target_removed` and
-name the canonical replacement. The logical selector addresses existing
-Platform XML Configuration and Extension targets; Unica resolves the physical
-`*Module.bsl` or descriptor location privately. `unica.meta.info` also stops
-accepting `Detailed`, which it never read.
-
-`unica.search {corpus: "names"}` converts a name or a synonym into a logical
-address. `unica.resolve` converts a path discovered by other means, and is the
-emergency bridge: use it only when the path arrived from outside Unica.
-
-### Readers that accept either selector
-
-Only the two spreadsheet-template readers remain in the transitional state
-ADR-0049 defines: they accept the logical selector **and** still accept their
-existing path. Every other reader that shared this table — the configuration,
-subsystem, role, form and schema readers, and the six `*.validate` tools — is
-retired in favour of `unica.view` and `unica.check`; removing the remaining
-paths is its own later merge request.
-
-| Tool | Logical selector | Path kept for now |
-| --- | --- | --- |
-| `unica.mxl.info`, `unica.mxl.decompile` | `sourceSet` + `metadataPath` | `TemplatePath` |
-
-Exactly one selector per call. Passing both fails with `selector_conflict`,
-because resolving a conflict silently would hide which selector produced the
-answer.
-
-An addressed object whose requested body is missing — a template whose
-`TemplateType` writes `Template.bin` rather than `Template.xml` — fails with
-`resource_absent`, not `target_not_found`: the object exists and is
-addressable, that body does not.
-
-## XDTO operations migration
-
-The release containing [issue #374](https://github.com/IngvarConsulting/unica/issues/374)
-replaced the flat single-operation form of the retired `unica.xdto.edit`
-with a typed ordered `operations` array (ADR-0071); on the canonical surface
-the same operations are `unica.apply` ops of the XDTO family. There is no compatibility alias: a call
-that still passes any retired top-level field fails with
-`legacy_arguments_removed` and names the replacement.
-
-| Removed top-level form | Canonical `operations` element |
-| --- | --- |
-| `operation: "add-value-type"` + `name`, `base` | `{"op": "addValueType", "name": "Amount", "base": "xs:decimal"}` |
-| `operation: "add-object-type"` + `name` | `{"op": "addObjectType", "name": "Order"}` |
-| `operation: "add-property"` + `typeName`, `property` [, `propertyPath`] | `{"op": "addProperty", "typeName": "Order", "property": {"name": "Ref", "type": "tns:Document"}}` — optional `propertyPath` targets a nested `typeDef` |
-| `operation: "remove-type"` + `name` | `{"op": "removeType", "name": "Order"}` |
-| `operation: "remove-property"` + `typeName`, `name` [, `propertyPath`] | `{"op": "removeProperty", "typeName": "Order", "name": "Ref"}` — optional `propertyPath` targets a nested `typeDef` |
-
-Field semantics are unchanged — an element carries exactly the fields the
-package writer has always read. Operations in one call apply in order, see
-each other's results, and publish once; a failed element leaves no partial
-write, and every effect is reported by `operationIndex`.
+See [source-access](skills/source-access/SKILL.md) for navigation,
+[code-patch](skills/code-patch/SKILL.md) for BSL changes, and
+[xdto](skills/xdto/SKILL.md) for typed XDTO operations.
 
 ## Templates, embedded help and validation
 

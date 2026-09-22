@@ -1916,52 +1916,76 @@ mod tests {
 
     #[test]
     fn apply_repeats_preflight_and_returns_an_independent_file_receipt() {
-        let root = tempfile::tempdir().unwrap();
-        fs::write(root.path().join(CONFIG_NAME), "format: DESIGNER\n").unwrap();
-        let preview = prepared(root.path(), true, None);
-        let output = normalize_path_identity(&preview.arguments.named_file).unwrap();
-        let tool = BundledTool {
-            program: root.path().join("v8-runner"),
-            warnings: Vec::new(),
-            missing: None,
-        };
-        let preview_runner = SequenceRunner::new(vec![process(preview_envelope(&output))]);
-        let preview_result = execute_with_resolved_runner(
-            &preview,
-            &preview_runner,
-            CancellationToken::new(),
-            &tool,
-            "0.7.0",
-        );
-        let apply = prepared(root.path(), false, preview_result.rev.clone());
-        let runner = SequenceRunner::publishing(
-            vec![
+        for published in [Some(&b"verified cf"[..]), None, Some(&b""[..])] {
+            let root = tempfile::tempdir().unwrap();
+            fs::write(root.path().join(CONFIG_NAME), "format: DESIGNER\n").unwrap();
+            let preview = prepared(root.path(), true, None);
+            let output = normalize_path_identity(&preview.arguments.named_file).unwrap();
+            let tool = BundledTool {
+                program: root.path().join("v8-runner"),
+                warnings: Vec::new(),
+                missing: None,
+            };
+            let preview_runner = SequenceRunner::new(vec![process(preview_envelope(&output))]);
+            let preview_result = execute_with_resolved_runner(
+                &preview,
+                &preview_runner,
+                CancellationToken::new(),
+                &tool,
+                "0.7.0",
+            );
+            let apply = prepared(root.path(), false, preview_result.rev.clone());
+            let responses = vec![
                 process(preview_envelope(&output)),
                 process(apply_envelope(&output)),
-            ],
-            b"verified cf",
-        );
+            ];
+            let runner = match published {
+                Some(bytes) => SequenceRunner::publishing(responses, bytes),
+                None => SequenceRunner::new(responses),
+            };
 
-        let result =
-            execute_with_resolved_runner(&apply, &runner, CancellationToken::new(), &tool, "0.7.0");
+            let result = execute_with_resolved_runner(
+                &apply,
+                &runner,
+                CancellationToken::new(),
+                &tool,
+                "0.7.0",
+            );
 
-        assert!(result.ok, "{result:?}");
-        assert_eq!(runner.calls.lock().unwrap().len(), 2);
-        assert!(runner.calls.lock().unwrap()[0]
-            .args
-            .contains(&"--dry-run".to_string()));
-        assert!(!runner.calls.lock().unwrap()[1]
-            .args
-            .contains(&"--dry-run".to_string()));
-        assert_eq!(result.data.as_ref().unwrap()["artifact"]["size"], 11);
-        assert_eq!(
-            result.data.as_ref().unwrap()["artifact"]["sha256"],
-            "244e79d203c7fa3c3ac5213f4ef8b6cb3fc0894514864bb337b6a4eb2c5a678b"
-        );
-        assert_eq!(result.artifacts[0]["path"], "dist/main.cf");
-        let encoded = serde_json::to_string(&result).unwrap();
-        assert!(!encoded.contains("--config"));
-        assert!(!encoded.contains("stdout"));
+            assert_eq!(runner.calls.lock().unwrap().len(), 2);
+            assert!(runner.calls.lock().unwrap()[0]
+                .args
+                .contains(&"--dry-run".to_string()));
+            assert!(!runner.calls.lock().unwrap()[1]
+                .args
+                .contains(&"--dry-run".to_string()));
+            if published.is_none_or(|bytes| bytes.is_empty()) {
+                assert!(!result.ok, "{result:?}");
+                assert_eq!(result.diagnostics[0]["code"], "invalid_result");
+                let reason = if published.is_none() {
+                    "missing"
+                } else {
+                    "empty"
+                };
+                assert!(
+                    result.diagnostics[0]["message"]
+                        .as_str()
+                        .is_some_and(|message| message.contains(reason)),
+                    "{result:?}"
+                );
+                continue;
+            }
+            assert!(result.ok, "{result:?}");
+            assert_eq!(result.data.as_ref().unwrap()["artifact"]["size"], 11);
+            assert_eq!(
+                result.data.as_ref().unwrap()["artifact"]["sha256"],
+                "244e79d203c7fa3c3ac5213f4ef8b6cb3fc0894514864bb337b6a4eb2c5a678b"
+            );
+            assert_eq!(result.artifacts[0]["path"], "dist/main.cf");
+            let encoded = serde_json::to_string(&result).unwrap();
+            assert!(!encoded.contains("--config"));
+            assert!(!encoded.contains("stdout"));
+        }
     }
 
     #[test]
@@ -1998,6 +2022,27 @@ mod tests {
         let rejection = validate_apply(&prepared, &plan, &applied).unwrap_err();
 
         assert_eq!(rejection.diagnostics[0]["code"], "invalid_result");
+
+        // Правильный путь не делает ответ другой команды нашей квитанцией.
+        for dry_run in [true, false] {
+            let envelope = if dry_run {
+                preview_envelope(&output)
+            } else {
+                apply_envelope(&output)
+            };
+            parse_runner_output(prepared.operation, process(envelope.clone()), dry_run)
+                .expect("the requested runner command is accepted");
+            for other_command in ["infobase.dump", "cf.export"] {
+                let mut foreign = envelope.clone();
+                foreign["command"] = json!(other_command);
+                let rejection =
+                    parse_runner_output(prepared.operation, process(foreign), dry_run).unwrap_err();
+                assert_eq!(
+                    rejection.diagnostics[0]["code"], "invalid_result",
+                    "foreign command {other_command}, dry_run={dry_run}"
+                );
+            }
+        }
     }
 
     #[test]

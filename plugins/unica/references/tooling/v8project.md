@@ -128,8 +128,7 @@ has global `format: EDT`.
 ## Autodetected source-sets
 
 A workspace without `v8project.yaml` still gets a source map. Autodetection
-looks only in a closed catalog of layouts (ADR-0075,
-`INV-SOURCE-AUTODETECT-CATALOG`) and never competes with the file: one declared
+looks only in a closed catalog of layouts and never competes with the file: one declared
 source-set replaces autodetection entirely.
 
 | Layout | Source-set |
@@ -177,9 +176,8 @@ directory named `main` keeps it.
 Syntax checks are `unica.check`; test runs and Designer/EDT conversion are not
 operations of the dictionary. A previewApply operation is applied with the
 `ifRev` its preview returned; a changed workspace or plan answers
-`stale_revision` or `concurrent_change` instead of applying. ADR-0016
-continues to own the future full-dump publication contract; its transaction
-guarantees do not make the current applied route executable.
+`stale_revision` or `concurrent_change` instead of applying. The remaining gap in binding preview to its inputs is tracked in
+[issue #950](https://github.com/IngvarConsulting/unica/issues/950).
 
 The runner 0.11 adapter does not expose its old source dump/build paths as
 successful `pull`/`push`: local-work protection, generation checks and the

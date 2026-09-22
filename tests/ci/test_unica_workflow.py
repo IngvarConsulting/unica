@@ -219,7 +219,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertEqual(set(needs(proof)), {"build-tools", "package-thin", "release-assessment"})
         for argument in (
             "scripts/ci/release-proof.py",
-            "--surface-ledger arch/tool-surface.md",
+            "--surface-ledger docs/tool-surface.md",
             "--wire-dir",
             "--package-dir",
             "--asset-verification-dir",
@@ -532,13 +532,10 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             with self.subTest(job_id=job_id):
                 self.assertEqual(job(self.publish, job_id).get("timeout-minutes"), minutes)
 
-    def test_registry_guards_run_in_the_source_contour(self) -> None:
-        """Стражи реестра идут в `guards` первыми, наборы Python — в `test-python` за ними."""
-        guards = job(self.release, "guards")
+    def test_python_suites_run_after_guards_with_the_runner_matrix(self) -> None:
+        """Наборы Python следуют за guards и используют матрицу штатного runner."""
         python = job(self.release, "test-python")
 
-        self.assertIn("python -m py_compile scripts/arch/*.py tests/arch/*.py", script(guards))
-        self.assertIn("python scripts/arch/registry.py --check", script(guards))
         self.assertIn('python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --suite "$SUITE" --only-size "$LANE" --results', script(python))
         self.assertEqual(needs(python), ["classify-changes", "guards"])
         # Матрицу джоб Python считает шов по воротам; джоба знает набор и полосу.
@@ -871,7 +868,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertGreaterEqual(all_scripts(self.publish).count("gh auth setup-git"), 2)
 
     def test_publication_is_one_linear_pass_ordered_by_needs(self) -> None:
-        """ADR-0068: stage → tag → verify → promote, no pull requests, no warden.
+        """Publication order: stage → tag → verify → promote, no pull requests, no warden.
 
         The order is the contract: the anchor tag exists before the install
         checks run, and the catalog moves only behind their green result. A

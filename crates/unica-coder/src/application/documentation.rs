@@ -1,10 +1,10 @@
 //! Public documentation search: renders `DocumentationRegistry` output into
-//! the typed `data` of `unica.documentation.search` (ADR-0023, ADR-0029).
+//! the typed document and section data used by `unica.docs`.
 //!
 //! This module owns only the section/hit-to-JSON projection and the
 //! partial-success rule. The registry is assembled in the composition root
 //! (`infrastructure::application_ports`), not here, so tests can inject
-//! stand-in providers (ADR-0029 point 5).
+//! stand-in providers.
 
 use serde_json::{json, Value};
 
@@ -30,9 +30,9 @@ fn status_fields(status: &DocumentationSectionStatus) -> (&'static str, Value) {
 
 /// Poll every applicable provider and project their sections into the
 /// public `data` shape unchanged: no cross-section sorting, merging or
-/// deletion (ADR-0029 point 8). A provider's own failure stays inside its
+/// deletion. A provider's own failure stays inside its
 /// own section and never removes another provider's sections from the
-/// response (ADR-0029 point 10).
+/// response.
 ///
 /// Опрос идёт параллельно: секции поставщиков независимы по контракту, и
 /// федеративный вызов стоит как самый медленный поставщик, а не как их
@@ -42,7 +42,7 @@ fn status_fields(status: &DocumentationSectionStatus) -> (&'static str, Value) {
 ///
 /// Search is successful if at least one applicable provider answered `ok` or
 /// `empty`; if every section is `unavailable`/`failed`, the call reports an
-/// error instead of an empty-looking success (ADR-0029 point 10).
+/// error instead of an empty-looking success.
 ///
 /// A blank query is refused here, before any provider is polled: substring
 /// matching makes the empty needle match every page, so a blank query would
@@ -328,7 +328,7 @@ mod tests {
         }
     }
 
-    /// Поставщики независимы (ADR-0029: без слияния и пересортировки секций),
+    /// Поставщики независимы: их секции не сливаются и не пересортировываются,
     /// поэтому опрашиваются параллельно: федеративный вызов стоит как самый
     /// медленный поставщик, а не как их сумма.
     #[test]
@@ -566,8 +566,7 @@ mod tests {
         // `failed_section`), so a mutation dropping the `Empty` arm from
         // that check would still pass all three. This is not a corner case:
         // `PlatformSyntaxHelpProvider::search` returns exactly this status
-        // whenever the installation is found but the query has no hits
-        // (ADR-0029 point 10).
+        // whenever the installation is found but the query has no hits.
         let registry = DocumentationRegistry::new(vec![Arc::new(Stub {
             id: "quiet",
             section: empty_section("quiet"),

@@ -20,7 +20,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = REPO_ROOT / ".config" / "python-sizes.toml"
-SUITES = ("tests/ci", "tests/arch", "tests/dev")
+SUITES = ("tests/ci", "tests/dev")
 # Вызов, а не упоминание: `"cargo"` в ожидании мока или в утверждении — не сборка.
 CARGO = re.compile(r'subprocess\.(?:run|Popen|check_output|check_call|call)\(\s*\[\s*"cargo"')
 SOCKET = re.compile(r"^\s*(import socket|from socket import)", re.M)

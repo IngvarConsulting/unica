@@ -2394,23 +2394,29 @@ mod tests {
 
     #[test]
     fn count_and_byte_entitlement_reject_second_reservation_before_task_store_create() {
-        let root = tempfile::tempdir().expect("temporary root");
-        let root_path = physical_root(&root);
-        let (first_key, first_link, _) = fixture(INVOCATION_A, TASK_A, "workspace-a");
-        let (second_key, second_link, _) = fixture(INVOCATION_B, TASK_B, "workspace-b");
-        let store =
-            TaskLifecycleLinkStoreV5::open_with_limits_for_test(&root_path, 1, 1_024, deadline())
-                .expect("open bounded store");
+        for (max_records, max_bytes) in [(1, 2_048), (2, 1_024)] {
+            let root = tempfile::tempdir().expect("temporary root");
+            let root_path = physical_root(&root);
+            let (first_key, first_link, _) = fixture(INVOCATION_A, TASK_A, "workspace-a");
+            let (second_key, second_link, _) = fixture(INVOCATION_B, TASK_B, "workspace-b");
+            let store = TaskLifecycleLinkStoreV5::open_with_limits_for_test(
+                &root_path,
+                max_records,
+                max_bytes,
+                deadline(),
+            )
+            .expect("open bounded store");
 
-        store
-            .reserve_task_link(first_key, first_link, deadline())
-            .expect("first reservation");
-        assert!(matches!(
-            store.reserve_task_link(second_key, second_link, deadline()),
-            Err(TaskLifecycleLinkStoreError::Capacity { .. })
-        ));
-        assert_eq!(store.capacity_snapshot().task_store_slots_accounted(), 1);
-        assert_eq!(store.capacity_snapshot().accounted_bytes(), 1_024);
+            store
+                .reserve_task_link(first_key, first_link, deadline())
+                .expect("first reservation");
+            assert!(matches!(
+                store.reserve_task_link(second_key, second_link, deadline()),
+                Err(TaskLifecycleLinkStoreError::Capacity { .. })
+            ));
+            assert_eq!(store.capacity_snapshot().task_store_slots_accounted(), 1);
+            assert_eq!(store.capacity_snapshot().accounted_bytes(), 1_024);
+        }
     }
 
     #[test]

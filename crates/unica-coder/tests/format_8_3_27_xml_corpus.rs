@@ -1100,7 +1100,7 @@ fn is_xml_payload_path(path: &Path) -> bool {
     {
         return true;
     }
-    // ADR-0024 grants `Package.bin` its XML reading through the XDTO package
+    // The XDTO package grammar grants `Package.bin` its XML reading through the XDTO package
     // layout, not through the file name. Mirrored by `_is_xml_payload_path` in
     // scripts/dev/verify-8-3-27-platform.py.
     let components = path
@@ -1632,7 +1632,7 @@ fn write_json_input(workspace: &Path, name: &str, value: &Value) -> Result<Strin
     Ok(relative)
 }
 
-/// Минимальные `operations`, делающие объект целостным по ADR-0030.
+/// Минимальные `operations`, делающие объект целостным.
 ///
 /// Виды без записи в таблице условий ничего не требуют, и инструмент за них
 /// ничего не придумывает, поэтому здесь для них пусто.
@@ -5727,7 +5727,7 @@ fn cfe_patch_method_corpus_covers_every_supported_module_layout_family() {
 
 #[test]
 fn xml_payload_rule_grants_the_bin_exception_only_to_the_xdto_layout() {
-    // ADR-0024 names `XDTOPackages/<Name>/Ext/Package.bin` as text XML. The
+    // The XDTO package grammar names `XDTOPackages/<Name>/Ext/Package.bin` as text XML. The
     // exception belongs to that layout, not to the file name, and this rule
     // mirrors `_is_xml_payload_path` in scripts/dev/verify-8-3-27-platform.py.
     for granted in [
