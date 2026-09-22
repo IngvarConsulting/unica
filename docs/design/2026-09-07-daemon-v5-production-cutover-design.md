@@ -14,9 +14,7 @@ daemon протокола v3. Протокол v5 с durable ReceiptLedger ре�
 подтверждения на конвейере и после этого удалить v3 из системы, не оставив
 двух wire identity ни в коде, ни в реестре.
 
-Источники требований: план W0a → W0b → W0c в
-[`docs/plans/2026-08-28-v0-13-completion.md`](../plans/2026-08-28-v0-13-completion.md),
-семантика фронтенда в
+Источники требований: семантика фронтенда в
 [2026-08-28-daemon-receipt-ledger-design.md](2026-08-28-daemon-receipt-ledger-design.md),
 пункты J0-1 и J0-2 зонтичной задачи #581.
 
