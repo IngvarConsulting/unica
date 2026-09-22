@@ -132,19 +132,6 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `guard-script` — `scripts/ci/check-skill-upstreams.py`
 - **Scope:** source, packaged, ci
 
-### INV-PRODUCT-DCS-NAMING — DCS — каноническое имя домена компоновки данных
-
-- **Rule:** Действующие английские идентификаторы домена компоновки данных
-  используют `dcs`/`Dcs`/`DCS` в инструментах, скиллах, модулях Rust, метаданных
-  пакета и действующей документации; удалённый транслитерированный псевдоним и
-  написание аббревиатуры с переставленными буквами не должны появиться снова
-  нигде, кроме явно разрешённых исключений — донорского дерева и схем
-  платформы.
-- **Decision:** ADR-0011
-- **Check:** `ci-test` — `tests/ci/test_dcs_naming_contract.py`
-- **Check:** `release-gate` — `scripts/ci/smoke-unica-mcp.py`
-- **Scope:** source, packaged, runtime, release
-
 ### INV-PRODUCT-NO-FORMAT-MIGRATION — Unica не мигрирует формат выгрузки
 
 - **Rule:** Unica никогда не мигрирует и не понижает формат выгрузки как
@@ -295,7 +282,7 @@ Unica. Каждая запись формулирует одно нормати�
 - **Rule:** Публичный набор инструментов адресуется именами вида
   `unica.<group>.<operation>`, и упакованный runtime отдаёт под этим именем
   каждый обязательный инструмент `unica.*`, не отдавая удалённый псевдоним.
-- **Decision:** ADR-0001, ADR-0011
+- **Decision:** ADR-0001
 - **Check:** `ci-test` — `tests/ci/test_unica_mcp_smoke.py`
 - **Check:** `release-gate` — `scripts/ci/smoke-unica-mcp.py`
 - **Scope:** runtime, packaged, release
@@ -936,21 +923,6 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/meta/edit.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/metadata_operations.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_xml_resources.rs`
-- **Scope:** runtime
-
-### INV-SOURCE-TAIL-INSERT — Вставка без селектора идёт в конец и доказывает повтор
-
-- **Rule:** Операция `insert` инструмента `unica.code.patch` принимает
-  необязательный `selector`. Без селектора содержимое дописывается в конец
-  канонического BSL-модуля, `position` не принимается, маркер порядка байтов
-  содержимым не считается и сохраняется, а повтор идентичного вызова до записи
-  распознаётся как семантически пустой. Отдельной операции инициализации нет.
-  Отсутствующий файл модуля создаётся только при применении записи и только
-  когда роль допустима для вида метаданных по реестру, а дескриптор владельца
-  доказан; предпросмотр файл не создаёт.
-- **Decision:** ADR-0026
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/code.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/application/tool_contracts.rs`
 - **Scope:** runtime
 
 ### INV-SOURCE-ATOMIC-PUBLISH — Мутация источника публикуется атомарно после проверки

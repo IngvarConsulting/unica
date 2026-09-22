@@ -1,6 +1,7 @@
 ---
 id: INV.SOURCE.TAIL-INSERT
-check: []
+check:
+  - crates/unica-coder/src/infrastructure/native_operations/code.rs::code_patch_writes_the_first_body_of_an_empty_or_bom_only_module
 gap: https://github.com/IngvarConsulting/unica/issues/955
 ---
 
@@ -10,3 +11,7 @@ gap: https://github.com/IngvarConsulting/unica/issues/955
 отсутствующий файл при применении. Предпросмотр ничего не создаёт.
 Недопустимая для вида владельца роль не становится доступной из-за
 переданного текста. Отдельная операция инициализации не нужна.
+
+Пустой модуль и модуль только с BOM принимают первый текст тем же способом;
+BOM сохраняется. Это проверено внутренним редактором. Создание отсутствующего
+файла через текущий `apply` ещё требует сквозной проверки.
