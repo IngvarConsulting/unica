@@ -116,7 +116,7 @@ Unica. Каждая запись формулирует одно нормати�
 - **Rule:** Каждый публичный контракт, который выполняется в исходном дереве,
   выполняется и в сгенерированном пакете для маркетплейса, а проверка на уровне
   пакета обязательна дополнительно к проверке на уровне исходников.
-- **Decision:** ADR-0001, ADR-0076
+- **Decision:** ADR-0001
 - **Check:** `ci-test` — `tests/ci/test_package_unica_plugin.py`
 - **Check:** `release-gate` — `scripts/ci/smoke-unica-bootstrap.py`
 - **Scope:** packaged, release
@@ -385,7 +385,7 @@ Unica. Каждая запись формулирует одно нормати�
   поставщиков за один общий ограниченный срок; одинаковые вызовы, ожидающие уже
   начатую доставку движка, не удерживают общее окно ожидания и сразу освобождают
   место в пуле допуска с состоянием работы.
-- **Decision:** ADR-0013, ADR-0017, ADR-0018, ADR-0076
+- **Decision:** ADR-0013, ADR-0017, ADR-0018
 - **Check:** `ci-test` — `crates/unica-coder/src/interfaces/mcp.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/application/code_intelligence.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/engine_delivery.rs`
@@ -400,7 +400,6 @@ Unica. Каждая запись формулирует одно нормати�
   необязательным `pollIntervalMs`: `working` несёт `ok=true`, отказ доставки —
   `ok=false` и причину, а следующий предметный вызов повторно проверяет
   готовность без отдельного публичного инструмента установки.
-- **Decision:** ADR-0076
 - **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/domain/long_work.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/application_ports.rs`
@@ -1000,7 +999,7 @@ Unica. Каждая запись формулирует одно нормати�
   каждый проверенный артефакт атомарно под
   `<cacheRoot>/<artifact>/<version>--<assetSha256>/<target>`; ни версия плагина,
   ни одна семантическая версия без SHA-256 не отождествляют разные байты.
-- **Decision:** ADR-0076, ADR-0012, ADR-0014
+- **Decision:** ADR-0012, ADR-0014
 - **Check:** `ci-test` — `crates/unica-bootstrap/src/host/runtime_cache.rs`
 - **Check:** `ci-test` — `crates/unica-bootstrap/tests/runtime_install.rs`
 - **Check:** `ci-test` — `tests/ci/test_package_unica_plugin.py`
@@ -1342,7 +1341,6 @@ Unica. Каждая запись формулирует одно нормати�
   отслеживаются в исходном дереве, а упаковка завершается ошибкой, если
   отслеживаемый файл оказался внутри генерируемого пути или является
   символической ссылкой.
-- **Decision:** ADR-0076
 - **Check:** `ci-test` — `tests/ci/test_package_unica_plugin.py`
 - **Scope:** source, packaged
 
@@ -1353,7 +1351,7 @@ Unica. Каждая запись формулирует одно нормати�
   командой shell-алиас Git, который определяет корень плагина для обоих хостов и
   передаёт его в `bootstrap/launch.sh`, и пакет никогда не зависит ни от полного
   runtime, ни от матрицы команд под каждую целевую платформу.
-- **Decision:** ADR-0076, ADR-0012
+- **Decision:** ADR-0012
 - **Check:** `ci-test` — `tests/ci/test_package_unica_plugin.py`
 - **Scope:** packaged, release
 
@@ -1364,7 +1362,6 @@ Unica. Каждая запись формулирует одно нормати�
   суммой, размером и режимом, и только после этого публикует артефакт атомарно;
   повреждённая доставка, выход за staging, ссылка, потерянный или необъявленный
   файл никогда не становятся готовым ядром или движком.
-- **Decision:** ADR-0076
 - **Check:** `ci-test` — `crates/unica-bootstrap/tests/runtime_install.rs`
 - **Check:** `ci-test` — `tests/ci/test_package_unica_runtime.py`
 - **Check:** `release-gate` — `scripts/ci/verify-release-assets.py`
@@ -1380,7 +1377,6 @@ Unica. Каждая запись формулирует одно нормати�
   с относительным соседством. Небезопасная запись, ссылка, повтор пути,
   коллизия, потерянная зависимость или необъявленный файл прекращает сборку или
   доставку до публикации готового корня.
-- **Decision:** ADR-0076
 - **Check:** `ci-test` — `tests/ci/test_build_unica_tools.py`
 - **Check:** `ci-test` — `tests/ci/test_package_unica_runtime.py`
 - **Check:** `ci-test` — `crates/unica-bootstrap/tests/runtime_install.rs`
@@ -1391,7 +1387,7 @@ Unica. Каждая запись формулирует одно нормати�
 - **Rule:** Встроенный публичный бинарник, собираемый из Cargo-воркспейса,
   называется `unica` и записан под этим именем в
   `plugins/unica/third-party/tools.lock.json`.
-- **Decision:** ADR-0001, ADR-0076
+- **Decision:** ADR-0001
 - **Check:** `guard-script` — `scripts/ci/check-version-contract.py`
 - **Check:** `ci-test` — `tests/ci/test_build_unica_tools.py`
 - **Scope:** source, packaged
@@ -1416,7 +1412,7 @@ Unica. Каждая запись формулирует одно нормати�
   которые принимает самый старый поддерживаемый клиент, а оба каталога хостов
   закрепляют один и тот же неизменяемый тег релиза с типом источника,
   адресующим подкаталог.
-- **Decision:** ADR-0012, ADR-0076
+- **Decision:** ADR-0012
 - **Check:** `ci-test` — `tests/ci/test_package_unica_plugin.py`
 - **Check:** `doc-assert` — `tests/ci/test_product_contracts.py`
 - **Scope:** packaged, release
@@ -1429,7 +1425,6 @@ Unica. Каждая запись формулирует одно нормати�
   `${CLAUDE_PLUGIN_ROOT}` без `cwd` в Claude Code, — собирается только под
   текущую целевую платформу и регистрирует свой каталог Codex под именем
   `unica-dev`, чтобы этот каталог нельзя было принять за опубликованный.
-- **Decision:** ADR-0076
 - **Check:** `ci-test` — `tests/ci/test_package_unica_plugin.py`
 - **Scope:** source
 
@@ -1439,7 +1434,6 @@ Unica. Каждая запись формулирует одно нормати�
   записи о происхождении апстримов, датированные записи ревью и внутренняя
   документация об устройстве пакета и конвейера живут вне `plugins/unica/` и в
   собранный плагин не попадают.
-- **Decision:** ADR-0076
 - **Check:** `ci-test` — `tests/ci/test_package_unica_plugin.py`
 - **Scope:** source, packaged
 
@@ -1546,7 +1540,6 @@ Unica. Каждая запись формулирует одно нормати�
   одним обязательным вызовом `cargo build --locked` в отдельный для целевой
   платформы каталог сборки Cargo; восстановленный кеш эту команду ускоряет, но
   никогда не заменяет.
-- **Decision:** ADR-0076
 - **Check:** `ci-test` — `tests/ci/test_build_unica_tools.py`
 - **Check:** `ci-test` — `tests/ci/test_unica_workflow.py`
 - **Scope:** ci
@@ -1557,7 +1550,6 @@ Unica. Каждая запись формулирует одно нормати�
   разрешённый ключ тулчейна и хеш `Cargo.lock`, префиксные ключи восстановления
   не используются, а каждая платформенная сборка сообщает свою целевую
   платформу, исход обращения к кешу и длительность сборки.
-- **Decision:** ADR-0076
 - **Check:** `ci-test` — `tests/ci/test_unica_workflow.py`
 - **Scope:** ci
 
@@ -1569,7 +1561,6 @@ Unica. Каждая запись формулирует одно нормати�
   одни сутки, тогда как тонкая полезная нагрузка для маркетплейса сохраняет
   более длительный срок хранения для размещения и продвижения; полный комплект
   инструментов границу задания не пересекает.
-- **Decision:** ADR-0076
 - **Check:** `ci-test` — `tests/ci/test_unica_workflow.py`
 - **Scope:** ci, release
 
@@ -1581,7 +1572,6 @@ Unica. Каждая запись формулирует одно нормати�
   будет выгружен или отброшен; дымовая проверка MCP исполняет это извлечённое
   ядро с явно подготовленными проверенными движками, а при публикации по тегу
   проверка ядра повторяется на скачанных опубликованных байтах.
-- **Decision:** ADR-0076
 - **Check:** `ci-test` — `tests/ci/test_unica_workflow.py`
 - **Check:** `release-gate` — `scripts/ci/verify-release-assets.py`
 - **Scope:** ci, release
@@ -1592,7 +1582,6 @@ Unica. Каждая запись формулирует одно нормати�
   pull request и ручные прогоны собирают пакет и прогоняют дымовые проверки без
   публикации, а размещение и продвижение каталога остаются отдельными явными
   задачами.
-- **Decision:** ADR-0076
 - **Check:** `ci-test` — `tests/ci/test_unica_workflow.py`
 - **Scope:** ci, release
 
@@ -1601,7 +1590,6 @@ Unica. Каждая запись формулирует одно нормати�
 - **Rule:** Каждый pull request решается единственным стабильным агрегирующим
   шлюзом, который вместе оценивает задачи по исходникам, по Rust, по упаковке,
   по bootstrap, по оценке релиза и по опубликованным артефактам.
-- **Decision:** ADR-0076
 - **Check:** `ci-test` — `tests/ci/test_unica_workflow.py`
 - **Check:** `ci-test` — `tests/ci/test_evaluate_ci_gate.py`
 - **Scope:** ci
