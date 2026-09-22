@@ -134,22 +134,6 @@ Unica. Каждая запись формулирует одно нормати�
 
 ## MCP — публичная MCP-поверхность
 
-### INV-MCP-ROLE-EDIT — Право роли изменяется через логическую typed-операцию
-
-- **Rule:** `unica.role.edit` выбирает существующую роль только через
-  `sourceSet + metadataPath`, принимает непустой закрытый массив операций
-  `setRight` и возвращает типизированные `changed`, `effects` по
-  `operationIndex`, `validation` и `diagnostics` без `stdout`, текстовой разницы
-  и физических путей; схема и синтаксический разбор не принимают
-  верхнеуровневые `RightsPath`, `Path`, `ObjectName`, `Name` и `Value`, а
-  записывающий компонент сохраняет невыбранные права, ограничения на уровне
-  записей, шаблоны и глобальные флаги в одной атомарной транзакции.
-- **Decision:** ADR-0043
-- **Check:** `ci-test` — `crates/unica-coder/src/application/tool_contracts.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/role.rs`
-- **Check:** `ci-test` — `tests/ci/test_unica_skills.py`
-- **Scope:** source, packaged, runtime
 
 ### INV-MCP-NO-ENGINE-SERVERS — `unica` — единственный MCP-сервер, видимый модели
 
