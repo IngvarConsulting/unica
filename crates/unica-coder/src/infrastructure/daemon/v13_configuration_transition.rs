@@ -7,7 +7,7 @@ use super::v13_infobase_exports::{
     valid_1c_identifier,
 };
 use crate::application::invocation_store::ToolIdentity;
-use crate::domain::cancellation::CancellationToken;
+use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
 use crate::domain::invocation::{DomainResult, SafeIdentityHash};
 use crate::domain::refusal::RefusalCode;
 use crate::domain::workspace::WorkspaceContext;
@@ -153,6 +153,7 @@ impl PreparedConfigurationTransition {
             ),
         }
     }
+
     fn invoke(
         &self,
         runner: &dyn ProcessRunner,
@@ -198,10 +199,13 @@ impl PreparedConfigurationTransition {
                 cancellation: if preview {
                     cancellation.clone()
                 } else {
-                    CancellationToken::new()
+                    cancellation.protect_process_on_spawn()
                 },
             })
             .map_err(|error| {
+                if error.starts_with(CANCELLED_PREFIX) {
+                    return self.fail(RefusalCode::Cancelled, "cancelled before provider launch");
+                }
                 super::v13_infobase_exports::missing_runner_rejection(
                     Some(self.operation.name().into()),
                     redactor(&error),

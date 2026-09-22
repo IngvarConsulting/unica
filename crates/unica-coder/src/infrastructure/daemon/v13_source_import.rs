@@ -22,7 +22,7 @@ use super::v13_infobase_exports::{
     resolve_bundled_runner, runner_rejection, CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
 };
 use crate::application::invocation_store::ToolIdentity;
-use crate::domain::cancellation::CancellationToken;
+use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
 use crate::domain::invocation::{DomainResult, SafeIdentityHash};
 use crate::domain::refusal::RefusalCode;
 use crate::domain::workspace::WorkspaceContext;
@@ -572,6 +572,12 @@ fn invoke_runner(
     cancellation: &CancellationToken,
     dry_run: bool,
 ) -> Result<Value, DomainResult> {
+    if cancellation.is_cancelled() {
+        return Err(reject(
+            RefusalCode::Cancelled,
+            "push cancelled before provider launch",
+        ));
+    }
     let mut args = vec![
         "--config".to_string(),
         prepared
@@ -601,9 +607,18 @@ fn invoke_runner(
             env_remove: Vec::new(),
             capture_limits: Some((RUNNER_OUTPUT_LIMIT, RUNNER_OUTPUT_LIMIT)),
             timeout: None,
-            cancellation: cancellation.clone(),
+            // A dispatched push may be inside the runner's non-abortable
+            // database phase. Cancellation remains effective before launch.
+            cancellation: if dry_run {
+                cancellation.clone()
+            } else {
+                cancellation.protect_process_on_spawn()
+            },
         })
         .map_err(|error| {
+            if error.starts_with(CANCELLED_PREFIX) {
+                return reject(RefusalCode::Cancelled, "cancelled before provider launch");
+            }
             reject_absent_runner(format!(
                 "failed to start bundled v8-runner: {}",
                 redactor(&error)
@@ -1184,5 +1199,37 @@ mod tests {
             assert_eq!(result.diagnostics[0]["code"], expected, "{code}");
             assert_eq!(map_runner_code(code).outcome(), outcome, "{code}");
         }
+    }
+
+    #[test]
+    fn push_detaches_only_its_executing_runner_call() {
+        let root = workspace();
+        let prepared = prepared(root.path(), None, false, false, None);
+        let plan = [("main", full()), ("ext-sales", partial(3))];
+        let runner = SequenceRunner::new(vec![process(envelope(&plan, true), true)]);
+        let cancellation = CancellationToken::new();
+        assert!(
+            invoke_runner(&prepared, &tool(root.path()), &runner, &cancellation, false,).is_ok()
+        );
+        let (_, child) = runner.calls.lock().unwrap()[0]
+            .cancellation
+            .spawn_with_gate(|| Ok(()))
+            .unwrap();
+        cancellation.cancel();
+        assert!(!child.is_cancelled());
+        assert!(cancellation.protected_process_started());
+
+        let runner = SequenceRunner::new(vec![process(envelope(&plan, false), true)]);
+        let cancellation = CancellationToken::new();
+        assert!(
+            invoke_runner(&prepared, &tool(root.path()), &runner, &cancellation, true,).is_ok()
+        );
+        let (_, child) = runner.calls.lock().unwrap()[0]
+            .cancellation
+            .spawn_with_gate(|| Ok(()))
+            .unwrap();
+        cancellation.cancel();
+        assert!(child.is_cancelled());
+        assert!(!cancellation.protected_process_started());
     }
 }

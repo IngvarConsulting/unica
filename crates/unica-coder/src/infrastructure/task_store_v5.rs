@@ -1656,6 +1656,58 @@ mod tests {
     }
 
     #[test]
+    fn completed_provider_receipt_survives_a_late_task_cancel_request() {
+        let root = tempfile::tempdir().unwrap();
+        let root_path = physical_root(&root);
+        let (store, _) = FileInvocationStoreV5::open_inspect_only(
+            &root_path,
+            Arc::new(ManualEpochClock::at(6_000)),
+            deadline(),
+        )
+        .unwrap();
+        let created = store
+            .create_exact(
+                new_record(
+                    task_id("27272727-2727-4727-8727-272727272727"),
+                    invocation_id("28282828-2828-4828-8828-282828282828"),
+                    0x1b,
+                ),
+                deadline(),
+            )
+            .unwrap();
+        let identity = created.identity();
+        let V5StartWorkingOutcome::Started(working) = store
+            .start_working_if_not_cancel_requested(&identity, created.version, deadline())
+            .unwrap()
+        else {
+            panic!("task did not enter working");
+        };
+        let cancelled = store
+            .request_cancel_exact(&identity, working.version, deadline())
+            .unwrap();
+        let completed = store
+            .publish_terminal_exact(
+                &identity,
+                cancelled.version,
+                V5TerminalPublication::Completed {
+                    terminal_epoch_ms: 6_100,
+                    terminal_digest: terminal_digest(0xbb),
+                    result: Box::new(DomainResult::success("provider confirmed mutation")),
+                },
+                deadline(),
+            )
+            .unwrap();
+        assert!(completed.cancel_requested);
+        match completed.task {
+            V5StoredTask::Completed { result, .. } => {
+                assert!(result.ok);
+                assert_eq!(result.summary, "provider confirmed mutation");
+            }
+            other => panic!("late cancellation hid the provider receipt: {other:?}"),
+        }
+    }
+
+    #[test]
     fn terminal_cas_rejects_foreign_stale_invalid_state_and_different_winner() {
         let root = tempfile::tempdir().expect("temporary v5 root");
         let root_path = physical_root(&root);

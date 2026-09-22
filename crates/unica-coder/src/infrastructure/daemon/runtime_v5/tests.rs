@@ -4,6 +4,160 @@
 //! поэтому выражения отбора nextest не меняются.
 
 use super::*;
+
+#[test]
+fn protected_mutation_preserves_success_and_failure_after_cancel_request() {
+    let cancellation = CancellationToken::new();
+    let protected = cancellation.protect_process_on_spawn();
+    protected.spawn_with_gate(|| Ok(())).unwrap();
+    cancellation.cancel();
+    assert!(cancellation.protected_process_started());
+
+    let succeeded = ReceiptTerminalOutcome::Completed {
+        result: Box::new(DomainResult::success("provider confirmed database change")),
+    };
+    assert!(matches!(
+        task_outcome_after_cancel(succeeded, true, true),
+        ReceiptTerminalOutcome::Completed { .. }
+    ));
+    let failed = ReceiptTerminalOutcome::Failed {
+        reason: V5SafeFailureReason::InvocationFailed,
+    };
+    assert!(matches!(
+        task_outcome_after_cancel(failed, true, true),
+        ReceiptTerminalOutcome::Failed { .. }
+    ));
+    let mut refusal = DomainResult::success("provider result could not be verified");
+    refusal.ok = false;
+    let refused = ReceiptTerminalOutcome::Completed {
+        result: Box::new(refusal),
+    };
+    assert!(matches!(
+        task_outcome_after_cancel(refused, true, true),
+        ReceiptTerminalOutcome::Completed { .. }
+    ));
+    assert!(matches!(
+        task_outcome_after_cancel(
+            ReceiptTerminalOutcome::Completed {
+                result: Box::new(DomainResult::success("no dispatch")),
+            },
+            true,
+            false,
+        ),
+        ReceiptTerminalOutcome::Cancelled
+    ));
+}
+
+#[test]
+fn protected_mutation_does_not_arm_the_two_second_cancel_watchdog() {
+    let root = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(root.path()).unwrap();
+    let identity = CoreIdentity::production_v5();
+    let state = DaemonStateDirectory::open(&state_root, &identity).unwrap();
+    let config = DaemonServerConfig::new(state_root, identity, Duration::from_millis(50));
+    let runtime = V5ReceiptRuntime::open(&state, &config).unwrap();
+    let task_id = TaskId::new();
+    let record = V5StoredInvocationRecord {
+        schema_version: crate::application::invocation_store_v5::V5StoredInvocationSchemaVersion,
+        task_id,
+        invocation_id: InvocationId::new(),
+        receipt_key_digest: "44".repeat(32).parse().unwrap(),
+        tool: V5ToolIdentity::Run,
+        normalized_arguments_hash: normalized_arguments_hash(&serde_json::Map::new()),
+        workspace_identity_hash: SafeIdentityHash::from_sha256(Sha256::digest(b"workspace").into()),
+        created_at_epoch_ms: 1_000,
+        updated_at_epoch_ms: 1_000,
+        ttl_ms: 3_600_000,
+        poll_interval_ms: 250,
+        version: 2,
+        cancel_requested: true,
+        task: V5StoredTask::Working,
+    };
+    let (cancellation, _guard) = runtime.active_task_cancellations.register(task_id).unwrap();
+    cancellation
+        .protect_process_on_spawn()
+        .spawn_with_gate(|| Ok(()))
+        .unwrap();
+    cancellation.cancel();
+    runtime.arm_cancel_grace(&record);
+    assert!(runtime
+        .fail_stop_watchdogs
+        .due(runtime.invocation_executor.now() + FAIL_STOP_GRACE + Duration::from_secs(1))
+        .is_none());
+
+    let unprotected = V5StoredInvocationRecord {
+        task_id: TaskId::new(),
+        receipt_key_digest: "55".repeat(32).parse().unwrap(),
+        ..record
+    };
+    runtime.arm_cancel_grace(&unprotected);
+    assert!(runtime
+        .fail_stop_watchdogs
+        .due(runtime.invocation_executor.now() + FAIL_STOP_GRACE + Duration::from_secs(1))
+        .is_some());
+}
+
+#[test]
+fn inline_protected_mutation_cancel_does_not_arm_fail_stop_watchdog() {
+    let root = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(root.path()).unwrap();
+    let identity = CoreIdentity::production_v5();
+    let state = DaemonStateDirectory::open(&state_root, &identity).unwrap();
+    let config = DaemonServerConfig::new(state_root, identity.clone(), Duration::from_millis(50));
+    let runtime = V5ReceiptRuntime::open(&state, &config).unwrap();
+    let key = ReceiptKey::new(
+        InvocationId::new(),
+        TaskId::new(),
+        RequestIdentity::new(
+            identity.digest().clone(),
+            V5ToolIdentity::Run,
+            normalized_arguments_hash(&serde_json::Map::new()),
+            request_scope_hash("workspace-a").unwrap(),
+        ),
+    );
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let reserved = runtime
+        .receipt_ledger
+        .reserve(
+            key.clone(),
+            OriginalCutoffDescriptor::new(1_000, 7_000).unwrap(),
+            deadline,
+        )
+        .unwrap()
+        .into_reservation()
+        .unwrap();
+    let bound = runtime
+        .receipt_ledger
+        .bind_reserved_actor(
+            key.clone(),
+            reserved.record_version(),
+            SafeIdentityHash::from_sha256(Sha256::digest(b"workspace-a").into()),
+            deadline,
+        )
+        .unwrap();
+    runtime
+        .receipt_ledger
+        .mark_reserved_begun(key.clone(), bound.record_version(), deadline)
+        .unwrap();
+    let (cancellation, _guard) = runtime
+        .active_task_cancellations
+        .register(key.reserved_task_id())
+        .unwrap();
+    cancellation
+        .protect_process_on_spawn()
+        .spawn_with_gate(|| Ok(()))
+        .unwrap();
+
+    runtime
+        .cancel_invocation(key, 2_000, deadline)
+        .expect("cancel started inline attempt");
+
+    assert!(cancellation.is_cancelled());
+    assert!(runtime
+        .fail_stop_watchdogs
+        .due(runtime.invocation_executor.now() + FAIL_STOP_GRACE + Duration::from_secs(1))
+        .is_none());
+}
 use crate::application::invocation::normalized_arguments_hash;
 use crate::application::operation_descriptors::{ExecutionClass, KnownLongReason};
 use crate::application::receipt_ledger::{

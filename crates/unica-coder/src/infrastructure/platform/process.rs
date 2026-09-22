@@ -760,13 +760,18 @@ impl ManagedChild {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let mut process_tree = ProcessTree::prepare(&mut process).map_err(process_error)?;
-        let mut child = process.spawn().map_err(process_error)?;
-        if let Err(error) = process_tree.attach(&mut child) {
-            let _ = process_tree.terminate(&mut child);
-            let _ = child.kill();
-            let _ = child.try_wait();
-            return Err(process_error(error));
-        }
+        // Cancellation and OS launch (including Windows Job attachment) are
+        // serialized. A failed launch never claims the protected phase.
+        let (child, cancellation) = cancellation.spawn_with_gate(|| {
+            let mut child = process.spawn().map_err(process_error)?;
+            if let Err(error) = process_tree.attach(&mut child) {
+                let _ = process_tree.terminate(&mut child);
+                let _ = child.kill();
+                let _ = child.try_wait();
+                return Err(process_error(error));
+            }
+            Ok(child)
+        })?;
 
         Ok(Self {
             child,
@@ -2524,6 +2529,7 @@ mod tests {
                 std::env::var("PATH").unwrap_or_else(|_| "missing".into())
             ),
             "sleep" => thread::sleep(Duration::from_secs(10)),
+            "short_sleep" => thread::sleep(Duration::from_millis(800)),
             "stream_forever" => loop {
                 println!("streamed line");
                 std::io::Write::flush(&mut std::io::stdout()).unwrap();
@@ -3764,6 +3770,39 @@ mod tests {
         managed.terminate().unwrap();
         assert!(second.elapsed() < Duration::from_millis(100));
         assert_eq!(managed.state, ChildState::Reaped);
+    }
+
+    #[test]
+    fn protected_process_finishes_after_cancellation_on_every_host() {
+        let cancellation = CancellationToken::new();
+        let signal = cancellation.clone();
+        let canceller = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !signal.protected_process_started() {
+                assert!(Instant::now() < deadline, "protected process did not start");
+                thread::sleep(Duration::from_millis(1));
+            }
+            signal.cancel();
+        });
+        let output = ManagedChild::run(ManagedCommand {
+            program: std::env::current_exe().unwrap(),
+            args: vec![
+                "--exact".into(),
+                "infrastructure::platform::process::tests::managed_child_test_helper".into(),
+                "--nocapture".into(),
+            ],
+            cwd: std::env::current_dir().unwrap(),
+            env: vec![(OsString::from(HELPER_ENV), OsString::from("short_sleep"))],
+            env_remove: Vec::new(),
+            capture_limits: None,
+            timeout: None,
+            cancellation: cancellation.protect_process_on_spawn(),
+        })
+        .unwrap();
+        canceller.join().unwrap();
+        assert!(cancellation.protected_process_started());
+        assert!(output.status_success, "{output:?}");
+        assert!(!output.cancelled);
     }
 
     #[test]

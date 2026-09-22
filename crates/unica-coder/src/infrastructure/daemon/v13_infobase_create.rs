@@ -22,7 +22,7 @@ use super::v13_infobase_exports::{
     resolve_bundled_runner, runner_rejection, CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
 };
 use crate::application::invocation_store::ToolIdentity;
-use crate::domain::cancellation::CancellationToken;
+use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
 use crate::domain::invocation::{DomainResult, SafeIdentityHash};
 use crate::domain::refusal::RefusalCode;
 use crate::domain::workspace::WorkspaceContext;
@@ -344,7 +344,10 @@ fn execute_with_resolved_runner(
     }
     // Квитанция у раннера, не со слов применения: повторное превью обязано
     // сказать, что создавать больше нечего.
-    let receipt = match invoke_runner(prepared, tool, runner, &cancellation, true) {
+    // A cancellation after creation cannot discard the confirmation that the
+    // infobase now exists. Finish the read-only receipt probe as part of this
+    // already-dispatched mutation.
+    let receipt = match invoke_runner(prepared, tool, runner, &CancellationToken::new(), true) {
         Ok(envelope) => envelope,
         Err(result) => return result,
     };
@@ -426,6 +429,12 @@ fn invoke_runner(
     cancellation: &CancellationToken,
     dry_run: bool,
 ) -> Result<Value, DomainResult> {
+    if cancellation.is_cancelled() {
+        return Err(reject(
+            RefusalCode::Cancelled,
+            "infobase.create cancelled before provider launch",
+        ));
+    }
     let mut args = vec![
         "--config".to_string(),
         prepared
@@ -449,9 +458,16 @@ fn invoke_runner(
             env_remove: Vec::new(),
             capture_limits: Some((RUNNER_OUTPUT_LIMIT, RUNNER_OUTPUT_LIMIT)),
             timeout: None,
-            cancellation: cancellation.clone(),
+            cancellation: if dry_run {
+                cancellation.clone()
+            } else {
+                cancellation.protect_process_on_spawn()
+            },
         })
         .map_err(|error| {
+            if error.starts_with(CANCELLED_PREFIX) {
+                return reject(RefusalCode::Cancelled, "cancelled before provider launch");
+            }
             reject_absent_runner(format!(
                 "failed to start bundled v8-runner: {}",
                 redactor(&error)
@@ -787,6 +803,59 @@ mod tests {
             "infobase path leaked: {encoded}"
         );
         assert!(!encoded.contains("1cv8"), "platform path leaked: {encoded}");
+    }
+
+    #[test]
+    fn cancellation_after_create_keeps_the_confirmation_probe_and_receipt() {
+        struct CancelAfterMutationRunner {
+            inner: SequenceRunner,
+            signal: CancellationToken,
+        }
+        impl ProcessRunner for CancelAfterMutationRunner {
+            fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
+                let _child = command.cancellation.spawn_with_gate(|| Ok(()))?;
+                let output = self.inner.run(command)?;
+                if !command.args.iter().any(|argument| argument == "--dry-run") {
+                    self.signal.cancel();
+                }
+                Ok(output)
+            }
+        }
+
+        let root = workspace();
+        let revision = run(
+            root.path(),
+            &prepared(root.path(), true, None),
+            &SequenceRunner::new(vec![process(
+                envelope(root.path(), "planned", "skipped", false),
+                true,
+            )]),
+        )
+        .rev
+        .unwrap();
+        let cancellation = CancellationToken::new();
+        let runner = CancelAfterMutationRunner {
+            inner: SequenceRunner::new(vec![
+                process(envelope(root.path(), "planned", "skipped", false), true),
+                process(envelope(root.path(), "ok", "skipped", true), true),
+                process(envelope(root.path(), "skipped", "skipped", false), true),
+            ]),
+            signal: cancellation.clone(),
+        };
+        let result = execute_with_resolved_runner(
+            &prepared(root.path(), false, Some(revision)),
+            &runner,
+            cancellation.clone(),
+            &tool(root.path()),
+            "0.9.0",
+        );
+        assert!(cancellation.is_cancelled());
+        assert!(result.ok, "{result:?}");
+        assert_eq!(result.data.unwrap()["state"], "created");
+        let calls = runner.inner.calls.lock().unwrap();
+        assert_eq!(calls.len(), 3);
+        assert!(calls[1].cancellation.protected_process_started());
+        assert!(!calls[2].cancellation.is_cancelled());
     }
 
     #[test]

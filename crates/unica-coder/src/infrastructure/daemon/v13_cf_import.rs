@@ -24,7 +24,7 @@ use super::v13_infobase_exports::{
     CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
 };
 use crate::application::invocation_store::ToolIdentity;
-use crate::domain::cancellation::CancellationToken;
+use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
 use crate::domain::invocation::{DomainResult, SafeIdentityHash};
 use crate::domain::refusal::RefusalCode;
 use crate::domain::workspace::WorkspaceContext;
@@ -475,6 +475,12 @@ fn invoke_runner(
     cancellation: &CancellationToken,
     dry_run: bool,
 ) -> Result<Value, DomainResult> {
+    if cancellation.is_cancelled() {
+        return Err(reject(
+            RefusalCode::Cancelled,
+            "upload cancelled before provider launch",
+        ));
+    }
     let mut args = vec![
         "--config".to_string(),
         prepared
@@ -506,9 +512,18 @@ fn invoke_runner(
             env_remove: Vec::new(),
             capture_limits: Some((RUNNER_OUTPUT_LIMIT, RUNNER_OUTPUT_LIMIT)),
             timeout: None,
-            cancellation: cancellation.clone(),
+            // Once load starts, let the runner finish its database operation and
+            // return the real receipt even if the caller requests cancellation.
+            cancellation: if dry_run {
+                cancellation.clone()
+            } else {
+                cancellation.protect_process_on_spawn()
+            },
         })
         .map_err(|error| {
+            if error.starts_with(CANCELLED_PREFIX) {
+                return reject(RefusalCode::Cancelled, "cancelled before provider launch");
+            }
             reject_absent_runner(format!(
                 "failed to start bundled v8-runner: {}",
                 redactor(&error)
@@ -1332,5 +1347,76 @@ mod tests {
             assert_eq!(result.diagnostics[0]["code"], expected, "{code}");
             assert_eq!(map_runner_code(code).outcome(), outcome, "{code}");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dispatched_upload_outlives_cancellation_and_returns_the_child_receipt() {
+        use crate::infrastructure::internal_adapters::SystemProcessRunner;
+        use std::os::unix::fs::PermissionsExt;
+        use std::thread;
+        use std::time::Duration;
+
+        let root = workspace();
+        let script = root.path().join("v8-runner");
+        fs::write(
+            &script,
+            "#!/bin/sh\nsleep 0.8\nprintf '{\"ok\":true,\"command\":\"load\",\"data\":{}}'\n",
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        let prepared = import_of(root.path(), "dist/main.cf", None, false, None);
+        let already_cancelled = CancellationToken::new();
+        already_cancelled.cancel();
+        let never_called = SequenceRunner::new(vec![]);
+        assert!(invoke_runner(
+            &prepared,
+            &tool(root.path()),
+            &never_called,
+            &already_cancelled,
+            false,
+        )
+        .is_err());
+        assert_eq!(never_called.call_count(), 0);
+        let cancellation = CancellationToken::new();
+        let signal = cancellation.clone();
+        let canceller = thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while !signal.protected_process_started() {
+                assert!(std::time::Instant::now() < deadline, "upload did not start");
+                thread::sleep(Duration::from_millis(1));
+            }
+            signal.cancel();
+        });
+
+        let outcome = invoke_runner(
+            &prepared,
+            &tool(root.path()),
+            &SystemProcessRunner,
+            &cancellation,
+            false,
+        );
+        canceller.join().unwrap();
+        assert!(cancellation.is_cancelled());
+        assert_eq!(outcome.unwrap()["command"], "load");
+
+        let cancellation = CancellationToken::new();
+        let signal = cancellation.clone();
+        let canceller = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(100));
+            signal.cancel();
+        });
+        let preview = invoke_runner(
+            &prepared,
+            &tool(root.path()),
+            &SystemProcessRunner,
+            &cancellation,
+            true,
+        );
+        canceller.join().unwrap();
+        assert!(
+            preview.is_err(),
+            "read-only preview must remain cancellable"
+        );
     }
 }
