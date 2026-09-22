@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- Preserve ADR-0018 and `INV-APP-LAZY-HIDDEN-SERVICES`; do not add a public MCP server or tool.
+- Keep the workspace service internal; do not add a public MCP server or tool.
 - Do not change the five-second startup budget, the 120-second request deadline, or the `service.json` schema.
 - Compute source generation before the first analyzer/RLM operation is admitted and keep the existing invalidation/freshness rules.
 - Keep `service.lock` as the persistent OS advisory-lock file; do not delete or reinterpret it as child liveness.

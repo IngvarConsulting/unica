@@ -269,7 +269,7 @@ Unica. Каждая запись формулирует одно нормати�
   поставщиков за один общий ограниченный срок; одинаковые вызовы, ожидающие уже
   начатую доставку движка, не удерживают общее окно ожидания и сразу освобождают
   место в пуле допуска с состоянием работы.
-- **Decision:** ADR-0013, ADR-0017, ADR-0018
+- **Decision:** ADR-0013
 - **Check:** `ci-test` — `crates/unica-coder/src/interfaces/mcp.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/application/code_intelligence.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/engine_delivery.rs`
@@ -522,18 +522,6 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
 - **Scope:** source, runtime
 
-### INV-APP-CODE-PROVIDER-BOUNDARY — Анализ кода не зависит от движка
-
-- **Rule:** Слой application оркестрирует поиск и навигацию только через
-  типизированные `CodeIntelligenceProvider` и `CodeIntelligenceContext`,
-  разрешает корень исходников один раз и не знает команд процессов, транспортов
-  и форматов частного хранилища поставщика; эти детали принадлежат
-  инфраструктурной реализации.
-- **Decision:** ADR-0017
-- **Check:** `ci-test` — `crates/unica-coder/src/application/code_intelligence.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/code_intelligence.rs`
-- **Scope:** source, runtime
-
 ### INV-APP-OUTLINE-SOURCE — Структура модуля берётся из текущего файла
 
 - **Rule:** `unica.code.outline` строит результат из BSL-файла, лежащего в
@@ -549,18 +537,6 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `crates/unica-coder/tests/platform/code_intelligence_symlinked_workspace.rs`
 - **Scope:** source, runtime
 
-### INV-APP-LAZY-HIDDEN-SERVICES — Внутренние сервисы скрыты и привязаны к рабочему пространству
-
-- **Rule:** Тёплые транспорты и сессии поставщиков живут в скрытом сервисе с
-  ключом из корня рабочего пространства и корня исходников; сервис запускается
-  только настоящей операцией поставщика, тогда как `initialize`, `tools/list`,
-  `unica.project.status`, `unica.project.map` и предпросмотр его не запускают,
-  и сервис никогда не становится публичной регистрацией MCP.
-- **Decision:** ADR-0018
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/workspace_services.rs`
-- **Check:** `ci-test` — `crates/unica-coder/tests/platform/issue_89_workspace_service.rs`
-- **Scope:** runtime
-
 ## CACHE — состояние рабочего пространства и кеш
 
 ### INV-CACHE-ORCHESTRATOR-OWNED — Состоянием рабочего пространства владеет оркестратор
@@ -569,7 +545,7 @@ Unica. Каждая запись формулирует одно нормати�
   логической инвалидацией по доменным событиям, а поставщик владеет реализацией
   жизненного цикла своего индекса, процесса и сессии; модель не согласовывает
   свежесть между движками, и оркестратор не читает частное хранилище поставщика.
-- **Decision:** ADR-0003, ADR-0001, ADR-0018
+- **Decision:** ADR-0003, ADR-0001
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/workspace_state.rs`
 - **Check:** `ci-test` — `tests/ci/test_product_contracts.py`
 - **Scope:** runtime
@@ -598,7 +574,6 @@ Unica. Каждая запись формулирует одно нормати�
 ### INV-CACHE-PROVIDER-STATE-OUTSIDE-SOURCE — Постоянное состояние поставщика не индексирует само себя
 
 - **Rule:** Постоянное состояние `RLM` выводится из нормализованных `workspaceRoot + sourceRoot`, остаётся вне индексируемого `sourceRoot`, изолирует разные рабочие пространства, `worktree` и корни исходников и передаётся одинаково индексатору и читающему процессу.
-- **Decision:** ADR-0018
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/workspace_index.rs`
 - **Check:** `ci-test` — `crates/unica-coder/tests/platform/issue_89_workspace_service.rs`
 - **Scope:** runtime
@@ -622,7 +597,7 @@ Unica. Каждая запись формулирует одно нормати�
   использует тот же механизм точного исходного образа и атомарной замены,
   поэтому конкурентный план либо сохраняет объединённый эффект после повторного
   планирования, либо явно отказывает, но не затирает чужую инвалидацию.
-- **Decision:** ADR-0003, ADR-0018, ADR-0022
+- **Decision:** ADR-0003, ADR-0022
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/workspace_state.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/compile_transaction.rs`
 - **Scope:** runtime
@@ -634,7 +609,7 @@ Unica. Каждая запись формулирует одно нормати�
   дерево git изолировано и от основной рабочей копии, и от любого другого
   рабочего дерева, а код, читающий состояние git, разрешает `.git` и как
   каталог, и как файл-указатель.
-- **Decision:** ADR-0003, ADR-0018
+- **Decision:** ADR-0003
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/workspace.rs`
 - **Check:** `ci-test` — `crates/unica-coder/tests/platform/code_intelligence_symlinked_workspace.rs`
 - **Scope:** runtime

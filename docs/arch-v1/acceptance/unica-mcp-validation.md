@@ -29,7 +29,7 @@ Expected:
   orchestrator.
 - Old adapter names are not public MCP registrations (INV-MCP-NO-ENGINE-SERVERS).
 - Hidden workspace analyzer services are internal implementation details and do
-  not add keys under `mcpServers` (INV-APP-LAZY-HIDDEN-SERVICES).
+  not add keys under `mcpServers`.
 - Bundled-tool versions come from `plugins/unica/third-party/tools.lock.json`.
   Contract tests must load the locked entry and validate the corresponding
   artifact/interface; they must not hardcode a second `bsl-analyzer` version
@@ -238,9 +238,7 @@ with `claude --plugin-dir ./plugins/unica`.
 
 ## Workspace Service Acceptance
 
-This section exercises INV-APP-CODE-PROVIDER-BOUNDARY (provider-neutral
-orchestration),
-INV-APP-LAZY-HIDDEN-SERVICES (hidden, workspace-scoped services),
+This section exercises provider-neutral orchestration, hidden workspace services,
 INV-SOURCE-SINGLE-RESOLVED-ROOT (source-root selection),
 INV-CACHE-WORKTREE-ISOLATION (independent provider state),
 INV-MCP-SDK-TRANSPORT and INV-MCP-BOUNDED-ADMISSION (transport ownership and

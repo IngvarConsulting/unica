@@ -1568,7 +1568,7 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         let (remote_tool, tool_args) = bsl_mcp_tool_request(tool_name, args)?;
         // A workspace that has not downloaded the tools has no analyzer in its
         // manifest. `code.search` already answers that state with an
-        // unavailable section and a working result (ADR-0017); answering it
+        // unavailable section and a working result; answering it
         // here with a failed call made the same workstation look broken (#275).
         // A provider that ran and failed is a different case and still fails.
         let bundled_tool = match resolve_bundled_tool(&plugin_root, "bsl-analyzer", !dry_run) {

@@ -1,6 +1,6 @@
 # ADR-0006: Workspace-scoped internal services
 
-- Статус: `superseded` — заменено ADR-0018
+- Статус: `superseded`
 - Дата: `2026-06-23`
 
 ## Контекст
