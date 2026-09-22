@@ -1,3 +1,6 @@
+#[path = "platform/runtime_install_support.rs"]
+mod runtime_install_support;
+
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -570,19 +573,7 @@ fn collecting_keeps_the_newest_versions_of_each_artifact() {
             (root.join(".ready.json"), ready_seconds),
             (root.parent().unwrap().to_path_buf(), directory_seconds),
         ] {
-            let mut options = fs::OpenOptions::new();
-            options.read(true).write(true);
-            if path.is_dir() {
-                options.write(false);
-                #[cfg(windows)]
-                {
-                    use std::os::windows::fs::OpenOptionsExt;
-                    options.custom_flags(0x0200_0000); // FILE_FLAG_BACKUP_SEMANTICS
-                    options.access_mode(0x0100); // FILE_WRITE_ATTRIBUTES for SetFileTime
-                }
-            }
-            options
-                .open(path)
+            runtime_install_support::open_for_timestamp(&path)
                 .unwrap()
                 .set_times(fs::FileTimes::new().set_modified(
                     std::time::SystemTime::UNIX_EPOCH
@@ -1611,7 +1602,7 @@ fn prefetch_cli_reports_success_and_artifact_disk_failures() {
     let core_path = format!(
         "bin/{}/unica{}",
         host.as_str(),
-        if cfg!(windows) { ".exe" } else { "" }
+        std::env::consts::EXE_SUFFIX
     );
     let engine = b"rlm-bsl-index";
     let engine_path = format!("bin/{}/rlm-bsl-index", host.as_str());
