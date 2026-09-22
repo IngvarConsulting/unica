@@ -499,7 +499,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
 
         self.assertEqual(len(set(versions.values())), 1, versions)
 
-    def test_source_package_declares_the_012_meta_delivery_version(self) -> None:
+    def test_source_package_declares_the_013_meta_delivery_version(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         plugin_root = repo_root / "plugins/unica"
         host_versions = {
@@ -516,7 +516,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
         delivered = set(host_versions.values())
         self.assertEqual(len(delivered), 1, host_versions)
         version = next(iter(delivered))
-        self.assertRegex(version, r"^0\.12\.\d+(?:-[0-9A-Za-z.]+)?$")
+        self.assertRegex(version, r"^0\.13\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$")
         self.assertEqual(unica_versions, [version])
 
     def test_claude_contracts_avoid_keys_older_clients_reject(self) -> None:

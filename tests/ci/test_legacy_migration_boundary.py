@@ -81,8 +81,8 @@ class LegacyMigrationBoundaryTests(unittest.TestCase):
             encoding="utf-8"
         )
         version = metadata["version"]
-        self.assertRegex(version, r"^0\.\d+\.\d+$")
-        self.assertGreaterEqual(tuple(map(int, version.split("."))), (0, 8, 0))
+        self.assertRegex(version, r"^0\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$")
+        self.assertGreaterEqual(tuple(map(int, version.partition("-")[0].split("."))), (0, 8, 0))
         for filename in ("install-unica.sh", "install-unica.ps1"):
             frozen_url = f"releases/download/v0.7.8/{filename}"
             obsolete_url = f"releases/download/v0.7.7/{filename}"
