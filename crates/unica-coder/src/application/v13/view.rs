@@ -763,7 +763,7 @@ mod tests {
         let service = ViewService::new(authority, ViewCursorStore::default());
         let request = || ViewRequest::new(at).unwrap().with_limit(50).unwrap();
         let first = service.view(request());
-        assert!(first.ok, "{first:?}");
+        assert!(first.ok);
         assert_eq!(first.page.as_ref().unwrap()["stoppedBy"], "bytes");
         assert_eq!(
             first.data.as_ref().unwrap()["items"]
@@ -806,7 +806,7 @@ mod tests {
         };
         let request = || ViewRequest::new(at).unwrap().with_limit(50).unwrap();
         let first = service.view_projected(request(), &project);
-        assert!(first.ok, "{first:?}");
+        assert!(first.ok);
         assert_eq!(first.page.as_ref().unwrap()["stoppedBy"], "bytes");
         assert_eq!(
             first.data.as_ref().unwrap()["items"]
