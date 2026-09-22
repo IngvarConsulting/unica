@@ -1,9 +1,11 @@
 ---
 id: INV.WIRE.ROOT-FACTS-AND-VERDICT
 check:
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_view_bootstrap_does_not_offer_an_unparseable_logical_address
   - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_view_bootstrap_recognizes_an_infobase_only_workspace
   - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_view_without_at_bootstraps_an_empty_workspace
   - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_view_bootstrap_does_not_equate_git_presence_with_repository_readiness
+gap: https://github.com/IngvarConsulting/unica/issues/970
 ---
 
 # Факты о рабочем пространстве и его готовность запрашиваются отдельно
@@ -22,3 +24,11 @@ check:
 настроек, а `check` возвращает одну причину отсутствия исходников.
 Проект только с соединением информационной базы пригоден для runtime-операций. `view` не предлагает ему настройку исходников: он возвращает
 preview-вызовы `cf.export` и `infobase.export`, затем корневой `check`.
+
+Набор с именем, из которого нельзя построить логический адрес, не получает
+ссылку на чтение. Корневая проверка сообщает `source_set.logical_name_invalid`
+и `ready: false`.
+
+Проверка готовности использует оставшийся срок запроса. Неполный обход
+не объявляется полной проверкой: ответ отмечает `readinessState: incomplete`.
+Проверка истечения срока через текущий публичный маршрут остаётся в `gap`.
