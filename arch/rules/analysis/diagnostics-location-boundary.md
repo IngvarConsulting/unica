@@ -1,6 +1,7 @@
 ---
 id: INV.SAFETY.DIAGNOSTIC-LOCATION-BOUNDARY
 check:
+  - crates/unica-coder/src/infrastructure/internal_adapters.rs::diagnostics_analyze_preserves_cyrillic_paths_through_typed_jsonl
   - crates/unica-coder/src/infrastructure/diagnostics.rs::diagnostic_location_distinguishes_unaddressable_owner_and_unproven_owner
   - crates/unica-coder/src/infrastructure/diagnostics.rs::diagnostic_location_rejects_escape_without_leaking_the_raw_handle
   - crates/unica-coder/src/infrastructure/diagnostics.rs::diagnostics_windows_normalizes_separators_unicode_file_uri_and_dot_segments
