@@ -424,8 +424,7 @@ Edge fixtures берутся из официального дампа платф
 7. Синхронизировать skill, acceptance, tool-surface review, ADR-0047 и новый
    `INV-MCP-META-INFO-COVERAGE` одним implementation PR.
 8. Проверить JSON-RPC: typed `structuredContent`, отсутствие `stdout`, raw XML и
-   физических путей; после этого принять ADR-0047, не переписывая попавшее в
-   `main` предложение ADR-0041, и закрыть
+   физических путей; после этого принять ADR-0047 и закрыть
    #293/#274 фактическими ссылками на проверки.
 
 ## Проверка design PR

@@ -1366,20 +1366,6 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/format_guard.rs`
 - **Scope:** runtime, source
 
-### INV-SOURCE-ROOT-POLICIES — Публикация и владение форматом задаются независимо
-
-- **Rule:** Один закрытый каталог точных QName платформенного XML задаёт две
-  независимые явные политики: допустимое написание версии при публикации и роль
-  документа в разрешении владельца формата. Версионированный при публикации
-  подчинённый документ не становится самостоятельным владельцем только из-за
-  атрибута `version`; публикация неизвестного QName и чтение неизвестного корня
-  с объявленной версией по-прежнему отказывают закрыто.
-- **Decision:** ADR-0031
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_xml_roots.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_xml_owner.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs`
-- **Scope:** runtime, source
-
 ### INV-SOURCE-OWNER-VERSION-GATE — Версию решает корень-владелец, отказ наступает до первой записи
 
 - **Rule:** Формат выгрузки разрешается от XML-корня, владеющего версией, для
