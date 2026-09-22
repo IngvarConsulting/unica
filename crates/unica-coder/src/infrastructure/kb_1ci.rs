@@ -1752,8 +1752,8 @@ mod provider_tests {
             "отказ обязан назвать оглавление, получено {toc}"
         );
 
-        // Третья нога: настоящий лист руководства открывается целиком
-        // (ADR-0033) и несёт текст про e1cib — вопрос #296 живьём.
+        // Настоящий лист руководства открывается целиком
+        // и несёт текст про e1cib — вопрос #296 живьём.
         let leaf = format!(
             "{KB_BASE}/1C_Enterprise_Platform/Guides/Developer_Guides/1C_Enterprise_Developer_Guide/1C_Enterprise_8.3.27_Developer_Guide/Appendix_1._URL_formats/1.2._Internal_links/1.2.1._General_information/?language=en"
         );
