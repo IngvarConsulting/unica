@@ -159,10 +159,10 @@ impl RunOperation {
                 json!({"type":"object","additionalProperties":false,"required":["name","active"],"properties":{"name":{"type":"string","description":"Installed extension name, a 1C identifier."},"active":{"type":"boolean","description":"True to activate; false to deactivate without deleting."}}}),
             ),
             RunIntent::ConfigurationApply => Some(
-                json!({"type":"object","additionalProperties":false,"properties":{"extension":{"type":"string"}}}),
+                json!({"type":"object","additionalProperties":false,"properties":{"extension":{"type":"string","description":"1C extension name; omit to target the main configuration."}}}),
             ),
             RunIntent::ConfigurationReset => Some(
-                json!({"type":"object","additionalProperties":false,"required":["force"],"properties":{"extension":{"type":"string"},"force":{"const":true}}}),
+                json!({"type":"object","additionalProperties":false,"required":["force"],"properties":{"extension":{"type":"string","description":"1C extension name; omit to target the main configuration."},"force":{"const":true,"description":"Must be true to reset; session management and generation checks are unavailable."}}}),
             ),
 
             RunIntent::CfExport => Some(json!({
@@ -200,10 +200,10 @@ impl RunOperation {
                 "required": ["output"]
             })),
             RunIntent::SourceExport => Some(
-                json!({"type":"object","additionalProperties":false,"required":["force"],"properties":{"sourceSet":{"type":"string"},"extension":{"type":"string"},"force":{"const":true}}}),
+                json!({"type":"object","additionalProperties":false,"required":["force"],"properties":{"sourceSet":{"type":"string","description":"Declared source set to fully replace from the infobase; omit for the main configuration."},"extension":{"type":"string","description":"1C extension name; required for an extension source set and must match it."},"force":{"const":true,"description":"Must be true; pull fully replaces one source set without protecting local changes."}}}),
             ),
             RunIntent::SourceImport => Some(
-                json!({"type":"object","additionalProperties":false,"properties":{"sourceSet":{"type":"string"},"full":{"type":"boolean"},"force":{"const":true},"noApply":{"const":false},"delete":{"type":"string","description":"Installed extension platform name to delete, including its data. Exclusive with source sending options."}},"oneOf":[{"required":["delete"],"not":{"anyOf":[{"required":["sourceSet"]},{"required":["full"]},{"required":["force"]},{"required":["noApply"]}]}},{"required":["force"],"not":{"required":["delete"]}}]}),
+                json!({"type":"object","additionalProperties":false,"properties":{"sourceSet":{"type":"string","description":"Declared source set to push; omit to push all declared sets."},"full":{"type":"boolean","description":"Request a full rebuild instead of letting the runner choose the loading mode."},"force":{"const":true,"description":"Must be true when pushing sources; applies the database configuration without generation checks."},"noApply":{"const":false,"description":"Must be false if supplied; source push always applies the database configuration."},"delete":{"type":"string","description":"Installed extension platform name to delete, including its data. Exclusive with source sending options."}},"oneOf":[{"required":["delete"],"not":{"anyOf":[{"required":["sourceSet"]},{"required":["full"]},{"required":["force"]},{"required":["noApply"]}]}},{"required":["force"],"not":{"required":["delete"]}}]}),
             ),
             RunIntent::CfImport => Some(json!({
                 "type": "object",
@@ -1009,6 +1009,14 @@ mod tests {
         let catalog = catalog_for(SurfaceRelease::V13).expect("canonical catalog");
         for tool in &catalog.tools {
             assert_described(&format!("unica.{}", tool.name), &tool.input_schema);
+        }
+        for operation in &catalog.run_dictionary {
+            if operation.support_reason().is_some() {
+                assert_described(
+                    &format!("unica.run.{}", operation.name()),
+                    &operation.args_schema().expect("limited operation schema"),
+                );
+            }
         }
     }
 
