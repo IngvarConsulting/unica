@@ -237,17 +237,6 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `tests/ci/test_meta_surface_contract.py`
 - **Scope:** source, packaged, runtime
 
-### INV-MCP-META-FINDINGS — Перенесённые находки метаданных имеют устойчивую идентичность
-
-- **Rule:** Каждое перенесённое из строкового контура языковое предупреждение
-  `MetadataValidator` возвращает в `structuredContent` отдельный стабильный код
-  правила, точное поле `properties.*` и непустой `language`; `message` не служит
-  машинным идентификатором.
-- **Decision:** ADR-0035
-- **Check:** `ci-test` — `crates/unica-coder/src/application/meta_info_surface_tests.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/application/meta_add_surface_tests.rs`
-- **Scope:** source, runtime
-
 ### INV-MCP-ROLE-EDIT — Право роли изменяется через логическую typed-операцию
 
 - **Rule:** `unica.role.edit` выбирает существующую роль только через

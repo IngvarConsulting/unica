@@ -7,7 +7,7 @@ use crate::domain::metadata::{
 };
 
 /// Платформа принимает такой дескриптор как документ и отвергает как объект
-/// конфигурации, поэтому условие проверяется здесь, а не схемой (ADR-0030).
+/// конфигурации, поэтому условие проверяется здесь, а не схемой.
 pub(super) fn check_meta_object_integrity(
     kind: MetadataKind,
     descriptor: &[u8],
@@ -72,7 +72,7 @@ fn collection_element_name(collection: MetaCollection) -> Option<&'static str> {
         MetaCollection::Templates => Some("Template"),
         MetaCollection::Commands => Some("Command"),
         // Эта коллекция хранится в отдельном `Predefined.xml`, а проверка
-        // ADR-0030 читает только итоговый дескриптор объекта.
+        // целостности читает только итоговый дескриптор объекта.
         MetaCollection::PredefinedItems => None,
     }
 }
