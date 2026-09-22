@@ -18,8 +18,6 @@ daemon протокола v3. Протокол v5 с durable ReceiptLedger ре�
 [`docs/plans/2026-08-28-v0-13-completion.md`](../plans/2026-08-28-v0-13-completion.md),
 семантика фронтенда в
 [2026-08-28-daemon-receipt-ledger-design.md](2026-08-28-daemon-receipt-ledger-design.md),
-порядок волн в
-[2026-08-28-v0-13-completion-wavefront-design.md](2026-08-28-v0-13-completion-wavefront-design.md),
 пункты J0-1 и J0-2 зонтичной задачи #581.
 
 ## Что есть сейчас
