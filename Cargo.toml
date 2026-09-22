@@ -9,8 +9,7 @@ license = "LGPL-3.0-or-later"
 repository = "https://github.com/IngvarConsulting/unica"
 
 [workspace.dependencies]
-# In-process parser semantics must match the bundled analyzer; a contract test
-# compares these resolved revisions with third-party/tools.lock.json.
+# Keep these revisions aligned with the bundled analyzer in tools.lock.json.
 bsl-parser = { package = "parser", git = "https://github.com/itrous/bsl-analyzer", rev = "9a92766691bbd0191a5ff02c34fa9058e4570b85" }
 bsl-syntax = { package = "syntax", git = "https://github.com/itrous/bsl-analyzer", rev = "9a92766691bbd0191a5ff02c34fa9058e4570b85" }
 diffy = "0.5.0"
