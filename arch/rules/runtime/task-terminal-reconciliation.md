@@ -5,6 +5,7 @@ check:
   - crates/unica-coder/src/infrastructure/task_store_v5.rs::terminal_cas_rejects_foreign_stale_invalid_state_and_different_winner
   - crates/unica-coder/tests/daemon_receipt_ledger.rs::task_terminal_receipt_crash_reconciles_without_replay
   - crates/unica-coder/tests/daemon_receipt_ledger.rs::every_cross_store_crash_point_reconciles_without_split_brain
+  - crates/unica-coder/tests/daemon_receipt_ledger.rs::unstaged_task_bind_is_refused_against_a_staged_handoff_predecessor
 ---
 
 # Сохранённый результат задачи восстанавливается без повторного исполнения
@@ -21,3 +22,8 @@ check:
 
 Если надёжно сохранённого результата нет, действует
 [правило восстановления незавершённых задач](task-recovery.md).
+
+Подготовленный конечный результат удаляется из квитанции только после
+точного подтверждения соответствующей конечной записи TaskStore.
+Для ещё не завершённой операции достаточно подтверждения незавершённой
+записи; этим путём нельзя передавать уже подготовленный конечный результат.
