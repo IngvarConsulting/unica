@@ -370,23 +370,6 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `tests/ci/test_architecture_sync_guard.py`
 - **Scope:** source, packaged
 
-### INV-MCP-DIAGNOSTIC-TARGET — Диагностика адресует логическую цель и фокус
-
-- **Rule:** `unica.code.diagnostics` выбирает цель через `action`, точный
-  `sourceSet` и обязательный для `findings` логический `metadataPath`, выводит
-  `targetKind` из разрешённой цели, не принимает публичный параметр выбора поставщика
-  и публикует каждое наблюдение через общий тип `SourceLocation` в поле `location`
-  и внутренний `focus`; адресуемая ветвь и все остальные
-  публичные поля не содержат абсолютный физический путь, а безопасное
-  относительное наблюдение без доказуемой цели явно имеет
-  `location.kind=unaddressable`.
-- **Decision:** ADR-0063
-- **Check:** `ci-test` — `crates/unica-coder/src/application/tool_contracts.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/application/diagnostics.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/diagnostics.rs`
-- **Check:** `doc-assert` — `tests/ci/test_unica_skills.py`
-- **Scope:** source, packaged, runtime
-
 ### INV-MCP-PREVIEW-MUTATION-ONLY — Предпросмотр принадлежит мутации
 
 - **Rule:** `ToolExecution::Read` не публикует и не принимает `dryRun` и
@@ -598,7 +581,7 @@ Unica. Каждая запись формулирует одно нормати�
   вызовы не разрешают `OperationalConfig` и не читают `[operational]`; отдельные
   потребители сетевой политики документации и стандартов продолжают читать те
   же файлы по `INV-APP-DOCUMENTATION-NETWORK-POLICY`.
-- **Decision:** ADR-0040, ADR-0063
+- **Decision:** ADR-0040
 - **Check:** `ci-test` — `crates/unica-coder/src/application/operational_config.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/domain/operational_config.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/operational_config.rs`
@@ -617,19 +600,6 @@ Unica. Каждая запись формулирует одно нормати�
 - **Decision:** ADR-0017
 - **Check:** `ci-test` — `crates/unica-coder/src/application/code_intelligence.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/code_intelligence.rs`
-- **Scope:** source, runtime
-
-### INV-APP-DIAGNOSTIC-PROVIDERS — Наблюдения поставщиков компонуются независимо
-
-- **Rule:** Слой application вызывает диагностики через упорядоченный реестр
-  `DiagnosticProvider`, сохраняет `provider + code` у каждого наблюдения, не
-  выполняет дедупликацию между поставщиками и локализует их неполноту и отказ в
-  отдельных секциях; полезный ответ одного поставщика допускает только явно
-  частичный общий результат другого, а отмена всего вызова не публикует
-  частичный набор.
-- **Decision:** ADR-0064
-- **Check:** `ci-test` — `crates/unica-coder/src/application/diagnostics.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/diagnostics.rs`
 - **Scope:** source, runtime
 
 ### INV-APP-OUTLINE-SOURCE — Структура модуля берётся из текущего файла
