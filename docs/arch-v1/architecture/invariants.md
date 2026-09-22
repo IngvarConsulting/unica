@@ -354,7 +354,7 @@ Unica. Каждая запись формулирует одно нормати�
   недостижимый из-за обязательного соседа, не публикуется, ограничение объёма
   ответа режет по сущностям контракта, а опубликованный и принимаемый наборы
   типизированных читателей закреплены таблицей.
-- **Decision:** ADR-0023, ADR-0048
+- **Decision:** ADR-0048
 - **Check:** `ci-test` — `crates/unica-coder/src/application/tool_contracts.rs`
 - **Scope:** runtime
 
@@ -465,29 +465,6 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `guard-script` — `scripts/ci/check-architecture-sync.py`
 - **Check:** `ci-test` — `tests/ci/test_architecture_sync_guard.py`
 - **Scope:** source, packaged
-
-### INV-MCP-TYPED-RESULT — Результат инструмента типизирован, а не отрисован текстом
-
-- **Rule:** Успешный вызов публичного инструмента, чья запись в
-  `spec/architecture/tool-surface-review.json` имеет `scope: "in"` и
-  `result.contract: "typed"`, публикует результат только как
-  `OperationResult.data` без текстового дубля в `stdout`; исполняемый контракт
-  классифицирует инструмент как `Typed` или `ExternalStream`, инструмент чтения
-  не публикует и не принимает `dryRun`, а общий финализатор проверяет каждый
-  успешный `Read + Typed`; записи с `scope: "retiring"` и `scope: "runtime"`
-  находятся вне границы этого правила до собственного решения. Успешный
-  `ToolExecution::Read` с
-  `ResultContract::Typed` всегда содержит `OperationResult.data`, а его
-  отсутствие завершает вызов стабильной ошибкой `typed_result_missing`;
-  текстовый дубль завершает вызов ошибкой `typed_result_textual`, а
-  соответствие классификации ведомости проверяет
-  `tool_specs_match_reviewed_result_contracts`.
-- **Decision:** ADR-0020, ADR-0023, ADR-0044
-- **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/application/tool_contracts.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/rlm_navigation.rs`
-- **Check:** `ci-test` — `tests/ci/test_tool_surface_ledger.py`
-- **Scope:** source, runtime
 
 ### INV-MCP-DIAGNOSTIC-TARGET — Диагностика адресует логическую цель и фокус
 

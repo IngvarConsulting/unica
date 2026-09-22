@@ -918,7 +918,7 @@ SCENARIO_PRESERVING_TOKENS = {
     ],
     # `Name` and `Mode` were report selectors. The typed answer carries the
     # whole object, so the scenarios are preserved by the addresses they read,
-    # not by the drill-down argument that no longer exists (ADR-0023).
+    # not by the drill-down argument that no longer exists.
     # Путь метаданных стал логическим адресом, а вердикт ушёл в свой вход.
     "meta-info": [
         '"at": "main:Catalog.Валюты"',
@@ -973,7 +973,7 @@ SCENARIO_PRESERVING_TOKENS = {
     ],
     # Eleven `Mode` values selected eleven reports. The typed answer carries
     # every section at once, so the scenarios are preserved by the sections the
-    # skill names, not by the selector that no longer exists (ADR-0023).
+    # skill names, not by the selector that no longer exists.
     # Содержимое ячеек стало отдельным адресом, а не признаком в аргументах,
     # поэтому сценарий сохраняется адресом ветви, а не селектором состава.
     "mxl-info": [

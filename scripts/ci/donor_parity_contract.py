@@ -343,7 +343,7 @@ def validate_relations(
     if not isinstance(relations, dict):
         return [*errors, "donor relations must be an object"]
 
-    # A tool that answers with typed data (ADR-0023) has no prose left to
+    # A tool that answers with typed data has no prose left to
     # compare against the donor script, so its cases carry a retirement reason
     # instead of a relation. The donor snapshot itself is never edited.
     retired = registry.get("retired", {})

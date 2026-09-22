@@ -212,7 +212,7 @@ def _input_schema_shape_error(value: object) -> str | None:
 def _code_search_output_schema_shape_error(value: object) -> str | None:
     if not isinstance(value, dict) or value.get("type") != "object":
         return "must declare an object envelope"
-    # ADR-0023: typed provider-neutral payload is carried by OperationResult.data.
+    # Typed provider-neutral payload is carried by OperationResult.data.
     required = value.get("required")
     if not isinstance(required, list) or "data" not in required:
         return "must require data"
