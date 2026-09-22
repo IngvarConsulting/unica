@@ -574,7 +574,7 @@ class MetaSurfaceContractTests(unittest.TestCase):
         )
 
     def test_registry_is_exactly_the_three_typed_metadata_handlers(self) -> None:
-        # `unica.meta.remove` left with DEC.2026-09-03.V0-13-LEGACY-BATCH-2:
+        # `unica.meta.remove` is retired:
         # removal is `unica.apply object.remove` on the canonical surface.
         blocks = registered_tool_blocks()
         meta = {name: block for name, block in blocks.items() if name.startswith("unica.meta.")}

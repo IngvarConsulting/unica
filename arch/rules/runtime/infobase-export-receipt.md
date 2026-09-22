@@ -9,6 +9,7 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::apply_rejects_a_runner_receipt_for_a_different_output
   - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::parser_rejects_provider_controls_and_output_escape
   - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::cfe_and_dt_invocations_use_only_their_closed_runner_arguments
+gap: https://github.com/IngvarConsulting/unica/issues/974
 ---
 
 # Успешная выгрузка базы подтверждается файлом назначения
@@ -35,3 +36,16 @@ check:
 Проверки используют управляемый раннер и реальные файлы; полный путь
 preview/apply проверен на CF, аргументы CFE и DT — отдельно.
 Платформа 1С в этих проверках не запускается.
+
+Ревизия preview связывает точные аргументы, основную и локальную
+конфигурацию проекта, состояние назначения, версию раннера и выбранный
+им исполнитель с планом. Изменение любого из этих входов требует нового
+предпросмотра.
+
+Квитанция подтверждает обычный файл: каталог, символическая ссылка или
+специальный файл не считаются успешной выгрузкой. Сырые stderr и данные
+аутентификации не попадают в результат.
+
+Влияние каждого входа на ревизию, отказ для всех перечисленных видов
+назначения и отсутствие секретов во всех ветвях ошибок отдельно не
+проверены; эти сценарии перечислены в gap.
