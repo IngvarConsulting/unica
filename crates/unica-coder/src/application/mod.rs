@@ -938,7 +938,7 @@ fn call_tool_with_runtime_admission(
             return Ok(result);
         }
     }
-    // ADR-0074: a classified applied operation executes and carries its named
+    // A classified applied operation executes and carries its named
     // risk into the result; only an unclassified one still fails closed.
     let mut applied_risk = None;
     if runtime_admission == RuntimeAdmissionPolicy::Enforce
@@ -3896,8 +3896,8 @@ pub(crate) mod tests {
     #[test]
     fn an_admission_refusal_names_the_missing_engine_too() {
         // #549 просил, чтобы отказ допуска не маскировал отсутствие бинаря.
-        // Сам маршрут из дефекта закрыт раньше: ADR-0074 пустил
-        // классифицированные операции исполняться с названным риском, а
+        // Сам маршрут из дефекта закрыт раньше: теперь
+        // классифицированные операции исполняются с названным риском, а
         // неклассифицированную аргументы до допуска не доносят. Отказ остаётся
         // достижим изнутри, и вторая причина в нём названа.
         let missing = crate::domain::engine::MissingEngine::new(

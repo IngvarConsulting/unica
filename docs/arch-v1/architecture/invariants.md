@@ -371,21 +371,6 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/application_ports.rs`
 - **Scope:** packaged, runtime
 
-### INV-MCP-RUNTIME-RECEIPT — Применённый runtime отвечает в исходном вызове
-
-- **Rule:** Применённая операция `unica.runtime.execute` исполняется синхронно и
-  возвращает свой терминальный результат в исходном `tools/call`, неся названную
-  причину риска предупреждением; неклассифицированная операция отказывает кодом
-  `runtime_operation_unbounded` до обнаружения рабочего пространства,
-  предпросмотр остаётся синхронным и без побочных эффектов, а унаследованные
-  `unica.build.*` запасным путём не предлагаются.
-- **Decision:** ADR-0074
-- **Check:** `ci-test` — `crates/unica-coder/src/application/runtime_admission.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/interfaces/mcp.rs`
-- **Check:** `ci-test` — `tests/ci/test_unica_skills.py`
-- **Scope:** source, packaged, runtime
-
 ### INV-MCP-SURFACE-SYNC — Изменения публичной поверхности синхронны
 
 - **Rule:** Добавление, удаление или переименование публичного MCP-инструмента
@@ -635,43 +620,6 @@ Unica. Каждая запись формулирует одно нормати�
   поставщика.
 - **Decision:** ADR-0054
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/application_ports.rs`
-- **Scope:** source, runtime
-
-### INV-APP-PARTIAL-FALLBACK — Runtime-build повторяет только доказанный частичный отказ
-
-- **Rule:** `unica.runtime.execute` и `unica.runtime.job.start` обязаны
-  независимо от состояния поддержки нормализовать обычный `build` с
-  `--json-message`. Ровно одну команду с добавленным `--full-rebuild` допускает
-  только `unica.runtime.job.start` и только после внешнего кода `4` и строгой
-  закрытой JSON-квитанции о завершившемся ошибкой частичном шаге `Designer`;
-  синхронный адаптер владеет одним процессом и второго не запускает ни при какой
-  квитанции. Явный полный режим, ошибка шага `edt_export`, отмена или превышение
-  срока, отмеченные внешним процессом Unica, обрезанная, повреждённая,
-  неизвестная или несвязанная квитанция повтора не допускают, а путь `config`
-  обязан оставаться внутри того же рабочего пространства, а точные байты
-  основного файла, присутствие и точные байты соседнего `v8project.local.yaml`,
-  идентичность корня и эпоха рабочего пространства проверяются перед первой
-  обычной и полной повторной попытками задания. Отказ классификации после кода
-  `4` обязан публиковаться предупреждением с названием отклонившей проверки.
-  Основной файл принимается только как ограниченно читаемый обычный файл;
-  соседний локальный файл может доказанно отсутствовать либо обязан
-  удовлетворять тем же требованиям. Долговременный повтор сохраняет один `jobId`
-  и `active.lock`, под блокировкой жизненного цикла заменяет `PID`, объединяет
-  ограниченные вычищенные журналы обеих попыток и применяет успешные эффекты
-  один раз после окончательного результата. Частное состояние `v8-runner` не
-  читается, а двухпроцессный разрыв его внутренней блокировки и новый срок
-  исполнения второй команды, а также отсутствие в закреплённой квитанции
-  признака отложенного внутреннего тайм-аута критического шага признаются
-  временными ограничениями до переработки поколения `v14`.
-- **Decision:** ADR-0067, ADR-0003
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/application_ports.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/internal_adapters.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/runtime_build_fallback.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/runtime_build_preflight.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/runtime_jobs.rs`
-- **Check:** `ci-test` — `tests/ci/test_product_contracts.py`
-- **Check:** `doc-assert` — `tests/ci/test_unica_skills.py`
-- **Check:** `release-gate` — `scripts/ci/check-tool-contracts.py`
 - **Scope:** source, runtime
 
 ### INV-APP-CONFIG-SNAPSHOT — Конфигурация вызова изолирована рабочим пространством

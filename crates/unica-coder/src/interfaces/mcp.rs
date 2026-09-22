@@ -1744,7 +1744,7 @@ mod tests {
 
         let response = client.receive().await;
         assert_eq!(response["id"], "runtime-refusal", "{response}");
-        // ADR-0074: the applied call is no longer refused before discovery, so
+        // The applied call is no longer refused before discovery, so
         // this fixture answers with the missing bundled runner instead. What the
         // test still pins is the shape: one terminal answer, no input echoed.
         let serialized = response.to_string();

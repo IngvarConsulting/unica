@@ -581,10 +581,8 @@ impl<'a> RuntimeAdapter<'a> {
                 }));
             }
         };
-        // The one full retry belongs to the durable entry point alone. An
-        // applied `unica.runtime.execute` is refused by INV-MCP-RUNTIME-RECEIPT
-        // before it reaches this adapter, so there is no first attempt here to
-        // classify and nothing to retry (ADR-0066, ADR-0067).
+        // This synchronous adapter runs one attempt. A full retry belongs
+        // to the durable worker, which owns both attempts.
         let mut runner_error = if args.get("operation").and_then(Value::as_str) == Some("build")
             && !output.status_success
         {
@@ -3094,11 +3092,8 @@ mod tests {
         cleanup_context(&context);
     }
 
-    /// #404 and ADR-0067. The one full retry belongs to the durable entry
-    /// point. An applied `unica.runtime.execute` never reaches this adapter
-    /// (INV-MCP-RUNTIME-RECEIPT), so a partial-failure receipt here must not
-    /// start a second process: the retry would escape the one call that owns
-    /// the lifecycle.
+    /// This synchronous adapter must not start a second process after a
+    /// partial-failure receipt. The durable worker owns the retry (#404).
     #[test]
     fn runtime_adapter_never_retries_a_failed_partial_build() {
         let mut context = temp_context("runtime-partial-no-sync-retry");
