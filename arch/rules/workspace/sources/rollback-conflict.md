@@ -1,6 +1,7 @@
 ---
 id: INV.SOURCE.ROLLBACK-DIAGNOSTIC-CLASS
 check:
+  - crates/unica-coder/src/infrastructure/workspace_actor.rs::prepared_apply_cleanup_race_surfaces_a_relative_actor_diagnostic
   - crates/unica-coder/src/infrastructure/native_operations/compile_transaction.rs::registration_rollback_preserves_same_name_recovery_decoy_after_parent_swap
   - crates/unica-coder/src/infrastructure/native_operations/compile_transaction.rs::registration_rollback_validation_reports_preserved_quarantine
   - crates/unica-coder/src/infrastructure/native_operations/compile_transaction.rs::removal_rollback_preserves_concurrent_file_and_recovery_artifact
@@ -20,3 +21,5 @@ check:
 остаток после восстановления получает `cleanup encountered:` и не меняет
 исходный тип ошибки. После успешной публикации проблема очистки сообщает
 предупреждение и не откатывает опубликованные данные.
+
+Проверка подмены при очистке выполняется на ОС, допускающих замену удерживаемого имени.

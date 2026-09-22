@@ -11,6 +11,7 @@ check:
   - crates/unica-coder/src/infrastructure/source_revision.rs::unsupported_fence_reconcile_is_bounded_to_six_passes_when_corpus_never_stabilizes
   - crates/unica-coder/src/infrastructure/source_revision.rs::retained_scan_limits_entries_files_and_aggregate_bytes
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::review_rejects_revision_change_during_post_fence_owner_proof
+gap: https://github.com/IngvarConsulting/unica/issues/971
 ---
 
 # Результат чтения выдаётся после повторной проверки исходников
@@ -43,3 +44,7 @@ check:
 
 Это проверка наблюдаемого состояния: она не гарантирует обнаружение
 изменения, которое произошло и было отменено между наблюдениями.
+
+Подготовка `apply`, включая допуск и предпросмотр, не ослабляет эти проверки
+и не отключает повторное использование подтверждённой ревизии. Проверка
+последующего чтения на том же акторе пока не закрыта; сценарии указаны в `gap`.
