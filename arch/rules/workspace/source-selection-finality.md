@@ -16,6 +16,7 @@ check:
   - crates/unica-coder/src/infrastructure/workspace_actor.rs::apply_selection_dry_run_rejects_late_map_change_without_receipt
   - crates/unica-coder/src/infrastructure/workspace_actor.rs::apply_selection_late_change_rolls_back_source_cache_revision_and_receipt
   - crates/unica-coder/src/infrastructure/source_selection_evidence.rs::published_replacement_of_a_retained_source_map_file_passes_the_final_gate
+gap: https://github.com/IngvarConsulting/unica/issues/987
 ---
 
 # Изменение применяется к той карте исходников, по которой его подготовили
@@ -36,3 +37,11 @@ check:
 
 Это проверка состояния в заданных точках. Она не обнаруживает изменение,
 которое успели полностью отменить между проверками.
+
+Если маркер нужен только для проверки существования, изменение его байтов
+на месте не меняет карту. Его исчезновение, смена вида или идентичности
+по-прежнему значимы. Для содержательно читаемых входов сравниваются байты.
+
+Проба без завершённого наблюдения закрывает допуск: ошибку нельзя принять
+за доказанное отсутствие файла. Проверка этих двух условий на полном пути
+актора остаётся в `gap`.
