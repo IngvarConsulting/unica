@@ -5084,6 +5084,281 @@ struct ActorLogicalReadLease {"#,
         (workspace, source)
     }
 
+    fn v13_runtime_for_borrowing_test() -> V5CanonicalInvocationRuntime {
+        V5CanonicalInvocationRuntime::new(canonical_v13_service(), Arc::new(TokioClock))
+    }
+
+    fn borrowing_view_fixture(parent_state: &str) -> tempfile::TempDir {
+        let (workspace, source) = source_selection_read_fixture();
+        let extension = workspace.path().join("ext");
+        std::fs::create_dir_all(extension.join("Catalogs")).unwrap();
+        let config = std::fs::read_to_string(source.join("Configuration.xml")).unwrap();
+        std::fs::write(extension.join("Configuration.xml"), config.replace("<Name>Store</Name>", "<ObjectBelonging>Adopted</ObjectBelonging><Name>Extension</Name><NamePrefix>Ext_</NamePrefix>")).unwrap();
+        std::fs::write(extension.join("Catalogs/Items.xml"), r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog uuid="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"><Properties><ObjectBelonging>Adopted</ObjectBelonging><Name>Items</Name><ExtendedConfigurationObject>aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa</ExtendedConfigurationObject></Properties><ChildObjects/></Catalog></MetaDataObject>"#).unwrap();
+        let mut yaml = "format: DESIGNER\nsource-set:\n  - name: parent\n    type: CONFIGURATION\n    path: src\n  - name: ext\n    type: EXTENSION\n    path: ext\n".to_string();
+        if parent_state == "duplicate" {
+            std::fs::create_dir_all(workspace.path().join("copy/Catalogs")).unwrap();
+            std::fs::copy(
+                source.join("Configuration.xml"),
+                workspace.path().join("copy/Configuration.xml"),
+            )
+            .unwrap();
+            std::fs::copy(
+                source.join("Catalogs/Items.xml"),
+                workspace.path().join("copy/Catalogs/Items.xml"),
+            )
+            .unwrap();
+            yaml.push_str("  - name: copy\n    type: CONFIGURATION\n    path: copy\n");
+        } else if parent_state == "missing_second" {
+            yaml.push_str("  - name: missing\n    type: CONFIGURATION\n    path: absent\n");
+        } else if parent_state == "unregistered" {
+            std::fs::write(
+                source.join("Configuration.xml"),
+                config.replace("<Catalog>Items</Catalog>", ""),
+            )
+            .unwrap();
+        } else if parent_state == "different_uuid" {
+            let path = source.join("Catalogs/Items.xml");
+            let text = std::fs::read_to_string(&path).unwrap().replace(
+                "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+            );
+            std::fs::write(path, text).unwrap();
+        }
+        std::fs::write(workspace.path().join("v8project.yaml"), yaml).unwrap();
+        workspace
+    }
+
+    #[test]
+    fn borrowing_view_resolves_registered_parent_and_preserves_unresolved_extension_facts() {
+        for (case, expected) in [
+            ("normal", "resolved"),
+            ("duplicate", "ambiguous"),
+            ("missing_second", "unavailable"),
+            ("unregistered", "not_found"),
+            ("different_uuid", "not_found"),
+        ] {
+            let workspace = borrowing_view_fixture(case);
+            let runtime = v13_runtime_for_borrowing_test();
+            let result = submit_canonical(
+                &runtime,
+                workspace.path(),
+                ToolIdentity::View,
+                serde_json::json!({"at":"ext:Catalog.Items"}),
+            );
+            assert!(result.ok, "{case}: {result:?}");
+            let props = &result.data.as_ref().unwrap()["props"];
+            assert_eq!(props["belonging"], "borrowed", "{case}");
+            assert_eq!(props["parentStatus"], expected, "{case}: {result:?}");
+            if expected == "resolved" {
+                assert_eq!(props["extends"], "parent:Catalog.Items");
+                let parent = submit_canonical(
+                    &runtime,
+                    workspace.path(),
+                    ToolIdentity::View,
+                    serde_json::json!({"at":props["extends"]}),
+                );
+                assert!(parent.ok, "parent must be readable: {parent:?}");
+            } else {
+                assert!(
+                    props.get("extends").is_none(),
+                    "{case}: never guess a parent"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn borrowing_view_bounds_override_props_for_metadata_and_specialized_readers() {
+        for (kind, directory) in [("Catalog", "Catalogs"), ("CommonModule", "CommonModules")] {
+            let workspace = borrowing_view_fixture("normal");
+            let states = (0..300).map(|index| format!("<xr:PropertyState><xr:Property>Property{index:04}</xr:Property><xr:State>Notify</xr:State></xr:PropertyState>")).collect::<String>();
+            for source in ["src", "ext"] {
+                let root = workspace.path().join(source);
+                let owner = root.join("Configuration.xml");
+                let config = std::fs::read_to_string(&owner)
+                    .unwrap()
+                    .replace("Catalog>", &format!("{kind}>"));
+                std::fs::write(owner, config).unwrap();
+                let original = root.join("Catalogs/Items.xml");
+                let mut xml = std::fs::read_to_string(&original)
+                    .unwrap()
+                    .replace("Catalog ", &format!("{kind} "))
+                    .replace("</Catalog>", &format!("</{kind}>"));
+                if kind == "CommonModule" {
+                    std::fs::create_dir_all(root.join("CommonModules/Items/Ext")).unwrap();
+                    std::fs::write(root.join("CommonModules/Items/Ext/Module.bsl"), "").unwrap();
+                    xml = xml.replace("</Properties>", "<Global>false</Global><ClientManagedApplication>false</ClientManagedApplication><Server>true</Server><ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ServerCall>false</ServerCall><Privileged>false</Privileged><ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties>");
+                }
+                if source == "ext" {
+                    xml = xml
+                        .replace(
+                            "<MetaDataObject ",
+                            "<MetaDataObject xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" ",
+                        )
+                        .replace(
+                            "<Properties>",
+                            &format!("<InternalInfo>{states}</InternalInfo><Properties>"),
+                        );
+                }
+                std::fs::create_dir_all(root.join(directory)).unwrap();
+                std::fs::write(root.join(directory).join("Items.xml"), xml).unwrap();
+            }
+            let runtime = v13_runtime_for_borrowing_test();
+            let result = submit_canonical(
+                &runtime,
+                workspace.path(),
+                ToolIdentity::View,
+                serde_json::json!({"at":format!("ext:{kind}.Items")}),
+            );
+            assert!(result.ok, "{kind}: {result:?}");
+            let props = &result.data.as_ref().unwrap()["props"];
+            assert_eq!(props["overridesCount"], 300, "{kind}: {result:?}");
+            assert_eq!(props["overridesComplete"], false, "{kind}: {result:?}");
+            assert!(
+                props.get("overrides").is_none(),
+                "oversized scalar must not escape: {kind}"
+            );
+            assert_eq!(
+                props["extends"],
+                format!("parent:{kind}.Items"),
+                "{result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_object_borrow_previews_publishes_and_rejects_changed_parent_revision() {
+        let workspace = borrowing_view_fixture("normal");
+        let owner = workspace.path().join("ext/Configuration.xml");
+        let config = std::fs::read_to_string(&owner).unwrap();
+        std::fs::write(&owner, config.replace("<Catalog>Items</Catalog>", "")).unwrap();
+        std::fs::remove_file(workspace.path().join("ext/Catalogs/Items.xml")).unwrap();
+        let runtime = v13_runtime_for_borrowing_test();
+        let skill = include_str!("../../../../../plugins/unica/skills/cfe-borrow/SKILL.md");
+        let examples = skill
+            .split("```json\n")
+            .skip(1)
+            .map(|block| {
+                serde_json::from_str::<serde_json::Value>(block.split("```").next().unwrap())
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let preview_args = examples[0]["params"]["arguments"].clone();
+        let preview = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::Apply,
+            preview_args.clone(),
+        );
+        assert!(preview.ok, "{preview:?}");
+        assert!(!workspace.path().join("ext/Catalogs/Items.xml").exists());
+        let mut apply_args = preview_args.clone();
+        apply_args["dryRun"] = serde_json::json!(false);
+        apply_args["ifRev"] = serde_json::json!(preview.rev);
+        let parent = workspace.path().join("src/Catalogs/Items.xml");
+        let text = std::fs::read_to_string(&parent).unwrap();
+        std::fs::write(
+            &parent,
+            text.replace(
+                "<Name>Items</Name>",
+                "<Name>Items</Name><Comment>changed</Comment>",
+            ),
+        )
+        .unwrap();
+        let stale = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::Apply,
+            apply_args.clone(),
+        );
+        assert!(!stale.ok, "parent change must invalidate preview");
+        assert!(
+            stale
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic["code"] == "stale_revision"),
+            "{stale:?}"
+        );
+        assert!(!workspace.path().join("ext/Catalogs/Items.xml").exists());
+        let preview = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::Apply,
+            preview_args.clone(),
+        );
+        assert!(preview.ok, "{preview:?}");
+        apply_args["ifRev"] = serde_json::json!(preview.rev);
+        let applied = submit_canonical(&runtime, workspace.path(), ToolIdentity::Apply, apply_args);
+        assert!(applied.ok, "{applied:?}");
+        let read = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::View,
+            examples[1]["params"]["arguments"].clone(),
+        );
+        assert!(read.ok, "{read:?}");
+        assert_eq!(
+            read.data.as_ref().unwrap()["props"]["extends"],
+            "parent:Catalog.Items"
+        );
+        let repeat = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::Apply,
+            preview_args,
+        );
+        assert!(repeat.ok, "{repeat:?}");
+        assert!(
+            repeat.changed.is_empty(),
+            "unchanged repeat is not an update"
+        );
+    }
+
+    #[test]
+    fn borrowing_view_rejects_parent_changes_before_final_publication() {
+        let workspace = borrowing_view_fixture("normal");
+        let runtime = v13_runtime_for_borrowing_test();
+        let request = InvocationRequest::new(
+            ToolIdentity::View,
+            serde_json::json!({"at":"ext:Catalog.Items"}),
+            std::fs::canonicalize(workspace.path())
+                .unwrap()
+                .to_string_lossy(),
+            7_000,
+        )
+        .unwrap();
+        let invocation = bind_workspace_invocation(
+            &request,
+            &runtime.workspace_actors,
+            Arc::clone(&runtime.deliveries),
+            Arc::clone(&runtime.provider_hosts),
+            Arc::clone(&runtime.runtime_resources),
+            None,
+            runtime.capture_response_deadline_for_test(),
+        )
+        .unwrap();
+        let cancellation = CancellationToken::new();
+        let execution = invocation.begin_execution(&cancellation).unwrap();
+        let result = canonical_v13_service()
+            .execute(&execution, cancellation.clone())
+            .unwrap();
+        assert_eq!(
+            result.data.as_ref().unwrap()["props"]["parentStatus"],
+            "resolved"
+        );
+        let parent = workspace.path().join("src/Catalogs/Items.xml");
+        let text = std::fs::read_to_string(&parent).unwrap().replace(
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        );
+        std::fs::write(parent, text).unwrap();
+        assert!(
+            execution.publish(Ok(result), &cancellation).is_err(),
+            "a stale parent address must not escape"
+        );
+    }
+
     #[test]
     pub(crate) fn view_find_admitted_snapshot_may_finish_after_map_change() {
         let (workspace, source) = source_selection_read_fixture();

@@ -42,6 +42,9 @@ pub(crate) struct ActorBoundInvocation {
     provider_root: ProviderRootBinding,
     #[allow(dead_code)] // consumed only by the injected Task 14 service before Task 22
     read_sources: Arc<[ActorReadSourceBinding]>,
+    parent_source_names: Vec<String>,
+    parent_source_selection:
+        Arc<crate::infrastructure::source_selection_evidence::RetainedSourceSelectionEvidence>,
     workspace_identity_hash: SafeIdentityHash,
     deliveries: Arc<crate::infrastructure::engine_delivery::DeliveryDesk>,
     provider_hosts: Arc<ProviderHostOwner>,
@@ -337,6 +340,7 @@ struct ActorLogicalReadSourceLease {
 struct ActorLogicalReadLease {
     deadline: ProviderDeadline,
     sources: Vec<ActorLogicalReadSourceLease>,
+    parent_sources: std::sync::Mutex<Vec<ActorLogicalReadSourceLease>>,
     route: ActorLogicalReadRoute,
 }
 
@@ -555,6 +559,7 @@ impl ActorBoundInvocation {
                 ActorExecutionRevision::LogicalRead(ActorLogicalReadLease {
                     deadline: logical_deadline,
                     sources,
+                    parent_sources: std::sync::Mutex::new(Vec::new()),
                     route,
                 })
             }
@@ -671,8 +676,36 @@ impl ActorBoundExecution {
                 )
             })?;
         self.invocation.actor.validate_binding(&binding)?;
-        let admission = self.invocation.actor.admit_apply(
+        let dependencies = request
+            .ops()
+            .iter()
+            .filter(|operation| operation.name() == "object.borrow")
+            .map(|operation| {
+                let from = operation
+                    .args()
+                    .get("from")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| {
+                        ApplyAdmissionError::Other("borrow parent address is missing".to_string())
+                    })?;
+                let parent = crate::domain::address::QualifiedAddress::parse(from)
+                    .map_err(|error| ApplyAdmissionError::Other(error.to_string()))?;
+                self.invocation
+                    .read_sources
+                    .iter()
+                    .find(|source| source.binding.source_set_name() == parent.source_set())
+                    .map(|source| source.binding.clone())
+                    .ok_or_else(|| {
+                        ApplyAdmissionError::Other(
+                            "borrow parent source was not admitted by the workspace actor"
+                                .to_string(),
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>, ApplyAdmissionError>>()?;
+        let admission = self.invocation.actor.admit_apply_with_dependencies(
             &binding,
+            &dependencies,
             request.if_rev(),
             request.dry_run(),
             ProviderDeadline::from_budget(ACTOR_OPERATION_BUDGET),
@@ -708,9 +741,14 @@ impl ActorBoundExecution {
         let ActorExecutionRevision::LogicalRead(lease) = &self.revision else {
             return Err("logical read sources are unavailable to a legacy invocation".to_string());
         };
+        let parents = lease
+            .parent_sources
+            .lock()
+            .map_err(|_| "parent read leases are poisoned")?;
         lease
             .sources
             .iter()
+            .chain(parents.iter())
             .map(|source| {
                 self.invocation.actor.validate_binding(&source.binding)?;
                 Ok(ActorReadSourceCapability {
@@ -725,6 +763,52 @@ impl ActorBoundExecution {
                 })
             })
             .collect()
+    }
+
+    /// Lazy parent reads use actor-issued leases and join the final read publication.
+    /// Failure to admit any declared candidate makes the whole parent lookup incomplete.
+    pub(in crate::infrastructure::daemon) fn admit_borrowing_parent_sources(
+        &self,
+        cancellation: &CancellationToken,
+    ) -> Result<(), String> {
+        let ActorExecutionRevision::LogicalRead(lease) = &self.revision else {
+            return Err("parent lookup requires a logical read".into());
+        };
+        self.invocation
+            .parent_source_selection
+            .validate(lease.deadline, cancellation)
+            .map_err(|error| error.to_string())?;
+        let mut fences = Vec::new();
+        for name in &self.invocation.parent_source_names {
+            let source = self
+                .invocation
+                .read_sources
+                .iter()
+                .find(|source| source.binding.source_set_name() == name)
+                .ok_or_else(|| "a declared parent source is unavailable".to_string())?;
+            self.invocation.actor.validate_binding(&source.binding)?;
+            let fence = self.invocation.actor.capture_logical_read_revision(
+                &source.binding,
+                lease.deadline,
+                cancellation,
+            )?;
+
+            if !lease
+                .sources
+                .iter()
+                .any(|selected| selected.binding.source_set_name() == name)
+            {
+                fences.push(ActorLogicalReadSourceLease {
+                    binding: source.binding.clone(),
+                    fence,
+                });
+            }
+        }
+        *lease
+            .parent_sources
+            .lock()
+            .map_err(|_| "parent read leases are poisoned")? = fences;
+        Ok(())
     }
 
     /// Admitted roots for the `find` directory: the retained no-follow root of
@@ -875,8 +959,19 @@ impl ActorBoundExecution {
                             .to_string()
                     });
                 }
-                let fences = lease
-                    .sources
+                let parent_sources = lease
+                    .parent_sources
+                    .into_inner()
+                    .map_err(|_| "parent read leases are poisoned")?;
+                if !parent_sources.is_empty() {
+                    self.invocation
+                        .parent_source_selection
+                        .validate(lease.deadline, cancellation)
+                        .map_err(|error| error.to_string())?;
+                }
+                let mut sources = lease.sources;
+                sources.extend(parent_sources);
+                let fences = sources
                     .into_iter()
                     .map(|source| source.fence)
                     .collect::<Vec<_>>();
@@ -1053,9 +1148,39 @@ fn bind_workspace_invocation_controlled(
             },
         )?;
     let declared_sources = &source_admission.map().source_sets;
+    let parent_source_names = declared_sources
+        .iter()
+        .filter(|source| source.kind == SourceSetKind::Configuration)
+        .map(|source| source.name.clone())
+        .collect::<Vec<_>>();
+    let view_extension_target = (request.tool()
+        == crate::application::invocation_store::ToolIdentity::View)
+        .then(|| {
+            request
+                .arguments()
+                .get("at")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|at| QualifiedAddress::parse(at).ok())
+        })
+        .flatten()
+        .filter(|at| {
+            declared_sources.iter().any(|source| {
+                source.name == at.source_set() && source.kind == SourceSetKind::Extension
+            })
+        });
     let mut admitted_sources = declared_sources
         .iter()
         .filter(|source| source.source_format == SourceFormat::PlatformXml)
+        .filter(|source| {
+            // An unavailable possible parent must not hide a healthy extension.
+            // Its name remains in parent_source_names, making resolution incomplete.
+            !(view_extension_target.is_some()
+                && source.kind == SourceSetKind::Configuration
+                && closed_daemon_source_relative_path(&source.path)
+                    .ok()
+                    .and_then(|relative| source_admission.source_root_identity(&relative))
+                    .is_none())
+        })
         .map(|source| {
             let unreadable = |reason| {
                 unadmitted(UnadmittedCause::SourceRootUnreadable {
@@ -1153,6 +1278,8 @@ fn bind_workspace_invocation_controlled(
         actor,
         provider_root,
         read_sources: Arc::from(read_sources),
+        parent_source_names,
+        parent_source_selection: Arc::new(source_admission.into_evidence()),
         workspace_identity_hash,
         deliveries: resources.deliveries,
         provider_hosts: resources.provider_hosts,

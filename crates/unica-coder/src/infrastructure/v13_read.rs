@@ -199,6 +199,106 @@ impl<'a> LogicalViewReadAuthority<'a> {
         }
     }
 
+    pub(crate) fn object_borrowing(
+        &self,
+        at: &QualifiedAddress,
+    ) -> Result<Option<crate::infrastructure::native_operations::meta::MetaBorrowing>, ViewError>
+    {
+        if self.read.source_set_kind() != SourceSetKind::Extension
+            || at.segments().len() != 1
+            || at.segments()[0].name().is_none()
+            || !at.segments()[0].kind().is_metadata_kind()
+        {
+            return Ok(None);
+        }
+        let target = MetadataAddress::parse(
+            PLATFORM_XML_8_3_27_FORMAT_2_20,
+            at.to_string().split_once(':').expect("qualified address").1,
+        )
+        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))?;
+        let admitted = ViewSourceSnapshot {
+            source_set_identity: self.read.source_set_identity().to_string(),
+            revision: self.exact_revision()?,
+        };
+        self.verify_registered_owner(&target, &admitted)?;
+        crate::infrastructure::native_operations::meta::parse_meta_borrowing(
+            &self.read.metadata_descriptor(&target)?,
+        )
+        .map(Some)
+        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
+    }
+
+    /// Resolve only registered, readable objects under this retained source.
+    /// A matching filename or name alone is not parent identity evidence.
+    pub(crate) fn borrowed_parent_matches(
+        &self,
+        parent_uuid: &str,
+        kind: &str,
+    ) -> Result<Vec<String>, ViewError> {
+        let admitted = ViewSourceSnapshot {
+            source_set_identity: self.read.source_set_identity().to_string(),
+            revision: self.exact_revision()?,
+        };
+        let payload = self
+            .read
+            .configuration_payload_with_checkpoint(&mut || self.read_checkpoint())?;
+        let mut matches = Vec::new();
+        for item in payload
+            .get("registeredObjects")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if item.get("kind").and_then(Value::as_str) != Some(kind) {
+                continue;
+            }
+            self.read_checkpoint()?;
+            let name = item.get("name").and_then(Value::as_str).ok_or_else(|| {
+                ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
+                    "registered parent has no name",
+                )
+            })?;
+            let target =
+                MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &format!("{kind}.{name}"))
+                    .map_err(|error| {
+                        ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+                    })?;
+            self.verify_registered_owner(&target, &admitted)?;
+            let bytes = self.read.metadata_descriptor(&target)?;
+            let text = std::str::from_utf8(&bytes).map_err(|_| {
+                ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
+                    "parent descriptor is not UTF-8",
+                )
+            })?;
+            let doc = roxmltree::Document::parse(text.trim_start_matches('\u{feff}')).map_err(
+                |error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()),
+            )?;
+            let uuid = doc
+                .root_element()
+                .children()
+                .find(|node| node.is_element())
+                .and_then(|node| node.attribute("uuid"));
+            if uuid.is_some_and(|uuid| uuid.eq_ignore_ascii_case(parent_uuid)) {
+                let at = format!("{}:{}", self.read.source_set(), target.as_str());
+                let address = QualifiedAddress::parse(&at).map_err(|error| {
+                    ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+                })?;
+                // A valid registered descriptor must also be readable through the public reader.
+                self.read_exact(&address, &ViewFilter::default(), &admitted)?;
+                matches.push(at);
+            }
+        }
+        if self.exact_revision()? != admitted.revision {
+            return Err(ViewError::new(
+                RefusalCode::StaleRevision,
+                "parent source changed during identity resolution",
+            ));
+        }
+        Ok(matches)
+    }
+
     fn exact_revision(&self) -> Result<String, ViewError> {
         self.read_checkpoint()?;
         self.read.exact_revision(self.deadline, self.cancellation)
@@ -492,26 +592,11 @@ impl<'a> LogicalViewReadAuthority<'a> {
         // Заимствование отвечает только в наборе расширения; там оно есть у
         // всякого объекта, и «своё» — такой же ответ, как «заимствовано».
         if let Some(borrowing) = read.borrowing {
-            payload.insert(
-                "belonging".to_string(),
-                json!(if borrowing.extends.is_some() {
-                    "borrowed"
-                } else {
-                    "own"
-                }),
-            );
-            if let Some(extends) = borrowing.extends {
-                payload.insert("extends".to_string(), json!(extends));
-                // Пустой список перекрытий — это его отсутствие: платформа не
-                // пишет `PropertyState`, когда перекрывать нечего.
-                if !borrowing.overrides.is_empty() {
-                    payload.insert(
-                        "overrides".to_string(),
-                        json!(borrowing.overrides.join(", ")),
-                    );
-                }
-            }
+            payload.extend(crate::infrastructure::v13_read_projection::borrowing_props(
+                &borrowing,
+            ));
         }
+
         // Предопределённые элементы — содержимое самого объекта, и писатель у
         // них есть. Без читателя агент, добавивший элемент, не может
         // подтвердить результат: ни счёта, ни списка, ни адреса.

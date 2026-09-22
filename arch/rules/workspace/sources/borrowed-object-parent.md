@@ -1,7 +1,9 @@
 ---
 id: INV.SOURCE.BORROWED-OBJECT-PARENT-ADDRESS
-check: []
-gap: https://github.com/IngvarConsulting/unica/issues/935
+check:
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::borrowing_view_resolves_registered_parent_and_preserves_unresolved_extension_facts
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::borrowing_view_rejects_parent_changes_before_final_publication
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::borrowing_view_bounds_override_props_for_metadata_and_specialized_readers
 ---
 
 # Заимствованный объект указывает проверенный адрес родителя

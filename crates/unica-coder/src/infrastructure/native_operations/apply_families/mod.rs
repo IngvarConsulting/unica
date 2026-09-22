@@ -1,3 +1,4 @@
+mod borrow;
 pub(crate) mod dcs_mxl;
 pub(crate) mod form_resource;
 pub(crate) mod metadata;
@@ -232,6 +233,7 @@ fn writable_profile_owner_chain(
 }
 
 enum ParsedApplyOperation {
+    Borrow(borrow::BorrowOperation),
     Metadata(IndexedPlanOperation<metadata::MetadataPlanOperation>),
     FormResource(IndexedPlanOperation<form_resource::FormResourcePlanOperation>),
     DcsMxl(IndexedPlanOperation<dcs_mxl::DcsMxlPlanOperation>),
@@ -450,6 +452,9 @@ pub(crate) fn plan_hidden_v13_apply(
                 return Err(hidden_apply_family_unimplemented(op_index));
             };
             let args = serde_json::Value::Object(operation.args().clone());
+            if operation.name() == "object.borrow" {
+                return borrow::parse(&args, op_index, binding).map(ParsedApplyOperation::Borrow);
+            }
             let parsed = match family {
                 OperationFamily::Metadata | OperationFamily::Properties => {
                     let parsed = metadata::parse_metadata_plan_operation(
@@ -526,6 +531,7 @@ pub(crate) fn plan_hidden_v13_apply(
     refuse_targets_outside_writable_profile(request, binding, &mut staged)?;
     refuse_targets_on_locked_vendor_objects(request, binding, admission, &mut staged)?;
     let mut provisional = Vec::new();
+    let mut borrowing = Vec::new();
     let mut cursor = 0;
     while cursor < parsed.len() {
         if let ParsedApplyOperation::Unsupported(index) = &parsed[cursor] {
@@ -537,6 +543,17 @@ pub(crate) fn plan_hidden_v13_apply(
             .count()
             + cursor;
         match &parsed[cursor] {
+            ParsedApplyOperation::Borrow(_) => {
+                for operation in &parsed[cursor..end] {
+                    let ParsedApplyOperation::Borrow(operation) = operation else {
+                        unreachable!()
+                    };
+                    let (effects, detail) =
+                        borrow::plan(&mut staged, admission, binding, operation)?;
+                    provisional.extend(effects);
+                    borrowing.push(detail);
+                }
+            }
             ParsedApplyOperation::Code(_) => {
                 let operations = parsed[cursor..end]
                     .iter()
@@ -658,7 +675,8 @@ pub(crate) fn plan_hidden_v13_apply(
         cursor = end;
     }
 
-    let effects = reconcile_effects(&staged, provisional);
+    let mut effects = reconcile_effects(&staged, provisional);
+    effects.set_borrowing(borrowing);
     Ok((staged, effects))
 }
 

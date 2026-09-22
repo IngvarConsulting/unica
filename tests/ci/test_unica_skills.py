@@ -381,12 +381,11 @@ def prompt_frontmatter(document: str) -> dict[str, str]:
 
 
 # Их предмет поверхность не создаёт: корень конфигурации и расширения,
-# заимствование, перехват метода, дескриптор внешней обработки или отчёта.
+# перехват метода, дескриптор внешней обработки или отчёта.
 # Скилл остаётся справочником формата и обязан назвать пробел вслух.
 SKILLS_WITHOUT_A_CANONICAL_ENTRY = {
     "cf-init",
     "cfe-init",
-    "cfe-borrow",
     "cfe-patch-method",
     "epf-init",
     "erf-init",
@@ -395,7 +394,7 @@ SKILLS_WITHOUT_A_CANONICAL_ENTRY = {
 IN_SCOPE_TOOLS = {
     "cf-edit": "unica.apply",
     "cf-init": "unica.check",
-    "cfe-borrow": "unica.check",
+    "cfe-borrow": "unica.apply",
     "cfe-init": "unica.check",
     "cfe-patch-method": "unica.check",
     "epf-init": "unica.check",
@@ -817,6 +816,7 @@ REPLACED_RUNTIME_SKILLS = {
 }
 
 TASK_EXAMPLE_ARGUMENT_KEYS = {
+    "cfe-borrow": ["at", "ops", "dryRun"],
     "cf-edit": ["at", "ops"],
     "meta-add": ["at", "ops"],
     "meta-edit": ["at", "ops"],
@@ -852,6 +852,7 @@ SCENARIO_PRESERVING_MIN_MCP_CALLS = {
 }
 
 ALLOWED_ADDITIONAL_MCP_TOOL_NAMES = {
+    "cfe-borrow": {"unica.view"},
     "form-compile": {"unica.view", "unica.check"},
     "role-compile": {"unica.view", "unica.check"},
     "dcs-compile": {"unica.view", "unica.check"},
@@ -871,14 +872,6 @@ SCENARIO_PRESERVING_TOKENS = {
         "Режим совместимости (default: `Version8_3_27`)",
         '"CompatibilityMode": "Version8_3_27"',
         '"name": "unica.view"',
-        '"name": "unica.check"',
-    ],
-    "cfe-borrow": [
-        '"Object": "Catalog.Контрагенты"',
-        '"Object": "Catalog.Контрагенты.Form.ФормаЭлемента"',
-        '"Object": "Catalog.Контрагенты ;; CommonModule.ОбщийМодуль ;; Enum.ВидыОплат"',
-        '"BorrowMainAttribute": true',
-        '"BorrowMainAttribute": "All"',
         '"name": "unica.check"',
     ],
     "cfe-init": [

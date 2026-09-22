@@ -69,9 +69,11 @@ pub(crate) fn parse_meta_borrowing(bytes: &[u8]) -> Result<MetaBorrowing, String
                         .children()
                         .find(|node| node.has_tag_name((XCF_READABLE_NS, "State")))
                         .map(meta_info_inner_text)
-                        .is_some_and(|state| state.trim() == "Extended");
-                    // Перекрытым считается только `Extended`: другие состояния
-                    // говорят о чём-то ещё, и выдавать их за перекрытие нельзя.
+                        .is_some_and(|state| {
+                            matches!(state.trim(), "Extended" | "Notify" | "MultiState")
+                        });
+                    // Все три состояния отражают вклад расширения:
+                    // его значение нельзя затереть обновлением родителя.
                     extended
                         .then(|| property.trim().to_string())
                         .filter(|property| !property.is_empty())

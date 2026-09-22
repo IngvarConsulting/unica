@@ -180,6 +180,18 @@ pub(super) fn hidden_apply_family_unimplemented(op_index: usize) -> ApplyPlanErr
     .at_path(format!("ops[{op_index}].op"))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BorrowPlanDetail {
+    pub(crate) index: usize,
+    pub(crate) at: String,
+    pub(crate) from: String,
+    pub(crate) parent_uuid: String,
+    pub(crate) created: bool,
+    pub(crate) changed_properties: Vec<String>,
+    pub(crate) protected_overrides: Vec<String>,
+}
+
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct PlannedApplyEffects {
     events: Vec<DomainEvent>,
@@ -191,9 +203,17 @@ pub(crate) struct PlannedApplyEffects {
     /// Typed warnings a planner attaches to a plan that still executes: a
     /// forced removal names the files that keep referring to the object.
     warnings: Vec<serde_json::Value>,
+    borrowing: Vec<BorrowPlanDetail>,
 }
 
 impl PlannedApplyEffects {
+    pub(crate) fn borrowing(&self) -> &[BorrowPlanDetail] {
+        &self.borrowing
+    }
+    pub(crate) fn set_borrowing(&mut self, details: Vec<BorrowPlanDetail>) {
+        self.borrowing = details;
+    }
+
     pub(crate) fn events(&self) -> &[DomainEvent] {
         &self.events
     }

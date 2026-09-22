@@ -1,0 +1,47 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+	<Catalog uuid="82e613ba-34ef-470f-96f1-e02c56be57d5">
+		<InternalInfo>
+			<xr:GeneratedType name="CatalogObject.CorpusCatalog" category="Object">
+				<xr:TypeId>0d95a5c9-ed8e-4a60-bd39-2ab69a3d6a87</xr:TypeId>
+				<xr:ValueId>9bb415f8-2c7c-4ab8-aad2-a7dd8ed6a102</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="CatalogRef.CorpusCatalog" category="Ref">
+				<xr:TypeId>bdd70217-77fb-4938-95e7-d310c3a051c7</xr:TypeId>
+				<xr:ValueId>3dc8a7d1-4399-4689-a5f2-4cd6217a111c</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="CatalogSelection.CorpusCatalog" category="Selection">
+				<xr:TypeId>1e7de0ba-a90e-4bc4-964d-5e6d39c131ed</xr:TypeId>
+				<xr:ValueId>c63eb6aa-6235-4947-b17b-cc1188212d47</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="CatalogList.CorpusCatalog" category="List">
+				<xr:TypeId>6f16db50-c2ea-43ff-8151-6822959da1be</xr:TypeId>
+				<xr:ValueId>a0ed80d1-47f0-43c3-a770-93165aa7f6b7</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="CatalogManager.CorpusCatalog" category="Manager">
+				<xr:TypeId>38e41602-ff17-4aec-a638-a12c452e8792</xr:TypeId>
+				<xr:ValueId>a5764fca-4c04-46b5-ad88-814d8196cc56</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:PropertyState>
+				<xr:Property>DescriptionLength</xr:Property>
+				<xr:State>Extended</xr:State>
+			</xr:PropertyState>
+		</InternalInfo>
+		<Properties>
+			<ObjectBelonging>Adopted</ObjectBelonging>
+			<Name>CorpusCatalog</Name>
+			<Synonym>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Локальное перекрытие</v8:content>
+				</v8:item>
+			</Synonym>
+			<Comment/>
+			<ExtendedConfigurationObject>1d6b8425-360c-4ab1-9bab-cc9a3b590bb2</ExtendedConfigurationObject>
+			<Hierarchical>false</Hierarchical>
+			<CodeLength>3</CodeLength>
+			<DescriptionLength>50</DescriptionLength>
+		</Properties>
+		<ChildObjects/>
+	</Catalog>
+</MetaDataObject>

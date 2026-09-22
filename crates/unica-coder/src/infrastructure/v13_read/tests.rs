@@ -794,17 +794,22 @@ fn borrowing_props_name_the_three_roles_of_an_extension_source_set() {
     let props = &overridden.data.as_ref().unwrap()["props"];
     assert_eq!(props["belonging"], json!("borrowed"));
     assert_eq!(
-        props["extends"],
+        props["parentId"],
         json!("11111111-1111-4111-8111-111111111111")
     );
     assert_eq!(props["overrides"], json!("Synonym"));
+    assert!(
+        props.get("extends").is_none(),
+        "UUID is not a readable parent address"
+    );
+    assert_eq!(props["parentStatus"], json!("unavailable"));
 
     let plain = service.view(ViewRequest::new("main:Document.Order").unwrap());
     assert!(plain.ok, "{:?}", refusal_codes(&plain));
     let props = &plain.data.as_ref().unwrap()["props"];
     assert_eq!(props["belonging"], json!("borrowed"));
     assert_eq!(
-        props["extends"],
+        props["parentId"],
         json!("11111111-1111-4111-8111-111111111111")
     );
     assert!(
