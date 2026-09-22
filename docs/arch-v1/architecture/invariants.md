@@ -334,46 +334,12 @@ Unica. Каждая запись формулирует одно нормати�
   (`server/discover`, `tools/list`, `tools/call`) — из реестра слоя
   application, причём и типы `rmcp`, и макросы инструментов из SDK не выходят
   за пределы этого модуля.
-- **Decision:** ADR-0013, ADR-0002, ADR-0069
+- **Decision:** ADR-0013, ADR-0002
 - **Check:** `ci-test` — `crates/unica-coder/src/interfaces/mcp.rs`
 - **Check:** `manual` — ни один скрипт-страж не знает имени крейта, поэтому
   ревью подтверждает, что импорты `rmcp` и макросы инструментов из SDK остаются
   внутри `crates/unica-coder/src/interfaces/mcp.rs`
 - **Scope:** source, runtime
-
-### INV-MCP-VERSION-TIERS — Версии протокола обслуживаются по SDK, гарантируются по матрице
-
-- **Rule:** Сервер не несёт собственной политики версий: согласование
-  версии, допуск первого запроса и версионное кодирование результатов —
-  штатные механизмы `rmcp` с дефолтным набором обслуживаемых версий, а
-  запасная версия ответа на неизвестное предложение явно закреплена на
-  `2025-11-25` и не наследуется от `ProtocolVersion::LATEST`. Гарантируемые
-  версии — `2025-06-18`, `2025-11-25` и `2026-07-28` — покрыты проводной
-  матрицей тестов и верификацией обоих жизненных циклов при запуске; красный
-  статус любой из них — красная приёмка, а изменение состава гарантий —
-  отдельное решение.
-- **Decision:** ADR-0069
-- **Check:** `ci-test` — `crates/unica-coder/src/interfaces/mcp.rs`
-- **Check:** `ci-test` —
-  `crates/unica-bootstrap/tests/platform/verification_contract.rs`
-- **Scope:** runtime
-
-### INV-MCP-DEFERRED-READ — Большое типизированное чтение продолжается по ссылке
-
-- **Rule:** Успешный типизированный результат чтения сверх настроенного
-  байтового порога публикуется манифестом отложенной доставки
-  (`state = "deferred"`, `isError: false`) с `suggestedSelections` и
-  `resultRef`, а продолжение — повторный вызов того же инструмента с
-  `resultRef` и селекцией — отдаёт побайтно стабильный срез неизменяемого
-  снимка, не перечитывая источник; ошибки продолжения стабильны:
-  `result_expired`, `result_ref_mismatch`, `result_unavailable`. Хранилище
-  снимков ограничено и не переживает процесс сервера.
-- **Decision:** ADR-0070
-- **Check:** `ci-test` — `crates/unica-coder/src/application/deferred_delivery.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
-- **Check:** `ci-test` —
-  `crates/unica-coder/src/application/result_store.rs`
-- **Scope:** runtime
 
 ### INV-MCP-BOUNDED-ADMISSION — Приём вызовов ограничен, отмена кооперативна
 

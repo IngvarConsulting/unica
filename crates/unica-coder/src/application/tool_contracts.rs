@@ -2262,7 +2262,7 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
             if operation == "form-edit" {
                 names.push("definition");
             }
-            // ADR-0070: the deferred-capable readers publish the continuation
+            // the deferred-capable readers publish the continuation
             // vocabulary alongside their own arguments.
             if super::deferred_delivery::supports_operation(operation) {
                 names.extend(super::deferred_delivery::CONTINUATION_ARGS);
@@ -2642,7 +2642,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "delivery",
-        "Deferred continuation only: `\"full\"` asks for the whole stored snapshot; it expresses the caller's intent and proves no human confirmation (ADR-0070)",
+        "Deferred continuation only: `\"full\"` asks for the whole stored snapshot; it expresses the caller's intent and proves no human confirmation",
     ),
     (
         "page",
@@ -2650,7 +2650,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "resultRef",
-        "Continuation reference issued by a deferred manifest of the same tool: the call is served from the immutable stored snapshot without re-reading the source (ADR-0070)",
+        "Continuation reference issued by a deferred manifest of the same tool: the call is served from the immutable stored snapshot without re-reading the source",
     ),
     (
         "documentId",

@@ -1,4 +1,4 @@
-//! Bounded in-memory store for deferred typed reader results (ADR-0070).
+//! Bounded in-memory store for deferred typed reader results.
 //!
 //! The store keeps an immutable snapshot of a full typed `OperationResult.data`
 //! so a continuation call can serve byte-stable slices without re-reading the
