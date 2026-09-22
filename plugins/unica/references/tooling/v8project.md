@@ -161,18 +161,18 @@ directory named `main` keeps it.
 
 | Intent | `unica.run` operation |
 | --- | --- |
-| Create an infobase with its source/sync baseline | `infobase.create` — unavailable with runner 0.11 |
-| Send sources / delete an extension | `push` — only `args: {"delete": "InstalledName"}` is supported with runner 0.11; sending sources is unavailable |
-| Bring database changes into sources with local-work protection | `pull` — unavailable with runner 0.11 |
+| Create an absent empty infobase | `infobase.create`, empty args; then send sources separately; no sync baseline |
+| Send sources / delete an extension | `push`, `force:true`, optional `sourceSet` and `full`; applies the database configuration. Deletion uses only `delete: "InstalledName"` |
+| Replace one source set from the working configuration | `pull`, `force:true`, optional `sourceSet`, `extension`; no local-work protection |
 | Export the configuration or an extension as `.cf`/`.cfe` | `download`, `state=working` or `state=database`, `output`, optional `extension` |
-| Load a `.cf`/`.cfe` into the working configuration only | `upload` — unavailable: runner 0.11 load also applies the database configuration |
+| Load a `.cf`/`.cfe` into the working configuration only | `upload`, `input`, optional `extension`; loading does not apply the database configuration |
 | Build a `.cf`/`.cfe` from sources | `make`, `output`, optional `sourceSet`, `extension`; `.epf`/`.erf` are not published |
 | Export the whole infobase as `.dt` | `infobase.dump`, `output` |
 | Load a `.dt` | `infobase.restore`, `input`, `mode=create` or `mode=replace` |
 | Launch a 1C client | `launch`, `clientMode`, optional `execute`, `waitForExit`, `waitTimeoutMs`; terminal, no preview required |
 | Inspect installed extensions | `extensions.list`, empty args; preview/apply opens a platform session |
 | Change installed extension activity | `extensions.set`, `name`, boolean `active`; other properties are unavailable |
-| Apply or discard pending configuration changes | `apply`, `reset` — unavailable with runner 0.11 |
+| Apply or discard pending configuration changes | `apply`, optional `extension`; `reset`, `force:true`, optional `extension`; Designer only |
 
 Syntax checks are `unica.check`; test runs and Designer/EDT conversion are not
 operations of the dictionary. A previewApply operation is applied with the
@@ -199,7 +199,7 @@ platform database-configuration update and is currently unavailable.
   operations; Unica exposes no `timeoutMs` argument.
 - `upload` is unavailable: the old runner implicitly applies the database configuration. Do not substitute it with another operation.
 - Designer/EDT conversion is not on the surface: Unica reads platform XML only.
-- Designer `rawKeys` are not on the surface; source moves are named `push` and `pull`, but are unavailable with the runner 0.11 adapter.
+- Designer `rawKeys` are not on the surface; `push` and `pull` require explicit `force:true` with the 0.11.1 adapter and do not protect generations or local work.
 - When credentials are absent, do not initiate a runtime probe to discover them. Ask the user; classify only authentication evidence already supplied by a verified boundary.
 - If a command reports a 1C license problem, stop and ask the user to fix licensing. Do not edit license services, HASP settings, registry, or license files.
 - If a runtime flag or debug-server step is missing from the `unica.run`

@@ -275,6 +275,8 @@ fn execute_with_resolved_runner(
                 "action": "create",
                 "connectionFrom": CONFIG_NAME,
                 "edtWorkspace": "skipped",
+                "initializesSources": false,
+                "generationProtection": false,
                 // Что превью узнать не может, названо, а не умолчано.
                 "targetStateKnownBeforeApply": false,
             },
@@ -367,6 +369,7 @@ fn execute_with_resolved_runner(
         "dryRun": false,
         "target": "infobase",
         "state": "created",
+        "initializesSources": false,
         "connectionFrom": CONFIG_NAME,
         "targetStateAttestedBy": "provider",
         "receipt": "repeated preview reports nothing left to create",

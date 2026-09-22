@@ -2,8 +2,8 @@
 id: CTR.WIRE.TOOL-SURFACE
 status: active
 governs: product
-version: 8
-decision: DEC.2026-09-22.RUNNER-ONE-TARGET-VOCABULARY
+version: 9
+decision: DEC.2026-09-22.RUNNER-COMPATIBLE-DEVELOPMENT-CYCLE
 producer: scripts/ci/generate-tool-surface.py
 consumers: [review, docs]
 check: crates/unica-coder/src/interfaces/mcp.rs::production_mcp_surface_exposes_only_canonical_v13_tools_and_task_compatibility
@@ -34,7 +34,8 @@ scope: [wire]
 
 `download`, `infobase.dump`, `infobase.restore`, `make`, `launch`,
 `extensions.list` и `extensions.set` исполняются в пределах закрытых схем
-адаптера 0.11. `push` поддерживает только `delete` установленного расширения.
-Остальные режимы целевого каталога отвечают отказом до платформенного запуска.
+адаптера 0.11.1. Шесть операций разработки исполняют ограниченное подмножество
+по INV.RUNTIME.COMPATIBLE-DEVELOPMENT-CYCLE; supportedArgs содержит его
+закрытую JSON-схему. Неподдержанные аргументы отвергаются до запуска.
 PreviewApply использует явный dryRun и ifRev; terminal launch сохраняет свой
 режим. Сырые CLI-аргументы, stdout/stderr и пароли в успех не публикуются.

@@ -361,6 +361,10 @@ pub(super) enum V5ActorBoundCanonicalInvocation {
         invocation: Box<ActorBoundInvocation>,
         service: Arc<dyn CanonicalInvocationService>,
     },
+    ConfigurationTransition {
+        transition: Arc<super::v13_configuration_transition::PreparedConfigurationTransition>,
+        workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
+    },
     Extensions {
         extensions: Arc<super::v13_extensions::PreparedExtensions>,
         workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
@@ -418,6 +422,9 @@ pub(super) enum V5PreparedCanonicalInvocation {
         invocation: Box<ActorBoundInvocation>,
         class: ExecutionClass,
         service: Arc<dyn CanonicalInvocationService>,
+    },
+    ConfigurationTransition {
+        transition: Arc<super::v13_configuration_transition::PreparedConfigurationTransition>,
     },
     Extensions {
         extensions: Arc<super::v13_extensions::PreparedExtensions>,
@@ -540,6 +547,19 @@ impl V5CanonicalInvocationRuntime {
         }
         if let Some(result) = super::v13_run_dictionary::execute_run_dictionary(&request) {
             return Err(V5CanonicalPrepareError::Direct(Box::new(result)));
+        }
+        match super::v13_configuration_transition::prepare(&request) {
+            super::v13_configuration_transition::Preparation::NotApplicable => {}
+            super::v13_configuration_transition::Preparation::Rejected(result) => {
+                return Err(V5CanonicalPrepareError::Rejected(result))
+            }
+            super::v13_configuration_transition::Preparation::Ready(transition) => {
+                let workspace_identity_hash = transition.workspace_identity_hash();
+                return Ok(V5ActorBoundCanonicalInvocation::ConfigurationTransition {
+                    transition,
+                    workspace_identity_hash,
+                });
+            }
         }
         match super::v13_extensions::prepare(&request) {
             super::v13_extensions::Preparation::NotApplicable => {}
@@ -687,7 +707,8 @@ impl V5ActorBoundCanonicalInvocation {
     pub(super) fn response_deadline(&self) -> Option<InvocationResponseDeadline> {
         match self {
             Self::Workspace { invocation, .. } => Some(invocation.response_deadline().clone()),
-            Self::Extensions { .. }
+            Self::ConfigurationTransition { .. }
+            | Self::Extensions { .. }
             | Self::InfobaseExport { .. }
             | Self::ClientRun { .. }
             | Self::CfImport { .. }
@@ -707,7 +728,11 @@ impl V5ActorBoundCanonicalInvocation {
     pub(super) fn workspace_identity_hash(&self) -> &crate::domain::invocation::SafeIdentityHash {
         match self {
             Self::Workspace { invocation, .. } => invocation.workspace_identity_hash(),
-            Self::Extensions {
+            Self::ConfigurationTransition {
+                workspace_identity_hash,
+                ..
+            }
+            | Self::Extensions {
                 workspace_identity_hash,
                 ..
             }
@@ -759,6 +784,9 @@ impl V5ActorBoundCanonicalInvocation {
                     service,
                 })
             }
+            Self::ConfigurationTransition { transition, .. } => {
+                Ok(V5PreparedCanonicalInvocation::ConfigurationTransition { transition })
+            }
             Self::Extensions { extensions, .. } => {
                 Ok(V5PreparedCanonicalInvocation::Extensions { extensions })
             }
@@ -794,7 +822,8 @@ impl V5PreparedCanonicalInvocation {
             ExecutionClass::KnownLong(KnownLongReason::ExternalProcess);
         match self {
             Self::Workspace { class, .. } => class,
-            Self::Extensions { .. }
+            Self::ConfigurationTransition { .. }
+            | Self::Extensions { .. }
             | Self::InfobaseExport { .. }
             | Self::ClientRun { .. }
             | Self::CfImport { .. }
@@ -830,6 +859,7 @@ impl V5PreparedCanonicalInvocation {
                     )
                 })?
             }
+            Self::ConfigurationTransition { transition } => Ok(transition.execute(cancellation)),
             Self::Extensions { extensions } => Ok(extensions.execute(cancellation)),
             Self::InfobaseExport { export } => Ok(export.execute(cancellation)),
             Self::ClientRun { launch } => Ok(launch.execute(cancellation)),
@@ -6906,10 +6936,12 @@ struct ActorLogicalReadLease {"#,
         );
     }
 
-    #[test]
-    fn v5_cf_import_prepares_before_source_admission_and_keeps_the_revision_gate() {
-        // This former admission route must now stop at the runner 1.0 capability gate.
+    fn assert_development_cycle_admission(selected: &str) {
         let workspace = tempfile::tempdir().unwrap();
+        std::fs::write(workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\ninfobase:\n  connection: 'File=base'\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n").unwrap();
+        std::fs::create_dir(workspace.path().join("src")).unwrap();
+        std::fs::write(workspace.path().join("main.cf"), b"fixture").unwrap();
         let preparations = Arc::new(AtomicUsize::new(0));
         let runtime = V5CanonicalInvocationRuntime::new(
             Arc::new(CountingPrepareService {
@@ -6917,113 +6949,79 @@ struct ActorLogicalReadLease {"#,
             }),
             Arc::new(TokioClock),
         );
-        for dry_run in [true, false] {
+        for (op, args) in [
+            ("upload", serde_json::json!({"input":"main.cf"})),
+            ("infobase.create", serde_json::json!({})),
+            ("push", serde_json::json!({"sourceSet":"main","force":true})),
+            ("pull", serde_json::json!({"sourceSet":"main","force":true})),
+            ("apply", serde_json::json!({})),
+            ("reset", serde_json::json!({"force":true})),
+        ] {
+            if op != selected {
+                continue;
+            }
+            for dry_run in [true, false] {
+                let mut arguments = serde_json::json!({"op":op,"args":args,"dryRun":dry_run});
+                if !dry_run {
+                    arguments["ifRev"] = serde_json::json!("preview-revision");
+                }
+                let request = InvocationRequest::new(
+                    ToolIdentity::Run,
+                    arguments,
+                    workspace.path().display().to_string(),
+                    7000,
+                )
+                .unwrap();
+                let bound = runtime
+                    .bind(request)
+                    .unwrap_or_else(|e| panic!("{op}: {e:?}"));
+                let prepared = bound.prepare().unwrap_or_else(|e| panic!("{op}: {e:?}"));
+                assert_eq!(
+                    prepared.execution_class(),
+                    &ExecutionClass::KnownLong(KnownLongReason::ExternalProcess)
+                );
+            }
             let request = InvocationRequest::new(
                 ToolIdentity::Run,
-                serde_json::json!({"op":"upload","args":{"input":"dist/main.cf"},"dryRun":dry_run}),
+                serde_json::json!({"op":op,"args":args,"dryRun":false}),
                 workspace.path().display().to_string(),
                 7000,
             )
             .unwrap();
-            let result = match runtime.bind(request) {
-                Err(V5CanonicalPrepareError::Direct(result)) => result,
-                _ => panic!("unsupported target semantics reached preparation"),
-            };
-            assert!(!result.ok);
-            assert_eq!(result.diagnostics[0]["code"], "unsupported_operation");
-            assert!(result.rev.is_none());
+            match runtime.bind(request) {
+                Err(V5CanonicalPrepareError::Rejected(result)) => {
+                    assert_eq!(result.diagnostics[0]["code"], "bad_value", "{op}")
+                }
+                _ => panic!("{op} accepted a mutation without its revision"),
+            }
         }
         assert_eq!(preparations.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn v5_cf_import_prepares_before_source_admission_and_keeps_the_revision_gate() {
+        assert_development_cycle_admission("upload");
     }
 
     #[test]
     fn v5_infobase_create_prepares_before_source_admission_and_keeps_the_revision_gate() {
-        // This former admission route must now stop at the runner 1.0 capability gate.
-        let workspace = tempfile::tempdir().unwrap();
-        let preparations = Arc::new(AtomicUsize::new(0));
-        let runtime = V5CanonicalInvocationRuntime::new(
-            Arc::new(CountingPrepareService {
-                preparations: Arc::clone(&preparations),
-            }),
-            Arc::new(TokioClock),
-        );
-        for dry_run in [true, false] {
-            let request = InvocationRequest::new(
-                ToolIdentity::Run,
-                serde_json::json!({"op":"infobase.create","args":{},"dryRun":dry_run}),
-                workspace.path().display().to_string(),
-                7000,
-            )
-            .unwrap();
-            let result = match runtime.bind(request) {
-                Err(V5CanonicalPrepareError::Direct(result)) => result,
-                _ => panic!("unsupported target semantics reached preparation"),
-            };
-            assert!(!result.ok);
-            assert_eq!(result.diagnostics[0]["code"], "unsupported_operation");
-            assert!(result.rev.is_none());
-        }
-        assert_eq!(preparations.load(Ordering::SeqCst), 0);
+        assert_development_cycle_admission("infobase.create");
     }
 
     #[test]
     fn v5_source_import_prepares_before_source_admission_and_keeps_the_revision_gate() {
-        // This former admission route must now stop at the runner 1.0 capability gate.
-        let workspace = tempfile::tempdir().unwrap();
-        let preparations = Arc::new(AtomicUsize::new(0));
-        let runtime = V5CanonicalInvocationRuntime::new(
-            Arc::new(CountingPrepareService {
-                preparations: Arc::clone(&preparations),
-            }),
-            Arc::new(TokioClock),
-        );
-        for dry_run in [true, false] {
-            let request = InvocationRequest::new(
-                ToolIdentity::Run,
-                serde_json::json!({"op":"push","args":{},"dryRun":dry_run}),
-                workspace.path().display().to_string(),
-                7000,
-            )
-            .unwrap();
-            let result = match runtime.bind(request) {
-                Err(V5CanonicalPrepareError::Direct(result)) => result,
-                _ => panic!("unsupported target semantics reached preparation"),
-            };
-            assert!(!result.ok);
-            assert_eq!(result.diagnostics[0]["code"], "unsupported_operation");
-            assert!(result.rev.is_none());
-        }
-        assert_eq!(preparations.load(Ordering::SeqCst), 0);
+        assert_development_cycle_admission("push");
     }
 
     #[test]
     fn v5_source_export_prepares_before_source_admission_and_keeps_the_revision_gate() {
-        // This former admission route must now stop at the runner 1.0 capability gate.
-        let workspace = tempfile::tempdir().unwrap();
-        let preparations = Arc::new(AtomicUsize::new(0));
-        let runtime = V5CanonicalInvocationRuntime::new(
-            Arc::new(CountingPrepareService {
-                preparations: Arc::clone(&preparations),
-            }),
-            Arc::new(TokioClock),
-        );
-        for dry_run in [true, false] {
-            let request = InvocationRequest::new(
-                ToolIdentity::Run,
-                serde_json::json!({"op":"pull","args":{},"dryRun":dry_run}),
-                workspace.path().display().to_string(),
-                7000,
-            )
-            .unwrap();
-            let result = match runtime.bind(request) {
-                Err(V5CanonicalPrepareError::Direct(result)) => result,
-                _ => panic!("unsupported target semantics reached preparation"),
-            };
-            assert!(!result.ok);
-            assert_eq!(result.diagnostics[0]["code"], "unsupported_operation");
-            assert!(result.rev.is_none());
-        }
-        assert_eq!(preparations.load(Ordering::SeqCst), 0);
+        assert_development_cycle_admission("pull");
+    }
+
+    #[test]
+    fn v5_development_cycle_prepares_before_source_admission_and_keeps_revision_gate() {
+        assert_development_cycle_admission("apply");
+        assert_development_cycle_admission("reset");
     }
 
     #[test]

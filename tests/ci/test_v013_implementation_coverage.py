@@ -131,7 +131,7 @@ class V013ImplementationCoverageTests(unittest.TestCase):
         supported = {"make", "download", "infobase.dump", "infobase.restore", "launch", "extensions.list", "extensions.set"}
         for name, entry in self.coverage["runOperations"].items():
             with self.subTest(operation=name):
-                expected = "supported" if name in supported else "partial" if name == "push" else "unsupported"
+                expected = "supported" if name in supported else "partial"
                 self.assertEqual(entry["status"], expected)
         self.assertNotIn("syntax.check", self.coverage["runOperations"])
         self.assertNotIn("test.run", self.coverage["runOperations"])

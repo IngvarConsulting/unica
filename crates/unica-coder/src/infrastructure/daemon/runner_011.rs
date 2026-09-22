@@ -7,7 +7,7 @@ use crate::infrastructure::internal_adapters::{
 use serde_yaml::Value;
 use std::path::{Path, PathBuf};
 
-pub(super) const VERSION: &str = "0.11.0";
+pub(super) const VERSION: &str = "0.11.1";
 pub(super) fn check_version(version: &str) -> Result<(), String> {
     if version == VERSION {
         Ok(())
@@ -168,7 +168,7 @@ pub(super) fn project_layer(mut value: Value, root: &Path, local: bool) -> Resul
         }
         if providers
             .keys()
-            .any(|k| matches!(k.as_str(), Some("apply" | "reset" | "diff")))
+            .any(|k| matches!(k.as_str(), Some("diff" | "apply" | "reset")))
         {
             return Err("provider command cannot be represented by runner 0.11".into());
         }
@@ -360,8 +360,8 @@ mod tests {
     }
     #[test]
     fn unknown_runner_versions_are_not_probed_by_executing_an_operation() {
-        assert!(check_version("0.11.0").is_ok());
-        for version in ["0.9.0", "0.11.1", "1.0.0", "1.0.0-rc.1", ""] {
+        assert!(check_version("0.11.1").is_ok());
+        for version in ["0.9.0", "0.11.0", "1.0.0", "1.0.0-rc.1", ""] {
             assert!(check_version(version).is_err());
         }
     }

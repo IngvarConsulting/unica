@@ -21,7 +21,7 @@ description: "Автономный сервер отладки 1С. Исполь
 
 1. Identify the debug target: HTTP service, web service, web client scenario, client MCP session, or isolated infobase startup.
 2. Map project source-sets with `unica.view {}`; inspect HTTP/WebService metadata with `unica.view` on the object node and handlers with `unica.search`.
-3. Check the workspace with `unica.check {}`. The target bootstrap sequence is `infobase.create` then `push`, but both creation and source sending are unavailable with runner 0.11. Report this gap; use an existing prepared infobase for supported operations.
+3. Check the workspace with `unica.check {}`. Use `infobase.create` then `push` with `force:true`, previewing each operation first. This creates the base and applies the sources without generation tracking. Standalone support still depends on the published provider capabilities.
 4. Launch the client with `launch` (`clientMode=thin`), then stop: an MCP client mode and a web-client URL are not on the v0.13 surface.
 5. If the user independently provides a web URL, report it as the hand-off point for an external browser-testing tool; otherwise report that no public MCP `unica` operation currently produces a web-client URL.
 6. Analyze server artifacts: startup command/result, URL, source-set, platform mode, handler metadata, diagnostics, event log or technological log files if provided.
