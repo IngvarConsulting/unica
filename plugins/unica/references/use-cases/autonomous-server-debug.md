@@ -21,7 +21,7 @@ Runtime идёт через `unica.run`: вызов без `op` отдаёт с�
 
 - `autonomous-server` prepares and analyzes the isolated runtime contour.
 - `unica.run` prepares the contour step by step: `infobase.create`,
-  `push`, then `launch`; creation and source push are unavailable with runner 0.11. Use an already prepared infobase; each supported previewApply step is previewed first
+  `push` with `force:true`, then `launch`; provider support depends on the target. Each supported previewApply step is previewed first
   and applied with its `ifRev`. Web publication and an MCP client mode are not
   on the v0.13 surface.
 - A concrete web-client URL supplied independently by the user is the hand-off

@@ -4,7 +4,7 @@
 //! базу в исходники, этот вносит исходники в базу.
 //!
 //! Аргументы закрыты: `sourceSet` — имя одного объявленного набора (без него
-//! импортируются все), `fullRebuild` — сбросить кэш изменений раннера и
+//! импортируются все), `force:true` обязателен; `full` — сбросить кэш изменений раннера и
 //! загрузить всё целиком. Превью зовёт `build --dry-run`: раннер выбирает
 //! для каждого набора режим (`full` или `partial` по своим правилам частичной
 //! загрузки), не запуская конфигуратор. Применение повторяет превью, сверяет
@@ -120,7 +120,28 @@ impl PreparedSourceImport {
                     format!("workspace discovery failed: {error}"),
                 )
             })?;
-        let arguments = parse_import_arguments(args)?;
+        if let Some(unknown) = args
+            .keys()
+            .find(|k| !["sourceSet", "full", "force", "noApply"].contains(&k.as_str()))
+        {
+            return Err(reject(
+                RefusalCode::BadValue,
+                format!("push does not accept `{unknown}`; use its published argsSchema"),
+            ));
+        }
+        if args.get("force") != Some(&Value::Bool(true)) {
+            return Err(reject(RefusalCode::UnsupportedOperation, "push requires force:true on the compatibility adapter; synchronization protection is unavailable"));
+        }
+        let mut public = args.clone();
+        public.remove("force");
+        if public.get("noApply").is_some_and(|v| v != false) {
+            return Err(reject(RefusalCode::UnsupportedOperation, "push noApply is not supported by this adapter; default push applies the database configuration"));
+        }
+        public.remove("noApply");
+        if let Some(full) = public.remove("full") {
+            public.insert("fullRebuild".into(), full);
+        }
+        let arguments = parse_import_arguments(&public)?;
         Ok(Self {
             arguments,
             dry_run,
@@ -488,7 +509,10 @@ fn execute_with_resolved_runner(
         "op": OPERATION,
         "dryRun": false,
         "providerDispatched": true,
-        "fullRebuild": prepared.arguments.full_rebuild,
+        "full": prepared.arguments.full_rebuild,
+        "force": true,
+        "generationProtection": false,
+        "appliesDatabaseConfiguration": true,
         "steps": plan.iter().map(|step| {
             let mut value = step.mode.public();
             value["sourceSet"] = json!(step.source_set);
@@ -666,7 +690,10 @@ fn plan_revision(
 
 fn public_plan(prepared: &PreparedSourceImport, plan: &[PlannedStep]) -> Value {
     json!({
-        "fullRebuild": prepared.arguments.full_rebuild,
+        "full": prepared.arguments.full_rebuild,
+        "force": true,
+        "generationProtection": false,
+        "appliesDatabaseConfiguration": true,
         "steps": plan.iter().map(|step| {
             let mut value = step.mode.public();
             value["sourceSet"] = json!(step.source_set);
@@ -679,11 +706,12 @@ fn public_plan(prepared: &PreparedSourceImport, plan: &[PlannedStep]) -> Value {
 
 fn public_arguments(prepared: &PreparedSourceImport) -> Value {
     let mut args = Map::new();
+    args.insert("force".to_string(), Value::Bool(true));
     if let Some(source_set) = &prepared.arguments.source_set {
         args.insert("sourceSet".to_string(), Value::String(source_set.clone()));
     }
     if prepared.arguments.full_rebuild {
-        args.insert("fullRebuild".to_string(), Value::Bool(true));
+        args.insert("full".to_string(), Value::Bool(true));
     }
     Value::Object(args)
 }
@@ -843,6 +871,23 @@ mod tests {
     }
 
     #[test]
+    fn compatibility_cycle_accepts_explicit_force_and_rejects_silent_overwrite() {
+        let root = workspace();
+        let request = |args| {
+            InvocationRequest::new(
+                ToolIdentity::Run,
+                json!({"op":"push","args":args,"dryRun":true}),
+                root.path().display().to_string(),
+                7000,
+            )
+            .unwrap()
+        };
+        assert!(PreparedSourceImport::parse(&request(json!({"force":true,"full":true}))).is_ok());
+        assert!(PreparedSourceImport::parse(&request(json!({}))).is_err());
+        assert!(PreparedSourceImport::parse(&request(json!({"force":false}))).is_err());
+    }
+
+    #[test]
     fn arguments_are_closed_and_each_refusal_names_the_fix() {
         for (args, expected) in [
             (
@@ -909,7 +954,7 @@ mod tests {
         assert!(result.ok, "{result:?}");
         let data = result.data.as_ref().unwrap();
         assert_eq!(data["providerDispatched"], false);
-        assert_eq!(data["plan"]["fullRebuild"], false);
+        assert_eq!(data["plan"]["full"], false);
         assert_eq!(data["plan"]["steps"][0]["sourceSet"], "main");
         assert_eq!(data["plan"]["steps"][0]["mode"], "full");
         assert_eq!(data["plan"]["steps"][1]["sourceSet"], "ext-sales");
@@ -919,7 +964,7 @@ mod tests {
         let revision = result.rev.clone().expect("preview returns a revision");
         assert!(revision.starts_with("unica-source-import-sha256-v1:"));
         assert_eq!(result.next[0]["args"]["ifRev"], revision);
-        assert_eq!(result.next[0]["args"]["args"], json!({}));
+        assert_eq!(result.next[0]["args"]["args"], json!({"force":true}));
         assert!(result.changed.is_empty());
         let encoded = serde_json::to_string(&result).unwrap();
         assert!(!encoded.contains("1cv8"), "platform path leaked: {encoded}");
@@ -945,7 +990,7 @@ mod tests {
         assert!(result.ok, "{result:?}");
         assert_eq!(
             result.next[0]["args"]["args"],
-            json!({"sourceSet": "ext-sales", "fullRebuild": true})
+            json!({"sourceSet": "ext-sales", "full": true, "force":true})
         );
         assert!(result.summary.contains("source set `ext-sales`"));
         assert!(runner

@@ -82,6 +82,15 @@ pub(super) fn prepare(request: &InvocationRequest) -> Preparation {
     else {
         return Preparation::NotApplicable;
     };
+    if operation == Operation::Delete
+        && request
+            .arguments()
+            .get("args")
+            .and_then(|v| v.get("delete"))
+            .is_none()
+    {
+        return Preparation::NotApplicable;
+    }
     match PreparedExtensions::parse(request, operation) {
         Ok(prepared) => Preparation::Ready(Arc::new(prepared)),
         Err(result) => Preparation::Rejected(Box::new(result)),

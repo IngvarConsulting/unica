@@ -3,7 +3,7 @@
 //! силами `v8-runner dump` (A-6 зонтика #871). Пара к `push`: тот
 //! вносит исходники в базу, этот выносит базу в исходники.
 //!
-//! Аргументы закрыты: `mode` — `full` или `incremental`; `sourceSet` — имя
+//! Аргументы закрыты: `force:true` обязателен, выгрузка всегда полная; `sourceSet` — имя
 //! объявленного набора, без него раннер берёт набор конфигурации;
 //! `extension` — имя расширения, которое раннер требует для набора расширения
 //! и сверяет с ним. Частичная выгрузка по объектам за словарём: у неё свой
@@ -155,7 +155,22 @@ impl PreparedSourceExport {
                     format!("workspace discovery failed: {error}"),
                 )
             })?;
-        let arguments = parse_export_arguments(args)?;
+        if let Some(unknown) = args
+            .keys()
+            .find(|k| !["sourceSet", "extension", "force"].contains(&k.as_str()))
+        {
+            return Err(reject(
+                RefusalCode::BadValue,
+                format!("pull does not accept `{unknown}`; use its published argsSchema"),
+            ));
+        }
+        if args.get("force") != Some(&Value::Bool(true)) {
+            return Err(reject(RefusalCode::UnsupportedOperation, "pull requires force:true on the compatibility adapter; synchronization protection is unavailable"));
+        }
+        let mut public = args.clone();
+        public.remove("force");
+        public.insert("mode".into(), json!("full"));
+        let arguments = parse_export_arguments(&public)?;
         Ok(Self {
             arguments,
             dry_run,
@@ -390,6 +405,9 @@ fn execute_with_resolved_runner(
                 "mode": prepared.arguments.mode.as_str(),
                 "target": path_text(&plan.target),
                 "targetExists": plan.existed,
+                "force": true,
+                "replacesLocalSources": true,
+                "localWorkProtection": false,
             },
             "providerDispatched": false,
             "requiresPlatform": true,
@@ -715,10 +733,7 @@ fn plan_revision(
 
 fn public_arguments(prepared: &PreparedSourceExport) -> Value {
     let mut args = Map::new();
-    args.insert(
-        "mode".to_string(),
-        Value::String(prepared.arguments.mode.as_str().to_string()),
-    );
+    args.insert("force".to_string(), Value::Bool(true));
     if let Some(source_set) = &prepared.arguments.source_set {
         args.insert("sourceSet".to_string(), Value::String(source_set.clone()));
     }
@@ -906,6 +921,23 @@ mod tests {
     }
 
     #[test]
+    fn compatibility_cycle_accepts_explicit_force_and_rejects_silent_overwrite() {
+        let root = workspace();
+        let request = |args| {
+            InvocationRequest::new(
+                ToolIdentity::Run,
+                json!({"op":"pull","args":args,"dryRun":true}),
+                root.path().display().to_string(),
+                7000,
+            )
+            .unwrap()
+        };
+        assert!(PreparedSourceExport::parse(&request(json!({"force":true}))).is_ok());
+        assert!(PreparedSourceExport::parse(&request(json!({}))).is_err());
+        assert!(PreparedSourceExport::parse(&request(json!({"force":false}))).is_err());
+    }
+
+    #[test]
     fn arguments_are_closed_and_each_refusal_names_the_fix() {
         for (args, expected) in [
             (json!({}), "mode must be `full` or `incremental`"),
@@ -994,7 +1026,7 @@ mod tests {
         let revision = result.rev.clone().expect("preview returns a revision");
         assert!(revision.starts_with("unica-source-export-sha256-v1:"));
         assert_eq!(result.next[0]["args"]["ifRev"], revision);
-        assert_eq!(result.next[0]["args"]["args"], json!({"mode": "full"}));
+        assert_eq!(result.next[0]["args"]["args"], json!({"force":true}));
         assert!(result.changed.is_empty());
         let encoded = serde_json::to_string(&result).unwrap();
         let root_text = normalize_path_identity(root.path())

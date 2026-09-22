@@ -139,9 +139,9 @@ List canonical runtime operations and their invocation contract, or preview/exec
 | `infobase` | string | нет | Named infobase; defaults to origin. The runner 0.11 adapter supports only origin. |
 | `op` | string | нет | Runner 1.0 operation name; omit to list the target dictionary and adapter support. |
 
-**Результат сейчас:** Словарь раннера 1.0 через типизированный unica.run: download, make, infobase.dump, infobase.restore, launch, extensions.list, extensions.set. Push допускает только удаление расширения; отправка исходников, pull, upload, apply, reset и infobase.create недоступны на адаптере 0.11. Доступность и схемы публикуются вместе; другая база не подменяется origin. (отвечают типизированным `data`)
+**Результат сейчас:** Все 13 операций целевого словаря исполнимы через закреплённый адаптер 0.11.1. push исходников и pull требуют force; upload загружает без применения БД; apply/reset разделены, reset требует force. infobase.create создаёт пустую базу. Шесть операций ограничены и публикуют поддержанную схему и отсутствующие гарантии. (отвечают типизированным `data`)
 
-**Целевой контракт:** Неполностью реализованных операций шесть: один ограниченный push и пять недоступных режима; обновление адаптера должно сохранить смысл публичных запросов.
+**Целевой контракт:** Ограничены шесть операций разработки. Адаптер 1.0 расширяет те же имена контролем поколений и синхронизацией; ifRev сейчас защищает план и локальные входы, а не поколение базы.
 
 **Сценарии:**
 

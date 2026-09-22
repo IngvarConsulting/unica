@@ -78,16 +78,6 @@ pub(super) fn reject_unavailable_run_before_admission(
         .find(|operation| operation.name() == op)
     {
         Some(operation) if operation.implemented => None,
-        Some(operation)
-            if operation.intent == RunIntent::SourceImport
-                && request
-                    .arguments()
-                    .get("args")
-                    .and_then(Value::as_object)
-                    .is_some_and(|args| args.get("delete").is_some_and(Value::is_string)) =>
-        {
-            None
-        }
         Some(operation) => Some(reject_run_operation(
             op,
             operation
@@ -145,7 +135,7 @@ pub(super) fn run_dictionary_result() -> DomainResult {
                 "execution": operation.execution(),
                 "effects": operation.effects(),
                 "implemented": operation.implemented,
-                "support": {"adapter":"v8-runner/0.11.0", "state": if operation.implemented {"supported"} else if operation.intent == RunIntent::SourceImport {"limited"} else {"unavailable"}, "reason":operation.support_reason(), "supportedInfobases":["origin"], "supportedArgs": if operation.intent == RunIntent::SourceImport {json!({"delete":"installed extension name"})} else {Value::Null}},
+                "support": {"adapter":"v8-runner/0.11.1", "state": if !operation.implemented {"unavailable"} else if operation.support_reason().is_some() {"limited"} else {"supported"}, "reason":operation.support_reason(), "supportedInfobases":["origin"], "supportedArgs": operation.args_schema()},
                 "terminal": operation.terminal,
                 "rejectsSessions": operation.rejects_sessions,
                 "previewRequired": preview_required,
@@ -170,16 +160,35 @@ fn reject_run_operation(op: &str, message: impl Into<String>) -> DomainResult {
 mod runner_one_tests {
     use super::*;
     #[test]
+    fn development_cycle_admits_the_explicit_compatibility_subset() {
+        for (op, args) in [
+            ("push", json!({"force":true,"full":true})),
+            ("pull", json!({"force":true})),
+            ("infobase.create", json!({})),
+            ("upload", json!({"input":"dist/main.cf"})),
+            ("apply", json!({})),
+            ("reset", json!({"force":true})),
+        ] {
+            let request = InvocationRequest::new(
+                ToolIdentity::Run,
+                json!({"op":op,"args":args,"dryRun":true}),
+                "/not-a-workspace",
+                7000,
+            )
+            .unwrap();
+            assert!(
+                execute_run_dictionary(&request).is_none(),
+                "{op} must reach its typed compatibility handler"
+            );
+        }
+    }
+
+    #[test]
     fn runner_one_refuses_unsupported_semantics_and_old_names_before_admission() {
         for (op, args) in [
-            ("push", json!({})),
-            ("push", json!({"force":true})),
-            ("pull", json!({"force":true})),
-            ("apply", json!({})),
-            ("upload", json!({"input":"x.cf"})),
-            ("reset", json!({})),
-            ("infobase.create", json!({})),
             ("source.import", json!({})),
+            ("source.export", json!({})),
+            ("cf.import", json!({"input":"x.cf"})),
             ("extension.create", json!({"name":"X"})),
             ("extension.info", json!({"name":"X"})),
         ] {
@@ -225,8 +234,10 @@ mod runner_one_tests {
             .as_array()
             .unwrap();
         let push = operations.iter().find(|v| v["op"] == "push").unwrap();
-        assert_eq!(push["implemented"], false);
+        assert_eq!(push["implemented"], true);
         assert_eq!(push["support"]["state"], "limited");
-        assert!(push["support"]["supportedArgs"].get("delete").is_some());
+        assert!(push["support"]["supportedArgs"]["properties"]
+            .get("delete")
+            .is_some());
     }
 }

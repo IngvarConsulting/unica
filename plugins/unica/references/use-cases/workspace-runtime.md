@@ -25,7 +25,8 @@ Runtime идёт через `unica.run`: вызов без `op` отдаёт с�
 При `support.state: unavailable` остановись; не выдумывай аргументов при
 `argsSchema: null`. Превью исполнением не является. Не обходи контракт прямым runner-ом.
 
-Source sending and pulling are currently unavailable with runner 0.11.
+With runner 0.11.1, source sending and full pulling require explicit `force:true`.
+They provide no generation or local-work protection; inspect the preview before execution.
 For source readiness independently of runtime availability, first
 call `unica.check {}`. It returns `status`, `ready`, `repositoryReady`,
 `checks[]` and `diagnostics[]` — the verdict on the workspace. The facts it
@@ -74,18 +75,18 @@ source-set path itself has no stronger structural evidence.
 
 | Intent | `unica.run` operation |
 | --- | --- |
-| Create an infobase with its source/sync baseline | `infobase.create` — unavailable with runner 0.11 |
-| Send sources / delete an extension | `push` — only `args: {"delete": "InstalledName"}` is supported with runner 0.11; sending sources is unavailable |
-| Bring database changes into sources with local-work protection | `pull` — unavailable with runner 0.11 |
+| Create an absent empty infobase | `infobase.create`, empty args; then send sources separately; no sync baseline |
+| Send sources / delete an extension | `push`, `force:true`, optional `sourceSet` and `full`; applies the database configuration. Deletion uses only `delete: "InstalledName"` |
+| Replace one source set from the working configuration | `pull`, `force:true`, optional `sourceSet`, `extension`; no local-work protection |
 | Export the configuration or an extension as `.cf`/`.cfe` | `download`, `state=working` or `state=database`, `output`, optional `extension` |
-| Load a `.cf`/`.cfe` into the working configuration only | `upload` — unavailable: runner 0.11 load also applies the database configuration |
+| Load a `.cf`/`.cfe` into the working configuration only | `upload`, `input`, optional `extension`; loading does not apply the database configuration |
 | Build a `.cf`/`.cfe` from sources | `make`, `output`, optional `sourceSet`, `extension`; `.epf`/`.erf` are not published |
 | Export the whole infobase as `.dt` | `infobase.dump`, `output` |
 | Load a `.dt` | `infobase.restore`, `input`, `mode=create` or `mode=replace` |
 | Launch a 1C client | `launch`, `clientMode`, optional `execute`, `waitForExit`, `waitTimeoutMs`; terminal, no preview required |
 | Inspect installed extensions | `extensions.list`, empty args; preview/apply opens a platform session |
 | Change installed extension activity | `extensions.set`, `name`, boolean `active`; other properties are unavailable |
-| Apply or discard pending configuration changes | `apply`, `reset` — unavailable with runner 0.11 |
+| Apply or discard pending configuration changes | `apply`, optional `extension`; `reset`, `force:true`, optional `extension`; Designer only |
 
 A previewApply operation is applied with the `ifRev` its preview returned; a
 changed workspace or plan answers `stale_revision` or `concurrent_change`

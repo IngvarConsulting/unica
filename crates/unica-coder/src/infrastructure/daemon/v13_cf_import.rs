@@ -7,7 +7,7 @@
 //! Аргументы закрыты: `input` — относительный путь к `.cf` или `.cfe` внутри
 //! рабочего пространства, `extension` — имя расширения, обязательное для
 //! `.cfe` и недопустимое для `.cf`. Режим один — `load`: `merge` тянет
-//! внешний файл настроек объединения, а `update` раннер 0.9.0 не поддерживает.
+//! внешний файл настроек объединения, а `update` совместимый раннер 0.11.1 не поддерживает.
 //!
 //! Превью зовёт `load --dry-run`: раннер находит платформу, разбирает файл и
 //! ничего не применяет. Применение повторяет превью, сверяет забор ревизии,
@@ -44,7 +44,7 @@ pub(super) const OPERATION: &str = "upload";
 /// раннер называет свои команды по-своему.
 const RUNNER_COMMAND: &str = "load";
 const RUNNER_MODE: &str = "load";
-/// Состояния совместимости, которые раннер 0.9.0 обещает в `compatibility_state`.
+/// Состояния совместимости, которые раннер 0.11.1 обещает в `compatibility_state`.
 const COMPATIBILITY_STATES: [&str; 4] = ["supported", "absent", "not_established", "not_probed"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -489,6 +489,7 @@ fn invoke_runner(
         prepared.arguments.input.display().to_string(),
         "--mode".to_string(),
         RUNNER_MODE.to_string(),
+        "--no-apply".to_string(),
     ];
     if let Some(extension) = &prepared.arguments.extension {
         args.extend(["--extension".to_string(), extension.clone()]);
@@ -596,11 +597,11 @@ fn validate_envelope(
         && (!data["compatibility_state"]
             .as_str()
             .is_some_and(|state| COMPATIBILITY_STATES.contains(&state))
-            || !data["execution"]["payload"]["update_db_cfg_ran"].is_boolean())
+            || data["execution"]["payload"]["update_db_cfg_ran"] != false)
     {
         return Err(reject(
             RefusalCode::InvalidResult,
-            "v8-runner apply result omitted the compatibility state or the database update flag",
+            "v8-runner apply result omitted compatibility state evidence or unexpectedly applied the database configuration",
         ));
     }
     let reported = data["artifact_path"].as_str().ok_or_else(|| {
@@ -670,6 +671,7 @@ fn public_plan(prepared: &PreparedCfImport, inputs: &StableInputs) -> Value {
         // Что превью узнать не может, названо, а не умолчано: совместимость
         // раннер проверяет только на применении.
         "compatibilityKnownBeforeApply": false,
+        "databaseConfigurationUpdated": false,
         "targetStateKnownBeforeApply": false,
     })
 }
@@ -864,7 +866,7 @@ mod tests {
                     "applied": applied,
                     "target_kind": kind.target_kind(),
                     "compatibility_state": if applied { "supported" } else { "not_probed" },
-                    "update_db_cfg_ran": applied,
+                    "update_db_cfg_ran": false,
                 }
             }
         });
@@ -902,6 +904,15 @@ mod tests {
             &tool(root),
             "0.9.0",
         )
+    }
+
+    #[test]
+    fn upload_refuses_a_receipt_that_implicitly_applied_the_database() {
+        let root = workspace();
+        let prepared = import_of(root.path(), "dist/main.cf", None, true, None);
+        let mut legacy = envelope(&prepared.arguments.input, ArtifactKind::Cf, None, true);
+        legacy["data"]["execution"]["payload"]["update_db_cfg_ran"] = json!(true);
+        assert!(validate_envelope(&prepared, &legacy, true).is_err());
     }
 
     #[test]
@@ -1030,7 +1041,7 @@ mod tests {
         let args = runner.joined_args(0);
         assert!(
             args.contains("--json-message load --path ")
-                && args.ends_with("--mode load --extension Sales --dry-run"),
+                && args.ends_with("--mode load --no-apply --extension Sales --dry-run"),
             "{args}"
         );
     }
@@ -1118,7 +1129,7 @@ mod tests {
         assert_eq!(data["source"]["size"], 19);
         assert_eq!(data["targetKind"], "configuration");
         assert_eq!(data["compatibilityState"], "supported");
-        assert_eq!(data["databaseConfigurationUpdated"], true);
+        assert_eq!(data["databaseConfigurationUpdated"], false);
         assert_eq!(data["targetStateAttestedBy"], "provider");
         assert!(data["extension"].is_null());
         assert_eq!(result.changed[0]["infobase"], true);

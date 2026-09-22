@@ -33,7 +33,7 @@ Support-state checks come from `unica.view` on the configuration root (`support`
 1. Identify release scope: vendor update, extension change, merge branch, support-state change, hotfix, migration, or integration contract change.
 2. Map source-sets with `unica.view {}`; inspect the configuration root with `unica.view <set>:Configuration`, extensions with `unica.diff` between the extension and configuration sets, `unica.view` on the object node, and `unica.search`.
 3. List compatibility risks: metadata rename/delete, changed roles, changed integration contracts, data migrations, scheduled jobs, query behavior, BSP hooks, and extension interceptors.
-4. Run `unica.check` on the changed modules; build and update go through `unica.run` (`make`; `upload` and source `push` are unavailable with runner 0.11) with a preview and its `ifRev`; test runs are outside the v0.13 surface, so record them as unverified unless separate evidence is supplied.
+4. Run `unica.check` on the changed modules; build and update go through `unica.run` (`make`; `upload` then `apply`, or source `push` with `force:true`) with a preview and its `ifRev`; test runs are outside the v0.13 surface, so record them as unverified unless separate evidence is supplied.
 5. Produce a release readiness note: blocking findings, migration steps, rollback boundary, manual checks, and Unica MCP contract gaps.
 
 ## Installed extensions
@@ -51,9 +51,9 @@ Support-state checks come from `unica.view` on the configuration root (`support`
 оно удаляет и данные расширения, требует своего preview и `ifRev`.
 Режим удаления нельзя совмещать с отправкой исходников. Выключение активности
 не равно удалению. Отдельного публичного создания пустого расширения нет:
-целевая модель создаёт его первой отправкой, которая пока недоступна.
-`upload` пока недоступен: старый load не только загружает, но и обновляет
-конфигурацию БД. Не заменяй эту операцию прямым запуском раннера.
+первая отправка `push` с `force:true` создаёт его из исходников.
+`upload` загружает CF/CFE без обновления конфигурации БД; затем нужен
+отдельный `apply`. `reset` с `force:true` отбрасывает неприменённое. Не заменяй эту операцию прямым запуском раннера.
 
 ## Review checklist
 
