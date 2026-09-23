@@ -319,8 +319,10 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                             "kind": {"type": "string", "description": "`names` corpus only: narrow the search to one logical node kind."},
                             "role": {"type": "string", "enum": ["lexical", "symbol", "semantic"], "description": "`text` corpus only: which provider answers. `lexical` matches literally, `symbol` uses the symbol index, `semantic` matches by meaning. Omit for the literal search Unica performs itself."},
                             "scope": logical_subtree_address(),
-                            "regex": {"type": "boolean", "description": "Request regex matching; currently only false is implemented.", "default": false},
-                            "limit": limit("Maximum matches to return."),
+                            "regex": {"type": "boolean", "description": "Use a regular expression for local text search.", "default": false},
+                            "limit": {"type": "integer", "minimum": 1, "default": 20,
+                                "description": "Maximum matches; local text pages accept at most 50."},
+                            "cursor": cursor("Continuation cursor from a previous local text-search page."),
                         }),
                         json!(["query"]),
                     ),
@@ -727,7 +729,9 @@ mod tests {
             &catalog.tools,
             "search",
             json!(["query"]),
-            &["query", "corpus", "kind", "role", "scope", "regex", "limit"],
+            &[
+                "query", "corpus", "kind", "role", "scope", "regex", "limit", "cursor",
+            ],
         );
         assert_schema(&catalog.tools, "check", json!([]), &["at"]);
         assert_schema(

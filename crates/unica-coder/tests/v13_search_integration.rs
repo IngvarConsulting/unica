@@ -134,7 +134,12 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
     .expect("extension configuration");
     std::fs::write(
         workspace.join("CommonModules/Main/Ext/Module.bsl"),
-        "Procedure MainNeedle() Export\nEndProcedure\n",
+        format!(
+            "Procedure MainNeedle() Export\nEndProcedure\n{}",
+            (0..21)
+                .map(|index| format!("// MainNeedle {index}\n"))
+                .collect::<String>()
+        ),
     )
     .expect("main module");
     std::fs::write(
@@ -142,6 +147,18 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
         r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule uuid="cccccccc-cccc-4ccc-8ccc-cccccccccccc"><Properties><Name>Main</Name><Global>false</Global><ClientManagedApplication>true</ClientManagedApplication><Server>true</Server><ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ServerCall>false</ServerCall><Privileged>false</Privileged><ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties></CommonModule></MetaDataObject>"#,
     )
     .expect("main module descriptor");
+    std::fs::create_dir_all(workspace.join("CommonModules/Orphan/Ext"))
+        .expect("unregistered module directory");
+    std::fs::write(
+        workspace.join("CommonModules/Orphan.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule uuid="eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"><Properties><Name>Orphan</Name><Global>false</Global><ClientManagedApplication>true</ClientManagedApplication><Server>true</Server><ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ServerCall>false</ServerCall><Privileged>false</Privileged><ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties></CommonModule></MetaDataObject>"#,
+    )
+    .expect("unregistered module descriptor");
+    std::fs::write(
+        workspace.join("CommonModules/Orphan/Ext/Module.bsl"),
+        "// OrphanNeedle\n",
+    )
+    .expect("unregistered module source");
     std::fs::write(
         workspace.join("src/extension/CommonModules/Extension/Ext/Module.bsl"),
         "Procedure ExtensionNeedle() Export\nEndProcedure\n",
@@ -188,9 +205,38 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
         json!({"query": "MainNeedle", "scope": "main:Configuration"}),
     )));
     assert_eq!(main["ok"], true, "{main:#}");
-    assert_eq!(main["data"]["matches"].as_array().map(Vec::len), Some(1));
+    assert_eq!(main["data"]["matches"].as_array().map(Vec::len), Some(20));
     assert_eq!(main["data"]["matches"][0]["scope"], "main:Configuration");
     assert!(main["data"]["matches"][0].get("file").is_none());
+    assert_eq!(main["page"]["stoppedBy"], "limit");
+    let cursor = main["cursor"].as_str().expect("search continuation");
+    let remaining = domain_result(&mcp.exchange(call_tool(
+        5,
+        "unica.search",
+        json!({"query": "MainNeedle", "scope": "main:Configuration", "cursor": cursor}),
+    )));
+    assert_eq!(remaining["ok"], true, "{remaining:#}");
+    assert_eq!(
+        remaining["data"]["matches"].as_array().map(Vec::len),
+        Some(2)
+    );
+    assert_eq!(remaining["page"]["stoppedBy"], "complete");
+    assert!(remaining.get("cursor").is_none());
+    let replay = domain_result(&mcp.exchange(call_tool(
+        6,
+        "unica.search",
+        json!({"query": "MainNeedle", "scope": "main:Configuration", "cursor": cursor}),
+    )));
+    assert_eq!(
+        replay, remaining,
+        "retry of one cursor must replay its page"
+    );
+    let wrong_question = domain_result(&mcp.exchange(call_tool(
+        7,
+        "unica.search",
+        json!({"query": "Needle", "scope": "main:Configuration", "cursor": cursor}),
+    )));
+    assert_eq!(wrong_question["diagnostics"][0]["code"], "invalid_cursor");
 
     let extension = domain_result(&mcp.exchange(call_tool(
         4,
@@ -207,7 +253,175 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
         "extension:Configuration"
     );
 
-    let ping = mcp.exchange(json!({"jsonrpc": "2.0", "id": 5, "method": "ping"}));
+    let absent_scope = domain_result(&mcp.exchange(call_tool(
+        16,
+        "unica.search",
+        json!({"query": "MainNeedle", "scope": "main:CommonModule.Missing"}),
+    )));
+    assert_eq!(absent_scope["diagnostics"][0]["code"], "not_found");
+    let orphan_scope = domain_result(&mcp.exchange(call_tool(
+        17,
+        "unica.search",
+        json!({"query": "OrphanNeedle", "scope": "main:CommonModule.Orphan"}),
+    )));
+    assert_eq!(orphan_scope["diagnostics"][0]["code"], "not_found");
+    let branch = domain_result(&mcp.exchange(call_tool(
+        18,
+        "unica.search",
+        json!({"query": "MainNeedle", "scope": "main:CommonModule"}),
+    )));
+    assert_eq!(branch["ok"], true, "{branch:#}");
+    assert_eq!(branch["data"]["matches"].as_array().map(Vec::len), Some(20));
+    assert!(branch["cursor"].as_str().is_some());
+
+    let broad =
+        domain_result(&mcp.exchange(call_tool(8, "unica.search", json!({"query": "Needle"}))));
+    assert_eq!(broad["page"]["stoppedBy"], "limit");
+    let broad_cursor = broad["cursor"].as_str().expect("multi-source cursor");
+    std::fs::write(
+        workspace.join("src/extension/CommonModules/Extension/Ext/Module.bsl"),
+        "Procedure ExtensionNeedle() Export\nEndProcedure\n// changed source\n",
+    )
+    .expect("change a source not reached by the first page");
+    let stale = domain_result(&mcp.exchange(call_tool(
+        9,
+        "unica.search",
+        json!({"query": "Needle", "cursor": broad_cursor}),
+    )));
+    assert_eq!(stale["diagnostics"][0]["code"], "stale_cursor");
+
+    for (id, arguments) in [
+        (
+            10,
+            json!({"query": "Needle", "corpus": "names", "cursor": cursor}),
+        ),
+        (
+            11,
+            json!({"query": "Needle", "role": "lexical", "cursor": cursor}),
+        ),
+        (12, json!({"query": "Needle", "limit": 51})),
+    ] {
+        let refused = domain_result(&mcp.exchange(call_tool(id, "unica.search", arguments)));
+        assert_eq!(
+            refused["diagnostics"][0]["code"], "bad_value",
+            "{refused:#}"
+        );
+    }
+
+    let ping = mcp.exchange(json!({"jsonrpc": "2.0", "id": 15, "method": "ping"}));
     assert!(ping.get("result").is_some(), "{ping:#}");
+    mcp.finish();
+}
+
+#[test]
+fn a_long_single_line_can_be_read_across_more_than_one_hundred_search_pages() {
+    let root = tempfile::tempdir().expect("long search root");
+    let workspace = root.path();
+    std::fs::create_dir_all(workspace.join("CommonModules/Main/Ext")).expect("module directory");
+    std::fs::write(
+        workspace.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\n",
+    )
+    .expect("workspace manifest");
+    std::fs::write(
+        workspace.join("Configuration.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"><Properties><Name>Main</Name></Properties><ChildObjects><CommonModule>Main</CommonModule></ChildObjects></Configuration></MetaDataObject>"#,
+    )
+    .expect("configuration");
+    std::fs::write(
+        workspace.join("CommonModules/Main/Ext/Module.bsl"),
+        "Needle ".repeat(2_041),
+    )
+    .expect("long source line");
+
+    let mut mcp = McpProcess::start(workspace);
+    let initialized = mcp.exchange(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                   "clientInfo": {"name": "v13-search-long", "version": "1"}}
+    }));
+    assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
+    mcp.notify(json!({"jsonrpc":"2.0", "method":"notifications/initialized", "params":{}}));
+
+    let started = Instant::now();
+    let mut cursor = None::<String>;
+    let mut total = 0;
+    let mut pages = 0;
+    loop {
+        let mut arguments = json!({"query": "Needle"});
+        if let Some(token) = cursor.as_ref() {
+            arguments["cursor"] = Value::String(token.clone());
+        }
+        let result = domain_result(&mcp.exchange(call_tool(2 + pages, "unica.search", arguments)));
+        assert_eq!(result["ok"], true, "{result:#}");
+        let matches = result["data"]["matches"].as_array().expect("matches");
+        assert!(!matches.is_empty());
+        assert!(matches.iter().all(|item| item["line"] == 1));
+        total += matches.len();
+        pages += 1;
+        cursor = result["cursor"].as_str().map(ToOwned::to_owned);
+        if cursor.is_none() {
+            assert_eq!(result["page"]["stoppedBy"], "complete");
+            break;
+        }
+        assert_eq!(result["page"]["stoppedBy"], "limit");
+    }
+    assert_eq!(total, 2_041);
+    assert_eq!(pages, 103);
+    eprintln!("103 search pages over one line: {:?}", started.elapsed());
+    mcp.finish();
+}
+
+#[test]
+fn scoped_text_search_does_not_need_a_projected_view_of_the_root() {
+    let root = tempfile::tempdir().expect("independent text search root");
+    let workspace = root.path();
+    std::fs::create_dir_all(workspace.join("CommonModules/Main/Ext")).expect("module directory");
+    std::fs::write(
+        workspace.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\n",
+    )
+    .expect("workspace manifest");
+    // The text corpus is still inspectable when a typed projection cannot
+    // parse the configuration descriptor. A `view` preflight would hide it.
+    std::fs::write(workspace.join("Configuration.xml"), "<incomplete")
+        .expect("unprojectable descriptor");
+    std::fs::write(
+        workspace.join("CommonModules/Main/Ext/Module.bsl"),
+        "// Needle\n",
+    )
+    .expect("module source");
+
+    let mut mcp = McpProcess::start(workspace);
+    let initialized = mcp.exchange(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                   "clientInfo": {"name": "v13-search-independent", "version": "1"}}
+    }));
+    assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
+    mcp.notify(json!({"jsonrpc":"2.0", "method":"notifications/initialized", "params":{}}));
+
+    let view = domain_result(&mcp.exchange(call_tool(
+        2,
+        "unica.view",
+        json!({"at": "main:Configuration"}),
+    )));
+    assert_eq!(view["ok"], false, "typed root must be unreadable: {view:#}");
+    let search = domain_result(&mcp.exchange(call_tool(
+        3,
+        "unica.search",
+        json!({"query": "Needle", "scope": "main:Configuration"}),
+    )));
+    assert_eq!(search["ok"], true, "{search:#}");
+    assert_eq!(search["data"]["matches"].as_array().map(Vec::len), Some(1));
+    assert_eq!(search["page"]["stoppedBy"], "complete");
+    std::fs::remove_file(workspace.join("Configuration.xml"))
+        .expect("remove the branch owner descriptor");
+    let missing_root = domain_result(&mcp.exchange(call_tool(
+        4,
+        "unica.search",
+        json!({"query": "Needle", "scope": "main:CommonModule"}),
+    )));
+    assert_eq!(missing_root["diagnostics"][0]["code"], "invalid_state");
     mcp.finish();
 }

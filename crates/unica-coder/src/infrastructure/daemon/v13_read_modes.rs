@@ -63,17 +63,20 @@ pub(crate) enum SearchMatcher {
 }
 
 impl SearchMatcher {
-    pub(super) fn match_starts(&self, line: &str) -> Vec<usize> {
+    pub(super) fn match_starts<'a>(
+        &'a self,
+        line: &'a str,
+    ) -> Box<dyn Iterator<Item = usize> + 'a> {
         match self {
-            Self::Literal(needle) => line
-                .match_indices(needle.as_str())
-                .map(|(start, _)| start)
-                .collect(),
-            Self::Regex(pattern) => pattern
-                .find_iter(line)
-                .filter(|found| !found.is_empty())
-                .map(|found| found.start())
-                .collect(),
+            Self::Literal(needle) => {
+                Box::new(line.match_indices(needle.as_str()).map(|(start, _)| start))
+            }
+            Self::Regex(pattern) => Box::new(
+                pattern
+                    .find_iter(line)
+                    .filter(|found| !found.is_empty())
+                    .map(|found| found.start()),
+            ),
         }
     }
 }

@@ -2984,7 +2984,7 @@ pub(crate) mod actor_capacity_tests {
                 "search_bsl_literal",
                 (
                     true,
-                    "fn search_bsl_literal(&self, matcher: &super::super::v13_read_modes::SearchMatcher, limit: usize, scope_prefix: Option<&str>, scope_at: &QualifiedAddress, cancellation: &CancellationToken,) -> Result<Vec<serde_json::Value>, String>",
+                    "fn search_bsl_literal(&self, matcher: &super::super::v13_read_modes::SearchMatcher, skip: &mut usize, limit: usize, scope_prefix: Option<&str>, scope_at: &QualifiedAddress, cancellation: &CancellationToken,) -> Result<Vec<serde_json::Value>, String>",
                     "",
                 ),
             ),

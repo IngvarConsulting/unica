@@ -10,13 +10,15 @@ use super::v13_call_graph::{
 use super::v13_read_modes::{filter_diff_data, project_view_sections, search_scope_prefix};
 use crate::application::invocation_store::ToolIdentity;
 use crate::application::operation_descriptors::ExecutionClass;
-use crate::application::result_store::ViewCursorStore;
+use crate::application::result_store::{
+    SearchCursorBinding, SearchCursorStore, StoredSearchCursor, ViewCursorStore,
+};
 use crate::application::tool_contracts::SurfaceRelease;
 use crate::application::v13::apply::parse_request as parse_apply_request;
 use crate::application::v13::find::{FindIndex, FindRequest};
 use crate::application::v13::resolve::{ResolveRequest, ResolvedLines, ResolvedSource};
 use crate::application::v13::tool_catalog::catalog_for;
-use crate::application::v13::view::{ViewError, ViewRequest, ViewService};
+use crate::application::v13::view::{ViewError, ViewReadAuthority, ViewRequest, ViewService};
 use crate::domain::address::{NodeKind, QualifiedAddress};
 use crate::domain::apply::OperationRegistry;
 use crate::domain::call_graph_identity::{CallGraphIdentity, CallGraphIdentityError};
@@ -42,6 +44,7 @@ use std::sync::Arc;
 /// typed `unsupported_*` result rather than pretending an engine is missing.
 pub(crate) struct CanonicalV13ReadService {
     cursors: Arc<ViewCursorStore>,
+    search_cursors: Arc<SearchCursorStore>,
     find_builder: WorkspaceFindDirectoryBuilder,
     /// Порты приложения живут столько же, сколько служба, а не сколько вызов.
     /// Внутри них стол доставок: он принадлежит серверу и переживает вызов,
@@ -55,6 +58,7 @@ impl Default for CanonicalV13ReadService {
     fn default() -> Self {
         Self {
             cursors: Arc::new(ViewCursorStore::default()),
+            search_cursors: Arc::new(SearchCursorStore::default()),
             find_builder: WorkspaceFindDirectoryBuilder::default(),
             ports: Arc::new(
                 crate::infrastructure::application_ports::InfrastructureApplicationPorts::new(),
@@ -851,12 +855,26 @@ impl CanonicalV13ReadService {
             }
         };
         if corpus == SearchCorpus::Names {
+            if arguments.contains_key("cursor") {
+                return error_result(
+                    None,
+                    RefusalCode::BadValue,
+                    "name search does not accept a text-search cursor",
+                );
+            }
             return self.execute_search_names(invocation, query, arguments, cancellation);
         }
         // Роль выбирает, чем искать по тексту: точным совпадением своими
         // силами или провайдером — символьным индексом, смысловым поиском.
         // Без роли поиск остаётся буквальным, каким был.
         if let Some(role) = arguments.get("role") {
+            if arguments.contains_key("cursor") {
+                return error_result(
+                    None,
+                    RefusalCode::BadValue,
+                    "provider search does not accept a text-search cursor",
+                );
+            }
             let Some(role) = role.as_str() else {
                 return error_result(None, RefusalCode::BadValue, "search role must be a string");
             };
@@ -897,13 +915,13 @@ impl CanonicalV13ReadService {
             }
         };
         let limit = match arguments.get("limit") {
-            Some(value) => match bounded_usize(value).filter(|limit| *limit <= 200) {
+            Some(value) => match bounded_usize(value).filter(|limit| *limit <= 50) {
                 Some(limit) => limit,
                 None => {
                     return error_result(
                         None,
                         RefusalCode::BadValue,
-                        "search limit must be an integer from 1 through 200",
+                        "search limit must be an integer from 1 through 50",
                     )
                 }
             },
@@ -948,19 +966,95 @@ impl CanonicalV13ReadService {
             if let Err(error) = search_scope_prefix(scope) {
                 return error_result(Some(scope.to_string()), error.code(), error.to_string());
             }
-            let viewed = self.execute_view_arguments(
-                invocation,
-                &Map::from_iter([("at".to_string(), Value::String(scope.to_string()))]),
-                cancellation,
-            );
-            if !viewed.ok {
-                return viewed;
+            let source = selected
+                .first()
+                .expect("a scoped source set is admitted above");
+            let authority = match source.logical_view_read_authority(cancellation) {
+                Ok(authority) => authority,
+                Err(error) => {
+                    return error_result(
+                        Some(scope.to_string()),
+                        RefusalCode::ProviderUnavailable,
+                        error,
+                    )
+                }
+            };
+            let snapshot = match authority.snapshot(scope) {
+                Ok(snapshot) => snapshot,
+                Err(error) => return view_error_result(Some(scope.to_string()), error),
+            };
+            if let Err(error) = authority.validate_search_scope_owner(scope, &snapshot) {
+                return view_error_result(Some(scope.to_string()), error);
+            }
+            if scope.segments()[0].kind() == NodeKind::Configuration
+                || scope.segments()[0].name().is_none()
+            {
+                // The root and an unnamed kind branch both depend on the
+                // configuration descriptor, but neither needs its projected
+                // child collection before a text-search page is returned.
+                let root_at =
+                    QualifiedAddress::parse(&format!("{}:Configuration", scope.source_set()))
+                        .expect("Configuration is a canonical root address");
+                let descriptor = match authority.identity_export_path(&root_at) {
+                    Ok(descriptor) => descriptor,
+                    Err(error) => return view_error_result(Some(scope.to_string()), error),
+                };
+                if let Some(descriptor) = descriptor {
+                    if let Err(error) = source
+                        .retained_root()
+                        .read_relative_regular_prefix(std::path::Path::new(&descriptor), 1)
+                    {
+                        let code = if error.kind() == std::io::ErrorKind::NotFound {
+                            RefusalCode::InvalidState
+                        } else {
+                            RefusalCode::ProviderUnavailable
+                        };
+                        return error_result(
+                            Some(scope.to_string()),
+                            code,
+                            format!("search scope descriptor is unavailable: {error}"),
+                        );
+                    }
+                }
             }
         }
+        let source_sets = selected
+            .iter()
+            .map(|source| source.source_set_name().to_owned())
+            .collect();
+        let revisions = selected
+            .iter()
+            .map(|source| source.revision_identity())
+            .collect::<Vec<_>>();
+        let binding = SearchCursorBinding {
+            workspace_identity: invocation.workspace_identity_hash().as_str().to_owned(),
+            query: query.to_owned(),
+            scope: scope.as_ref().map(ToString::to_string),
+            mode: mode.to_owned(),
+            source_sets,
+            revisions,
+            page_limit: limit,
+        };
+        let cursor = match arguments.get("cursor") {
+            None => None,
+            Some(Value::String(token)) => match self.search_cursors.read(token, &binding) {
+                Ok(cursor) => Some((token.as_str(), cursor)),
+                Err(error) => {
+                    return error_result(None, error.code(), "search cursor is invalid or stale")
+                }
+            },
+            Some(_) => {
+                return error_result(
+                    None,
+                    RefusalCode::BadValue,
+                    "search cursor must be a string",
+                )
+            }
+        };
+        let offset = cursor.as_ref().map_or(0, |(_, cursor)| cursor.offset);
+        let mut skip = offset;
         let mut matches = Vec::new();
-        let mut revisions = Vec::new();
         for source in selected {
-            revisions.push(source.revision_identity());
             let scope_at = scope.clone().unwrap_or_else(|| {
                 QualifiedAddress::parse(&format!("{}:Configuration", source.source_set_name()))
                     .expect("actor source-set names and Configuration address are canonical")
@@ -977,7 +1071,8 @@ impl CanonicalV13ReadService {
             };
             match source.search_bsl_literal(
                 &matcher,
-                limit.saturating_sub(matches.len()),
+                &mut skip,
+                limit.saturating_add(1).saturating_sub(matches.len()),
                 scope_prefix.as_deref(),
                 &scope_at,
                 cancellation,
@@ -985,16 +1080,87 @@ impl CanonicalV13ReadService {
                 Ok(found) => matches.extend(found),
                 Err(error) => return error_result(None, RefusalCode::ProviderUnavailable, error),
             }
-            if matches.len() == limit {
+            if matches.len() > limit {
                 break;
             }
         }
-        let mut result = DomainResult::success(format!("{mode} BSL search completed"));
-        result.data = Some(serde_json::json!({
-            "mode": mode,
-            "matches": matches,
-        }));
-        result.rev = combined_revision(&revisions);
+        self.search_page(matches, cursor, binding)
+    }
+
+    fn search_page(
+        &self,
+        matches: Vec<Value>,
+        cursor: Option<(&str, StoredSearchCursor)>,
+        binding: SearchCursorBinding,
+    ) -> DomainResult {
+        use crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES;
+        use crate::application::v13::view::PREFERRED_PAGE_BYTES;
+
+        let mode = binding.mode.as_str();
+        let limit = binding.page_limit;
+        let offset = cursor.as_ref().map_or(0, |(_, cursor)| cursor.offset);
+        let summary = format!("{mode} BSL search completed");
+        let revision = combined_revision(&binding.revisions);
+        let mut page_matches = Vec::new();
+        let mut byte_stop = false;
+        for item in matches.iter().take(limit) {
+            let mut candidate = page_matches.clone();
+            candidate.push(item.clone());
+            let mut probe = DomainResult::success(summary.clone());
+            probe.data = Some(json!({"mode": mode, "matches": candidate}));
+            // "complete" is the longest terminal reason, so this probe also
+            // bounds the final result when there is no continuation cursor.
+            probe.page = Some(json!({"stoppedBy": "complete"}));
+            probe.cursor = Some("sc1.00000000000000000000000000000000".to_owned());
+            probe.rev = revision.clone();
+            let bytes = serde_json::to_vec(&probe).map_or(usize::MAX, |value| value.len());
+            if bytes > MAX_CANONICAL_RESULT_BYTES {
+                if page_matches.is_empty() {
+                    return error_result(
+                        None,
+                        RefusalCode::ResultTooLarge,
+                        "one search result exceeds the transport limit",
+                    );
+                }
+                byte_stop = true;
+                break;
+            }
+            if bytes > PREFERRED_PAGE_BYTES && !page_matches.is_empty() {
+                byte_stop = true;
+                break;
+            }
+            page_matches.push(item.clone());
+        }
+        let consumed = page_matches.len();
+        let more = matches.len() > consumed;
+        let stopped_by = if !more {
+            "complete"
+        } else if byte_stop {
+            "bytes"
+        } else {
+            "limit"
+        };
+        let mut result = DomainResult::success(summary);
+        result.data = Some(json!({"mode": mode, "matches": page_matches}));
+        result.page = Some(json!({"stoppedBy": stopped_by}));
+        result.rev = revision;
+        if more {
+            let next_offset = offset.saturating_add(consumed);
+            let issued = match cursor {
+                Some((token, stored)) => {
+                    self.search_cursors.insert_next(&stored, next_offset, token)
+                }
+                None => self.search_cursors.insert_first(binding, next_offset),
+            };
+            let Some(issued) = issued else {
+                return error_result(
+                    None,
+                    RefusalCode::ResultTooLarge,
+                    "search continuation could not be retained",
+                );
+            };
+            result.cursor = Some(issued);
+        }
         result
     }
 
