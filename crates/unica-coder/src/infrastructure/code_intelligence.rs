@@ -2124,6 +2124,43 @@ mod tests {
     }
 
     #[test]
+    fn git_grep_cancellation_discards_already_streamed_hits() {
+        let runner = FakeRunner {
+            output: ProcessOutput {
+                status_success: false,
+                status: "cancelled".to_string(),
+                stdout: "a/Module.bsl\x002\x00First\n".to_string(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: true,
+                stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
+            },
+            commands: Mutex::new(Vec::new()),
+        };
+
+        let section = GitGrepProvider::with_runner(&runner).search(
+            &SearchRequest {
+                query: "needle".to_string(),
+                limit: 20,
+            },
+            &context(),
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
+            &CancellationToken::new(),
+        );
+
+        assert_eq!(section.status, ProviderSectionStatus::Failed);
+        assert!(section.hits.is_empty());
+        assert!(!section.search_complete);
+        assert!(section
+            .diagnostics
+            .iter()
+            .any(|detail| detail.contains("cancel")));
+    }
+
+    #[test]
     fn git_grep_keeps_every_row_when_the_capture_was_not_truncated() {
         let runner = FakeRunner {
             output: ProcessOutput {

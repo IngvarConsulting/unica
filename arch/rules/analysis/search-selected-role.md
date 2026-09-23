@@ -1,7 +1,9 @@
 ---
 id: INV.WIRE.SEARCH-SELECTED-ROLE
-check: []
-gap: https://github.com/IngvarConsulting/unica/issues/960
+check:
+  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::public_role_search_runs_only_selected_provider_and_cannot_use_a_neighbor_success
+  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::selected_role_search_does_not_start_a_provider_after_parent_cancellation
+  - crates/unica-coder/tests/v13_search_integration.rs::canonical_search_is_source_scoped_and_rejects_legacy_call_shape
 ---
 
 # Указанная роль запускает только выбранный способ поиска
