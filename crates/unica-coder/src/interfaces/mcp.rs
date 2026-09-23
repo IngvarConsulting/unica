@@ -3334,7 +3334,10 @@ mod tests {
                     }))
                     .await;
                 let result = client.receive().await;
-                if result["result"]["structuredContent"]["data"]["task"]["status"] != "working" {
+                if !matches!(
+                    result["result"]["structuredContent"]["data"]["task"]["status"].as_str(),
+                    Some("queued" | "working")
+                ) {
                     return result;
                 }
                 request_id += 1;
