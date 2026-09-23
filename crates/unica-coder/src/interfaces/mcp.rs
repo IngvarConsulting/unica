@@ -3445,13 +3445,17 @@ mod tests {
         daemon.finish(owner);
     }
 
-    #[cfg(windows)]
     #[tokio::test]
     async fn public_native_cancel_waits_for_slow_job_attach_before_answering() {
         use crate::infrastructure::daemon::server::actor_capacity_tests::{
             canonical_v13_service, install_cancellable_create_runner, LiveV5Daemon,
         };
-        use crate::infrastructure::platform::process::JobAttachGateForTest;
+        use crate::infrastructure::platform::JobAttachGateForTest;
+
+        if !JobAttachGateForTest::supported() {
+            eprintln!("Windows Job attachment is unavailable on this host");
+            return;
+        }
 
         let root = tempfile::tempdir().unwrap();
         install_cancellable_create_runner(root.path());

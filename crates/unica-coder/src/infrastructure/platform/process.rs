@@ -42,6 +42,10 @@ pub(crate) struct JobAttachGateForTest {
 
 #[cfg(all(test, windows))]
 impl JobAttachGateForTest {
+    pub(crate) const fn supported() -> bool {
+        true
+    }
+
     pub(crate) fn install(program: PathBuf) -> Self {
         let signal = Arc::new((
             Mutex::new(JobAttachGateState {
@@ -71,6 +75,28 @@ impl JobAttachGateForTest {
         let (state, ready) = &*self.signal;
         state.lock().expect("job attach gate state").released = true;
         ready.notify_all();
+    }
+}
+
+#[cfg(all(test, not(windows)))]
+pub(crate) struct JobAttachGateForTest;
+
+#[cfg(all(test, not(windows)))]
+impl JobAttachGateForTest {
+    pub(crate) const fn supported() -> bool {
+        false
+    }
+
+    pub(crate) fn install(_program: PathBuf) -> Self {
+        unreachable!("Windows Job attachment is unavailable on this host")
+    }
+
+    pub(crate) fn wait_spawned(&self, _timeout: Duration) {
+        unreachable!("Windows Job attachment is unavailable on this host")
+    }
+
+    pub(crate) fn release(&self) {
+        unreachable!("Windows Job attachment is unavailable on this host")
     }
 }
 

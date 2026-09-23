@@ -19,6 +19,7 @@ pub(crate) use process::{
 pub(crate) use process::{
     inject_runtime_tree_cleanup_timeout_for_test, reset_runtime_tree_cleanup_calls_for_test,
     runtime_process_tree_test_scenario_for_test, runtime_tree_cleanup_calls_for_test,
+    JobAttachGateForTest,
 };
 pub(crate) use target::current_target_id;
 
