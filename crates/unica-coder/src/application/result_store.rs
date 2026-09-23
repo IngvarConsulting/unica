@@ -841,6 +841,27 @@ mod tests {
     }
 
     #[test]
+    fn expired_view_cursor_releases_its_snapshot_charge() {
+        let store = ViewCursorStore::new(Duration::ZERO, 8, 4_096);
+        let first = view_binding("main:Document.Первый.Module.Object.Body", "rev-1");
+        let second = view_binding("main:Document.Второй.Module.Object.Body", "rev-1");
+        let first_token = store
+            .insert_snapshot(first.clone(), json!({}), vec![json!(1)], 0)
+            .unwrap();
+        let second_token = store
+            .insert_snapshot(second.clone(), json!({}), vec![json!(2)], 0)
+            .unwrap();
+        let entries = store.entries.lock().unwrap();
+        assert_eq!(
+            entries.len(),
+            1,
+            "expired snapshot must be discarded on admission"
+        );
+        assert!(!entries.contains_key(&first_token));
+        assert!(entries.contains_key(&second_token));
+    }
+
+    #[test]
     fn many_small_items_are_charged_for_retained_heap_not_only_json() {
         let binding = view_binding("main:Document.Заказ.Module.Object.Body", "rev-1");
         let items = vec![Value::Null; 10_000];
