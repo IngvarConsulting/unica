@@ -460,7 +460,7 @@ impl CanonicalV13ReadService {
             {
                 let borrowing = source
                     .logical_view_read_authority(cancellation)
-                    .map_err(|message| ViewError::new(RefusalCode::ProviderUnavailable, message))?
+                    .map_err(|message| ViewError::detailed(RefusalDetail::ProviderAbsent, message))?
                     .object_borrowing(&address)?;
                 if let Some(borrowing) = borrowing {
                     if let Some(props) = data.get_mut("props").and_then(Value::as_object_mut) {
