@@ -198,15 +198,29 @@ impl ViewCursorStore {
         let tokens = (0..pages.len())
             .map(|_| format!("vc1.{}", Uuid::new_v4().simple()))
             .collect::<Vec<_>>();
+        // Check the exact stored size before cloning the node into every
+        // entry. A page may contain an indivisible item larger than the
+        // preferred response size, while the chain still has a fixed quota.
+        let mut added_bytes = 0usize;
+        let mut page_bytes = Vec::with_capacity(pages.len());
+        for (index, page) in pages.iter().enumerate() {
+            let next_cursor = tokens.get(index + 1);
+            let bytes = serde_json::to_vec(&(&node, &page.items, &next_cursor))
+                .ok()?
+                .len();
+            added_bytes = added_bytes.checked_add(bytes)?;
+            if added_bytes > self.max_total_bytes {
+                return None;
+            }
+            page_bytes.push(bytes);
+        }
         let entries_to_add = pages
             .into_iter()
+            .zip(page_bytes)
             .enumerate()
-            .map(|(index, page)| {
+            .map(|(index, (page, bytes))| {
                 let next_cursor = tokens.get(index + 1).cloned();
-                let bytes = serde_json::to_vec(&(&node, &page.items, &next_cursor))
-                    .ok()?
-                    .len();
-                Some((
+                (
                     tokens[index].clone(),
                     ViewCursorEntry {
                         binding: binding.clone(),
@@ -218,16 +232,9 @@ impl ViewCursorStore {
                         stored_at: now,
                         last_read: now,
                     },
-                ))
+                )
             })
-            .collect::<Option<Vec<_>>>()?;
-        let added_bytes = entries_to_add
-            .iter()
-            .map(|(_, entry)| entry.bytes)
-            .sum::<usize>();
-        if added_bytes > self.max_total_bytes {
-            return None;
-        }
+            .collect::<Vec<_>>();
         let mut entries = self.entries.lock().expect("view cursor store poisoned");
         entries.retain(|_, entry| now.duration_since(entry.stored_at) < self.ttl);
         let mut total = entries.values().map(|entry| entry.bytes).sum::<usize>();
