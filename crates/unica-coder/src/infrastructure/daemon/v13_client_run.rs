@@ -745,7 +745,7 @@ mod tests {
                 "designer runs no external processor",
             ),
             (
-                json!({"clientMode": "thin", "execute": "/abs/Report.epf"}),
+                json!({"clientMode": "thin", "execute": root.path().join("tools/Report.epf").to_string_lossy()}),
                 "must be workspace-relative",
             ),
             (
