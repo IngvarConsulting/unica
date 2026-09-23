@@ -4149,6 +4149,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn native_task_get_reports_late_cancel_request_without_claiming_cancellation() {
+        use crate::domain::invocation::{InvocationStatus, TaskId};
+
+        fn requested_working(task_id: TaskId) -> V5DaemonTaskSnapshot {
+            let mut snapshot = canonical_snapshot(task_id, InvocationStatus::Working, None);
+            let V5DaemonTaskSnapshot::Working {
+                cancel_requested, ..
+            } = &mut snapshot
+            else {
+                unreachable!()
+            };
+            *cancel_requested = true;
+            snapshot
+        }
+
+        let task_id = TaskId::new();
+        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _| {
+            Ok(CanonicalCallOutcome::Task(canonical_snapshot(
+                task_id,
+                InvocationStatus::Working,
+                None,
+            )))
+        });
+        let get: Arc<CanonicalTaskHandler> = Arc::new(move |_, _| Ok(requested_working(task_id)));
+        let cancel: Arc<CanonicalTaskHandler> =
+            Arc::new(move |_, _| Ok(requested_working(task_id)));
+        let (mut client, _) =
+            spawn_unica_server(UnicaServer::with_canonical_v13_tasks(call, get, cancel));
+
+        client
+            .send(json!({
+                "jsonrpc":"2.0", "id":1, "method":"tools/call",
+                "params":{"name":"unica.check", "arguments":{}, "_meta":modern_tasks_meta()}
+            }))
+            .await;
+        let seed = client.receive().await;
+        assert_eq!(seed["result"]["status"], "working", "{seed}");
+        assert!(seed["result"].get("statusMessage").is_none(), "{seed}");
+
+        client
+            .send(json!({
+                "jsonrpc":"2.0", "id":2, "method":"tasks/cancel",
+                "params":{"taskId":task_id.to_string(), "_meta":modern_tasks_meta()}
+            }))
+            .await;
+        let cancelled = client.receive().await;
+        assert_eq!(cancelled["result"]["resultType"], "complete", "{cancelled}");
+        client
+            .send(json!({
+                "jsonrpc":"2.0", "id":3, "method":"tasks/get",
+                "params":{"taskId":task_id.to_string(), "_meta":modern_tasks_meta()}
+            }))
+            .await;
+        let task = client.receive().await;
+        assert_eq!(task["result"]["status"], "working", "{task}");
+        assert_eq!(
+            task["result"]["statusMessage"],
+            "Cancellation was requested; check task status and result for the actual outcome",
+            "{task}"
+        );
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn legacy_offer_2025_11_25_is_echoed() {
         let (mut client, _) = spawn_server(application_handler());
         client

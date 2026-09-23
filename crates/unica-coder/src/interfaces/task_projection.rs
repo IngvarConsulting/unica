@@ -145,7 +145,7 @@ fn task_v5(snapshot: &V5DaemonTaskSnapshot) -> Result<Task, TaskProjectionError>
     if snapshot.updated_at_epoch_ms() < snapshot.created_at_epoch_ms() {
         return Err(TaskProjectionError::ReverseTimestampOrder);
     }
-    let projected = Task::new(
+    let mut projected = Task::new(
         snapshot.task_id().to_string(),
         task_status(snapshot.status()),
         iso8601(snapshot.created_at_epoch_ms())?,
@@ -153,6 +153,11 @@ fn task_v5(snapshot: &V5DaemonTaskSnapshot) -> Result<Task, TaskProjectionError>
     )
     .with_ttl_ms(snapshot.ttl_ms())
     .with_poll_interval_ms(snapshot.poll_interval_ms());
+    if snapshot.cancel_requested() {
+        projected = projected.with_status_message(
+            "Cancellation was requested; check task status and result for the actual outcome",
+        );
+    }
     ensure_projection_bounded(&projected)?;
     Ok(projected)
 }
@@ -329,6 +334,20 @@ mod tests {
                 "ttlMs"
             ]
         );
+
+        let mut requested = queued.clone();
+        let V5DaemonTaskSnapshot::Queued {
+            cancel_requested, ..
+        } = &mut requested
+        else {
+            unreachable!()
+        };
+        *cancel_requested = true;
+        let seed = super::create_task_result_v5(&requested).unwrap();
+        assert_eq!(
+            serde_json::to_value(seed).unwrap()["statusMessage"],
+            "Cancellation was requested; check task status and result for the actual outcome"
+        );
     }
 
     #[test]
@@ -367,13 +386,17 @@ mod tests {
             ttl_ms: 3_600_000,
             poll_interval_ms: 250,
             version: 3,
-            cancel_requested: false,
+            cancel_requested: true,
             terminal_epoch_ms: 1_777_012_346_789,
             terminal_digest: v5_terminal_digest(),
             result: Box::new(result),
         };
 
         let detailed = super::detailed_task_v5(&completed).expect("completed task");
+        assert_eq!(
+            serde_json::to_value(&detailed).unwrap()["statusMessage"],
+            "Cancellation was requested; check task status and result for the actual outcome"
+        );
         let rmcp::model::TaskPayload::Completed { result: embedded } = detailed.payload else {
             panic!("completed task must embed the original call result");
         };
@@ -404,12 +427,16 @@ mod tests {
                 ttl_ms: 3_600_000,
                 poll_interval_ms: 250,
                 version: 3,
-                cancel_requested: false,
+                cancel_requested: true,
                 terminal_epoch_ms: 1_777_012_346_789,
                 terminal_digest: v5_terminal_digest(),
                 reason,
             };
             let detailed = super::detailed_task_v5(&failed).expect("failed task");
+            assert_eq!(
+                serde_json::to_value(&detailed).unwrap()["statusMessage"],
+                "Cancellation was requested; check task status and result for the actual outcome"
+            );
             let rmcp::model::TaskPayload::Failed { error } = detailed.payload else {
                 panic!("failed task must embed a JSON-RPC error");
             };
@@ -454,8 +481,13 @@ mod tests {
             terminal_epoch_ms: 1_777_012_346_789,
             terminal_digest: v5_terminal_digest(),
         };
+        let detailed = super::detailed_task_v5(&cancelled_task).unwrap();
+        assert_eq!(
+            serde_json::to_value(&detailed).unwrap()["statusMessage"],
+            "Cancellation was requested; check task status and result for the actual outcome"
+        );
         assert!(matches!(
-            super::detailed_task_v5(&cancelled_task).unwrap().payload,
+            detailed.payload,
             rmcp::model::TaskPayload::Cancelled
         ));
     }

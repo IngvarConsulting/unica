@@ -2,7 +2,10 @@
 id: CTR.WIRE.NATIVE-TASK-PROJECTION
 check:
   - crates/unica-coder/src/interfaces/mcp.rs::native_task_projection_contract_is_capability_gated_durable_and_replay_free
+  - crates/unica-coder/src/interfaces/mcp.rs::native_task_get_reports_late_cancel_request_without_claiming_cancellation
   - crates/unica-coder/src/interfaces/task_projection.rs::v5_native_projection_keeps_durable_time_ttl_and_maps_queued_to_working
+  - crates/unica-coder/src/interfaces/task_projection.rs::v5_completed_task_embeds_the_exact_direct_call_result
+  - crates/unica-coder/src/interfaces/task_projection.rs::v5_failed_and_cancelled_terminals_answer_only_the_closed_vocabulary
 ---
 
 # Native Task сохраняет состояние и результат вызова
@@ -20,6 +23,10 @@ check:
 создания отклоняется. Встроенный протокол MCP представляет `queued`
 как `working`. Неизвестный, истёкший и некорректный идентификаторы дают
 различимые закрытые ошибки.
+
+Если сохранён запрос отмены, `tasks/get` передаёт его через стандартное
+`statusMessage`. Сообщение не заменяет состояние задания и фактический
+результат; клиент MCP сам решает, показывать ли его модели.
 
 Завершённое задание содержит тот же сериализованный `CallToolResult`, что
 и прямой ответ: канонический JSON находится в `structuredContent`,

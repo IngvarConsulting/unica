@@ -11,6 +11,7 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::inline_protected_mutation_cancel_does_not_arm_fail_stop_watchdog
   - crates/unica-coder/src/infrastructure/daemon/server.rs::mutating_runner_cancel_keeps_the_factual_receipt_over_the_v5_daemon_wire
   - crates/unica-coder/src/interfaces/mcp.rs::public_task_cancel_and_result_preserve_a_started_infobase_create_receipt
+  - crates/unica-coder/src/interfaces/mcp.rs::native_task_get_reports_late_cancel_request_without_claiming_cancellation
   - crates/unica-coder/src/infrastructure/platform/process.rs::protected_process_finishes_after_cancellation_on_every_host
   - crates/unica-coder/src/infrastructure/platform/process.rs::slow_job_attach_delays_cancel_without_starting_the_mutation_early
   - crates/unica-coder/src/domain/cancellation.rs::cancellation_waits_for_in_flight_protected_dispatch
@@ -27,8 +28,9 @@ Unica дожидается результата раннера и не заве�
 тому же защищённому действию.
 
 Если раннер подтвердил успех, поздняя отмена не заменяет его квитанцию на
-`Cancelled`. Для задания запрос отмены остаётся видимым в `cancelRequested`,
-а фактический результат публикуется как завершённый. Политика не меняет
+`Cancelled`. В совместимых `unica.task.get/cancel` запрос отмены виден как
+`cancelRequested: true`, а native Task передаёт его через `statusMessage`.
+Фактический результат публикуется как завершённый. Политика не меняет
 ограниченную очистку обычных управляемых процессов и операций чтения.
 
 Если после запуска защищённый раннер не отвечает, задание остаётся `working`
