@@ -405,7 +405,15 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         platforms = job(self.release, "test-rust-platforms")
         classify = job(self.release, "classify-changes")
 
-        self.assertEqual(normalized(python["if"]), "${{ !" + main_push + " }}")
+        empty_large = "(github.event_name == 'workflow_dispatch' && inputs.profile == 'large' && needs.classify-changes.outputs.python_matrix == '[]')"
+        self.assertEqual(
+            normalized(python["if"]),
+            "${{ !" + main_push + " && !" + empty_large + " }}",
+        )
+        build = job(self.release, "build-tools")
+        self.assertIn("needs.test-python.result == 'success'", condition(build))
+        self.assertIn("needs.test-python.result == 'skipped'", condition(build))
+        self.assertIn("needs.classify-changes.outputs.python_matrix == '[]'", condition(build))
         rust = normalized(condition(platforms))
         self.assertIn(main_push + " && ( needs.classify-changes.outputs.toolchain_changed == 'true' || needs.classify-changes.outputs.ci_changed == 'true' )", rust)
         self.assertIn("!" + main_push + " && ( needs.classify-changes.outputs.rust_changed == 'true'", rust)

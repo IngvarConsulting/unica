@@ -186,9 +186,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     needs: [classify-changes, guards]
-    # Push в `main` тестов не гоняет: дерево проверила очередь, а кэша наборы
-    # Python не пишут. Релизные линии вливаются без очереди и идут полностью.
-    if: ${{ !(github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+    # Push в `main` тестов не гоняет. У ночного `large` нет Python-наборов:
+    # пустая матрица в GitHub Actions даёт failure ещё до запуска шагов.
+    if: ${{ !(github.event_name == 'push' && github.ref == 'refs/heads/main') && !(github.event_name == 'workflow_dispatch' && inputs.profile == 'large' && needs.classify-changes.outputs.python_matrix == '[]') }}
     # Наборы идут параллельными джобами, по одной на набор, а `tests/ci` —
     # по полосам размера: одним процессом он шёл в очереди шесть с половиной
     # минут, из них четыре — несколько `medium`-тестов. Матрицу считает шов
@@ -357,7 +357,10 @@ jobs:
         always() &&
         needs.classify-changes.result == 'success' &&
         needs.guards.result == 'success' &&
-        needs.test-python.result == 'success' &&
+        (needs.test-python.result == 'success' ||
+         (github.event_name == 'workflow_dispatch' && inputs.profile == 'large' &&
+          needs.classify-changes.outputs.python_matrix == '[]' &&
+          needs.test-python.result == 'skipped')) &&
         (needs.test-rust-platforms.result == 'success' || needs.test-rust-platforms.result == 'skipped') &&
         (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')) &&
         (needs.classify-changes.outputs.release_required == 'true' ||
@@ -1105,4 +1108,5 @@ jobs:
       - name: Evaluate required CI results
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
+          PYTHON_MATRIX: ${{ needs.classify-changes.outputs.python_matrix }}
         run: python scripts/ci/evaluate-ci-gate.py
