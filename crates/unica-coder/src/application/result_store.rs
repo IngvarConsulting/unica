@@ -6,8 +6,11 @@
 //! total-bytes quota keep it bounded.
 
 use crate::domain::refusal::RefusalCode;
-use std::collections::HashMap;
+use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
+use std::io::{self, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -18,6 +21,10 @@ pub const DEFAULT_TTL: Duration = Duration::from_secs(15 * 60);
 pub const DEFAULT_MAX_ENTRIES: usize = 32;
 pub const DEFAULT_MAX_TOTAL_BYTES: usize = 64 * 1024 * 1024;
 const VIEW_MAX_ENTRIES: usize = 128;
+// The token string and entry bookkeeping are bounded separately from the
+// serialized snapshot. Charge each issued token so they cannot bypass the
+// aggregate byte quota while sharing one Arc.
+const VIEW_ENTRY_CHARGE: usize = 128;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResultStoreError {
@@ -77,7 +84,7 @@ pub struct ResultStore {
 /// Identity a v0.13 continuation is allowed to resume. The source revision is
 /// deliberately separate: replay against the same question after a change is
 /// `stale_cursor`, while replay against another question is `invalid_cursor`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub(crate) struct ViewCursorBinding {
     pub(crate) canonical_at: String,
     pub(crate) projection: String,
@@ -88,28 +95,25 @@ pub(crate) struct ViewCursorBinding {
 }
 
 struct ViewCursorEntry {
-    binding: ViewCursorBinding,
-    node: Value,
-    items: Vec<Value>,
-    next_cursor: Option<String>,
-    stopped_by: &'static str,
-    bytes: usize,
+    snapshot: Arc<ViewCollectionSnapshot>,
+    offset: usize,
     stored_at: Instant,
     last_read: Instant,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct StoredViewCursor {
+#[derive(Debug)]
+pub(crate) struct ViewCollectionSnapshot {
     pub(crate) binding: ViewCursorBinding,
     pub(crate) node: Value,
     pub(crate) items: Vec<Value>,
-    pub(crate) next_cursor: Option<String>,
-    pub(crate) stopped_by: &'static str,
+    bytes: usize,
+    secret: [u8; 32],
 }
 
-pub(crate) struct ViewStoredPage {
-    pub(crate) items: Vec<Value>,
-    pub(crate) stopped_by: &'static str,
+#[derive(Debug, Clone)]
+pub(crate) struct StoredViewCursor {
+    pub(crate) snapshot: Arc<ViewCollectionSnapshot>,
+    pub(crate) offset: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,9 +132,10 @@ impl ViewCursorError {
 }
 
 /// Bounded process-local storage for opaque v0.13 page continuations. Tokens
-/// are random replayable capabilities; no numeric parser offset crosses the
-/// public boundary. Each stored entry owns one already-cut page and its stable
-/// successor, so a client retry after a transport timeout is byte-equivalent.
+/// are opaque replayable capabilities; no numeric parser offset crosses the
+/// public boundary. Entries share one bounded immutable collection snapshot.
+/// Only issued continuations consume entry slots, so a long collection can
+/// progress without reserving its entire chain before the first page.
 pub(crate) struct ViewCursorStore {
     ttl: Duration,
     max_entries: usize,
@@ -154,104 +159,102 @@ impl ViewCursorStore {
         }
     }
 
-    pub(crate) const fn max_entries(&self) -> usize {
-        self.max_entries
-    }
-
-    #[cfg(test)]
-    pub(crate) fn insert_pages(
+    pub(crate) fn insert_snapshot(
         &self,
         binding: ViewCursorBinding,
         node: Value,
         items: Vec<Value>,
         offset: usize,
-        page_limit: usize,
     ) -> Option<String> {
-        if offset >= items.len() || page_limit == 0 {
+        if offset >= items.len() || self.max_entries == 0 {
             return None;
         }
-        let pages = items[offset..]
-            .chunks(page_limit)
-            .enumerate()
-            .map(|(index, chunk)| ViewStoredPage {
-                items: chunk.to_vec(),
-                stopped_by: if offset + (index + 1) * page_limit < items.len() {
-                    "limit"
-                } else {
-                    "complete"
-                },
-            })
-            .collect::<Vec<_>>();
-        self.insert_prepared_pages(binding, node, pages)
+        let json_bytes = bounded_json_size(&(&binding, &node, &items), self.max_total_bytes)?;
+        let bytes = snapshot_charge(&binding, &node, &items, json_bytes);
+        // The current cursor must remain available while its successor is
+        // published. Admit enough quota for both before returning page one,
+        // otherwise a later page could fail solely on cursor bookkeeping.
+        let reserved_entries = if self.max_entries > 1 && offset + 1 < items.len() {
+            2
+        } else {
+            1
+        };
+        if bytes.saturating_add(reserved_entries * VIEW_ENTRY_CHARGE) > self.max_total_bytes {
+            return None;
+        }
+        let mut secret = [0u8; 32];
+        secret[..16].copy_from_slice(Uuid::new_v4().as_bytes());
+        secret[16..].copy_from_slice(Uuid::new_v4().as_bytes());
+        let snapshot = Arc::new(ViewCollectionSnapshot {
+            binding,
+            node,
+            items,
+            bytes,
+            secret,
+        });
+        self.insert_entry(snapshot, offset, None)
     }
 
-    pub(crate) fn insert_prepared_pages(
+    /// Reissue the same successor on retries, including when an older LRU
+    /// eviction removed that successor after its first publication.
+    pub(crate) fn insert_next(
         &self,
-        binding: ViewCursorBinding,
-        node: Value,
-        pages: Vec<ViewStoredPage>,
+        current: &StoredViewCursor,
+        offset: usize,
+        current_token: &str,
     ) -> Option<String> {
-        if pages.is_empty() || pages.len() > self.max_entries {
+        if offset >= current.snapshot.items.len() {
             return None;
         }
-        let now = Instant::now();
-        let tokens = (0..pages.len())
-            .map(|_| format!("vc1.{}", Uuid::new_v4().simple()))
-            .collect::<Vec<_>>();
-        // Check the exact stored size before cloning the node into every
-        // entry. A page may contain an indivisible item larger than the
-        // preferred response size, while the chain still has a fixed quota.
-        let mut added_bytes = 0usize;
-        let mut page_bytes = Vec::with_capacity(pages.len());
-        for (index, page) in pages.iter().enumerate() {
-            let next_cursor = tokens.get(index + 1);
-            let bytes = serde_json::to_vec(&(&node, &page.items, &next_cursor))
-                .ok()?
-                .len();
-            added_bytes = added_bytes.checked_add(bytes)?;
-            if added_bytes > self.max_total_bytes {
-                return None;
-            }
-            page_bytes.push(bytes);
+        self.insert_entry(Arc::clone(&current.snapshot), offset, Some(current_token))
+    }
+
+    fn insert_entry(
+        &self,
+        snapshot: Arc<ViewCollectionSnapshot>,
+        offset: usize,
+        current_token: Option<&str>,
+    ) -> Option<String> {
+        if self.max_entries == 0
+            || snapshot.bytes.saturating_add(VIEW_ENTRY_CHARGE) > self.max_total_bytes
+        {
+            return None;
         }
-        let entries_to_add = pages
-            .into_iter()
-            .zip(page_bytes)
-            .enumerate()
-            .map(|(index, (page, bytes))| {
-                let next_cursor = tokens.get(index + 1).cloned();
-                (
-                    tokens[index].clone(),
-                    ViewCursorEntry {
-                        binding: binding.clone(),
-                        node: node.clone(),
-                        items: page.items,
-                        next_cursor,
-                        stopped_by: page.stopped_by,
-                        bytes,
-                        stored_at: now,
-                        last_read: now,
-                    },
-                )
-            })
-            .collect::<Vec<_>>();
+        let token = view_cursor_token(&snapshot.secret, offset);
+        let now = Instant::now();
         let mut entries = self.entries.lock().expect("view cursor store poisoned");
         entries.retain(|_, entry| now.duration_since(entry.stored_at) < self.ttl);
-        let mut total = entries.values().map(|entry| entry.bytes).sum::<usize>();
-        while entries.len().saturating_add(entries_to_add.len()) > self.max_entries
-            || (total.saturating_add(added_bytes) > self.max_total_bytes && !entries.is_empty())
+        if let Some(existing) = entries.get_mut(&token) {
+            if Arc::ptr_eq(&existing.snapshot, &snapshot) && existing.offset == offset {
+                existing.last_read = now;
+                return Some(token);
+            }
+            return None;
+        }
+        while entries.len() >= self.max_entries
+            || unique_snapshot_bytes(&entries, Some(&snapshot))
+                .saturating_add((entries.len() + 1).saturating_mul(VIEW_ENTRY_CHARGE))
+                > self.max_total_bytes
         {
             let oldest = entries
                 .iter()
+                .filter(|(candidate, _)| {
+                    self.max_entries == 1 || current_token != Some(candidate.as_str())
+                })
                 .min_by_key(|(_, entry)| entry.last_read)
-                .map(|(token, _)| token.clone())?;
-            if let Some(removed) = entries.remove(&oldest) {
-                total = total.saturating_sub(removed.bytes);
-            }
+                .map(|(candidate, _)| candidate.clone())?;
+            entries.remove(&oldest);
         }
-        let first = tokens.first()?.clone();
-        entries.extend(entries_to_add);
-        Some(first)
+        entries.insert(
+            token.clone(),
+            ViewCursorEntry {
+                snapshot,
+                offset,
+                stored_at: now,
+                last_read: now,
+            },
+        );
+        Some(token)
     }
 
     pub(crate) fn read(
@@ -275,26 +278,152 @@ impl ViewCursorStore {
         let entry = entries
             .get_mut(token)
             .expect("the checked view cursor remains present");
-        if entry.binding.canonical_at != expected.canonical_at
-            || entry.binding.projection != expected.projection
-            || entry.binding.normalized_filter != expected.normalized_filter
-            || entry.binding.source_set_identity != expected.source_set_identity
-            || entry.binding.page_limit != expected.page_limit
+        let binding = &entry.snapshot.binding;
+        if binding.canonical_at != expected.canonical_at
+            || binding.projection != expected.projection
+            || binding.normalized_filter != expected.normalized_filter
+            || binding.source_set_identity != expected.source_set_identity
+            || binding.page_limit != expected.page_limit
         {
             return Err(ViewCursorError::Invalid);
         }
-        if entry.binding.source_revision != current_revision {
+        if binding.source_revision != current_revision {
             return Err(ViewCursorError::Stale);
         }
         entry.last_read = now;
         Ok(StoredViewCursor {
-            binding: entry.binding.clone(),
-            node: entry.node.clone(),
-            items: entry.items.clone(),
-            next_cursor: entry.next_cursor.clone(),
-            stopped_by: entry.stopped_by,
+            snapshot: Arc::clone(&entry.snapshot),
+            offset: entry.offset,
         })
     }
+}
+
+fn unique_snapshot_bytes(
+    entries: &HashMap<String, ViewCursorEntry>,
+    extra: Option<&Arc<ViewCollectionSnapshot>>,
+) -> usize {
+    let mut seen = HashSet::new();
+    let mut total = 0usize;
+    for entry in entries.values() {
+        if seen.insert(Arc::as_ptr(&entry.snapshot) as usize) {
+            total = total.saturating_add(entry.snapshot.bytes);
+        }
+    }
+    if let Some(snapshot) = extra {
+        if seen.insert(Arc::as_ptr(snapshot) as usize) {
+            total = total.saturating_add(snapshot.bytes);
+        }
+    }
+    total
+}
+
+struct BoundedSizeWriter {
+    bytes: usize,
+    limit: usize,
+}
+
+impl Write for BoundedSizeWriter {
+    fn write(&mut self, chunk: &[u8]) -> io::Result<usize> {
+        self.bytes = self.bytes.saturating_add(chunk.len());
+        if self.bytes > self.limit {
+            return Err(io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                "view snapshot exceeds quota",
+            ));
+        }
+        Ok(chunk.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn bounded_json_size(value: &impl serde::Serialize, limit: usize) -> Option<usize> {
+    let mut writer = BoundedSizeWriter { bytes: 0, limit };
+    serde_json::to_writer(&mut writer, value).ok()?;
+    Some(writer.bytes)
+}
+
+fn snapshot_charge(
+    binding: &ViewCursorBinding,
+    node: &Value,
+    items: &Vec<Value>,
+    json_bytes: usize,
+) -> usize {
+    let binding_heap = [
+        &binding.canonical_at,
+        &binding.projection,
+        &binding.normalized_filter,
+        &binding.source_set_identity,
+        &binding.source_revision,
+    ]
+    .iter()
+    .fold(0usize, |total, value| {
+        total.saturating_add(value.capacity())
+    });
+    let estimated_heap = std::mem::size_of::<ViewCollectionSnapshot>()
+        .saturating_add(binding_heap)
+        .saturating_add(value_heap_bytes(node))
+        .saturating_add(
+            items
+                .capacity()
+                .saturating_mul(std::mem::size_of::<Value>()),
+        )
+        .saturating_add(items.iter().fold(0usize, |total, value| {
+            total.saturating_add(value_extra_heap_bytes(value))
+        }));
+    json_bytes.max(estimated_heap)
+}
+
+fn value_heap_bytes(value: &Value) -> usize {
+    std::mem::size_of::<Value>().saturating_add(value_extra_heap_bytes(value))
+}
+
+fn value_extra_heap_bytes(value: &Value) -> usize {
+    match value {
+        Value::String(text) => text.capacity(),
+        Value::Array(values) => values
+            .capacity()
+            .saturating_mul(std::mem::size_of::<Value>())
+            .saturating_add(values.iter().fold(0usize, |total, value| {
+                total.saturating_add(value_extra_heap_bytes(value))
+            })),
+        Value::Object(values) => values
+            .len()
+            .saturating_mul(std::mem::size_of::<String>() + std::mem::size_of::<Value>() + 64)
+            .saturating_add(values.iter().fold(0usize, |total, (key, value)| {
+                total
+                    .saturating_add(key.capacity())
+                    .saturating_add(value_extra_heap_bytes(value))
+            })),
+        Value::Null | Value::Bool(_) | Value::Number(_) => 0,
+    }
+}
+
+fn view_cursor_token(secret: &[u8; 32], offset: usize) -> String {
+    // HMAC-SHA256 keeps the offset opaque and makes reissued successors stable.
+    let mut ipad = [0x36u8; 64];
+    let mut opad = [0x5cu8; 64];
+    for (index, byte) in secret.iter().enumerate() {
+        ipad[index] ^= byte;
+        opad[index] ^= byte;
+    }
+    let inner = Sha256::new()
+        .chain_update(ipad)
+        .chain_update((offset as u64).to_be_bytes())
+        .finalize();
+    let digest = Sha256::new()
+        .chain_update(opad)
+        .chain_update(inner)
+        .finalize();
+    use std::fmt::Write as _;
+    let mut token = String::with_capacity(36);
+    token.push_str("vc1.");
+    for byte in &digest[..16] {
+        write!(&mut token, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    token
 }
 
 fn valid_view_cursor_token(token: &str) -> bool {
@@ -538,12 +667,11 @@ mod tests {
         let store = ViewCursorStore::default();
         let binding = view_binding("main:Document.Заказ.Module.Object.Body", "rev-1");
         let token = store
-            .insert_pages(
+            .insert_snapshot(
                 binding.clone(),
                 json!({"at": binding.canonical_at}),
                 vec![json!({"line": 2}), json!({"line": 3})],
                 0,
-                1,
             )
             .unwrap();
         assert!(token.starts_with("vc1."));
@@ -586,35 +714,142 @@ mod tests {
             ViewCursorError::Invalid
         );
         let page = store.read(&token, &binding, "rev-1").unwrap();
-        assert_eq!(page.items, vec![json!({"line": 2})]);
-        assert!(page.next_cursor.is_some());
+        assert_eq!(page.snapshot.items[page.offset], json!({"line": 2}));
+        let successor = store.insert_next(&page, 1, &token).unwrap();
         let replay = store.read(&token, &binding, "rev-1").unwrap();
-        assert_eq!(replay, page);
+        assert_eq!(replay.offset, page.offset);
+        assert_eq!(store.insert_next(&replay, 1, &token).unwrap(), successor);
     }
 
     #[test]
-    fn cursor_chain_is_refused_before_it_can_exceed_the_entry_bound() {
-        let store = ViewCursorStore::new(DEFAULT_TTL, 2, 1_024);
+    fn long_chain_issues_one_cursor_at_a_time_and_reissues_an_evicted_successor() {
+        let store = ViewCursorStore::new(DEFAULT_TTL, 2, 4_096);
         let binding = view_binding("main:Document.Заказ.Module.Object.Body", "rev-1");
+        let first = store
+            .insert_snapshot(
+                binding.clone(),
+                json!({"at": binding.canonical_at}),
+                vec![json!(1), json!(2), json!(3), json!(4)],
+                0,
+            )
+            .unwrap();
+        let first_page = store.read(&first, &binding, "rev-1").unwrap();
+        let second = store.insert_next(&first_page, 1, &first).unwrap();
+        let second_page = store.read(&second, &binding, "rev-1").unwrap();
+        let third = store.insert_next(&second_page, 2, &second).unwrap();
+        assert_eq!(
+            store.read(&first, &binding, "rev-1").unwrap_err(),
+            ViewCursorError::Invalid
+        );
+        let third_page = store.read(&third, &binding, "rev-1").unwrap();
+        let fourth = store.insert_next(&third_page, 3, &third).unwrap();
+        assert_eq!(
+            store.read(&second, &binding, "rev-1").unwrap_err(),
+            ViewCursorError::Invalid
+        );
+        store.read(&third, &binding, "rev-1").unwrap();
+        let _other = store
+            .insert_snapshot(
+                view_binding("main:Document.Другой.Module.Object.Body", "rev-1"),
+                json!({"at":"other"}),
+                vec![json!(1)],
+                0,
+            )
+            .unwrap();
+        assert_eq!(
+            store.read(&fourth, &binding, "rev-1").unwrap_err(),
+            ViewCursorError::Invalid
+        );
+        // A still-live predecessor reissues exactly its evicted successor.
+        let third_page = store.read(&third, &binding, "rev-1").unwrap();
+        assert_eq!(store.insert_next(&third_page, 3, &third).unwrap(), fourth);
+        assert_eq!(store.read(&fourth, &binding, "rev-1").unwrap().offset, 3);
+    }
 
-        assert!(store
-            .insert_pages(
-                binding.clone(),
-                json!({"at": binding.canonical_at}),
-                vec![json!(1), json!(2), json!(3)],
-                0,
-                1,
-            )
+    #[test]
+    fn view_snapshot_byte_quota_and_lru_evict_old_chains() {
+        let binding = |name| view_binding(name, "rev-1");
+        let store = ViewCursorStore::new(DEFAULT_TTL, 8, 2_048);
+        let insert = |name| {
+            store
+                .insert_snapshot(
+                    binding(name),
+                    json!({"at":name}),
+                    vec![json!("X".repeat(800))],
+                    0,
+                )
+                .unwrap()
+        };
+        let first_at = "main:Document.Первый.Module.Object.Body";
+        let second_at = "main:Document.Второй.Module.Object.Body";
+        let third_at = "main:Document.Третий.Module.Object.Body";
+        let first = insert(first_at);
+        let second = insert(second_at);
+        assert_eq!(
+            store.read(&first, &binding(first_at), "rev-1").unwrap_err(),
+            ViewCursorError::Invalid
+        );
+        store.read(&second, &binding(second_at), "rev-1").unwrap();
+        let third = insert(third_at);
+        assert_eq!(
+            store
+                .read(&second, &binding(second_at), "rev-1")
+                .unwrap_err(),
+            ViewCursorError::Invalid
+        );
+        assert!(store.read(&third, &binding(third_at), "rev-1").is_ok());
+
+        let lru = ViewCursorStore::new(DEFAULT_TTL, 2, 4_096);
+        let first = lru
+            .insert_snapshot(binding(first_at), json!({}), vec![json!(1)], 0)
+            .unwrap();
+        let second = lru
+            .insert_snapshot(binding(second_at), json!({}), vec![json!(2)], 0)
+            .unwrap();
+        lru.read(&first, &binding(first_at), "rev-1").unwrap();
+        let third = lru
+            .insert_snapshot(binding(third_at), json!({}), vec![json!(3)], 0)
+            .unwrap();
+        assert_eq!(
+            lru.read(&second, &binding(second_at), "rev-1").unwrap_err(),
+            ViewCursorError::Invalid
+        );
+        assert!(lru.read(&first, &binding(first_at), "rev-1").is_ok());
+        assert!(lru.read(&third, &binding(third_at), "rev-1").is_ok());
+    }
+
+    #[test]
+    fn snapshot_admission_reserves_room_for_the_next_cursor() {
+        let binding = view_binding("main:Document.Заказ.Module.Object.Body", "rev-1");
+        let node = json!({"at": binding.canonical_at});
+        let items = vec![json!(1), json!(2), json!(3)];
+        let json_bytes = bounded_json_size(&(&binding, &node, &items), usize::MAX).unwrap();
+        let snapshot_bytes = snapshot_charge(&binding, &node, &items, json_bytes);
+        let too_small =
+            ViewCursorStore::new(DEFAULT_TTL, 2, snapshot_bytes + 2 * VIEW_ENTRY_CHARGE - 1);
+        assert!(too_small
+            .insert_snapshot(binding.clone(), node.clone(), items.clone(), 1)
             .is_none());
+
+        let enough = ViewCursorStore::new(DEFAULT_TTL, 2, snapshot_bytes + 2 * VIEW_ENTRY_CHARGE);
+        let first = enough
+            .insert_snapshot(binding.clone(), node, items, 1)
+            .unwrap();
+        let page = enough.read(&first, &binding, "rev-1").unwrap();
+        let second = enough.insert_next(&page, 2, &first).unwrap();
+        assert_eq!(enough.read(&second, &binding, "rev-1").unwrap().offset, 2);
+    }
+
+    #[test]
+    fn many_small_items_are_charged_for_retained_heap_not_only_json() {
+        let binding = view_binding("main:Document.Заказ.Module.Object.Body", "rev-1");
+        let items = vec![Value::Null; 10_000];
+        let json_bytes = bounded_json_size(&(&binding, json!({}), &items), usize::MAX).unwrap();
+        assert!(json_bytes < 100_000);
+        let store = ViewCursorStore::new(DEFAULT_TTL, 128, 100_000);
         assert!(store
-            .insert_pages(
-                binding.clone(),
-                json!({"at": binding.canonical_at}),
-                vec![json!(1), json!(2)],
-                0,
-                1,
-            )
-            .is_some());
+            .insert_snapshot(binding, json!({}), items, 1)
+            .is_none());
     }
 
     #[test]
@@ -622,12 +857,11 @@ mod tests {
         let store = ViewCursorStore::default();
         let binding = view_binding("main:Document.Заказ.Module.Object.Body", "rev-1");
         let token = store
-            .insert_pages(
+            .insert_snapshot(
                 binding.clone(),
                 json!({"at": binding.canonical_at}),
                 vec![json!({"line": 2})],
                 0,
-                1,
             )
             .unwrap();
         assert_eq!(
@@ -643,12 +877,11 @@ mod tests {
 
         let expiring = ViewCursorStore::new(Duration::ZERO, 4, 1024);
         let token = expiring
-            .insert_pages(
+            .insert_snapshot(
                 binding.clone(),
                 json!({"at": binding.canonical_at}),
                 vec![json!({"line": 2})],
                 0,
-                1,
             )
             .unwrap();
         assert_eq!(

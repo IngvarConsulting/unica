@@ -1,12 +1,11 @@
 use crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES;
-use crate::application::result_store::{
-    ViewCursorBinding, ViewCursorError, ViewCursorStore, ViewStoredPage,
-};
+use crate::application::result_store::{ViewCursorBinding, ViewCursorError, ViewCursorStore};
 use crate::domain::address::QualifiedAddress;
 use crate::domain::invocation::DomainResult;
 use crate::domain::node_view::NodeViewData;
 use crate::domain::refusal::{RefusalCode, RefusalDetail};
 use serde_json::{Map, Value};
+use std::io::{self, Write};
 use std::sync::Arc;
 
 const DEFAULT_LIMIT: usize = 20;
@@ -260,13 +259,32 @@ impl<A: ViewReadAuthority> ViewService<A> {
                 .cursors
                 .read(cursor, &binding, &snapshot.revision)
                 .map_err(cursor_error)?;
-            return self.stored_page_result(
-                stored.node,
-                stored.items,
-                stored.next_cursor,
-                stored.stopped_by,
-                request,
-                stored.binding,
+            let page = prepare_page(
+                &stored.snapshot.node,
+                &stored.snapshot.items,
+                stored.offset,
+                request.limit,
+                &stored.snapshot.binding,
+            )?;
+            let next_cursor = if page.next_offset < stored.snapshot.items.len() {
+                self.cursors
+                    .insert_next(&stored, page.next_offset, cursor)
+                    .ok_or_else(|| {
+                        ViewError::new(
+                            RefusalCode::ResultTooLarge,
+                            "view continuation could not be retained",
+                        )
+                    })?
+                    .into()
+            } else {
+                None
+            };
+            return collection_result(
+                &stored.snapshot.node,
+                page.items,
+                next_cursor,
+                page.stopped_by,
+                &stored.snapshot.binding,
             );
         }
 
@@ -314,58 +332,41 @@ impl<A: ViewReadAuthority> ViewService<A> {
                 "typed collection items are not an array",
             )
         })?;
-        self.page_result(Value::Object(object), items, 0, request, binding)
+        let node = Value::Object(object);
+        preflight_collection(&node, &items, &binding)?;
+        let current = self.authority.snapshot(&request.at)?;
+        if current != snapshot {
+            return Err(ViewError::new(
+                RefusalCode::ConcurrentChange,
+                "source changed while the view collection was read; retry the question",
+            ));
+        }
+        self.page_result(node, items, request, binding)
     }
 
     fn page_result(
         &self,
         node: Value,
         items: Vec<Value>,
-        offset: usize,
         request: &ViewRequest,
         binding: ViewCursorBinding,
     ) -> Result<DomainResult, ViewError> {
-        if offset > items.len() {
-            return Err(ViewError::new(
-                RefusalCode::InvalidCursor,
-                "view cursor offset is invalid",
-            ));
-        }
-        let mut pages = prepare_pages(
-            &node,
-            &items[offset..],
-            request.limit,
-            &binding,
-            self.cursors.max_entries().saturating_add(1),
-        )?;
-        let first = pages.remove(0);
-        let cursor = if pages.is_empty() {
+        let first = prepare_page(&node, &items, 0, request.limit, &binding)?;
+        let cursor = if first.next_offset == items.len() {
             None
         } else {
             Some(
                 self.cursors
-                    .insert_prepared_pages(binding.clone(), node.clone(), pages)
+                    .insert_snapshot(binding.clone(), node.clone(), items, first.next_offset)
                     .ok_or_else(|| {
                         ViewError::new(
                             RefusalCode::ResultTooLarge,
-                            "logical collection exceeds the bounded cursor store",
+                            "logical collection exceeds the bounded view snapshot store",
                         )
                     })?,
             )
         };
         collection_result(&node, first.items, cursor, first.stopped_by, &binding)
-    }
-
-    fn stored_page_result(
-        &self,
-        node: Value,
-        items: Vec<Value>,
-        cursor: Option<String>,
-        stopped_by: &'static str,
-        _request: &ViewRequest,
-        binding: ViewCursorBinding,
-    ) -> Result<DomainResult, ViewError> {
-        collection_result(&node, items, cursor, stopped_by, &binding)
     }
 }
 
@@ -392,19 +393,95 @@ fn collection_result(
     Ok(result)
 }
 
-fn prepare_pages(
+struct PreparedViewPage {
+    items: Vec<Value>,
+    next_offset: usize,
+    stopped_by: &'static str,
+}
+
+fn preflight_collection(
     node: &Value,
     items: &[Value],
+    binding: &ViewCursorBinding,
+) -> Result<(), ViewError> {
+    let empty = collection_result(node, Vec::new(), None, "complete", binding)?;
+    if serialized_result_size(&empty) > MAX_CANONICAL_RESULT_BYTES {
+        return Err(ViewError::new(
+            RefusalCode::ResultTooLarge,
+            "logical collection metadata exceeds the transport result limit",
+        ));
+    }
+    if items.is_empty() {
+        return Ok(());
+    }
+    let with_cursor = collection_result(
+        node,
+        vec![Value::Null],
+        Some(CURSOR_SIZE_PLACEHOLDER.to_string()),
+        "bytes",
+        binding,
+    )?;
+    let terminal = collection_result(node, vec![Value::Null], None, "complete", binding)?;
+    let with_cursor_base = serialized_result_size(&with_cursor) - 4;
+    let terminal_base = serialized_result_size(&terminal) - 4;
+    // A continuation is issued only if every indivisible item can later fit
+    // inside the exact public result envelope, including its cursor.
+    for (index, item) in items.iter().enumerate() {
+        let base = if index + 1 < items.len() {
+            with_cursor_base
+        } else {
+            terminal_base
+        };
+        if base.saturating_add(serialized_value_size(item)) > MAX_CANONICAL_RESULT_BYTES {
+            return Err(ViewError::new(
+                RefusalCode::ResultTooLarge,
+                "one collection item exceeds the transport result limit",
+            ));
+        }
+    }
+    Ok(())
+}
+
+struct SizeWriter(usize);
+
+impl Write for SizeWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0 = self.0.saturating_add(bytes.len());
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn serialized_value_size(value: &Value) -> usize {
+    let mut writer = SizeWriter(0);
+    serde_json::to_writer(&mut writer, value).expect("a JSON value serializes");
+    writer.0
+}
+
+fn serialized_result_size(result: &DomainResult) -> usize {
+    serde_json::to_vec(result)
+        .expect("a domain result containing JSON values serializes")
+        .len()
+}
+
+fn prepare_page(
+    node: &Value,
+    items: &[Value],
+    mut offset: usize,
     limit: usize,
     binding: &ViewCursorBinding,
-    max_pages: usize,
-) -> Result<Vec<ViewStoredPage>, ViewError> {
-    let mut pages = Vec::new();
-    let mut offset = 0;
+) -> Result<PreparedViewPage, ViewError> {
+    if offset > items.len() {
+        return Err(ViewError::new(
+            RefusalCode::InvalidCursor,
+            "view cursor offset is invalid",
+        ));
+    }
     let base = collection_result(node, Vec::new(), None, "complete", binding)?;
-    let base_bytes = serde_json::to_vec(&base)
-        .expect("a domain result containing JSON values serializes")
-        .len();
+    let base_bytes = serialized_result_size(&base);
     if base_bytes > MAX_CANONICAL_RESULT_BYTES {
         return Err(ViewError::new(
             RefusalCode::ResultTooLarge,
@@ -415,75 +492,57 @@ fn prepare_pages(
     // element cap and the transport limit still apply, without forcing every
     // otherwise readable element onto its own page.
     let prefer_page_bytes = base_bytes <= PREFERRED_PAGE_BYTES;
-    loop {
-        let mut page_items = Vec::new();
-        let stopped_by = loop {
-            if offset == items.len() {
-                break "complete";
-            }
-            if page_items.len() == limit {
-                break "limit";
-            }
-            let mut candidate = page_items.clone();
-            candidate.push(items[offset].clone());
-            let probe = collection_result(
-                node,
-                candidate.clone(),
-                (offset + 1 < items.len()).then(|| CURSOR_SIZE_PLACEHOLDER.to_string()),
-                "complete",
-                binding,
-            )?;
-            let bytes = serde_json::to_vec(&probe)
-                .expect("a domain result containing JSON values serializes")
-                .len();
-            if bytes > MAX_CANONICAL_RESULT_BYTES {
-                if page_items.is_empty() {
-                    return Err(ViewError::new(
-                        RefusalCode::ResultTooLarge,
-                        "one collection item exceeds the transport result limit",
-                    ));
-                }
-                break "bytes";
-            }
-            if prefer_page_bytes && bytes > PREFERRED_PAGE_BYTES && !page_items.is_empty() {
-                break "bytes";
-            }
-            page_items = candidate;
-            offset += 1;
-        };
-        pages.push(ViewStoredPage {
-            items: page_items,
-            stopped_by,
-        });
-        if pages.len() > max_pages {
-            return Err(ViewError::new(
-                RefusalCode::ResultTooLarge,
-                "logical collection exceeds the bounded cursor store",
-            ));
-        }
+    let mut page_items = Vec::new();
+    let stopped_by = loop {
         if offset == items.len() {
-            break;
+            break "complete";
         }
-    }
-    let first = &pages[0];
-    let first_probe = collection_result(
+        if page_items.len() == limit {
+            break "limit";
+        }
+        let mut candidate = page_items.clone();
+        candidate.push(items[offset].clone());
+        let probe = collection_result(
+            node,
+            candidate.clone(),
+            (offset + 1 < items.len()).then(|| CURSOR_SIZE_PLACEHOLDER.to_string()),
+            "complete",
+            binding,
+        )?;
+        let bytes = serialized_result_size(&probe);
+        if bytes > MAX_CANONICAL_RESULT_BYTES {
+            if page_items.is_empty() {
+                return Err(ViewError::new(
+                    RefusalCode::ResultTooLarge,
+                    "one collection item exceeds the transport result limit",
+                ));
+            }
+            break "bytes";
+        }
+        if prefer_page_bytes && bytes > PREFERRED_PAGE_BYTES && !page_items.is_empty() {
+            break "bytes";
+        }
+        page_items = candidate;
+        offset += 1;
+    };
+    let page_probe = collection_result(
         node,
-        first.items.clone(),
-        (pages.len() > 1).then(|| CURSOR_SIZE_PLACEHOLDER.to_string()),
-        first.stopped_by,
+        page_items.clone(),
+        (offset < items.len()).then(|| CURSOR_SIZE_PLACEHOLDER.to_string()),
+        stopped_by,
         binding,
     )?;
-    if serde_json::to_vec(&first_probe)
-        .expect("a domain result containing JSON values serializes")
-        .len()
-        > MAX_CANONICAL_RESULT_BYTES
-    {
+    if serialized_result_size(&page_probe) > MAX_CANONICAL_RESULT_BYTES {
         return Err(ViewError::new(
             RefusalCode::ResultTooLarge,
             "logical collection page exceeds the transport result limit",
         ));
     }
-    Ok(pages)
+    Ok(PreparedViewPage {
+        items: page_items,
+        next_offset: offset,
+        stopped_by,
+    })
 }
 
 fn cursor_error(error: ViewCursorError) -> ViewError {
@@ -774,6 +833,41 @@ mod tests {
     }
 
     #[test]
+    fn a_collection_longer_than_the_cursor_entry_limit_still_has_a_first_page() {
+        let at = "main:Document.Заказ.Module.Object.Body";
+        let mut authority = FixtureAuthority::new();
+        authority.views.insert(
+            at.to_string(),
+            NodeViewData::Collection(CollectionView::new(
+                NodeView::new(at, "Body", "Тело модуля", Map::new()),
+                (0..2_601).map(|line| json!({"line": line})).collect(),
+            )),
+        );
+        let service = ViewService::new(authority, ViewCursorStore::default());
+        let request = || ViewRequest::new(at).unwrap().with_limit(20).unwrap();
+        let mut page = service.view(request());
+        assert!(page.ok);
+        let mut lines = Vec::new();
+        loop {
+            lines.extend(
+                page.data.as_ref().unwrap()["items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|item| item["line"].as_u64().unwrap()),
+            );
+            let Some(cursor) = page.cursor.clone() else {
+                break;
+            };
+            let next = service.view(request().with_cursor(cursor.clone()));
+            assert_eq!(next, service.view(request().with_cursor(cursor)));
+            page = next;
+        }
+        assert_eq!(lines, (0..2_601).collect::<Vec<_>>());
+        assert_eq!(page.page.as_ref().unwrap()["stoppedBy"], "complete");
+    }
+
+    #[test]
     fn addressed_collection_prefers_64_kib_pages_and_replays() {
         let at = "main:Document.Заказ.Module.Object.Body";
         let mut authority = FixtureAuthority::new();
@@ -1052,7 +1146,7 @@ mod tests {
     }
 
     #[test]
-    fn collection_exceeding_cursor_capacity_is_refused_before_a_cursor_is_issued() {
+    fn collection_exceeding_cursor_entry_count_still_has_usable_pages() {
         use crate::application::result_store::DEFAULT_TTL;
         let at = "main:Document.Заказ.Module.Object.Body";
         let mut authority = FixtureAuthority::new();
@@ -1064,11 +1158,95 @@ mod tests {
             )),
         );
         let store = ViewCursorStore::new(DEFAULT_TTL, 2, 1024 * 1024);
+        let service = ViewService::new(authority, store);
+        let request = || ViewRequest::new(at).unwrap().with_limit(1).unwrap();
+        let mut page = service.view(request());
+        let mut seen = Vec::new();
+        loop {
+            assert!(page.ok);
+            seen.push(
+                page.data.as_ref().unwrap()["items"][0]["line"]
+                    .as_u64()
+                    .unwrap(),
+            );
+            let Some(cursor) = page.cursor.take() else {
+                break;
+            };
+            page = service.view(request().with_cursor(cursor));
+        }
+        assert_eq!(seen, (0..100).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn snapshot_over_byte_quota_refuses_before_promising_a_continuation() {
+        use crate::application::result_store::DEFAULT_TTL;
+        let at = "main:Document.Заказ.Module.Object.Body";
+        let mut authority = FixtureAuthority::new();
+        authority.views.insert(
+            at.to_string(),
+            NodeViewData::Collection(CollectionView::new(
+                NodeView::new(at, "Body", "Тело модуля", Map::new()),
+                (0..100).map(|line| json!({"line": line})).collect(),
+            )),
+        );
+        let store = ViewCursorStore::new(DEFAULT_TTL, 128, 512);
         let result = ViewService::new(authority, store)
             .view(ViewRequest::new(at).unwrap().with_limit(1).unwrap());
         assert!(!result.ok);
         assert_eq!(result.diagnostics[0]["code"], "result_too_large");
         assert!(result.cursor.is_none());
+    }
+
+    #[test]
+    fn a_late_oversized_item_refuses_before_the_first_page() {
+        let at = "main:Document.Заказ.Module.Object.Body";
+        let mut authority = FixtureAuthority::new();
+        authority.views.insert(
+            at.to_string(),
+            NodeViewData::Collection(CollectionView::new(
+                NodeView::new(at, "Body", "Тело модуля", Map::new()),
+                vec![json!({"line":1}), json!({"line":2,"text":"X".repeat(crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES)})],
+            )),
+        );
+        let result = ViewService::new(authority, ViewCursorStore::default())
+            .view(ViewRequest::new(at).unwrap().with_limit(1).unwrap());
+        assert!(!result.ok);
+        assert_eq!(result.diagnostics[0]["code"], "result_too_large");
+        assert!(result.cursor.is_none());
+    }
+
+    #[test]
+    fn concurrent_cursor_retries_return_the_same_page_and_successor() {
+        use std::sync::Arc;
+        let at = "main:Document.Заказ.Module.Object.Body";
+        let service = Arc::new(ViewService::new(
+            FixtureAuthority::new(),
+            ViewCursorStore::default(),
+        ));
+        let first = service.view(ViewRequest::new(at).unwrap().with_limit(1).unwrap());
+        let cursor = first.cursor.unwrap();
+        let handles = (0..8)
+            .map(|_| {
+                let service = Arc::clone(&service);
+                let cursor = cursor.clone();
+                std::thread::spawn(move || {
+                    service.view(
+                        ViewRequest::new(at)
+                            .unwrap()
+                            .with_limit(1)
+                            .unwrap()
+                            .with_cursor(cursor),
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        let pages = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>();
+        assert!(pages[0].ok);
+        assert!(pages[0].cursor.is_some());
+        assert!(pages.iter().all(|page| page == &pages[0]));
     }
 
     /// Уточнение обязано пережить дорогу от чтения до провода. Разбирать
