@@ -24,8 +24,9 @@ SOURCE_ROOT = REPO_ROOT / "crates" / "unica-coder" / "src"
 # раннер во всех семи операциях `run` (корня плагина нет, бинарь не разрешён,
 # версия не читается, процесс не стартовал — `provider_absent`), затем разбор
 # адреса и содержимого дескриптора у читателей (`source_unreadable`) и два
-# пробела профиля платформы (`provider_absent`).
-UNDETAILED_PROVIDER_UNAVAILABLE_CEILING = 106
+# пробела профиля платформы (`provider_absent`). Проверка области поиска имён
+# также отвечает `not_found`, когда набор исходников не допущен.
+UNDETAILED_PROVIDER_UNAVAILABLE_CEILING = 105
 
 TEST_TAIL = re.compile(r"#\[cfg\(test\)\]\s*(?:pub(?:\(crate\))?\s+)?mod\s+\w+")
 STRING_LITERAL = re.compile(r'"(?:\\.|[^"\\])*"')
