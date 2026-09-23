@@ -972,9 +972,9 @@ impl CanonicalV13ReadService {
             let authority = match source.logical_view_read_authority(cancellation) {
                 Ok(authority) => authority,
                 Err(error) => {
-                    return error_result(
+                    return error_result_detailed(
                         Some(scope.to_string()),
-                        RefusalCode::ProviderUnavailable,
+                        RefusalDetail::ProviderAbsent,
                         error,
                     )
                 }
@@ -1004,16 +1004,20 @@ impl CanonicalV13ReadService {
                         .retained_root()
                         .read_relative_regular_prefix(std::path::Path::new(&descriptor), 1)
                     {
-                        let code = if error.kind() == std::io::ErrorKind::NotFound {
-                            RefusalCode::InvalidState
+                        let message = format!("search scope descriptor is unavailable: {error}");
+                        return if error.kind() == std::io::ErrorKind::NotFound {
+                            error_result(
+                                Some(scope.to_string()),
+                                RefusalCode::InvalidState,
+                                message,
+                            )
                         } else {
-                            RefusalCode::ProviderUnavailable
+                            error_result_detailed(
+                                Some(scope.to_string()),
+                                RefusalDetail::SourceUnreadable,
+                                message,
+                            )
                         };
-                        return error_result(
-                            Some(scope.to_string()),
-                            code,
-                            format!("search scope descriptor is unavailable: {error}"),
-                        );
                     }
                 }
             }
