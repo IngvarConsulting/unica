@@ -70,6 +70,7 @@ pub(crate) struct CompatibilityTaskSnapshot {
     pub(crate) result: Option<DomainResult>,
     /// Closed presence only: failure code/message remains on the daemon side.
     pub(crate) has_failure: bool,
+    pub(crate) cancel_requested: bool,
     pub(crate) created_at_epoch_ms: u64,
     pub(crate) updated_at_epoch_ms: u64,
     pub(crate) ttl_ms: u64,
@@ -83,6 +84,7 @@ impl CompatibilityTaskSnapshot {
         status: InvocationStatus,
         result: Option<DomainResult>,
         has_failure: bool,
+        cancel_requested: bool,
         created_at_epoch_ms: u64,
         updated_at_epoch_ms: u64,
         ttl_ms: u64,
@@ -93,6 +95,7 @@ impl CompatibilityTaskSnapshot {
             status,
             result,
             has_failure,
+            cancel_requested,
             created_at_epoch_ms,
             updated_at_epoch_ms,
             ttl_ms,
@@ -246,7 +249,7 @@ pub(crate) fn project_task_snapshot(
         InvocationStatus::Failed => "failed",
         InvocationStatus::Cancelled => "cancelled",
     };
-    let data = json!({
+    let mut data = json!({
         "task": {
             "taskId": snapshot.task_id.to_string(),
             "status": status,
@@ -256,6 +259,9 @@ pub(crate) fn project_task_snapshot(
             "pollIntervalMs": snapshot.poll_interval_ms
         }
     });
+    if snapshot.cancel_requested {
+        data["task"]["cancelRequested"] = json!(true);
+    }
     let mut result = DomainResult::success(summary);
     result.ok = ok;
     result.data = Some(data);
@@ -325,6 +331,7 @@ mod tests {
             status,
             None,
             status == InvocationStatus::Failed,
+            false,
             1_777_012_345_678,
             1_777_012_346_789,
             3_600_000,
@@ -490,6 +497,32 @@ mod tests {
             project_task_snapshot(&completed, CompatibilityProjection::State).unwrap(),
             subject,
             "get projects state while result projects the subject payload"
+        );
+    }
+
+    #[test]
+    fn late_cancel_request_is_visible_in_task_state_without_changing_subject_result() {
+        let mut state = snapshot(InvocationStatus::Working);
+        state.cancel_requested = true;
+        let working = project_task_snapshot(&state, CompatibilityProjection::State).unwrap();
+        assert_eq!(
+            working.data.as_ref().unwrap()["task"]["cancelRequested"],
+            true
+        );
+
+        state.status = InvocationStatus::Completed;
+        state.result = Some(DomainResult::success("provider completed"));
+        let completed = project_task_snapshot(&state, CompatibilityProjection::State).unwrap();
+        assert_eq!(
+            completed.data.as_ref().unwrap()["task"]["cancelRequested"],
+            true
+        );
+        let result =
+            project_task_snapshot(&state, CompatibilityProjection::TerminalResult).unwrap();
+        assert_eq!(result.summary, "provider completed");
+        assert!(
+            result.data.is_none(),
+            "task state must not alter the subject result"
         );
     }
 

@@ -400,6 +400,7 @@ fn project_compatibility_snapshot(
         snapshot.status(),
         snapshot.completed_result().cloned(),
         snapshot.failure_reason().is_some(),
+        snapshot.cancel_requested(),
         snapshot.created_at_epoch_ms(),
         snapshot.updated_at_epoch_ms(),
         snapshot.ttl_ms(),
@@ -3404,6 +3405,10 @@ mod tests {
         let cancelled = client.receive().await;
         assert_eq!(
             cancelled["result"]["structuredContent"]["data"]["task"]["status"], "working",
+            "{cancelled}"
+        );
+        assert_eq!(
+            cancelled["result"]["structuredContent"]["data"]["task"]["cancelRequested"], true,
             "{cancelled}"
         );
         assert!(!workspace.join("created.marker").exists());
