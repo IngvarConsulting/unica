@@ -7,12 +7,110 @@ use std::path::PathBuf;
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
+#[cfg(all(test, windows))]
+use std::sync::{Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const TERMINATION_WAIT_LIMIT: Duration = Duration::from_millis(500);
 const READER_WAIT_LIMIT: Duration = Duration::from_millis(500);
+
+#[cfg(all(test, windows))]
+struct JobAttachGateState {
+    spawned: bool,
+    released: bool,
+}
+
+#[cfg(all(test, windows))]
+type JobAttachGateSignal = Arc<(Mutex<JobAttachGateState>, Condvar)>;
+
+#[cfg(all(test, windows))]
+fn job_attach_gates() -> &'static Mutex<std::collections::HashMap<PathBuf, JobAttachGateSignal>> {
+    static GATES: OnceLock<Mutex<std::collections::HashMap<PathBuf, JobAttachGateSignal>>> =
+        OnceLock::new();
+    GATES.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
+/// A one-shot test barrier after Windows has spawned the suspended child and
+/// before the production Job Object attachment resumes it.
+#[cfg(all(test, windows))]
+pub(crate) struct JobAttachGateForTest {
+    program: PathBuf,
+    signal: JobAttachGateSignal,
+}
+
+#[cfg(all(test, windows))]
+impl JobAttachGateForTest {
+    pub(crate) fn install(program: PathBuf) -> Self {
+        let signal = Arc::new((
+            Mutex::new(JobAttachGateState {
+                spawned: false,
+                released: false,
+            }),
+            Condvar::new(),
+        ));
+        let previous = job_attach_gates()
+            .lock()
+            .expect("job attach gate registry")
+            .insert(program.clone(), Arc::clone(&signal));
+        assert!(previous.is_none(), "duplicate Job attach test gate");
+        Self { program, signal }
+    }
+
+    pub(crate) fn wait_spawned(&self, timeout: Duration) {
+        let (state, ready) = &*self.signal;
+        let state = state.lock().expect("job attach gate state");
+        let (state, _) = ready
+            .wait_timeout_while(state, timeout, |state| !state.spawned)
+            .expect("job attach gate wait");
+        assert!(state.spawned, "runner did not reach the Job attach gate");
+    }
+
+    pub(crate) fn release(&self) {
+        let (state, ready) = &*self.signal;
+        state.lock().expect("job attach gate state").released = true;
+        ready.notify_all();
+    }
+}
+
+#[cfg(all(test, windows))]
+impl Drop for JobAttachGateForTest {
+    fn drop(&mut self) {
+        self.release();
+        job_attach_gates()
+            .lock()
+            .expect("job attach gate registry")
+            .remove(&self.program);
+    }
+}
+
+#[cfg(all(test, windows))]
+fn wait_at_job_attach_gate_for_test(process: &Command) {
+    // infobase.create also launches a dry-run preflight on apply. The gate
+    // must stop the protected mutation, not that cancellable preflight.
+    if process
+        .get_args()
+        .any(|arg| arg.to_str() == Some("--dry-run"))
+    {
+        return;
+    }
+    let program = process.get_program();
+    let program = std::fs::canonicalize(program).unwrap_or_else(|_| PathBuf::from(program));
+    let gate = job_attach_gates()
+        .lock()
+        .expect("job attach gate registry")
+        .remove(&program);
+    if let Some(gate) = gate {
+        let (state, ready) = &*gate;
+        let mut state = state.lock().expect("job attach gate state");
+        state.spawned = true;
+        ready.notify_all();
+        while !state.released {
+            state = ready.wait(state).expect("job attach gate release");
+        }
+    }
+}
 pub(crate) const STDOUT_CAPTURE_LIMIT: usize = 1024 * 1024;
 pub(crate) const STDERR_CAPTURE_LIMIT: usize = 256 * 1024;
 
@@ -764,6 +862,8 @@ impl ManagedChild {
         // serialized. A failed launch never claims the protected phase.
         let (child, cancellation) = cancellation.spawn_with_gate(|| {
             let mut child = process.spawn().map_err(process_error)?;
+            #[cfg(all(test, windows))]
+            wait_at_job_attach_gate_for_test(&process);
             if let Err(error) = process_tree.attach(&mut child) {
                 let _ = process_tree.terminate(&mut child);
                 let _ = child.kill();

@@ -11,6 +11,7 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::inline_protected_mutation_cancel_does_not_arm_fail_stop_watchdog
   - crates/unica-coder/src/infrastructure/daemon/server.rs::mutating_runner_cancel_keeps_the_factual_receipt_over_the_v5_daemon_wire
   - crates/unica-coder/src/interfaces/mcp.rs::public_task_cancel_and_result_preserve_a_started_infobase_create_receipt
+  - crates/unica-coder/src/interfaces/mcp.rs::public_native_cancel_waits_for_slow_job_attach_before_answering
   - crates/unica-coder/src/interfaces/mcp.rs::native_task_get_reports_late_cancel_request_without_claiming_cancellation
   - crates/unica-coder/src/infrastructure/platform/process.rs::protected_process_finishes_after_cancellation_on_every_host
   - crates/unica-coder/src/infrastructure/platform/process.rs::slow_job_attach_delays_cancel_without_starting_the_mutation_early

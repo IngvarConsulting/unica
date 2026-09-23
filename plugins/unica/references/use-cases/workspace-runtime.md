@@ -45,7 +45,35 @@ that outlives the handoff window becomes a durable Task. Keep the returned
 `taskId`, read the state with `unica.task.get`, wait for a bounded interval with
 `unica.task.result`, and cancel with `unica.task.cancel`; a client with native
 Tasks uses `tasks/get` and `tasks/cancel` instead. The terminal result never
-publishes raw stdout, so liveness is judged by the Task state, not by logs.
+publishes raw stdout. The Task state is the authority for the outcome; a
+`working` state alone does not prove that the runner is making progress.
+
+### If a mutating runner remains `working`
+
+Keep the `taskId` and the operation's infobase and workspace identity. Read
+`tasks/get` (or `unica.task.get`) and use `unica.task.result` only for a bounded
+wait in the compatibility profile. A late `tasks/cancel` is a request, not a
+receipt that the mutation stopped: native Tasks report it in the next
+`tasks/get.statusMessage`; compatibility tools expose `cancelRequested: true`.
+If the cancel request itself times out, read the Task again before deciding
+what happened. The request may already have been saved while Windows waits to
+attach the runner to its Job Object. `ttlMs` controls retention, not execution.
+
+When `working` outlasts the operation's expected window, have the operator
+check the runner process and platform session on the host, the target infobase,
+and the available platform diagnostics. Escalate to the person responsible for
+that infobase if progress cannot be established or the occupied Task capacity
+blocks other work. Do not infer progress from `working`, rerun the mutation,
+or kill its process tree merely because cancellation was requested. An
+intervention in the runner or daemon needs an explicit operational decision
+with the target infobase identified.
+
+After a daemon restart, `outcome_uncertain` means the mutation may have taken
+effect although no final receipt was durably saved. Inspect the actual
+infobase state and intended change, record the finding alongside the `taskId`,
+then decide a new action from that evidence. Unica does not replay this work
+automatically; a second `run` call is a new mutation, not a retry of the old
+Task.
 
 Each `sourceSets[].sourceFormat` describes working-tree discovery. Repository
 checks may additionally become applicable from staged index markers; do not

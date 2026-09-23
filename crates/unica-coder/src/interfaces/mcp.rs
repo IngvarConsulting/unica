@@ -3445,6 +3445,155 @@ mod tests {
         daemon.finish(owner);
     }
 
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn public_native_cancel_waits_for_slow_job_attach_before_answering() {
+        use crate::infrastructure::daemon::server::actor_capacity_tests::{
+            canonical_v13_service, install_cancellable_create_runner, LiveV5Daemon,
+        };
+        use crate::infrastructure::platform::process::JobAttachGateForTest;
+
+        let root = tempfile::tempdir().unwrap();
+        install_cancellable_create_runner(root.path());
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\ninfobase:\n  connection: 'File=build/ib'\n",
+        )
+        .unwrap();
+        let workspace = std::fs::canonicalize(workspace).unwrap();
+        let daemon = LiveV5Daemon::start(canonical_v13_service());
+        let owner = daemon.owner();
+        let (mut client, _) = spawn_unica_server(UnicaServer::with_canonical_daemon(
+            daemon.owner(),
+            workspace.to_string_lossy().into_owned(),
+        ));
+
+        client
+            .send(json!({
+                "jsonrpc":"2.0", "id":1, "method":"tools/call",
+                "params":{"name":"unica.run", "arguments":{"op":"infobase.create","args":{},"dryRun":true}, "_meta":modern_meta()}
+            }))
+            .await;
+        let preview = client.receive().await;
+        let preview_id = preview["result"]["structuredContent"]["data"]["task"]["taskId"]
+            .as_str()
+            .unwrap_or_else(|| panic!("preview did not return a task: {preview}"));
+        let preview_deadline = Instant::now() + Duration::from_secs(20);
+        let rev = loop {
+            assert!(Instant::now() < preview_deadline, "preview did not settle");
+            client
+                .send(json!({
+                    "jsonrpc":"2.0", "id":2, "method":"tools/call",
+                    "params":{"name":"unica.task.result", "arguments":{"taskId":preview_id,"waitMs":1000}, "_meta":modern_meta()}
+                }))
+                .await;
+            let response = client.receive().await;
+            if let Some(rev) = response["result"]["structuredContent"]["rev"].as_str() {
+                break rev.to_owned();
+            }
+        };
+
+        let target = crate::infrastructure::platform::current_target_id().unwrap();
+        let runner = root
+            .path()
+            .join("plugins/unica/bin")
+            .join(target)
+            .join(format!("v8-runner{}", std::env::consts::EXE_SUFFIX));
+        let attach = JobAttachGateForTest::install(std::fs::canonicalize(runner).unwrap());
+        client
+            .send(json!({
+                "jsonrpc":"2.0", "id":3, "method":"tools/call",
+                "params":{"name":"unica.run", "arguments":{"op":"infobase.create","args":{},"dryRun":false,"ifRev":rev}, "_meta":modern_meta()}
+            }))
+            .await;
+        let apply = client.receive().await;
+        let task_id = apply["result"]["structuredContent"]["data"]["task"]["taskId"]
+            .as_str()
+            .unwrap_or_else(|| panic!("apply did not return a task: {apply}"))
+            .to_owned();
+        let parsed_task_id = task_id.parse().unwrap();
+        attach.wait_spawned(Duration::from_secs(20));
+        assert!(!workspace.join("entered.marker").exists());
+
+        let sent_at = Instant::now();
+        client
+            .send(json!({
+                "jsonrpc":"2.0", "id":4, "method":"tasks/cancel",
+                "params":{"taskId":task_id, "_meta":modern_tasks_meta()}
+            }))
+            .await;
+        let intent_deadline = Instant::now() + Duration::from_secs(5);
+        while !daemon.get(&owner, parsed_task_id).cancel_requested() {
+            assert!(
+                Instant::now() < intent_deadline,
+                "cancel intent was not saved"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(
+            timeout(Duration::from_millis(250), client.reader.next_line())
+                .await
+                .is_err(),
+            "tasks/cancel answered before the suspended runner was attached"
+        );
+        assert!(!workspace.join("entered.marker").exists());
+        attach.release();
+        let cancelled = client.receive().await;
+        let elapsed = sent_at.elapsed();
+        eprintln!("public tasks/cancel with delayed Windows Job attach: {elapsed:?}");
+        assert!(elapsed >= Duration::from_millis(250), "{elapsed:?}");
+        assert!(elapsed <= Duration::from_millis(7_125), "{elapsed:?}");
+        assert_eq!(cancelled["result"]["resultType"], "complete", "{cancelled}");
+
+        client
+            .send(json!({
+                "jsonrpc":"2.0", "id":5, "method":"tasks/get",
+                "params":{"taskId":task_id, "_meta":modern_tasks_meta()}
+            }))
+            .await;
+        let task = client.receive().await;
+        assert_eq!(task["result"]["status"], "working", "{task}");
+        assert!(task["result"].get("statusMessage").is_some(), "{task}");
+
+        let entered_deadline = Instant::now() + Duration::from_secs(20);
+        while !workspace.join("entered.marker").exists() {
+            assert!(Instant::now() < entered_deadline, "runner did not start");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        std::fs::write(workspace.join("release.marker"), "finish mutation").unwrap();
+        let result_deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            assert!(Instant::now() < result_deadline, "task did not settle");
+            client
+                .send(json!({
+                    "jsonrpc":"2.0", "id":6, "method":"tools/call",
+                    "params":{"name":"unica.task.result", "arguments":{"taskId":task_id,"waitMs":1000}, "_meta":modern_meta()}
+                }))
+                .await;
+            let result = client.receive().await;
+            if matches!(
+                result["result"]["structuredContent"]["data"]["task"]["status"].as_str(),
+                Some("queued" | "working")
+            ) {
+                continue;
+            }
+            assert_eq!(
+                result["result"]["structuredContent"]["ok"], true,
+                "{result}"
+            );
+            assert_eq!(
+                result["result"]["structuredContent"]["data"]["state"], "created",
+                "{result}"
+            );
+            break;
+        }
+        assert!(workspace.join("created.marker").exists());
+        client.shutdown().await;
+        daemon.finish(owner);
+    }
+
     async fn tasks_direct_first_capability_case() {
         use crate::domain::invocation::{InvocationStatus, TaskId};
         use std::sync::atomic::AtomicUsize;
