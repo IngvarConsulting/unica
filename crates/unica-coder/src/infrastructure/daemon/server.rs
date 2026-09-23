@@ -5285,14 +5285,24 @@ struct ActorLogicalReadLease {"#,
         std::fs::remove_file(workspace.path().join("ext/Catalogs/Items.xml")).unwrap();
         let runtime = v13_runtime_for_borrowing_test();
         let skill = include_str!("../../../../../plugins/unica/skills/cfe-borrow/SKILL.md");
-        let examples = skill
-            .split("```json\n")
-            .skip(1)
-            .map(|block| {
-                serde_json::from_str::<serde_json::Value>(block.split("```").next().unwrap())
-                    .unwrap()
-            })
-            .collect::<Vec<_>>();
+        let parse_examples = |source: &str| {
+            source
+                .split("```json")
+                .skip(1)
+                .map(|block| {
+                    serde_json::from_str::<serde_json::Value>(block.split("```").next().unwrap())
+                        .unwrap()
+                })
+                .collect::<Vec<_>>()
+        };
+        let examples = parse_examples(skill);
+        let windows_skill = skill.replace("\r\n", "\n").replace('\n', "\r\n");
+        assert_eq!(examples, parse_examples(&windows_skill));
+        assert_eq!(
+            examples.len(),
+            2,
+            "the skill must keep both public examples"
+        );
         let preview_args = examples[0]["params"]["arguments"].clone();
         let preview = submit_canonical(
             &runtime,
