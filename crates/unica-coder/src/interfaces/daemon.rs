@@ -1,4 +1,4 @@
-use crate::infrastructure::daemon::client_v5::V5DaemonProcessOwner;
+use crate::infrastructure::daemon::client_v5::{V5DaemonClient, V5DaemonProcessOwner};
 use crate::infrastructure::daemon::identity::CoreIdentity;
 use crate::infrastructure::daemon::server::DaemonServerConfig;
 use std::ffi::OsString;
@@ -80,14 +80,12 @@ fn configured_idle_grace(read_env: &dyn Fn(&str) -> Option<OsString>) -> Result<
 }
 
 /// Connect to the production protocol-v5 user daemon, starting it if it is absent.
-pub(crate) fn connect_default_user_daemon(
-    state_root: &Path,
-) -> Result<V5DaemonProcessOwner, String> {
+pub(crate) fn connect_default_user_daemon(state_root: &Path) -> Result<V5DaemonClient, String> {
     let executable = std::env::current_exe()
         .map_err(|error| format!("failed to locate current unica executable: {error}"))?;
     let idle_grace = configured_idle_grace(&|name| std::env::var_os(name))?;
-    V5DaemonProcessOwner::connect_or_spawn(
-        state_root,
+    V5DaemonClient::connect(
+        state_root.to_path_buf(),
         CoreIdentity::production(),
         executable,
         idle_grace,

@@ -6,6 +6,11 @@
 //! protocol sessions, daemon processes, barriers and clocks and performs every assertion here. The
 //! bridge is not a second ReceiptLedger and must not synthesize observations from a scenario name.
 
+#[path = "support/frontend_process.rs"]
+mod frontend_process;
+#[path = "daemon_receipt_ledger/frontend_restart.rs"]
+mod frontend_restart;
+
 use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};

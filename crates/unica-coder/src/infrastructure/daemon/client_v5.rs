@@ -1,3 +1,6 @@
+mod connections;
+pub(crate) use connections::V5DaemonClient;
+
 use super::identity::{CoreIdentity, DaemonStateDirectory};
 use super::protocol_v5::{
     decode_v5_server_response, read_bounded_v5_probe_response_frame_before, V5ClientRequest,
@@ -9,7 +12,9 @@ use crate::application::receipt_ledger::{ReceiptKey, TerminalDigest};
 use crate::domain::invocation::TaskId;
 use crate::infrastructure::platform::ManagedStartupChild;
 use std::fmt;
-use std::io::{self, BufReader, Write};
+#[cfg(any(test, feature = "receipt-ledger-test-support"))]
+use std::io::Write;
+use std::io::{self, BufReader};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -123,13 +128,13 @@ impl StartupEndpointObservation {
 }
 
 trait V5StartupChildControl {
-    fn detach(&mut self) -> Result<(), String>;
+    fn detach(&mut self, deadline: Instant) -> Result<(), String>;
     fn terminate_bounded(&mut self, wait_limit: Duration) -> Result<(), String>;
 }
 
 impl V5StartupChildControl for ManagedStartupChild {
-    fn detach(&mut self) -> Result<(), String> {
-        ManagedStartupChild::detach(self)
+    fn detach(&mut self, deadline: Instant) -> Result<(), String> {
+        ManagedStartupChild::detach_before(self, deadline)
     }
 
     fn terminate_bounded(&mut self, wait_limit: Duration) -> Result<(), String> {
@@ -142,11 +147,16 @@ fn finish_ready_startup<C: V5StartupChildControl>(
     child: &mut C,
     state: &DaemonStateDirectory,
     endpoint: &StartupEndpointObservation,
+    deadline: Instant,
 ) -> Result<V5DaemonProcessOwner, String> {
-    match child.detach() {
+    match child.detach(deadline) {
         Ok(()) => Ok(owner),
         Err(error) => {
-            let termination = child.terminate_bounded(STARTUP_CLEANUP_TIMEOUT);
+            let termination = child.terminate_bounded(
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(STARTUP_CLEANUP_TIMEOUT),
+            );
             let endpoint_cleanup = endpoint.cleanup(state);
             let mut diagnostic =
                 format!("protocol-v5 daemon became ready but ownership detach failed: {error}");
@@ -163,6 +173,39 @@ fn finish_ready_startup<C: V5StartupChildControl>(
     }
 }
 
+enum ConnectionFailure {
+    Unavailable(String),
+    Rejected(String),
+}
+
+impl ConnectionFailure {
+    fn io(stage: &str, error: io::Error) -> Self {
+        let message = format!("{stage}: {error}");
+        match error.kind() {
+            io::ErrorKind::ConnectionRefused
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::UnexpectedEof
+            | io::ErrorKind::TimedOut
+            | io::ErrorKind::WouldBlock
+            | io::ErrorKind::BrokenPipe
+            | io::ErrorKind::NotConnected => Self::Unavailable(message),
+            _ => Self::Rejected(message),
+        }
+    }
+    fn message(self) -> String {
+        match self {
+            Self::Unavailable(message) | Self::Rejected(message) => message,
+        }
+    }
+}
+
+impl From<String> for ConnectionFailure {
+    fn from(message: String) -> Self {
+        Self::Rejected(message)
+    }
+}
+
 impl V5DaemonProcessOwner {
     /// Connect to the exact production-v5 daemon under `state_root`, spawning
     /// the same binary in `--daemon` mode when no live endpoint answers.
@@ -172,37 +215,81 @@ impl V5DaemonProcessOwner {
         executable: PathBuf,
         idle_grace: Duration,
     ) -> Result<Self, String> {
+        let deadline = Instant::now() + CONNECT_TIMEOUT;
+        Self::connect_or_spawn_before(state_root, core_identity, executable, idle_grace, deadline)
+    }
+
+    pub(crate) fn connect_or_spawn_before(
+        state_root: &Path,
+        core_identity: CoreIdentity,
+        executable: PathBuf,
+        idle_grace: Duration,
+        deadline: Instant,
+    ) -> Result<Self, String> {
+        remaining(deadline, "discovery")?;
         if core_identity != CoreIdentity::production_v5() {
             return Err("protocol-v5 client requires the exact production-v5 identity".to_string());
         }
-        let deadline = Instant::now()
-            .checked_add(CONNECT_TIMEOUT)
-            .ok_or_else(|| "protocol-v5 startup deadline overflow".to_string())?;
         let state = DaemonStateDirectory::open(state_root, &core_identity)?;
         if let Some(record) = state.read_v5_endpoint_record()? {
+            if record.core_identity() != &core_identity {
+                return Err("protocol-v5 endpoint belongs to a foreign core identity".to_string());
+            }
             let probe_deadline = existing_endpoint_probe_deadline(deadline)?;
-            if let Ok(owner) = Self::connect_before(record, probe_deadline) {
-                return Ok(owner);
+            match Self::connect_classified_before(record, probe_deadline) {
+                Ok(owner) => return Ok(owner),
+                Err(ConnectionFailure::Rejected(message)) => return Err(message),
+                Err(ConnectionFailure::Unavailable(_)) => {}
             }
         }
 
-        let lock_budget = remaining(deadline, "spawn lock")?.min(SPAWN_LOCK_TIMEOUT);
-        let _spawn_lock = state.acquire_spawn_lock(lock_budget)?;
+        remaining(deadline, "spawn lock")?;
+        let lock_deadline = deadline.min(Instant::now() + SPAWN_LOCK_TIMEOUT);
+        let _spawn_lock = state.acquire_spawn_lock_before(lock_deadline)?;
         if let Some(record) = state.read_v5_endpoint_record()? {
+            if record.core_identity() != &core_identity {
+                return Err("protocol-v5 endpoint belongs to a foreign core identity".to_string());
+            }
             let probe_deadline = existing_endpoint_probe_deadline(deadline)?;
-            if let Ok(owner) = Self::connect_before(record, probe_deadline) {
-                return Ok(owner);
+            match Self::connect_classified_before(record, probe_deadline) {
+                Ok(owner) => return Ok(owner),
+                Err(ConnectionFailure::Rejected(message)) => return Err(message),
+                Err(ConnectionFailure::Unavailable(_)) => {}
             }
         }
 
+        // Readiness and failure cleanup share the caller's deadline. Reserve
+        // part of even a short recovery window instead of adding a new grace.
+        let startup_budget = remaining(deadline, "spawn")?;
+        let cleanup_reserve = (startup_budget / 3).min(STARTUP_CLEANUP_TIMEOUT);
+        let readiness_deadline = deadline - cleanup_reserve;
         let command =
             super::daemon_process_command(&executable, state_root, &core_identity, idle_grace);
-        let mut child = ManagedStartupChild::spawn_configured(command)
+        let mut child = ManagedStartupChild::spawn_configured_before(command, deadline)
             .map_err(|error| format!("failed to spawn protocol-v5 daemon: {error}"))?;
+        Self::await_startup_before(
+            &mut child,
+            &state,
+            &core_identity,
+            readiness_deadline,
+            deadline,
+        )
+    }
+
+    fn await_startup_before(
+        child: &mut ManagedStartupChild,
+        state: &DaemonStateDirectory,
+        core_identity: &CoreIdentity,
+        readiness_deadline: Instant,
+        deadline: Instant,
+    ) -> Result<Self, String> {
         let expected_pid = child.id();
         let mut endpoint = StartupEndpointObservation::new(expected_pid);
 
         let readiness = loop {
+            if let Err(error) = remaining(readiness_deadline, "spawn readiness") {
+                break Err(error);
+            }
             let child_status = match child.try_wait_status() {
                 Ok(status) => status,
                 Err(error) => break Err(error),
@@ -217,7 +304,7 @@ impl V5DaemonProcessOwner {
                 Err(error) => break Err(error),
             };
             if let Some(record) = record {
-                if record.core_identity() != &core_identity {
+                if record.core_identity() != core_identity {
                     break Err(
                         "protocol-v5 endpoint belongs to a foreign core identity".to_string()
                     );
@@ -233,13 +320,15 @@ impl V5DaemonProcessOwner {
                         ));
                     }
                     if endpoint.observe(&record) {
-                        if let Ok(owner) = Self::connect_before(record, deadline) {
-                            break Ok(owner);
+                        match Self::connect_classified_before(record, readiness_deadline) {
+                            Ok(owner) => break Ok(owner),
+                            Err(ConnectionFailure::Rejected(message)) => break Err(message),
+                            Err(ConnectionFailure::Unavailable(_)) => {}
                         }
                     }
                 }
             }
-            let retry_budget = match remaining(deadline, "spawn readiness") {
+            let retry_budget = match remaining(readiness_deadline, "spawn readiness") {
                 Ok(remaining) => remaining,
                 Err(error) => break Err(error),
             };
@@ -247,10 +336,14 @@ impl V5DaemonProcessOwner {
         };
 
         match readiness {
-            Ok(owner) => finish_ready_startup(owner, &mut child, &state, &endpoint),
+            Ok(owner) => finish_ready_startup(owner, child, state, &endpoint, deadline),
             Err(error) => {
-                let cleanup = child.terminate_bounded(STARTUP_CLEANUP_TIMEOUT);
-                let endpoint_cleanup = endpoint.cleanup(&state);
+                let cleanup = child.terminate_bounded(
+                    deadline
+                        .saturating_duration_since(Instant::now())
+                        .min(STARTUP_CLEANUP_TIMEOUT),
+                );
+                let endpoint_cleanup = endpoint.cleanup(state);
                 let mut diagnostic = error;
                 if let Err(cleanup) = cleanup {
                     diagnostic.push_str(&format!(
@@ -269,11 +362,13 @@ impl V5DaemonProcessOwner {
     /// Open one more authenticated session on an already published endpoint.
     /// Each session carries its own owner lease, so a slow direct response on
     /// one peer never serializes another call behind it.
+    #[cfg(test)]
     pub(crate) fn connect_peer_before(&self, deadline: Instant) -> Result<Self, V5TransportError> {
         Self::connect_before(self.record.clone(), deadline)
             .map_err(V5TransportError::RequestNotSent)
     }
 
+    #[cfg(test)]
     pub(crate) fn core_identity(&self) -> &CoreIdentity {
         self.record.core_identity()
     }
@@ -282,9 +377,16 @@ impl V5DaemonProcessOwner {
         record: V5EndpointRecord,
         deadline: Instant,
     ) -> Result<Self, String> {
+        Self::connect_classified_before(record, deadline).map_err(ConnectionFailure::message)
+    }
+
+    fn connect_classified_before(
+        record: V5EndpointRecord,
+        deadline: Instant,
+    ) -> Result<Self, ConnectionFailure> {
         let address = record.loopback_addr()?;
         let stream = TcpStream::connect_timeout(&address.into(), remaining(deadline, "connect")?)
-            .map_err(|error| format!("connect protocol-v5 daemon: {error}"))?;
+            .map_err(|error| ConnectionFailure::io("connect protocol-v5 daemon", error))?;
         stream
             .set_nonblocking(false)
             .map_err(|error| format!("configure protocol-v5 client stream: {error}"))?;
@@ -303,13 +405,24 @@ impl V5DaemonProcessOwner {
             core_identity: owner.record.core_identity().clone(),
             owner_lease: Uuid::new_v4().to_string(),
         };
-        owner.write_before(&hello, deadline, "handshake request")?;
-        let frame = owner.read_before(deadline, "handshake response")?;
+        owner
+            .write_before(&hello, deadline, "handshake request")
+            .map_err(ConnectionFailure::Unavailable)?;
+        let frame = read_bounded_v5_probe_response_frame_before(&mut owner.reader, |reader| {
+            let budget = remaining(deadline, "handshake response")
+                .map_err(|error| io::Error::new(io::ErrorKind::TimedOut, error))?;
+            reader.get_ref().set_read_timeout(Some(budget))
+        })
+        .map_err(|error| ConnectionFailure::io("read protocol-v5 handshake", error))?;
+        remaining(deadline, "handshake response")?;
         let ready: V5HandshakeServerResponse = serde_json::from_slice(&frame)
             .map_err(|_| "protocol-v5 handshake response is not strict JSON".to_string())?;
         if !ready.matches_record(&owner.record) {
-            return Err("protocol-v5 handshake response does not match endpoint".to_string());
+            return Err("protocol-v5 handshake response does not match endpoint"
+                .to_string()
+                .into());
         }
+        remaining(deadline, "handshake decode")?;
         Ok(owner)
     }
 
@@ -624,9 +737,9 @@ impl V5DaemonProcessOwner {
         if self.poisoned {
             return Err(V5TransportError::SessionPoisoned);
         }
-        if let Err(error) = self.write_before(&request, deadline, stage) {
+        if let Err(error) = self.write_typed_before(&request, deadline, stage) {
             self.poison();
-            return Err(V5TransportError::RequestNotSent(error));
+            return Err(error);
         }
         let frame = match self.read_before(deadline, stage) {
             Ok(frame) => frame,
@@ -697,16 +810,27 @@ impl V5DaemonProcessOwner {
         deadline: Instant,
         stage: &'static str,
     ) -> Result<(), String> {
-        self.writer
-            .set_write_timeout(Some(remaining(deadline, stage)?))
-            .map_err(|error| format!("configure protocol-v5 {stage} timeout: {error}"))?;
-        let mut bytes =
-            serde_json::to_vec(value).map_err(|_| format!("serialize protocol-v5 {stage}"))?;
-        bytes.push(b'\n');
-        self.writer
-            .write_all(&bytes)
-            .map_err(|error| format!("write protocol-v5 {stage}: {error}"))?;
-        remaining(deadline, stage).map(|_| ())
+        self.write_typed_before(value, deadline, stage)
+            .map_err(|error| error.to_string())
+    }
+
+    fn write_typed_before<T: serde::Serialize>(
+        &mut self,
+        value: &T,
+        deadline: Instant,
+        stage: &'static str,
+    ) -> Result<(), V5TransportError> {
+        request_write::write_request(
+            &mut self.writer,
+            value,
+            stage,
+            |writer| {
+                writer
+                    .set_write_timeout(Some(remaining(deadline, stage)?))
+                    .map_err(|error| format!("configure protocol-v5 {stage} timeout: {error}"))
+            },
+            || remaining(deadline, stage).map(|_| ()),
+        )
     }
 
     #[cfg(feature = "receipt-ledger-test-support")]
@@ -747,6 +871,8 @@ impl V5DaemonProcessOwner {
         let _ = self.reader.get_ref().shutdown(std::net::Shutdown::Both);
     }
 }
+
+mod request_write;
 
 fn response_timeout_for_request(request: &V5ClientRequest) -> Duration {
     match request {
@@ -789,15 +915,17 @@ mod tests {
     #[derive(Default)]
     struct DetachFailingChild {
         termination_attempted: bool,
+        cleanup_budget: Option<Duration>,
     }
 
     impl V5StartupChildControl for DetachFailingChild {
-        fn detach(&mut self) -> Result<(), String> {
+        fn detach(&mut self, _deadline: Instant) -> Result<(), String> {
             Err("injected detach failure".to_string())
         }
 
-        fn terminate_bounded(&mut self, _wait_limit: Duration) -> Result<(), String> {
+        fn terminate_bounded(&mut self, wait_limit: Duration) -> Result<(), String> {
             self.termination_attempted = true;
+            self.cleanup_budget = Some(wait_limit);
             Ok(())
         }
     }
@@ -937,6 +1065,62 @@ mod tests {
     }
 
     #[test]
+    fn failed_readiness_kills_the_child_within_the_original_budget() {
+        use crate::infrastructure::platform::testing::{
+            long_running_command, wait_for_process_exit,
+        };
+        let (_root, state) = state_directory();
+        let fixture = long_running_command();
+        let mut command = std::process::Command::new(fixture.program);
+        command.args(fixture.args);
+        let started = Instant::now();
+        let deadline = started + Duration::from_millis(900);
+        let mut child = ManagedStartupChild::spawn_configured_before(command, deadline).unwrap();
+        let pid = child.id();
+        let outcome = V5DaemonProcessOwner::await_startup_before(
+            &mut child,
+            &state,
+            &CoreIdentity::production_v5(),
+            started + Duration::from_millis(300),
+            deadline,
+        );
+        assert!(
+            matches!(outcome, Err(message) if message.contains("deadline expired during spawn readiness")),
+            "unexpected startup outcome"
+        );
+        assert!(
+            Instant::now() < deadline,
+            "startup cleanup replenished the deadline"
+        );
+        assert!(
+            wait_for_process_exit(pid, Duration::from_millis(1)),
+            "failed startup left its child alive"
+        );
+        assert!(state.read_v5_endpoint_record().unwrap().is_none());
+    }
+
+    #[test]
+    fn failed_detach_cleanup_never_replenishes_the_request_deadline() {
+        let (_root, state) = state_directory();
+        for budget in [Duration::ZERO, Duration::from_millis(40)] {
+            let (owner, _peer) = connected_owner();
+            let mut endpoint = StartupEndpointObservation::new(owner.record.pid());
+            endpoint.observe(&owner.record);
+            let mut child = DetachFailingChild::default();
+            let result = finish_ready_startup(
+                owner,
+                &mut child,
+                &state,
+                &endpoint,
+                Instant::now() + budget,
+            );
+            assert!(result.is_err());
+            assert!(child.termination_attempted);
+            assert!(child.cleanup_budget.unwrap() <= budget);
+        }
+    }
+
+    #[test]
     fn detach_failure_cleanup_is_identity_bound_to_observed_ready_record() {
         let (_root, state) = state_directory();
         let (owner, peer) = connected_owner();
@@ -946,7 +1130,13 @@ mod tests {
         assert!(endpoint.observe(&observed));
         let mut child = DetachFailingChild::default();
 
-        let error = match finish_ready_startup(owner, &mut child, &state, &endpoint) {
+        let error = match finish_ready_startup(
+            owner,
+            &mut child,
+            &state,
+            &endpoint,
+            Instant::now() + CONNECT_TIMEOUT,
+        ) {
             Ok(_) => panic!("injected detach failure unexpectedly succeeded"),
             Err(error) => error,
         };

@@ -38,7 +38,9 @@ use std::collections::HashSet;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::infrastructure::daemon::client_v5::{V5DaemonProcessOwner, V5TaskExchangeError};
+#[cfg(test)]
+use crate::infrastructure::daemon::client_v5::V5DaemonProcessOwner;
+use crate::infrastructure::daemon::client_v5::{V5DaemonClient, V5TaskExchangeError};
 use crate::infrastructure::daemon::protocol_v5::{V5DaemonErrorCode, V5DaemonTaskSnapshot};
 
 pub const MCP_MAX_TOOL_WORKERS: usize = 32;
@@ -84,8 +86,8 @@ pub fn run_stdio() {
             return;
         }
     };
-    let owner = match crate::interfaces::daemon::connect_default_user_daemon(&state_root) {
-        Ok(owner) => owner,
+    let client = match crate::interfaces::daemon::connect_default_user_daemon(&state_root) {
+        Ok(client) => client,
         Err(error) => {
             eprintln!("failed to connect to unica user daemon: {error}");
             return;
@@ -99,7 +101,7 @@ pub fn run_stdio() {
         }
     };
     let notice = startup_notice_from(std::env::var(STARTUP_NOTICE_ENV).ok());
-    let server = UnicaServer::canonical_v13_daemon(owner, workspace_hint, notice);
+    let server = UnicaServer::canonical_v13_daemon(client, workspace_hint, notice);
     let in_flight = server.in_flight();
 
     let runtime = match tokio::runtime::Builder::new_multi_thread()
@@ -251,11 +253,11 @@ impl UnicaServer {
     }
 
     fn canonical_v13_daemon(
-        owner: V5DaemonProcessOwner,
+        client: V5DaemonClient,
         workspace_hint: String,
         startup_notice: Option<String>,
     ) -> Self {
-        let router = canonical_daemon_router(owner, workspace_hint);
+        let router = canonical_daemon_router(client, workspace_hint);
         Self {
             router: SurfaceToolRouter::CanonicalV13(router),
             in_flight: Arc::new(InFlightRegistry::default()),
@@ -266,7 +268,7 @@ impl UnicaServer {
 
     #[cfg(test)]
     fn with_canonical_daemon(owner: V5DaemonProcessOwner, workspace_hint: String) -> Self {
-        Self::canonical_v13_daemon(owner, workspace_hint, None)
+        Self::canonical_v13_daemon(owner.into(), workspace_hint, None)
     }
 
     fn in_flight(&self) -> Arc<InFlightRegistry> {
