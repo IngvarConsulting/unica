@@ -276,3 +276,10 @@ binary(daemon_receipt_ledger) & (
 slow-timeout = { period = "900s", terminate-after = 2 }
 threads-required = "num-cpus"
 # <<< размер large (срок)
+
+# Публичная задержка отмены при Windows Job attach должна остаться в логе
+# успешного прогона: общая длительность теста включает подготовку раннера.
+[[profile.default.overrides]]
+filter = 'test(/^interfaces::mcp::tests::public_native_cancel_waits_for_slow_job_attach_before_answering$/)'
+success-output = "immediate"
+junit.store-success-output = true
