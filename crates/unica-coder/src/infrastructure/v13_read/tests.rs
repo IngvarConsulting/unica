@@ -104,7 +104,7 @@ fn borrowed_common_module_view_serializes_unknown_privileged_without_losing_cont
     let view = fixture
         .extension_view_service()
         .view(ViewRequest::new("main:CommonModule.CorpusModule").unwrap());
-    assert!(view.ok, "{:?}", view.diagnostics);
+    assert!(view.ok);
     let data = view.data.unwrap();
     assert_eq!(
         data["props"]["commonModule"]["privileged"],
