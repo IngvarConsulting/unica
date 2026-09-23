@@ -3319,6 +3319,28 @@ mod tests {
             canonical_v13_service, install_cancellable_create_runner, LiveV5Daemon,
         };
 
+        async fn terminal_result(
+            client: &mut McpClient,
+            task_id: &str,
+            deadline: Instant,
+        ) -> Value {
+            let mut request_id = 10_u64;
+            loop {
+                assert!(Instant::now() < deadline, "task.result did not settle");
+                client
+                    .send(json!({
+                        "jsonrpc":"2.0", "id":request_id, "method":"tools/call",
+                        "params":{"name":"unica.task.result", "arguments":{"taskId":task_id,"waitMs":1000}, "_meta":modern_meta()}
+                    }))
+                    .await;
+                let result = client.receive().await;
+                if result["result"]["structuredContent"]["data"]["task"]["status"] != "working" {
+                    return result;
+                }
+                request_id += 1;
+            }
+        }
+
         let root = tempfile::tempdir().unwrap();
         install_cancellable_create_runner(root.path());
         let workspace = root.path().join("workspace");
@@ -3345,13 +3367,12 @@ mod tests {
         let preview_id = preview["result"]["structuredContent"]["data"]["task"]["taskId"]
             .as_str()
             .unwrap_or_else(|| panic!("preview did not return a task: {preview}"));
-        client
-            .send(json!({
-                "jsonrpc":"2.0", "id":2, "method":"tools/call",
-                "params":{"name":"unica.task.result", "arguments":{"taskId":preview_id}, "_meta":modern_meta()}
-            }))
-            .await;
-        let preview_result = client.receive().await;
+        let preview_result = terminal_result(
+            &mut client,
+            preview_id,
+            Instant::now() + Duration::from_secs(20),
+        )
+        .await;
         let rev = preview_result["result"]["structuredContent"]["rev"]
             .as_str()
             .unwrap_or_else(|| panic!("preview has no revision: {preview_result}"));
@@ -3384,13 +3405,12 @@ mod tests {
         );
         assert!(!workspace.join("created.marker").exists());
         std::fs::write(workspace.join("release.marker"), "finish mutation").unwrap();
-        client
-            .send(json!({
-                "jsonrpc":"2.0", "id":5, "method":"tools/call",
-                "params":{"name":"unica.task.result", "arguments":{"taskId":task_id}, "_meta":modern_meta()}
-            }))
-            .await;
-        let result = client.receive().await;
+        let result = terminal_result(
+            &mut client,
+            &task_id,
+            Instant::now() + Duration::from_secs(20),
+        )
+        .await;
         assert_eq!(
             result["result"]["structuredContent"]["ok"], true,
             "{result}"

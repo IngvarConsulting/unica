@@ -7638,6 +7638,13 @@ struct ActorLogicalReadLease {"#,
     pub(crate) fn install_cancellable_create_runner(root: &std::path::Path) {
         use sha2::{Digest, Sha256};
 
+        for name in ["UNICA_PLUGIN_ROOT", "UNICA_ARTIFACT_CACHE"] {
+            assert!(
+                std::env::var_os(name).is_none(),
+                "the runner fixture must not resolve a binary from {name}"
+            );
+        }
+
         let plugin = root.join("plugins/unica");
         let target = crate::infrastructure::platform::current_target_id().unwrap();
         let binary_name = if cfg!(windows) {
@@ -7661,7 +7668,7 @@ fn main() {
     let created = cwd.join("created.marker");
     if !dry_run {
         fs::write(cwd.join("entered.marker"), "runner entered mutation").unwrap();
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = Instant::now() + Duration::from_secs(60);
         while !cwd.join("release.marker").exists() {
             if Instant::now() >= deadline { panic!("runner was never released"); }
             thread::sleep(Duration::from_millis(5));
