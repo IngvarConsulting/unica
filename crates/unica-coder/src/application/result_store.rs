@@ -25,6 +25,7 @@ const VIEW_MAX_ENTRIES: usize = 128;
 // serialized snapshot. Charge each issued token so they cannot bypass the
 // aggregate byte quota while sharing one Arc.
 const VIEW_ENTRY_CHARGE: usize = 128;
+const SEARCH_MAX_TOTAL_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResultStoreError {
@@ -141,6 +142,244 @@ pub(crate) struct ViewCursorStore {
     max_entries: usize,
     max_total_bytes: usize,
     entries: Mutex<HashMap<String, ViewCursorEntry>>,
+}
+
+/// A search continuation stores only the question and the next offset. The
+/// source is read again under a fresh read fence, so a long result never has
+/// to fit in the cursor store before its first page can be returned.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct SearchCursorBinding {
+    pub(crate) workspace_identity: String,
+    pub(crate) query: String,
+    pub(crate) scope: Option<String>,
+    pub(crate) mode: String,
+    pub(crate) source_sets: Vec<String>,
+    pub(crate) revisions: Vec<String>,
+    pub(crate) page_limit: usize,
+}
+
+#[derive(Debug)]
+struct SearchCursorSnapshot {
+    binding: SearchCursorBinding,
+    bytes: usize,
+    secret: [u8; 32],
+}
+
+struct SearchCursorEntry {
+    snapshot: Arc<SearchCursorSnapshot>,
+    offset: usize,
+    stored_at: Instant,
+    last_read: Instant,
+}
+
+#[derive(Clone)]
+pub(crate) struct StoredSearchCursor {
+    snapshot: Arc<SearchCursorSnapshot>,
+    pub(crate) offset: usize,
+}
+
+pub(crate) struct SearchCursorStore {
+    ttl: Duration,
+    max_entries: usize,
+    max_total_bytes: usize,
+    entries: Mutex<HashMap<String, SearchCursorEntry>>,
+}
+
+impl Default for SearchCursorStore {
+    fn default() -> Self {
+        Self::new(DEFAULT_TTL, VIEW_MAX_ENTRIES, SEARCH_MAX_TOTAL_BYTES)
+    }
+}
+
+impl SearchCursorStore {
+    pub(crate) fn new(ttl: Duration, max_entries: usize, max_total_bytes: usize) -> Self {
+        Self {
+            ttl,
+            max_entries,
+            max_total_bytes,
+            entries: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub(crate) fn insert_first(
+        &self,
+        binding: SearchCursorBinding,
+        offset: usize,
+    ) -> Option<String> {
+        if self.max_entries < 2 {
+            return None;
+        }
+        let json_bytes = bounded_json_size(&binding, self.max_total_bytes)?;
+        let bytes = search_snapshot_charge(&binding, json_bytes);
+        if bytes.saturating_add(2 * VIEW_ENTRY_CHARGE) > self.max_total_bytes {
+            return None;
+        }
+        let mut secret = [0u8; 32];
+        secret[..16].copy_from_slice(Uuid::new_v4().as_bytes());
+        secret[16..].copy_from_slice(Uuid::new_v4().as_bytes());
+        self.insert_entry(
+            Arc::new(SearchCursorSnapshot {
+                binding,
+                bytes,
+                secret,
+            }),
+            offset,
+            None,
+        )
+    }
+
+    pub(crate) fn read(
+        &self,
+        token: &str,
+        expected: &SearchCursorBinding,
+    ) -> Result<StoredSearchCursor, ViewCursorError> {
+        if !valid_search_cursor_token(token) {
+            return Err(ViewCursorError::Invalid);
+        }
+        let mut entries = self.entries.lock().expect("search cursor store poisoned");
+        let now = Instant::now();
+        let Some(entry) = entries.get(token) else {
+            return Err(ViewCursorError::Invalid);
+        };
+        if now.duration_since(entry.stored_at) >= self.ttl {
+            entries.remove(token);
+            return Err(ViewCursorError::Invalid);
+        }
+        let entry = entries
+            .get_mut(token)
+            .expect("checked search cursor exists");
+        let binding = &entry.snapshot.binding;
+        if binding.workspace_identity != expected.workspace_identity
+            || binding.query != expected.query
+            || binding.scope != expected.scope
+            || binding.mode != expected.mode
+            || binding.source_sets != expected.source_sets
+            || binding.page_limit != expected.page_limit
+        {
+            return Err(ViewCursorError::Invalid);
+        }
+        if binding.revisions != expected.revisions {
+            return Err(ViewCursorError::Stale);
+        }
+        entry.last_read = now;
+        Ok(StoredSearchCursor {
+            snapshot: Arc::clone(&entry.snapshot),
+            offset: entry.offset,
+        })
+    }
+
+    pub(crate) fn insert_next(
+        &self,
+        current: &StoredSearchCursor,
+        offset: usize,
+        current_token: &str,
+    ) -> Option<String> {
+        self.insert_entry(Arc::clone(&current.snapshot), offset, Some(current_token))
+    }
+
+    fn insert_entry(
+        &self,
+        snapshot: Arc<SearchCursorSnapshot>,
+        offset: usize,
+        current_token: Option<&str>,
+    ) -> Option<String> {
+        if self.max_entries < 2
+            || snapshot.bytes.saturating_add(2 * VIEW_ENTRY_CHARGE) > self.max_total_bytes
+        {
+            return None;
+        }
+        let token = search_cursor_token(&snapshot.secret, offset);
+        let now = Instant::now();
+        let mut entries = self.entries.lock().expect("search cursor store poisoned");
+        entries.retain(|_, entry| now.duration_since(entry.stored_at) < self.ttl);
+        if let Some(existing) = entries.get_mut(&token) {
+            if Arc::ptr_eq(&existing.snapshot, &snapshot) && existing.offset == offset {
+                existing.last_read = now;
+                return Some(token);
+            }
+            return None;
+        }
+        while entries.len() >= self.max_entries
+            || unique_search_snapshot_bytes(&entries, Some(&snapshot))
+                .saturating_add((entries.len() + 1).saturating_mul(VIEW_ENTRY_CHARGE))
+                > self.max_total_bytes
+        {
+            let oldest = entries
+                .iter()
+                .filter(|(candidate, _)| current_token != Some(candidate.as_str()))
+                .min_by_key(|(_, entry)| entry.last_read)
+                .map(|(candidate, _)| candidate.clone())?;
+            entries.remove(&oldest);
+        }
+        entries.insert(
+            token.clone(),
+            SearchCursorEntry {
+                snapshot,
+                offset,
+                stored_at: now,
+                last_read: now,
+            },
+        );
+        Some(token)
+    }
+}
+
+fn search_snapshot_charge(binding: &SearchCursorBinding, json_bytes: usize) -> usize {
+    let strings = binding
+        .source_sets
+        .iter()
+        .chain(binding.revisions.iter())
+        .map(String::capacity)
+        .fold(
+            binding
+                .workspace_identity
+                .capacity()
+                .saturating_add(binding.query.capacity())
+                .saturating_add(binding.scope.as_ref().map_or(0, String::capacity))
+                .saturating_add(binding.mode.capacity()),
+            usize::saturating_add,
+        );
+    json_bytes.max(
+        std::mem::size_of::<SearchCursorSnapshot>()
+            .saturating_add(strings)
+            .saturating_add(
+                (binding.source_sets.capacity() + binding.revisions.capacity())
+                    .saturating_mul(std::mem::size_of::<String>()),
+            ),
+    )
+}
+
+fn unique_search_snapshot_bytes(
+    entries: &HashMap<String, SearchCursorEntry>,
+    extra: Option<&Arc<SearchCursorSnapshot>>,
+) -> usize {
+    let mut seen = HashSet::new();
+    let mut total = 0usize;
+    for entry in entries.values() {
+        if seen.insert(Arc::as_ptr(&entry.snapshot) as usize) {
+            total = total.saturating_add(entry.snapshot.bytes);
+        }
+    }
+    if let Some(snapshot) = extra {
+        if seen.insert(Arc::as_ptr(snapshot) as usize) {
+            total = total.saturating_add(snapshot.bytes);
+        }
+    }
+    total
+}
+
+fn search_cursor_token(secret: &[u8; 32], offset: usize) -> String {
+    let mut token = view_cursor_token(secret, offset);
+    token.replace_range(..3, "sc1");
+    token
+}
+
+fn valid_search_cursor_token(token: &str) -> bool {
+    token.len() == 36
+        && token.starts_with("sc1.")
+        && token[4..]
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 impl Default for ViewCursorStore {
@@ -660,6 +899,95 @@ mod tests {
             source_revision: revision.to_string(),
             page_limit: 1,
         }
+    }
+
+    fn search_binding(query: &str, revision: &str) -> SearchCursorBinding {
+        SearchCursorBinding {
+            workspace_identity: "workspace-a".to_owned(),
+            query: query.to_owned(),
+            scope: None,
+            mode: "literal".to_owned(),
+            source_sets: vec!["main".to_owned()],
+            revisions: vec![revision.to_owned()],
+            page_limit: 20,
+        }
+    }
+
+    #[test]
+    fn search_cursor_binds_the_question_and_revision_and_reissues_a_successor() {
+        let store = SearchCursorStore::default();
+        let binding = search_binding("needle", "rev-1");
+        let first = store.insert_first(binding.clone(), 20).unwrap();
+        assert!(first.starts_with("sc1."));
+        assert_eq!(
+            SearchCursorStore::default().read(&first, &binding).err(),
+            Some(ViewCursorError::Invalid)
+        );
+        let mut different = binding.clone();
+        different.source_sets.push("extension".to_owned());
+        assert_eq!(
+            store.read(&first, &different).err(),
+            Some(ViewCursorError::Invalid)
+        );
+        let mut other_workspace = binding.clone();
+        other_workspace.workspace_identity = "workspace-b".to_owned();
+        assert_eq!(
+            store.read(&first, &other_workspace).err(),
+            Some(ViewCursorError::Invalid)
+        );
+        let mut stale = binding.clone();
+        stale.revisions[0] = "rev-2".to_owned();
+        assert_eq!(
+            store.read(&first, &stale).err(),
+            Some(ViewCursorError::Stale)
+        );
+        let page = store.read(&first, &binding).unwrap();
+        assert_eq!(page.offset, 20);
+        let second = store.insert_next(&page, 40, &first).unwrap();
+        assert_eq!(store.insert_next(&page, 40, &first).unwrap(), second);
+        assert_eq!(store.read(&second, &binding).unwrap().offset, 40);
+        assert_eq!(
+            store
+                .read("sc1.00000000000000000000000000000000", &binding)
+                .err(),
+            Some(ViewCursorError::Invalid)
+        );
+    }
+
+    #[test]
+    fn search_cursor_store_bounds_binding_bytes_and_reserves_its_successor() {
+        let binding = search_binding("needle", "rev-1");
+        let json_bytes = bounded_json_size(&binding, usize::MAX).unwrap();
+        let bytes = search_snapshot_charge(&binding, json_bytes);
+        let insufficient =
+            SearchCursorStore::new(DEFAULT_TTL, 2, bytes + 2 * VIEW_ENTRY_CHARGE - 1);
+        assert!(insufficient.insert_first(binding.clone(), 20).is_none());
+        let enough = SearchCursorStore::new(DEFAULT_TTL, 2, bytes + 2 * VIEW_ENTRY_CHARGE);
+        let first = enough.insert_first(binding.clone(), 20).unwrap();
+        let page = enough.read(&first, &binding).unwrap();
+        assert!(enough.insert_next(&page, 40, &first).is_some());
+
+        let limited = SearchCursorStore::new(DEFAULT_TTL, 2, 2_048);
+        let first = limited.insert_first(binding.clone(), 20).unwrap();
+        let oversized = search_binding(&"X".repeat(3_000), "rev-1");
+        assert!(limited.insert_first(oversized, 20).is_none());
+        assert!(limited.read(&first, &binding).is_ok());
+    }
+
+    #[test]
+    fn expired_search_cursor_is_invalid_and_releases_its_charge() {
+        let store = SearchCursorStore::new(Duration::ZERO, 2, 2_048);
+        let binding = search_binding("needle", "rev-1");
+        let first = store.insert_first(binding.clone(), 20).unwrap();
+        assert_eq!(
+            store.read(&first, &binding).err(),
+            Some(ViewCursorError::Invalid)
+        );
+        let second = store.insert_first(binding, 40).unwrap();
+        let entries = store.entries.lock().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(!entries.contains_key(&first));
+        assert!(entries.contains_key(&second));
     }
 
     #[test]

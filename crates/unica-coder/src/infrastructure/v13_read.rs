@@ -1377,6 +1377,34 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
 }
 
 impl LogicalViewReadAuthority<'_> {
+    /// Search needs the named owner's registration and descriptor, but not a
+    /// projected collection of its children. An unnamed kind branch is a
+    /// valid logical scope even when it currently contains no objects.
+    pub(crate) fn validate_search_scope_owner(
+        &self,
+        scope: &QualifiedAddress,
+        admitted: &ViewSourceSnapshot,
+    ) -> Result<(), ViewError> {
+        let [owner] = scope.segments() else {
+            return Err(ViewError::new(
+                RefusalCode::UnsupportedScope,
+                "search scope must name the root or one metadata branch or owner",
+            ));
+        };
+        if owner.kind() == NodeKind::Configuration {
+            return Ok(());
+        }
+        let Some(name) = owner.name() else {
+            return Ok(());
+        };
+        let target = MetadataAddress::parse(
+            PLATFORM_XML_8_3_27_FORMAT_2_20,
+            &format!("{}.{name}", owner.kind().as_str()),
+        )
+        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))?;
+        self.verify_registered_owner(&target, admitted)
+    }
+
     /// A template's own body (data sets of a DCS, areas of a spreadsheet) is
     /// read only when the template node itself is addressed. Projecting the
     /// owner or the template collection never opens template payloads, so a

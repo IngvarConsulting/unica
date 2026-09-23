@@ -127,6 +127,7 @@ impl ActorReadSourceCapability {
     pub(in crate::infrastructure::daemon) fn search_bsl_literal(
         &self,
         matcher: &super::super::v13_read_modes::SearchMatcher,
+        skip: &mut usize,
         limit: usize,
         scope_prefix: Option<&str>,
         scope_at: &QualifiedAddress,
@@ -266,7 +267,32 @@ impl ActorReadSourceCapability {
                             continue;
                         };
                         for (line_index, line) in text.lines().enumerate() {
+                            if cancellation.is_cancelled() {
+                                return Err("canonical search was cancelled".to_string());
+                            }
+                            if self.deadline.remaining().is_zero() {
+                                return Err(
+                                    "canonical search operation deadline elapsed".to_string()
+                                );
+                            }
+                            let mut previous_byte = 0;
+                            let mut column = 1;
+                            let mut snippet = None::<String>;
                             for byte_column in matcher.match_starts(line) {
+                                if cancellation.is_cancelled() {
+                                    return Err("canonical search was cancelled".to_string());
+                                }
+                                if self.deadline.remaining().is_zero() {
+                                    return Err(
+                                        "canonical search operation deadline elapsed".to_string()
+                                    );
+                                }
+                                column += line[previous_byte..byte_column].chars().count();
+                                previous_byte = byte_column;
+                                if *skip > 0 {
+                                    *skip -= 1;
+                                    continue;
+                                }
                                 let mut item = serde_json::Map::new();
                                 item.insert(
                                     "scope".to_string(),
@@ -276,16 +302,15 @@ impl ActorReadSourceCapability {
                                     "line".to_string(),
                                     serde_json::Value::from(line_index + 1),
                                 );
-                                item.insert(
-                                    "column".to_string(),
-                                    serde_json::Value::from(
-                                        line[..byte_column].chars().count() + 1,
-                                    ),
-                                );
+                                item.insert("column".to_string(), serde_json::Value::from(column));
                                 item.insert(
                                     "snippet".to_string(),
                                     serde_json::Value::String(
-                                        line.chars().take(512).collect::<String>(),
+                                        snippet
+                                            .get_or_insert_with(|| {
+                                                line.chars().take(512).collect::<String>()
+                                            })
+                                            .clone(),
                                     ),
                                 );
                                 matches.push(serde_json::Value::Object(item));

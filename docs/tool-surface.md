@@ -158,16 +158,17 @@ Search one corpus for a query: BSL module text, or the names and synonyms of met
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
 | `corpus` | string | нет | Where to search: `text` matches BSL module content and answers scope, line, column and snippet; `names` matches metadata names and synonyms and answers at, kind and title. Defaults to `text`. |
+| `cursor` | string | нет | Continue a previous local text-search page. Bound to the query, scope, source revisions and page limit. |
 | `kind` | string | нет | `names` corpus only: narrow the search to one logical node kind. |
-| `limit` | integer | нет | Maximum matches to return. |
+| `limit` | integer | нет | Maximum matches per page. Local text search defaults to 20 and accepts up to 50. |
 | `query` | string | да | Literal BSL text, symbol, or metadata name to search for. |
-| `regex` | boolean | нет | Request regex matching; currently only false is implemented. |
+| `regex` | boolean | нет | Use a regular expression for local text search. |
 | `role` | string | нет | `text` corpus only: which provider answers. `lexical` matches literally, `symbol` uses the symbol index, `semantic` matches by meaning. Omit for the literal search Unica performs itself. |
 | `scope` | string | нет | logical subtree address |
 
-**Результат сейчас:** Литеральный bounded-поиск по BSL возвращает `data.matches` для `Configuration` и разрешённого поддерева объекта метаданных; regex и symbol остаются неподдержанными (отвечают типизированным `data`)
+**Результат сейчас:** Локальный поиск по BSL возвращает `data.matches`, `page.stoppedBy` и, пока есть следующие совпадения, `cursor`. Курсор повторно читает те же исходники и отвечает `stale_cursor` после их изменения; повтор того же курсора возвращает ту же страницу. Локальный режим поддерживает литерал и regex. Поиск по именам и провайдерные роли пока не принимают курсор и остаются отдельным пробелом постраничного контракта (отвечают типизированным `data`)
 
-**Целевой контракт:** Добавить символический и regex-режимы через закрытые варианты контракта
+**Целевой контракт:** Довести поиск по именам и провайдерным ролям до того же явного контракта полноты и продолжения.
 
 **Сценарии:**
 

@@ -6,6 +6,7 @@ check:
   - crates/unica-coder/src/application/v13/view.rs::snapshot_over_byte_quota_refuses_before_promising_a_continuation
   - crates/unica-coder/src/application/v13/view.rs::a_late_oversized_item_refuses_before_the_first_page
   - crates/unica-coder/src/application/v13/view.rs::supplied_graph_collection_uses_stable_pages_bound_to_its_owner
+  - crates/unica-coder/tests/v13_search_integration.rs::canonical_search_is_source_scoped_and_rejects_legacy_call_shape
 gap: https://github.com/IngvarConsulting/unica/issues/871
 ---
 
@@ -25,4 +26,6 @@ gap: https://github.com/IngvarConsulting/unica/issues/871
 Это целевой контракт: текущие инструменты используют разные пределы,
 а `check` пока не принимает параметры страницы. `view` заранее читает всю
 коллекцию, но создаёт страницы по запросу; при превышении квоты снимка
-отказывает до выдачи курсора. Разрыв для остальных операций сохранён в `gap`.
+отказывает до выдачи курсора. Локальный текстовый `search` выдаёт страницы,
+повторно читая исходники по курсору и проверяя их ревизии; поиск по именам и
+провайдерные роли пока не имеют продолжения. Остальной разрыв сохранён в `gap`.
