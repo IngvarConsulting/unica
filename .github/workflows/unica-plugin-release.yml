@@ -167,7 +167,7 @@ jobs:
       # уходят в Code Scanning, где видны по правилу и строке, и разбираются
       # отдельно. Токен нужен сетевым проверкам: подменённые коммиты, известные
       # уязвимости действий.
-      - uses: taiki-e/install-action@84f5ac3124727fb3d284d4d22ee9ab3654fd09a6 # v2.87.7
+      - uses: taiki-e/install-action@4076c08d76dba979c11a7285295b0716c1d67908 # v2.87.15
         with:
           tool: zizmor@1.30.0
       - env:
@@ -176,7 +176,7 @@ jobs:
       # Токен pull request из форка писать в Code Scanning не вправе; своим
       # веткам и push загрузка доступна.
       - if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        uses: github/codeql-action/upload-sarif@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4.38.1
         with:
           sarif_file: zizmor.sarif
           category: zizmor
@@ -315,7 +315,7 @@ jobs:
       # каждом раннере матрицы, своим шагом до тестов. Находки едут в Code
       # Scanning, а `-D warnings` по-прежнему красит джобу. Версии закреплены:
       # исполнители — часть контракта прогона.
-      - uses: taiki-e/install-action@84f5ac3124727fb3d284d4d22ee9ab3654fd09a6 # v2.87.7
+      - uses: taiki-e/install-action@4076c08d76dba979c11a7285295b0716c1d67908 # v2.87.15
         with:
           tool: cargo-nextest@0.9.143,clippy-sarif@0.8.0,sarif-fmt@0.8.0
       # Подпись и план выгружаются раньше линта и тестов: раннер, упавший на
@@ -334,7 +334,7 @@ jobs:
           cargo clippy --workspace --all-targets --all-features --message-format=json -- -D warnings \
             | clippy-sarif | tee clippy.sarif | sarif-fmt
       - if: always() && hashFiles('clippy.sarif') != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        uses: github/codeql-action/upload-sarif@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4.38.1
         with:
           sarif_file: clippy.sarif
           category: clippy-${{ matrix.runner }}
