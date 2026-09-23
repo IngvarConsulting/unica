@@ -7632,6 +7632,159 @@ struct ActorLogicalReadLease {"#,
         .unwrap();
     }
 
+    /// A real executable stands in for the pinned runner. Its apply call waits
+    /// after entering the mutating step, so the test cancels at a known point.
+    /// Compiling it in the test keeps the same path on Unix and Windows.
+    fn install_cancellable_create_runner(root: &std::path::Path) {
+        use sha2::{Digest, Sha256};
+
+        let plugin = root.join("plugins/unica");
+        let target = crate::infrastructure::platform::current_target_id().unwrap();
+        let binary_name = if cfg!(windows) {
+            "v8-runner.exe"
+        } else {
+            "v8-runner"
+        };
+        let relative = format!("bin/{target}/{binary_name}");
+        let binary = plugin.join(&relative);
+        std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(plugin.join("third-party")).unwrap();
+        std::fs::create_dir_all(plugin.join("skills")).unwrap();
+        let source = root.join("runner-probe.rs");
+        std::fs::write(
+            &source,
+            r##"
+use std::{env, fs, thread, time::{Duration, Instant}};
+fn main() {
+    let cwd = env::current_dir().unwrap();
+    let dry_run = env::args().any(|arg| arg == "--dry-run");
+    let created = cwd.join("created.marker");
+    if !dry_run {
+        fs::write(cwd.join("entered.marker"), "runner entered mutation").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !cwd.join("release.marker").exists() {
+            if Instant::now() >= deadline { panic!("runner was never released"); }
+            thread::sleep(Duration::from_millis(5));
+        }
+        fs::write(&created, "provider created infobase").unwrap();
+    }
+    let status = if !dry_run { "ok" } else if created.exists() { "skipped" } else { "planned" };
+    println!(r#"{{"ok":true,"command":"init","duration_ms":0,"data":{{"ok":true,"provider_dispatched":{},"steps":[{{"target":"infobase","action":"create","status":"{}","message":"probe","duration_ms":0}},{{"target":"edt_workspace","action":"import","status":"skipped","message":"probe","duration_ms":0}}],"duration_ms":0}},"warnings":[],"steps":[]}}"#, !dry_run, status);
+}
+"##,
+        )
+        .unwrap();
+        let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+        let compiled = std::process::Command::new(rustc)
+            .arg("--edition=2021")
+            .arg(&source)
+            .arg("-o")
+            .arg(&binary)
+            .output()
+            .expect("compile runner probe");
+        assert!(
+            compiled.status.success(),
+            "{}",
+            String::from_utf8_lossy(&compiled.stderr)
+        );
+        let digest = format!("{:x}", Sha256::digest(std::fs::read(&binary).unwrap()));
+        std::fs::write(
+            plugin.join("third-party/manifest.json"),
+            serde_json::json!({
+                "sourceManifest": true,
+                "tools": [{
+                    "name": "v8-runner",
+                    "version": "0.11.1",
+                    "binaries": {target: {"binaryPath": relative, "sha256": digest}}
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn mutating_runner_cancel_keeps_the_factual_receipt_over_the_v5_daemon_wire() {
+        let root = tempfile::tempdir().unwrap();
+        install_cancellable_create_runner(root.path());
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\ninfobase:\n  connection: 'File=build/ib'\n",
+        )
+        .unwrap();
+        let workspace = std::fs::canonicalize(workspace).unwrap();
+        let daemon = LiveV5Daemon::start(canonical_v13_service());
+        let owner = daemon.owner();
+        let request = |dry_run: bool, if_rev: Option<&str>| {
+            let mut args = serde_json::json!({"op":"infobase.create","args":{},"dryRun":dry_run});
+            if let Some(rev) = if_rev {
+                args["ifRev"] = serde_json::json!(rev);
+            }
+            InvocationRequest::new(ToolIdentity::Run, args, workspace.to_string_lossy(), 7_000)
+                .unwrap()
+        };
+        let preview = daemon.task_id(&owner, &request(true, None));
+        let revision = match daemon.wait_terminal(&owner, preview, Duration::from_secs(20)) {
+            V5DaemonTaskSnapshot::Completed { result, .. } => {
+                assert!(result.ok, "{result:?}");
+                result.rev.unwrap()
+            }
+            other => panic!("preview did not complete: {other:?}"),
+        };
+
+        let task_id = daemon.task_id(&owner, &request(false, Some(&revision)));
+        let entered = workspace.join("entered.marker");
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !entered.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "mutating runner did not start: {:?}",
+                daemon.get(&owner, task_id)
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let cancelled = daemon.cancel(&owner, task_id);
+        assert!(
+            matches!(
+                cancelled,
+                V5DaemonTaskSnapshot::Working {
+                    cancel_requested: true,
+                    ..
+                }
+            ),
+            "{cancelled:?}"
+        );
+        assert!(!workspace.join("created.marker").exists());
+        std::fs::write(workspace.join("release.marker"), "finish mutation").unwrap();
+        let terminal = daemon.wait_terminal(&owner, task_id, Duration::from_secs(20));
+        match terminal {
+            V5DaemonTaskSnapshot::Completed {
+                cancel_requested: true,
+                result,
+                ..
+            } => {
+                assert!(result.ok, "{result:?}");
+                assert_eq!(result.data.as_ref().unwrap()["state"], "created");
+                assert_eq!(
+                    result.data.as_ref().unwrap()["receipt"],
+                    "repeated preview reports nothing left to create"
+                );
+            }
+            other => panic!("late cancellation hid the provider receipt: {other:?}"),
+        }
+        assert!(workspace.join("created.marker").exists());
+        assert!(matches!(
+            daemon.get(&owner, task_id),
+            V5DaemonTaskSnapshot::Completed {
+                cancel_requested: true,
+                ..
+            }
+        ));
+        daemon.finish(owner);
+    }
+
     #[test]
     fn daemon_shared_delivery_releases_request_admission_before_wait_and_shares_across_worktrees() {
         let workspace_parent = tempfile::tempdir().unwrap();
