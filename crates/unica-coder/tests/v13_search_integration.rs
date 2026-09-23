@@ -280,6 +280,60 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
     assert_eq!(sections[0]["role"], "lexical");
     assert_eq!(sections[0]["hits"].as_array().map(Vec::len), Some(7));
 
+    let main_names = domain_result(&mcp.exchange(call_tool(
+        19,
+        "unica.search",
+        json!({"query": "CommonModule", "corpus": "names", "scope": "main:Configuration"}),
+    )));
+    assert_eq!(main_names["ok"], true, "{main_names:#}");
+    let main_matches = main_names["data"]["matches"]
+        .as_array()
+        .expect("name matches");
+    assert!(!main_matches.is_empty());
+    assert!(main_matches.iter().all(|item| item["at"]
+        .as_str()
+        .is_some_and(|at| at.starts_with("main:"))));
+
+    let named_scope = domain_result(&mcp.exchange(call_tool(
+        20,
+        "unica.search",
+        json!({"query": "Main", "corpus": "names", "scope": "main:CommonModule.Main"}),
+    )));
+    assert_eq!(named_scope["ok"], true, "{named_scope:#}");
+    assert_eq!(
+        named_scope["data"]["matches"].as_array().map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        named_scope["data"]["matches"][0]["at"],
+        "main:CommonModule.Main"
+    );
+
+    let missing_scope = domain_result(&mcp.exchange(call_tool(
+        21,
+        "unica.search",
+        json!({"query": "Main", "corpus": "names", "scope": "main:CommonModule.Missing"}),
+    )));
+    assert_eq!(missing_scope["diagnostics"][0]["code"], "not_found");
+    let unsupported_scope = domain_result(&mcp.exchange(call_tool(
+        22,
+        "unica.search",
+        json!({"query": "Main", "corpus": "names", "scope": "main:CommonModule.Main.Attribute.Missing"}),
+    )));
+    assert_eq!(
+        unsupported_scope["diagnostics"][0]["code"],
+        "unsupported_scope"
+    );
+    let unsupported_root = domain_result(&mcp.exchange(call_tool(
+        23,
+        "unica.search",
+        json!({"query": "Main", "corpus": "names", "scope": "main:Form"}),
+    )));
+    assert_eq!(
+        unsupported_root["diagnostics"][0]["code"],
+        "unsupported_scope"
+    );
+
     let absent_scope = domain_result(&mcp.exchange(call_tool(
         16,
         "unica.search",
@@ -328,15 +382,15 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
         ),
         (12, json!({"query": "Needle", "limit": 51})),
         (
-            19,
+            25,
             json!({"query": "Main", "corpus": "names", "role": "lexical"}),
         ),
         (
-            20,
+            26,
             json!({"query": "Needle", "role": "lexical", "scope": 7}),
         ),
         (
-            21,
+            27,
             json!({"query": "Needle", "role": "lexical", "limit": 0}),
         ),
     ] {

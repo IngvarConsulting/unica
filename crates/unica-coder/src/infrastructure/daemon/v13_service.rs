@@ -27,7 +27,9 @@ use crate::domain::code_intelligence::{
     CallGraphState, CodeIntelligenceContext, CodeIntelligenceRegistry, ProviderRole, SearchRequest,
 };
 use crate::domain::invocation::{DomainResult, InvocationFailure};
+use crate::domain::project_sources::SourceSetKind;
 use crate::domain::refusal::{RefusalCode, RefusalDetail};
+use crate::infrastructure::metadata_kinds::metadata_kind;
 use crate::infrastructure::native_operations::apply::{
     ApplyPlanErrorKind, ApplyStagedState, PlannedApplyEffects, StagedChangeKind, StagedFileState,
 };
@@ -1385,18 +1387,43 @@ impl CanonicalV13ReadService {
                 Err(error) => return error_result(None, error.code(), error.to_string()),
             };
         }
+        let scope = match arguments.get("scope") {
+            None => None,
+            Some(Value::String(scope)) => match QualifiedAddress::parse(scope) {
+                Ok(scope) => Some(scope),
+                Err(error) => {
+                    return error_result(
+                        Some(scope.to_string()),
+                        RefusalCode::BadValue,
+                        error.to_string(),
+                    )
+                }
+            },
+            Some(_) => {
+                return error_result(None, RefusalCode::BadValue, "search scope must be a string")
+            }
+        };
         let sources = match invocation.layout_sources() {
             Ok(sources) => sources,
             Err(error) => return error_result(None, RefusalCode::ProviderUnavailable, error),
         };
-        let Some(deadline) = sources.first().map(|source| source.deadline()) else {
+        let selected = sources
+            .iter()
+            .filter(|source| {
+                scope
+                    .as_ref()
+                    .is_none_or(|scope| source.name() == scope.source_set())
+            })
+            .collect::<Vec<_>>();
+        let Some(first) = selected.first() else {
             return error_result(
-                None,
-                RefusalCode::ProviderUnavailable,
-                "no admitted source set is available for a name search",
+                scope.as_ref().map(ToString::to_string),
+                RefusalCode::NotFound,
+                "name search scope does not name an admitted source set",
             );
         };
-        let layout = sources
+        let deadline = first.deadline();
+        let layout = selected
             .iter()
             .map(|source| LayoutFindSource::new(source.name(), source.kind(), source.root()))
             .collect::<Vec<_>>();
@@ -1404,6 +1431,12 @@ impl CanonicalV13ReadService {
             Ok(directory) => directory,
             Err(error) => return error_result(None, error.code(), error.to_string()),
         };
+        if let Some(scope) = scope {
+            if let Err((code, message)) = validate_name_scope(&directory, &scope, first.kind()) {
+                return error_result(Some(scope.to_string()), code, message);
+            }
+            request = request.with_scope(scope);
+        }
         let found = directory.find(request);
         let matches: Vec<Value> = found
             .candidates()
@@ -2397,6 +2430,93 @@ fn with_node_dictionary(mut result: DomainResult, at: &str) -> DomainResult {
 enum SearchCorpus {
     Text,
     Names,
+}
+
+fn validate_name_scope(
+    directory: &FindIndex,
+    scope: &QualifiedAddress,
+    source_kind: SourceSetKind,
+) -> Result<(), (RefusalCode, &'static str)> {
+    let segments = scope.segments();
+    let first = &segments[0];
+    let supported_owner = match source_kind {
+        SourceSetKind::Configuration | SourceSetKind::Extension => {
+            metadata_kind(first.kind().as_str()).is_some()
+        }
+        SourceSetKind::ExternalProcessor => first.kind() == NodeKind::ExternalDataProcessor,
+        SourceSetKind::ExternalReport => first.kind() == NodeKind::ExternalReport,
+    };
+    if segments.len() == 1 && first.kind() == NodeKind::Configuration {
+        if matches!(
+            source_kind,
+            SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+        ) {
+            return Err((
+                RefusalCode::UnsupportedScope,
+                "external source sets have no Configuration root",
+            ));
+        }
+        return directory
+            .has_address(&scope.to_string())
+            .then_some(())
+            .ok_or((
+                RefusalCode::InvalidState,
+                "name search Configuration descriptor is unavailable",
+            ));
+    }
+    if !supported_owner || segments.len() > 2 {
+        return Err((
+            RefusalCode::UnsupportedScope,
+            "name search cannot search this logical subtree",
+        ));
+    }
+    if matches!(
+        source_kind,
+        SourceSetKind::Configuration | SourceSetKind::Extension
+    ) && !directory.has_address(&format!("{}:Configuration", scope.source_set()))
+    {
+        return Err((
+            RefusalCode::InvalidState,
+            "name search Configuration descriptor is unavailable",
+        ));
+    }
+    if segments.len() == 2 {
+        let child = &segments[1];
+        if first.name().is_none()
+            || !matches!(
+                child.kind(),
+                NodeKind::Form | NodeKind::Template | NodeKind::Command
+            )
+        {
+            return Err((
+                RefusalCode::UnsupportedScope,
+                "name search cannot search this logical subtree",
+            ));
+        }
+        let owner = format!(
+            "{}:{}.{}",
+            scope.source_set(),
+            first.kind().as_str(),
+            first.name().expect("checked owner name")
+        );
+        if !directory.has_address(&owner) {
+            return Err((
+                RefusalCode::NotFound,
+                "name search scope owner does not exist",
+            ));
+        }
+    }
+    if segments
+        .last()
+        .is_some_and(|segment| segment.name().is_some())
+        && !directory.has_address(&scope.to_string())
+    {
+        return Err((
+            RefusalCode::NotFound,
+            "name search scope owner does not exist",
+        ));
+    }
+    Ok(())
 }
 
 fn error_result(at: Option<String>, code: RefusalCode, message: impl Into<String>) -> DomainResult {
