@@ -1,4 +1,4 @@
-use crate::domain::address::NodeKind;
+use crate::domain::address::{NodeKind, QualifiedAddress};
 use crate::domain::refusal::RefusalCode;
 use serde::Serialize;
 use std::cmp::Ordering;
@@ -11,6 +11,7 @@ const MAX_QUERY_CHARS: usize = 1_024;
 pub(crate) struct FindRequest {
     query: String,
     kind: Option<String>,
+    scope: Option<QualifiedAddress>,
     limit: usize,
 }
 
@@ -32,6 +33,7 @@ impl FindRequest {
         Ok(Self {
             query: query.to_string(),
             kind: None,
+            scope: None,
             limit: DEFAULT_LIMIT,
         })
     }
@@ -58,6 +60,25 @@ impl FindRequest {
         }
         self.limit = limit.min(MAX_LIMIT);
         Ok(self)
+    }
+
+    pub(crate) fn with_scope(mut self, scope: QualifiedAddress) -> Self {
+        self.scope = Some(scope);
+        self
+    }
+
+    fn contains_address(&self, at: &str) -> bool {
+        let Some(scope) = &self.scope else {
+            return true;
+        };
+        if scope.segments().len() == 1 && scope.segments()[0].kind() == NodeKind::Configuration {
+            return at.starts_with(&format!("{}:", scope.source_set()));
+        }
+        let at_scope = scope.to_string();
+        at == at_scope
+            || at
+                .strip_prefix(&at_scope)
+                .is_some_and(|tail| tail.starts_with('.'))
     }
 }
 
@@ -285,6 +306,12 @@ impl FindIndex {
             .find(|document| document.at == at && document.path.is_some())
     }
 
+    pub(crate) fn has_address(&self, at: &str) -> bool {
+        self.documents
+            .binary_search_by(|document| document.at.as_str().cmp(at))
+            .is_ok()
+    }
+
     /// Точный поиск по пути. Путь мог прийти абсолютным или относительно
     /// корня рабочего пространства, поэтому хвост принимается тоже — но
     /// только целиком, посегментно, а не подстрокой.
@@ -313,6 +340,7 @@ impl FindIndex {
                 .kind
                 .as_ref()
                 .is_none_or(|kind| kind == &document.kind)
+                && request.contains_address(&document.at)
         });
         let mut direct = eligible
             .clone()
@@ -467,6 +495,7 @@ fn bounded_levenshtein(left: &str, right: &str, bound: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::{FindDocument, FindFact, FindFactKind, FindIndex, FindRequest};
+    use crate::domain::address::QualifiedAddress;
 
     fn index() -> FindIndex {
         FindIndex::new(vec![
@@ -556,6 +585,22 @@ mod tests {
                 .len(),
             100,
         );
+    }
+
+    #[test]
+    fn name_scope_stops_at_a_logical_segment_boundary() {
+        let index = FindIndex::new(vec![
+            FindDocument::new("main:Catalog.Item", "Catalog", "Item", vec![]),
+            FindDocument::new("main:Catalog.Items", "Catalog", "Items", vec![]),
+            FindDocument::new("other:Catalog.Item", "Catalog", "Item", vec![]),
+        ]);
+        let request = FindRequest::new("Item")
+            .unwrap()
+            .with_scope(QualifiedAddress::parse("main:Catalog.Item").unwrap());
+
+        let found = index.find(request);
+        assert_eq!(found.candidates().len(), 1);
+        assert_eq!(found.candidates()[0].at(), "main:Catalog.Item");
     }
 
     #[test]

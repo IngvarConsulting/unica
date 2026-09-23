@@ -207,6 +207,61 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
         "extension:Configuration"
     );
 
+    let main_names = domain_result(&mcp.exchange(call_tool(
+        6,
+        "unica.search",
+        json!({"query": "CommonModule", "corpus": "names", "scope": "main:Configuration"}),
+    )));
+    assert_eq!(main_names["ok"], true, "{main_names:#}");
+    assert_eq!(
+        main_names["data"]["matches"].as_array().map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        main_names["data"]["matches"][0]["at"],
+        "main:CommonModule.Main"
+    );
+
+    let named_scope = domain_result(&mcp.exchange(call_tool(
+        7,
+        "unica.search",
+        json!({"query": "Main", "corpus": "names", "scope": "main:CommonModule.Main"}),
+    )));
+    assert_eq!(named_scope["ok"], true, "{named_scope:#}");
+    assert_eq!(
+        named_scope["data"]["matches"].as_array().map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        named_scope["data"]["matches"][0]["at"],
+        "main:CommonModule.Main"
+    );
+
+    let missing_scope = domain_result(&mcp.exchange(call_tool(
+        8,
+        "unica.search",
+        json!({"query": "Main", "corpus": "names", "scope": "main:CommonModule.Missing"}),
+    )));
+    assert_eq!(missing_scope["diagnostics"][0]["code"], "not_found");
+    let unsupported_scope = domain_result(&mcp.exchange(call_tool(
+        9,
+        "unica.search",
+        json!({"query": "Main", "corpus": "names", "scope": "main:CommonModule.Main.Attribute.Missing"}),
+    )));
+    assert_eq!(
+        unsupported_scope["diagnostics"][0]["code"],
+        "unsupported_scope"
+    );
+    let unsupported_root = domain_result(&mcp.exchange(call_tool(
+        10,
+        "unica.search",
+        json!({"query": "Main", "corpus": "names", "scope": "main:Form"}),
+    )));
+    assert_eq!(
+        unsupported_root["diagnostics"][0]["code"],
+        "unsupported_scope"
+    );
+
     let ping = mcp.exchange(json!({"jsonrpc": "2.0", "id": 5, "method": "ping"}));
     assert!(ping.get("result").is_some(), "{ping:#}");
     mcp.finish();
