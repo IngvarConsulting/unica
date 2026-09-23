@@ -1040,7 +1040,7 @@ pub(crate) mod actor_capacity_tests {
         LOGICAL_READ_NOW.with(|current| *current.borrow_mut() = Some(now));
     }
 
-    fn canonical_v13_service() -> Arc<dyn CanonicalInvocationService> {
+    pub(crate) fn canonical_v13_service() -> Arc<dyn CanonicalInvocationService> {
         Arc::new(crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default())
     }
 
@@ -7635,7 +7635,7 @@ struct ActorLogicalReadLease {"#,
     /// A real executable stands in for the pinned runner. Its apply call waits
     /// after entering the mutating step, so the test cancels at a known point.
     /// Compiling it in the test keeps the same path on Unix and Windows.
-    fn install_cancellable_create_runner(root: &std::path::Path) {
+    pub(crate) fn install_cancellable_create_runner(root: &std::path::Path) {
         use sha2::{Digest, Sha256};
 
         let plugin = root.join("plugins/unica");
