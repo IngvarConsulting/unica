@@ -3022,6 +3022,7 @@ pub(crate) mod tests {
 
     thread_local! {
         static SUPPORT_POLICY_ACTOR_TEST_NOW: Cell<Instant> = Cell::new(Instant::now());
+        static RETAINED_APPLY_DEADLINE_TEST_NOW: Cell<Instant> = Cell::new(Instant::now());
     }
 
     fn support_policy_actor_test_now() -> Instant {
@@ -3034,6 +3035,10 @@ pub(crate) mod tests {
 
     fn reset_support_policy_actor_test_now() {
         set_support_policy_actor_test_now(Instant::now());
+    }
+
+    fn retained_apply_deadline_test_now() -> Instant {
+        RETAINED_APPLY_DEADLINE_TEST_NOW.get()
     }
 
     #[test]
@@ -7060,13 +7065,18 @@ pub(crate) mod tests {
                 )],
             )
             .unwrap();
-        prepared.deadline = ProviderDeadline::from_budget(Duration::from_millis(500));
+        let started = Instant::now();
+        RETAINED_APPLY_DEADLINE_TEST_NOW.set(started);
+        prepared.deadline = ProviderDeadline::with_clock(
+            started + Duration::from_secs(1),
+            retained_apply_deadline_test_now,
+        );
         let source_before = snapshot_tree(&fixture.roots[0]);
         let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
         let machine_before = service.machine_state_for_test();
         let _ = crate::infrastructure::native_operations::compile_transaction::take_retained_apply_observed_events();
         crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_post_validation_hook(
-            || std::thread::sleep(Duration::from_millis(550)),
+            move || RETAINED_APPLY_DEADLINE_TEST_NOW.set(started + Duration::from_secs(2)),
         );
 
         let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
@@ -10487,13 +10497,18 @@ pub(crate) mod tests {
         let mut prepared =
             prepare_property_effect_batch(&fixture, &binding, false, &CancellationToken::new());
         assert_prepared_form_module_effect_subject(&prepared);
-        prepared.deadline = ProviderDeadline::from_budget(Duration::from_millis(500));
+        let started = Instant::now();
+        RETAINED_APPLY_DEADLINE_TEST_NOW.set(started);
+        prepared.deadline = ProviderDeadline::with_clock(
+            started + Duration::from_secs(1),
+            retained_apply_deadline_test_now,
+        );
         let source_before = snapshot_tree(&fixture.roots[0]);
         let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
         let machine_before = service.machine_state_for_test();
         let _ = crate::infrastructure::native_operations::compile_transaction::take_retained_apply_observed_events();
         crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_post_validation_hook(
-            || std::thread::sleep(Duration::from_millis(550)),
+            move || RETAINED_APPLY_DEADLINE_TEST_NOW.set(started + Duration::from_secs(2)),
         );
 
         let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
@@ -11496,17 +11511,22 @@ pub(crate) mod tests {
                 .unwrap();
             let service = fixture.actor.source_revision_service(&binding).unwrap();
             let cancellation = CancellationToken::new();
+            let started = Instant::now();
+            set_support_policy_actor_test_now(started);
             let admission = fixture
                 .actor
                 .admit_apply(
                     &binding,
                     None,
                     false,
-                    ProviderDeadline::from_budget(if gate == "deadline" {
-                        Duration::from_millis(500)
+                    if gate == "deadline" {
+                        ProviderDeadline::with_clock(
+                            started + Duration::from_secs(1),
+                            support_policy_actor_test_now,
+                        )
                     } else {
-                        Duration::from_secs(5)
-                    }),
+                        ProviderDeadline::from_budget(Duration::from_secs(5))
+                    },
                     &cancellation,
                 )
                 .unwrap();
@@ -11527,9 +11547,9 @@ pub(crate) mod tests {
                 );
             } else {
                 crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_post_validation_hook(
-                    || {
-                        set_support_policy_validation_hook(|| {
-                            std::thread::sleep(Duration::from_millis(550));
+                    move || {
+                        set_support_policy_validation_hook(move || {
+                            set_support_policy_actor_test_now(started + Duration::from_secs(2));
                         });
                     },
                 );
