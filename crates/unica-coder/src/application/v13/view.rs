@@ -836,7 +836,7 @@ mod tests {
             "rev-1",
             Some(json!({"at":branch,"kind":"Caller","title":"Caller","props":{"callGraph":"ready"},"items":items})),
         );
-        assert!(first.ok, "{first:?}");
+        assert!(first.ok);
         assert_eq!(
             first.data.as_ref().unwrap()["items"]
                 .as_array()
@@ -854,7 +854,7 @@ mod tests {
             "rev-1",
             None,
         );
-        assert!(second.ok, "{second:?}");
+        assert!(second.ok);
         assert_eq!(
             second.data.as_ref().unwrap()["items"][0]["at"],
             "main:CommonModule.Узел20"
