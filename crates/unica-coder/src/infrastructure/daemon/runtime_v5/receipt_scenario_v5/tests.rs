@@ -9,6 +9,26 @@ use crate::infrastructure::daemon::protocol_v5::V5InvocationPhase as TestV5Invoc
 use crate::infrastructure::receipt_ledger::ReceiptLedgerStore;
 
 #[test]
+fn bulk_key_index_keeps_exact_json_equality_with_collisions_and_missing_digests() {
+    let first = json!({"keyDigest": "collision", "invocationId": "first"});
+    let collision = json!({"keyDigest": "collision", "invocationId": "second"});
+    let missing = json!({"invocationId": "third"});
+    let non_string = json!({"keyDigest": 42, "invocationId": "fourth"});
+    let mut index = vec![first.clone(), missing.clone(), non_string.clone()];
+    let additions = [
+        first.clone(),
+        collision.clone(),
+        collision.clone(),
+        missing.clone(),
+        non_string.clone(),
+    ];
+
+    extend_receipt_key_index(&mut index, additions.iter());
+
+    assert_eq!(index, vec![first, missing, non_string, collision]);
+}
+
+#[test]
 fn seeded_promised_and_handoff_states_cross_the_real_actor_store_path() {
     let identity = CoreIdentity::production_v5();
     let cases = [

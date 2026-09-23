@@ -3850,15 +3850,27 @@ fn assert_snapshot_accounting(snapshot: &Snapshot) {
         snapshot.tasks.len() as u64 <= snapshot.task_link_count + snapshot.task_link_reserved_count,
         "TaskStore records cannot outnumber materialized lifecycle links plus live reservations"
     );
+    let mut links_by_digest: BTreeMap<&str, Vec<&TaskLinkObservation>> = BTreeMap::new();
+    for link in &snapshot.task_links {
+        links_by_digest
+            .entry(link.key.key_digest.as_str())
+            .or_default()
+            .push(link);
+    }
+    let matching_link_count = |task: &TaskObservation| {
+        links_by_digest
+            .get(task.receipt_key.key_digest.as_str())
+            .map_or(0, |links| {
+                links
+                    .iter()
+                    .filter(|link| link.key == task.receipt_key)
+                    .count()
+            })
+    };
     let unlinked_tasks = snapshot
         .tasks
         .iter()
-        .filter(|task| {
-            !snapshot
-                .task_links
-                .iter()
-                .any(|link| link.key == task.receipt_key)
-        })
+        .filter(|task| matching_link_count(task) == 0)
         .count() as u64;
     assert!(
         unlinked_tasks <= snapshot.task_link_reserved_count,
@@ -3866,12 +3878,7 @@ fn assert_snapshot_accounting(snapshot: &Snapshot) {
     );
     for task in &snapshot.tasks {
         assert!(
-            snapshot
-                .task_links
-                .iter()
-                .filter(|link| link.key == task.receipt_key)
-                .count()
-                <= 1,
+            matching_link_count(task) <= 1,
             "a TaskStore record cannot be owned by multiple lifecycle links"
         );
     }
@@ -3926,10 +3933,25 @@ fn assert_exact_linked_task_pool(snapshot: &Snapshot, expected_count: u64) {
     assert_eq!(snapshot.task_links.len() as u64, expected_count);
     assert_eq!(snapshot.tasks.len() as u64, expected_count);
     assert_eq!(snapshot.task_link_reserved_count, 0);
+    let mut tasks_by_digest: BTreeMap<&str, Vec<&TaskObservation>> = BTreeMap::new();
+    for task in &snapshot.tasks {
+        tasks_by_digest
+            .entry(task.receipt_key.key_digest.as_str())
+            .or_default()
+            .push(task);
+    }
+    let mut links_by_digest: BTreeMap<&str, Vec<&TaskLinkObservation>> = BTreeMap::new();
     for link in &snapshot.task_links {
-        let matching_tasks: Vec<_> = snapshot
-            .tasks
-            .iter()
+        links_by_digest
+            .entry(link.key.key_digest.as_str())
+            .or_default()
+            .push(link);
+    }
+    for link in &snapshot.task_links {
+        let matching_tasks: Vec<_> = tasks_by_digest
+            .get(link.key.key_digest.as_str())
+            .into_iter()
+            .flatten()
             .filter(|task| task.receipt_key == link.key)
             .collect();
         assert_eq!(matching_tasks.len(), 1);
@@ -3943,9 +3965,10 @@ fn assert_exact_linked_task_pool(snapshot: &Snapshot, expected_count: u64) {
     }
     for task in &snapshot.tasks {
         assert_eq!(
-            snapshot
-                .task_links
-                .iter()
+            links_by_digest
+                .get(task.receipt_key.key_digest.as_str())
+                .into_iter()
+                .flatten()
                 .filter(|link| link.key == task.receipt_key)
                 .count(),
             1,
