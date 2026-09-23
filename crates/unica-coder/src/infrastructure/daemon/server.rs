@@ -5182,6 +5182,17 @@ struct ActorLogicalReadLease {"#,
             assert_eq!(props["parentStatus"], expected, "{case}: {result:?}");
             if expected == "resolved" {
                 assert_eq!(props["extends"], "parent:Catalog.Items");
+                let filtered = submit_canonical(
+                    &runtime,
+                    workspace.path(),
+                    ToolIdentity::View,
+                    serde_json::json!({"at":"ext:Catalog.Items","filter":{"sections":["props"]}}),
+                );
+                assert!(filtered.ok, "filtered borrowed view: {filtered:?}");
+                assert_eq!(
+                    filtered.data.as_ref().unwrap()["props"]["extends"],
+                    "parent:Catalog.Items",
+                );
                 let parent = submit_canonical(
                     &runtime,
                     workspace.path(),
@@ -5218,7 +5229,12 @@ struct ActorLogicalReadLease {"#,
                 if kind == "CommonModule" {
                     std::fs::create_dir_all(root.join("CommonModules/Items/Ext")).unwrap();
                     std::fs::write(root.join("CommonModules/Items/Ext/Module.bsl"), "").unwrap();
-                    xml = xml.replace("</Properties>", "<Global>false</Global><ClientManagedApplication>false</ClientManagedApplication><Server>true</Server><ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ServerCall>false</ServerCall><Privileged>false</Privileged><ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties>");
+                    let privileged = if source == "src" {
+                        "<Privileged>false</Privileged>"
+                    } else {
+                        ""
+                    };
+                    xml = xml.replace("</Properties>", &format!("<Global>false</Global><ClientManagedApplication>false</ClientManagedApplication><Server>true</Server><ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ServerCall>false</ServerCall>{privileged}<ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties>"));
                 }
                 if source == "ext" {
                     xml = xml
@@ -5254,6 +5270,9 @@ struct ActorLogicalReadLease {"#,
                 format!("parent:{kind}.Items"),
                 "{result:?}"
             );
+            if kind == "CommonModule" {
+                assert_eq!(props["commonModule"]["privileged"], serde_json::Value::Null);
+            }
         }
     }
 

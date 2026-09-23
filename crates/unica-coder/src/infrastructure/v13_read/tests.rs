@@ -28,6 +28,92 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+#[test]
+fn borrowed_common_module_keeps_missing_privileged_unknown() {
+    let borrowed = fixture_text("platform_8_3_27/cfe_borrow/extension-common-module.xml");
+    let props = super::common_module_properties(borrowed.as_bytes(), SourceSetKind::Extension)
+        .expect("platform borrowed CommonModule omits Privileged");
+    let serialized = serde_json::to_value(props).unwrap();
+    assert_eq!(serialized["privileged"], serde_json::Value::Null);
+
+    let ordinary = fixture_text("platform_8_3_27/cfe_borrow/parent-common-module.xml");
+    let missing = ordinary.replace("<Privileged>false</Privileged>", "");
+    assert_eq!(
+        super::common_module_properties(missing.as_bytes(), SourceSetKind::Configuration)
+            .unwrap_err()
+            .code(),
+        RefusalCode::ProviderUnavailable,
+    );
+    assert_eq!(
+        super::common_module_properties(borrowed.as_bytes(), SourceSetKind::Configuration)
+            .unwrap_err()
+            .code(),
+        RefusalCode::ProviderUnavailable,
+    );
+    let own_extension = borrowed.replace(
+        "<ExtendedConfigurationObject>ac847dc9-e222-45cf-af4a-6fa863c919a8</ExtendedConfigurationObject>",
+        "",
+    );
+    assert!(
+        super::common_module_properties(own_extension.as_bytes(), SourceSetKind::Extension)
+            .is_err(),
+        "an extension's own CommonModule still requires Privileged",
+    );
+    for (raw, expected) in [("true", true), ("false", false)] {
+        let explicit = borrowed.replace(
+            "<ReturnValuesReuse>",
+            &format!("<Privileged>{raw}</Privileged><ReturnValuesReuse>"),
+        );
+        let props =
+            super::common_module_properties(explicit.as_bytes(), SourceSetKind::Extension).unwrap();
+        assert_eq!(props.privileged, Some(expected));
+    }
+    for raw in ["", "unknown"] {
+        let invalid = borrowed.replace(
+            "<ReturnValuesReuse>",
+            &format!("<Privileged>{raw}</Privileged><ReturnValuesReuse>"),
+        );
+        assert!(
+            super::common_module_properties(invalid.as_bytes(), SourceSetKind::Extension).is_err(),
+            "explicit invalid Privileged must not become null",
+        );
+    }
+}
+
+#[test]
+fn borrowed_common_module_view_serializes_unknown_privileged_without_losing_contexts() {
+    let fixture = RealReaderFixture::new();
+    let configuration = fs::read_to_string(fixture.source.join("Configuration.xml")).unwrap();
+    write(
+        &fixture.source.join("Configuration.xml"),
+        &configuration.replace(
+            "</ChildObjects>",
+            "<CommonModule>CorpusModule</CommonModule></ChildObjects>",
+        ),
+    );
+    write(
+        &fixture.source.join("CommonModules/CorpusModule.xml"),
+        &fixture_text("platform_8_3_27/cfe_borrow/extension-common-module.xml"),
+    );
+    write(
+        &fixture
+            .source
+            .join("CommonModules/CorpusModule/Ext/Module.bsl"),
+        "Процедура Проверка() Экспорт\nКонецПроцедуры\n",
+    );
+    let view = fixture
+        .extension_view_service()
+        .view(ViewRequest::new("main:CommonModule.CorpusModule").unwrap());
+    assert!(view.ok, "{:?}", view.diagnostics);
+    let data = view.data.unwrap();
+    assert_eq!(
+        data["props"]["commonModule"]["privileged"],
+        serde_json::Value::Null
+    );
+    assert!(data["props"]["commonModule"]["server"].is_boolean());
+    assert!(data["branches"].is_array());
+}
+
 fn configuration_payload(
     reader: &ProviderReadAuthority,
 ) -> Result<serde_json::Value, crate::application::v13::view::ViewError> {

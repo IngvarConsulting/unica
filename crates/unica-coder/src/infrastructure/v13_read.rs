@@ -801,7 +801,10 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 |error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()),
             )?;
             let descriptor = self.read.metadata_descriptor(&owner)?;
-            Some(common_module_properties(&descriptor)?)
+            Some(common_module_properties(
+                &descriptor,
+                self.read.source_set_kind(),
+            )?)
         } else {
             None
         };
@@ -1780,7 +1783,10 @@ fn module_source_address(
         .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error))
 }
 
-fn common_module_properties(bytes: &[u8]) -> Result<CommonModuleProperties, ViewError> {
+fn common_module_properties(
+    bytes: &[u8],
+    source_kind: SourceSetKind,
+) -> Result<CommonModuleProperties, ViewError> {
     let text = std::str::from_utf8(bytes).map_err(|_| {
         ViewError::detailed(
             RefusalDetail::SourceUnreadable,
@@ -1790,6 +1796,11 @@ fn common_module_properties(bytes: &[u8]) -> Result<CommonModuleProperties, View
     let document = roxmltree::Document::parse(text.trim_start_matches('\u{feff}'))
         .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))?;
     let root = document.root_element();
+    let borrowed = source_kind == SourceSetKind::Extension
+        && crate::infrastructure::native_operations::meta::parse_meta_borrowing(bytes)
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?
+            .extends
+            .is_some_and(|id| uuid::Uuid::parse_str(&id).is_ok());
     let boolean = |name| -> Result<bool, ViewError> {
         let raw = xml_descendant_text(root, name).ok_or_else(|| {
             ViewError::detailed(
@@ -1806,6 +1817,28 @@ fn common_module_properties(bytes: &[u8]) -> Result<CommonModuleProperties, View
             )),
         }
     };
+    let privileged = match root
+        .descendants()
+        .find(|node| node.is_element() && node.tag_name().name() == "Privileged")
+    {
+        None if borrowed => None,
+        None => {
+            return Err(ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
+                "common module descriptor has no Privileged property",
+            ));
+        }
+        Some(node) => match node.text().map(str::trim) {
+            Some("true") => Some(true),
+            Some("false") => Some(false),
+            _ => {
+                return Err(ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
+                    "common module Privileged property is not boolean",
+                ));
+            }
+        },
+    };
     Ok(CommonModuleProperties {
         global: boolean("Global")?,
         client_managed_application: boolean("ClientManagedApplication")?,
@@ -1813,7 +1846,7 @@ fn common_module_properties(bytes: &[u8]) -> Result<CommonModuleProperties, View
         external_connection: boolean("ExternalConnection")?,
         client_ordinary_application: boolean("ClientOrdinaryApplication")?,
         server_call: boolean("ServerCall")?,
-        privileged: boolean("Privileged")?,
+        privileged,
         return_values_reuse: xml_descendant_text(root, "ReturnValuesReuse")
             .ok_or_else(|| {
                 ViewError::detailed(

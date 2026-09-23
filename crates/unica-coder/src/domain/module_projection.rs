@@ -46,7 +46,7 @@ pub(crate) struct CommonModuleProperties {
     pub(crate) external_connection: bool,
     pub(crate) client_ordinary_application: bool,
     pub(crate) server_call: bool,
-    pub(crate) privileged: bool,
+    pub(crate) privileged: Option<bool>,
     pub(crate) return_values_reuse: String,
 }
 
@@ -947,7 +947,7 @@ mod tests {
             external_connection: true,
             client_ordinary_application: false,
             server_call: false,
-            privileged: false,
+            privileged: Some(false),
             return_values_reuse: "DuringRequest".to_string(),
         });
         let mut common_identity = identity(props);
