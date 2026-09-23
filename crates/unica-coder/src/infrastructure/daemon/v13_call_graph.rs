@@ -10,6 +10,7 @@ use crate::domain::call_graph_identity::{CallGraphIdentity, CallGraphIdentityErr
 use crate::domain::code_intelligence::{
     CallEdgeProvenance, CallGraphDirection, CallGraphResult, CallGraphState,
 };
+use crate::domain::invocation::DomainResult;
 use serde_json::{json, Map, Value};
 
 /// Название секции, которой вызывающий просит сводку графа.
@@ -140,7 +141,9 @@ pub(super) fn complete_branch<D, E>(
     let first_result = initial.0.result(direction);
     let full_result = full.result(direction);
     if full_result.state != CallGraphState::Ready {
-        return Err(CompleteBranchError::Incomplete);
+        // Reindexing or provider loss is a named state, not a malformed
+        // complete answer. Publish that state without any truncated edges or cursor.
+        return Ok((full, full_directory.or(initial.1)));
     }
     if first_result.revision != full_result.revision || first_result.total != full_result.total {
         return Err(CompleteBranchError::Changed);
@@ -269,6 +272,27 @@ pub(super) fn branch_collection(
         );
     }
     Value::Object(node)
+}
+
+/// A graph that is still indexing or unavailable has no complete collection
+/// to paginate. Name its state without a misleading completed page.
+pub(super) fn unready_branch_result(
+    at: &QualifiedAddress,
+    direction: CallGraphDirection,
+    summary: &CallGraphSummary,
+) -> DomainResult {
+    debug_assert_ne!(summary.result(direction).state, CallGraphState::Ready);
+    let mut data = branch_collection(at, direction, summary, |_| None);
+    data.as_object_mut()
+        .expect("branch collection is a node")
+        .remove("items");
+    let mut result = DomainResult::success("call graph branch is not ready");
+    result.at = Some(at.to_string());
+    result.data = Some(data);
+    if let Some(reason) = &summary.reason {
+        result.warnings.push(json!({"callGraph": reason}));
+    }
+    result
 }
 
 /// Направление, которое называет адрес, если это адрес ветви графа.
@@ -422,7 +446,7 @@ mod tests {
     use super::{
         branch_collection, branch_direction, branch_owner, complete_branch, extend_method_node,
         full_branch_matches, module_file_for_placed, placed_for_module_file,
-        required_full_branch_limit, CallGraphSummary, CompleteBranchError,
+        required_full_branch_limit, unready_branch_result, CallGraphSummary, CompleteBranchError,
     };
     use crate::domain::address::QualifiedAddress;
     use crate::domain::code_intelligence::{
@@ -581,12 +605,56 @@ mod tests {
             stale: None,
             complete: false,
         };
-        assert!(matches!(
-            complete_branch((first, None::<()>), CallGraphDirection::Callers, |_| {
+        let (not_ready, _): (CallGraphSummary, Option<()>) =
+            complete_branch((first, None), CallGraphDirection::Callers, |_| {
                 Ok::<_, ()>((unavailable, None))
-            }),
-            Err(CompleteBranchError::Incomplete)
-        ));
+            })
+            .unwrap();
+        assert_eq!(not_ready.callers.state, CallGraphState::Unavailable);
+        assert!(not_ready.callers.edges.is_empty());
+        let not_ready_answer = unready_branch_result(&at, CallGraphDirection::Callers, &not_ready);
+        assert!(not_ready_answer.ok);
+        assert_eq!(
+            not_ready_answer.data.as_ref().unwrap()["props"]["callGraph"],
+            "unavailable"
+        );
+        assert!(not_ready_answer
+            .data
+            .as_ref()
+            .unwrap()
+            .get("items")
+            .is_none());
+        assert!(not_ready_answer.page.is_none());
+        assert!(not_ready_answer.cursor.is_none());
+        assert!(not_ready_answer.rev.is_none());
+
+        let mut indexing = not_ready;
+        indexing.callers.state = CallGraphState::Indexing;
+        let (still_indexing, _): (CallGraphSummary, Option<()>) = complete_branch(
+            (
+                CallGraphSummary {
+                    callers: CallGraphResult {
+                        complete: false,
+                        ..ready(73, Vec::new())
+                    },
+                    callees: ready(0, Vec::new()),
+                    reason: None,
+                },
+                None,
+            ),
+            CallGraphDirection::Callers,
+            |_| Ok::<_, ()>((indexing, None)),
+        )
+        .unwrap();
+        assert_eq!(still_indexing.callers.state, CallGraphState::Indexing);
+        assert!(still_indexing.callers.edges.is_empty());
+        let indexing_answer =
+            unready_branch_result(&at, CallGraphDirection::Callers, &still_indexing);
+        assert_eq!(
+            indexing_answer.data.as_ref().unwrap()["props"]["callGraph"],
+            "indexing"
+        );
+        assert!(indexing_answer.page.is_none());
     }
 
     /// Сводка кладётся в `props`, направления — в ветви со счётом.

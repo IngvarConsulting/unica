@@ -4,8 +4,8 @@ const CALL_GRAPH_PAGE_LIMIT: usize = 50;
 
 use super::v13_call_graph::{
     branch_collection, branch_direction, branch_owner, complete_branch, extend_method_node,
-    fetch_summary, module_file_for_placed, placed_for_module_file, CallGraphFetchError,
-    CallGraphSummary, CompleteBranchError, CALL_GRAPH_SECTION,
+    fetch_summary, module_file_for_placed, placed_for_module_file, unready_branch_result,
+    CallGraphFetchError, CallGraphSummary, CompleteBranchError, CALL_GRAPH_SECTION,
 };
 use super::v13_read_modes::{filter_diff_data, project_view_sections, search_scope_prefix};
 use crate::application::invocation_store::ToolIdentity;
@@ -409,7 +409,7 @@ impl CanonicalV13ReadService {
             let Some(expected_revision) = owner_result.rev.as_deref() else {
                 return error_result(
                     Some(at.to_string()),
-                    RefusalCode::ProviderUnavailable,
+                    RefusalCode::InvalidResult,
                     "owning method has no source revision",
                 );
             };
@@ -448,21 +448,16 @@ impl CanonicalV13ReadService {
                         Err(CompleteBranchError::Incomplete) => {
                             return error_result(
                                 Some(at.to_string()),
-                                RefusalCode::ProviderUnavailable,
+                                RefusalCode::InvalidResult,
                                 "call graph provider did not return the complete branch",
                             )
                         }
                     };
-                    if let Some(reason) = summary.reason.clone() {
-                        // A ready direction can coexist with an unavailable peer.
-                        // The page names its own direction and keeps that warning.
-                        if summary.result(direction).state == CallGraphState::Unavailable {
-                            return error_result(
-                                Some(at.to_string()),
-                                RefusalCode::ProviderUnavailable,
-                                reason,
-                            );
-                        }
+                    if summary.result(direction).state != CallGraphState::Ready {
+                        return enforce_view_result_limit(
+                            unready_branch_result(&address, direction, &summary),
+                            at,
+                        );
                     }
                     // Сосед, которого анализатор называет файлом, получает адрес
                     // через раскладку: файл модуля → дескриптор → узел → роль
