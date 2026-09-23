@@ -4311,4 +4311,86 @@ mod tests {
         assert!(marker.exists(), "child did not resume after attachment");
         child.wait();
     }
+
+    #[cfg(windows)]
+    #[test]
+    fn slow_job_attach_delays_cancel_without_starting_the_mutation_early() {
+        use std::sync::mpsc;
+
+        let marker = std::env::temp_dir().join(format!(
+            "unica-slow-attach-marker-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _marker_cleanup = FileCleanupGuard(marker.clone());
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "infrastructure::platform::process::tests::managed_child_test_helper",
+                "--nocapture",
+            ])
+            .env(HELPER_ENV, "write_marker")
+            .env(HELPER_PID_FILE_ENV, &marker)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut tree = ProcessTree::prepare(&mut command).unwrap();
+        let cancellation = CancellationToken::new();
+        let protected = cancellation.protect_process_on_spawn();
+        let (spawned_tx, spawned_rx) = mpsc::channel();
+        let (attach_tx, attach_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let (child, detached_cancellation) = protected
+                .spawn_with_gate(|| {
+                    let mut child = ChildCleanupGuard(Some(command.spawn().unwrap()));
+                    spawned_tx.send(()).unwrap();
+                    attach_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+                    tree.attach(child.child_mut()).unwrap();
+                    Ok(child)
+                })
+                .unwrap();
+            assert!(!detached_cancellation.is_cancelled());
+            child.wait();
+        });
+        spawned_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(
+            !marker.exists(),
+            "suspended child ran before Job attachment"
+        );
+
+        let (started_tx, started_rx) = mpsc::channel();
+        let (cancelled_tx, cancelled_rx) = mpsc::channel();
+        let canceller = thread::spawn(move || {
+            let began = Instant::now();
+            started_tx.send(()).unwrap();
+            cancellation.cancel();
+            cancelled_tx.send(began.elapsed()).unwrap();
+            cancellation
+        });
+        started_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(
+            cancelled_rx
+                .recv_timeout(Duration::from_millis(250))
+                .is_err(),
+            "cancel returned while Job attachment was still in flight"
+        );
+        assert!(!marker.exists(), "mutation began before Job attachment");
+        attach_tx.send(()).unwrap();
+        let elapsed = cancelled_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(
+            elapsed >= Duration::from_millis(250),
+            "cancel waited only {elapsed:?}"
+        );
+        let cancellation = canceller.join().unwrap();
+        worker.join().unwrap();
+        assert!(cancellation.protected_process_started());
+        assert!(
+            marker.exists(),
+            "protected child did not finish after late cancel"
+        );
+    }
 }

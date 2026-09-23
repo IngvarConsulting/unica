@@ -7647,11 +7647,7 @@ struct ActorLogicalReadLease {"#,
 
         let plugin = root.join("plugins/unica");
         let target = crate::infrastructure::platform::current_target_id().unwrap();
-        let binary_name = if cfg!(windows) {
-            "v8-runner.exe"
-        } else {
-            "v8-runner"
-        };
+        let binary_name = format!("v8-runner{}", std::env::consts::EXE_SUFFIX);
         let relative = format!("bin/{target}/{binary_name}");
         let binary = plugin.join(&relative);
         std::fs::create_dir_all(binary.parent().unwrap()).unwrap();

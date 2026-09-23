@@ -12,6 +12,7 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/server.rs::mutating_runner_cancel_keeps_the_factual_receipt_over_the_v5_daemon_wire
   - crates/unica-coder/src/interfaces/mcp.rs::public_task_cancel_and_result_preserve_a_started_infobase_create_receipt
   - crates/unica-coder/src/infrastructure/platform/process.rs::protected_process_finishes_after_cancellation_on_every_host
+  - crates/unica-coder/src/infrastructure/platform/process.rs::slow_job_attach_delays_cancel_without_starting_the_mutation_early
   - crates/unica-coder/src/domain/cancellation.rs::cancellation_waits_for_in_flight_protected_dispatch
   - crates/unica-coder/src/infrastructure/task_store_v5.rs::completed_provider_receipt_survives_a_late_task_cancel_request
 gap: https://github.com/IngvarConsulting/unica/issues/989
