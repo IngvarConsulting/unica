@@ -266,7 +266,7 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                             "at": logical_address(),
                             "filter": data_object("Optional projection such as sections; valid only with at."),
                             "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20,
-                                "description": "Maximum child items per addressed view page; the 64 KiB response budget may stop earlier."},
+                                "description": "Maximum child items per addressed view page; a preferred 64 KiB page size may stop earlier, but an indivisible item remains whole."},
                             "cursor": cursor("Continuation cursor from an earlier addressed view."),
                         }),
                         json!([]),

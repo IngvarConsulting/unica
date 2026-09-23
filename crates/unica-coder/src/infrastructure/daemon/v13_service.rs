@@ -490,7 +490,7 @@ impl CanonicalV13ReadService {
                 }
             }
         }
-        enforce_view_page_budget(result, at)
+        enforce_view_result_limit(result, at)
     }
 
     /// Сводка графа вызовов для одного метода.
@@ -2010,21 +2010,21 @@ fn error_result(at: Option<String>, code: RefusalCode, message: impl Into<String
     DomainResult::canonical_rejection(at, code, message)
 }
 
-fn enforce_view_page_budget(result: DomainResult, at: &str) -> DomainResult {
+fn enforce_view_result_limit(result: DomainResult, at: &str) -> DomainResult {
     // The application measures the projected collection before cutting it.
-    // Keep this final guard for any later enrichment of the public envelope.
-    if !result.ok || result.page.is_none() {
+    // Keep the actual transport ceiling after later response enrichment.
+    if !result.ok {
         return result;
     }
     let bytes =
         serde_json::to_vec(&result).expect("a domain result containing JSON values serializes");
-    if bytes.len() <= crate::application::v13::view::PAGE_BYTES {
+    if bytes.len() <= crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES {
         result
     } else {
         error_result(
             Some(at.to_string()),
             RefusalCode::ResultTooLarge,
-            "projected view page exceeds the 64 KiB page budget",
+            "projected view result exceeds the transport result limit",
         )
     }
 }
@@ -2063,7 +2063,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn computed_can_section_cannot_push_a_view_page_past_64_kib() {
+    fn computed_can_section_may_exceed_the_preferred_page_size() {
         let at = "main:Catalog.Товары";
         let mut result =
             crate::domain::invocation::DomainResult::success("logical collection page resolved");
@@ -2075,13 +2075,29 @@ mod tests {
         ]});
         result.data = Some(data.clone());
         assert!(
-            serde_json::to_vec(&result).unwrap().len() <= crate::application::v13::view::PAGE_BYTES
+            serde_json::to_vec(&result).unwrap().len()
+                <= crate::application::v13::view::PREFERRED_PAGE_BYTES
         );
         result.data = Some(super::project_view_sections(&data, &json!(["items", "can"])).unwrap());
         assert!(
-            serde_json::to_vec(&result).unwrap().len() > crate::application::v13::view::PAGE_BYTES
+            serde_json::to_vec(&result).unwrap().len()
+                > crate::application::v13::view::PREFERRED_PAGE_BYTES
         );
-        let checked = super::enforce_view_page_budget(result, at);
+        let checked = super::enforce_view_result_limit(result, at);
+        assert!(checked.ok);
+    }
+
+    #[test]
+    fn response_enrichment_cannot_exceed_the_transport_result_limit() {
+        let at = "main:Catalog.Товары";
+        let mut result =
+            crate::domain::invocation::DomainResult::success("logical collection page resolved");
+        result.at = Some(at.to_string());
+        result.page = Some(json!({"stoppedBy": "complete"}));
+        result.data = Some(json!({"at": at, "items": ["X".repeat(
+            crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES
+        )]}));
+        let checked = super::enforce_view_result_limit(result, at);
         assert!(!checked.ok);
         assert_eq!(checked.diagnostics[0]["code"], "result_too_large");
     }
