@@ -1,4 +1,7 @@
-use crate::application::result_store::{ViewCursorBinding, ViewCursorError, ViewCursorStore};
+use crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES;
+use crate::application::result_store::{
+    ViewCursorBinding, ViewCursorError, ViewCursorStore, ViewStoredPage,
+};
 use crate::domain::address::QualifiedAddress;
 use crate::domain::invocation::DomainResult;
 use crate::domain::node_view::NodeViewData;
@@ -6,8 +9,11 @@ use crate::domain::refusal::{RefusalCode, RefusalDetail};
 use serde_json::{Map, Value};
 use std::sync::Arc;
 
-const DEFAULT_LIMIT: usize = 50;
-const MAX_LIMIT: usize = 1_000;
+const DEFAULT_LIMIT: usize = 20;
+const MAX_LIMIT: usize = 50;
+pub(crate) const PREFERRED_PAGE_BYTES: usize = 64 * 1024;
+const CURSOR_SIZE_PLACEHOLDER: &str = "vc1.00000000000000000000000000000000";
+type ViewProjector<'a> = dyn Fn(&Value) -> Result<Value, ViewError> + 'a;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ViewFilter(Map<String, Value>);
@@ -224,13 +230,28 @@ impl<A: ViewReadAuthority> ViewService<A> {
     }
 
     pub(crate) fn view(&self, request: ViewRequest) -> DomainResult {
-        match self.try_view(&request) {
+        match self.try_view(&request, None) {
             Ok(result) => result,
             Err(error) => error_result(Some(request.at.to_string()), error),
         }
     }
 
-    fn try_view(&self, request: &ViewRequest) -> Result<DomainResult, ViewError> {
+    pub(crate) fn view_projected(
+        &self,
+        request: ViewRequest,
+        project: &ViewProjector<'_>,
+    ) -> DomainResult {
+        match self.try_view(&request, Some(project)) {
+            Ok(result) => result,
+            Err(error) => error_result(Some(request.at.to_string()), error),
+        }
+    }
+
+    fn try_view(
+        &self,
+        request: &ViewRequest,
+        project: Option<&ViewProjector<'_>>,
+    ) -> Result<DomainResult, ViewError> {
         let snapshot = self.authority.snapshot(&request.at)?;
         let canonical_at = self.authority.canonical_address(&request.at, &snapshot)?;
         let binding = request.binding(&canonical_at, &snapshot);
@@ -243,6 +264,7 @@ impl<A: ViewReadAuthority> ViewService<A> {
                 stored.node,
                 stored.items,
                 stored.next_cursor,
+                stored.stopped_by,
                 request,
                 stored.binding,
             );
@@ -259,6 +281,10 @@ impl<A: ViewReadAuthority> ViewService<A> {
         }
         let serialized = serde_json::to_value(view)
             .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))?;
+        let serialized = match project {
+            Some(project) => project(&serialized)?,
+            None => serialized,
+        };
         let mut object = serialized.as_object().cloned().ok_or_else(|| {
             ViewError::new(
                 RefusalCode::ProviderUnavailable,
@@ -270,6 +296,16 @@ impl<A: ViewReadAuthority> ViewService<A> {
             result.at = Some(canonical_at.to_string());
             result.data = Some(Value::Object(object));
             result.rev = Some(snapshot.revision);
+            if serde_json::to_vec(&result)
+                .expect("a domain result containing JSON values serializes")
+                .len()
+                > MAX_CANONICAL_RESULT_BYTES
+            {
+                return Err(ViewError::new(
+                    RefusalCode::ResultTooLarge,
+                    "logical node exceeds the transport result limit",
+                ));
+            }
             return Ok(result);
         };
         let items = items.as_array().cloned().ok_or_else(|| {
@@ -295,21 +331,20 @@ impl<A: ViewReadAuthority> ViewService<A> {
                 "view cursor offset is invalid",
             ));
         }
-        let end = offset.saturating_add(request.limit).min(items.len());
-        let mut page = node.as_object().cloned().ok_or_else(|| {
-            ViewError::new(
-                RefusalCode::ProviderUnavailable,
-                "stored node projection is not an object",
-            )
-        })?;
-        page.insert(
-            "items".to_string(),
-            Value::Array(items[offset..end].to_vec()),
-        );
-        let cursor = if end < items.len() {
+        let mut pages = prepare_pages(
+            &node,
+            &items[offset..],
+            request.limit,
+            &binding,
+            self.cursors.max_entries().saturating_add(1),
+        )?;
+        let first = pages.remove(0);
+        let cursor = if pages.is_empty() {
+            None
+        } else {
             Some(
                 self.cursors
-                    .insert_pages(binding.clone(), node, items, end, request.limit)
+                    .insert_prepared_pages(binding.clone(), node.clone(), pages)
                     .ok_or_else(|| {
                         ViewError::new(
                             RefusalCode::ResultTooLarge,
@@ -317,15 +352,8 @@ impl<A: ViewReadAuthority> ViewService<A> {
                         )
                     })?,
             )
-        } else {
-            None
         };
-        let mut result = DomainResult::success("logical collection page resolved");
-        result.at = Some(binding.canonical_at.clone());
-        result.data = Some(Value::Object(page));
-        result.rev = Some(binding.source_revision);
-        result.cursor = cursor;
-        Ok(result)
+        collection_result(&node, first.items, cursor, first.stopped_by, &binding)
     }
 
     fn stored_page_result(
@@ -333,23 +361,129 @@ impl<A: ViewReadAuthority> ViewService<A> {
         node: Value,
         items: Vec<Value>,
         cursor: Option<String>,
+        stopped_by: &'static str,
         _request: &ViewRequest,
         binding: ViewCursorBinding,
     ) -> Result<DomainResult, ViewError> {
-        let mut page = node.as_object().cloned().ok_or_else(|| {
-            ViewError::new(
-                RefusalCode::ProviderUnavailable,
-                "stored node projection is not an object",
-            )
-        })?;
-        page.insert("items".to_string(), Value::Array(items));
-        let mut result = DomainResult::success("logical collection page resolved");
-        result.at = Some(binding.canonical_at.clone());
-        result.data = Some(Value::Object(page));
-        result.rev = Some(binding.source_revision);
-        result.cursor = cursor;
-        Ok(result)
+        collection_result(&node, items, cursor, stopped_by, &binding)
     }
+}
+
+fn collection_result(
+    node: &Value,
+    items: Vec<Value>,
+    cursor: Option<String>,
+    stopped_by: &'static str,
+    binding: &ViewCursorBinding,
+) -> Result<DomainResult, ViewError> {
+    let mut page = node.as_object().cloned().ok_or_else(|| {
+        ViewError::new(
+            RefusalCode::ProviderUnavailable,
+            "stored node projection is not an object",
+        )
+    })?;
+    page.insert("items".to_string(), Value::Array(items));
+    let mut result = DomainResult::success("logical collection page resolved");
+    result.at = Some(binding.canonical_at.clone());
+    result.data = Some(Value::Object(page));
+    result.rev = Some(binding.source_revision.clone());
+    result.cursor = cursor;
+    result.page = Some(serde_json::json!({"stoppedBy": stopped_by}));
+    Ok(result)
+}
+
+fn prepare_pages(
+    node: &Value,
+    items: &[Value],
+    limit: usize,
+    binding: &ViewCursorBinding,
+    max_pages: usize,
+) -> Result<Vec<ViewStoredPage>, ViewError> {
+    let mut pages = Vec::new();
+    let mut offset = 0;
+    let base = collection_result(node, Vec::new(), None, "complete", binding)?;
+    let base_bytes = serde_json::to_vec(&base)
+        .expect("a domain result containing JSON values serializes")
+        .len();
+    if base_bytes > MAX_CANONICAL_RESULT_BYTES {
+        return Err(ViewError::new(
+            RefusalCode::ResultTooLarge,
+            "logical collection metadata exceeds the transport result limit",
+        ));
+    }
+    // Metadata alone may exceed the preferred page size. In that case an
+    // element cap and the transport limit still apply, without forcing every
+    // otherwise readable element onto its own page.
+    let prefer_page_bytes = base_bytes <= PREFERRED_PAGE_BYTES;
+    loop {
+        let mut page_items = Vec::new();
+        let stopped_by = loop {
+            if offset == items.len() {
+                break "complete";
+            }
+            if page_items.len() == limit {
+                break "limit";
+            }
+            let mut candidate = page_items.clone();
+            candidate.push(items[offset].clone());
+            let probe = collection_result(
+                node,
+                candidate.clone(),
+                (offset + 1 < items.len()).then(|| CURSOR_SIZE_PLACEHOLDER.to_string()),
+                "complete",
+                binding,
+            )?;
+            let bytes = serde_json::to_vec(&probe)
+                .expect("a domain result containing JSON values serializes")
+                .len();
+            if bytes > MAX_CANONICAL_RESULT_BYTES {
+                if page_items.is_empty() {
+                    return Err(ViewError::new(
+                        RefusalCode::ResultTooLarge,
+                        "one collection item exceeds the transport result limit",
+                    ));
+                }
+                break "bytes";
+            }
+            if prefer_page_bytes && bytes > PREFERRED_PAGE_BYTES && !page_items.is_empty() {
+                break "bytes";
+            }
+            page_items = candidate;
+            offset += 1;
+        };
+        pages.push(ViewStoredPage {
+            items: page_items,
+            stopped_by,
+        });
+        if pages.len() > max_pages {
+            return Err(ViewError::new(
+                RefusalCode::ResultTooLarge,
+                "logical collection exceeds the bounded cursor store",
+            ));
+        }
+        if offset == items.len() {
+            break;
+        }
+    }
+    let first = &pages[0];
+    let first_probe = collection_result(
+        node,
+        first.items.clone(),
+        (pages.len() > 1).then(|| CURSOR_SIZE_PLACEHOLDER.to_string()),
+        first.stopped_by,
+        binding,
+    )?;
+    if serde_json::to_vec(&first_probe)
+        .expect("a domain result containing JSON values serializes")
+        .len()
+        > MAX_CANONICAL_RESULT_BYTES
+    {
+        return Err(ViewError::new(
+            RefusalCode::ResultTooLarge,
+            "logical collection page exceeds the transport result limit",
+        ));
+    }
+    Ok(pages)
 }
 
 fn cursor_error(error: ViewCursorError) -> ViewError {
@@ -495,11 +629,11 @@ mod tests {
         let request = ViewRequest::new("main:Document.Заказ.Module.Object.Method").unwrap();
         assert_eq!(request.at(), "main:Document.Заказ.Module.Object.Method");
         assert_eq!(request.filter(), &ViewFilter::default());
-        assert_eq!(request.limit(), 50);
+        assert_eq!(request.limit(), 20);
         assert_eq!(
             ViewRequest::new("main:Document.Заказ.Module.Object.Method")
                 .unwrap()
-                .with_limit(1_001)
+                .with_limit(51)
                 .unwrap_err()
                 .code()
                 .as_str(),
@@ -530,6 +664,7 @@ mod tests {
             2
         );
         assert_eq!(first.data.as_ref().unwrap()["items"][1]["line"], 2);
+        assert_eq!(first.page.as_ref().unwrap()["stoppedBy"], "limit");
         let cursor = first.cursor.unwrap();
         assert!(cursor.starts_with("vc1."));
         assert!(cursor[4..].parse::<usize>().is_err());
@@ -550,6 +685,7 @@ mod tests {
         );
         assert_eq!(second.data.as_ref().unwrap()["items"][0]["line"], 3);
         assert!(second.cursor.is_none());
+        assert_eq!(second.page.as_ref().unwrap()["stoppedBy"], "complete");
 
         let methods = "main:Document.Заказ.Module.Object.Method";
         let mut authority = FixtureAuthority::new();
@@ -635,6 +771,304 @@ mod tests {
         let replay = service.view(request());
         assert_eq!(replay, page);
         assert!(page.cursor.is_some());
+    }
+
+    #[test]
+    fn addressed_collection_prefers_64_kib_pages_and_replays() {
+        let at = "main:Document.Заказ.Module.Object.Body";
+        let mut authority = FixtureAuthority::new();
+        authority.views.insert(
+            at.to_string(),
+            NodeViewData::Collection(CollectionView::new(
+                NodeView::new(at, "Body", "Тело модуля", Map::new()),
+                vec![
+                    json!({"line": 1, "text": "А".repeat(20_000)}),
+                    json!({"line": 2, "text": "Б".repeat(20_000)}),
+                    json!({"line": 3, "text": "В".repeat(20_000)}),
+                ],
+            )),
+        );
+        let service = ViewService::new(authority, ViewCursorStore::default());
+        let request = || ViewRequest::new(at).unwrap().with_limit(50).unwrap();
+        let first = service.view(request());
+        assert!(first.ok);
+        assert_eq!(first.page.as_ref().unwrap()["stoppedBy"], "bytes");
+        assert_eq!(
+            first.data.as_ref().unwrap()["items"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(serde_json::to_vec(&first).unwrap().len() <= super::PREFERRED_PAGE_BYTES);
+        let cursor = first.cursor.clone().unwrap();
+        let second = service.view(request().with_cursor(cursor.clone()));
+        assert_eq!(second, service.view(request().with_cursor(cursor)));
+        assert_eq!(second.page.as_ref().unwrap()["stoppedBy"], "bytes");
+        assert!(serde_json::to_vec(&second).unwrap().len() <= super::PREFERRED_PAGE_BYTES);
+        let last = service.view(request().with_cursor(second.cursor.unwrap()));
+        assert_eq!(last.page.as_ref().unwrap()["stoppedBy"], "complete");
+        assert!(last.cursor.is_none());
+        assert!(serde_json::to_vec(&last).unwrap().len() <= super::PREFERRED_PAGE_BYTES);
+    }
+
+    #[test]
+    fn projected_section_is_counted_before_publishing_a_replayable_cursor() {
+        let at = "main:Document.Заказ.Module.Object.Body";
+        let mut authority = FixtureAuthority::new();
+        authority.views.insert(
+            at.to_string(),
+            NodeViewData::Collection(CollectionView::new(
+                NodeView::new(at, "Body", "Тело модуля", Map::new()),
+                vec![
+                    json!({"line": 1, "text": "А".repeat(15_000)}),
+                    json!({"line": 2, "text": "Б".repeat(15_000)}),
+                ],
+            )),
+        );
+        let service = ViewService::new(authority, ViewCursorStore::default());
+        let project = |data: &serde_json::Value| -> Result<serde_json::Value, ViewError> {
+            let mut projected = data.clone();
+            projected["can"] = json!(["operation".repeat(1_000)]);
+            Ok(projected)
+        };
+        let request = || ViewRequest::new(at).unwrap().with_limit(50).unwrap();
+        let first = service.view_projected(request(), &project);
+        assert!(first.ok);
+        assert_eq!(first.page.as_ref().unwrap()["stoppedBy"], "bytes");
+        assert_eq!(
+            first.data.as_ref().unwrap()["items"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(serde_json::to_vec(&first).unwrap().len() <= super::PREFERRED_PAGE_BYTES);
+        let cursor = first.cursor.unwrap();
+        let next = service.view_projected(request().with_cursor(cursor.clone()), &project);
+        assert_eq!(
+            next,
+            service.view_projected(request().with_cursor(cursor), &project)
+        );
+        assert_eq!(next.page.as_ref().unwrap()["stoppedBy"], "complete");
+        assert!(next.cursor.is_none());
+        assert!(serde_json::to_vec(&next).unwrap().len() <= super::PREFERRED_PAGE_BYTES);
+    }
+
+    #[test]
+    fn projection_without_items_returns_one_node_without_a_spurious_cursor() {
+        let at = "main:Document.Заказ.Module.Object.Body";
+        let service = ViewService::new(FixtureAuthority::new(), ViewCursorStore::default());
+        let result = service.view_projected(ViewRequest::new(at).unwrap(), &|data| {
+            let mut projected = data.clone();
+            projected.as_object_mut().unwrap().remove("items");
+            Ok(projected)
+        });
+        assert!(result.ok);
+        assert!(result.data.as_ref().unwrap().get("items").is_none());
+        assert!(result.cursor.is_none());
+        assert!(result.page.is_none());
+    }
+
+    #[test]
+    fn one_item_over_the_page_target_is_returned_whole() {
+        let at = "main:Document.Заказ.Module.Object.Body";
+        let mut authority = FixtureAuthority::new();
+        authority.views.insert(
+            at.to_string(),
+            NodeViewData::Collection(CollectionView::new(
+                NodeView::new(at, "Body", "Тело модуля", Map::new()),
+                vec![json!({"line": 1, "text": "А".repeat(70_000)})],
+            )),
+        );
+        let service = ViewService::new(authority, ViewCursorStore::default());
+        let result = service.view(ViewRequest::new(at).unwrap());
+        assert!(result.ok);
+        assert_eq!(
+            result.data.as_ref().unwrap()["items"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(result.page.as_ref().unwrap()["stoppedBy"], "complete");
+        assert!(result.cursor.is_none());
+    }
+
+    #[test]
+    fn indivisible_large_items_keep_a_replayable_continuation() {
+        let at = "main:Document.Заказ.Module.Object.Body";
+        let mut authority = FixtureAuthority::new();
+        authority.views.insert(
+            at.to_string(),
+            NodeViewData::Collection(CollectionView::new(
+                NodeView::new(at, "Body", "Тело модуля", Map::new()),
+                vec![
+                    json!({"line": 1, "text": "А".repeat(70_000)}),
+                    json!({"line": 2, "text": "Б".repeat(70_000)}),
+                ],
+            )),
+        );
+        let service = ViewService::new(authority, ViewCursorStore::default());
+        let first = service.view(ViewRequest::new(at).unwrap());
+        assert!(first.ok);
+        assert_eq!(first.page.as_ref().unwrap()["stoppedBy"], "bytes");
+        assert_eq!(
+            first.data.as_ref().unwrap()["items"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(serde_json::to_vec(&first).unwrap().len() > super::PREFERRED_PAGE_BYTES);
+        let cursor = first.cursor.unwrap();
+        let request = || ViewRequest::new(at).unwrap().with_cursor(cursor.clone());
+        let last = service.view(request());
+        assert_eq!(last, service.view(request()));
+        assert!(last.ok);
+        assert_eq!(last.page.as_ref().unwrap()["stoppedBy"], "complete");
+        assert_eq!(
+            last.data.as_ref().unwrap()["items"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(last.cursor.is_none());
+    }
+
+    #[test]
+    fn empty_collection_with_metadata_over_the_page_target_is_returned_whole() {
+        let at = "main:Document.Заказ.Module.Object.Body";
+        let mut authority = FixtureAuthority::new();
+        let mut props = Map::new();
+        props.insert("description".to_string(), json!("А".repeat(70_000)));
+        authority.views.insert(
+            at.to_string(),
+            NodeViewData::Collection(CollectionView::new(
+                NodeView::new(at, "Body", "Тело модуля", props),
+                vec![],
+            )),
+        );
+        let result = ViewService::new(authority, ViewCursorStore::default())
+            .view(ViewRequest::new(at).unwrap());
+        assert!(result.ok);
+        assert_eq!(result.page.as_ref().unwrap()["stoppedBy"], "complete");
+        assert!(result.cursor.is_none());
+    }
+
+    #[test]
+    fn metadata_over_the_page_target_does_not_force_one_item_per_page() {
+        let at = "main:Document.Заказ.Module.Object.Body";
+        let mut authority = FixtureAuthority::new();
+        let mut props = Map::new();
+        props.insert("description".to_string(), json!("А".repeat(70_000)));
+        authority.views.insert(
+            at.to_string(),
+            NodeViewData::Collection(CollectionView::new(
+                NodeView::new(at, "Body", "Тело модуля", props),
+                (0..20).map(|line| json!({"line": line})).collect(),
+            )),
+        );
+        let result = ViewService::new(authority, ViewCursorStore::default())
+            .view(ViewRequest::new(at).unwrap());
+        assert!(result.ok);
+        assert_eq!(
+            result.data.as_ref().unwrap()["items"]
+                .as_array()
+                .unwrap()
+                .len(),
+            20
+        );
+        assert_eq!(result.page.as_ref().unwrap()["stoppedBy"], "complete");
+    }
+
+    #[test]
+    fn item_over_the_transport_limit_is_refused_without_a_cursor() {
+        let at = "main:Document.Заказ.Module.Object.Body";
+        let mut authority = FixtureAuthority::new();
+        authority.views.insert(
+            at.to_string(),
+            NodeViewData::Collection(CollectionView::new(
+                NodeView::new(at, "Body", "Тело модуля", Map::new()),
+                vec![json!({"text": "X".repeat(crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES)})],
+            )),
+        );
+        let result = ViewService::new(authority, ViewCursorStore::default())
+            .view(ViewRequest::new(at).unwrap());
+        assert!(!result.ok);
+        assert_eq!(result.diagnostics[0]["code"], "result_too_large");
+        assert!(result.cursor.is_none());
+    }
+
+    #[test]
+    fn node_over_the_transport_limit_is_refused_explicitly() {
+        let at = "main:Document.Заказ.Module.Object";
+        let mut authority = FixtureAuthority::new();
+        let mut props = Map::new();
+        props.insert(
+            "description".to_string(),
+            json!("X".repeat(crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES)),
+        );
+        authority.views.insert(
+            at.to_string(),
+            NodeViewData::Node(NodeView::new(at, "Module", "Модуль объекта", props)),
+        );
+        let result = ViewService::new(authority, ViewCursorStore::default())
+            .view(ViewRequest::new(at).unwrap());
+        assert!(!result.ok);
+        assert_eq!(result.diagnostics[0]["code"], "result_too_large");
+        assert!(result.cursor.is_none());
+    }
+
+    #[test]
+    fn a_final_page_uses_its_actual_size_without_a_placeholder_cursor() {
+        let at = "main:Document.Заказ.Module.Object.Body";
+        let read = |description_len| {
+            let mut authority = FixtureAuthority::new();
+            let mut props = Map::new();
+            props.insert(
+                "description".to_string(),
+                json!("X".repeat(description_len)),
+            );
+            authority.views.insert(
+                at.to_string(),
+                NodeViewData::Collection(CollectionView::new(
+                    NodeView::new(at, "Body", "Тело модуля", props),
+                    vec![json!(1)],
+                )),
+            );
+            ViewService::new(authority, ViewCursorStore::default())
+                .view(ViewRequest::new(at).unwrap())
+        };
+        let baseline = read(0);
+        assert!(baseline.ok);
+        let exact_size = crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES;
+        let result = read(exact_size - serde_json::to_vec(&baseline).unwrap().len());
+        assert!(result.ok);
+        assert_eq!(serde_json::to_vec(&result).unwrap().len(), exact_size);
+        assert_eq!(result.page.as_ref().unwrap()["stoppedBy"], "complete");
+        assert!(result.cursor.is_none());
+    }
+
+    #[test]
+    fn collection_exceeding_cursor_capacity_is_refused_before_a_cursor_is_issued() {
+        use crate::application::result_store::DEFAULT_TTL;
+        let at = "main:Document.Заказ.Module.Object.Body";
+        let mut authority = FixtureAuthority::new();
+        authority.views.insert(
+            at.to_string(),
+            NodeViewData::Collection(CollectionView::new(
+                NodeView::new(at, "Body", "Тело модуля", Map::new()),
+                (0..100).map(|line| json!({"line": line})).collect(),
+            )),
+        );
+        let store = ViewCursorStore::new(DEFAULT_TTL, 2, 1024 * 1024);
+        let result = ViewService::new(authority, store)
+            .view(ViewRequest::new(at).unwrap().with_limit(1).unwrap());
+        assert!(!result.ok);
+        assert_eq!(result.diagnostics[0]["code"], "result_too_large");
+        assert!(result.cursor.is_none());
     }
 
     /// Уточнение обязано пережить дорогу от чтения до провода. Разбирать

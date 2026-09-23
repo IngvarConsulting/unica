@@ -944,7 +944,7 @@ mod tests {
             ),
             (json!({}), "bad_value", "output must be non-empty text"),
             (
-                json!({"output": "/tmp/main.cf"}),
+                json!({"output": root.path().join("main.cf").to_string_lossy()}),
                 "bad_value",
                 "workspace-relative",
             ),

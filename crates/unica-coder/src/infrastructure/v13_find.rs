@@ -439,7 +439,7 @@ fn retain_child(
 }
 
 fn read_descriptor_head(root: &RetainedDirectoryCapability, relative: &Path) -> Option<Vec<u8>> {
-    root.read_relative_regular_bounded(relative, DESCRIPTOR_HEAD_BYTES)
+    root.read_relative_regular_prefix(relative, DESCRIPTOR_HEAD_BYTES)
         .ok()
 }
 
@@ -506,7 +506,7 @@ fn find_checkpoint(
 
 #[cfg(test)]
 mod tests {
-    use super::{LayoutFindSource, WorkspaceFindDirectoryBuilder};
+    use super::{LayoutFindSource, WorkspaceFindDirectoryBuilder, DESCRIPTOR_HEAD_BYTES};
     use crate::application::v13::find::FindRequest;
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::ProviderDeadline;
@@ -667,6 +667,41 @@ mod tests {
         assert_eq!(located.placed_path(), Some("Catalogs/Валюты.xml"));
         // Мост не гадает: близкого адреса для него не существует.
         assert!(index.locate_address("main:Catalog.Валют").is_none());
+    }
+
+    #[test]
+    fn large_configuration_descriptor_still_has_a_layout_address() {
+        let fixture = Fixture::new();
+        let descriptor = fixture.source.join("Configuration.xml");
+        let mut contents = std::fs::read(&descriptor).unwrap();
+        contents.extend(vec![b' '; DESCRIPTOR_HEAD_BYTES + 1]);
+        std::fs::write(&descriptor, contents).unwrap();
+
+        let index = fixture.directory();
+        let entry = index
+            .locate_address("main:Configuration")
+            .expect("the beginning of a large descriptor still places the root");
+        assert_eq!(entry.placed_path(), Some("Configuration.xml"));
+    }
+
+    #[test]
+    fn linked_configuration_descriptor_is_not_admitted_by_prefix_read() {
+        use crate::infrastructure::platform::testing::{
+            create_file_link_fixture_for_test, FileLinkFixtureOutcome,
+        };
+
+        let fixture = Fixture::new();
+        let descriptor = fixture.source.join("Configuration.xml");
+        let physical = fixture.source.join("physical-configuration.xml");
+        std::fs::rename(&descriptor, &physical).unwrap();
+        match create_file_link_fixture_for_test(&physical, &descriptor).unwrap() {
+            FileLinkFixtureOutcome::Created => {}
+            FileLinkFixtureOutcome::Unsupported
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => return,
+        }
+
+        let index = fixture.directory();
+        assert!(index.locate_address("main:Configuration").is_none());
     }
 
     #[test]

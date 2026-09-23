@@ -72,6 +72,37 @@ def consumer_path(target: str) -> str:
     )
 
 
+def run_bootstrap_command(
+    command: list[str], environment: dict[str, str], timeout_seconds: float
+) -> tuple[int, str, str]:
+    # Regular files do not need EOF from descendants after the parent exits.
+    # A captured pipe can remain open in a Windows grandchild after timeout.
+    with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stdout_log, tempfile.TemporaryFile(
+        mode="w+t", encoding="utf-8"
+    ) as stderr_log:
+        try:
+            result = subprocess.run(
+                command,
+                stdout=stdout_log,
+                stderr=stderr_log,
+                timeout=timeout_seconds,
+                check=False,
+                env=environment,
+            )
+        except subprocess.TimeoutExpired as error:
+            stderr_log.seek(0)
+            tail = stderr_log.read()[-2000:].strip()
+            raise SystemExit(
+                f"packaged bootstrap smoke timed out after {timeout_seconds:g}s"
+                + (f": {tail}" if tail else "")
+            ) from error
+        stdout_log.seek(0)
+        stderr_log.seek(0)
+        stdout = result.stdout if result.stdout is not None else stdout_log.read()
+        stderr = result.stderr if result.stderr is not None else stderr_log.read()
+    return result.returncode, stdout, stderr
+
+
 def smoke(
     plugin_root: Path,
     target: str,
@@ -96,35 +127,30 @@ def smoke(
     # build artifact other steps read, so it must not be left neutralised.
     try:
         with tempfile.TemporaryDirectory(prefix="unica-bootstrap-smoke-") as directory:
-            root = Path(directory)
+            # macOS /var is a symlink to /private/var; the daemon deliberately
+            # refuses symlinks in its state path. Give it a physical root.
+            root = Path(directory).resolve()
             environment = os.environ.copy()
             environment["CODEX_HOME"] = str(root / "codex-home")
             environment["UNICA_RUNTIME_CACHE_DIR"] = str(root / "runtime-cache")
+            environment["UNICA_PROVIDER_STATE_DIR"] = str(root / "provider-state")
             environment["PATH"] = consumer_path(target)
             if shutil.which("node", path=environment["PATH"]):
                 raise SystemExit("Node.js leaked into the bootstrap consumer PATH")
-            try:
-                result = subprocess.run(
-                    [str(bootstrap), "verify", "--plugin-root", str(plugin_root)],
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout_seconds,
-                    check=False,
-                    env=environment,
-                )
-            except subprocess.TimeoutExpired as error:
-                raise SystemExit(
-                    f"packaged bootstrap smoke timed out after {timeout_seconds:g}s"
-                ) from error
+            returncode, stdout, stderr = run_bootstrap_command(
+                [str(bootstrap), "verify", "--plugin-root", str(plugin_root)],
+                environment,
+                timeout_seconds,
+            )
     finally:
         if original_manifest is not None:
             manifest_path.write_text(original_manifest, encoding="utf-8")
 
-    detail = "\n".join(part.strip() for part in (result.stderr, result.stdout) if part.strip())
+    detail = "\n".join(part.strip() for part in (stderr, stdout) if part.strip())
     if "overflowed its stack" in detail:
         raise SystemExit(f"packaged bootstrap overflowed its stack: {detail}")
     if expect_download_failure:
-        if result.returncode == 0:
+        if returncode == 0:
             raise SystemExit(
                 "packaged bootstrap accepted a runtime archive whose checksum was neutralised"
             )
@@ -138,14 +164,14 @@ def smoke(
                 f"{detail or 'no process output'}"
             )
         return
-    if result.returncode != 0:
+    if returncode != 0:
         raise SystemExit(
-            f"packaged bootstrap exited with {result.returncode}: "
+            f"packaged bootstrap exited with {returncode}: "
             f"{detail or 'no process output'}"
         )
     if not (
-        "verified Unica " in result.stderr
-        and " package, runtime, and MCP tools at " in result.stderr
+        "verified Unica " in stderr
+        and " package, runtime, and MCP tools at " in stderr
     ):
         raise SystemExit("packaged bootstrap did not report successful MCP verification")
 

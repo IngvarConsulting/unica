@@ -24,7 +24,7 @@ use super::v13_infobase_exports::{
     CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
 };
 use crate::application::invocation_store::ToolIdentity;
-use crate::domain::cancellation::CancellationToken;
+use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
 use crate::domain::invocation::{DomainResult, SafeIdentityHash};
 use crate::domain::refusal::RefusalCode;
 use crate::domain::workspace::WorkspaceContext;
@@ -475,6 +475,12 @@ fn invoke_runner(
     cancellation: &CancellationToken,
     dry_run: bool,
 ) -> Result<Value, DomainResult> {
+    if cancellation.is_cancelled() {
+        return Err(reject(
+            RefusalCode::Cancelled,
+            "upload cancelled before provider launch",
+        ));
+    }
     let mut args = vec![
         "--config".to_string(),
         prepared
@@ -506,9 +512,18 @@ fn invoke_runner(
             env_remove: Vec::new(),
             capture_limits: Some((RUNNER_OUTPUT_LIMIT, RUNNER_OUTPUT_LIMIT)),
             timeout: None,
-            cancellation: cancellation.clone(),
+            // Once load starts, let the runner finish its database operation and
+            // return the real receipt even if the caller requests cancellation.
+            cancellation: if dry_run {
+                cancellation.clone()
+            } else {
+                cancellation.protect_process_on_spawn()
+            },
         })
         .map_err(|error| {
+            if error.starts_with(CANCELLED_PREFIX) {
+                return reject(RefusalCode::Cancelled, "cancelled before provider launch");
+            }
             reject_absent_runner(format!(
                 "failed to start bundled v8-runner: {}",
                 redactor(&error)
@@ -1331,6 +1346,47 @@ mod tests {
             );
             assert_eq!(result.diagnostics[0]["code"], expected, "{code}");
             assert_eq!(map_runner_code(code).outcome(), outcome, "{code}");
+        }
+    }
+
+    #[test]
+    fn upload_detaches_only_its_executing_runner_call() {
+        let root = workspace();
+        let prepared = import_of(root.path(), "dist/main.cf", None, false, None);
+        let already_cancelled = CancellationToken::new();
+        already_cancelled.cancel();
+        let never_called = SequenceRunner::new(vec![]);
+        assert!(invoke_runner(
+            &prepared,
+            &tool(root.path()),
+            &never_called,
+            &already_cancelled,
+            false,
+        )
+        .is_err());
+        assert_eq!(never_called.call_count(), 0);
+
+        for dry_run in [false, true] {
+            let runner = SequenceRunner::new(vec![process(
+                envelope(&prepared.arguments.input, ArtifactKind::Cf, None, !dry_run),
+                true,
+            )]);
+            let cancellation = CancellationToken::new();
+            assert!(invoke_runner(
+                &prepared,
+                &tool(root.path()),
+                &runner,
+                &cancellation,
+                dry_run,
+            )
+            .is_ok());
+            let (_, child) = runner.calls.lock().unwrap()[0]
+                .cancellation
+                .spawn_with_gate(|| Ok(()))
+                .unwrap();
+            cancellation.cancel();
+            assert_eq!(cancellation.protected_process_started(), !dry_run);
+            assert_eq!(child.is_cancelled(), dry_run);
         }
     }
 }

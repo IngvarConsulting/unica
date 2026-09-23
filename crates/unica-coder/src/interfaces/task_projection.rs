@@ -345,6 +345,7 @@ mod tests {
             next: vec![],
             rev: None,
             cursor: None,
+            page: None,
         };
         let direct = match super::project_direct_terminal(
             &crate::application::receipt_ledger::ReceiptTerminalOutcome::Completed {

@@ -221,16 +221,29 @@ impl DaemonStateDirectory {
         Ok(retained)
     }
 
+    #[cfg(test)]
     pub(crate) fn acquire_spawn_lock(&self, timeout: Duration) -> Result<SpawnLock, String> {
+        self.acquire_spawn_lock_before(Instant::now() + timeout)
+    }
+
+    pub(crate) fn acquire_spawn_lock_before(&self, deadline: Instant) -> Result<SpawnLock, String> {
+        if Instant::now() >= deadline {
+            return Err("timed out waiting for daemon spawn ownership".to_string());
+        }
         self.verify_identity()?;
         let file = open_directory_ownership_lock(&self.directory, OsStr::new(SPAWN_LOCK_NAME))
             .map_err(|error| daemon_io_error("open daemon spawn ownership object", error))?;
-        let deadline = Instant::now() + timeout;
         loop {
+            if Instant::now() >= deadline {
+                return Err("timed out waiting for daemon spawn ownership".to_string());
+            }
             match file.try_lock_exclusive() {
                 Ok(()) => return Ok(SpawnLock { file }),
                 Err(error) if lock_is_contended(&error) && Instant::now() < deadline => {
-                    std::thread::sleep(Duration::from_millis(10));
+                    std::thread::sleep(
+                        Duration::from_millis(10)
+                            .min(deadline.saturating_duration_since(Instant::now())),
+                    );
                 }
                 Err(error) if lock_is_contended(&error) => {
                     return Err("timed out waiting for daemon spawn ownership".to_string())
@@ -509,6 +522,16 @@ mod tests {
                 state_root.join(format!("daemon-p5-{}", identity.as_str()))
             );
         }
+    }
+
+    #[test]
+    fn expired_spawn_deadline_cannot_acquire_even_a_free_lock() {
+        let root = tempfile::tempdir().unwrap();
+        let state_root = std::fs::canonicalize(root.path()).unwrap();
+        let state =
+            DaemonStateDirectory::open(&state_root, &CoreIdentity::production_v5()).unwrap();
+        assert!(state.acquire_spawn_lock_before(Instant::now()).is_err());
+        assert!(state.acquire_spawn_lock(Duration::from_millis(50)).is_ok());
     }
 
     #[test]

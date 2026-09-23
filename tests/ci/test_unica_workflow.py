@@ -771,6 +771,9 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertEqual([(upload["name"], upload["retention-days"]) for upload in uploads(assessment)], [("unica-release-assessment", 1)])
 
     def test_packaged_bootstrap_is_smoked_on_every_supported_host(self) -> None:
+        windows_cleanup = step_named(job(self.release, "build-tools"), "Check bootstrap smoke process cleanup on Windows")
+        self.assertEqual(condition(windows_cleanup), "matrix.target == 'win-x64'")
+        self.assertIn("tests.ci.test_smoke_unica_bootstrap", windows_cleanup["run"])
         probe = job(self.release, "probe-thin-bootstrap")
         smoke = job(self.release, "smoke-thin-plugin")
         expected_targets = {
@@ -833,6 +836,15 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         }
         matched = {name for name in upload_names if fnmatch.fnmatch(name, "unica-runtime-*")}
         self.assertEqual(matched, {"unica-runtime-${{ matrix.target }}"})
+        downloaded = steps_using(publish, "actions/download-artifact")
+        self.assertEqual(
+            [(step["with"].get("pattern"), step["with"].get("path")) for step in downloaded],
+            [("unica-runtime-*", "dist/runtime"), ("unica-metadata-*", "dist/metadata")],
+        )
+        pair = step_named(publish, "Pair core archives with their metadata")["run"]
+        self.assertIn('test -f "dist/metadata/unica-runtime-${target}.json"', pair)
+        self.assertIn('cp "dist/metadata/unica-runtime-${target}.json" dist/runtime/', pair)
+        self.assertIn("verify-release-assets.py --asset-dir dist/runtime", pair)
         self.assertFalse(any("install-unica" in value for value in strings(publish)))
         self.assertIn("gh release download", script(verify))
         self.assertIn("verify-release-assets.py", script(verify))

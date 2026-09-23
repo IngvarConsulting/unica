@@ -5,7 +5,7 @@
 use super::protocol::InvocationRequest;
 use super::runner_011::Runner011ProcessRunner;
 use crate::application::invocation_store::ToolIdentity;
-use crate::domain::cancellation::CancellationToken;
+use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
 use crate::domain::invocation::{DomainResult, SafeIdentityHash};
 use crate::domain::refusal::{RefusalCode, RefusalDetail};
 use crate::domain::workspace::WorkspaceContext;
@@ -754,6 +754,13 @@ fn invoke_runner(
     cancellation: &CancellationToken,
     dry_run: bool,
 ) -> Result<Value, DomainResult> {
+    if cancellation.is_cancelled() {
+        return Err(reject(
+            prepared.operation,
+            RefusalCode::Cancelled,
+            "cancelled before provider launch",
+        ));
+    }
     let mut args = vec![
         "--config".to_string(),
         prepared
@@ -815,15 +822,26 @@ fn invoke_runner(
         env_remove: Vec::new(),
         capture_limits: Some((RUNNER_OUTPUT_LIMIT, RUNNER_OUTPUT_LIMIT)),
         timeout: None,
-        cancellation: cancellation.clone(),
+        cancellation: if !dry_run && prepared.operation == ExportOperation::Restore {
+            cancellation.protect_process_on_spawn()
+        } else {
+            cancellation.clone()
+        },
     });
     let output = match output {
         Ok(output) => output,
         Err(error) => {
+            if error.starts_with(CANCELLED_PREFIX) {
+                return Err(reject(
+                    prepared.operation,
+                    RefusalCode::Cancelled,
+                    "cancelled before provider launch",
+                ));
+            }
             return Err(missing_runner_rejection(
                 Some(prepared.operation.name().to_string()),
                 format!("failed to start bundled v8-runner: {}", redactor(&error)),
-            ))
+            ));
         }
     };
     parse_runner_output(prepared.operation, output, dry_run)
@@ -1779,6 +1797,46 @@ mod tests {
             fs::read(root.path().join("transfer/base.dt")).unwrap(),
             b"transfer bytes"
         );
+    }
+
+    #[test]
+    fn restore_detaches_only_its_mutating_call() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join(CONFIG_NAME), "format: DESIGNER\n").unwrap();
+        fs::create_dir_all(root.path().join("transfer")).unwrap();
+        let input = root.path().join("transfer/base.dt");
+        fs::write(&input, b"transfer bytes").unwrap();
+        let tool = BundledTool {
+            program: root.path().join("v8-runner"),
+            warnings: Vec::new(),
+            missing: None,
+        };
+        for (operation, dry_run, protected) in [
+            (ExportOperation::Restore, false, true),
+            (ExportOperation::Restore, true, false),
+            (ExportOperation::Configuration, false, false),
+        ] {
+            let prepared = if operation == ExportOperation::Restore {
+                prepared_restore(root.path(), dry_run, None, RestoreMode::Replace)
+            } else {
+                prepared(root.path(), dry_run, None)
+            };
+            let envelope = if operation == ExportOperation::Restore {
+                restore_apply_envelope(&input, "replace", "restored")
+            } else {
+                json!({"ok":true,"command":"infobase.configuration.export","data":{}})
+            };
+            let runner = SequenceRunner::new(vec![process(envelope)]);
+            let cancellation = CancellationToken::new();
+            let _ = invoke_runner(&prepared, &tool, &runner, &cancellation, dry_run);
+            let (_, child) = runner.calls.lock().unwrap()[0]
+                .cancellation
+                .spawn_with_gate(|| Ok(()))
+                .unwrap();
+            cancellation.cancel();
+            assert_eq!(cancellation.protected_process_started(), protected);
+            assert_eq!(child.is_cancelled(), !protected);
+        }
     }
 
     #[test]

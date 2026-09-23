@@ -150,6 +150,14 @@ impl V5ActiveTaskCancellations {
         }
     }
 
+    fn protected_started(&self, task_id: crate::domain::invocation::TaskId) -> bool {
+        self.tokens
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&task_id)
+            .is_some_and(CancellationToken::protected_process_started)
+    }
+
     fn is_empty(&self) -> bool {
         self.tokens
             .lock()
@@ -330,6 +338,18 @@ impl FailStopWatchdogs {
 /// The grace a promised or cancelled attempt gets before the process
 /// fail-stops on it.
 const FAIL_STOP_GRACE: Duration = TASK_RECONCILIATION_BUDGET;
+
+fn task_outcome_after_cancel(
+    candidate: ReceiptTerminalOutcome,
+    cancel_requested: bool,
+    protected_started: bool,
+) -> ReceiptTerminalOutcome {
+    if cancel_requested && !protected_started {
+        ReceiptTerminalOutcome::Cancelled
+    } else {
+        candidate
+    }
+}
 
 /// What the inline worker hands back to the session handler.
 enum InlineWorkerReport {
@@ -2332,7 +2352,14 @@ impl V5ReceiptRuntime {
     /// A cancelled Working Task gets the grace to reach its terminal before
     /// the process fail-stops on it.
     fn arm_cancel_grace(&self, record: &V5StoredInvocationRecord) {
-        if record.task == V5StoredTask::Working {
+        // The ordinary grace protects a cancelled, non-cooperative attempt.
+        // A protected runner has crossed the process launch boundary; killing
+        // the daemon here would discard the database operation's receipt.
+        if record.task == V5StoredTask::Working
+            && !self
+                .active_task_cancellations
+                .protected_started(record.task_id)
+        {
             self.fail_stop_watchdogs.arm(
                 record.receipt_key_digest.clone(),
                 self.invocation_executor.now(),
@@ -2451,11 +2478,18 @@ impl V5ReceiptRuntime {
                         // it the grace before the process fail-stops on it.
                         self.active_task_cancellations
                             .cancel(reserved.key().reserved_task_id());
-                        self.fail_stop_watchdogs.arm(
-                            crate::application::receipt_ledger::receipt_key_digest(reserved.key()),
-                            self.invocation_executor.now(),
-                            FAIL_STOP_GRACE,
-                        );
+                        if !self
+                            .active_task_cancellations
+                            .protected_started(reserved.key().reserved_task_id())
+                        {
+                            self.fail_stop_watchdogs.arm(
+                                crate::application::receipt_ledger::receipt_key_digest(
+                                    reserved.key(),
+                                ),
+                                self.invocation_executor.now(),
+                                FAIL_STOP_GRACE,
+                            );
+                        }
                         return self
                             .reply_for_existing_state(ReceiptState::Reserved(reserved), deadline);
                     }
@@ -3222,7 +3256,8 @@ impl V5ReceiptRuntime {
                 self.hooks
                     .callback_invocation_id(reservation.key().invocation_id());
                 let result = prepared.execute(cancellation.clone());
-                let outcome = if cancellation.is_cancelled() {
+                let protected_started = cancellation.protected_process_started();
+                let outcome = if cancellation.is_cancelled() && !protected_started {
                     ReceiptTerminalOutcome::Cancelled
                 } else {
                     match result {
@@ -3531,7 +3566,8 @@ impl V5ReceiptRuntime {
             .event(V5ReceiptRuntimeEventKind::ExecuteEntered, self.epoch_ms());
         self.hooks.callback_invocation_id(invocation_id);
         let result = prepared.execute(cancellation.clone());
-        if cancellation.is_cancelled() {
+        let protected_started = cancellation.protected_process_started();
+        if cancellation.is_cancelled() && !protected_started {
             ReceiptTerminalOutcome::Cancelled
         } else {
             match result {
@@ -4037,7 +4073,8 @@ impl V5ReceiptRuntime {
                 .event(V5ReceiptRuntimeEventKind::ExecuteEntered, epoch_ms);
             self.hooks.callback_invocation_id(invocation_id);
             let result = prepared.execute(cancellation.clone());
-            let outcome = if cancellation.is_cancelled() {
+            let protected_started = cancellation.protected_process_started();
+            let outcome = if cancellation.is_cancelled() && !protected_started {
                 ReceiptTerminalOutcome::Cancelled
             } else {
                 match result {
@@ -4095,7 +4132,8 @@ impl V5ReceiptRuntime {
             .event(V5ReceiptRuntimeEventKind::ExecuteEntered, epoch_ms);
         self.hooks.callback_invocation_id(invocation_id);
         let result = prepared.execute(cancellation.clone());
-        let outcome = if cancellation.is_cancelled() {
+        let protected_started = cancellation.protected_process_started();
+        let outcome = if cancellation.is_cancelled() && !protected_started {
             ReceiptTerminalOutcome::Cancelled
         } else {
             match result {
@@ -4140,7 +4178,8 @@ impl V5ReceiptRuntime {
                     runtime.epoch_ms(),
                 );
                 let result = prepared.execute(cancellation.clone());
-                let outcome = if cancellation.is_cancelled() {
+                let protected_started = cancellation.protected_process_started();
+                let outcome = if cancellation.is_cancelled() && !protected_started {
                     ReceiptTerminalOutcome::Cancelled
                 } else {
                     match result {
@@ -4224,11 +4263,11 @@ impl V5ReceiptRuntime {
             }
             _ => return Err(ReceiptLedgerError::TaskBoundMismatch),
         };
-        let outcome = if record.cancel_requested {
-            ReceiptTerminalOutcome::Cancelled
-        } else {
-            candidate
-        };
+        let outcome = task_outcome_after_cancel(
+            candidate,
+            record.cancel_requested,
+            self.active_task_cancellations.protected_started(task_id),
+        );
         let terminal = match canonical_v5_terminal(&outcome) {
             Ok(terminal) => terminal,
             Err(CanonicalTerminalError::ResultTooLarge) => {

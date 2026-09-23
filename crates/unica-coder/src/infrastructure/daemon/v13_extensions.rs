@@ -10,7 +10,7 @@ use super::v13_infobase_exports::{
     CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
 };
 use crate::application::invocation_store::ToolIdentity;
-use crate::domain::cancellation::CancellationToken;
+use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
 use crate::domain::invocation::{DomainResult, SafeIdentityHash};
 use crate::domain::refusal::RefusalCode;
 use crate::domain::workspace::WorkspaceContext;
@@ -155,6 +155,7 @@ impl PreparedExtensions {
             Err(message) => missing_runner_rejection(Some(self.operation.name().into()), message),
         }
     }
+
     fn fail(&self, code: RefusalCode, message: impl Into<String>) -> DomainResult {
         rejection(self.operation, code, message)
     }
@@ -290,9 +291,18 @@ impl PreparedExtensions {
                 env_remove: Vec::new(),
                 capture_limits: Some((RUNNER_OUTPUT_LIMIT, RUNNER_OUTPUT_LIMIT)),
                 timeout: None,
-                cancellation: cancellation.clone(),
+                // Listing and previews remain cancellable. A dispatched
+                // mutation must return its provider receipt before settling.
+                cancellation: if preview || self.operation.reads() {
+                    cancellation.clone()
+                } else {
+                    cancellation.protect_process_on_spawn()
+                },
             })
             .map_err(|error| {
+                if error.starts_with(CANCELLED_PREFIX) {
+                    return self.fail(RefusalCode::Cancelled, "cancelled before provider launch");
+                }
                 missing_runner_rejection(
                     Some(self.operation.name().into()),
                     format!("failed to start bundled v8-runner: {}", redactor(&error)),
@@ -900,5 +910,25 @@ mod tests {
         assert!(!result.ok);
         assert!(result.changed.is_empty());
         assert_eq!(result.diagnostics[0]["detailCode"], "provider_absent");
+    }
+
+    #[test]
+    fn only_mutating_extension_calls_detach_from_cancellation() {
+        for operation in [Operation::List, Operation::Delete, Operation::Activate] {
+            let root = tempfile::tempdir().unwrap();
+            let prepared = fixture(root.path(), operation);
+            let runner = SequenceRunner::new(vec![envelope(&prepared, false)]);
+            let cancellation = CancellationToken::new();
+            assert!(prepared
+                .invoke(&runner, &tool(root.path()), &cancellation, false)
+                .is_ok());
+            let (_, child) = runner.calls.lock().unwrap()[0]
+                .cancellation
+                .spawn_with_gate(|| Ok(()))
+                .unwrap();
+            cancellation.cancel();
+            assert_eq!(child.is_cancelled(), operation.reads());
+            assert_eq!(cancellation.protected_process_started(), !operation.reads());
+        }
     }
 }

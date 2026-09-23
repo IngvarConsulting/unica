@@ -1079,7 +1079,7 @@ mod tests {
     fn preview_refuses_a_target_outside_the_workspace_an_undeclared_set_or_a_write() {
         let root = workspace();
         let mut outside = envelope(root.path(), "main", "FULL", None, false);
-        outside["data"]["target_path"] = json!("/var/tmp/elsewhere/main");
+        outside["data"]["target_path"] = json!(root.path().parent().unwrap().to_string_lossy());
         let runner = SequenceRunner::new(vec![process(outside, true)]);
         let result = run(
             root.path(),

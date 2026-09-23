@@ -760,13 +760,18 @@ impl ManagedChild {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let mut process_tree = ProcessTree::prepare(&mut process).map_err(process_error)?;
-        let mut child = process.spawn().map_err(process_error)?;
-        if let Err(error) = process_tree.attach(&mut child) {
-            let _ = process_tree.terminate(&mut child);
-            let _ = child.kill();
-            let _ = child.try_wait();
-            return Err(process_error(error));
-        }
+        // Cancellation and OS launch (including Windows Job attachment) are
+        // serialized. A failed launch never claims the protected phase.
+        let (child, cancellation) = cancellation.spawn_with_gate(|| {
+            let mut child = process.spawn().map_err(process_error)?;
+            if let Err(error) = process_tree.attach(&mut child) {
+                let _ = process_tree.terminate(&mut child);
+                let _ = child.kill();
+                let _ = child.try_wait();
+                return Err(process_error(error));
+            }
+            Ok(child)
+        })?;
 
         Ok(Self {
             child,
@@ -1166,7 +1171,17 @@ pub(super) fn detach_std_handles_from_inheritance() {
 pub(super) fn detach_std_handles_from_inheritance() {}
 
 impl ManagedStartupChild {
-    pub(crate) fn spawn_configured(mut process: Command) -> Result<Self, String> {
+    pub(crate) fn spawn_configured(process: Command) -> Result<Self, String> {
+        Self::spawn_configured_before(process, Instant::now() + TERMINATION_WAIT_LIMIT)
+    }
+
+    pub(crate) fn spawn_configured_before(
+        mut process: Command,
+        deadline: Instant,
+    ) -> Result<Self, String> {
+        if Instant::now() >= deadline {
+            return Err("startup deadline expired before process creation".to_string());
+        }
         let process_tree = ProcessTree::prepare_detachable(&mut process).map_err(process_error)?;
         let child = process.spawn().map_err(process_error)?;
         let mut managed = Self {
@@ -1181,7 +1196,11 @@ impl ManagedStartupChild {
             .process_tree
             .attach(managed.child.as_mut().expect("startup child exists"))
         {
-            let cleanup = managed.terminate_bounded(TERMINATION_WAIT_LIMIT);
+            let cleanup = managed.terminate_bounded(
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(TERMINATION_WAIT_LIMIT),
+            );
             return match cleanup {
                 Ok(()) => Err(process_error(error)),
                 Err(cleanup_error) => Err(format!("{}; {cleanup_error}", process_error(error))),
@@ -1302,6 +1321,13 @@ impl ManagedStartupChild {
     }
 
     pub(crate) fn detach(&mut self) -> Result<(), String> {
+        self.detach_before(Instant::now() + TERMINATION_WAIT_LIMIT)
+    }
+
+    pub(crate) fn detach_before(&mut self, deadline: Instant) -> Result<(), String> {
+        if Instant::now() >= deadline {
+            return Err("startup deadline expired before detach".to_string());
+        }
         let child = self.child.as_mut().expect("startup child exists");
         if self
             .process_tree
@@ -1309,7 +1335,11 @@ impl ManagedStartupChild {
             .map_err(process_error)?
             .is_some()
         {
-            self.process_tree.cleanup_after_leader_exit(child);
+            let cleanup_deadline = StartupTerminationDeadline::system(
+                deadline.saturating_duration_since(Instant::now()),
+            );
+            self.process_tree
+                .cleanup_after_leader_exit_until(child, &cleanup_deadline);
             return Err("process_failed: startup process exited before detach".to_string());
         }
         self.process_tree.detach().map_err(process_error)?;
@@ -2524,6 +2554,7 @@ mod tests {
                 std::env::var("PATH").unwrap_or_else(|_| "missing".into())
             ),
             "sleep" => thread::sleep(Duration::from_secs(10)),
+            "short_sleep" => thread::sleep(Duration::from_millis(800)),
             "stream_forever" => loop {
                 println!("streamed line");
                 std::io::Write::flush(&mut std::io::stdout()).unwrap();
@@ -3767,6 +3798,39 @@ mod tests {
     }
 
     #[test]
+    fn protected_process_finishes_after_cancellation_on_every_host() {
+        let cancellation = CancellationToken::new();
+        let signal = cancellation.clone();
+        let canceller = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !signal.protected_process_started() {
+                assert!(Instant::now() < deadline, "protected process did not start");
+                thread::sleep(Duration::from_millis(1));
+            }
+            signal.cancel();
+        });
+        let output = ManagedChild::run(ManagedCommand {
+            program: std::env::current_exe().unwrap(),
+            args: vec![
+                "--exact".into(),
+                "infrastructure::platform::process::tests::managed_child_test_helper".into(),
+                "--nocapture".into(),
+            ],
+            cwd: std::env::current_dir().unwrap(),
+            env: vec![(OsString::from(HELPER_ENV), OsString::from("short_sleep"))],
+            env_remove: Vec::new(),
+            capture_limits: None,
+            timeout: None,
+            cancellation: cancellation.protect_process_on_spawn(),
+        })
+        .unwrap();
+        canceller.join().unwrap();
+        assert!(cancellation.protected_process_started());
+        assert!(output.status_success, "{output:?}");
+        assert!(!output.cancelled);
+    }
+
+    #[test]
     fn line_consumer_can_stop_and_reap_the_process_before_timeout() {
         let mut managed = ManagedChild::spawn(ManagedCommand {
             program: std::env::current_exe().unwrap(),
@@ -4009,6 +4073,15 @@ mod tests {
         assert!(wait_until_dead(pids[0], Duration::from_secs(2)));
         assert!(wait_until_dead(pids[1], Duration::from_secs(2)));
         cleanup.disarm();
+    }
+
+    #[test]
+    fn expired_startup_deadline_refuses_before_spawning() {
+        let command = Command::new("unica-nonexistent-startup-fixture");
+        let result = ManagedStartupChild::spawn_configured_before(command, Instant::now());
+        assert!(
+            matches!(result, Err(message) if message == "startup deadline expired before process creation")
+        );
     }
 
     #[test]

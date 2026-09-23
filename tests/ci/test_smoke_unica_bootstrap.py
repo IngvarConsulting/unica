@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -232,6 +235,48 @@ class SmokeUnicaBootstrapTests(unittest.TestCase):
 
         # The tag build verifies the real published bytes end to end.
         self.assertEqual(observed["sha"], self.PUBLISHED_SHA)
+
+    def test_smoke_gives_daemon_a_physical_private_state_root(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self.plugin(Path(directory))
+            observed = {}
+
+            def fake_run(*args, **kwargs):
+                observed.update(kwargs["env"])
+                self.assertNotEqual(kwargs["stdout"], subprocess.PIPE)
+                self.assertNotEqual(kwargs["stderr"], subprocess.PIPE)
+                return subprocess.CompletedProcess(args, 0, "", "verified Unica 0.9.1 package, runtime, and MCP tools at /cache")
+
+            with patch.object(module.subprocess, "run", side_effect=fake_run):
+                module.smoke(plugin, "linux-x64", 2, expect_download_failure=False)
+
+            provider = Path(observed["UNICA_PROVIDER_STATE_DIR"])
+            self.assertEqual(provider.parent, provider.parent.resolve())
+            self.assertEqual(provider.parent, Path(observed["CODEX_HOME"]).parent)
+
+    def test_smoke_does_not_wait_for_a_descendant_holding_standard_output(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as directory:
+            probe = Path(directory) / "inherited-output.py"
+            spawned = Path(directory) / "descendant-started"
+            probe.write_text(
+                (
+                    "import subprocess, sys, time\n"
+                    "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(4)'])\n"
+                    f"open({str(spawned)!r}, 'w').write('started')\n"
+                    "print('bootstrap started', file=sys.stderr, flush=True)\n"
+                ),
+                encoding="utf-8",
+            )
+            started = time.monotonic()
+            code, _, stderr = module.run_bootstrap_command(
+                [sys.executable, str(probe)], os.environ.copy(), 1.5
+            )
+            self.assertEqual(code, 0)
+            self.assertEqual(spawned.read_text(), "started")
+            self.assertIn("bootstrap started", stderr)
+            self.assertLess(time.monotonic() - started, 2.5)
 
     def test_probe_rejects_stack_overflow_before_download_error(self) -> None:
         module = load_module()

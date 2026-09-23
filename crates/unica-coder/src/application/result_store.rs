@@ -17,6 +17,7 @@ use uuid::Uuid;
 pub const DEFAULT_TTL: Duration = Duration::from_secs(15 * 60);
 pub const DEFAULT_MAX_ENTRIES: usize = 32;
 pub const DEFAULT_MAX_TOTAL_BYTES: usize = 64 * 1024 * 1024;
+const VIEW_MAX_ENTRIES: usize = 128;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResultStoreError {
@@ -91,6 +92,7 @@ struct ViewCursorEntry {
     node: Value,
     items: Vec<Value>,
     next_cursor: Option<String>,
+    stopped_by: &'static str,
     bytes: usize,
     stored_at: Instant,
     last_read: Instant,
@@ -102,6 +104,12 @@ pub(crate) struct StoredViewCursor {
     pub(crate) node: Value,
     pub(crate) items: Vec<Value>,
     pub(crate) next_cursor: Option<String>,
+    pub(crate) stopped_by: &'static str,
+}
+
+pub(crate) struct ViewStoredPage {
+    pub(crate) items: Vec<Value>,
+    pub(crate) stopped_by: &'static str,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,7 +140,7 @@ pub(crate) struct ViewCursorStore {
 
 impl Default for ViewCursorStore {
     fn default() -> Self {
-        Self::new(DEFAULT_TTL, DEFAULT_MAX_ENTRIES, DEFAULT_MAX_TOTAL_BYTES)
+        Self::new(DEFAULT_TTL, VIEW_MAX_ENTRIES, DEFAULT_MAX_TOTAL_BYTES)
     }
 }
 
@@ -146,6 +154,11 @@ impl ViewCursorStore {
         }
     }
 
+    pub(crate) const fn max_entries(&self) -> usize {
+        self.max_entries
+    }
+
+    #[cfg(test)]
     pub(crate) fn insert_pages(
         &self,
         binding: ViewCursorBinding,
@@ -157,47 +170,71 @@ impl ViewCursorStore {
         if offset >= items.len() || page_limit == 0 {
             return None;
         }
-        let page_count = items.len().saturating_sub(offset).div_ceil(page_limit);
-        if page_count > self.max_entries {
+        let pages = items[offset..]
+            .chunks(page_limit)
+            .enumerate()
+            .map(|(index, chunk)| ViewStoredPage {
+                items: chunk.to_vec(),
+                stopped_by: if offset + (index + 1) * page_limit < items.len() {
+                    "limit"
+                } else {
+                    "complete"
+                },
+            })
+            .collect::<Vec<_>>();
+        self.insert_prepared_pages(binding, node, pages)
+    }
+
+    pub(crate) fn insert_prepared_pages(
+        &self,
+        binding: ViewCursorBinding,
+        node: Value,
+        pages: Vec<ViewStoredPage>,
+    ) -> Option<String> {
+        if pages.is_empty() || pages.len() > self.max_entries {
             return None;
         }
         let now = Instant::now();
-        let pages = items[offset..]
-            .chunks(page_limit)
-            .map(<[Value]>::to_vec)
-            .collect::<Vec<_>>();
         let tokens = (0..pages.len())
             .map(|_| format!("vc1.{}", Uuid::new_v4().simple()))
             .collect::<Vec<_>>();
+        // Check the exact stored size before cloning the node into every
+        // entry. A page may contain an indivisible item larger than the
+        // preferred response size, while the chain still has a fixed quota.
+        let mut added_bytes = 0usize;
+        let mut page_bytes = Vec::with_capacity(pages.len());
+        for (index, page) in pages.iter().enumerate() {
+            let next_cursor = tokens.get(index + 1);
+            let bytes = serde_json::to_vec(&(&node, &page.items, &next_cursor))
+                .ok()?
+                .len();
+            added_bytes = added_bytes.checked_add(bytes)?;
+            if added_bytes > self.max_total_bytes {
+                return None;
+            }
+            page_bytes.push(bytes);
+        }
         let entries_to_add = pages
             .into_iter()
+            .zip(page_bytes)
             .enumerate()
-            .map(|(index, page)| {
+            .map(|(index, (page, bytes))| {
                 let next_cursor = tokens.get(index + 1).cloned();
-                let bytes = serde_json::to_vec(&(&node, &page, &next_cursor))
-                    .ok()?
-                    .len();
-                Some((
+                (
                     tokens[index].clone(),
                     ViewCursorEntry {
                         binding: binding.clone(),
                         node: node.clone(),
-                        items: page,
+                        items: page.items,
                         next_cursor,
+                        stopped_by: page.stopped_by,
                         bytes,
                         stored_at: now,
                         last_read: now,
                     },
-                ))
+                )
             })
-            .collect::<Option<Vec<_>>>()?;
-        let added_bytes = entries_to_add
-            .iter()
-            .map(|(_, entry)| entry.bytes)
-            .sum::<usize>();
-        if added_bytes > self.max_total_bytes {
-            return None;
-        }
+            .collect::<Vec<_>>();
         let mut entries = self.entries.lock().expect("view cursor store poisoned");
         entries.retain(|_, entry| now.duration_since(entry.stored_at) < self.ttl);
         let mut total = entries.values().map(|entry| entry.bytes).sum::<usize>();
@@ -255,6 +292,7 @@ impl ViewCursorStore {
             node: entry.node.clone(),
             items: entry.items.clone(),
             next_cursor: entry.next_cursor.clone(),
+            stopped_by: entry.stopped_by,
         })
     }
 }
