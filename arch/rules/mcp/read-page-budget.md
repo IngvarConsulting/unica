@@ -1,6 +1,11 @@
 ---
 id: INV.WIRE.READ-PAGE-BUDGET
-check: []
+check:
+  - crates/unica-coder/src/application/v13/view.rs::addressed_collection_prefers_64_kib_pages_and_replays
+  - crates/unica-coder/src/application/v13/view.rs::one_item_over_the_page_target_is_returned_whole
+  - crates/unica-coder/src/application/v13/view.rs::snapshot_over_byte_quota_refuses_before_promising_a_continuation
+  - crates/unica-coder/src/application/v13/view.rs::a_late_oversized_item_refuses_before_the_first_page
+  - crates/unica-coder/src/application/v13/view.rs::supplied_graph_collection_uses_stable_pages_bound_to_its_owner
 gap: https://github.com/IngvarConsulting/unica/issues/871
 ---
 

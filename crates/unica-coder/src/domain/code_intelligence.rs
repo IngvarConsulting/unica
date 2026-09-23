@@ -1099,6 +1099,10 @@ pub struct CallGraphResult {
     /// Ревизия графа и её свежесть по мнению самого анализатора.
     pub revision: Option<u64>,
     pub stale: Option<bool>,
+    /// Whether the provider returned every neighbouring call edge. Internal
+    /// admission fact; the public branch reports completeness through a cursor.
+    #[serde(skip)]
+    pub complete: bool,
 }
 
 /// Typed answer of `unica.code.definition` (ADR-0023). The index already

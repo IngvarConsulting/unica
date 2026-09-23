@@ -264,6 +264,7 @@ impl<'a> BslAnalyzerProvider<'a> {
             "action": direction.analyzer_action(),
             "id": id,
             "max_nodes": limit,
+            "edge_kinds": ["call"],
         });
         let mut outcome = ProviderReadOutcome {
             provider: ProviderId::BslAnalyzer.identity(),
@@ -300,12 +301,19 @@ impl<'a> BslAnalyzerProvider<'a> {
                     edges: Vec::new(),
                     revision: None,
                     stale: None,
+                    complete: false,
                 }));
                 return Ok(outcome);
             }
         };
         let value: Value = serde_json::from_str(output.result_text.trim())
             .map_err(|error| format!("invalid call graph answer from the analyzer: {error}"))?;
+        if value.get("status").and_then(Value::as_str) != Some("loading")
+            && value["result"]["error"].is_null()
+            && value["result"]["root"]["id"].as_str() != Some(id)
+        {
+            return Err("call graph provider answered for another method".to_string());
+        }
         match parse_call_graph_answer(&value, direction) {
             Ok(result) => {
                 outcome.summary = match result.total {
@@ -1413,9 +1421,13 @@ pub(crate) fn parse_call_graph_answer(
             edges: Vec::new(),
             revision: None,
             stale: None,
+            complete: false,
         });
     }
-    let revision = value.get("revision").and_then(Value::as_u64);
+    let revision = value
+        .get("revision")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "call graph answer has no revision".to_string())?;
     let stale = value.get("stale").and_then(Value::as_bool);
     let result = value
         .get("result")
@@ -1428,22 +1440,53 @@ pub(crate) fn parse_call_graph_answer(
         .get(direction.total_field())
         .and_then(Value::as_u64)
         .ok_or_else(|| format!("call graph answer has no {} count", direction.total_field()))?;
+    if result.get("total").and_then(Value::as_u64) != Some(total) {
+        return Err("call graph direction and neighbour counts disagree".to_string());
+    }
+    let returned = result
+        .get("returned")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "call graph answer has no returned count".to_string())?;
+    let dropped = result
+        .get("dropped_count")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "call graph answer has no dropped count".to_string())?;
+    if returned.checked_add(dropped) != Some(total) {
+        return Err("call graph counts disagree".to_string());
+    }
+    let connectors_dropped = result
+        .get("connectors_dropped")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| "call graph answer has no connector completeness".to_string())?;
+    let root = result
+        .get("root")
+        .and_then(|root| root.get("id"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| "call graph answer has no root id".to_string())?;
     let mut edges = Vec::new();
-    for edge in result
+    let mut self_call = false;
+    let provider_edges = result
         .get("edges")
         .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
+        .ok_or_else(|| "call graph answer has no edge array".to_string())?;
+    for edge in provider_edges {
         // Направление решает, какой конец ребра называет соседа: у входящего
         // это `from`, у исходящего `to`.
+        if edge.get("kind").and_then(Value::as_str) != Some("call") {
+            return Err("call graph provider returned a non-call edge".to_string());
+        }
         let peer = match direction {
             CallGraphDirection::Callers => edge.get("from"),
             CallGraphDirection::Callees => edge.get("to"),
         }
         .and_then(Value::as_str);
-        let Some(peer) = peer else {
-            return Err("call graph edge names no peer".to_string());
+        let peer = match peer {
+            Some(peer) => peer,
+            None if edge.get("from").is_none() && edge.get("to").is_none() => {
+                self_call = true;
+                root
+            }
+            None => return Err("call graph edge names no peer".to_string()),
         };
         let provenance = match edge.get("provenance").and_then(Value::as_str) {
             Some("resolved") => CallEdgeProvenance::Resolved,
@@ -1462,12 +1505,20 @@ pub(crate) fn parse_call_graph_answer(
             provenance,
         });
     }
+    let total = total
+        .checked_add(u64::from(self_call))
+        .ok_or_else(|| "call graph count overflow".to_string())?;
+    let complete = dropped == 0 && !connectors_dropped;
+    if complete && u64::try_from(edges.len()).ok() != Some(total) {
+        return Err("call graph edge count disagrees with the complete result".to_string());
+    }
     Ok(CallGraphResult {
         state: CallGraphState::Ready,
         total: Some(total),
         edges,
-        revision,
+        revision: Some(revision),
         stale,
+        complete,
     })
 }
 
@@ -1516,6 +1567,7 @@ mod tests {
         assert_eq!(callers.edges[0].provenance, CallEdgeProvenance::Resolved);
         assert_eq!(callers.revision, Some(1));
         assert_eq!(callers.stale, Some(false));
+        assert!(callers.complete);
 
         // У исходящего ребра соседа называет другой конец, и счёт лежит в
         // другом поле: направление — не признак, а разная форма ответа.
@@ -1550,6 +1602,52 @@ mod tests {
             parse_call_graph_answer(&forged, CallGraphDirection::Callers)
                 .expect_err("словарь происхождения закрыт")
                 .contains("unknown provenance"),
+        );
+    }
+
+    #[test]
+    fn call_graph_distinguishes_a_recursive_call_from_a_capped_answer() {
+        let payloads: Value = serde_json::from_str(include_str!(
+            "../../../../tests/fixtures/bsl_analyzer/graph-0.2.67.json"
+        ))
+        .unwrap();
+        let mut recursive = payloads["callers"].clone();
+        recursive["result"]["in_total"] = json!(0);
+        recursive["result"]["total"] = json!(0);
+        recursive["result"]["returned"] = json!(0);
+        recursive["result"]["nodes"] = json!([]);
+        recursive["result"]["edges"] = json!([{"kind":"call","provenance":"resolved"}]);
+        let root = recursive["result"]["root"]["id"].as_str().unwrap();
+        let parsed = parse_call_graph_answer(&recursive, CallGraphDirection::Callers).unwrap();
+        assert_eq!(parsed.total, Some(1));
+        assert_eq!(parsed.edges[0].id, root);
+        assert!(parsed.complete);
+
+        let mut capped = payloads["callers"].clone();
+        capped["result"]["returned"] = json!(0);
+        capped["result"]["dropped_count"] = json!(1);
+        capped["result"]["edges"] = json!([]);
+        let parsed = parse_call_graph_answer(&capped, CallGraphDirection::Callers).unwrap();
+        assert_eq!(parsed.total, Some(1));
+        assert!(!parsed.complete);
+
+        let mut non_call = payloads["callers"].clone();
+        non_call["result"]["edges"][0]["kind"] = json!("manager_access");
+        assert!(
+            parse_call_graph_answer(&non_call, CallGraphDirection::Callers)
+                .unwrap_err()
+                .contains("non-call")
+        );
+
+        let mut missing_edges = payloads["callers"].clone();
+        missing_edges["result"]["total"] = json!(0);
+        missing_edges["result"]["in_total"] = json!(0);
+        missing_edges["result"]["returned"] = json!(0);
+        missing_edges["result"]["edges"] = Value::Null;
+        assert!(
+            parse_call_graph_answer(&missing_edges, CallGraphDirection::Callers)
+                .unwrap_err()
+                .contains("edge array")
         );
     }
     use std::cell::RefCell;
@@ -2394,12 +2492,36 @@ mod tests {
         assert_eq!(calls[0].1["action"], "callers");
         assert_eq!(calls[0].1["id"], "method/common/Вызываемый/Цель");
         assert_eq!(calls[0].1["max_nodes"], 20);
+        assert_eq!(calls[0].1["edge_kinds"], json!(["call"]));
         let Some(CodeIntelligenceReadData::CallGraph(graph)) = outcome.data else {
             panic!("порт отдаёт типизированный граф: {:?}", outcome.data);
         };
         assert_eq!(graph.state, CallGraphState::Ready);
         assert_eq!(graph.total, Some(1));
         assert_eq!(graph.edges[0].provenance, CallEdgeProvenance::Resolved);
+
+        let mut wrong_root = payloads["callers"].clone();
+        wrong_root["result"]["root"]["id"] = json!("method/common/Чужой/Метод");
+        let wrong_client = FakeBslClient {
+            calls: Mutex::new(Vec::new()),
+            output: WorkspaceServiceBslOutput {
+                result_text: wrong_root.to_string(),
+                stderr: String::new(),
+            },
+        };
+        assert!(BslAnalyzerProvider::with_client(&wrong_client)
+            .read(
+                &CodeIntelligenceReadRequest::CallGraph {
+                    id: "method/common/Вызываемый/Цель".to_string(),
+                    direction: CallGraphDirection::Callers,
+                    limit: 20,
+                },
+                &context(),
+                ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
+                &CancellationToken::new(),
+            )
+            .unwrap_err()
+            .contains("another method"));
 
         // Недостижимый движок — названное состояние, а не нулевой счёт:
         // «графа нет» и «вызовов нет» — разные ответы.

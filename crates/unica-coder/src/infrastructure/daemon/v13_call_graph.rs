@@ -15,6 +15,17 @@ use serde_json::{json, Map, Value};
 /// Название секции, которой вызывающий просит сводку графа.
 pub(super) const CALL_GRAPH_SECTION: &str = "callGraph";
 
+pub(super) enum CallGraphFetchError {
+    Provider(String),
+    Changed,
+}
+
+impl From<String> for CallGraphFetchError {
+    fn from(error: String) -> Self {
+        Self::Provider(error)
+    }
+}
+
 /// Что служба узнала у анализатора по обоим направлениям.
 #[derive(Debug, Clone)]
 pub(super) struct CallGraphSummary {
@@ -64,12 +75,80 @@ impl CallGraphSummary {
             .any(|edge| edge.id.starts_with("method/file/"))
     }
 
-    fn result(&self, direction: CallGraphDirection) -> &CallGraphResult {
+    pub(super) fn result(&self, direction: CallGraphDirection) -> &CallGraphResult {
         match direction {
             CallGraphDirection::Callers => &self.callers,
             CallGraphDirection::Callees => &self.callees,
         }
     }
+}
+
+/// A capped analyzer answer is only a sizing probe. Never publish its edges
+/// as a complete branch, even when it contains enough for the first page.
+pub(super) fn required_full_branch_limit(
+    summary: &CallGraphSummary,
+    direction: CallGraphDirection,
+) -> Result<Option<usize>, String> {
+    let result = summary.result(direction);
+    if result.state != CallGraphState::Ready || result.complete {
+        return Ok(None);
+    }
+    result
+        .total
+        .and_then(|total| usize::try_from(total).ok())
+        .map(Some)
+        .ok_or_else(|| "call graph neighbour count cannot be represented".to_string())
+}
+
+pub(super) fn full_branch_matches(
+    first: &CallGraphSummary,
+    full: &CallGraphSummary,
+    direction: CallGraphDirection,
+) -> bool {
+    let first = first.result(direction);
+    let full = full.result(direction);
+    first.state == CallGraphState::Ready
+        && full.state == CallGraphState::Ready
+        && full.complete
+        && full.total == first.total
+        && full.revision == first.revision
+}
+
+#[derive(Debug)]
+pub(super) enum CompleteBranchError<E> {
+    CountTooLarge(String),
+    Fetch(E),
+    Changed,
+    Incomplete,
+}
+
+/// Obtain one complete immutable branch before the caller publishes page one.
+/// The initial 50-neighbour answer only sizes the request; a capped answer is
+/// never returned to the pager. `fetch` runs only when another provider read is
+/// necessary and its exact limit is derived from the provider's own total.
+pub(super) fn complete_branch<D, E>(
+    initial: (CallGraphSummary, Option<D>),
+    direction: CallGraphDirection,
+    fetch: impl FnOnce(usize) -> Result<(CallGraphSummary, Option<D>), E>,
+) -> Result<(CallGraphSummary, Option<D>), CompleteBranchError<E>> {
+    let limit = required_full_branch_limit(&initial.0, direction)
+        .map_err(CompleteBranchError::CountTooLarge)?;
+    let Some(limit) = limit else {
+        return Ok(initial);
+    };
+    let (full, full_directory) = fetch(limit).map_err(CompleteBranchError::Fetch)?;
+    let first_result = initial.0.result(direction);
+    let full_result = full.result(direction);
+    if full_result.state != CallGraphState::Ready {
+        return Err(CompleteBranchError::Incomplete);
+    }
+    if first_result.revision != full_result.revision || first_result.total != full_result.total {
+        return Err(CompleteBranchError::Changed);
+    }
+    if !full_branch_matches(&initial.0, &full, direction) {
+        return Err(CompleteBranchError::Incomplete);
+    }
+    Ok((full, full_directory.or(initial.1)))
 }
 
 /// Дополнить узел метода сводкой графа: счёт в `props`, направления в ветвях.
@@ -174,6 +253,9 @@ pub(super) fn branch_collection(
     if let Some(stale) = result.stale {
         props.insert("stale".to_string(), json!(stale));
     }
+    if let Some(revision) = result.revision {
+        props.insert("graphRevision".to_string(), json!(revision));
+    }
     node.insert("props".to_string(), Value::Object(props));
     node.insert("items".to_string(), Value::Array(items));
     if unaddressable > 0 {
@@ -222,7 +304,7 @@ pub(super) fn fetch_summary(
     limit: usize,
     budget: std::time::Duration,
     cancellation: &crate::domain::cancellation::CancellationToken,
-) -> Result<CallGraphSummary, String> {
+) -> Result<CallGraphSummary, CallGraphFetchError> {
     let mut args = Map::new();
     args.insert("sourceSet".to_string(), json!(source_set));
     let (context, _scope) = ports.resolve_code_search_context(workspace, &args)?;
@@ -281,6 +363,12 @@ pub(super) fn fetch_summary(
     }
     let callees = answers.pop().expect("два направления");
     let callers = answers.pop().expect("два направления");
+    if callers.state == CallGraphState::Ready
+        && callees.state == CallGraphState::Ready
+        && callers.revision != callees.revision
+    {
+        return Err(CallGraphFetchError::Changed);
+    }
     Ok(CallGraphSummary {
         callers,
         callees,
@@ -325,14 +413,16 @@ fn unavailable() -> CallGraphResult {
         edges: Vec::new(),
         revision: None,
         stale: None,
+        complete: false,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        branch_collection, branch_direction, branch_owner, extend_method_node,
-        module_file_for_placed, placed_for_module_file, CallGraphSummary,
+        branch_collection, branch_direction, branch_owner, complete_branch, extend_method_node,
+        full_branch_matches, module_file_for_placed, placed_for_module_file,
+        required_full_branch_limit, CallGraphSummary, CompleteBranchError,
     };
     use crate::domain::address::QualifiedAddress;
     use crate::domain::code_intelligence::{
@@ -351,6 +441,7 @@ mod tests {
             edges,
             revision: Some(1),
             stale: Some(false),
+            complete: true,
         }
     }
 
@@ -359,6 +450,143 @@ mod tests {
             id: id.to_string(),
             provenance,
         }
+    }
+
+    #[test]
+    fn a_capped_graph_requires_a_complete_same_revision_snapshot_before_paging() {
+        let mut first = CallGraphSummary {
+            callers: ready(
+                73,
+                (0..50)
+                    .map(|n| {
+                        edge(
+                            &format!("method/common/Модуль/Метод{n}"),
+                            CallEdgeProvenance::Resolved,
+                        )
+                    })
+                    .collect(),
+            ),
+            callees: ready(0, Vec::new()),
+            reason: None,
+        };
+        first.callers.complete = false;
+        assert_eq!(
+            required_full_branch_limit(&first, CallGraphDirection::Callers).unwrap(),
+            Some(73)
+        );
+
+        let mut full = first.clone();
+        full.callers.complete = true;
+        full.callers.edges.extend((50..73).map(|n| {
+            edge(
+                &format!("method/common/Модуль/Метод{n}"),
+                CallEdgeProvenance::Resolved,
+            )
+        }));
+        assert!(full_branch_matches(
+            &first,
+            &full,
+            CallGraphDirection::Callers
+        ));
+        assert_eq!(
+            required_full_branch_limit(&full, CallGraphDirection::Callers).unwrap(),
+            None
+        );
+        full.callers.revision = Some(2);
+        assert!(!full_branch_matches(
+            &first,
+            &full,
+            CallGraphDirection::Callers
+        ));
+        full.callers.revision = Some(1);
+        full.callers.complete = false;
+        assert!(!full_branch_matches(
+            &first,
+            &full,
+            CallGraphDirection::Callers
+        ));
+    }
+
+    #[test]
+    fn capped_graph_refetches_exact_total_before_publishing_a_branch() {
+        let mut first = CallGraphSummary {
+            callers: ready(
+                73,
+                (0..50)
+                    .map(|n| {
+                        edge(
+                            &format!("method/common/Модуль/Метод{n}"),
+                            CallEdgeProvenance::Resolved,
+                        )
+                    })
+                    .collect(),
+            ),
+            callees: ready(0, Vec::new()),
+            reason: None,
+        };
+        first.callers.complete = false;
+        let mut full = first.clone();
+        full.callers.complete = true;
+        full.callers.edges.extend((50..73).map(|n| {
+            edge(
+                &format!("method/common/Модуль/Метод{n}"),
+                CallEdgeProvenance::Resolved,
+            )
+        }));
+        let mut requested = Vec::new();
+        let (accepted, _): (CallGraphSummary, Option<()>) = complete_branch(
+            (first.clone(), None),
+            CallGraphDirection::Callers,
+            |limit| {
+                requested.push(limit);
+                Ok::<_, ()>((full.clone(), None))
+            },
+        )
+        .unwrap();
+        assert_eq!(requested, [73]);
+        let at = address("main:CommonModule.Модуль.Method.Проба.Caller");
+        let collection = branch_collection(&at, CallGraphDirection::Callers, &accepted, |_| None);
+        assert_eq!(collection["items"].as_array().unwrap().len(), 73);
+        assert_eq!(
+            collection["items"][72]["at"],
+            "main:CommonModule.Модуль.Method.Метод72"
+        );
+
+        let mut changed = full.clone();
+        changed.callers.revision = Some(2);
+        assert!(matches!(
+            complete_branch(
+                (first.clone(), None::<()>),
+                CallGraphDirection::Callers,
+                |_| Ok::<_, ()>((changed, None))
+            ),
+            Err(CompleteBranchError::Changed)
+        ));
+        full.callers.complete = false;
+        assert!(matches!(
+            complete_branch(
+                (first.clone(), None::<()>),
+                CallGraphDirection::Callers,
+                |_| { Ok::<_, ()>((full, None)) }
+            ),
+            Err(CompleteBranchError::Incomplete)
+        ));
+
+        let mut unavailable = first.clone();
+        unavailable.callers = CallGraphResult {
+            state: CallGraphState::Unavailable,
+            total: None,
+            edges: Vec::new(),
+            revision: None,
+            stale: None,
+            complete: false,
+        };
+        assert!(matches!(
+            complete_branch((first, None::<()>), CallGraphDirection::Callers, |_| {
+                Ok::<_, ()>((unavailable, None))
+            }),
+            Err(CompleteBranchError::Incomplete)
+        ));
     }
 
     /// Сводка кладётся в `props`, направления — в ветви со счётом.
@@ -404,6 +632,7 @@ mod tests {
             edges: Vec::new(),
             revision: None,
             stale: None,
+            complete: false,
         };
         let summary = CallGraphSummary {
             reason: None,
@@ -432,6 +661,7 @@ mod tests {
                 edges: Vec::new(),
                 revision: None,
                 stale: None,
+                complete: false,
             },
         };
         let mut data = Map::new();
@@ -482,6 +712,7 @@ mod tests {
 
         assert_eq!(page["kind"], "Caller");
         assert_eq!(page["props"]["callGraph"], "ready");
+        assert_eq!(page["props"]["graphRevision"], 1);
         assert_eq!(
             page["items"],
             json!([

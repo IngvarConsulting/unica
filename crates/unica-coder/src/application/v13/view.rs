@@ -78,6 +78,10 @@ impl ViewRequest {
         self.limit
     }
 
+    pub(crate) fn cursor(&self) -> Option<&str> {
+        self.cursor.as_deref()
+    }
+
     pub(crate) fn with_filter(mut self, filter: Map<String, Value>) -> Self {
         self.filter = ViewFilter::new(filter);
         self
@@ -229,7 +233,7 @@ impl<A: ViewReadAuthority> ViewService<A> {
     }
 
     pub(crate) fn view(&self, request: ViewRequest) -> DomainResult {
-        match self.try_view(&request, None) {
+        match self.try_view(&request, None, None) {
             Ok(result) => result,
             Err(error) => error_result(Some(request.at.to_string()), error),
         }
@@ -240,7 +244,23 @@ impl<A: ViewReadAuthority> ViewService<A> {
         request: ViewRequest,
         project: &ViewProjector<'_>,
     ) -> DomainResult {
-        match self.try_view(&request, Some(project)) {
+        match self.try_view(&request, Some(project), None) {
+            Ok(result) => result,
+            Err(error) => error_result(Some(request.at.to_string()), error),
+        }
+    }
+
+    /// Page a collection supplied by a non-source provider while binding its
+    /// cursor to the owning source node. Continuations reuse the captured
+    /// collection; `data` is required only for the first page.
+    pub(crate) fn view_preloaded_collection(
+        &self,
+        request: ViewRequest,
+        source_at: &QualifiedAddress,
+        expected_revision: &str,
+        data: Option<Value>,
+    ) -> DomainResult {
+        match self.try_view(&request, None, Some((source_at, expected_revision, data))) {
             Ok(result) => result,
             Err(error) => error_result(Some(request.at.to_string()), error),
         }
@@ -250,9 +270,24 @@ impl<A: ViewReadAuthority> ViewService<A> {
         &self,
         request: &ViewRequest,
         project: Option<&ViewProjector<'_>>,
+        supplied: Option<(&QualifiedAddress, &str, Option<Value>)>,
     ) -> Result<DomainResult, ViewError> {
-        let snapshot = self.authority.snapshot(&request.at)?;
-        let canonical_at = self.authority.canonical_address(&request.at, &snapshot)?;
+        let source_at = supplied.as_ref().map_or(&request.at, |(at, _, _)| *at);
+        let snapshot = self.authority.snapshot(source_at)?;
+        if supplied
+            .as_ref()
+            .is_some_and(|(_, expected, _)| snapshot.revision != *expected)
+        {
+            return Err(ViewError::new(
+                RefusalCode::ConcurrentChange,
+                "source changed while the supplied collection was read; retry the question",
+            ));
+        }
+        let canonical_at = if supplied.is_some() {
+            request.at.clone()
+        } else {
+            self.authority.canonical_address(&request.at, &snapshot)?
+        };
         let binding = request.binding(&canonical_at, &snapshot);
         if let Some(cursor) = request.cursor.as_deref() {
             let stored = self
@@ -288,21 +323,31 @@ impl<A: ViewReadAuthority> ViewService<A> {
             );
         }
 
-        let view = self
-            .authority
-            .read_exact(&canonical_at, &request.filter, &snapshot)?;
-        if view.at() != canonical_at.to_string() {
+        let serialized = if let Some((_, _, data)) = supplied {
+            data.ok_or_else(|| {
+                ViewError::new(
+                    RefusalCode::InvalidState,
+                    "a new supplied collection has no provider result",
+                )
+            })?
+        } else {
+            let view = self
+                .authority
+                .read_exact(&canonical_at, &request.filter, &snapshot)?;
+            let serialized = serde_json::to_value(view).map_err(|error| {
+                ViewError::new(RefusalCode::ProviderUnavailable, error.to_string())
+            })?;
+            match project {
+                Some(project) => project(&serialized)?,
+                None => serialized,
+            }
+        };
+        if serialized.get("at").and_then(Value::as_str) != Some(canonical_at.to_string().as_str()) {
             return Err(ViewError::new(
                 RefusalCode::ProviderUnavailable,
-                "typed reader returned a projection for another logical address",
+                "reader returned a projection for another logical address",
             ));
         }
-        let serialized = serde_json::to_value(view)
-            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))?;
-        let serialized = match project {
-            Some(project) => project(&serialized)?,
-            None => serialized,
-        };
         let mut object = serialized.as_object().cloned().ok_or_else(|| {
             ViewError::new(
                 RefusalCode::ProviderUnavailable,
@@ -334,7 +379,7 @@ impl<A: ViewReadAuthority> ViewService<A> {
         })?;
         let node = Value::Object(object);
         preflight_collection(&node, &items, &binding)?;
-        let current = self.authority.snapshot(&request.at)?;
+        let current = self.authority.snapshot(source_at)?;
         if current != snapshot {
             return Err(ViewError::new(
                 RefusalCode::ConcurrentChange,
@@ -775,6 +820,56 @@ mod tests {
             json!([{"name": "Вторая"}])
         );
         assert!(second.cursor.is_none());
+    }
+
+    #[test]
+    fn supplied_graph_collection_uses_stable_pages_bound_to_its_owner() {
+        let service = ViewService::new(FixtureAuthority::new(), ViewCursorStore::default());
+        let owner = QualifiedAddress::parse("main:Document.Заказ.Module.Object").unwrap();
+        let branch = "main:Document.Заказ.Module.Object.Method.Проба.Caller";
+        let items: Vec<_> = (0..120)
+            .map(|n| json!({"at":format!("main:CommonModule.Узел{n}"),"kind":"Method"}))
+            .collect();
+        let first = service.view_preloaded_collection(
+            ViewRequest::new(branch).unwrap(),
+            &owner,
+            "rev-1",
+            Some(json!({"at":branch,"kind":"Caller","title":"Caller","props":{"callGraph":"ready"},"items":items})),
+        );
+        assert!(first.ok, "{first:?}");
+        assert_eq!(
+            first.data.as_ref().unwrap()["items"]
+                .as_array()
+                .unwrap()
+                .len(),
+            20
+        );
+        assert_eq!(first.page.as_ref().unwrap()["stoppedBy"], "limit");
+        let cursor = first.cursor.unwrap();
+        let second = service.view_preloaded_collection(
+            ViewRequest::new(branch)
+                .unwrap()
+                .with_cursor(cursor.clone()),
+            &owner,
+            "rev-1",
+            None,
+        );
+        assert!(second.ok, "{second:?}");
+        assert_eq!(
+            second.data.as_ref().unwrap()["items"][0]["at"],
+            "main:CommonModule.Узел20"
+        );
+        assert_ne!(second.cursor, Some(cursor.clone()));
+
+        service.authority.change_revision(&owner.to_string());
+        let stale = service.view_preloaded_collection(
+            ViewRequest::new(branch).unwrap().with_cursor(cursor),
+            &owner,
+            "rev-1",
+            None,
+        );
+        assert!(!stale.ok);
+        assert!(stale.summary.contains("source changed"));
     }
 
     #[test]

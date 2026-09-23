@@ -3,8 +3,9 @@ use super::server::{ActorBoundExecution, ActorBoundInvocation, CanonicalInvocati
 const CALL_GRAPH_PAGE_LIMIT: usize = 50;
 
 use super::v13_call_graph::{
-    branch_collection, branch_direction, branch_owner, extend_method_node, fetch_summary,
-    module_file_for_placed, placed_for_module_file, CallGraphSummary, CALL_GRAPH_SECTION,
+    branch_collection, branch_direction, branch_owner, complete_branch, extend_method_node,
+    fetch_summary, module_file_for_placed, placed_for_module_file, CallGraphFetchError,
+    CallGraphSummary, CompleteBranchError, CALL_GRAPH_SECTION,
 };
 use super::v13_read_modes::{filter_diff_data, project_view_sections, search_scope_prefix};
 use crate::application::invocation_store::ToolIdentity;
@@ -20,6 +21,7 @@ use crate::domain::address::{NodeKind, QualifiedAddress};
 use crate::domain::apply::OperationRegistry;
 use crate::domain::call_graph_identity::{CallGraphIdentity, CallGraphIdentityError};
 use crate::domain::cancellation::CancellationToken;
+use crate::domain::code_intelligence::CallGraphState;
 use crate::domain::invocation::{DomainResult, InvocationFailure};
 use crate::domain::refusal::{RefusalCode, RefusalDetail};
 use crate::infrastructure::native_operations::apply::{
@@ -389,21 +391,78 @@ impl CanonicalV13ReadService {
                     "call graph branch has no owning method",
                 );
             };
-            let owner_result =
-                ViewService::with_shared_cursors(authority, Arc::clone(&self.cursors)).view(
-                    match ViewRequest::new(&owner.to_string()) {
-                        Ok(request) => request,
-                        Err(error) => return view_error_result(Some(owner.to_string()), error),
-                    },
+            if !request.filter().is_empty() {
+                return error_result(
+                    Some(at.to_string()),
+                    RefusalCode::BadValue,
+                    "call graph branch does not accept a filter",
                 );
+            }
+            let service = ViewService::with_shared_cursors(authority, Arc::clone(&self.cursors));
+            let owner_result = service.view(match ViewRequest::new(&owner.to_string()) {
+                Ok(request) => request,
+                Err(error) => return view_error_result(Some(owner.to_string()), error),
+            });
             if !owner_result.ok {
                 return owner_result;
             }
-            return match self.call_graph_summary(invocation, &owner, cancellation) {
-                Ok((summary, directory)) => {
-                    let mut answer = owner_result;
+            let Some(expected_revision) = owner_result.rev.as_deref() else {
+                return error_result(
+                    Some(at.to_string()),
+                    RefusalCode::ProviderUnavailable,
+                    "owning method has no source revision",
+                );
+            };
+            if request.cursor().is_some() {
+                return enforce_view_result_limit(
+                    service.view_preloaded_collection(request, &owner, expected_revision, None),
+                    at,
+                );
+            }
+            return match self.call_graph_summary(
+                invocation,
+                &owner,
+                CALL_GRAPH_PAGE_LIMIT,
+                cancellation,
+            ) {
+                Ok(initial) => {
+                    let (summary, directory) = match complete_branch(initial, direction, |limit| {
+                        self.call_graph_summary(invocation, &owner, limit, cancellation)
+                    }) {
+                        Ok(answer) => answer,
+                        Err(CompleteBranchError::CountTooLarge(message)) => {
+                            return error_result(
+                                Some(at.to_string()),
+                                RefusalCode::ResultTooLarge,
+                                message,
+                            )
+                        }
+                        Err(CompleteBranchError::Fetch(refusal)) => return *refusal,
+                        Err(CompleteBranchError::Changed) => {
+                            return error_result(
+                                Some(at.to_string()),
+                                RefusalCode::ConcurrentChange,
+                                "call graph changed while collecting its page; retry",
+                            )
+                        }
+                        Err(CompleteBranchError::Incomplete) => {
+                            return error_result(
+                                Some(at.to_string()),
+                                RefusalCode::ProviderUnavailable,
+                                "call graph provider did not return the complete branch",
+                            )
+                        }
+                    };
                     if let Some(reason) = summary.reason.clone() {
-                        answer.warnings.push(json!({"callGraph": reason}));
+                        // A ready direction can coexist with an unavailable peer.
+                        // The page names its own direction and keeps that warning.
+                        if summary.result(direction).state == CallGraphState::Unavailable {
+                            return error_result(
+                                Some(at.to_string()),
+                                RefusalCode::ProviderUnavailable,
+                                reason,
+                            );
+                        }
                     }
                     // Сосед, которого анализатор называет файлом, получает адрес
                     // через раскладку: файл модуля → дескриптор → узел → роль
@@ -426,7 +485,7 @@ impl CanonicalV13ReadService {
                         None => None,
                     };
                     let source_set = owner.source_set();
-                    answer.data = Some(branch_collection(&address, direction, &summary, |path| {
+                    let data = branch_collection(&address, direction, &summary, |path| {
                         let directory = directory.as_ref()?;
                         let (placed, role) = placed_for_module_file(path)?;
                         let entry = directory.locate_path(&placed)?;
@@ -434,9 +493,17 @@ impl CanonicalV13ReadService {
                             return None;
                         }
                         QualifiedAddress::parse(&format!("{}.Module.{role}", entry.at())).ok()
-                    }));
-                    answer.cursor = None;
-                    answer
+                    });
+                    let mut answer = service.view_preloaded_collection(
+                        request,
+                        &owner,
+                        expected_revision,
+                        Some(data),
+                    );
+                    if let Some(reason) = summary.reason {
+                        answer.warnings.push(json!({"callGraph": reason}));
+                    }
+                    enforce_view_result_limit(answer, at)
                 }
                 Err(refusal) => *refusal,
             };
@@ -497,7 +564,8 @@ impl CanonicalV13ReadService {
                     "view section `callGraph` is computed for a method node only",
                 );
             }
-            match self.call_graph_summary(invocation, &address, cancellation) {
+            match self.call_graph_summary(invocation, &address, CALL_GRAPH_PAGE_LIMIT, cancellation)
+            {
                 Ok((summary, _directory)) => {
                     if let Some(reason) = summary.reason.clone() {
                         result.warnings.push(json!({"callGraph": reason}));
@@ -533,6 +601,7 @@ impl CanonicalV13ReadService {
         &self,
         invocation: &ActorBoundExecution,
         method_at: &QualifiedAddress,
+        limit: usize,
         cancellation: &CancellationToken,
     ) -> Result<(CallGraphSummary, Option<FindIndex>), Box<DomainResult>> {
         let mut directory = None;
@@ -598,18 +667,23 @@ impl CanonicalV13ReadService {
             workspace,
             method_at.source_set(),
             &identity,
-            // Тот же потолок страницы, что у навигации: 50 — объявленный
-            // максимум поверхности, и второго числа здесь не заводится.
-            CALL_GRAPH_PAGE_LIMIT,
+            // Первая попытка берёт не более 50 соседей. Ветвь с большим
+            // счётом повторяет запрос для полного снимка до публикации курсора.
+            limit,
             operational.code_intelligence().provider_read_timeout(),
             cancellation,
         )
         .map_err(|error| {
-            Box::new(error_result(
-                Some(method_at.to_string()),
-                RefusalCode::ProviderUnavailable,
-                error,
-            ))
+            let (code, message) = match error {
+                CallGraphFetchError::Provider(message) => {
+                    (RefusalCode::ProviderUnavailable, message)
+                }
+                CallGraphFetchError::Changed => (
+                    RefusalCode::ConcurrentChange,
+                    "call graph changed between directions; retry the question".to_string(),
+                ),
+            };
+            Box::new(error_result(Some(method_at.to_string()), code, message))
         })?;
         Ok((summary, directory))
     }
