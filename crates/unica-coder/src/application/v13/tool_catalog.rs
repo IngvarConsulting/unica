@@ -369,13 +369,13 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                 },
                 V13ToolContract {
                     name: "docs",
-                    description: "Search bundled Unica and safe 1C documentation by topic. Search hits use pages; each source reports whether its retrieved window is complete.",
+                    description: "Search bundled Unica and safe 1C documentation by topic, or open a document locator. Search hits and long document text use pages; each search source reports whether its retrieved window is complete.",
                     input_schema: schema(
                         json!({
                             "query": {"type": "string", "description": "Documentation question or search phrase."},
                             "source": {"type": "string", "description": "Optional documented source kind, not a provider identity."},
-                            "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20, "description": "Maximum documentation hits per page, from 1 to 50. Does not apply to a document locator."},
-                            "cursor": cursor("Continue the same documentation search; the cursor checks the complete retrieved answer for changes. Does not apply to a document locator."),
+                            "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20, "description": "Maximum hits per search page or text fragments per long document page, from 1 to 50. A text fragment is one line or at most 16 KiB of a longer line; short documents still arrive whole."},
+                            "cursor": cursor("Continue the same documentation search or long document. A document cursor checks its complete text and metadata for changes; concatenate document.text fragments in page order."),
                         }),
                         json!(["query"]),
                     ),
@@ -496,7 +496,13 @@ fn result_envelope_schema() -> Value {
             "rev": {"type": "string"},
             "cursor": cursor("Opaque continuation cursor issued by this result stream."),
             "page": {"type": "object", "additionalProperties": false,
-                "properties": {"stoppedBy": {"type": "string", "enum": ["limit", "bytes", "complete"]}},
+                "properties": {
+                    "stoppedBy": {"type": "string", "enum": ["limit", "bytes", "complete"]},
+                    "startByte": {"type": "integer", "minimum": 0},
+                    "endByte": {"type": "integer", "minimum": 0},
+                    "totalBytes": {"type": "integer", "minimum": 0},
+                    "fragmentsReturned": {"type": "integer", "minimum": 0}
+                },
                 "required": ["stoppedBy"]},
         },
         "required": ["ok", "summary"],
@@ -986,6 +992,16 @@ mod tests {
         assert_eq!(output["type"], "object");
         assert_eq!(output["additionalProperties"], false);
         assert_eq!(output["required"], json!(["ok", "summary"]));
+        for field in ["startByte", "endByte", "totalBytes", "fragmentsReturned"] {
+            assert_eq!(
+                output["properties"]["page"]["properties"][field]["type"],
+                "integer"
+            );
+            assert_eq!(
+                output["properties"]["page"]["properties"][field]["minimum"],
+                0
+            );
+        }
         assert_eq!(
             output["properties"]
                 .as_object()
