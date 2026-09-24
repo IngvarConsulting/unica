@@ -2431,15 +2431,7 @@ fn run_bsl_diagnostics(
             // Провалом считается ошибка, а не всякая пометка: подсказка по
             // стилю не ломает модуль, и остальные валидаторы поверхности
             // судят так же.
-            let passed = !result.items.iter().any(|item| {
-                matches!(
-                    item,
-                    crate::domain::diagnostics::DiagnosticItem::Diagnostic {
-                        severity: crate::domain::diagnostics::DiagnosticSeverity::Error,
-                        ..
-                    } | crate::domain::diagnostics::DiagnosticItem::ResourceFailure { .. }
-                )
-            });
+            let passed = bsl_findings_passed(&result.items);
             Ok((passed, findings))
         }
         // Координатор отказывает по разным причинам, и уточнение получает
@@ -2474,6 +2466,19 @@ fn bsl_result_proves_full_verdict(result: &crate::domain::diagnostics::Diagnosti
         && result.truncated == Some(false)
         && result.items_total == Some(result.items.len())
         && result.items_returned == Some(result.items.len())
+}
+
+fn bsl_findings_passed(items: &[crate::domain::diagnostics::DiagnosticItem]) -> bool {
+    use crate::domain::diagnostics::{DiagnosticItem, DiagnosticSeverity};
+    !items.iter().any(|item| {
+        matches!(
+            item,
+            DiagnosticItem::Diagnostic {
+                severity: DiagnosticSeverity::Error,
+                ..
+            } | DiagnosticItem::ResourceFailure { .. }
+        )
+    })
 }
 
 fn run_node_checks(
@@ -2936,6 +2941,31 @@ mod tests {
         result.items_total = Some(0);
         result.items_returned = Some(0);
         assert!(super::bsl_result_proves_full_verdict(&result));
+    }
+
+    #[test]
+    fn bsl_check_sees_an_error_after_two_hundred_warnings() {
+        use crate::domain::diagnostics::{DiagnosticFocus, DiagnosticItem, DiagnosticSeverity};
+        use crate::domain::source_location::SourceLocation;
+        use crate::domain::source_target::TargetKind;
+        let finding = |severity| DiagnosticItem::Diagnostic {
+            provider: "bsl-language-server",
+            location: SourceLocation::Addressed {
+                source_set: "main".to_string(),
+                metadata_path: None,
+                target_kind: TargetKind::Module,
+            },
+            location_reason: None,
+            focus: DiagnosticFocus::Target,
+            code: "late-error".to_string(),
+            severity,
+            message: "finding".to_string(),
+            tags: Vec::new(),
+        };
+        let mut items = vec![finding(DiagnosticSeverity::Warning); 200];
+        assert!(super::bsl_findings_passed(&items));
+        items.push(finding(DiagnosticSeverity::Error));
+        assert!(!super::bsl_findings_passed(&items));
     }
 
     struct CountingSearchProvider {
