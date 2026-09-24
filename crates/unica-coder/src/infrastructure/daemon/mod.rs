@@ -383,6 +383,7 @@ mod tests {
             "resolve must not publish an incomplete directory: {exact:?}"
         );
         assert_eq!(exact.diagnostics[0]["code"], "provider_unavailable");
+        assert_eq!(exact.diagnostics[0]["detailCode"], "source_unreadable");
         daemon.finish(owner);
     }
 

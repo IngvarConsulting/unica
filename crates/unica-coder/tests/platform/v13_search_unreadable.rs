@@ -130,6 +130,7 @@ fn unreadable_name_descriptor_is_reported_without_losing_proven_matches() {
         resolve["diagnostics"][0]["code"], "provider_unavailable",
         "{resolve:#}"
     );
+    assert_eq!(resolve["diagnostics"][0]["detailCode"], "source_unreadable");
     std::fs::set_permissions(&hidden, restore.1.clone()).expect("restore descriptor access");
     let complete = domain_result(&mcp.exchange(call_tool(
         7,

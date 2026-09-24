@@ -3,7 +3,7 @@ use crate::domain::address::{NodeKind, QualifiedAddress};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::project_sources::SourceSetKind;
-use crate::domain::refusal::RefusalCode;
+use crate::domain::refusal::{RefusalCode, RefusalDetail};
 use crate::infrastructure::metadata_kinds::metadata_kind_by_directory;
 use crate::infrastructure::platform::filesystem::{
     RetainedChildCapability, RetainedDirectoryCapability, RetainedRegularFileCapability,
@@ -50,6 +50,7 @@ impl<'a> LayoutFindSource<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FindBuildError {
     code: RefusalCode,
+    detail: Option<RefusalDetail>,
     message: String,
 }
 
@@ -57,12 +58,29 @@ impl FindBuildError {
     fn new(code: RefusalCode, message: impl Into<String>) -> Self {
         Self {
             code,
+            detail: None,
+            message: message.into(),
+        }
+    }
+
+    fn with_detail(detail: RefusalDetail, message: impl Into<String>) -> Self {
+        Self {
+            code: detail.code(),
+            detail: Some(detail),
             message: message.into(),
         }
     }
 
     pub(crate) const fn code(&self) -> RefusalCode {
         self.code
+    }
+
+    pub(crate) const fn detail(&self) -> Option<RefusalDetail> {
+        self.detail
+    }
+
+    fn is_local_unreadable(&self) -> bool {
+        self.detail == Some(RefusalDetail::SourceUnreadable)
     }
 }
 
@@ -179,8 +197,8 @@ impl WorkspaceFindDirectoryBuilder {
     ) -> Result<FindIndex, FindBuildError> {
         let outcome = self.build_for_search(sources, deadline, cancellation)?;
         if outcome.omissions.total != 0 {
-            return Err(FindBuildError::new(
-                RefusalCode::ProviderUnavailable,
+            return Err(FindBuildError::with_detail(
+                RefusalDetail::SourceUnreadable,
                 format!(
                     "resolve cannot prove a complete source layout: {} descriptor reads failed",
                     outcome.omissions.total
@@ -240,7 +258,7 @@ impl WorkspaceFindDirectoryBuilder {
             Ok(Some(RetainedChildCapability::RegularFile(file))) => Some(file),
             Ok(Some(_)) => return Err(unsafe_layout_entry()),
             Ok(None) => None,
-            Err(error) if error.code() == RefusalCode::ProviderUnavailable => {
+            Err(error) if error.is_local_unreadable() => {
                 build.record_omission(source.name, "descriptor_unreadable");
                 None
             }
@@ -296,8 +314,7 @@ impl WorkspaceFindDirectoryBuilder {
                     match retain_enumerated_child(&collection, &owner, deadline, cancellation) {
                         Ok(child) => child,
                         Err(error)
-                            if error.code() == RefusalCode::ProviderUnavailable
-                                && owner_name.ends_with(".xml") =>
+                            if error.is_local_unreadable() && owner_name.ends_with(".xml") =>
                         {
                             build.record_omission(source.name, "descriptor_unreadable");
                             continue;
@@ -405,7 +422,7 @@ impl WorkspaceFindDirectoryBuilder {
             };
             let file = match retain_enumerated_child(source.root, &entry, deadline, cancellation) {
                 Ok(RetainedChildCapability::RegularFile(file)) => file,
-                Err(error) if error.code() == RefusalCode::ProviderUnavailable => {
+                Err(error) if error.is_local_unreadable() => {
                     build.record_omission(source.name, "descriptor_unreadable");
                     continue;
                 }
@@ -487,10 +504,7 @@ impl WorkspaceFindDirectoryBuilder {
                 };
                 let child = match retain_enumerated_child(&family, &entry, deadline, cancellation) {
                     Ok(child) => child,
-                    Err(error)
-                        if error.code() == RefusalCode::ProviderUnavailable
-                            && entry_name.ends_with(".xml") =>
-                    {
+                    Err(error) if error.is_local_unreadable() && entry_name.ends_with(".xml") => {
                         build.record_omission(source.name, "descriptor_unreadable");
                         continue;
                     }
@@ -690,9 +704,14 @@ fn retain_enumerated_child(
 }
 
 fn child_read_error(error: io::Error) -> FindBuildError {
+    if error.kind() == io::ErrorKind::PermissionDenied {
+        return FindBuildError::with_detail(
+            RefusalDetail::SourceUnreadable,
+            "find source layout changed or could not be read safely",
+        );
+    }
     let code = match error.kind() {
         io::ErrorKind::NotFound => RefusalCode::ConcurrentChange,
-        io::ErrorKind::PermissionDenied => RefusalCode::ProviderUnavailable,
         _ => RefusalCode::InvalidSource,
     };
     FindBuildError::new(
@@ -718,13 +737,23 @@ fn immediate_names(
             find_checkpoint(deadline, cancellation)
                 .map_err(|error| std::io::Error::other(error.to_string()))
         })
-        .map_err(|_error| {
+        .map_err(|error| {
             if cancellation.is_cancelled() {
                 FindBuildError::new(RefusalCode::Cancelled, "find directory build was cancelled")
             } else if deadline.remaining().is_zero() {
                 FindBuildError::new(
                     RefusalCode::DeadlineExceeded,
                     "find directory build deadline elapsed",
+                )
+            } else if error.kind() == io::ErrorKind::PermissionDenied {
+                FindBuildError::with_detail(
+                    RefusalDetail::SourceUnreadable,
+                    "find could not read the source layout",
+                )
+            } else if error.kind() == io::ErrorKind::FileTooLarge {
+                FindBuildError::new(
+                    RefusalCode::ProviderLimitExceeded,
+                    "find source collection exceeds the bounded entry limit",
                 )
             } else {
                 FindBuildError::new(
