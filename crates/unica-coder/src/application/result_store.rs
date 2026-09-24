@@ -153,8 +153,12 @@ pub(crate) struct SearchCursorBinding {
     pub(crate) query: String,
     pub(crate) scope: Option<String>,
     pub(crate) mode: String,
+    pub(crate) kind: Option<String>,
     pub(crate) source_sets: Vec<String>,
     pub(crate) revisions: Vec<String>,
+    /// Names have no source revision lease. Their complete ranked answer and
+    /// public coverage instead identify the replayed stream.
+    pub(crate) result_fingerprint: Option<String>,
     pub(crate) page_limit: usize,
 }
 
@@ -253,12 +257,15 @@ impl SearchCursorStore {
             || binding.query != expected.query
             || binding.scope != expected.scope
             || binding.mode != expected.mode
+            || binding.kind != expected.kind
             || binding.source_sets != expected.source_sets
             || binding.page_limit != expected.page_limit
         {
             return Err(ViewCursorError::Invalid);
         }
-        if binding.revisions != expected.revisions {
+        if binding.revisions != expected.revisions
+            || binding.result_fingerprint != expected.result_fingerprint
+        {
             return Err(ViewCursorError::Stale);
         }
         entry.last_read = now;
@@ -336,7 +343,14 @@ fn search_snapshot_charge(binding: &SearchCursorBinding, json_bytes: usize) -> u
                 .capacity()
                 .saturating_add(binding.query.capacity())
                 .saturating_add(binding.scope.as_ref().map_or(0, String::capacity))
-                .saturating_add(binding.mode.capacity()),
+                .saturating_add(binding.mode.capacity())
+                .saturating_add(binding.kind.as_ref().map_or(0, String::capacity))
+                .saturating_add(
+                    binding
+                        .result_fingerprint
+                        .as_ref()
+                        .map_or(0, String::capacity),
+                ),
             usize::saturating_add,
         );
     json_bytes.max(
@@ -907,8 +921,10 @@ mod tests {
             query: query.to_owned(),
             scope: None,
             mode: "literal".to_owned(),
+            kind: None,
             source_sets: vec!["main".to_owned()],
             revisions: vec![revision.to_owned()],
+            result_fingerprint: None,
             page_limit: 20,
         }
     }
@@ -952,6 +968,31 @@ mod tests {
                 .err(),
             Some(ViewCursorError::Invalid)
         );
+    }
+
+    #[test]
+    fn names_cursor_binds_kind_and_complete_ranked_answer() {
+        let store = SearchCursorStore::default();
+        let mut binding = search_binding("Node", "unused");
+        binding.mode = "names".to_owned();
+        binding.kind = Some("Catalog".to_owned());
+        binding.revisions.clear();
+        binding.result_fingerprint = Some("names-sha256-v1:one".to_owned());
+        let token = store.insert_first(binding.clone(), 20).unwrap();
+
+        let mut other_kind = binding.clone();
+        other_kind.kind = Some("Document".to_owned());
+        assert_eq!(
+            store.read(&token, &other_kind).err(),
+            Some(ViewCursorError::Invalid)
+        );
+        let mut changed_answer = binding.clone();
+        changed_answer.result_fingerprint = Some("names-sha256-v1:two".to_owned());
+        assert_eq!(
+            store.read(&token, &changed_answer).err(),
+            Some(ViewCursorError::Stale)
+        );
+        assert_eq!(store.read(&token, &binding).unwrap().offset, 20);
     }
 
     #[test]

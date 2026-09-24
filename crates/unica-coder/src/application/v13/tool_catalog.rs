@@ -311,7 +311,7 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                 },
                 V13ToolContract {
                     name: "search",
-                    description: "Search one corpus for a query: BSL module text, or the names and synonyms of metadata objects. Optionally under one logical subtree. Names results report descriptor-read coverage separately from approximate name matching.",
+                    description: "Search one corpus for a query: BSL module text, or the names and synonyms of metadata objects. Optionally under one logical subtree. Local text and names results use pages; names report descriptor-read coverage separately from approximate name matching.",
                     input_schema: schema(
                         json!({
                             "query": {"type": "string", "description": "Literal BSL text, symbol, or metadata name to search for."},
@@ -321,8 +321,8 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                             "scope": logical_subtree_address(),
                             "regex": {"type": "boolean", "description": "Use a regular expression for local text search.", "default": false},
                             "limit": {"type": "integer", "minimum": 1, "default": 20,
-                                "description": "Maximum matches per page. Local text search defaults to 20 and accepts up to 50."},
-                            "cursor": cursor("Continue a previous local text-search page. Bound to the query, scope, source revisions and page limit."),
+                                "description": "Maximum matches per page. Local text and names search accept up to 50; provider-role search has its own bound."},
+                            "cursor": cursor("Continue a previous local text or names page. Bound to the question, source sets, page limit and the relevant revision or complete ranked names result."),
                         }),
                         json!(["query"]),
                     ),

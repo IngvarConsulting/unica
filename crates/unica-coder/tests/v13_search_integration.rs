@@ -374,11 +374,14 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
     )));
     assert_eq!(stale["diagnostics"][0]["code"], "stale_cursor");
 
+    let cross_corpus = domain_result(&mcp.exchange(call_tool(
+        10,
+        "unica.search",
+        json!({"query": "Needle", "corpus": "names", "cursor": cursor}),
+    )));
+    assert_eq!(cross_corpus["diagnostics"][0]["code"], "invalid_cursor");
+
     for (id, arguments) in [
-        (
-            10,
-            json!({"query": "Needle", "corpus": "names", "cursor": cursor}),
-        ),
         (
             11,
             json!({"query": "Needle", "role": "lexical", "cursor": cursor}),
@@ -519,5 +522,179 @@ fn scoped_text_search_does_not_need_a_projected_view_of_the_root() {
         json!({"query": "Needle", "scope": "main:CommonModule"}),
     )));
     assert_eq!(missing_root["diagnostics"][0]["code"], "invalid_state");
+    mcp.finish();
+}
+
+#[test]
+fn names_search_pages_all_ranked_matches_and_rejects_changed_answers() {
+    let root = tempfile::tempdir().expect("names pages workspace");
+    let workspace = root.path();
+    std::fs::create_dir_all(workspace.join("Catalogs")).expect("catalog collection");
+    std::fs::write(
+        workspace.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\n",
+    )
+    .expect("workspace manifest");
+    let children = (0..121)
+        .map(|index| format!("<Catalog>Item{index:03}</Catalog>"))
+        .collect::<String>();
+    std::fs::write(
+        workspace.join("Configuration.xml"),
+        format!(
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Root</Name></Properties><ChildObjects>{children}</ChildObjects></Configuration></MetaDataObject>"#
+        ),
+    )
+    .expect("configuration descriptor");
+    for index in 0..121 {
+        std::fs::write(
+            workspace.join(format!("Catalogs/Item{index:03}.xml")),
+            format!(r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>Item{index:03}</Name></Properties></Catalog></MetaDataObject>"#),
+        )
+        .expect("catalog descriptor");
+    }
+
+    let mut mcp = McpProcess::start(workspace);
+    let initialized = mcp.exchange(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                   "clientInfo": {"name": "v13-names-pages", "version": "1"}}
+    }));
+    assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
+    mcp.notify(json!({
+        "jsonrpc": "2.0", "method": "notifications/initialized", "params": {}
+    }));
+
+    let mut cursor: Option<String> = None;
+    let mut first_cursor = String::new();
+    let mut seen = Vec::new();
+    for page_index in 0..16 {
+        let mut arguments = json!({
+            "query": "Item", "corpus": "names", "kind": "Catalog", "limit": 17
+        });
+        if let Some(token) = &cursor {
+            arguments["cursor"] = json!(token);
+        }
+        let page =
+            domain_result(&mcp.exchange(call_tool(10 + page_index, "unica.search", arguments)));
+        assert_eq!(page["ok"], true, "{page:#}");
+        assert_eq!(page["data"]["approximate"], false);
+        assert_eq!(page["data"]["sourceCoverage"]["complete"], true);
+        assert!(page["rev"].is_null(), "names do not claim a revision");
+        let matches = page["data"]["matches"].as_array().expect("name matches");
+        assert!(!matches.is_empty(), "{page:#}");
+        assert!(matches.len() <= 17);
+        assert!(matches.iter().all(|item| item.get("file").is_none()));
+        seen.extend(
+            matches
+                .iter()
+                .map(|item| item["at"].as_str().unwrap().to_owned()),
+        );
+        cursor = page["cursor"].as_str().map(str::to_owned);
+        if page_index == 0 {
+            first_cursor = cursor
+                .clone()
+                .unwrap_or_else(|| panic!("first page continues: {page:#}"));
+            assert_eq!(page["page"]["stoppedBy"], "limit");
+        }
+        if cursor.is_none() {
+            assert_eq!(page["page"]["stoppedBy"], "complete");
+            break;
+        }
+        assert_eq!(page["page"]["stoppedBy"], "limit");
+    }
+    assert_eq!(seen.len(), 121);
+    assert_eq!(seen.first().unwrap(), "main:Catalog.Item000");
+    assert_eq!(seen.last().unwrap(), "main:Catalog.Item120");
+    assert_eq!(
+        seen.iter().collect::<std::collections::BTreeSet<_>>().len(),
+        121
+    );
+
+    let mut nearest_cursor: Option<String> = None;
+    let mut nearest_seen = Vec::new();
+    for page_index in 0..16 {
+        let mut arguments =
+            json!({"query": "Iten", "corpus": "names", "kind": "Catalog", "limit": 17});
+        if let Some(token) = &nearest_cursor {
+            arguments["cursor"] = json!(token);
+        }
+        let page =
+            domain_result(&mcp.exchange(call_tool(100 + page_index, "unica.search", arguments)));
+        assert_eq!(page["ok"], true, "{page:#}");
+        assert_eq!(page["data"]["approximate"], true);
+        nearest_seen.extend(
+            page["data"]["matches"]
+                .as_array()
+                .expect("nearest matches")
+                .iter()
+                .map(|item| item["at"].as_str().unwrap().to_owned()),
+        );
+        nearest_cursor = page["cursor"].as_str().map(str::to_owned);
+        if nearest_cursor.is_none() {
+            assert_eq!(page["page"]["stoppedBy"], "complete");
+            break;
+        }
+        assert_eq!(page["page"]["stoppedBy"], "limit");
+    }
+    assert_eq!(nearest_seen, seen);
+
+    let default_page = domain_result(&mcp.exchange(call_tool(
+        200,
+        "unica.search",
+        json!({"query": "Item", "corpus": "names", "kind": "Catalog"}),
+    )));
+    assert_eq!(
+        default_page["data"]["matches"].as_array().map(Vec::len),
+        Some(20)
+    );
+    assert_eq!(default_page["page"]["stoppedBy"], "limit");
+    let max_page = domain_result(&mcp.exchange(call_tool(
+        201,
+        "unica.search",
+        json!({"query": "Item", "corpus": "names", "kind": "Catalog", "limit": 50}),
+    )));
+    assert_eq!(
+        max_page["data"]["matches"].as_array().map(Vec::len),
+        Some(50)
+    );
+    assert_eq!(max_page["page"]["stoppedBy"], "limit");
+    let over_limit = domain_result(&mcp.exchange(call_tool(
+        202,
+        "unica.search",
+        json!({"query": "Item", "corpus": "names", "kind": "Catalog", "limit": 51}),
+    )));
+    assert_eq!(over_limit["diagnostics"][0]["code"], "bad_value");
+
+    let replay = domain_result(&mcp.exchange(call_tool(
+        30,
+        "unica.search",
+        json!({"query": "Item", "corpus": "names", "kind": "Catalog", "limit": 17, "cursor": first_cursor}),
+    )));
+    assert_eq!(replay["ok"], true, "{replay:#}");
+    assert_eq!(replay["data"]["matches"][0]["at"], "main:Catalog.Item017");
+    let wrong_kind = domain_result(&mcp.exchange(call_tool(
+        31,
+        "unica.search",
+        json!({"query": "Item", "corpus": "names", "kind": "Document", "limit": 17, "cursor": first_cursor}),
+    )));
+    assert_eq!(wrong_kind["diagnostics"][0]["code"], "invalid_cursor");
+    let wrong_limit = domain_result(&mcp.exchange(call_tool(
+        32,
+        "unica.search",
+        json!({"query": "Item", "corpus": "names", "kind": "Catalog", "limit": 18, "cursor": first_cursor}),
+    )));
+    assert_eq!(wrong_limit["diagnostics"][0]["code"], "invalid_cursor");
+
+    std::fs::write(
+        workspace.join("Catalogs/Item060.xml"),
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>Item060Changed</Name></Properties></Catalog></MetaDataObject>"#,
+    )
+    .expect("change one ranked name");
+    let stale = domain_result(&mcp.exchange(call_tool(
+        33,
+        "unica.search",
+        json!({"query": "Item", "corpus": "names", "kind": "Catalog", "limit": 17, "cursor": first_cursor}),
+    )));
+    assert_eq!(stale["diagnostics"][0]["code"], "stale_cursor", "{stale:#}");
     mcp.finish();
 }

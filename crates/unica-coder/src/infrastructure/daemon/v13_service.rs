@@ -24,7 +24,8 @@ use crate::domain::apply::OperationRegistry;
 use crate::domain::call_graph_identity::{CallGraphIdentity, CallGraphIdentityError};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::{
-    CallGraphState, CodeIntelligenceContext, CodeIntelligenceRegistry, ProviderRole, SearchRequest,
+    CallGraphState, CodeIntelligenceContext, CodeIntelligenceRegistry, ProviderDeadline,
+    ProviderRole, SearchRequest,
 };
 use crate::domain::invocation::{DomainResult, InvocationFailure};
 use crate::domain::project_sources::SourceSetKind;
@@ -880,13 +881,6 @@ impl CanonicalV13ReadService {
                     "name search does not accept a provider role",
                 );
             }
-            if arguments.contains_key("cursor") {
-                return error_result(
-                    None,
-                    RefusalCode::BadValue,
-                    "name search does not accept a text-search cursor",
-                );
-            }
             return self.execute_search_names(invocation, query, arguments, cancellation);
         }
         // Роль выбирает, чем искать по тексту: точным совпадением своими
@@ -1060,8 +1054,10 @@ impl CanonicalV13ReadService {
             query: query.to_owned(),
             scope: scope.as_ref().map(ToString::to_string),
             mode: mode.to_owned(),
+            kind: None,
             source_sets,
             revisions,
+            result_fingerprint: None,
             page_limit: limit,
         };
         let cursor = match arguments.get("cursor") {
@@ -1122,27 +1118,41 @@ impl CanonicalV13ReadService {
         cursor: Option<(&str, StoredSearchCursor)>,
         binding: SearchCursorBinding,
     ) -> DomainResult {
+        let summary = format!("{} BSL search completed", binding.mode);
+        self.search_page_with_data(matches, cursor, binding, summary, Map::new())
+    }
+
+    fn search_page_with_data(
+        &self,
+        matches: Vec<Value>,
+        cursor: Option<(&str, StoredSearchCursor)>,
+        binding: SearchCursorBinding,
+        summary: String,
+        extra_data: Map<String, Value>,
+    ) -> DomainResult {
         use crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES;
         use crate::application::v13::view::PREFERRED_PAGE_BYTES;
 
         let mode = binding.mode.as_str();
         let limit = binding.page_limit;
         let offset = cursor.as_ref().map_or(0, |(_, cursor)| cursor.offset);
-        let summary = format!("{mode} BSL search completed");
         let revision = combined_revision(&binding.revisions);
         let mut page_matches = Vec::new();
         let mut byte_stop = false;
+        let measured_bytes = |items: &[Value]| {
+            search_page_probe_bytes(mode, items, &summary, &extra_data, revision.as_deref())
+        };
+        if measured_bytes(&[]) > MAX_CANONICAL_RESULT_BYTES {
+            return error_result(
+                None,
+                RefusalCode::ResultTooLarge,
+                "search page metadata exceeds the transport limit",
+            );
+        }
         for item in matches.iter().take(limit) {
             let mut candidate = page_matches.clone();
             candidate.push(item.clone());
-            let mut probe = DomainResult::success(summary.clone());
-            probe.data = Some(json!({"mode": mode, "matches": candidate}));
-            // "complete" is the longest terminal reason, so this probe also
-            // bounds the final result when there is no continuation cursor.
-            probe.page = Some(json!({"stoppedBy": "complete"}));
-            probe.cursor = Some("sc1.00000000000000000000000000000000".to_owned());
-            probe.rev = revision.clone();
-            let bytes = serde_json::to_vec(&probe).map_or(usize::MAX, |value| value.len());
+            let bytes = measured_bytes(&candidate);
             if bytes > MAX_CANONICAL_RESULT_BYTES {
                 if page_matches.is_empty() {
                     return error_result(
@@ -1170,7 +1180,7 @@ impl CanonicalV13ReadService {
             "limit"
         };
         let mut result = DomainResult::success(summary);
-        result.data = Some(json!({"mode": mode, "matches": page_matches}));
+        result.data = Some(search_page_data(mode, &page_matches, &extra_data));
         result.page = Some(json!({"stoppedBy": stopped_by}));
         result.rev = revision;
         if more {
@@ -1388,19 +1398,23 @@ impl CanonicalV13ReadService {
                 Err(error) => return error_result(None, error.code(), error.to_string()),
             };
         }
-        if let Some(limit) = arguments.get("limit") {
-            let Some(limit) = bounded_usize(limit) else {
-                return error_result(
-                    None,
-                    RefusalCode::BadValue,
-                    "search limit must be a positive integer",
-                );
-            };
-            request = match request.with_limit(limit) {
-                Ok(request) => request,
-                Err(error) => return error_result(None, error.code(), error.to_string()),
-            };
-        }
+        let limit = match arguments.get("limit") {
+            None => 20,
+            Some(value) => match bounded_usize(value).filter(|limit| *limit <= 50) {
+                Some(limit) => limit,
+                None => {
+                    return error_result(
+                        None,
+                        RefusalCode::BadValue,
+                        "search limit must be an integer from 1 through 50",
+                    )
+                }
+            },
+        };
+        request = match request.with_limit(limit) {
+            Ok(request) => request,
+            Err(error) => return error_result(None, error.code(), error.to_string()),
+        };
         let scope = match arguments.get("scope") {
             None => None,
             Some(Value::String(scope)) => match QualifiedAddress::parse(scope) {
@@ -1455,6 +1469,7 @@ impl CanonicalV13ReadService {
             Ok(built) => built,
             Err(error) => return find_build_error_result(None, error),
         };
+        let scope_binding = scope.as_ref().map(ToString::to_string);
         if let Some(scope) = scope {
             if let Err((code, message)) = validate_name_scope(&built.index, &scope, first.kind()) {
                 if built.omissions.total != 0
@@ -1470,12 +1485,128 @@ impl CanonicalV13ReadService {
             }
             request = request.with_scope(scope);
         }
-        let found = built.index.find(request);
-        let matches: Vec<Value> = found
+        let found = match built
+            .index
+            .find_all_checked(request, deadline, cancellation)
+        {
+            Ok(found) => found,
+            Err(error) => return error_result(None, error.code(), error.to_string()),
+        };
+        let summary = if built.omissions.total == 0 {
+            "name search completed".to_string()
+        } else {
+            format!(
+                "name search has {} unreadable descriptor candidates",
+                built.omissions.total
+            )
+        };
+        let coverage = json!({
+            "complete": built.omissions.total == 0,
+            "omitted": built.omissions.total,
+            "detailsTruncated": built.omissions.total > built.omissions.details.len(),
+            "details": built.omissions.details.iter().map(|detail| json!({
+                "sourceSet": detail.source_set,
+                "reason": detail.reason,
+            })).collect::<Vec<_>>(),
+        });
+        let mut extra_data = Map::new();
+        extra_data.insert("sourceCoverage".to_owned(), coverage.clone());
+        extra_data.insert("approximate".to_owned(), Value::Bool(found.is_nearest()));
+        let empty_page_bytes = search_page_probe_bytes("names", &[], &summary, &extra_data, None);
+        if empty_page_bytes > crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES {
+            return error_result(
+                None,
+                RefusalCode::ResultTooLarge,
+                "name search page metadata exceeds the transport limit",
+            );
+        }
+        // Names do not have a source revision lease. Rebuild the complete
+        // ranked answer on each page and bind the cursor to the public stream
+        // and coverage instead of claiming a source revision.
+        let mut hasher = Sha256::new();
+        hasher.update(b"unica-v13-names-result-v1\0");
+        for (index, candidate) in found.candidates().iter().enumerate() {
+            if index % 128 == 0 {
+                if let Some(refusal) = name_search_interruption(deadline, cancellation) {
+                    return refusal;
+                }
+            }
+            let public = json!({
+                "at": candidate.at(),
+                "kind": candidate.kind(),
+                "title": candidate.title(),
+                "reason": candidate.reason(),
+            });
+            let bytes = serde_json::to_vec(&public).expect("name match is serializable");
+            // An item after the first page must not receive a continuation
+            // that could never carry it. The empty probe includes every fixed
+            // response field and its cursor; adding one JSON array item adds
+            // exactly its serialized byte length.
+            if empty_page_bytes.saturating_add(bytes.len())
+                > crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES
+            {
+                return error_result(
+                    None,
+                    RefusalCode::ResultTooLarge,
+                    "one name search result exceeds the transport limit",
+                );
+            }
+            hasher.update((bytes.len() as u64).to_le_bytes());
+            hasher.update(&bytes);
+        }
+        let evidence =
+            json!({"approximate": found.is_nearest(), "sourceCoverage": coverage.clone()});
+        let bytes = serde_json::to_vec(&evidence).expect("name coverage is serializable");
+        hasher.update((bytes.len() as u64).to_le_bytes());
+        hasher.update(&bytes);
+        if let Some(refusal) = name_search_interruption(deadline, cancellation) {
+            return refusal;
+        }
+        let binding = SearchCursorBinding {
+            workspace_identity: invocation.workspace_identity_hash().as_str().to_owned(),
+            query: query.to_owned(),
+            scope: scope_binding,
+            mode: "names".to_owned(),
+            kind: arguments
+                .get("kind")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            source_sets: selected
+                .iter()
+                .map(|source| source.name().to_owned())
+                .collect(),
+            revisions: Vec::new(),
+            result_fingerprint: Some(format!("names-sha256-v1:{:x}", hasher.finalize())),
+            page_limit: limit,
+        };
+        let cursor = match arguments.get("cursor") {
+            None => None,
+            Some(Value::String(token)) => match self.search_cursors.read(token, &binding) {
+                Ok(cursor) => Some((token.as_str(), cursor)),
+                Err(error) => {
+                    return error_result(
+                        None,
+                        error.code(),
+                        "name search cursor is invalid or stale",
+                    )
+                }
+            },
+            Some(_) => {
+                return error_result(
+                    None,
+                    RefusalCode::BadValue,
+                    "search cursor must be a string",
+                )
+            }
+        };
+        let offset = cursor.as_ref().map_or(0, |(_, cursor)| cursor.offset);
+        let matches = found
             .candidates()
             .iter()
+            .skip(offset)
+            .take(limit + 1)
             .map(|candidate| {
-                serde_json::json!({
+                json!({
                     "at": candidate.at(),
                     "kind": candidate.kind(),
                     "title": candidate.title(),
@@ -1483,30 +1614,10 @@ impl CanonicalV13ReadService {
                 })
             })
             .collect();
-        let mut result = DomainResult::success(if built.omissions.total == 0 {
-            "name search completed".to_string()
-        } else {
-            format!(
-                "name search has {} unreadable descriptor candidates",
-                built.omissions.total
-            )
-        });
-        result.data = Some(serde_json::json!({
-            "mode": "names",
-            "matches": matches,
-            "sourceCoverage": {
-                "complete": built.omissions.total == 0,
-                "omitted": built.omissions.total,
-                "detailsTruncated": built.omissions.total > built.omissions.details.len(),
-                "details": built.omissions.details.iter().map(|detail| serde_json::json!({
-                    "sourceSet": detail.source_set,
-                    "reason": detail.reason,
-                })).collect::<Vec<_>>(),
-            },
-            // Совпадение по близости — догадка, и она названа: читатель
-            // обязан отличать «нашлось» от «похоже на».
-            "approximate": found.is_nearest(),
-        }));
+        let result = self.search_page_with_data(matches, cursor, binding, summary, extra_data);
+        if let Some(refusal) = name_search_interruption(deadline, cancellation) {
+            return refusal;
+        }
         result
     }
 
@@ -2022,6 +2133,51 @@ fn find_build_error_result(at: Option<String>, error: FindBuildError) -> DomainR
         Some(detail) => error_result_detailed(at, detail, error.to_string()),
         None => error_result(at, error.code(), error.to_string()),
     }
+}
+
+fn search_page_data(mode: &str, matches: &[Value], extra: &Map<String, Value>) -> Value {
+    let mut data = extra.clone();
+    data.insert("mode".to_owned(), Value::String(mode.to_owned()));
+    data.insert("matches".to_owned(), Value::Array(matches.to_vec()));
+    Value::Object(data)
+}
+
+fn search_page_probe_bytes(
+    mode: &str,
+    matches: &[Value],
+    summary: &str,
+    extra_data: &Map<String, Value>,
+    revision: Option<&str>,
+) -> usize {
+    let mut probe = DomainResult::success(summary.to_owned());
+    probe.data = Some(search_page_data(mode, matches, extra_data));
+    // "complete" is the longest terminal reason; a cursor also reserves
+    // space even when this turns out to be the final page.
+    probe.page = Some(json!({"stoppedBy": "complete"}));
+    probe.cursor = Some("sc1.00000000000000000000000000000000".to_owned());
+    probe.rev = revision.map(str::to_owned);
+    serde_json::to_vec(&probe).map_or(usize::MAX, |value| value.len())
+}
+
+fn name_search_interruption(
+    deadline: ProviderDeadline,
+    cancellation: &CancellationToken,
+) -> Option<DomainResult> {
+    if cancellation.is_cancelled() {
+        return Some(error_result(
+            None,
+            RefusalCode::Cancelled,
+            "name search was cancelled",
+        ));
+    }
+    if deadline.remaining().is_zero() {
+        return Some(error_result(
+            None,
+            RefusalCode::DeadlineExceeded,
+            "name search deadline elapsed",
+        ));
+    }
+    None
 }
 
 fn combined_revision(revisions: &[String]) -> Option<String> {

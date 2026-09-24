@@ -1,4 +1,6 @@
 use crate::domain::address::{NodeKind, QualifiedAddress};
+use crate::domain::cancellation::CancellationToken;
+use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::refusal::RefusalCode;
 use serde::Serialize;
 use std::cmp::Ordering;
@@ -334,6 +336,43 @@ impl FindIndex {
     }
 
     pub(crate) fn find(&self, request: FindRequest) -> FindResult {
+        let limit = request.limit;
+        self.find_ranked(request, Some(limit), || Ok(()))
+            .expect("an unchecked find cannot fail")
+    }
+
+    /// Return the entire ranked stream for a paged public search. The
+    /// historical `find` limit remains intact for internal readers.
+    pub(crate) fn find_all_checked(
+        &self,
+        request: FindRequest,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<FindResult, FindError> {
+        self.find_ranked(request, None, || {
+            if cancellation.is_cancelled() {
+                return Err(FindError::new(
+                    RefusalCode::Cancelled,
+                    "name search was cancelled",
+                ));
+            }
+            if deadline.remaining().is_zero() {
+                return Err(FindError::new(
+                    RefusalCode::DeadlineExceeded,
+                    "name search deadline elapsed",
+                ));
+            }
+            Ok(())
+        })
+    }
+
+    fn find_ranked(
+        &self,
+        request: FindRequest,
+        cap: Option<usize>,
+        mut checkpoint: impl FnMut() -> Result<(), FindError>,
+    ) -> Result<FindResult, FindError> {
+        checkpoint()?;
         let query = normalize(&request.query);
         let eligible = self.documents.iter().filter(|document| {
             request
@@ -342,37 +381,52 @@ impl FindIndex {
                 .is_none_or(|kind| kind == &document.kind)
                 && request.contains_address(&document.at)
         });
-        let mut direct = eligible
-            .clone()
-            .filter_map(|document| best_direct_match(document, &query))
-            .collect::<Vec<_>>();
+        let mut direct = Vec::new();
+        for (index, document) in eligible.clone().enumerate() {
+            if index % 128 == 0 {
+                checkpoint()?;
+            }
+            if let Some(candidate) = best_direct_match(document, &query) {
+                direct.push(candidate);
+            }
+        }
+        checkpoint()?;
         direct.sort_by(scored_order);
         direct.dedup_by(|left, right| left.document.at == right.document.at);
+        checkpoint()?;
         if !direct.is_empty() {
-            return FindResult {
+            return Ok(FindResult {
                 candidates: direct
                     .into_iter()
-                    .take(request.limit)
+                    .take(cap.unwrap_or(usize::MAX))
                     .map(ScoredCandidate::into_candidate)
                     .collect(),
                 nearest: false,
-            };
+            });
         }
 
-        let mut nearest = eligible
-            .filter_map(|document| nearest_match(document, &query))
-            .collect::<Vec<_>>();
+        let mut nearest = Vec::new();
+        for (index, document) in eligible.enumerate() {
+            if index % 128 == 0 {
+                checkpoint()?;
+            }
+            if let Some(candidate) = nearest_match(document, &query) {
+                nearest.push(candidate);
+            }
+        }
+        checkpoint()?;
         nearest.sort_by(scored_order);
         nearest.dedup_by(|left, right| left.document.at == right.document.at);
         let has_nearest = !nearest.is_empty();
-        FindResult {
+        checkpoint()?;
+        Ok(FindResult {
             candidates: nearest
                 .into_iter()
-                .take(request.limit.min(10))
+                .take(cap.map_or(usize::MAX, |limit| limit.min(10)))
                 .map(ScoredCandidate::into_candidate)
                 .collect(),
             nearest: has_nearest,
-        }
+        })
     }
 
     #[cfg(test)]
@@ -497,6 +551,10 @@ fn bounded_levenshtein(left: &str, right: &str, bound: usize) -> Option<usize> {
 mod tests {
     use super::{FindDocument, FindFact, FindFactKind, FindIndex, FindRequest};
     use crate::domain::address::QualifiedAddress;
+    use crate::domain::cancellation::CancellationToken;
+    use crate::domain::code_intelligence::ProviderDeadline;
+    use crate::domain::refusal::RefusalCode;
+    use std::time::Duration;
 
     fn index() -> FindIndex {
         FindIndex::new(vec![
@@ -604,6 +662,69 @@ mod tests {
                 .candidates()
                 .len(),
             100,
+        );
+        assert_eq!(
+            index
+                .find_all_checked(
+                    FindRequest::new("Node").unwrap(),
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .unwrap()
+                .candidates()
+                .len(),
+            150,
+        );
+    }
+
+    #[test]
+    fn paged_name_ranking_keeps_all_nearest_candidates_and_checks_cancellation() {
+        let documents = (0..15)
+            .map(|index| {
+                FindDocument::new(
+                    format!("main:Catalog.Node{index:02}"),
+                    "Catalog",
+                    format!("Node{index:02}"),
+                    vec![FindFact::new(FindFactKind::Name, format!("Node{index:02}"))],
+                )
+            })
+            .collect();
+        let index = FindIndex::new(documents);
+        let request = FindRequest::new("Nade").unwrap();
+        let found = index
+            .find_all_checked(
+                request.clone(),
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert!(found.is_nearest());
+        assert_eq!(found.candidates().len(), 15);
+        assert_eq!(index.find(request.clone()).candidates().len(), 10);
+
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        assert_eq!(
+            index
+                .find_all_checked(
+                    request.clone(),
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &cancelled,
+                )
+                .unwrap_err()
+                .code(),
+            RefusalCode::Cancelled,
+        );
+        assert_eq!(
+            index
+                .find_all_checked(
+                    request,
+                    ProviderDeadline::from_budget(Duration::ZERO),
+                    &CancellationToken::new(),
+                )
+                .unwrap_err()
+                .code(),
+            RefusalCode::DeadlineExceeded,
         );
     }
 
