@@ -106,7 +106,7 @@ impl RunOperation {
             RunIntent::InfobaseImport => {
                 "Import a DT transfer file as the infobase; the mode states whether an absent infobase is created or the data of an existing one is discarded."
             }
-            RunIntent::ExtensionList => "Read installed extensions through a previewed platform session. Name prefixes are not reported by the platform.",
+            RunIntent::ExtensionList => "Read installed extensions through a previewed platform session. Each namePrefix is the provider-attested value or null when unknown.",
             RunIntent::ExtensionActivate => "Set the named installed extension active or inactive.",
             RunIntent::ConfigurationApply => "Apply the working configuration to the database configuration; unlike unica.apply this changes the infobase.",
             RunIntent::ConfigurationReset => "Discard pending configuration changes in the infobase, restoring its database configuration.",

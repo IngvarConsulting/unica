@@ -475,15 +475,13 @@ impl PreparedExtensions {
         let mut data = json!({"op":self.operation.name(),"dryRun":false,"provider":receipt["selected"],"targetStateAttestedBy":"provider"});
         if self.operation.reads() {
             data["requested"] = self.requested();
-            data["extensions"] = Value::Array(
-                applied["data"]["extensions"]
-                    .as_array()
-                    .expect("validated records")
-                    .iter()
-                    .map(public_record)
-                    .collect(),
+            let items = applied["data"]["extensions"]
+                .as_array()
+                .expect("validated records");
+            data["extensions"] = Value::Array(items.iter().map(public_record).collect());
+            data["namePrefixAvailable"] = json!(
+                !items.is_empty() && items.iter().all(|item| item["name_prefix"].is_string())
             );
-            data["namePrefixAvailable"] = json!(false);
         } else {
             data["name"] = self.extension_name().clone();
             data["action"] = json!(self.action());
@@ -537,9 +535,12 @@ fn valid_inventory_record(item: &Value) -> bool {
         && ["version", "security_profile_name"]
             .iter()
             .all(|k| item[k].is_null() || item[k].as_str().is_some_and(|v| v.len() <= 4096))
+        && item.get("name_prefix").is_some_and(|prefix| {
+            prefix.is_null() || prefix.as_str().is_some_and(|value| value.len() <= 4096)
+        })
 }
 fn public_record(item: &Value) -> Value {
-    json!({"name":item["name"],"version":item["version"],"purpose":item["purpose"],"active":item["active"],"safeMode":item["safe_mode"],"unsafeActionProtection":item["unsafe_action_protection"],"usedInDistributedInfobase":item["used_in_distributed_infobase"],"scope":item["scope"],"hashSum":item["hash_sum"],"securityProfileName":item["security_profile_name"]})
+    json!({"name":item["name"],"version":item["version"],"namePrefix":item["name_prefix"],"purpose":item["purpose"],"active":item["active"],"safeMode":item["safe_mode"],"unsafeActionProtection":item["unsafe_action_protection"],"usedInDistributedInfobase":item["used_in_distributed_infobase"],"scope":item["scope"],"hashSum":item["hash_sum"],"securityProfileName":item["security_profile_name"]})
 }
 fn rejection(operation: Operation, code: RefusalCode, message: impl Into<String>) -> DomainResult {
     DomainResult::canonical_rejection(Some(operation.name().into()), code, message)
@@ -614,7 +615,7 @@ mod tests {
         }
     }
     fn record() -> Value {
-        json!({"name":"Тест","version":null,"purpose":"Patch","active":false,"safe_mode":true,"unsafe_action_protection":false,"used_in_distributed_infobase":false,"scope":"Infobase","hash_sum":"abc","security_profile_name":null})
+        json!({"name":"Тест","version":null,"name_prefix":null,"purpose":"Patch","active":false,"safe_mode":true,"unsafe_action_protection":false,"used_in_distributed_infobase":false,"scope":"Infobase","hash_sum":"abc","security_profile_name":null})
     }
     fn envelope(prepared: &PreparedExtensions, preview: bool) -> Value {
         let mut data = json!({"ok":true,"provider_dispatched":!preview,"provider":{"selected":"ibcmd","origin":{"kind":"default"}}});
@@ -766,6 +767,85 @@ mod tests {
         wrong = envelope(&p, false);
         wrong["data"]["extensions"][0]["active"] = json!("yes");
         assert!(p.validate(&wrong, false).is_err());
+        wrong = envelope(&p, false);
+        wrong["data"]["extensions"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("name_prefix");
+        assert!(p.validate(&wrong, false).is_err());
+        wrong = envelope(&p, false);
+        wrong["data"]["extensions"][0]["name_prefix"] = json!(42);
+        assert!(p.validate(&wrong, false).is_err());
+    }
+    #[test]
+    fn installed_prefix_keeps_known_value_empty_value_and_unknown_distinct() {
+        for (prefix, available) in [
+            (json!("A8_"), true),
+            (json!(""), true),
+            (Value::Null, false),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let mut prepared = fixture(root.path(), Operation::List);
+            let preview = envelope(&prepared, true);
+            let mut applied = envelope(&prepared, false);
+            applied["data"]["extensions"][0]["name_prefix"] = prefix.clone();
+            let tool = tool(root.path());
+            let preview_result = prepared.execute_with(
+                &SequenceRunner::new(vec![preview.clone()]),
+                &tool,
+                super::super::runner_011::VERSION,
+                CancellationToken::new(),
+            );
+            prepared.dry_run = false;
+            prepared.if_rev = preview_result.rev;
+            let result = prepared.execute_with(
+                &SequenceRunner::new(vec![preview, applied]),
+                &tool,
+                super::super::runner_011::VERSION,
+                CancellationToken::new(),
+            );
+            assert!(result.ok, "{result:?}");
+            let data = result.data.unwrap();
+            assert_eq!(data["extensions"][0]["namePrefix"], prefix);
+            assert_eq!(data["namePrefixAvailable"], available);
+        }
+        for prefixes in [Vec::<Value>::new(), vec![json!("A8_"), Value::Null]] {
+            let root = tempfile::tempdir().unwrap();
+            let mut prepared = fixture(root.path(), Operation::List);
+            let preview = envelope(&prepared, true);
+            let mut applied = envelope(&prepared, false);
+            applied["data"]["extensions"] = Value::Array(
+                prefixes
+                    .iter()
+                    .enumerate()
+                    .map(|(index, prefix)| {
+                        let mut item = record();
+                        item["name"] = json!(format!("Extension{index}"));
+                        item["name_prefix"] = prefix.clone();
+                        item
+                    })
+                    .collect(),
+            );
+            let tool = tool(root.path());
+            let planned = prepared.execute_with(
+                &SequenceRunner::new(vec![preview.clone()]),
+                &tool,
+                super::super::runner_011::VERSION,
+                CancellationToken::new(),
+            );
+            prepared.dry_run = false;
+            prepared.if_rev = planned.rev;
+            let result = prepared.execute_with(
+                &SequenceRunner::new(vec![preview, applied]),
+                &tool,
+                super::super::runner_011::VERSION,
+                CancellationToken::new(),
+            );
+            assert!(result.ok, "{result:?}");
+            let data = result.data.unwrap();
+            assert_eq!(data["namePrefixAvailable"], false);
+            assert_eq!(data["extensions"].as_array().unwrap().len(), prefixes.len());
+        }
     }
     #[test]
     fn extension_arguments_are_closed_and_apply_requires_the_preview_revision() {
