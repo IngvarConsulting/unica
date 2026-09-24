@@ -638,7 +638,7 @@ mod tests {
         let result = prepared.execute_with(
             &SequenceRunner::new(vec![envelope(&prepared, true)]),
             &tool(root.path()),
-            "0.11.0",
+            super::super::runner_011::VERSION,
             CancellationToken::new(),
         );
         assert!(result.ok);
@@ -654,7 +654,12 @@ mod tests {
             let preview = envelope(&prepared, true);
             let applied = envelope(&prepared, false);
             let runner = SequenceRunner::new(vec![preview.clone()]);
-            let result = prepared.execute_with(&runner, &tool, "0.11.0", CancellationToken::new());
+            let result = prepared.execute_with(
+                &runner,
+                &tool,
+                super::super::runner_011::VERSION,
+                CancellationToken::new(),
+            );
             assert!(result.ok, "{result:?}");
             assert!(result.changed.is_empty());
             assert_eq!(runner.calls.lock().unwrap().len(), 1);
@@ -665,7 +670,12 @@ mod tests {
             prepared.dry_run = false;
             prepared.if_rev = result.rev;
             let runner = SequenceRunner::new(vec![preview, applied]);
-            let result = prepared.execute_with(&runner, &tool, "0.11.0", CancellationToken::new());
+            let result = prepared.execute_with(
+                &runner,
+                &tool,
+                super::super::runner_011::VERSION,
+                CancellationToken::new(),
+            );
             assert!(result.ok, "{op:?}: {result:?}");
             assert_eq!(result.changed.is_empty(), op.reads());
             let calls = runner.calls.lock().unwrap();
@@ -694,7 +704,7 @@ mod tests {
                 .execute_with(
                     &SequenceRunner::new(vec![preview.clone()]),
                     &tool,
-                    "0.11.0",
+                    super::super::runner_011::VERSION,
                     CancellationToken::new(),
                 )
                 .rev;
@@ -722,7 +732,7 @@ mod tests {
             let version = if change == "version" {
                 "0.11.1"
             } else {
-                "0.11.0"
+                super::super::runner_011::VERSION
             };
             let result = p.execute_with(&runner, &tool, version, CancellationToken::new());
             assert!(!result.ok, "{change}");
@@ -787,7 +797,7 @@ mod tests {
         let receipt = p1.execute_with(
             &SequenceRunner::new(vec![envelope(&p1, true)]),
             &tool(first.path()),
-            "0.11.0",
+            super::super::runner_011::VERSION,
             CancellationToken::new(),
         );
         p2.dry_run = false;
@@ -796,7 +806,7 @@ mod tests {
         let result = p2.execute_with(
             &runner,
             &tool(second.path()),
-            "0.11.0",
+            super::super::runner_011::VERSION,
             CancellationToken::new(),
         );
         assert!(
@@ -814,7 +824,7 @@ mod tests {
         let result = p.execute_with(
             &SequenceRunner::new(vec![envelope(&p, true)]),
             &tool(root.path()),
-            "0.11.0",
+            super::super::runner_011::VERSION,
             CancellationToken::new(),
         );
         assert!(result.ok);
@@ -889,8 +899,13 @@ mod tests {
         let cancellation = CancellationToken::new();
         cancellation.cancel();
         assert!(
-            !p.execute_with(&runner, &tool(root.path()), "0.11.0", cancellation)
-                .ok
+            !p.execute_with(
+                &runner,
+                &tool(root.path()),
+                super::super::runner_011::VERSION,
+                cancellation
+            )
+            .ok
         );
         assert!(runner.calls.lock().unwrap().is_empty());
     }
@@ -904,7 +919,7 @@ mod tests {
         let result = p.execute_with(
             &runner,
             &tool(root.path()),
-            "0.11.0",
+            super::super::runner_011::VERSION,
             CancellationToken::new(),
         );
         assert!(!result.ok);

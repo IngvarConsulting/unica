@@ -7711,7 +7711,7 @@ fn main() {
                 "sourceManifest": true,
                 "tools": [{
                     "name": "v8-runner",
-                    "version": "0.11.1",
+                    "version": "0.11.2",
                     "binaries": {target: {"binaryPath": relative, "sha256": digest}}
                 }]
             })

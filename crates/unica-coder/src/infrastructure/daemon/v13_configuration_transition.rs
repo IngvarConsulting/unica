@@ -415,7 +415,7 @@ mod tests {
             let result = prepared.execute_with(
                 &UnavailableRunner,
                 &tool(root.path()),
-                "0.11.1",
+                super::super::runner_011::VERSION,
                 CancellationToken::new(),
             );
             assert!(!result.ok);
@@ -437,7 +437,7 @@ mod tests {
                 let result = p.execute_with(
                     &Probe::new(vec![preview.clone()]),
                     &tool(root.path()),
-                    "0.11.1",
+                    super::super::runner_011::VERSION,
                     CancellationToken::new(),
                 );
                 assert!(result.ok);
@@ -448,7 +448,7 @@ mod tests {
                 let result = p.execute_with(
                     &runner,
                     &tool(root.path()),
-                    "0.11.1",
+                    super::super::runner_011::VERSION,
                     CancellationToken::new(),
                 );
                 assert!(result.ok, "{result:?}");
@@ -471,7 +471,7 @@ mod tests {
         let planned = p.execute_with(
             &Probe::new(vec![preview.clone()]),
             &tool(root.path()),
-            "0.11.1",
+            super::super::runner_011::VERSION,
             CancellationToken::new(),
         );
         p.if_rev = planned.rev;
@@ -481,7 +481,7 @@ mod tests {
         let result = p.execute_with(
             &Probe::new(vec![preview.clone(), bad]),
             &tool(root.path()),
-            "0.11.1",
+            super::super::runner_011::VERSION,
             CancellationToken::new(),
         );
         assert!(!result.ok, "failed status cannot be successful");
@@ -490,7 +490,7 @@ mod tests {
         let result = p.execute_with(
             &Probe::new(vec![preview, done]),
             &tool(root.path()),
-            "0.11.1",
+            super::super::runner_011::VERSION,
             CancellationToken::new(),
         );
         assert!(result.ok);
@@ -510,7 +510,7 @@ mod tests {
         let result = p.execute_with(
             &runner,
             &tool(root.path()),
-            "0.11.1",
+            super::super::runner_011::VERSION,
             CancellationToken::new(),
         );
         assert!(!result.ok);
@@ -526,7 +526,7 @@ mod tests {
             let result = p.execute_with(
                 &Probe::new(vec![v]),
                 &tool(root.path()),
-                "0.11.1",
+                super::super::runner_011::VERSION,
                 CancellationToken::new(),
             );
             assert!(!result.ok, "{field}");

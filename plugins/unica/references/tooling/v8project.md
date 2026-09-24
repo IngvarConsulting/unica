@@ -179,7 +179,7 @@ operations of the dictionary. A previewApply operation is applied with the
 `stale_revision` or `concurrent_change` instead of applying. The remaining gap in binding preview to its inputs is tracked in
 [issue #950](https://github.com/IngvarConsulting/unica/issues/950).
 
-The runner 0.11.1 adapter supports source `push` and `pull` with explicit
+The runner 0.11.2 adapter supports source `push` and `pull` with explicit
 `force:true`, without local-work protection or generation checks. Source
 `push` also applies the database configuration; `noApply:true` is unavailable.
 `upload` keeps loading separate from applying.
@@ -196,9 +196,9 @@ changes to the database configuration, optionally for one named extension.
 - Treat a platform-generated CDFI sidecar `ConfigDumpInfo.xml` whose root is `ConfigDumpInfo` as local per-infobase runtime state: keep it out of Git and never use it as source-format evidence. A legitimate metadata descriptor (including an external EPF/ERF descriptor) for an object actually named `ConfigDumpInfo` remains source and belongs in Git.
 - `execution_timeout` in `v8project.yaml` is the runner budget for `unica.run`
   operations; Unica exposes no `timeoutMs` argument.
-- `upload` with adapter 0.11.1 loads a CF/CFE without applying the database configuration. Use the separate `apply` operation to apply it; both operations require preview and its `ifRev`.
+- `upload` with adapter 0.11.2 loads a CF/CFE without applying the database configuration. Use the separate `apply` operation to apply it; both operations require preview and its `ifRev`.
 - Designer/EDT conversion is not on the surface: Unica reads platform XML only.
-- Designer `rawKeys` are not on the surface; source `push` and `pull` require explicit `force:true` with the 0.11.1 adapter and do not protect generations or local work.
+- Designer `rawKeys` are not on the surface; source `push` and `pull` require explicit `force:true` with the 0.11.2 adapter and do not protect generations or local work.
 - When credentials are absent, do not initiate a runtime probe to discover them. Ask the user; classify only authentication evidence already supplied by a verified boundary.
 - If a command reports a 1C license problem, stop and ask the user to fix licensing. Do not edit license services, HASP settings, registry, or license files.
 - If a runtime flag or debug-server step is missing from the `unica.run`

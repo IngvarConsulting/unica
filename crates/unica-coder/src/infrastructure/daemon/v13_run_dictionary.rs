@@ -135,7 +135,7 @@ pub(super) fn run_dictionary_result() -> DomainResult {
                 "execution": operation.execution(),
                 "effects": operation.effects(),
                 "implemented": operation.implemented,
-                "support": {"adapter":"v8-runner/0.11.1", "state": if !operation.implemented {"unavailable"} else if operation.support_reason().is_some() {"limited"} else {"supported"}, "reason":operation.support_reason(), "supportedInfobases":["origin"], "supportedArgs": operation.args_schema()},
+                "support": {"adapter":format!("v8-runner/{}", super::runner_011::VERSION), "state": if !operation.implemented {"unavailable"} else if operation.support_reason().is_some() {"limited"} else {"supported"}, "reason":operation.support_reason(), "supportedInfobases":["origin"], "supportedArgs": operation.args_schema()},
                 "terminal": operation.terminal,
                 "rejectsSessions": operation.rejects_sessions,
                 "previewRequired": preview_required,
