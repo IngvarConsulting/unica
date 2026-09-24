@@ -364,13 +364,14 @@ impl FindIndex {
             .collect::<Vec<_>>();
         nearest.sort_by(scored_order);
         nearest.dedup_by(|left, right| left.document.at == right.document.at);
+        let has_nearest = !nearest.is_empty();
         FindResult {
             candidates: nearest
                 .into_iter()
                 .take(request.limit.min(10))
                 .map(ScoredCandidate::into_candidate)
                 .collect(),
-            nearest: true,
+            nearest: has_nearest,
         }
     }
 
@@ -550,6 +551,25 @@ mod tests {
         assert!(nearest.is_nearest());
         assert_eq!(nearest.candidates()[0].at(), "main:Catalog.Валюты");
         assert!(nearest.candidates()[0].reason().starts_with("nearest:"));
+    }
+
+    #[test]
+    fn empty_search_has_no_approximate_match() {
+        let absent_kind = index().find(
+            FindRequest::new("Валюты")
+                .unwrap()
+                .with_kind("Role")
+                .unwrap(),
+        );
+        assert!(absent_kind.candidates().is_empty());
+        assert!(!absent_kind.is_nearest());
+
+        let distant = index().find(
+            FindRequest::new("A query longer than the nearest bound of thirty two characters")
+                .unwrap(),
+        );
+        assert!(distant.candidates().is_empty());
+        assert!(!distant.is_nearest());
     }
 
     #[test]
