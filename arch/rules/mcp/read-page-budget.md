@@ -8,12 +8,16 @@ check:
   - crates/unica-coder/src/application/v13/view.rs::supplied_graph_collection_uses_stable_pages_bound_to_its_owner
   - crates/unica-coder/tests/v13_search_integration.rs::canonical_search_is_source_scoped_and_rejects_legacy_call_shape
   - crates/unica-coder/tests/v13_search_integration.rs::names_search_pages_all_ranked_matches_and_rejects_changed_answers
+  - crates/unica-coder/tests/v13_search_integration.rs::canonical_search_is_source_scoped_and_rejects_legacy_call_shape
   - crates/unica-coder/src/application/v13/check.rs::check_pages_preserve_verdict_and_every_diagnostic_with_replay
   - crates/unica-coder/src/application/v13/check.rs::check_returns_whole_large_finding_and_refuses_late_oversize_before_page_one
   - crates/unica-coder/src/application/v13/check.rs::check_refuses_before_first_page_when_snapshot_cannot_be_retained
   - crates/unica-coder/src/application/v13/check.rs::late_finding_at_transport_edge_is_refused_before_issuing_a_cursor
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::bsl_check_never_calls_a_truncated_analyzer_result_complete
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::bsl_check_sees_an_error_after_two_hundred_warnings
+  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::provider_search_pages_all_received_hits_and_rejects_changed_answers
+  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::provider_limit_remains_visible_after_the_last_received_page
+  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::late_oversized_provider_hit_refuses_before_first_cursor
 gap: https://github.com/IngvarConsulting/unica/issues/871
 ---
 
@@ -39,5 +43,7 @@ gap: https://github.com/IngvarConsulting/unica/issues/871
 отказывает до выдачи курсора. Локальный текстовый `search` выдаёт страницы,
 повторно читая исходники по курсору и проверяя их ревизии. Поиск по именам
 пересобирает ранжированный ответ и проверяет его отпечаток перед продолжением;
-он не заявляет ревизию исходников. Провайдерные роли пока не имеют продолжения.
-Остальной разрыв сохранён в `gap`.
+он не заявляет ревизию исходников. Провайдерные роли пересобирают ограниченное
+окно результатов и сверяют отпечаток всего ответа перед продолжением; достижение
+предела поставщика остаётся явным даже на последней странице полученного окна.
+Продолжение за пределами этого окна и страницы `docs` остаются в `gap`.

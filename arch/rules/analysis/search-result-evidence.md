@@ -10,6 +10,7 @@ check:
   - crates/unica-coder/src/application/mod.rs::code_search_schema_accepts_a_real_partial_provider_section
   - crates/unica-coder/src/application/code_intelligence.rs::malformed_provider_subset_remains_useful_without_claiming_complete_coverage
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::public_role_search_surfaces_partial_provider_warning_and_hit
+  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::provider_limit_remains_visible_after_the_last_received_page
   - crates/unica-coder/src/infrastructure/code_intelligence.rs::bsl_analyzer_at_requested_limit_does_not_claim_exhaustion
   - crates/unica-coder/src/infrastructure/code_intelligence.rs::rlm_at_requested_limit_does_not_claim_exhaustion
   - crates/unica-coder/src/infrastructure/code_intelligence.rs::bsl_analyzer_does_not_claim_complete_when_one_header_is_unreadable
@@ -44,4 +45,7 @@ gap: https://github.com/IngvarConsulting/unica/issues/871
 буквальный поиск — места в порядке файлов. Неполнота результата обозначается
 явно. Сводка не заменяет первую страницу полезных совпадений.
 Общий [предел страницы](../mcp/read-page-budget.md) сохраняется.
-Страницы для остальных видов поиска на публичном входе остаются в `gap`.
+Провайдерный поиск выдаёт страницы полученного окна, сохраняя его роль,
+поставщика и полноту. Курсор не доказывает, что поставщик нашёл всё: при
+достижении его предела последняя страница сохраняет `limitReached` и нижнюю
+оценку. Продолжение за пределами окна поставщика остаётся в `gap`.

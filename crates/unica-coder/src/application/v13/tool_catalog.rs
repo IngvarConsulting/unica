@@ -311,7 +311,7 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                 },
                 V13ToolContract {
                     name: "search",
-                    description: "Search one corpus for a query: BSL module text, or the names and synonyms of metadata objects. Optionally under one logical subtree. Local text and names results use pages; names report descriptor-read coverage separately from approximate name matching.",
+                    description: "Search one corpus for a query: BSL module text, or the names and synonyms of metadata objects. Optionally under one logical subtree. Results use pages; provider roles report whether their finite search window is complete. Names report descriptor-read coverage separately from approximate name matching.",
                     input_schema: schema(
                         json!({
                             "query": {"type": "string", "description": "Literal BSL text, symbol, or metadata name to search for."},
@@ -320,9 +320,9 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                             "role": {"type": "string", "enum": ["lexical", "symbol", "semantic"], "description": "`text` corpus only: which provider answers. `lexical` matches literally, `symbol` uses the symbol index, `semantic` matches by meaning. Omit for the literal search Unica performs itself."},
                             "scope": logical_subtree_address(),
                             "regex": {"type": "boolean", "description": "Use a regular expression for local text search.", "default": false},
-                            "limit": {"type": "integer", "minimum": 1, "default": 20,
-                                "description": "Maximum matches per page. Local text and names search accept up to 50; provider-role search has its own bound."},
-                            "cursor": cursor("Continue a previous local text or names page. Bound to the question, source sets, page limit and the relevant revision or complete ranked names result."),
+                            "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20,
+                                "description": "Maximum matches per page, from 1 to 50. Provider roles may stop after their first 200 retrieved matches and mark the search incomplete."},
+                            "cursor": cursor("Continue a previous search page. Bound to the question, source sets, page limit and the relevant revision or complete retrieved result."),
                         }),
                         json!(["query"]),
                     ),
@@ -805,6 +805,14 @@ mod tests {
         }
         assert_eq!(input_field(&catalog.tools, "view", "limit")["default"], 20);
         assert_eq!(input_field(&catalog.tools, "view", "limit")["maximum"], 50);
+        assert_eq!(
+            input_field(&catalog.tools, "search", "limit")["default"],
+            20
+        );
+        assert_eq!(
+            input_field(&catalog.tools, "search", "limit")["maximum"],
+            50
+        );
         assert_field_type(&catalog.tools, "view", "cursor", "string");
         assert_data_object(
             input_field(&catalog.tools, "view", "filter"),

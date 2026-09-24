@@ -282,6 +282,51 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
     assert_eq!(sections.len(), 1, "only the selected role may answer");
     assert_eq!(sections[0]["role"], "lexical");
     assert_eq!(sections[0]["hits"].as_array().map(Vec::len), Some(7));
+    assert_eq!(sections[0]["matches"]["returned"], 7);
+    let mut lexical_lines = sections[0]["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|hit| hit["line"].as_u64().unwrap())
+        .collect::<Vec<_>>();
+    let mut lexical_cursor = lexical["cursor"]
+        .as_str()
+        .expect("provider continuation")
+        .to_string();
+    let mut lexical_pages = 1;
+    loop {
+        let page = domain_result(&mcp.exchange(call_tool(
+            30 + lexical_pages,
+            "unica.search",
+            json!({"query": "MainNeedle", "role": "lexical", "scope": "main:CommonModule.Main", "limit": 7, "cursor": lexical_cursor}),
+        )));
+        assert_eq!(page["ok"], true, "{page:#}");
+        let hits = page["data"]["matches"][0]["hits"].as_array().unwrap();
+        assert_eq!(
+            page["data"]["matches"][0]["matches"]["returned"],
+            hits.len()
+        );
+        lexical_lines.extend(hits.iter().map(|hit| hit["line"].as_u64().unwrap()));
+        lexical_pages += 1;
+        if let Some(next) = page["cursor"].as_str() {
+            lexical_cursor = next.to_string();
+        } else {
+            assert_eq!(page["page"]["stoppedBy"], "complete");
+            assert_eq!(page["data"]["matches"][0]["searchComplete"], true);
+            break;
+        }
+    }
+    assert_eq!(lexical_pages, 4);
+    assert_eq!(
+        lexical_lines,
+        std::iter::once(1).chain(3..=23).collect::<Vec<_>>()
+    );
+    let cross_mode = domain_result(&mcp.exchange(call_tool(
+        35,
+        "unica.search",
+        json!({"query": "MainNeedle", "role": "lexical", "scope": "main:Configuration", "cursor": cursor}),
+    )));
+    assert_eq!(cross_mode["diagnostics"][0]["code"], "invalid_cursor");
 
     let main_names = domain_result(&mcp.exchange(call_tool(
         19,
@@ -382,10 +427,6 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
     assert_eq!(cross_corpus["diagnostics"][0]["code"], "invalid_cursor");
 
     for (id, arguments) in [
-        (
-            11,
-            json!({"query": "Needle", "role": "lexical", "cursor": cursor}),
-        ),
         (12, json!({"query": "Needle", "limit": 51})),
         (
             25,

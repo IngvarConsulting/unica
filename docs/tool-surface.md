@@ -155,22 +155,22 @@ List canonical runtime operations and their invocation contract, or preview/exec
 
 ### `unica.search`
 
-Search one corpus for a query: BSL module text, or the names and synonyms of metadata objects. Optionally under one logical subtree. Local text and names results use pages; names report descriptor-read coverage separately from approximate name matching.
+Search one corpus for a query: BSL module text, or the names and synonyms of metadata objects. Optionally under one logical subtree. Results use pages; provider roles report whether their finite search window is complete. Names report descriptor-read coverage separately from approximate name matching.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
 | `corpus` | string | нет | Where to search: `text` matches BSL module content and answers scope, line, column and snippet; `names` matches metadata names and synonyms and answers at, kind and title. Defaults to `text`. |
-| `cursor` | string | нет | Continue a previous local text or names page. Bound to the question, source sets, page limit and the relevant revision or complete ranked names result. |
+| `cursor` | string | нет | Continue a previous search page. Bound to the question, source sets, page limit and the relevant revision or complete retrieved result. |
 | `kind` | string | нет | `names` corpus only: narrow the search to one logical node kind. |
-| `limit` | integer | нет | Maximum matches per page. Local text and names search accept up to 50; provider-role search has its own bound. |
+| `limit` | integer | нет | Maximum matches per page, from 1 to 50. Provider roles may stop after their first 200 retrieved matches and mark the search incomplete. |
 | `query` | string | да | Literal BSL text, symbol, or metadata name to search for. |
 | `regex` | boolean | нет | Use a regular expression for local text search. |
 | `role` | string | нет | `text` corpus only: which provider answers. `lexical` matches literally, `symbol` uses the symbol index, `semantic` matches by meaning. Omit for the literal search Unica performs itself. |
 | `scope` | string | нет | logical subtree address |
 
-**Результат сейчас:** Локальный поиск по BSL и именам возвращает `data.matches`, `page.stoppedBy` и, пока есть следующие совпадения, `cursor`. Текстовый курсор повторно читает исходники и проверяет их ревизии; курсор имён повторно собирает весь ранжированный ответ и проверяет его отпечаток вместе с `sourceCoverage`. Если проверяемые сведения изменились, приходит `stale_cursor`; повтор того же курсора возвращает ту же страницу. Локальный текстовый режим поддерживает литерал и regex. Провайдерные роли пока не принимают курсор и остаются пробелом постраничного контракта. (отвечают типизированным `data`)
+**Результат сейчас:** Локальный поиск по BSL и именам и поиск через поставщика возвращают `data.matches`, `page.stoppedBy` и, пока есть следующие полученные совпадения, `cursor`. Текстовый курсор повторно читает исходники и проверяет их ревизии; курсоры имён и поставщика повторно собирают ответ и проверяют его отпечаток. Если проверяемые сведения изменились, приходит `stale_cursor`; повтор того же курсора возвращает ту же страницу. Локальный текстовый режим поддерживает литерал и regex. Поставщик пока получает только первые 200 совпадений: последняя страница этого окна имеет `page.stoppedBy: complete`, но секция оставляет `searchComplete: false`, `status: limitReached` и нижнюю оценку числа совпадений, если поиск был усечён. (отвечают типизированным `data`)
 
-**Целевой контракт:** Довести провайдерные роли до явного контракта полноты и продолжения.
+**Целевой контракт:** Дать продолжение за пределами окна поставщика, когда сам поставщик сможет продолжать поиск.
 
 **Сценарии:**
 
