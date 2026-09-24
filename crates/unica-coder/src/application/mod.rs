@@ -444,7 +444,7 @@ pub fn code_search_output_schema() -> Value {
             "provider": {"type": "string", "minLength": 1},
             "status": {
                 "type": "string",
-                "enum": ["ok", "empty", "limitReached", "timedOut", "unavailable", "failed"]
+                "enum": ["ok", "empty", "partial", "limitReached", "timedOut", "unavailable", "failed"]
             },
             "termination": {
                 "oneOf": [
@@ -2968,6 +2968,46 @@ pub(crate) mod tests {
         assert_eq!(
             section["properties"]["termination"]["oneOf"][1]["properties"]["retryable"]["type"],
             "boolean"
+        );
+    }
+
+    #[test]
+    fn code_search_schema_accepts_a_real_partial_provider_section() {
+        use crate::domain::code_intelligence::{
+            ProviderId, ProviderSearchHit, ProviderSearchSection, SearchOrdering, SearchRanking,
+        };
+        use crate::domain::source_location::SourceLocation;
+
+        let section = ProviderSearchSection::partial(
+            ProviderId::Rlm.identity(),
+            SearchRanking::Provider,
+            SearchOrdering::Provider,
+            vec![ProviderSearchHit {
+                rank: Some(1),
+                provider_score: None,
+                location: SourceLocation::Unaddressable {
+                    source_set: "main".to_string(),
+                    owner_metadata_path: None,
+                    path: "CommonModules/Sales/Ext/Module.bsl".to_string(),
+                },
+                line: 1,
+                end_line: None,
+                symbol: None,
+                kind: None,
+                snippet: "Post".to_string(),
+                attributes: Map::new(),
+            }],
+            vec!["ignored malformed RLM result #1".to_string()],
+        )
+        .unwrap();
+        let schema = code_search_output_schema();
+        let item_schema = &schema["properties"]["data"]["properties"]["sections"]["items"];
+        let serialized = serde_json::to_value(section).unwrap();
+        assert!(
+            jsonschema::validator_for(item_schema)
+                .unwrap()
+                .is_valid(&serialized),
+            "partial provider section must match the published output schema: {serialized}"
         );
     }
 

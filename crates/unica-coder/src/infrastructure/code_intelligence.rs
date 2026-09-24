@@ -127,6 +127,10 @@ impl<'a> GitGrepProvider<'a> {
                         StreamControl::Continue
                     }
                 }
+                Err(error) if error.starts_with(CANCELLED_PREFIX) => {
+                    fatal = Some(error);
+                    StreamControl::Stop
+                }
                 Err(error) => {
                     diagnostics.push(format!(
                         "ignored malformed git-grep record #{line_number}: {error}"
@@ -451,8 +455,12 @@ impl CodeIntelligenceProvider for BslAnalyzerProvider<'_> {
             .call("search", context, arguments, timeout, cancellation)
         {
             Ok(output) => {
-                let mut section =
-                    parse_bsl_analyzer_search(&output.result_text, context, cancellation);
+                let mut section = parse_bsl_analyzer_search(
+                    &output.result_text,
+                    context,
+                    request.limit,
+                    cancellation,
+                );
                 // Keep stderr wherever the section is the provider's own
                 // account of why it cannot serve — that includes waiting on
                 // the index, whose stderr names the dependency. A plain
@@ -469,7 +477,9 @@ impl CodeIntelligenceProvider for BslAnalyzerProvider<'_> {
                             termination.code
                                 == crate::domain::code_intelligence::SearchTerminationCode::DependencyPending
                         }),
-                    ProviderSectionStatus::Unavailable | ProviderSectionStatus::Failed => true,
+                    ProviderSectionStatus::Partial
+                    | ProviderSectionStatus::Unavailable
+                    | ProviderSectionStatus::Failed => true,
                 };
                 if retain_stderr && !output.stderr.trim().is_empty() {
                     section
@@ -707,7 +717,9 @@ impl CodeIntelligenceProvider for RlmProvider<'_> {
             Err(error) => return failed_section(ProviderId::Rlm, error),
         };
         match attempt {
-            RlmSearchAttempt::Output(result) => parse_rlm_search(&result, context, cancellation),
+            RlmSearchAttempt::Output(result) => {
+                parse_rlm_search(&result, context, request.limit, cancellation)
+            }
             RlmSearchAttempt::Unready(readiness) => {
                 let dependency_detail = match &readiness {
                     IndexReadiness::Missing | IndexReadiness::Building => Some("buildingIndex"),
@@ -774,6 +786,7 @@ impl CodeIntelligenceProvider for RlmProvider<'_> {
 fn parse_rlm_search(
     text: &str,
     context: &CodeIntelligenceContext,
+    requested_limit: usize,
     cancellation: &CancellationToken,
 ) -> ProviderSearchSection {
     let value: Value = match serde_json::from_str(text.trim()) {
@@ -796,12 +809,17 @@ fn parse_rlm_search(
     };
     let mut hits = Vec::new();
     let mut diagnostics = Vec::new();
+    let mut discarded_result = false;
     let mut locations = SearchLocationProjector::new(context, cancellation);
     for (index, row) in rows.iter().enumerate() {
         match parse_rlm_search_row(row, hits.len() + 1, &mut locations) {
             Ok(hit) => hits.push(hit),
+            Err(error) if error.starts_with(CANCELLED_PREFIX) => {
+                return failed_section(ProviderId::Rlm, error);
+            }
             Err(error) => {
-                diagnostics.push(format!("ignored malformed RLM result #{index}: {error}"))
+                discarded_result = true;
+                diagnostics.push(format!("ignored malformed RLM result #{index}: {error}"));
             }
         }
     }
@@ -812,14 +830,35 @@ fn parse_rlm_search(
             diagnostics,
         );
     }
-    ProviderSearchSection::complete(
-        ProviderId::Rlm.identity(),
-        SearchRanking::Provider,
-        SearchOrdering::Provider,
-        hits,
-        diagnostics,
-    )
-    .unwrap_or_else(|error| ProviderSearchSection::failed(ProviderId::Rlm.identity(), error))
+    if discarded_result && rows.len() >= requested_limit {
+        diagnostics.push("RLM result limit was also reached".to_string());
+    }
+    let section = if discarded_result {
+        ProviderSearchSection::partial(
+            ProviderId::Rlm.identity(),
+            SearchRanking::Provider,
+            SearchOrdering::Provider,
+            hits,
+            diagnostics,
+        )
+    } else if rows.len() >= requested_limit {
+        ProviderSearchSection::limit_reached(
+            ProviderId::Rlm.identity(),
+            SearchRanking::Provider,
+            SearchOrdering::Provider,
+            hits,
+            diagnostics,
+        )
+    } else {
+        ProviderSearchSection::complete(
+            ProviderId::Rlm.identity(),
+            SearchRanking::Provider,
+            SearchOrdering::Provider,
+            hits,
+            diagnostics,
+        )
+    };
+    section.unwrap_or_else(|error| ProviderSearchSection::failed(ProviderId::Rlm.identity(), error))
 }
 
 fn parse_rlm_search_row(
@@ -893,6 +932,7 @@ fn parse_rlm_search_row(
 fn parse_bsl_analyzer_search(
     text: &str,
     context: &CodeIntelligenceContext,
+    requested_limit: usize,
     cancellation: &CancellationToken,
 ) -> ProviderSearchSection {
     let trimmed = text.trim();
@@ -930,19 +970,28 @@ fn parse_bsl_analyzer_search(
     let mut hits = Vec::new();
     let mut diagnostics = Vec::new();
     let mut current: Option<ProviderSearchHit> = None;
+    let mut returned_headers = 0;
+    let mut discarded_result = false;
     let mut locations = SearchLocationProjector::new(context, cancellation);
     for raw_line in text.lines() {
         let structural = raw_line.trim_start();
         let line = structural.trim_end();
         if line.starts_with('#') {
+            returned_headers += 1;
             if let Some(hit) = current.take() {
                 hits.push(hit);
             }
             match parse_bsl_analyzer_header(line, &mut locations) {
                 Ok(hit) => current = Some(hit),
-                Err(error) => diagnostics.push(format!(
-                    "ignored malformed bsl-analyzer search header: {error}"
-                )),
+                Err(error) if error.starts_with(CANCELLED_PREFIX) => {
+                    return failed_section(ProviderId::BslAnalyzer, error);
+                }
+                Err(error) => {
+                    discarded_result = true;
+                    diagnostics.push(format!(
+                        "ignored malformed bsl-analyzer search header: {error}"
+                    ));
+                }
             }
         } else if let Some(graph_id) = line.strip_prefix("graph_id:") {
             if let Some(hit) = current.as_mut() {
@@ -989,14 +1038,35 @@ fn parse_bsl_analyzer_search(
             diagnostics.join("; "),
         );
     }
-    ProviderSearchSection::complete(
-        ProviderId::BslAnalyzer.identity(),
-        SearchRanking::Provider,
-        SearchOrdering::Provider,
-        hits,
-        diagnostics,
-    )
-    .unwrap_or_else(|error| {
+    if discarded_result && returned_headers >= requested_limit {
+        diagnostics.push("bsl-analyzer result limit was also reached".to_string());
+    }
+    let section = if discarded_result {
+        ProviderSearchSection::partial(
+            ProviderId::BslAnalyzer.identity(),
+            SearchRanking::Provider,
+            SearchOrdering::Provider,
+            hits,
+            diagnostics,
+        )
+    } else if returned_headers >= requested_limit {
+        ProviderSearchSection::limit_reached(
+            ProviderId::BslAnalyzer.identity(),
+            SearchRanking::Provider,
+            SearchOrdering::Provider,
+            hits,
+            diagnostics,
+        )
+    } else {
+        ProviderSearchSection::complete(
+            ProviderId::BslAnalyzer.identity(),
+            SearchRanking::Provider,
+            SearchOrdering::Provider,
+            hits,
+            diagnostics,
+        )
+    };
+    section.unwrap_or_else(|error| {
         ProviderSearchSection::failed(ProviderId::BslAnalyzer.identity(), error)
     })
 }
@@ -1082,6 +1152,17 @@ fn git_grep_stream_section(
         return failed_section(ProviderId::GitGrep, fatal);
     }
     if output.stopped_by_consumer {
+        if !diagnostics.is_empty() {
+            diagnostics.push("git-grep result limit was also reached".to_string());
+            return ProviderSearchSection::partial(
+                ProviderId::GitGrep.identity(),
+                SearchRanking::None,
+                SearchOrdering::ProviderTraversal,
+                hits,
+                diagnostics,
+            )
+            .expect("partial git-grep section is valid");
+        }
         return ProviderSearchSection::limit_reached(
             ProviderId::GitGrep.identity(),
             SearchRanking::None,
@@ -1134,6 +1215,8 @@ fn git_grep_stream_section(
             );
             ProviderSectionStatus::Failed
         }
+    } else if !diagnostics.is_empty() {
+        ProviderSectionStatus::Partial
     } else {
         ProviderSectionStatus::Ok
     };
@@ -1150,6 +1233,14 @@ fn git_grep_stream_section(
                 ProviderSearchSection::failed(ProviderId::GitGrep.identity(), error)
             })
         }
+        ProviderSectionStatus::Partial => ProviderSearchSection::partial(
+            ProviderId::GitGrep.identity(),
+            SearchRanking::None,
+            SearchOrdering::ProviderTraversal,
+            hits,
+            diagnostics,
+        )
+        .expect("partial git-grep section is valid"),
         _ => ProviderSearchSection::failed(ProviderId::GitGrep.identity(), diagnostics.join("; ")),
     }
 }
@@ -1534,7 +1625,8 @@ mod tests {
         CallEdgeProvenance, CallGraphDirection, CallGraphState, CodeIntelligenceContext,
         CodeIntelligenceProvider, CodeIntelligenceReadData, CodeIntelligenceReadRequest,
         CodeIntelligenceRegistry, CodeSearchScope, ProviderCapability, ProviderDeadline,
-        ProviderId, ProviderSectionStatus, RelativeSearchFilter, SearchRequest,
+        ProviderId, ProviderSectionStatus, RelativeSearchFilter, SearchCountRelation,
+        SearchRequest,
     };
     use crate::domain::source_location::SourceLocation;
     use crate::domain::source_roots::ResolvedSourceRoot;
@@ -1671,14 +1763,14 @@ mod tests {
         text: &str,
         context: &CodeIntelligenceContext,
     ) -> crate::domain::code_intelligence::ProviderSearchSection {
-        super::parse_bsl_analyzer_search(text, context, &CancellationToken::new())
+        super::parse_bsl_analyzer_search(text, context, usize::MAX, &CancellationToken::new())
     }
 
     fn parse_rlm_search(
         text: &str,
         context: &CodeIntelligenceContext,
     ) -> crate::domain::code_intelligence::ProviderSearchSection {
-        super::parse_rlm_search(text, context, &CancellationToken::new())
+        super::parse_rlm_search(text, context, usize::MAX, &CancellationToken::new())
     }
 
     struct FakeRunner {
@@ -2283,6 +2375,40 @@ mod tests {
     }
 
     #[test]
+    fn git_grep_keeps_valid_hits_but_reports_malformed_siblings_as_partial() {
+        let runner = FakeRunner {
+            output: output("malformed\nCommonModules/Sales/Ext/Module.bsl\x001\x00Post();\n"),
+            commands: Mutex::new(Vec::new()),
+        };
+        let section = GitGrepProvider::with_runner(&runner).search(
+            &SearchRequest {
+                query: "Post".to_string(),
+                limit: 20,
+            },
+            &context(),
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
+            &CancellationToken::new(),
+        );
+
+        assert_eq!(section.status, ProviderSectionStatus::Partial);
+        assert_eq!(section.hits.len(), 1);
+        assert!(!section.search_complete);
+        assert_eq!(section.matches.relation, SearchCountRelation::LowerBound);
+
+        let capped = GitGrepProvider::with_runner(&runner).search(
+            &SearchRequest {
+                query: "Post".to_string(),
+                limit: 1,
+            },
+            &context(),
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
+            &CancellationToken::new(),
+        );
+        assert_eq!(capped.status, ProviderSectionStatus::Partial);
+        assert!(capped.diagnostics.iter().any(|item| item.contains("limit")));
+    }
+
+    #[test]
     fn git_grep_does_not_publish_a_parent_escape_as_a_location() {
         let runner = FakeRunner {
             output: output("../outside/Secret.bsl\x002\x00Password = 1;\n"),
@@ -2411,6 +2537,54 @@ mod tests {
             .diagnostics
             .iter()
             .any(|item| item.contains("malformed bsl-analyzer search header")));
+    }
+
+    #[test]
+    fn bsl_analyzer_does_not_claim_complete_when_one_header_is_unreadable() {
+        let section = parse_bsl_analyzer_search(
+            "#broken header\n#2 [L] CommonModules/Sales/Ext/Module.bsl:1 :: Post (procedure)\n",
+            &context(),
+        );
+        assert_eq!(section.hits.len(), 1);
+        assert_eq!(section.status, ProviderSectionStatus::Partial);
+        assert!(!section.search_complete);
+        assert_eq!(section.matches.relation, SearchCountRelation::LowerBound);
+        assert_eq!(
+            section.termination.unwrap().code,
+            crate::domain::code_intelligence::SearchTerminationCode::ProviderFailed
+        );
+
+        let capped = super::parse_bsl_analyzer_search(
+            "#broken header\n#2 [L] CommonModules/Sales/Ext/Module.bsl:1 :: Post (procedure)\n",
+            &context(),
+            2,
+            &CancellationToken::new(),
+        );
+        assert_eq!(capped.status, ProviderSectionStatus::Partial);
+        assert!(capped.diagnostics.iter().any(|item| item.contains("limit")));
+    }
+
+    #[test]
+    fn cancelled_projection_is_not_reported_as_a_malformed_search_result() {
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let analyzer = super::parse_bsl_analyzer_search(
+            "#1 [L] CommonModules/Sales/Ext/Module.bsl:1 :: Post (procedure)\n",
+            &context(),
+            20,
+            &cancellation,
+        );
+        let rlm = super::parse_rlm_search(
+            r#"[{"text":"Post","source_type":"method","path":"CommonModules/Sales/Ext/Module.bsl","detail":{"line":1}}]"#,
+            &context(),
+            20,
+            &cancellation,
+        );
+        for section in [analyzer, rlm] {
+            assert_eq!(section.status, ProviderSectionStatus::Failed);
+            assert!(section.hits.is_empty());
+            assert!(section.diagnostics[0].starts_with(CANCELLED_PREFIX));
+        }
     }
 
     #[test]
@@ -2614,6 +2788,45 @@ mod tests {
         assert_eq!(calls[0].1["query"], "Post");
         assert_eq!(calls[0].1["limit"], 50);
         assert!(calls[0].2 <= Duration::from_secs(120));
+    }
+
+    #[test]
+    fn bsl_analyzer_at_requested_limit_does_not_claim_exhaustion() {
+        let client = FakeBslClient {
+            calls: Mutex::new(Vec::new()),
+            output: WorkspaceServiceBslOutput {
+                result_text: "#1 [L] CommonModules/Sales/Ext/Module.bsl:1 :: Post (procedure)\n"
+                    .to_string(),
+                stderr: String::new(),
+            },
+        };
+        let provider = BslAnalyzerProvider::with_client(&client);
+        let section = provider.search(
+            &SearchRequest {
+                query: "Post".to_string(),
+                limit: 1,
+            },
+            &context(),
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
+            &CancellationToken::new(),
+        );
+        assert_eq!(section.hits.len(), 1);
+        assert_eq!(section.status, ProviderSectionStatus::LimitReached);
+        assert!(!section.search_complete);
+        assert_eq!(section.matches.relation, SearchCountRelation::LowerBound);
+
+        let section = provider.search(
+            &SearchRequest {
+                query: "Post".to_string(),
+                limit: 2,
+            },
+            &context(),
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
+            &CancellationToken::new(),
+        );
+        assert_eq!(section.status, ProviderSectionStatus::Ok);
+        assert!(section.search_complete);
+        assert_eq!(section.matches.relation, SearchCountRelation::Exact);
     }
 
     #[test]
@@ -2821,11 +3034,26 @@ mod tests {
             &context(),
         );
 
-        assert_eq!(section.status, ProviderSectionStatus::Ok);
         assert_eq!(section.hits.len(), 1);
+        assert_eq!(section.status, ProviderSectionStatus::Partial);
         assert_eq!(section.hits[0].rank, Some(1));
         assert_eq!(section.hits[0].line, 7);
         assert_eq!(section.diagnostics.len(), 1);
+        assert!(!section.search_complete);
+        assert_eq!(section.matches.relation, SearchCountRelation::LowerBound);
+        assert_eq!(
+            section.termination.unwrap().code,
+            crate::domain::code_intelligence::SearchTerminationCode::ProviderFailed
+        );
+
+        let capped = super::parse_rlm_search(
+            r#"[{}, {"text":"Post","source_type":"method","path":"CommonModules/X/Ext/Module.bsl","detail":{"line":7}}]"#,
+            &context(),
+            2,
+            &CancellationToken::new(),
+        );
+        assert_eq!(capped.status, ProviderSectionStatus::Partial);
+        assert!(capped.diagnostics.iter().any(|item| item.contains("limit")));
     }
 
     struct FakeRlmClient {
@@ -2940,6 +3168,44 @@ mod tests {
         assert_eq!(calls[0].2, 20);
         assert!(calls[0].3 > Duration::from_secs(45));
         assert!(calls[0].3 <= Duration::from_secs(90));
+    }
+
+    #[test]
+    fn rlm_at_requested_limit_does_not_claim_exhaustion() {
+        let client = FakeRlmClient {
+            readiness: IndexReadiness::Ready {
+                db_path: PathBuf::from("/cache/index.db"),
+            },
+            calls: Mutex::new(Vec::new()),
+            result: r#"[{"text":"Post","source_type":"method","path":"CommonModules/Sales/Ext/Module.bsl","detail":{"line":1}}]"#.to_string(),
+        };
+        let provider = RlmProvider::with_client(&client);
+        let section = provider.search(
+            &SearchRequest {
+                query: "Post".to_string(),
+                limit: 1,
+            },
+            &context(),
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
+            &CancellationToken::new(),
+        );
+        assert_eq!(section.hits.len(), 1);
+        assert_eq!(section.status, ProviderSectionStatus::LimitReached);
+        assert!(!section.search_complete);
+        assert_eq!(section.matches.relation, SearchCountRelation::LowerBound);
+
+        let section = provider.search(
+            &SearchRequest {
+                query: "Post".to_string(),
+                limit: 2,
+            },
+            &context(),
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
+            &CancellationToken::new(),
+        );
+        assert_eq!(section.status, ProviderSectionStatus::Ok);
+        assert!(section.search_complete);
+        assert_eq!(section.matches.relation, SearchCountRelation::Exact);
     }
 
     #[test]

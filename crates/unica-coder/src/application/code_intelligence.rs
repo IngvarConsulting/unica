@@ -389,7 +389,9 @@ impl CodeSearchCoordinator {
                 ProviderSectionStatus::Ok | ProviderSectionStatus::Empty
             ) || matches!(
                 section.status,
-                ProviderSectionStatus::LimitReached | ProviderSectionStatus::TimedOut
+                ProviderSectionStatus::Partial
+                    | ProviderSectionStatus::LimitReached
+                    | ProviderSectionStatus::TimedOut
             ) && !section.hits.is_empty()
         });
         let mut warnings = Vec::new();
@@ -400,7 +402,9 @@ impl CodeSearchCoordinator {
         for section in &sections {
             if matches!(
                 section.status,
-                ProviderSectionStatus::Failed | ProviderSectionStatus::Unavailable
+                ProviderSectionStatus::Partial
+                    | ProviderSectionStatus::Failed
+                    | ProviderSectionStatus::Unavailable
             ) {
                 let message = section_problem(section);
                 if ok {
@@ -417,7 +421,9 @@ impl CodeSearchCoordinator {
                 section.search_complete
                     || matches!(
                         section.status,
-                        ProviderSectionStatus::LimitReached | ProviderSectionStatus::TimedOut
+                        ProviderSectionStatus::Partial
+                            | ProviderSectionStatus::LimitReached
+                            | ProviderSectionStatus::TimedOut
                     ) && !section.hits.is_empty()
             }) {
                 SearchCoverage::Partial
@@ -457,7 +463,9 @@ fn progress_state_for_section(section: &ProviderSearchSection) -> SearchProvider
         | ProviderSectionStatus::LimitReached => SearchProviderState::Completed,
         ProviderSectionStatus::TimedOut => SearchProviderState::TimedOut,
         ProviderSectionStatus::Unavailable => SearchProviderState::Unavailable,
-        ProviderSectionStatus::Failed => SearchProviderState::Failed,
+        ProviderSectionStatus::Partial | ProviderSectionStatus::Failed => {
+            SearchProviderState::Failed
+        }
     }
 }
 
@@ -831,7 +839,7 @@ mod tests {
         CodeIntelligenceContext, CodeIntelligenceProvider, CodeIntelligenceReadRequest,
         CodeIntelligenceRegistry, ProviderCapability, ProviderDeadline, ProviderId,
         ProviderReadOutcome, ProviderSearchHit, ProviderSearchSection, ProviderSectionStatus,
-        SearchOrdering, SearchRanking, SearchRequest,
+        SearchCoverage, SearchOrdering, SearchRanking, SearchRequest,
     };
     use crate::domain::operational_config::CodeIntelligenceDeadlines;
     use crate::domain::progress::{ProgressEvent, ProgressSink};
@@ -910,6 +918,14 @@ mod tests {
                 .unwrap()
             }
             ProviderSectionStatus::LimitReached => ProviderSearchSection::limit_reached(
+                id.identity(),
+                SearchRanking::Provider,
+                SearchOrdering::Provider,
+                hits,
+                diagnostics,
+            )
+            .unwrap(),
+            ProviderSectionStatus::Partial => ProviderSearchSection::partial(
                 id.identity(),
                 SearchRanking::Provider,
                 SearchOrdering::Provider,
@@ -1209,6 +1225,41 @@ mod tests {
 
         assert!(!failed.ok);
         assert_eq!(failed.errors.len(), 3);
+    }
+
+    #[test]
+    fn malformed_provider_subset_remains_useful_without_claiming_complete_coverage() {
+        let section = ProviderSearchSection::partial(
+            ProviderId::Rlm.identity(),
+            SearchRanking::Provider,
+            SearchOrdering::Provider,
+            vec![test_hit(0)],
+            vec!["ignored malformed RLM result #1".to_string()],
+        )
+        .unwrap();
+        let provider = Arc::new(StaticProvider { section });
+        let execution =
+            CodeSearchCoordinator::new(CodeIntelligenceRegistry::new(vec![provider]).unwrap())
+                .search(
+                    &SearchRequest {
+                        query: "Post".to_string(),
+                        limit: 20,
+                    },
+                    &context(),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+
+        assert!(execution.ok);
+        assert_eq!(execution.result.coverage, SearchCoverage::Partial);
+        assert_eq!(execution.result.sections[0].hits.len(), 1);
+        assert_eq!(execution.warnings.len(), 1);
+        assert!(execution.warnings[0].contains("ignored malformed"));
+        let serialized = serde_json::to_value(&execution.result.sections[0]).unwrap();
+        assert_eq!(serialized["status"], "partial");
+        assert_eq!(serialized["termination"]["code"], "providerFailed");
+        assert_eq!(serialized["searchComplete"], false);
+        assert_eq!(serialized["matches"]["relation"], "lowerBound");
     }
 
     #[test]
