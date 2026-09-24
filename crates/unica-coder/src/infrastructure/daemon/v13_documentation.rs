@@ -119,7 +119,11 @@ impl PreparedDocumentationSearch {
             &self.context,
             &self.query,
             self.source.as_deref(),
-            200,
+            // The page cursor is over the complete provider answer. Fetching
+            // only the first 200 hits would make later pages impossible and
+            // would miss an oversized hit that must refuse page one.
+            usize::MAX,
+            self.cursor.is_some() && !is_locator,
             &cancellation,
         );
         if !result.ok {
@@ -221,6 +225,23 @@ fn page_documentation(
             break;
         }
     }
+    // A changed provider answer invalidates an existing cursor before any
+    // preflight on the new answer. The original answer was checked before
+    // page one; a later oversized hit in a different answer is stale, not a
+    // late failure of the already-published stream.
+    let cursor = match cursor_token {
+        None => None,
+        Some(token) => match cursors.read(token, &binding) {
+            Ok(stored) => Some((token, stored)),
+            Err(error) => {
+                return DomainResult::canonical_rejection(
+                    None,
+                    error.code(),
+                    "docs cursor is invalid or stale",
+                )
+            }
+        },
+    };
     let probe = |selected: &[(usize, Value)]| {
         serde_json::to_vec(&docs_page_result(
             &result,
@@ -255,19 +276,6 @@ fn page_documentation(
             );
         }
     }
-    let cursor = match cursor_token {
-        None => None,
-        Some(token) => match cursors.read(token, &binding) {
-            Ok(stored) => Some((token, stored)),
-            Err(error) => {
-                return DomainResult::canonical_rejection(
-                    None,
-                    error.code(),
-                    "docs cursor is invalid or stale",
-                )
-            }
-        },
-    };
     let offset = cursor.as_ref().map_or(0, |(_, stored)| stored.offset);
     if cursor.is_some() && offset >= hits.len() {
         return DomainResult::canonical_rejection(
@@ -862,6 +870,18 @@ mod tests {
                     &cancellation,
                 );
                 assert_eq!(changed.diagnostics[0]["code"], "stale_cursor");
+                let mut oversized_change = response(9);
+                oversized_change.data.as_mut().unwrap()["sections"][2]["hits"][29]["snippet"] =
+                    json!("x"
+                        .repeat(crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES));
+                let stale_before_size = page_documentation(
+                    &store,
+                    oversized_change,
+                    binding(20),
+                    Some(token),
+                    &cancellation,
+                );
+                assert_eq!(stale_before_size.diagnostics[0]["code"], "stale_cursor");
             }
             cursor = page.cursor;
         }
@@ -968,7 +988,7 @@ mod tests {
                     language: "ru".into(),
                     status: DocumentationSectionStatus::Ok,
                     warnings: Vec::new(),
-                    hits: (1..=25)
+                    hits: (1..=205)
                         .take(request.limit)
                         .map(|rank| DocumentationHit {
                             rank,
@@ -976,7 +996,13 @@ mod tests {
                             document_id: format!("pages:{corpus}:{rank}"),
                             title: format!("Page {rank}"),
                             signature: None,
-                            snippet: "found".into(),
+                            snippet: if request.query == "oversize" && rank == 205 {
+                                "x".repeat(
+                                    crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES,
+                                )
+                            } else {
+                                "found".into()
+                            },
                             applicable_version: "8.3".into(),
                         })
                         .collect(),
@@ -993,8 +1019,8 @@ mod tests {
         let cursors = Arc::new(SearchCursorStore::default());
         let mut cursor = None;
         let mut documents = Vec::new();
-        for index in 0..5 {
-            let mut arguments = json!({"query": "Page", "limit": 10});
+        for index in 0..9 {
+            let mut arguments = json!({"query": "Page", "limit": 50});
             if let Some(token) = cursor.as_ref() {
                 arguments["cursor"] = json!(token);
             }
@@ -1014,11 +1040,17 @@ mod tests {
             assert!(page.ok, "{page:?}");
             let sections = page.data.as_ref().unwrap()["sections"].as_array().unwrap();
             assert_eq!(sections.len(), 2);
+            assert_eq!(page.data.as_ref().unwrap()["searchComplete"], true);
+            for section in sections {
+                assert_eq!(section["searchComplete"], true);
+                assert_eq!(section["matches"]["total"], 205);
+                assert_eq!(section["matches"]["relation"], "exact");
+            }
             if index == 0 {
                 assert_eq!(sections[0]["sourceKind"], "platform-help");
                 assert_eq!(sections[1]["sourceKind"], "development-standard");
-                assert_eq!(sections[0]["hits"].as_array().unwrap().len(), 5);
-                assert_eq!(sections[1]["hits"].as_array().unwrap().len(), 5);
+                assert_eq!(sections[0]["hits"].as_array().unwrap().len(), 25);
+                assert_eq!(sections[1]["hits"].as_array().unwrap().len(), 25);
             }
             for section in sections {
                 documents.extend(
@@ -1032,13 +1064,31 @@ mod tests {
             cursor = page.cursor;
         }
         assert!(cursor.is_none());
-        assert_eq!(documents.len(), 50);
+        assert_eq!(documents.len(), 410);
         let unique = documents
             .into_iter()
             .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(unique.len(), 50);
+        assert_eq!(unique.len(), 410);
         assert!(unique.contains("pages:syntax:1"));
-        assert!(unique.contains("pages:standards:25"));
+        assert!(unique.contains("pages:syntax:205"));
+        assert!(unique.contains("pages:standards:205"));
+
+        let request = InvocationRequest::new(
+            ToolIdentity::Docs,
+            json!({"query": "oversize", "limit": 50}),
+            std::fs::canonicalize(workspace.path())
+                .unwrap()
+                .to_string_lossy(),
+            7_000,
+        )
+        .unwrap();
+        let Preparation::Ready(prepared) = prepare(&request, Arc::clone(&cursors)) else {
+            panic!("late oversized docs hit must reach the page preflight");
+        };
+        let refused = prepared.execute(CancellationToken::new());
+        assert!(!refused.ok);
+        assert_eq!(refused.diagnostics[0]["code"], "result_too_large");
+        assert!(refused.cursor.is_none());
     }
 
     #[test]

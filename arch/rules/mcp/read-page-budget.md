@@ -24,6 +24,8 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/v13_documentation.rs::opened_document_pages_reassemble_exact_utf8_text_and_replay
   - crates/unica-coder/src/infrastructure/daemon/v13_documentation.rs::document_over_transport_size_on_one_line_starts_with_a_useful_page
   - crates/unica-coder/src/infrastructure/daemon/v13_documentation.rs::oversized_document_metadata_refuses_before_issuing_a_cursor
+  - crates/unica-coder/src/infrastructure/standards_documentation.rs::v8std_search_reads_past_fifty_and_replays_the_complete_ranked_stream
+  - crates/unica-coder/src/infrastructure/standards_documentation.rs::old_v8std_without_cursor_marks_a_full_window_incomplete
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::provider_search_pages_all_received_hits_and_rejects_changed_answers
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::provider_limit_remains_visible_after_the_last_received_page
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::late_oversized_provider_hit_refuses_before_first_cursor
@@ -57,14 +59,17 @@ gap: https://github.com/IngvarConsulting/unica/issues/871
 предела поставщика остаётся явным даже на последней странице полученного окна.
 Поиск справки также пересобирает все секции и сверяет их отпечаток. В пределах бюджета страницы
 совпадения чередуются между корпусами. Каждая секция сообщает полноту:
-заполненное окно поставщика не выдаётся за весь корпус. `page.stoppedBy:
-complete` завершает полученное окно, даже если поиск в нём неполон. Локальные
-поставщики справки возвращают до 200 результатов, v8std — до 50. До первого курсора
-проверяется, что каждый неделимый результат можно вернуть. Открытый документ
+заполненное окно без подтверждённого продолжения не выдаётся за весь корпус.
+`page.stoppedBy: complete` завершает полученный поток, даже если поиск в нём
+неполон. Локальные поставщики справки перечисляют все совпадения. Адаптер v8std
+дочитывает страницы по курсору поставщика; прежний сервер без курсора оставляет
+полное окно из 50 результатов явно неполным. До первого курсора проверяется,
+что каждый неделимый результат можно вернуть. Открытый документ
 с коротким текстом сохраняет полный ответ; длинный текст делится на фрагменты
 по строкам и границам UTF-8, а курсор связан с отпечатком всего документа.
 Если владелец вернул текст, даже строка длиннее 8 МиБ начинается полезной
 страницей. Сведения о документе
 не делятся: если они сами превышают транспортный предел, отказ приходит до
-первого курсора. Продолжение поиска за пределами окон поставщиков остаётся в
-`gap`.
+первого курсора. Кодовые роли пока получают только окно до 200 результатов;
+их продолжение остаётся в `gap`. Курсор v8std ещё должен быть развёрнут
+на публичном сервере и проверен через установленный пакет.

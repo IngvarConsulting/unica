@@ -9,6 +9,7 @@ check:
   - crates/unica-coder/src/infrastructure/kb_1ci.rs::kb_provider_matches_titles_and_reads_only_the_top_pages
   - crates/unica-coder/src/infrastructure/standards_documentation.rs::v8std_get_not_found_and_policy_deny_are_owner_failures
   - crates/unica-coder/src/infrastructure/standards_documentation.rs::v8std_cancellation_stops_before_the_network_for_search_and_get
+  - crates/unica-coder/src/infrastructure/standards_documentation.rs::v8std_later_page_failure_or_cancellation_never_publishes_a_partial_stream
 gap: https://github.com/IngvarConsulting/unica/issues/953
 ---
 

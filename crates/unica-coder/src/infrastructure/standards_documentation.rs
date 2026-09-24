@@ -52,6 +52,9 @@ pub struct V8StdDocumentationProvider {
     pub cancellation: crate::domain::cancellation::CancellationToken,
     /// Срок жизни кеша поиска стандартов в памяти процесса.
     pub search_cache_ttl: std::time::Duration,
+    /// Продолжение канонического курсора перепроверяет ранжированный ответ.
+    /// Новый первый запрос по тому же тексту по-прежнему пользуется кешем.
+    pub revalidate_search: bool,
 }
 
 /// Продовый срок жизни кеша поиска стандартов — как у kb-кешей: часы держат
@@ -66,10 +69,10 @@ pub(crate) const V8STD_SEARCH_CACHE_CAP: usize = 128;
 
 /// Ключ кеша поиска: endpoint, нормализованный запрос, лимит.
 type SearchCacheKey = (String, String, usize);
-/// Запись кеша: срок годности и сырое тело успешного ответа сервера. Срок
+/// Запись кеша: срок годности и вся проверенная секция поиска. Срок
 /// вычисляется при записи из TTL записавшего провайдера — чтение и чистка
 /// не зависят от того, чей TTL действовал.
-type SearchCacheEntry = (std::time::Instant, String);
+type SearchCacheEntry = (std::time::Instant, DocumentationSection);
 
 /// Кеш успешных ответов `v8std_search`. Политика и отмена проверяются ДО
 /// кеша, неуспех не кешируется.
@@ -129,7 +132,9 @@ impl DocumentationProvider for V8StdDocumentationProvider {
     }
 
     fn search_window_limit(&self) -> usize {
-        50
+        // The upstream cursor can traverse beyond one 50-result response.
+        // An older endpoint without a cursor is marked incomplete below.
+        usize::MAX
     }
 
     fn corpora(&self) -> Vec<DocumentationCorpus> {
@@ -276,105 +281,251 @@ impl DocumentationProvider for V8StdDocumentationProvider {
         let cache_key = (self.endpoint.clone(), query.clone(), request.limit);
         // Запрет поставщика действует и на кеш (INV.APP.DOCUMENTATION-DENIED-CACHE).
         // Отмена также проверена до чтения кеша.
-        let cached_body = {
-            let cache = V8STD_SEARCH_CACHE
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            cache.get(&cache_key).and_then(|(deadline, body)| {
-                (std::time::Instant::now() < *deadline).then(|| body.clone())
+        // A new first-page search reuses the complete process-cached answer.
+        // Only a public cursor continuation bypasses it to compare a fresh
+        // ranked stream with the fingerprint of the issued answer.
+        let cached_section = (!self.revalidate_search)
+            .then(|| {
+                let cache = V8STD_SEARCH_CACHE
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                cache.get(&cache_key).and_then(|(deadline, section)| {
+                    (std::time::Instant::now() < *deadline).then(|| section.clone())
+                })
             })
-        };
-        let from_cache = cached_body.is_some();
-        let body = match cached_body {
-            Some(body) => body,
-            None => {
-                let payload = json!({
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "tools/call",
-                    "params": {
-                        "name": "v8std_search",
-                        "arguments": { "query": query, "limit": request.limit },
-                    }
-                });
-                match self.http.post_json(&self.endpoint, &payload) {
-                    Ok(body) => body,
-                    Err(error) => {
+            .flatten();
+        if let Some(section) = cached_section {
+            return vec![section];
+        }
+        let mut cursor: Option<String> = None;
+        let mut seen_cursors = std::collections::BTreeSet::new();
+        let mut seen_urls = std::collections::BTreeSet::new();
+        let mut expected_total: Option<u64> = None;
+        let mut results = Vec::new();
+        let mut fetched_count = 0usize;
+        let mut warnings = Vec::new();
+        loop {
+            if self.cancellation.is_cancelled() {
+                return vec![self.section(
+                    "ru",
+                    DocumentationSectionStatus::Unavailable {
+                        reason: UnavailableReason::Timeout,
+                        detail: "вызов отменён посреди чтения страниц стандартов".to_string(),
+                    },
+                    Vec::new(),
+                )];
+            }
+            let remaining = request.limit.saturating_sub(results.len());
+            if remaining == 0 {
+                warnings.push("достигнут предел запрошенных результатов v8std".to_string());
+                break;
+            }
+            // The upstream cursor is bound to limit, so every page of one
+            // traversal must use the same size even when the caller asks for
+            // a non-multiple of fifty.
+            let page_limit = request.limit.min(50);
+            let mut arguments = json!({"query": query, "limit": page_limit});
+            if let Some(token) = &cursor {
+                arguments["cursor"] = json!(token);
+            }
+            let payload = json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "v8std_search", "arguments": arguments}
+            });
+            let body = match self.http.post_json(&self.endpoint, &payload) {
+                Ok(body) => body,
+                Err(error) => {
+                    return vec![self.section(
+                        "ru",
+                        DocumentationSectionStatus::Failed {
+                            diagnostic: format!("сервер стандартов недоступен: {error}"),
+                        },
+                        Vec::new(),
+                    )];
+                }
+            };
+            // The same adapter parses the MCP envelope for legacy and
+            // canonical calls. A failed later page discards the whole search.
+            let outcome = StandardsAdapter::outcome_from_http_body(
+                "search",
+                &self.endpoint,
+                "v8std_search",
+                &body,
+            );
+            if !outcome.outcome.ok {
+                return vec![self.section(
+                    "ru",
+                    DocumentationSectionStatus::Failed {
+                        diagnostic: outcome.outcome.errors.join("; "),
+                    },
+                    Vec::new(),
+                )];
+            }
+            let inner = outcome
+                .data
+                .as_ref()
+                .and_then(|data| data.get("content"))
+                .and_then(Value::as_array)
+                .and_then(|content| content.first())
+                .and_then(|entry| entry.get("text"))
+                .and_then(Value::as_str)
+                .and_then(|text| serde_json::from_str::<Value>(text).ok());
+            let Some(inner) = inner else {
+                return vec![self.section(
+                    "ru",
+                    DocumentationSectionStatus::Failed {
+                        diagnostic: "ответ v8std_search не разбирается".to_string(),
+                    },
+                    Vec::new(),
+                )];
+            };
+            let Some(page_results) = inner.get("results").and_then(Value::as_array) else {
+                return vec![self.section(
+                    "ru",
+                    DocumentationSectionStatus::Failed {
+                        diagnostic: "ответ v8std_search не несёт results".to_string(),
+                    },
+                    Vec::new(),
+                )];
+            };
+            if page_results.len() > page_limit {
+                return vec![self.section(
+                    "ru",
+                    DocumentationSectionStatus::Failed {
+                        diagnostic: "v8std_search превысил запрошенный размер страницы".to_string(),
+                    },
+                    Vec::new(),
+                )];
+            }
+            for result in page_results {
+                if let Some(url) = result.get("url").and_then(Value::as_str) {
+                    if !seen_urls.insert(url.to_string()) {
                         return vec![self.section(
                             "ru",
                             DocumentationSectionStatus::Failed {
-                                diagnostic: format!("сервер стандартов недоступен: {error}"),
+                                diagnostic: "v8std_search повторил результат на соседней странице"
+                                    .to_string(),
                             },
                             Vec::new(),
                         )];
                     }
                 }
             }
-        };
-        // Конверт JSON-RPC разбирает тот же код, что и у фасадов: один
-        // разбор на движок, а не два расходящихся.
-        let outcome = StandardsAdapter::outcome_from_http_body(
-            "search",
-            &self.endpoint,
-            "v8std_search",
-            &body,
-        );
-        if !outcome.outcome.ok {
-            return vec![self.section(
-                "ru",
-                DocumentationSectionStatus::Failed {
-                    diagnostic: outcome.outcome.errors.join("; "),
-                },
-                Vec::new(),
-            )];
-        }
-        let hits = outcome
-            .data
-            .as_ref()
-            .and_then(|data| data.get("content"))
-            .and_then(Value::as_array)
-            .and_then(|content| content.first())
-            .and_then(|entry| entry.get("text"))
-            .and_then(Value::as_str)
-            .and_then(|text| serde_json::from_str::<Value>(text).ok())
-            .and_then(|inner| inner.get("results").cloned())
-            .and_then(|results| results.as_array().cloned());
-        let Some(results) = hits else {
-            return vec![self.section(
-                "ru",
-                DocumentationSectionStatus::Failed {
-                    diagnostic: "ответ v8std_search не несёт results".to_string(),
-                },
-                Vec::new(),
-            )];
-        };
-        // Разбор дошёл до results — ответ настоящий, его можно переиспользовать.
-        // Неуспехи выше до этой строки не доходят и не кешируются. Каждая
-        // запись сопровождается чисткой истёкших и вытеснением при
-        // переполнении: кеш процесса ограничен сверху, а не растёт на каждый
-        // уникальный запрос до рестарта.
-        if !from_cache {
-            let mut cache = V8STD_SEARCH_CACHE
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let now = std::time::Instant::now();
-            cache.retain(|_, (deadline, _)| now < *deadline);
-            while cache.len() >= V8STD_SEARCH_CACHE_CAP {
-                let Some(nearest_deadline) = cache
-                    .iter()
-                    .min_by_key(|(_, (deadline, _))| *deadline)
-                    .map(|(key, _)| key.clone())
-                else {
-                    break;
-                };
-                cache.remove(&nearest_deadline);
+            fetched_count += page_results.len();
+            results.extend(page_results.iter().take(remaining).cloned());
+            let next = match inner.get("next_cursor") {
+                Some(Value::String(token)) if !token.is_empty() => Some(token.clone()),
+                Some(Value::Null) => None,
+                None => {
+                    if page_results.len() == page_limit {
+                        warnings.push(
+                            "v8std_search не сообщил продолжение после полного окна; остальная выдача неизвестна".to_string(),
+                        );
+                    }
+                    None
+                }
+                _ => {
+                    return vec![self.section(
+                        "ru",
+                        DocumentationSectionStatus::Failed {
+                            diagnostic: "v8std_search вернул неверный next_cursor".to_string(),
+                        },
+                        Vec::new(),
+                    )]
+                }
+            };
+            if (cursor.is_some() || next.is_some() || expected_total.is_some())
+                && inner.get("total").is_none()
+            {
+                return vec![self.section(
+                    "ru",
+                    DocumentationSectionStatus::Failed {
+                        diagnostic: "v8std_search потерял total при продолжении".to_string(),
+                    },
+                    Vec::new(),
+                )];
             }
-            cache.insert(cache_key, (now + self.search_cache_ttl, body.clone()));
+            if let Some(raw_total) = inner.get("total") {
+                let Some(total) = raw_total.as_u64() else {
+                    return vec![self.section(
+                        "ru",
+                        DocumentationSectionStatus::Failed {
+                            diagnostic: "v8std_search вернул неверный total".to_string(),
+                        },
+                        Vec::new(),
+                    )];
+                };
+                if expected_total.is_some_and(|previous| previous != total) {
+                    return vec![self.section(
+                        "ru",
+                        DocumentationSectionStatus::Failed {
+                            diagnostic: "v8std_search изменил total между страницами".to_string(),
+                        },
+                        Vec::new(),
+                    )];
+                }
+                expected_total = Some(total);
+                if total < fetched_count as u64
+                    || (next.is_none() && total != fetched_count as u64)
+                    || (next.is_some() && total == fetched_count as u64)
+                {
+                    return vec![self.section(
+                        "ru",
+                        DocumentationSectionStatus::Failed {
+                            diagnostic: "v8std_search вернул противоречивый total".to_string(),
+                        },
+                        Vec::new(),
+                    )];
+                }
+            }
+            if next.is_some() && page_results.is_empty() {
+                return vec![self.section(
+                    "ru",
+                    DocumentationSectionStatus::Failed {
+                        diagnostic: "v8std_search зациклил курсор".to_string(),
+                    },
+                    Vec::new(),
+                )];
+            }
+            if fetched_count > request.limit {
+                warnings.push("достигнут предел запрошенных результатов v8std".to_string());
+                break;
+            }
+            match next {
+                Some(token) if results.len() < request.limit => {
+                    if !seen_cursors.insert(token.clone()) {
+                        return vec![self.section(
+                            "ru",
+                            DocumentationSectionStatus::Failed {
+                                diagnostic: "v8std_search зациклил курсор".to_string(),
+                            },
+                            Vec::new(),
+                        )];
+                    }
+                    cursor = Some(token);
+                }
+                Some(_) => {
+                    warnings.push("достигнут предел запрошенных результатов v8std".to_string());
+                    break;
+                }
+                None => break,
+            }
+        }
+        if self.cancellation.is_cancelled() {
+            return vec![self.section(
+                "ru",
+                DocumentationSectionStatus::Unavailable {
+                    reason: UnavailableReason::Timeout,
+                    detail: "вызов отменён после чтения страниц стандартов".to_string(),
+                },
+                Vec::new(),
+            )];
         }
         // Локатор попадания — контракт владельца: чужой адрес из сетевого
         // ответа маршрутизировался бы другому поставщику при получении.
         // Такое попадание пропускается и называется предупреждением секции.
-        let mut warnings = Vec::new();
         let mut hits: Vec<DocumentationHit> = Vec::new();
         for result in results.iter() {
             let url = result
@@ -417,6 +568,26 @@ impl DocumentationProvider for V8StdDocumentationProvider {
         // и ответившая локаль называется, как того требует контракт секций.
         let mut section = self.section("ru", status, hits);
         section.warnings = warnings;
+        // Failed or malformed later pages above never publish/cache the first
+        // window. A fresh cursor replay also replaces the cached answer: after
+        // stale_cursor, a new first-page search must be able to start from the
+        // newly observed ranking rather than repeating the stale snapshot.
+        let mut cache = V8STD_SEARCH_CACHE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let now = std::time::Instant::now();
+        cache.retain(|_, (deadline, _)| now < *deadline);
+        while cache.len() >= V8STD_SEARCH_CACHE_CAP && !cache.contains_key(&cache_key) {
+            let Some(nearest_deadline) = cache
+                .iter()
+                .min_by_key(|(_, (deadline, _))| *deadline)
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
+            cache.remove(&nearest_deadline);
+        }
+        cache.insert(cache_key, (now + self.search_cache_ttl, section.clone()));
         vec![section]
     }
 }
@@ -465,6 +636,7 @@ mod tests {
                 http: Arc::clone(&http) as Arc<dyn HttpClient + Send + Sync>,
                 cancellation: crate::domain::cancellation::CancellationToken::default(),
                 search_cache_ttl: Duration::from_secs(3600),
+                revalidate_search: false,
             },
             http,
         )
@@ -512,6 +684,332 @@ mod tests {
         );
         assert!(first.signature.is_none());
         assert!(first.provider_score > section.hits[1].provider_score);
+    }
+
+    struct SearchPages {
+        bodies: std::sync::Mutex<std::collections::VecDeque<String>>,
+        arguments: std::sync::Mutex<Vec<Value>>,
+        cancel_after_first: Option<crate::domain::cancellation::CancellationToken>,
+    }
+
+    impl HttpClient for SearchPages {
+        fn post_json(&self, _: &str, payload: &Value) -> Result<String, String> {
+            let mut arguments = self.arguments.lock().unwrap();
+            arguments.push(payload["params"]["arguments"].clone());
+            if arguments.len() == 1 {
+                if let Some(token) = &self.cancel_after_first {
+                    token.cancel();
+                }
+            }
+            drop(arguments);
+            self.bodies
+                .lock()
+                .unwrap()
+                .pop_front()
+                .ok_or_else(|| "unexpected extra search page".to_string())
+        }
+    }
+
+    fn search_page_body(results: &[Value], next_cursor: Option<&str>, total: usize) -> String {
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "content": [{
+                    "type": "text",
+                    "text": json!({
+                        "results": results,
+                        "total": total,
+                        "next_cursor": next_cursor,
+                    }).to_string(),
+                }],
+            },
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn v8std_search_reads_past_fifty_and_replays_the_complete_ranked_stream() {
+        let results: Vec<Value> = (1..=51)
+            .map(|rank| {
+                json!({
+                    "url": format!("https://v8std.ru/std/{rank}/"),
+                    "title": format!("Standard {rank}"),
+                    "description": "matched",
+                    "score": 100.0 - rank as f64,
+                })
+            })
+            .collect();
+        let first = search_page_body(&results[..50], Some("vs1.next"), 51);
+        let last = search_page_body(&results[50..], None, 51);
+        let mut changed_results = results.clone();
+        changed_results[50]["title"] = json!("Changed standard 51");
+        let changed_last = search_page_body(&changed_results[50..], None, 51);
+        let http = Arc::new(SearchPages {
+            bodies: std::sync::Mutex::new(
+                [first.clone(), last, first, changed_last]
+                    .into_iter()
+                    .collect(),
+            ),
+            arguments: std::sync::Mutex::new(Vec::new()),
+            cancel_after_first: None,
+        });
+        let mut provider = V8StdDocumentationProvider {
+            endpoint: "http://paged-standards/mcp".to_string(),
+            network: NetworkAccess::Allow,
+            http: Arc::clone(&http) as Arc<dyn HttpClient + Send + Sync>,
+            cancellation: crate::domain::cancellation::CancellationToken::default(),
+            search_cache_ttl: Duration::from_secs(3600),
+            revalidate_search: false,
+        };
+        let mut request = request();
+        request.limit = usize::MAX;
+        for _ in 0..2 {
+            let sections = provider.search(&request, &context());
+            assert!(matches!(sections[0].status, DocumentationSectionStatus::Ok));
+            assert!(sections[0].warnings.is_empty());
+            assert_eq!(sections[0].hits.len(), 51);
+            assert_eq!(sections[0].hits[50].rank, 51);
+            assert_eq!(sections[0].hits[50].document_id, "https://v8std.ru/std/51/");
+        }
+        assert_eq!(
+            http.arguments.lock().unwrap().len(),
+            2,
+            "first-page retry uses cache"
+        );
+        provider.revalidate_search = true;
+        let refreshed = provider.search(&request, &context());
+        assert_eq!(refreshed[0].hits.len(), 51);
+        assert_eq!(refreshed[0].hits[50].title, "Changed standard 51");
+        provider.revalidate_search = false;
+        let restarted = provider.search(&request, &context());
+        assert_eq!(restarted[0].hits[50].title, "Changed standard 51");
+        let arguments = http.arguments.lock().unwrap();
+        assert_eq!(arguments.len(), 4, "canonical traversal must revalidate");
+        assert_eq!(arguments[0]["limit"], 50);
+        assert!(arguments[0].get("cursor").is_none());
+        assert_eq!(arguments[1]["cursor"], "vs1.next");
+        assert!(arguments[2].get("cursor").is_none());
+        assert_eq!(arguments[3]["cursor"], "vs1.next");
+    }
+
+    #[test]
+    fn v8std_cursor_keeps_the_upstream_page_size_when_requested_limit_is_sixty() {
+        let results: Vec<Value> = (1..=70)
+            .map(|rank| json!({"url": format!("https://v8std.ru/std/{rank}/")}))
+            .collect();
+        let http = Arc::new(SearchPages {
+            bodies: std::sync::Mutex::new(
+                [
+                    search_page_body(&results[..50], Some("vs1.next"), 70),
+                    search_page_body(&results[50..], None, 70),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+            arguments: std::sync::Mutex::new(Vec::new()),
+            cancel_after_first: None,
+        });
+        let provider = V8StdDocumentationProvider {
+            endpoint: "http://sixty-standards/mcp".to_string(),
+            network: NetworkAccess::Allow,
+            http: Arc::clone(&http) as Arc<dyn HttpClient + Send + Sync>,
+            cancellation: crate::domain::cancellation::CancellationToken::default(),
+            search_cache_ttl: Duration::from_secs(3600),
+            revalidate_search: false,
+        };
+        let mut request = request();
+        request.limit = 60;
+        let section = provider.search(&request, &context()).remove(0);
+        assert!(matches!(section.status, DocumentationSectionStatus::Ok));
+        assert_eq!(section.hits.len(), 60);
+        assert!(section
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("предел")));
+        let arguments = http.arguments.lock().unwrap();
+        assert_eq!(arguments.len(), 2);
+        assert_eq!(arguments[0]["limit"], 50);
+        assert_eq!(arguments[1]["limit"], 50);
+    }
+
+    #[test]
+    fn v8std_later_page_failure_or_cancellation_never_publishes_a_partial_stream() {
+        let first_results: Vec<Value> = (1..=50)
+            .map(|rank| json!({"url": format!("https://v8std.ru/std/{rank}/")}))
+            .collect();
+        let first = search_page_body(&first_results, Some("vs1.next"), 51);
+        let stale = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": {"code": -32602, "message": "stale search cursor"},
+        })
+        .to_string();
+        let http = Arc::new(SearchPages {
+            bodies: std::sync::Mutex::new([first.clone(), stale].into_iter().collect()),
+            arguments: std::sync::Mutex::new(Vec::new()),
+            cancel_after_first: None,
+        });
+        let mut provider = V8StdDocumentationProvider {
+            endpoint: "http://changed-standards/mcp".to_string(),
+            network: NetworkAccess::Allow,
+            http: Arc::clone(&http) as Arc<dyn HttpClient + Send + Sync>,
+            cancellation: crate::domain::cancellation::CancellationToken::default(),
+            search_cache_ttl: Duration::from_secs(3600),
+            revalidate_search: false,
+        };
+        let mut request = request();
+        request.limit = usize::MAX;
+        let failed = provider.search(&request, &context()).remove(0);
+        assert!(matches!(
+            failed.status,
+            DocumentationSectionStatus::Failed { .. }
+        ));
+        assert!(failed.hits.is_empty());
+        assert_eq!(http.arguments.lock().unwrap().len(), 2);
+
+        let cancellation = crate::domain::cancellation::CancellationToken::default();
+        let http = Arc::new(SearchPages {
+            bodies: std::sync::Mutex::new([first].into_iter().collect()),
+            arguments: std::sync::Mutex::new(Vec::new()),
+            cancel_after_first: Some(cancellation.clone()),
+        });
+        provider.endpoint = "http://cancelled-standards/mcp".to_string();
+        provider.http = Arc::clone(&http) as Arc<dyn HttpClient + Send + Sync>;
+        provider.cancellation = cancellation;
+        let cancelled = provider.search(&request, &context()).remove(0);
+        assert!(matches!(
+            cancelled.status,
+            DocumentationSectionStatus::Unavailable {
+                reason: UnavailableReason::Timeout,
+                ..
+            }
+        ));
+        assert!(cancelled.hits.is_empty());
+        assert_eq!(http.arguments.lock().unwrap().len(), 1);
+
+        let cancellation = crate::domain::cancellation::CancellationToken::default();
+        let one_hit = search_page_body(&[json!({"url": "https://v8std.ru/std/1/"})], None, 1);
+        let http = Arc::new(SearchPages {
+            bodies: std::sync::Mutex::new([one_hit.clone(), one_hit].into_iter().collect()),
+            arguments: std::sync::Mutex::new(Vec::new()),
+            cancel_after_first: Some(cancellation.clone()),
+        });
+        provider.endpoint = "http://cancelled-after-final-page/mcp".to_string();
+        provider.http = Arc::clone(&http) as Arc<dyn HttpClient + Send + Sync>;
+        provider.cancellation = cancellation;
+        let cancelled = provider.search(&request, &context()).remove(0);
+        assert!(matches!(
+            cancelled.status,
+            DocumentationSectionStatus::Unavailable { .. }
+        ));
+        assert!(cancelled.hits.is_empty());
+        provider.cancellation = crate::domain::cancellation::CancellationToken::default();
+        let recovered = provider.search(&request, &context()).remove(0);
+        assert!(matches!(recovered.status, DocumentationSectionStatus::Ok));
+        assert_eq!(recovered.hits.len(), 1);
+        assert_eq!(http.arguments.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn rejected_v8std_page_is_not_cached() {
+        let too_many: Vec<Value> = (1..=11)
+            .map(|rank| json!({"url": format!("https://v8std.ru/std/{rank}/")}))
+            .collect();
+        let valid = vec![json!({"url": "https://v8std.ru/std/1/"})];
+        let http = Arc::new(SearchPages {
+            bodies: std::sync::Mutex::new(
+                [
+                    search_page_body(&too_many, None, 11),
+                    search_page_body(&valid, None, 1),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+            arguments: std::sync::Mutex::new(Vec::new()),
+            cancel_after_first: None,
+        });
+        let provider = V8StdDocumentationProvider {
+            endpoint: "http://recovering-standards/mcp".to_string(),
+            network: NetworkAccess::Allow,
+            http: Arc::clone(&http) as Arc<dyn HttpClient + Send + Sync>,
+            cancellation: crate::domain::cancellation::CancellationToken::default(),
+            search_cache_ttl: Duration::from_secs(3600),
+            revalidate_search: false,
+        };
+        let mut request = request();
+        request.limit = 10;
+        let rejected = provider.search(&request, &context()).remove(0);
+        assert!(matches!(
+            rejected.status,
+            DocumentationSectionStatus::Failed { .. }
+        ));
+        let recovered = provider.search(&request, &context()).remove(0);
+        assert!(matches!(recovered.status, DocumentationSectionStatus::Ok));
+        assert_eq!(recovered.hits.len(), 1);
+        assert_eq!(http.arguments.lock().unwrap().len(), 2);
+
+        let http = Arc::new(SearchPages {
+            bodies: std::sync::Mutex::new(
+                [
+                    search_page_body(&[], Some("vs1.invalid"), 1),
+                    search_page_body(&valid, None, 1),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+            arguments: std::sync::Mutex::new(Vec::new()),
+            cancel_after_first: None,
+        });
+        let provider = V8StdDocumentationProvider {
+            endpoint: "http://empty-continuation-standards/mcp".to_string(),
+            network: NetworkAccess::Allow,
+            http: Arc::clone(&http) as Arc<dyn HttpClient + Send + Sync>,
+            cancellation: crate::domain::cancellation::CancellationToken::default(),
+            search_cache_ttl: Duration::from_secs(3600),
+            revalidate_search: false,
+        };
+        let rejected = provider.search(&request, &context()).remove(0);
+        assert!(matches!(
+            rejected.status,
+            DocumentationSectionStatus::Failed { .. }
+        ));
+        let recovered = provider.search(&request, &context()).remove(0);
+        assert!(matches!(recovered.status, DocumentationSectionStatus::Ok));
+        assert_eq!(recovered.hits.len(), 1);
+        assert_eq!(http.arguments.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn old_v8std_without_cursor_marks_a_full_window_incomplete() {
+        let results: Vec<Value> = (1..=50)
+            .map(|rank| json!({"url": format!("https://v8std.ru/std/{rank}/")}))
+            .collect();
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {"content": [{
+                "type": "text",
+                "text": json!({"results": results}).to_string(),
+            }]},
+        })
+        .to_string();
+        let (provider, http) = provider(NetworkAccess::Allow, Ok(body));
+        let mut request = request();
+        request.limit = usize::MAX;
+        let registry = DocumentationRegistry::new(vec![Arc::new(provider)]).unwrap();
+        let projected =
+            crate::application::documentation::search(&registry, &request, &context()).unwrap();
+        assert_eq!(http.calls.load(Ordering::SeqCst), 1);
+        let section = &projected["sections"][0];
+        assert_eq!(section["hits"].as_array().unwrap().len(), 50);
+        assert_eq!(section["searchComplete"], false);
+        assert_eq!(section["matches"]["relation"], "lowerBound");
+        assert!(section["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|warning| warning.as_str().unwrap().contains("продолжение")));
     }
 
     /// Повторный одинаковый запрос сессии отвечается кешем процесса, без
