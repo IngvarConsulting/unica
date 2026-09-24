@@ -305,6 +305,7 @@ impl WorkspaceFindDirectoryBuilder {
                 };
             let mut proved_owners = HashSet::new();
             let mut owner_directories = Vec::new();
+            let mut unsafe_owner_directories = HashSet::new();
             for owner in immediate_names(&collection, deadline, cancellation)? {
                 find_checkpoint(deadline, cancellation)?;
                 let Some(owner_name) = owner.to_str() else {
@@ -363,8 +364,20 @@ impl WorkspaceFindDirectoryBuilder {
                         owner_directories.push((owner_name.to_string(), owner_root.identity()));
                     }
                     _ if owner_name.ends_with(".xml") => return Err(unsafe_layout_entry()),
-                    _ => continue,
+                    RetainedChildCapability::ReparsePoint
+                    | RetainedChildCapability::Unsupported => {
+                        // The descriptor is the proof that this directory is
+                        // an owner. A linked or unsupported matching directory
+                        // must not silently hide its nested objects.
+                        unsafe_owner_directories.insert(owner_name.to_string());
+                    }
                 }
+            }
+            if unsafe_owner_directories
+                .iter()
+                .any(|name| proved_owners.contains(name))
+            {
+                return Err(unsafe_layout_entry());
             }
             for (owner_name, original_identity) in owner_directories {
                 find_checkpoint(deadline, cancellation)?;
@@ -529,6 +542,12 @@ impl WorkspaceFindDirectoryBuilder {
                         None,
                     ),
                     _ if entry_name.ends_with(".xml") => return Err(unsafe_layout_entry()),
+                    RetainedChildCapability::ReparsePoint
+                    | RetainedChildCapability::Unsupported
+                        if family_kind == NodeKind::Command =>
+                    {
+                        return Err(unsafe_layout_entry());
+                    }
                     _ => continue,
                 };
                 let synonym = if family_kind == NodeKind::Command {
@@ -1068,6 +1087,68 @@ mod tests {
                 &CancellationToken::new(),
             )
             .expect_err("linked nested descriptor must not become a local omission");
+        assert_eq!(refusal.code(), RefusalCode::InvalidSource);
+    }
+
+    #[test]
+    fn linked_proven_owner_directory_refuses_instead_of_hiding_nested_names() {
+        use crate::infrastructure::platform::testing::{
+            create_directory_link_fixture_for_test, FileLinkFixtureOutcome,
+        };
+
+        let fixture = Fixture::new();
+        let owner_root = fixture.source.join("Catalogs/Валюты");
+        let physical = fixture.source.join("physical-owner");
+        fs::rename(&owner_root, &physical).unwrap();
+        match create_directory_link_fixture_for_test(&physical, &owner_root).unwrap() {
+            FileLinkFixtureOutcome::Created => {}
+            FileLinkFixtureOutcome::Unsupported
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => return,
+        }
+
+        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let refusal = WorkspaceFindDirectoryBuilder::default()
+            .build_for_search(
+                &[LayoutFindSource::new(
+                    "main",
+                    SourceSetKind::Configuration,
+                    &root,
+                )],
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+            .expect_err("a linked proven owner must not hide its nested names");
+        assert_eq!(refusal.code(), RefusalCode::InvalidSource);
+    }
+
+    #[test]
+    fn linked_command_directory_refuses_instead_of_looking_complete() {
+        use crate::infrastructure::platform::testing::{
+            create_directory_link_fixture_for_test, FileLinkFixtureOutcome,
+        };
+
+        let fixture = Fixture::new();
+        let command = fixture.source.join("Catalogs/Валюты/Commands/Обновить");
+        let physical = fixture.source.join("physical-command");
+        fs::rename(&command, &physical).unwrap();
+        match create_directory_link_fixture_for_test(&physical, &command).unwrap() {
+            FileLinkFixtureOutcome::Created => {}
+            FileLinkFixtureOutcome::Unsupported
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => return,
+        }
+
+        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let refusal = WorkspaceFindDirectoryBuilder::default()
+            .build_for_search(
+                &[LayoutFindSource::new(
+                    "main",
+                    SourceSetKind::Configuration,
+                    &root,
+                )],
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+            .expect_err("a linked command must not look absent");
         assert_eq!(refusal.code(), RefusalCode::InvalidSource);
     }
 
