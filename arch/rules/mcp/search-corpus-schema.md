@@ -5,7 +5,7 @@ check:
   - crates/unica-coder/src/application/v13/find.rs::find_returns_address_facts_and_not_content_hits
   - crates/unica-coder/src/application/v13/find.rs::exact_kind_alias_filter_limit_and_nearest_are_deterministic
   - crates/unica-coder/tests/v13_search_integration.rs::canonical_search_is_source_scoped_and_rejects_legacy_call_shape
-gap: https://github.com/IngvarConsulting/unica/issues/960
+gap: https://github.com/IngvarConsulting/unica/issues/871
 ---
 
 # Поиск имён и текста показывает разные сведения о совпадении

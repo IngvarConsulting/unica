@@ -170,6 +170,19 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
     )
     .expect("extension module descriptor");
 
+    assert!(Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(workspace)
+        .status()
+        .expect("initialize search fixture repository")
+        .success());
+    assert!(Command::new("git")
+        .args(["add", "."])
+        .current_dir(workspace)
+        .status()
+        .expect("index search fixture sources")
+        .success());
+
     let mut mcp = McpProcess::start(workspace);
     let initialized = mcp.exchange(json!({
         "jsonrpc": "2.0",
@@ -252,6 +265,20 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
         extension["data"]["matches"][0]["scope"],
         "extension:Configuration"
     );
+
+    let lexical = domain_result(&mcp.exchange(call_tool(
+        24,
+        "unica.search",
+        json!({"query": "MainNeedle", "role": "lexical", "scope": "main:CommonModule.Main", "limit": 7}),
+    )));
+    assert_eq!(lexical["ok"], true, "{lexical:#}");
+    assert_eq!(lexical["data"]["mode"], "lexical");
+    let sections = lexical["data"]["matches"]
+        .as_array()
+        .expect("provider sections");
+    assert_eq!(sections.len(), 1, "only the selected role may answer");
+    assert_eq!(sections[0]["role"], "lexical");
+    assert_eq!(sections[0]["hits"].as_array().map(Vec::len), Some(7));
 
     let main_names = domain_result(&mcp.exchange(call_tool(
         19,
@@ -354,6 +381,18 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
             json!({"query": "Needle", "role": "lexical", "cursor": cursor}),
         ),
         (12, json!({"query": "Needle", "limit": 51})),
+        (
+            25,
+            json!({"query": "Main", "corpus": "names", "role": "lexical"}),
+        ),
+        (
+            26,
+            json!({"query": "Needle", "role": "lexical", "scope": 7}),
+        ),
+        (
+            27,
+            json!({"query": "Needle", "role": "lexical", "limit": 0}),
+        ),
     ] {
         let refused = domain_result(&mcp.exchange(call_tool(id, "unica.search", arguments)));
         assert_eq!(

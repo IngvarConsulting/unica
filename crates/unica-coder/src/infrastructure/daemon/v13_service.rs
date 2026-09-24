@@ -23,7 +23,9 @@ use crate::domain::address::{NodeKind, QualifiedAddress};
 use crate::domain::apply::OperationRegistry;
 use crate::domain::call_graph_identity::{CallGraphIdentity, CallGraphIdentityError};
 use crate::domain::cancellation::CancellationToken;
-use crate::domain::code_intelligence::CallGraphState;
+use crate::domain::code_intelligence::{
+    CallGraphState, CodeIntelligenceContext, CodeIntelligenceRegistry, ProviderRole, SearchRequest,
+};
 use crate::domain::invocation::{DomainResult, InvocationFailure};
 use crate::domain::project_sources::SourceSetKind;
 use crate::domain::refusal::{RefusalCode, RefusalDetail};
@@ -869,6 +871,13 @@ impl CanonicalV13ReadService {
             }
         };
         if corpus == SearchCorpus::Names {
+            if arguments.contains_key("role") {
+                return error_result(
+                    None,
+                    RefusalCode::BadValue,
+                    "name search does not accept a provider role",
+                );
+            }
             if arguments.contains_key("cursor") {
                 return error_result(
                     None,
@@ -1203,9 +1212,7 @@ impl CanonicalV13ReadService {
         arguments: &Map<String, Value>,
         cancellation: &CancellationToken,
     ) -> DomainResult {
-        use crate::application::code_intelligence::CodeSearchCoordinator;
         use crate::application::ports::ApplicationPorts;
-        use crate::domain::code_intelligence::{ProviderRole, SearchRequest};
 
         let Some(role) = ProviderRole::ALL
             .into_iter()
@@ -1235,8 +1242,8 @@ impl CanonicalV13ReadService {
         // Канонический вход — логический адрес; порт разрешения контекста
         // говорит словарём v0.12. Перевод делается здесь и только здесь.
         let mut selector = Map::new();
-        match arguments.get("scope").and_then(Value::as_str) {
-            Some(scope) => match QualifiedAddress::parse(scope) {
+        match arguments.get("scope") {
+            Some(Value::String(scope)) => match QualifiedAddress::parse(scope) {
                 Ok(address) => {
                     selector.insert(
                         "sourceSet".to_string(),
@@ -1267,6 +1274,9 @@ impl CanonicalV13ReadService {
                     )
                 }
             },
+            Some(_) => {
+                return error_result(None, RefusalCode::BadValue, "search scope must be a string")
+            }
             None => match invocation.admitted_source_set_names().first() {
                 Some(name) => {
                     selector.insert("sourceSet".to_string(), Value::String((*name).to_string()));
@@ -1304,26 +1314,41 @@ impl CanonicalV13ReadService {
                 )
             }
         };
-        let limit = arguments
-            .get("limit")
-            .and_then(bounded_usize)
-            .filter(|limit| *limit <= 200)
-            .unwrap_or(20);
+        let limit = match arguments.get("limit") {
+            None => 20,
+            Some(value) => match bounded_usize(value) {
+                Some(limit) if limit <= 200 => limit,
+                _ => {
+                    return error_result(
+                        None,
+                        RefusalCode::BadValue,
+                        "provider search limit must be a positive integer at most 200",
+                    )
+                }
+            },
+        };
         let request = SearchRequest {
             query: query.to_string(),
             limit,
         };
-        let execution =
-            match CodeSearchCoordinator::with_deadlines(registry, operational.code_intelligence())
-                .search_observed(
-                    &request,
-                    &search_context,
-                    cancellation,
-                    &crate::domain::progress::NoopProgressSink,
-                ) {
-                Ok(execution) => execution,
-                Err(error) => return error_result(None, RefusalCode::ProviderUnavailable, error),
-            };
+        let execution = match search_selected_role(
+            registry,
+            role,
+            &request,
+            &search_context,
+            cancellation,
+            operational.code_intelligence(),
+        ) {
+            Ok(execution) => execution,
+            Err(error) => {
+                let code = if error.starts_with(crate::domain::cancellation::CANCELLED_PREFIX) {
+                    RefusalCode::Cancelled
+                } else {
+                    RefusalCode::ProviderUnavailable
+                };
+                return error_result(None, code, error);
+            }
+        };
         // Провайдер, который не отработал, ничего не доказывает: пустой ответ
         // при неудачном прогоне выглядел бы как «искали и не нашли».
         if !execution.ok {
@@ -1843,6 +1868,30 @@ impl CanonicalV13ReadService {
             _ => Ok(ResolvedLines::NotLineBased),
         }
     }
+}
+
+fn search_selected_role(
+    registry: CodeIntelligenceRegistry,
+    role: ProviderRole,
+    request: &SearchRequest,
+    context: &CodeIntelligenceContext,
+    cancellation: &CancellationToken,
+    deadlines: crate::domain::operational_config::CodeIntelligenceDeadlines,
+) -> Result<crate::application::code_intelligence::CodeSearchExecution, String> {
+    use crate::application::code_intelligence::CodeSearchCoordinator;
+
+    let provider = registry
+        .search_providers()
+        .find(|provider| provider.identity().role == role)
+        .cloned()
+        .ok_or_else(|| format!("no search provider is registered for `{}`", role.as_str()))?;
+    let selected = CodeIntelligenceRegistry::new(vec![provider])?;
+    CodeSearchCoordinator::with_deadlines(selected, deadlines).search_observed(
+        request,
+        context,
+        cancellation,
+        &crate::domain::progress::NoopProgressSink,
+    )
 }
 
 /// Ответ моста: один точный предмет и ничего больше.
@@ -2564,7 +2613,156 @@ fn view_error_result(
 
 #[cfg(test)]
 mod tests {
+    use crate::domain::cancellation::CancellationToken;
+    use crate::domain::code_intelligence::{
+        CodeIntelligenceContext, CodeIntelligenceProvider, CodeIntelligenceRegistry,
+        CodeSearchScope, ProviderCapability, ProviderDeadline, ProviderIdentity, ProviderRole,
+        ProviderSearchSection, SearchOrdering, SearchRanking, SearchRequest,
+    };
+    use crate::domain::operational_config::CodeIntelligenceDeadlines;
+    use crate::domain::source_roots::ResolvedSourceRoot;
+    use crate::domain::workspace::WorkspaceContext;
     use serde_json::json;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    struct CountingSearchProvider {
+        identity: ProviderIdentity,
+        calls: Arc<AtomicUsize>,
+        fails: bool,
+    }
+
+    impl CodeIntelligenceProvider for CountingSearchProvider {
+        fn identity(&self) -> ProviderIdentity {
+            self.identity.clone()
+        }
+
+        fn capabilities(&self) -> &[ProviderCapability] {
+            &[ProviderCapability::Search]
+        }
+
+        fn search(
+            &self,
+            request: &SearchRequest,
+            context: &CodeIntelligenceContext,
+            deadline: ProviderDeadline,
+            cancellation: &CancellationToken,
+        ) -> ProviderSearchSection {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(request.query, "Needle");
+            assert_eq!(request.limit, 7);
+            assert_eq!(context.search_scope.as_ref().unwrap().source_set, "main");
+            assert!(deadline.remaining() <= Duration::from_secs(1));
+            assert!(!cancellation.is_cancelled());
+            if self.fails {
+                ProviderSearchSection::failed(self.identity.clone(), "selected failure".into())
+            } else {
+                ProviderSearchSection::complete(
+                    self.identity.clone(),
+                    SearchRanking::Provider,
+                    SearchOrdering::Provider,
+                    Vec::new(),
+                    Vec::new(),
+                )
+                .expect("complete section")
+            }
+        }
+    }
+
+    fn selected_role_test_context() -> CodeIntelligenceContext {
+        CodeIntelligenceContext::new(
+            WorkspaceContext {
+                cwd: PathBuf::from("/workspace"),
+                workspace_root: PathBuf::from("/workspace"),
+                cache_root: PathBuf::from("/cache"),
+                workspace_epoch: 1,
+            },
+            ResolvedSourceRoot {
+                source_set: Some("main".into()),
+                path: PathBuf::from("/workspace"),
+            },
+        )
+        .with_search_scope(CodeSearchScope::all(
+            "main".into(),
+            PathBuf::from("/workspace"),
+            false,
+        ))
+    }
+
+    #[test]
+    fn public_role_search_runs_only_selected_provider_and_cannot_use_a_neighbor_success() {
+        for selected_role in ProviderRole::ALL {
+            for selected_fails in [false, true] {
+                let counters = (0..3)
+                    .map(|_| Arc::new(AtomicUsize::new(0)))
+                    .collect::<Vec<_>>();
+                let providers = ProviderRole::ALL
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, role)| {
+                        Arc::new(CountingSearchProvider {
+                            identity: ProviderIdentity::new(role, format!("provider-{index}")),
+                            calls: Arc::clone(&counters[index]),
+                            fails: selected_fails && role == selected_role,
+                        }) as Arc<dyn CodeIntelligenceProvider>
+                    })
+                    .collect();
+                let execution = super::search_selected_role(
+                    CodeIntelligenceRegistry::new(providers).unwrap(),
+                    selected_role,
+                    &SearchRequest {
+                        query: "Needle".into(),
+                        limit: 7,
+                    },
+                    &selected_role_test_context(),
+                    &CancellationToken::new(),
+                    CodeIntelligenceDeadlines::for_test(Duration::from_secs(1)),
+                )
+                .expect("selected search executes");
+                assert_eq!(
+                    execution.ok, !selected_fails,
+                    "selected provider owns outcome"
+                );
+                assert_eq!(execution.result.sections.len(), 1);
+                assert_eq!(execution.result.sections[0].identity.role, selected_role);
+                for (index, role) in ProviderRole::ALL.into_iter().enumerate() {
+                    assert_eq!(
+                        counters[index].load(Ordering::SeqCst),
+                        usize::from(role == selected_role),
+                        "{role:?} called during {selected_role:?} search"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn selected_role_search_does_not_start_a_provider_after_parent_cancellation() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider = Arc::new(CountingSearchProvider {
+            identity: ProviderIdentity::new(ProviderRole::Lexical, "lexical"),
+            calls: Arc::clone(&calls),
+            fails: false,
+        });
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let error = super::search_selected_role(
+            CodeIntelligenceRegistry::new(vec![provider]).unwrap(),
+            ProviderRole::Lexical,
+            &SearchRequest {
+                query: "Needle".into(),
+                limit: 7,
+            },
+            &selected_role_test_context(),
+            &cancellation,
+            CodeIntelligenceDeadlines::for_test(Duration::from_secs(1)),
+        )
+        .expect_err("cancelled search must not start");
+        assert!(error.starts_with(crate::domain::cancellation::CANCELLED_PREFIX));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
 
     #[test]
     fn computed_can_section_may_exceed_the_preferred_page_size() {
