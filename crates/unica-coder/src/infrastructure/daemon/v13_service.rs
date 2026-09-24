@@ -2165,6 +2165,22 @@ fn provider_search_page(
             .as_array_mut()
             .expect("provider search hits serialize as an array"),
     );
+    // The cursor names the previous complete provider answer. Verify that
+    // identity before inspecting sizes in a different answer; changed late
+    // results must report stale_cursor after pages were already published.
+    let cursor = match cursor_token {
+        None => None,
+        Some(token) => match cursors.read(token, &binding) {
+            Ok(cursor) => Some((token, cursor)),
+            Err(error) => {
+                return error_result(
+                    None,
+                    error.code(),
+                    "provider search cursor is invalid or stale",
+                )
+            }
+        },
+    };
     let cursor_placeholder = "sc1.00000000000000000000000000000000";
     let probe = |page_hits: &[Value]| {
         serde_json::to_vec(&provider_search_page_result(
@@ -2202,19 +2218,6 @@ fn provider_search_page(
             );
         }
     }
-    let cursor = match cursor_token {
-        None => None,
-        Some(token) => match cursors.read(token, &binding) {
-            Ok(cursor) => Some((token, cursor)),
-            Err(error) => {
-                return error_result(
-                    None,
-                    error.code(),
-                    "provider search cursor is invalid or stale",
-                )
-            }
-        },
-    };
     let offset = cursor.as_ref().map_or(0, |(_, stored)| stored.offset);
     if offset >= hits.len() && cursor.is_some() {
         return error_result(
@@ -3252,6 +3255,18 @@ mod tests {
                 );
                 assert!(!changed.ok);
                 assert_eq!(changed.diagnostics[0]["code"], "stale_cursor");
+                let mut oversized_change = provider_search_test_execution(75, 8, false);
+                oversized_change.result.sections[0].hits[74].snippet =
+                    "x".repeat(crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES);
+                let stale_before_size = super::provider_search_page(
+                    &store,
+                    ProviderRole::Semantic,
+                    oversized_change,
+                    provider_search_test_binding(ProviderRole::Semantic, 20),
+                    result.cursor.as_deref(),
+                    &cancellation,
+                );
+                assert_eq!(stale_before_size.diagnostics[0]["code"], "stale_cursor");
             }
             cursor = result.cursor;
         }
