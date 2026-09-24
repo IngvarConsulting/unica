@@ -377,7 +377,7 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
     let cross_corpus = domain_result(&mcp.exchange(call_tool(
         10,
         "unica.search",
-        json!({"query": "Needle", "corpus": "names", "cursor": cursor}),
+        json!({"query": "MainNeedle", "scope": "main:Configuration", "corpus": "names", "cursor": cursor}),
     )));
     assert_eq!(cross_corpus["diagnostics"][0]["code"], "invalid_cursor");
 
