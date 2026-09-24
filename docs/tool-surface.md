@@ -89,16 +89,16 @@ Compare two readable logical nodes of the same kind without changing files.
 
 ### `unica.docs`
 
-Search bundled Unica and safe 1C documentation by topic. Search hits use pages; each source reports whether its retrieved window is complete.
+Search bundled Unica and safe 1C documentation by topic, or open a document locator. Search hits and long document text use pages; each search source reports whether its retrieved window is complete.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `cursor` | string | нет | Continue the same documentation search; the cursor checks the complete retrieved answer for changes. Does not apply to a document locator. |
-| `limit` | integer | нет | Maximum documentation hits per page, from 1 to 50. Does not apply to a document locator. |
+| `cursor` | string | нет | Continue the same documentation search or long document. A document cursor checks its complete text and metadata for changes; concatenate document.text fragments in page order. |
+| `limit` | integer | нет | Maximum hits per search page or text fragments per long document page, from 1 to 50. A text fragment is one line or at most 16 KiB of a longer line; short documents still arrive whole. |
 | `query` | string | да | Documentation question or search phrase. |
 | `source` | string | нет | Optional documented source kind, not a provider identity. |
 
-**Результат сейчас:** Отвечает до допуска рабочей области; поиск по platform-help и development-standard возвращает страницы `data.sections` с `searchComplete` для каждой секции и всего ответа. В пределах бюджета страницы совпадения чередуются между корпусами; курсор сверяет полный полученный ответ. Локальные поставщики отдают окно до 200 результатов, v8std — до 50; заполненное окно остаётся явно неполным. `page.stoppedBy: complete` означает конец полученного окна, а не обязательно всего поиска. Локатор страницы открывает документ без параметров пагинации. configuration-documentation отвечает `unsupported_source` до actor-safe reader (отвечают типизированным `data`)
+**Результат сейчас:** Отвечает до допуска рабочей области; поиск по platform-help и development-standard возвращает страницы `data.sections` с `searchComplete` для каждой секции и всего ответа. В пределах бюджета страницы совпадения чередуются между корпусами; курсор сверяет полный полученный ответ. Локальные поставщики отдают окно до 200 результатов, v8std — до 50; заполненное окно остаётся явно неполным. `page.stoppedBy: complete` означает конец полученного окна, а не обязательно всего поиска. Локатор открывает короткий документ целиком, а длинный текст — точными страницами с byte range и курсором, связанным с полным документом. configuration-documentation отвечает `unsupported_source` до actor-safe reader (отвечают типизированным `data`)
 
 **Целевой контракт:** Добавить actor-owned nofollow/cancellation reader для документации конфигурации, выбор locale и version и продолжение за пределами окна каждого поставщика
 

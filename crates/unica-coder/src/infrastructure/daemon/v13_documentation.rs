@@ -76,14 +76,6 @@ pub(super) fn prepare(request: &InvocationRequest, cursors: Arc<SearchCursorStor
         Some(Value::String(cursor)) => Some(cursor.clone()),
         Some(_) => return reject(RefusalCode::BadValue, "docs cursor must be a string"),
     };
-    if crate::infrastructure::application_ports::documentation_locator(query).is_some()
-        && (arguments.contains_key("limit") || cursor.is_some())
-    {
-        return reject(
-            RefusalCode::BadValue,
-            "a documentation page locator does not accept pagination",
-        );
-    }
     // Корень нужен политике сети и закреплённой версии платформы, а не
     // допуску исходников: пустой каталог — это отсутствие ограничений, и
     // обнаружение здесь не отказывает по их отсутствию.
@@ -121,6 +113,8 @@ impl PreparedDocumentationSearch {
     }
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
+        let is_locator =
+            crate::infrastructure::application_ports::documentation_locator(&self.query).is_some();
         let result = crate::infrastructure::application_ports::canonical_v13_docs_search_with_limit(
             &self.context,
             &self.query,
@@ -128,30 +122,37 @@ impl PreparedDocumentationSearch {
             200,
             &cancellation,
         );
-        if !result.ok
-            || crate::infrastructure::application_ports::documentation_locator(&self.query)
-                .is_some()
-        {
+        if !result.ok {
             return result;
         }
         let binding = SearchCursorBinding {
             workspace_identity: self.workspace_identity_hash().as_str().to_owned(),
             query: self.query.clone(),
             scope: self.source.clone(),
-            mode: "docs".to_string(),
+            mode: if is_locator { "docs-document" } else { "docs" }.to_string(),
             kind: None,
             source_sets: Vec::new(),
             revisions: Vec::new(),
             result_fingerprint: None,
             page_limit: self.limit,
         };
-        page_documentation(
-            &self.cursors,
-            result,
-            binding,
-            self.cursor.as_deref(),
-            &cancellation,
-        )
+        if is_locator {
+            page_document_text(
+                &self.cursors,
+                result,
+                binding,
+                self.cursor.as_deref(),
+                &cancellation,
+            )
+        } else {
+            page_documentation(
+                &self.cursors,
+                result,
+                binding,
+                self.cursor.as_deref(),
+                &cancellation,
+            )
+        }
     }
 }
 
@@ -351,6 +352,253 @@ fn docs_page_result(
     page
 }
 
+const DOCUMENT_TEXT_FRAGMENT_BYTES: usize = 16 * 1024;
+const DOCUMENT_CURSOR_PROBE: &str = "sc1.00000000000000000000000000000000";
+
+#[derive(Clone, Copy)]
+struct DocumentTextRange {
+    start: usize,
+    end: usize,
+    total: usize,
+    fragments: usize,
+}
+
+/// A locator still opens one document. Only its text is divided; all of the
+/// owner's metadata accompanies every page. The cursor offset is a byte offset
+/// in the original UTF-8 string, not an index into a normalized rendering.
+fn page_document_text(
+    cursors: &SearchCursorStore,
+    mut result: DomainResult,
+    mut binding: SearchCursorBinding,
+    cursor_token: Option<&str>,
+    cancellation: &CancellationToken,
+) -> DomainResult {
+    use crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES;
+    use crate::application::v13::view::PREFERRED_PAGE_BYTES;
+
+    let refuse = |code, message| DomainResult::canonical_rejection(None, code, message);
+    if cancellation.is_cancelled() {
+        return refuse(RefusalCode::Cancelled, "docs document page cancelled");
+    }
+    let Some(mut data) = result.data.take() else {
+        return refuse(
+            RefusalCode::ProviderFailed,
+            "docs provider returned no document",
+        );
+    };
+    let Some(document) = data.get_mut("document").and_then(Value::as_object_mut) else {
+        return refuse(
+            RefusalCode::ProviderFailed,
+            "docs provider returned an invalid document",
+        );
+    };
+    let Some(Value::String(text)) =
+        document.insert("text".to_string(), Value::String(String::new()))
+    else {
+        return refuse(
+            RefusalCode::ProviderFailed,
+            "docs document has no text string",
+        );
+    };
+    result.data = Some(data);
+
+    // Keep the existing one-response shape for short documents. An explicit
+    // cursor must still be validated, even if the document later became short.
+    if cursor_token.is_none() && text.len() <= PREFERRED_PAGE_BYTES {
+        let mut whole = result.clone();
+        whole.data.as_mut().expect("document data exists")["document"]["text"] = json!(text);
+        if serde_json::to_vec(&whole)
+            .expect("document result is serializable")
+            .len()
+            <= PREFERRED_PAGE_BYTES
+        {
+            return whole;
+        }
+    }
+
+    let mut hasher = Sha256::new();
+    hasher.update(b"unica-v13-docs-document-page-v1\0");
+    hasher.update(
+        serde_json::to_vec(result.data.as_ref().expect("document data exists"))
+            .expect("document metadata is serializable"),
+    );
+    hasher.update((text.len() as u64).to_le_bytes());
+    for chunk in text.as_bytes().chunks(64 * 1024) {
+        if cancellation.is_cancelled() {
+            return refuse(RefusalCode::Cancelled, "docs document page cancelled");
+        }
+        hasher.update(chunk);
+    }
+    binding.result_fingerprint = Some(format!("docs-document-sha256-v1:{:x}", hasher.finalize()));
+
+    let total = text.len();
+    let probe = |start: usize, end: usize, stopped_by: &str| {
+        serde_json::to_vec(&document_text_page_result(
+            &result,
+            &text[start..end],
+            DocumentTextRange {
+                start,
+                end,
+                total,
+                fragments: binding.page_limit,
+            },
+            stopped_by,
+            Some(DOCUMENT_CURSOR_PROBE),
+        ))
+        .expect("document page is serializable")
+        .len()
+    };
+    // Maximum decimal widths and the longest stoppedBy value make this a
+    // conservative bound for every later page with a real 36-byte token.
+    let metadata_bytes = probe(total, total, "complete");
+    if metadata_bytes > MAX_CANONICAL_RESULT_BYTES {
+        return refuse(
+            RefusalCode::ResultTooLarge,
+            "docs document metadata exceeds the transport limit",
+        );
+    }
+    let available = MAX_CANONICAL_RESULT_BYTES - metadata_bytes;
+    if !text.is_empty() && available == 0 {
+        return refuse(
+            RefusalCode::ResultTooLarge,
+            "docs document metadata leaves no room for text",
+        );
+    }
+    // JSON escaping uses at most six output bytes per input byte. When the
+    // metadata is almost at the transport limit, validate every scalar too:
+    // a later UTF-8 character must not make an issued cursor unusable.
+    let fragment_bytes = DOCUMENT_TEXT_FRAGMENT_BYTES.min((available / 6).max(1));
+    if available < 24 {
+        for character in text.chars() {
+            if cancellation.is_cancelled() {
+                return refuse(RefusalCode::Cancelled, "docs document page cancelled");
+            }
+            let encoded = serde_json::to_string(&character.to_string())
+                .expect("document character is serializable");
+            if encoded.len() - 2 > available {
+                return refuse(
+                    RefusalCode::ResultTooLarge,
+                    "one docs document character exceeds the transport limit",
+                );
+            }
+        }
+    }
+
+    let cursor = match cursor_token {
+        None => None,
+        Some(token) => match cursors.read(token, &binding) {
+            Ok(stored) => Some((token, stored)),
+            Err(error) => return refuse(error.code(), "docs document cursor is invalid or stale"),
+        },
+    };
+    let start = cursor.as_ref().map_or(0, |(_, stored)| stored.offset);
+    if start > total || !text.is_char_boundary(start) || (cursor.is_some() && start == total) {
+        return refuse(
+            RefusalCode::InvalidCursor,
+            "docs document cursor is invalid",
+        );
+    }
+    let mut end = start;
+    let mut fragments = 0;
+    let mut byte_stop = false;
+    while end < total && fragments < binding.page_limit {
+        if cancellation.is_cancelled() {
+            return refuse(RefusalCode::Cancelled, "docs document page cancelled");
+        }
+        let next = next_document_fragment_end(&text, end, fragment_bytes);
+        let bytes = probe(start, next, "complete");
+        if bytes > MAX_CANONICAL_RESULT_BYTES {
+            if end == start {
+                return refuse(
+                    RefusalCode::ResultTooLarge,
+                    "one docs document fragment exceeds the transport limit",
+                );
+            }
+            byte_stop = true;
+            break;
+        }
+        if bytes > PREFERRED_PAGE_BYTES && end > start {
+            byte_stop = true;
+            break;
+        }
+        end = next;
+        fragments += 1;
+    }
+    let more = end < total;
+    let stopped_by = if !more {
+        "complete"
+    } else if byte_stop {
+        "bytes"
+    } else {
+        "limit"
+    };
+    let mut page = document_text_page_result(
+        &result,
+        &text[start..end],
+        DocumentTextRange {
+            start,
+            end,
+            total,
+            fragments,
+        },
+        stopped_by,
+        None,
+    );
+    if cancellation.is_cancelled() {
+        return refuse(RefusalCode::Cancelled, "docs document page cancelled");
+    }
+    if more {
+        let issued = match cursor {
+            Some((token, stored)) => cursors.insert_next(&stored, end, token),
+            None => cursors.insert_first(binding, end),
+        };
+        let Some(issued) = issued else {
+            return refuse(
+                RefusalCode::ResultTooLarge,
+                "docs document continuation could not be retained",
+            );
+        };
+        page.cursor = Some(issued);
+    }
+    page
+}
+
+fn next_document_fragment_end(text: &str, start: usize, max_bytes: usize) -> usize {
+    let remainder = &text[start..];
+    let mut end = text.len().min(start.saturating_add(max_bytes));
+    while end > start && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    if end == start {
+        end = start + remainder.chars().next().expect("text remains").len_utf8();
+    }
+    // Search only this fragment's bounded window. Scanning the entire
+    // remainder on each page makes one long line quadratic.
+    remainder[..end - start]
+        .find('\n')
+        .map_or(end, |relative| start + relative + 1)
+}
+
+fn document_text_page_result(
+    base: &DomainResult,
+    text: &str,
+    range: DocumentTextRange,
+    stopped_by: &str,
+    cursor: Option<&str>,
+) -> DomainResult {
+    let mut page = base.clone();
+    page.data.as_mut().expect("document data exists")["document"]["text"] = json!(text);
+    page.page = Some(json!({
+        "startByte": range.start,
+        "endByte": range.end,
+        "totalBytes": range.total,
+        "fragmentsReturned": range.fragments,
+        "stoppedBy": stopped_by,
+    }));
+    page.cursor = cursor.map(str::to_owned);
+    page
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -399,6 +647,160 @@ mod tests {
             section("standards", 30, true),
         ]}));
         result
+    }
+
+    fn document_binding(limit: usize) -> SearchCursorBinding {
+        SearchCursorBinding {
+            mode: "docs-document".into(),
+            query: "platform-help:sample".into(),
+            page_limit: limit,
+            ..binding(limit)
+        }
+    }
+
+    fn document_response(text: &str) -> DomainResult {
+        let mut result = DomainResult::success("unica.docs opened the page");
+        result.data = Some(json!({"document": {
+            "provider": "platform-help", "corpus": "syntax", "sourceKind": "platform-help",
+            "authority": "vendor", "language": "ru", "documentId": "platform-help:sample",
+            "title": "Пример", "signature": null, "applicableVersion": "8.3.27",
+            "text": text,
+        }}));
+        result
+    }
+
+    #[test]
+    fn short_opened_document_preserves_the_whole_response() {
+        let original = document_response("Первая строка\r\nВторая 🙂\n");
+        let page = page_document_text(
+            &SearchCursorStore::default(),
+            original.clone(),
+            document_binding(20),
+            None,
+            &CancellationToken::new(),
+        );
+        assert_eq!(page, original);
+    }
+
+    #[test]
+    fn opened_document_pages_reassemble_exact_utf8_text_and_replay() {
+        let original = format!("Заголовок\r\n{}\n\nКонец🙂", "Строка🙂".repeat(18_000));
+        let store = SearchCursorStore::default();
+        let cancellation = CancellationToken::new();
+        let mut cursor = None;
+        let mut bytes = Vec::new();
+        let mut expected_start = 0;
+        let mut pages = 0;
+        loop {
+            let page = page_document_text(
+                &store,
+                document_response(&original),
+                document_binding(3),
+                cursor.as_deref(),
+                &cancellation,
+            );
+            assert!(page.ok, "{page:?}");
+            let frame = page.page.as_ref().unwrap();
+            assert_eq!(frame["startByte"], expected_start);
+            assert_eq!(frame["totalBytes"], original.len());
+            assert!(frame["fragmentsReturned"].as_u64().unwrap() <= 3);
+            let text = page.data.as_ref().unwrap()["document"]["text"]
+                .as_str()
+                .unwrap();
+            bytes.extend_from_slice(text.as_bytes());
+            expected_start = frame["endByte"].as_u64().unwrap() as usize;
+            assert_eq!(bytes.len(), expected_start);
+            if pages == 0 {
+                let token = page.cursor.as_deref().unwrap();
+                let replay = page_document_text(
+                    &store,
+                    document_response(&original),
+                    document_binding(3),
+                    Some(token),
+                    &cancellation,
+                );
+                let replay_again = page_document_text(
+                    &store,
+                    document_response(&original),
+                    document_binding(3),
+                    Some(token),
+                    &cancellation,
+                );
+                assert_eq!(replay, replay_again);
+                let mut changed_metadata = document_response(&original);
+                changed_metadata.data.as_mut().unwrap()["document"]["title"] = json!("Иное");
+                let stale = page_document_text(
+                    &store,
+                    changed_metadata,
+                    document_binding(3),
+                    Some(token),
+                    &cancellation,
+                );
+                assert_eq!(stale.diagnostics[0]["code"], "stale_cursor");
+                let wrong_locator = page_document_text(
+                    &store,
+                    document_response(&original),
+                    SearchCursorBinding {
+                        query: "platform-help:other".into(),
+                        ..document_binding(3)
+                    },
+                    Some(token),
+                    &cancellation,
+                );
+                assert_eq!(wrong_locator.diagnostics[0]["code"], "invalid_cursor");
+            }
+            pages += 1;
+            cursor = page.cursor;
+            if cursor.is_none() {
+                assert_eq!(frame["stoppedBy"], "complete");
+                break;
+            }
+            assert!(pages < 100);
+        }
+        assert!(pages > 2);
+        assert_eq!(bytes, original.as_bytes());
+    }
+
+    #[test]
+    fn document_over_transport_size_on_one_line_starts_with_a_useful_page() {
+        let text =
+            "🙂".repeat(crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES / 4 + 1);
+        let page = page_document_text(
+            &SearchCursorStore::default(),
+            document_response(&text),
+            document_binding(20),
+            None,
+            &CancellationToken::new(),
+        );
+        assert!(page.ok, "{page:?}");
+        assert!(
+            serde_json::to_vec(&page).unwrap().len()
+                <= crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES
+        );
+        assert_eq!(page.page.as_ref().unwrap()["startByte"], 0);
+        assert!(page.page.as_ref().unwrap()["endByte"].as_u64().unwrap() > 0);
+        assert!(page.cursor.is_some());
+        let first = page.data.as_ref().unwrap()["document"]["text"]
+            .as_str()
+            .unwrap();
+        assert!(text.starts_with(first));
+    }
+
+    #[test]
+    fn oversized_document_metadata_refuses_before_issuing_a_cursor() {
+        let mut result = document_response("текст");
+        result.data.as_mut().unwrap()["document"]["title"] =
+            json!("x".repeat(crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES));
+        let page = page_document_text(
+            &SearchCursorStore::default(),
+            result,
+            document_binding(20),
+            None,
+            &CancellationToken::new(),
+        );
+        assert!(!page.ok);
+        assert_eq!(page.diagnostics[0]["code"], "result_too_large");
+        assert!(page.cursor.is_none());
     }
 
     #[test]
@@ -640,7 +1042,7 @@ mod tests {
     }
 
     #[test]
-    fn docs_locator_rejects_pagination_arguments() {
+    fn docs_locator_accepts_pagination_arguments() {
         let workspace = tempfile::tempdir().unwrap();
         let request = InvocationRequest::new(
             ToolIdentity::Docs,
@@ -651,11 +1053,111 @@ mod tests {
             7_000,
         )
         .unwrap();
-        let Preparation::Rejected(result) =
+        let Preparation::Ready(prepared) =
             prepare(&request, Arc::new(SearchCursorStore::default()))
         else {
-            panic!("document locator cannot accept a page limit");
+            panic!("document locator must accept a page limit");
         };
-        assert_eq!(result.diagnostics[0]["code"], "bad_value");
+        assert_eq!(prepared.limit, 20);
+    }
+
+    #[test]
+    fn prepared_document_locator_continues_across_calls_before_source_admission() {
+        use crate::domain::documentation::{
+            Authority, DocumentationContext, DocumentationCorpus, DocumentationDocument,
+            DocumentationProvider, DocumentationProviderId, DocumentationSearchRequest,
+            DocumentationSection, SourceKind,
+        };
+        use std::sync::Mutex;
+
+        struct PageOwner {
+            text: Arc<Mutex<String>>,
+        }
+        impl DocumentationProvider for PageOwner {
+            fn id(&self) -> DocumentationProviderId {
+                DocumentationProviderId::new("page-owner")
+            }
+            fn corpora(&self) -> Vec<DocumentationCorpus> {
+                vec![DocumentationCorpus {
+                    id: "syntax".into(),
+                    source_kind: SourceKind::PlatformHelp,
+                    authority: Authority::Vendor,
+                }]
+            }
+            fn needs_network(&self) -> bool {
+                false
+            }
+            fn search(
+                &self,
+                _: &DocumentationSearchRequest,
+                _: &DocumentationContext,
+            ) -> Vec<DocumentationSection> {
+                Vec::new()
+            }
+            fn get(
+                &self,
+                document_id: &str,
+                _: &str,
+                _: &DocumentationContext,
+            ) -> Option<Result<DocumentationDocument, String>> {
+                (document_id == "platform-help:sample").then(|| {
+                    Ok(DocumentationDocument {
+                        provider: self.id(),
+                        corpus: "syntax".into(),
+                        source_kind: SourceKind::PlatformHelp,
+                        authority: Authority::Vendor,
+                        language: "ru".into(),
+                        document_id: document_id.into(),
+                        title: "Пример".into(),
+                        signature: None,
+                        applicable_version: "8.3.27".into(),
+                        text: self.text.lock().unwrap().clone(),
+                    })
+                })
+            }
+        }
+
+        let body = Arc::new(Mutex::new("Справка🙂".repeat(12_000)));
+        let _provider =
+            crate::infrastructure::application_ports::install_documentation_registry_stand_in(
+                Arc::new(PageOwner {
+                    text: Arc::clone(&body),
+                }),
+            );
+        let workspace_dir = tempfile::tempdir().unwrap();
+        let workspace = std::fs::canonicalize(workspace_dir.path()).unwrap();
+        let cursors = Arc::new(SearchCursorStore::default());
+        let invoke = |cursor: Option<&str>| {
+            let mut arguments = json!({"query": "platform-help:sample", "limit": 1});
+            if let Some(cursor) = cursor {
+                arguments["cursor"] = json!(cursor);
+            }
+            let request = InvocationRequest::new(
+                ToolIdentity::Docs,
+                arguments,
+                workspace.to_string_lossy(),
+                7_000,
+            )
+            .unwrap();
+            let Preparation::Ready(prepared) = prepare(&request, Arc::clone(&cursors)) else {
+                panic!("document locator must prepare");
+            };
+            prepared.execute(CancellationToken::new())
+        };
+
+        let first = invoke(None);
+        assert!(first.ok, "{first:?}");
+        assert_eq!(first.page.as_ref().unwrap()["startByte"], 0);
+        let token = first.cursor.as_deref().unwrap();
+        let second = invoke(Some(token));
+        assert!(second.ok, "{second:?}");
+        assert_eq!(
+            second.page.as_ref().unwrap()["startByte"],
+            first.page.as_ref().unwrap()["endByte"]
+        );
+        assert_eq!(second, invoke(Some(token)));
+        *body.lock().unwrap() = "другая справка".repeat(12_000);
+        let changed = invoke(Some(token));
+        assert_eq!(changed.diagnostics[0]["code"], "stale_cursor");
     }
 }

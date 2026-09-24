@@ -20,7 +20,10 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/v13_documentation.rs::late_oversized_docs_hit_refuses_before_first_cursor
   - crates/unica-coder/src/infrastructure/daemon/v13_documentation.rs::one_docs_hit_over_page_target_is_returned_whole
   - crates/unica-coder/src/infrastructure/daemon/v13_documentation.rs::prepared_docs_search_continues_across_calls_before_source_admission
-  - crates/unica-coder/src/infrastructure/daemon/v13_documentation.rs::docs_locator_rejects_pagination_arguments
+  - crates/unica-coder/src/infrastructure/daemon/v13_documentation.rs::docs_locator_accepts_pagination_arguments
+  - crates/unica-coder/src/infrastructure/daemon/v13_documentation.rs::opened_document_pages_reassemble_exact_utf8_text_and_replay
+  - crates/unica-coder/src/infrastructure/daemon/v13_documentation.rs::document_over_transport_size_on_one_line_starts_with_a_useful_page
+  - crates/unica-coder/src/infrastructure/daemon/v13_documentation.rs::oversized_document_metadata_refuses_before_issuing_a_cursor
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::provider_search_pages_all_received_hits_and_rejects_changed_answers
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::provider_limit_remains_visible_after_the_last_received_page
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::late_oversized_provider_hit_refuses_before_first_cursor
@@ -57,6 +60,11 @@ gap: https://github.com/IngvarConsulting/unica/issues/871
 заполненное окно поставщика не выдаётся за весь корпус. `page.stoppedBy:
 complete` завершает полученное окно, даже если поиск в нём неполон. Локальные
 поставщики справки возвращают до 200 результатов, v8std — до 50. До первого курсора
-проверяется, что каждый неделимый результат можно вернуть. Продолжение за
-пределами окон поставщиков и страницы открытого текста документа остаются в
+проверяется, что каждый неделимый результат можно вернуть. Открытый документ
+с коротким текстом сохраняет полный ответ; длинный текст делится на фрагменты
+по строкам и границам UTF-8, а курсор связан с отпечатком всего документа.
+Если владелец вернул текст, даже строка длиннее 8 МиБ начинается полезной
+страницей. Сведения о документе
+не делятся: если они сами превышают транспортный предел, отказ приходит до
+первого курсора. Продолжение поиска за пределами окон поставщиков остаётся в
 `gap`.
