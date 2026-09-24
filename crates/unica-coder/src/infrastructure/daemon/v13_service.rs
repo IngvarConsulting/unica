@@ -1,6 +1,9 @@
 use super::server::{ActorBoundExecution, ActorBoundInvocation, CanonicalInvocationService};
 /// Потолок страницы ветви графа: объявленный максимум поверхности.
 const CALL_GRAPH_PAGE_LIMIT: usize = 50;
+/// Provider APIs accept a top-N request, but no offset. Keep their existing
+/// public bound as the fetch window and page the returned evidence separately.
+const PROVIDER_SEARCH_FETCH_LIMIT: usize = 200;
 
 use super::v13_call_graph::{
     branch_collection, branch_direction, branch_owner, complete_branch, extend_method_node,
@@ -887,13 +890,6 @@ impl CanonicalV13ReadService {
         // силами или провайдером — символьным индексом, смысловым поиском.
         // Без роли поиск остаётся буквальным, каким был.
         if let Some(role) = arguments.get("role") {
-            if arguments.contains_key("cursor") {
-                return error_result(
-                    None,
-                    RefusalCode::BadValue,
-                    "provider search does not accept a text-search cursor",
-                );
-            }
             let Some(role) = role.as_str() else {
                 return error_result(None, RefusalCode::BadValue, "search role must be a string");
             };
@@ -1328,20 +1324,31 @@ impl CanonicalV13ReadService {
         };
         let limit = match arguments.get("limit") {
             None => 20,
-            Some(value) => match bounded_usize(value) {
-                Some(limit) if limit <= 200 => limit,
+            Some(value) => match bounded_usize(value).filter(|limit| *limit <= 50) {
+                Some(limit) => limit,
                 _ => {
                     return error_result(
                         None,
                         RefusalCode::BadValue,
-                        "provider search limit must be a positive integer at most 200",
+                        "provider search page limit must be a positive integer at most 50",
                     )
                 }
             },
         };
+        let cursor = match arguments.get("cursor") {
+            None => None,
+            Some(Value::String(token)) => Some(token.as_str()),
+            Some(_) => {
+                return error_result(
+                    None,
+                    RefusalCode::BadValue,
+                    "search cursor must be a string",
+                )
+            }
+        };
         let request = SearchRequest {
             query: query.to_string(),
-            limit,
+            limit: PROVIDER_SEARCH_FETCH_LIMIT,
         };
         let execution = match search_selected_role(
             registry,
@@ -1370,7 +1377,32 @@ impl CanonicalV13ReadService {
                 format!("`{}` search did not complete", role.as_str()),
             );
         }
-        render_selected_role_search_result(role, execution)
+        let binding = SearchCursorBinding {
+            workspace_identity: invocation.workspace_identity_hash().as_str().to_owned(),
+            query: query.to_owned(),
+            scope: arguments
+                .get("scope")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            mode: role.as_str().to_owned(),
+            kind: None,
+            source_sets: vec![search_context
+                .source_root
+                .source_set
+                .clone()
+                .unwrap_or_default()],
+            revisions: Vec::new(),
+            result_fingerprint: None,
+            page_limit: limit,
+        };
+        provider_search_page(
+            &self.search_cursors,
+            role,
+            execution,
+            binding,
+            cursor,
+            cancellation,
+        )
     }
 
     fn execute_search_names(
@@ -2085,28 +2117,191 @@ fn search_selected_role(
     )
 }
 
-fn render_selected_role_search_result(
+fn provider_search_page(
+    cursors: &SearchCursorStore,
     role: ProviderRole,
     execution: crate::application::code_intelligence::CodeSearchExecution,
+    mut binding: SearchCursorBinding,
+    cursor_token: Option<&str>,
+    cancellation: &CancellationToken,
 ) -> DomainResult {
-    let complete = execution
-        .result
-        .sections
-        .iter()
-        .all(|section| section.search_complete);
-    let summary = if complete {
+    use crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES;
+    use crate::application::v13::view::PREFERRED_PAGE_BYTES;
+
+    if cancellation.is_cancelled() {
+        return error_result(
+            None,
+            RefusalCode::Cancelled,
+            "provider search page cancelled",
+        );
+    }
+    let mut sections = execution.result.sections;
+    if sections.len() != 1 {
+        return error_result(
+            None,
+            RefusalCode::ProviderFailed,
+            "selected search provider did not return exactly one section",
+        );
+    }
+    let section = sections.remove(0);
+    let summary = if section.search_complete {
         format!("{} search completed", role.as_str())
     } else {
         format!("{} search returned incomplete results", role.as_str())
     };
+    // Providers expose top-N only. Re-query the same finite window on a later
+    // page and bind the cursor to every fact returned by that provider; an
+    // index refresh must make the old cursor stale instead of moving hits.
+    let fingerprint_bytes = serde_json::to_vec(&(&section, &execution.warnings))
+        .expect("provider search evidence is serializable");
+    let mut hasher = Sha256::new();
+    hasher.update(b"unica-v13-provider-search-v1\0");
+    hasher.update(&fingerprint_bytes);
+    binding.result_fingerprint = Some(format!("provider-sha256-v1:{:x}", hasher.finalize()));
+    let mut section_value =
+        serde_json::to_value(&section).expect("provider search section is serializable");
+    let hits = std::mem::take(
+        section_value["hits"]
+            .as_array_mut()
+            .expect("provider search hits serialize as an array"),
+    );
+    let cursor_placeholder = "sc1.00000000000000000000000000000000";
+    let probe = |page_hits: &[Value]| {
+        serde_json::to_vec(&provider_search_page_result(
+            role,
+            &section_value,
+            page_hits,
+            &execution.warnings,
+            &summary,
+            "limit",
+            Some(cursor_placeholder),
+        ))
+        .expect("provider search page is serializable")
+        .len()
+    };
+    if probe(&[]) > MAX_CANONICAL_RESULT_BYTES {
+        return error_result(
+            None,
+            RefusalCode::ResultTooLarge,
+            "provider search page metadata exceeds the transport limit",
+        );
+    }
+    for hit in &hits {
+        if cancellation.is_cancelled() {
+            return error_result(
+                None,
+                RefusalCode::Cancelled,
+                "provider search page cancelled",
+            );
+        }
+        if probe(std::slice::from_ref(hit)) > MAX_CANONICAL_RESULT_BYTES {
+            return error_result(
+                None,
+                RefusalCode::ResultTooLarge,
+                "one provider search result exceeds the transport limit",
+            );
+        }
+    }
+    let cursor = match cursor_token {
+        None => None,
+        Some(token) => match cursors.read(token, &binding) {
+            Ok(cursor) => Some((token, cursor)),
+            Err(error) => {
+                return error_result(
+                    None,
+                    error.code(),
+                    "provider search cursor is invalid or stale",
+                )
+            }
+        },
+    };
+    let offset = cursor.as_ref().map_or(0, |(_, stored)| stored.offset);
+    if offset >= hits.len() && cursor.is_some() {
+        return error_result(
+            None,
+            RefusalCode::InvalidCursor,
+            "provider search cursor is invalid",
+        );
+    }
+    let mut page_hits = Vec::new();
+    let mut byte_stop = false;
+    for hit in hits.iter().skip(offset).take(binding.page_limit) {
+        let mut candidate = page_hits.clone();
+        candidate.push(hit.clone());
+        let bytes = probe(&candidate);
+        if bytes > MAX_CANONICAL_RESULT_BYTES {
+            byte_stop = true;
+            break;
+        }
+        if bytes > PREFERRED_PAGE_BYTES && !page_hits.is_empty() {
+            byte_stop = true;
+            break;
+        }
+        page_hits.push(hit.clone());
+    }
+    let next_offset = offset.saturating_add(page_hits.len());
+    let more = next_offset < hits.len();
+    let stopped_by = if !more {
+        "complete"
+    } else if byte_stop {
+        "bytes"
+    } else {
+        "limit"
+    };
+    if cancellation.is_cancelled() {
+        return error_result(
+            None,
+            RefusalCode::Cancelled,
+            "provider search page cancelled",
+        );
+    }
+    let mut result = provider_search_page_result(
+        role,
+        &section_value,
+        &page_hits,
+        &execution.warnings,
+        &summary,
+        stopped_by,
+        None,
+    );
+    if more {
+        let issued = match cursor {
+            Some((token, stored)) => cursors.insert_next(&stored, next_offset, token),
+            None => cursors.insert_first(binding, next_offset),
+        };
+        let Some(issued) = issued else {
+            return error_result(
+                None,
+                RefusalCode::ResultTooLarge,
+                "provider search continuation could not be retained",
+            );
+        };
+        result.cursor = Some(issued);
+    }
+    result
+}
+
+fn provider_search_page_result(
+    role: ProviderRole,
+    section: &Value,
+    hits: &[Value],
+    warnings: &[String],
+    summary: &str,
+    stopped_by: &str,
+    cursor: Option<&str>,
+) -> DomainResult {
+    let mut projected = section.clone();
+    projected["hits"] = Value::Array(hits.to_vec());
+    // `returned` describes this public page. `total` and `relation` retain
+    // the provider's exact or lower-bound claim about its whole search.
+    projected["matches"]["returned"] = json!(hits.len());
     let mut result = DomainResult::success(summary);
-    result.data = Some(serde_json::json!({
-        "mode": role.as_str(),
-        "matches": execution.result.sections,
-    }));
+    result.data = Some(json!({"mode": role.as_str(), "matches": [projected]}));
+    result.page = Some(json!({"stoppedBy": stopped_by}));
     result
         .warnings
-        .extend(execution.warnings.into_iter().map(Value::String));
+        .extend(warnings.iter().cloned().map(Value::String));
+    result.cursor = cursor.map(str::to_owned);
     result
 }
 
@@ -2897,6 +3092,8 @@ fn view_error_result(
 
 #[cfg(test)]
 mod tests {
+    use crate::application::code_intelligence::CodeSearchExecution;
+    use crate::application::result_store::SearchCursorBinding;
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::{
         CodeIntelligenceContext, CodeIntelligenceProvider, CodeIntelligenceRegistry,
@@ -2911,6 +3108,227 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
+
+    fn provider_search_test_binding(role: ProviderRole, limit: usize) -> SearchCursorBinding {
+        SearchCursorBinding {
+            workspace_identity: "workspace".into(),
+            query: "Needle".into(),
+            scope: None,
+            mode: role.as_str().into(),
+            kind: None,
+            source_sets: vec!["main".into()],
+            revisions: Vec::new(),
+            result_fingerprint: None,
+            page_limit: limit,
+        }
+    }
+
+    fn provider_search_test_execution(
+        count: usize,
+        snippet_bytes: usize,
+        provider_limit_reached: bool,
+    ) -> CodeSearchExecution {
+        use crate::domain::code_intelligence::{
+            CodeSearchResult, ProviderSearchHit, SearchCoverage,
+        };
+        use crate::domain::source_location::SourceLocation;
+        use crate::domain::source_target::TargetKind;
+
+        let hits = (1..=count)
+            .map(|rank| ProviderSearchHit {
+                rank: Some(rank),
+                provider_score: Some((count - rank) as f64),
+                location: SourceLocation::Addressed {
+                    source_set: "main".to_string(),
+                    metadata_path: None,
+                    target_kind: TargetKind::Module,
+                },
+                line: rank,
+                end_line: None,
+                symbol: None,
+                kind: None,
+                snippet: "x".repeat(snippet_bytes),
+                attributes: serde_json::Map::new(),
+            })
+            .collect();
+        let identity = ProviderIdentity::new(ProviderRole::Semantic, "rlm");
+        let section = if provider_limit_reached {
+            ProviderSearchSection::limit_reached(
+                identity,
+                SearchRanking::Provider,
+                SearchOrdering::Provider,
+                hits,
+                Vec::new(),
+            )
+        } else {
+            ProviderSearchSection::complete(
+                identity,
+                SearchRanking::Provider,
+                SearchOrdering::Provider,
+                hits,
+                Vec::new(),
+            )
+        }
+        .expect("valid provider section");
+        CodeSearchExecution {
+            ok: true,
+            result: CodeSearchResult {
+                coverage: if provider_limit_reached {
+                    SearchCoverage::Partial
+                } else {
+                    SearchCoverage::Complete
+                },
+                elapsed_ms: 1,
+                sections: vec![section],
+            },
+            warnings: Vec::new(),
+            errors: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn provider_search_pages_all_received_hits_and_rejects_changed_answers() {
+        let store = crate::application::result_store::SearchCursorStore::default();
+        let cancellation = CancellationToken::new();
+        let mut cursor = None;
+        let mut ranks = Vec::new();
+        for page_index in 0..4 {
+            let result = super::provider_search_page(
+                &store,
+                ProviderRole::Semantic,
+                provider_search_test_execution(75, 8, false),
+                provider_search_test_binding(ProviderRole::Semantic, 20),
+                cursor.as_deref(),
+                &cancellation,
+            );
+            assert!(result.ok, "{result:?}");
+            let data = result.data.as_ref().expect("page data");
+            let section = &data["matches"][0];
+            let hits = section["hits"].as_array().expect("page hits");
+            assert_eq!(section["matches"]["returned"], hits.len());
+            assert_eq!(section["matches"]["total"], 75);
+            assert_eq!(section["matches"]["relation"], "exact");
+            ranks.extend(hits.iter().map(|hit| hit["rank"].as_u64().unwrap()));
+            if page_index == 0 {
+                let replay = super::provider_search_page(
+                    &store,
+                    ProviderRole::Semantic,
+                    provider_search_test_execution(75, 8, false),
+                    provider_search_test_binding(ProviderRole::Semantic, 20),
+                    result.cursor.as_deref(),
+                    &cancellation,
+                );
+                assert_eq!(
+                    replay.data,
+                    super::provider_search_page(
+                        &store,
+                        ProviderRole::Semantic,
+                        provider_search_test_execution(75, 8, false),
+                        provider_search_test_binding(ProviderRole::Semantic, 20),
+                        result.cursor.as_deref(),
+                        &cancellation,
+                    )
+                    .data
+                );
+                assert_eq!(
+                    replay.cursor,
+                    super::provider_search_page(
+                        &store,
+                        ProviderRole::Semantic,
+                        provider_search_test_execution(75, 8, false),
+                        provider_search_test_binding(ProviderRole::Semantic, 20),
+                        result.cursor.as_deref(),
+                        &cancellation,
+                    )
+                    .cursor
+                );
+                let changed = super::provider_search_page(
+                    &store,
+                    ProviderRole::Semantic,
+                    provider_search_test_execution(75, 9, false),
+                    provider_search_test_binding(ProviderRole::Semantic, 20),
+                    result.cursor.as_deref(),
+                    &cancellation,
+                );
+                assert!(!changed.ok);
+                assert_eq!(changed.diagnostics[0]["code"], "stale_cursor");
+            }
+            cursor = result.cursor;
+        }
+        assert_eq!(ranks, (1..=75).collect::<Vec<_>>());
+        assert!(cursor.is_none());
+    }
+
+    #[test]
+    fn provider_limit_remains_visible_after_the_last_received_page() {
+        let store = crate::application::result_store::SearchCursorStore::default();
+        let cancellation = CancellationToken::new();
+        let mut cursor = None;
+        let mut last = None;
+        for _ in 0..4 {
+            let result = super::provider_search_page(
+                &store,
+                ProviderRole::Semantic,
+                provider_search_test_execution(200, 8, true),
+                provider_search_test_binding(ProviderRole::Semantic, 50),
+                cursor.as_deref(),
+                &cancellation,
+            );
+            assert!(result.ok, "{result:?}");
+            cursor = result.cursor.clone();
+            last = Some(result);
+        }
+        let last = last.unwrap();
+        assert!(last.cursor.is_none());
+        assert_eq!(last.page.as_ref().unwrap()["stoppedBy"], "complete");
+        assert!(last.summary.contains("incomplete"));
+        let section = &last.data.as_ref().unwrap()["matches"][0];
+        assert_eq!(section["status"], "limitReached");
+        assert_eq!(section["searchComplete"], false);
+        assert_eq!(section["termination"]["code"], "limitReached");
+        assert_eq!(section["matches"]["returned"], 50);
+        assert_eq!(section["matches"]["total"], 200);
+        assert_eq!(section["matches"]["relation"], "lowerBound");
+        assert_eq!(section["hits"][0]["rank"], 151);
+    }
+
+    #[test]
+    fn late_oversized_provider_hit_refuses_before_first_cursor() {
+        let store = crate::application::result_store::SearchCursorStore::default();
+        let cancellation = CancellationToken::new();
+        let mut execution = provider_search_test_execution(25, 8, false);
+        execution.result.sections[0].hits[24].snippet =
+            "x".repeat(crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES);
+        let result = super::provider_search_page(
+            &store,
+            ProviderRole::Semantic,
+            execution,
+            provider_search_test_binding(ProviderRole::Semantic, 20),
+            None,
+            &cancellation,
+        );
+        assert!(!result.ok);
+        assert_eq!(result.diagnostics[0]["code"], "result_too_large");
+        assert!(result.cursor.is_none());
+    }
+
+    #[test]
+    fn selected_provider_with_multiple_sections_reports_failed_result() {
+        let mut execution = provider_search_test_execution(1, 8, false);
+        execution
+            .result
+            .sections
+            .push(execution.result.sections[0].clone());
+        let result = super::provider_search_page(
+            &crate::application::result_store::SearchCursorStore::default(),
+            ProviderRole::Semantic,
+            execution,
+            provider_search_test_binding(ProviderRole::Semantic, 20),
+            None,
+            &CancellationToken::new(),
+        );
+        assert_eq!(result.diagnostics[0]["code"], "provider_failed");
+    }
 
     #[test]
     fn bsl_check_never_calls_a_truncated_analyzer_result_complete() {
@@ -3108,7 +3526,8 @@ mod tests {
             vec!["ignored malformed RLM result #1".to_string()],
         )
         .unwrap();
-        let result = super::render_selected_role_search_result(
+        let result = super::provider_search_page(
+            &crate::application::result_store::SearchCursorStore::default(),
             ProviderRole::Semantic,
             CodeSearchExecution {
                 ok: true,
@@ -3120,6 +3539,9 @@ mod tests {
                 warnings: vec!["rlm: ignored malformed RLM result #1".to_string()],
                 errors: Vec::new(),
             },
+            provider_search_test_binding(ProviderRole::Semantic, 20),
+            None,
+            &CancellationToken::new(),
         );
         let serialized = serde_json::to_value(result).unwrap();
         assert_eq!(serialized["ok"], true);

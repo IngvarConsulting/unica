@@ -8,6 +8,7 @@ check:
   - crates/unica-coder/src/application/v13/view.rs::supplied_graph_collection_uses_stable_pages_bound_to_its_owner
   - crates/unica-coder/tests/v13_search_integration.rs::canonical_search_is_source_scoped_and_rejects_legacy_call_shape
   - crates/unica-coder/tests/v13_search_integration.rs::names_search_pages_all_ranked_matches_and_rejects_changed_answers
+  - crates/unica-coder/tests/v13_search_integration.rs::canonical_search_is_source_scoped_and_rejects_legacy_call_shape
   - crates/unica-coder/src/application/v13/check.rs::check_pages_preserve_verdict_and_every_diagnostic_with_replay
   - crates/unica-coder/src/application/v13/check.rs::check_returns_whole_large_finding_and_refuses_late_oversize_before_page_one
   - crates/unica-coder/src/application/v13/check.rs::check_refuses_before_first_page_when_snapshot_cannot_be_retained
@@ -20,6 +21,9 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/v13_documentation.rs::one_docs_hit_over_page_target_is_returned_whole
   - crates/unica-coder/src/infrastructure/daemon/v13_documentation.rs::prepared_docs_search_continues_across_calls_before_source_admission
   - crates/unica-coder/src/infrastructure/daemon/v13_documentation.rs::docs_locator_rejects_pagination_arguments
+  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::provider_search_pages_all_received_hits_and_rejects_changed_answers
+  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::provider_limit_remains_visible_after_the_last_received_page
+  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::late_oversized_provider_hit_refuses_before_first_cursor
 gap: https://github.com/IngvarConsulting/unica/issues/871
 ---
 
@@ -45,8 +49,10 @@ gap: https://github.com/IngvarConsulting/unica/issues/871
 отказывает до выдачи курсора. Локальный текстовый `search` выдаёт страницы,
 повторно читая исходники по курсору и проверяя их ревизии. Поиск по именам
 пересобирает ранжированный ответ и проверяет его отпечаток перед продолжением;
-он не заявляет ревизию исходников. Поиск справки пересобирает все секции и
-сверяет их отпечаток перед продолжением. В пределах бюджета страницы
+он не заявляет ревизию исходников. Провайдерные роли пересобирают ограниченное
+окно результатов и сверяют отпечаток всего ответа перед продолжением; достижение
+предела поставщика остаётся явным даже на последней странице полученного окна.
+Поиск справки также пересобирает все секции и сверяет их отпечаток. В пределах бюджета страницы
 совпадения чередуются между корпусами. Каждая секция сообщает полноту:
 заполненное окно поставщика не выдаётся за весь корпус. `page.stoppedBy:
 complete` завершает полученное окно, даже если поиск в нём неполон. Локальные
