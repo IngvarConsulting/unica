@@ -1370,12 +1370,7 @@ impl CanonicalV13ReadService {
                 format!("`{}` search did not complete", role.as_str()),
             );
         }
-        let mut result = DomainResult::success(format!("{} search completed", role.as_str()));
-        result.data = Some(serde_json::json!({
-            "mode": role.as_str(),
-            "matches": execution.result.sections,
-        }));
-        result
+        render_selected_role_search_result(role, execution)
     }
 
     fn execute_search_names(
@@ -2088,6 +2083,31 @@ fn search_selected_role(
         cancellation,
         &crate::domain::progress::NoopProgressSink,
     )
+}
+
+fn render_selected_role_search_result(
+    role: ProviderRole,
+    execution: crate::application::code_intelligence::CodeSearchExecution,
+) -> DomainResult {
+    let complete = execution
+        .result
+        .sections
+        .iter()
+        .all(|section| section.search_complete);
+    let summary = if complete {
+        format!("{} search completed", role.as_str())
+    } else {
+        format!("{} search returned incomplete results", role.as_str())
+    };
+    let mut result = DomainResult::success(summary);
+    result.data = Some(serde_json::json!({
+        "mode": role.as_str(),
+        "matches": execution.result.sections,
+    }));
+    result
+        .warnings
+        .extend(execution.warnings.into_iter().map(Value::String));
+    result
 }
 
 /// Ответ моста: один точный предмет и ничего больше.
@@ -3026,6 +3046,63 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn public_role_search_surfaces_partial_provider_warning_and_hit() {
+        use crate::application::code_intelligence::CodeSearchExecution;
+        use crate::domain::code_intelligence::{
+            CodeSearchResult, ProviderSearchHit, SearchCoverage,
+        };
+        use crate::domain::source_location::SourceLocation;
+
+        let section = ProviderSearchSection::partial(
+            ProviderIdentity::new(ProviderRole::Semantic, "rlm"),
+            SearchRanking::Provider,
+            SearchOrdering::Provider,
+            vec![ProviderSearchHit {
+                rank: Some(1),
+                provider_score: None,
+                location: SourceLocation::Unaddressable {
+                    source_set: "main".to_string(),
+                    owner_metadata_path: None,
+                    path: "CommonModules/Sales/Ext/Module.bsl".to_string(),
+                },
+                line: 1,
+                end_line: None,
+                symbol: Some("Post".to_string()),
+                kind: Some("procedure".to_string()),
+                snippet: "Post".to_string(),
+                attributes: serde_json::Map::new(),
+            }],
+            vec!["ignored malformed RLM result #1".to_string()],
+        )
+        .unwrap();
+        let result = super::render_selected_role_search_result(
+            ProviderRole::Semantic,
+            CodeSearchExecution {
+                ok: true,
+                result: CodeSearchResult {
+                    coverage: SearchCoverage::Partial,
+                    elapsed_ms: 1,
+                    sections: vec![section],
+                },
+                warnings: vec!["rlm: ignored malformed RLM result #1".to_string()],
+                errors: Vec::new(),
+            },
+        );
+        let serialized = serde_json::to_value(result).unwrap();
+        assert_eq!(serialized["ok"], true);
+        assert!(serialized["summary"]
+            .as_str()
+            .unwrap()
+            .contains("incomplete"));
+        assert_eq!(serialized["warnings"].as_array().map(Vec::len), Some(1));
+        assert_eq!(serialized["data"]["matches"][0]["status"], "partial");
+        assert_eq!(
+            serialized["data"]["matches"][0]["hits"][0]["symbol"],
+            "Post"
+        );
     }
 
     #[test]

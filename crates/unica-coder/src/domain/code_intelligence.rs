@@ -433,6 +433,7 @@ impl ProviderDeadline {
 pub enum ProviderSectionStatus {
     Ok,
     Empty,
+    Partial,
     LimitReached,
     TimedOut,
     Unavailable,
@@ -444,6 +445,7 @@ impl ProviderSectionStatus {
         match self {
             Self::Ok => "ok",
             Self::Empty => "empty",
+            Self::Partial => "partial",
             Self::LimitReached => "limitReached",
             Self::TimedOut => "timedOut",
             Self::Unavailable => "unavailable",
@@ -652,6 +654,19 @@ impl ProviderSearchSection {
                     );
                 }
             }
+            ProviderSectionStatus::Partial => {
+                if search_complete
+                    || hits.is_empty()
+                    || diagnostics.is_empty()
+                    || matches.relation != SearchCountRelation::LowerBound
+                    || matches.total.is_none_or(|total| total < hits.len())
+                {
+                    return Err(
+                        "partial search section must retain hits, diagnostics, and a lower bound"
+                            .to_string(),
+                    );
+                }
+            }
             ProviderSectionStatus::Unavailable | ProviderSectionStatus::Failed => {
                 if search_complete
                     || !hits.is_empty()
@@ -745,6 +760,24 @@ impl ProviderSearchSection {
             hits,
             diagnostics,
             SearchTermination::limit_reached(),
+        )
+    }
+
+    pub fn partial(
+        identity: ProviderIdentity,
+        ranking: SearchRanking,
+        ordering: SearchOrdering,
+        hits: Vec<ProviderSearchHit>,
+        diagnostics: Vec<String>,
+    ) -> Result<Self, String> {
+        Self::bounded(
+            identity,
+            ProviderSectionStatus::Partial,
+            ranking,
+            ordering,
+            hits,
+            diagnostics,
+            SearchTermination::provider_failed(),
         )
     }
 
@@ -917,6 +950,9 @@ fn validate_search_termination(
         (
             ProviderSectionStatus::Ok | ProviderSectionStatus::Empty,
             None
+        ) | (
+            ProviderSectionStatus::Partial,
+            Some(SearchTerminationCode::ProviderFailed)
         ) | (
             ProviderSectionStatus::LimitReached,
             Some(SearchTerminationCode::LimitReached)
@@ -1693,5 +1729,40 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(error, "empty search section must carry an exact zero count");
+    }
+
+    #[test]
+    fn partial_section_requires_proven_hits_and_diagnostics() {
+        let identity = ProviderIdentity::new(ProviderRole::Semantic, "replacement-semantic");
+        assert!(ProviderSearchSection::partial(
+            identity.clone(),
+            SearchRanking::Provider,
+            SearchOrdering::Provider,
+            Vec::new(),
+            vec!["malformed result".to_string()],
+        )
+        .is_err());
+        assert!(ProviderSearchSection::partial(
+            identity,
+            SearchRanking::Provider,
+            SearchOrdering::Provider,
+            vec![ProviderSearchHit {
+                rank: Some(1),
+                provider_score: None,
+                location: SourceLocation::Unaddressable {
+                    source_set: "main".to_string(),
+                    owner_metadata_path: None,
+                    path: "Module.bsl".to_string(),
+                },
+                line: 1,
+                end_line: None,
+                symbol: None,
+                kind: None,
+                snippet: String::new(),
+                attributes: Map::new(),
+            }],
+            Vec::new(),
+        )
+        .is_err());
     }
 }
