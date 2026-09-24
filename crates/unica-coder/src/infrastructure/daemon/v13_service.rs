@@ -2139,7 +2139,7 @@ fn provider_search_page(
     if sections.len() != 1 {
         return error_result(
             None,
-            RefusalCode::ProviderUnavailable,
+            RefusalCode::ProviderFailed,
             "selected search provider did not return exactly one section",
         );
     }
@@ -3310,6 +3310,24 @@ mod tests {
         assert!(!result.ok);
         assert_eq!(result.diagnostics[0]["code"], "result_too_large");
         assert!(result.cursor.is_none());
+    }
+
+    #[test]
+    fn selected_provider_with_multiple_sections_reports_failed_result() {
+        let mut execution = provider_search_test_execution(1, 8, false);
+        execution
+            .result
+            .sections
+            .push(execution.result.sections[0].clone());
+        let result = super::provider_search_page(
+            &crate::application::result_store::SearchCursorStore::default(),
+            ProviderRole::Semantic,
+            execution,
+            provider_search_test_binding(ProviderRole::Semantic, 20),
+            None,
+            &CancellationToken::new(),
+        );
+        assert_eq!(result.diagnostics[0]["code"], "provider_failed");
     }
 
     #[test]
