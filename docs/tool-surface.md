@@ -44,20 +44,22 @@ Preview or atomically apply typed edits to one logically addressed 1C node.
 
 ### `unica.check`
 
-Confirm workspace source-set admission, or validate one logical node: readability plus every validator its kind owns.
+Confirm workspace source-set admission, or validate one logical node: readability plus every validator its kind owns. Node diagnostics are returned in stable pages.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
 | `at` | string | нет | Qualified logical address: <sourceSet>:<Kind>[.<Name>...]. Omit only for workspace bootstrap where allowed. |
+| `cursor` | string | нет | Continuation cursor from an earlier check of the same node. |
+| `limit` | integer | нет | Maximum diagnostics in one node-check page (default 20, maximum 50). |
 
-**Результат сейчас:** Без `at` доказывает admission source set; с `at` читает узел и запускает все валидаторы его вида (`cf`/`cfe` для корня по виду набора, `form`, `dcs`/`mxl` по `TemplateType`, `role`, `subsystem`, `interface`, `meta`), отдавая `status`, `validators` и диагностики; узел без валидаторов отвечает читаемостью (отвечают типизированным `data`)
+**Результат сейчас:** Без `at` доказывает admission source set; с `at` читает узел и запускает все валидаторы его вида (`cf`/`cfe` для корня по виду набора, `form`, `dcs`/`mxl` по `TemplateType`, `role`, `subsystem`, `interface`, `meta`, `bsl`), отдавая `status`, `validators` и диагностики страницами; узел без валидаторов отвечает читаемостью (отвечают типизированным `data`)
 
 **Целевой контракт:** Держать таблицу вид → валидаторы закрытой и доказанной корпусом; на проводе у `check` нет аргумента выбора валидатора
 
 **Сценарии:**
 
 - Проверить, что рабочее пространство и его source set допущены
-- Проверить один логический узел всеми валидаторами его вида
+- Проверить один логический узел всеми валидаторами его вида и дочитать все страницы диагностик
 - Проверить читаемость узла без валидаторов
 
 ## diff

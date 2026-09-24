@@ -8,6 +8,11 @@ check:
   - crates/unica-coder/src/application/v13/view.rs::supplied_graph_collection_uses_stable_pages_bound_to_its_owner
   - crates/unica-coder/tests/v13_search_integration.rs::canonical_search_is_source_scoped_and_rejects_legacy_call_shape
   - crates/unica-coder/tests/v13_search_integration.rs::names_search_pages_all_ranked_matches_and_rejects_changed_answers
+  - crates/unica-coder/src/application/v13/check.rs::check_pages_preserve_verdict_and_every_diagnostic_with_replay
+  - crates/unica-coder/src/application/v13/check.rs::check_returns_whole_large_finding_and_refuses_late_oversize_before_page_one
+  - crates/unica-coder/src/application/v13/check.rs::check_refuses_before_first_page_when_snapshot_cannot_be_retained
+  - crates/unica-coder/src/application/v13/check.rs::late_finding_at_transport_edge_is_refused_before_issuing_a_cursor
+  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::bsl_check_never_calls_a_truncated_analyzer_result_complete
 gap: https://github.com/IngvarConsulting/unica/issues/871
 ---
 
@@ -24,8 +29,11 @@ gap: https://github.com/IngvarConsulting/unica/issues/871
 результата остаётся технической границей: если один ответ в неё не помещается,
 инструмент явно отказывает и не обещает курсор, который не сможет выполнить.
 
-Это целевой контракт: текущие инструменты используют разные пределы,
-а `check` пока не принимает параметры страницы. `view` заранее читает всю
+Это целевой контракт: текущие инструменты используют разные пределы.
+Адресный `check` вычисляет вердикт по всем находкам, затем отдаёт диагностики
+страницами с неизменным вердиктом. Если снимок не помещается в хранилище
+курсоров или поздняя находка превышает транспортный предел, он отказывает до
+первой страницы. `view` заранее читает всю
 коллекцию, но создаёт страницы по запросу; при превышении квоты снимка
 отказывает до выдачи курсора. Локальный текстовый `search` выдаёт страницы,
 повторно читая исходники по курсору и проверяя их ревизии. Поиск по именам

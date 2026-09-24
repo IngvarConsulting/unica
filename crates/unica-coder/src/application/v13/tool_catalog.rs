@@ -329,10 +329,12 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                 },
                 V13ToolContract {
                     name: "check",
-                    description: "Confirm workspace source-set admission, or validate one logical node: readability plus every validator its kind owns.",
+                    description: "Confirm workspace source-set admission, or validate one logical node: readability plus every validator its kind owns. Node diagnostics are returned in stable pages.",
                     input_schema: schema(
                         json!({
                             "at": logical_address(),
+                            "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20, "description": "Maximum diagnostics in one node-check page (default 20, maximum 50)."},
+                            "cursor": cursor("Continuation cursor from an earlier check of the same node."),
                         }),
                         json!([]),
                     ),
@@ -733,7 +735,18 @@ mod tests {
                 "query", "corpus", "kind", "role", "scope", "regex", "limit", "cursor",
             ],
         );
-        assert_schema(&catalog.tools, "check", json!([]), &["at"]);
+        assert_schema(
+            &catalog.tools,
+            "check",
+            json!([]),
+            &["at", "limit", "cursor"],
+        );
+        let check = catalog
+            .tools
+            .iter()
+            .find(|tool| tool.name == "check")
+            .unwrap();
+        assert_eq!(check.input_schema["properties"]["limit"]["maximum"], 50);
         assert_schema(
             &catalog.tools,
             "diff",
