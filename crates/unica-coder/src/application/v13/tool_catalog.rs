@@ -496,7 +496,13 @@ fn result_envelope_schema() -> Value {
             "rev": {"type": "string"},
             "cursor": cursor("Opaque continuation cursor issued by this result stream."),
             "page": {"type": "object", "additionalProperties": false,
-                "properties": {"stoppedBy": {"type": "string", "enum": ["limit", "bytes", "complete"]}},
+                "properties": {
+                    "stoppedBy": {"type": "string", "enum": ["limit", "bytes", "complete"]},
+                    "startByte": {"type": "integer", "minimum": 0},
+                    "endByte": {"type": "integer", "minimum": 0},
+                    "totalBytes": {"type": "integer", "minimum": 0},
+                    "fragmentsReturned": {"type": "integer", "minimum": 0}
+                },
                 "required": ["stoppedBy"]},
         },
         "required": ["ok", "summary"],
@@ -986,6 +992,16 @@ mod tests {
         assert_eq!(output["type"], "object");
         assert_eq!(output["additionalProperties"], false);
         assert_eq!(output["required"], json!(["ok", "summary"]));
+        for field in ["startByte", "endByte", "totalBytes", "fragmentsReturned"] {
+            assert_eq!(
+                output["properties"]["page"]["properties"][field]["type"],
+                "integer"
+            );
+            assert_eq!(
+                output["properties"]["page"]["properties"][field]["minimum"],
+                0
+            );
+        }
         assert_eq!(
             output["properties"]
                 .as_object()
