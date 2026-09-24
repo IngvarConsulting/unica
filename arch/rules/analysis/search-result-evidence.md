@@ -12,7 +12,10 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::public_role_search_surfaces_partial_provider_warning_and_hit
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::provider_limit_remains_visible_after_the_last_received_page
   - crates/unica-coder/src/infrastructure/code_intelligence.rs::bsl_analyzer_at_requested_limit_does_not_claim_exhaustion
+  - crates/unica-coder/src/infrastructure/code_intelligence.rs::bsl_analyzer_at_its_internal_cap_does_not_claim_exhaustion
+  - crates/unica-coder/src/infrastructure/code_intelligence.rs::bsl_analyzer_output_budget_truncation_does_not_claim_exhaustion
   - crates/unica-coder/src/infrastructure/code_intelligence.rs::rlm_at_requested_limit_does_not_claim_exhaustion
+  - crates/unica-coder/src/infrastructure/code_intelligence.rs::rlm_at_one_source_quota_does_not_claim_exhaustion
   - crates/unica-coder/src/infrastructure/code_intelligence.rs::bsl_analyzer_does_not_claim_complete_when_one_header_is_unreadable
   - crates/unica-coder/src/infrastructure/code_intelligence.rs::rlm_parser_keeps_valid_rows_and_reports_malformed_siblings
   - crates/unica-coder/src/infrastructure/code_intelligence.rs::git_grep_keeps_valid_hits_but_reports_malformed_siblings_as_partial
@@ -28,6 +31,9 @@ gap: https://github.com/IngvarConsulting/unica/issues/871
 Ранг поставщика сохраняется как его собственная оценка.
 Если поставщик вернул ровно запрошенное число результатов без признака конца,
 секция сообщает о достижении предела и даёт нижнюю оценку числа совпадений.
+Учитывается и меньший внутренний предел поставщика: 50 результатов у
+`bsl-analyzer`, квота на каждую из шести категорий у RLM. Сообщение
+`bsl-analyzer` об усечении по бюджету вывода также не считается полным ответом.
 Если поставщик завершил поиск, но отдельный результат нельзя разобрать,
 остальные проверенные совпадения сохраняются, а секция получает статус
 `partial` и нижнюю оценку.

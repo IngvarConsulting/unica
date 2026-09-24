@@ -807,6 +807,28 @@ fn parse_rlm_search(
             "RLM search helper returned a non-array result".to_string(),
         );
     };
+    // The pinned RLM helper searches six sources independently with this
+    // quota, then concatenates their answers. A short final array can still
+    // conceal more matches in one saturated source.
+    let per_source = (requested_limit / 6).max(3);
+    let mut source_counts = [0usize; 6];
+    for row in rows {
+        let source = row.get("source_type").and_then(Value::as_str);
+        let index = match source {
+            Some("method") => Some(0),
+            Some("object") => Some(1),
+            Some("region") => Some(2),
+            Some("header") => Some(3),
+            Some("attribute") => Some(4),
+            Some("predefined") => Some(5),
+            _ => None,
+        };
+        if let Some(index) = index {
+            source_counts[index] += 1;
+        }
+    }
+    let provider_limit_reached =
+        rows.len() >= requested_limit || source_counts.iter().any(|&count| count >= per_source);
     let mut hits = Vec::new();
     let mut diagnostics = Vec::new();
     let mut discarded_result = false;
@@ -830,7 +852,7 @@ fn parse_rlm_search(
             diagnostics,
         );
     }
-    if discarded_result && rows.len() >= requested_limit {
+    if discarded_result && provider_limit_reached {
         diagnostics.push("RLM result limit was also reached".to_string());
     }
     let section = if discarded_result {
@@ -841,7 +863,7 @@ fn parse_rlm_search(
             hits,
             diagnostics,
         )
-    } else if rows.len() >= requested_limit {
+    } else if provider_limit_reached {
         ProviderSearchSection::limit_reached(
             ProviderId::Rlm.identity(),
             SearchRanking::Provider,
@@ -935,6 +957,9 @@ fn parse_bsl_analyzer_search(
     requested_limit: usize,
     cancellation: &CancellationToken,
 ) -> ProviderSearchSection {
+    // The pinned bsl-analyzer clamps search_code's requested limit to 50.
+    const BSL_ANALYZER_SEARCH_MAX_LIMIT: usize = 50;
+    let effective_limit = requested_limit.min(BSL_ANALYZER_SEARCH_MAX_LIMIT);
     let trimmed = text.trim();
     if trimmed.is_empty() || trimmed == "No results found." {
         return empty_section(ProviderId::BslAnalyzer, SearchRanking::Provider);
@@ -972,6 +997,7 @@ fn parse_bsl_analyzer_search(
     let mut current: Option<ProviderSearchHit> = None;
     let mut returned_headers = 0;
     let mut discarded_result = false;
+    let mut output_budget_truncated = false;
     let mut locations = SearchLocationProjector::new(context, cancellation);
     for raw_line in text.lines() {
         let structural = raw_line.trim_start();
@@ -1011,6 +1037,8 @@ fn parse_bsl_analyzer_search(
         } else if line.starts_with("--") && line.ends_with("--") {
             let diagnostic = line.trim_matches('-').trim();
             if !diagnostic.is_empty() {
+                output_budget_truncated |=
+                    diagnostic.contains("truncated to fit max_output_tokens");
                 diagnostics.push(diagnostic.to_string());
             }
         } else if line.is_empty() {
@@ -1038,10 +1066,11 @@ fn parse_bsl_analyzer_search(
             diagnostics.join("; "),
         );
     }
-    if discarded_result && returned_headers >= requested_limit {
+    let provider_limit_reached = returned_headers >= effective_limit;
+    if (discarded_result || output_budget_truncated) && provider_limit_reached {
         diagnostics.push("bsl-analyzer result limit was also reached".to_string());
     }
-    let section = if discarded_result {
+    let section = if discarded_result || output_budget_truncated {
         ProviderSearchSection::partial(
             ProviderId::BslAnalyzer.identity(),
             SearchRanking::Provider,
@@ -1049,7 +1078,7 @@ fn parse_bsl_analyzer_search(
             hits,
             diagnostics,
         )
-    } else if returned_headers >= requested_limit {
+    } else if provider_limit_reached {
         ProviderSearchSection::limit_reached(
             ProviderId::BslAnalyzer.identity(),
             SearchRanking::Provider,
@@ -2830,6 +2859,38 @@ mod tests {
     }
 
     #[test]
+    fn bsl_analyzer_at_its_internal_cap_does_not_claim_exhaustion() {
+        let output = (1..=50)
+            .map(|rank| {
+                format!(
+                    "#{rank} [L] CommonModules/Sales/Ext/Module.bsl:{rank} :: Post{rank} (procedure)\n"
+                )
+            })
+            .collect::<String>();
+        let section =
+            super::parse_bsl_analyzer_search(&output, &context(), 200, &CancellationToken::new());
+        assert_eq!(section.hits.len(), 50);
+        assert_eq!(section.status, ProviderSectionStatus::LimitReached);
+        assert!(!section.search_complete);
+        assert_eq!(section.matches.relation, SearchCountRelation::LowerBound);
+    }
+
+    #[test]
+    fn bsl_analyzer_output_budget_truncation_does_not_claim_exhaustion() {
+        let section = super::parse_bsl_analyzer_search(
+            "#1 [L] CommonModules/Sales/Ext/Module.bsl:1 :: Post (procedure)\n\
+             -- showing 1 of 5 results (truncated to fit max_output_tokens; raise the budget or narrow the query) --\n",
+            &context(),
+            200,
+            &CancellationToken::new(),
+        );
+        assert_eq!(section.hits.len(), 1);
+        assert_eq!(section.status, ProviderSectionStatus::Partial);
+        assert!(!section.search_complete);
+        assert_eq!(section.matches.relation, SearchCountRelation::LowerBound);
+    }
+
+    #[test]
     fn bsl_analyzer_does_not_broaden_metadata_scoped_search() {
         let client = FakeBslClient {
             calls: Mutex::new(Vec::new()),
@@ -3206,6 +3267,36 @@ mod tests {
         assert_eq!(section.status, ProviderSectionStatus::Ok);
         assert!(section.search_complete);
         assert_eq!(section.matches.relation, SearchCountRelation::Exact);
+    }
+
+    #[test]
+    fn rlm_at_one_source_quota_does_not_claim_exhaustion() {
+        let rows = (1..=33)
+            .map(|line| {
+                json!({
+                    "text": format!("Post{line}"),
+                    "source_type": "method",
+                    "path": "CommonModules/Sales/Ext/Module.bsl",
+                    "detail": {"line": line}
+                })
+            })
+            .collect::<Vec<_>>();
+        let output = serde_json::to_string(&rows).unwrap();
+        let capped = super::parse_rlm_search(&output, &context(), 200, &CancellationToken::new());
+        assert_eq!(capped.hits.len(), 33);
+        assert_eq!(capped.status, ProviderSectionStatus::LimitReached);
+        assert!(!capped.search_complete);
+        assert_eq!(capped.matches.relation, SearchCountRelation::LowerBound);
+
+        let uncapped = super::parse_rlm_search(
+            &serde_json::to_string(&rows[..32]).unwrap(),
+            &context(),
+            200,
+            &CancellationToken::new(),
+        );
+        assert_eq!(uncapped.status, ProviderSectionStatus::Ok);
+        assert!(uncapped.search_complete);
+        assert_eq!(uncapped.matches.relation, SearchCountRelation::Exact);
     }
 
     #[test]
