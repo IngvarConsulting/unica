@@ -340,6 +340,7 @@ fn validate_canonical_value(
 pub(super) struct V5CanonicalInvocationRuntime {
     service: Arc<dyn CanonicalInvocationService>,
     clock: Arc<dyn Clock>,
+    documentation_cursors: Arc<crate::application::result_store::SearchCursorStore>,
     workspace_actors: WorkspaceActorRegistry,
     deliveries: Arc<crate::infrastructure::engine_delivery::DeliveryDesk>,
     provider_hosts: Arc<ProviderHostOwner>,
@@ -468,6 +469,9 @@ impl V5CanonicalInvocationRuntime {
         Self {
             service,
             clock,
+            documentation_cursors: Arc::new(
+                crate::application::result_store::SearchCursorStore::default(),
+            ),
             workspace_actors,
             deliveries: Arc::new(crate::infrastructure::engine_delivery::DeliveryDesk::default()),
             provider_hosts: Arc::new(ProviderHostOwner::default()),
@@ -665,7 +669,7 @@ impl V5CanonicalInvocationRuntime {
                 });
             }
         }
-        match super::v13_documentation::prepare(&request) {
+        match super::v13_documentation::prepare(&request, Arc::clone(&self.documentation_cursors)) {
             super::v13_documentation::Preparation::NotApplicable => {}
             super::v13_documentation::Preparation::Rejected(result) => {
                 return Err(V5CanonicalPrepareError::Rejected(result))

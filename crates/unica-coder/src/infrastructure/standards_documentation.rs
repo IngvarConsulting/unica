@@ -128,6 +128,10 @@ impl DocumentationProvider for V8StdDocumentationProvider {
         DocumentationProviderId::new("v8std")
     }
 
+    fn search_window_limit(&self) -> usize {
+        50
+    }
+
     fn corpora(&self) -> Vec<DocumentationCorpus> {
         vec![DocumentationCorpus {
             id: CORPUS.to_string(),

@@ -14,6 +14,12 @@ check:
   - crates/unica-coder/src/application/v13/check.rs::late_finding_at_transport_edge_is_refused_before_issuing_a_cursor
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::bsl_check_never_calls_a_truncated_analyzer_result_complete
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::bsl_check_sees_an_error_after_two_hundred_warnings
+  - crates/unica-coder/src/application/documentation.rs::full_provider_window_is_a_lower_bound_and_receives_its_own_limit
+  - crates/unica-coder/src/infrastructure/daemon/v13_documentation.rs::docs_pages_mixed_sections_and_rejects_changed_answers
+  - crates/unica-coder/src/infrastructure/daemon/v13_documentation.rs::late_oversized_docs_hit_refuses_before_first_cursor
+  - crates/unica-coder/src/infrastructure/daemon/v13_documentation.rs::one_docs_hit_over_page_target_is_returned_whole
+  - crates/unica-coder/src/infrastructure/daemon/v13_documentation.rs::prepared_docs_search_continues_across_calls_before_source_admission
+  - crates/unica-coder/src/infrastructure/daemon/v13_documentation.rs::docs_locator_rejects_pagination_arguments
 gap: https://github.com/IngvarConsulting/unica/issues/871
 ---
 
@@ -39,5 +45,12 @@ gap: https://github.com/IngvarConsulting/unica/issues/871
 отказывает до выдачи курсора. Локальный текстовый `search` выдаёт страницы,
 повторно читая исходники по курсору и проверяя их ревизии. Поиск по именам
 пересобирает ранжированный ответ и проверяет его отпечаток перед продолжением;
-он не заявляет ревизию исходников. Провайдерные роли пока не имеют продолжения.
-Остальной разрыв сохранён в `gap`.
+он не заявляет ревизию исходников. Поиск справки пересобирает все секции и
+сверяет их отпечаток перед продолжением. В пределах бюджета страницы
+совпадения чередуются между корпусами. Каждая секция сообщает полноту:
+заполненное окно поставщика не выдаётся за весь корпус. `page.stoppedBy:
+complete` завершает полученное окно, даже если поиск в нём неполон. Локальные
+поставщики справки возвращают до 200 результатов, v8std — до 50. До первого курсора
+проверяется, что каждый неделимый результат можно вернуть. Продолжение за
+пределами окон поставщиков и страницы открытого текста документа остаются в
+`gap`.

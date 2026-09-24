@@ -89,16 +89,18 @@ Compare two readable logical nodes of the same kind without changing files.
 
 ### `unica.docs`
 
-Search bundled Unica and safe 1C documentation by topic.
+Search bundled Unica and safe 1C documentation by topic. Search hits use pages; each source reports whether its retrieved window is complete.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
+| `cursor` | string | нет | Continue the same documentation search; the cursor checks the complete retrieved answer for changes. Does not apply to a document locator. |
+| `limit` | integer | нет | Maximum documentation hits per page, from 1 to 50. Does not apply to a document locator. |
 | `query` | string | да | Documentation question or search phrase. |
 | `source` | string | нет | Optional documented source kind, not a provider identity. |
 
-**Результат сейчас:** Отвечает до допуска рабочей области; поиск по platform-help и development-standard возвращает `data.sections`; configuration-documentation отвечает `unsupported_source` до actor-safe reader (отвечают типизированным `data`)
+**Результат сейчас:** Отвечает до допуска рабочей области; поиск по platform-help и development-standard возвращает страницы `data.sections` с `searchComplete` для каждой секции и всего ответа. В пределах бюджета страницы совпадения чередуются между корпусами; курсор сверяет полный полученный ответ. Локальные поставщики отдают окно до 200 результатов, v8std — до 50; заполненное окно остаётся явно неполным. `page.stoppedBy: complete` означает конец полученного окна, а не обязательно всего поиска. Локатор страницы открывает документ без параметров пагинации. configuration-documentation отвечает `unsupported_source` до actor-safe reader (отвечают типизированным `data`)
 
-**Целевой контракт:** Добавить actor-owned nofollow/cancellation reader для документации конфигурации, адресное получение документа, locale и version
+**Целевой контракт:** Добавить actor-owned nofollow/cancellation reader для документации конфигурации, выбор locale и version и продолжение за пределами окна каждого поставщика
 
 **Сценарии:**
 

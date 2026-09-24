@@ -189,6 +189,11 @@ pub struct DocumentationContext {
 pub trait DocumentationProvider: Send + Sync {
     fn id(&self) -> DocumentationProviderId;
     fn corpora(&self) -> Vec<DocumentationCorpus>;
+    /// Highest result window this provider can retrieve for one question.
+    /// A full window does not prove that the underlying corpus was exhausted.
+    fn search_window_limit(&self) -> usize {
+        usize::MAX
+    }
     /// Нужна ли поставщику сеть: локальный поставщик отвечает `false`.
     fn needs_network(&self) -> bool;
     /// По одной секции на каждый объявленный корпус: поля секции обязаны

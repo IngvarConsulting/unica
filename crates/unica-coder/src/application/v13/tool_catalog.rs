@@ -369,11 +369,13 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                 },
                 V13ToolContract {
                     name: "docs",
-                    description: "Search bundled Unica and safe 1C documentation by topic.",
+                    description: "Search bundled Unica and safe 1C documentation by topic. Search hits use pages; each source reports whether its retrieved window is complete.",
                     input_schema: schema(
                         json!({
                             "query": {"type": "string", "description": "Documentation question or search phrase."},
                             "source": {"type": "string", "description": "Optional documented source kind, not a provider identity."},
+                            "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20, "description": "Maximum documentation hits per page, from 1 to 50. Does not apply to a document locator."},
+                            "cursor": cursor("Continue the same documentation search; the cursor checks the complete retrieved answer for changes. Does not apply to a document locator."),
                         }),
                         json!(["query"]),
                     ),
@@ -763,7 +765,7 @@ mod tests {
             &catalog.tools,
             "docs",
             json!(["query"]),
-            &["query", "source"],
+            &["query", "source", "limit", "cursor"],
         );
 
         for (tool, field) in [
@@ -782,6 +784,7 @@ mod tests {
             ("run", "ifRev"),
             ("docs", "query"),
             ("docs", "source"),
+            ("docs", "cursor"),
         ] {
             assert_field_type(&catalog.tools, tool, field, "string");
         }
@@ -805,6 +808,8 @@ mod tests {
         }
         assert_eq!(input_field(&catalog.tools, "view", "limit")["default"], 20);
         assert_eq!(input_field(&catalog.tools, "view", "limit")["maximum"], 50);
+        assert_eq!(input_field(&catalog.tools, "docs", "limit")["default"], 20);
+        assert_eq!(input_field(&catalog.tools, "docs", "limit")["maximum"], 50);
         assert_field_type(&catalog.tools, "view", "cursor", "string");
         assert_data_object(
             input_field(&catalog.tools, "view", "filter"),

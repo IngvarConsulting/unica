@@ -938,7 +938,7 @@ fn documentation_registry(
 /// Поставщики выдают идентификатор со схемой — `configuration-help:<набор>:<путь>`
 /// — или ссылкой. Ни имя метода, ни фраза на языке такой формы не имеют,
 /// поэтому разделение детерминированно и не гадает.
-fn documentation_locator(query: &str) -> Option<&str> {
+pub(crate) fn documentation_locator(query: &str) -> Option<&str> {
     let trimmed = query.trim();
     if trimmed.contains(char::is_whitespace) {
         return None;
@@ -991,10 +991,21 @@ fn open_documentation_page(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn canonical_v13_docs_search(
     workspace: &WorkspaceContext,
     query: &str,
     source: Option<&str>,
+    cancellation: &CancellationToken,
+) -> crate::domain::invocation::DomainResult {
+    canonical_v13_docs_search_with_limit(workspace, query, source, 20, cancellation)
+}
+
+pub(crate) fn canonical_v13_docs_search_with_limit(
+    workspace: &WorkspaceContext,
+    query: &str,
+    source: Option<&str>,
+    fetch_limit: usize,
     cancellation: &CancellationToken,
 ) -> crate::domain::invocation::DomainResult {
     let source_kinds = match source {
@@ -1039,7 +1050,7 @@ pub(crate) fn canonical_v13_docs_search(
     let request = crate::domain::documentation::DocumentationSearchRequest {
         query: query.to_string(),
         source_kinds,
-        limit: 20,
+        limit: fetch_limit,
         language: "ru".to_string(),
     };
     let result = (|| {
