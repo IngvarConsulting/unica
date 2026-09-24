@@ -16,8 +16,9 @@ pub use cache::{Prefetched, RuntimeInstallation, RuntimeInstaller};
 pub use download::{DownloadObserver, Downloader, HttpDownloader, SilentDownload};
 pub use error::{BootstrapError, Failure, Result};
 pub use host::{
-    host_tool_deadline, provider_state_root, runtime_cache_root, verify_installed_plugin_metadata,
-    verify_installed_skill_package,
+    capture_host_workspace_context, host_tool_deadline, host_workspace_capabilities,
+    host_workspace_environment_keys, provider_state_root, runtime_cache_root,
+    verify_installed_plugin_metadata, verify_installed_skill_package, HostWorkspaceContext,
 };
 pub use manifest::{
     Artifact, ArtifactRole, DeliveryForm, ReleaseIdentity, RuntimeAsset, RuntimeFile,

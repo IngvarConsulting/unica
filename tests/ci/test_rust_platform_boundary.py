@@ -626,7 +626,7 @@ class HostNameBoundaryTests(unittest.TestCase):
                 self.assertIsNone(self.guard.HOST_MARKER.search(identifier))
 
     def test_a_name_opening_a_segment_is_host_knowledge(self) -> None:
-        for identifier in ("CodexHost", "codex_home_root", "CODEX_HOME", ".claude-plugin"):
+        for identifier in ("CodexHost", "codex_home_root", "CODEX_HOME", ".claude-plugin", "ZcodeHost", "ZCODE_PROJECT_DIR", ".zcode-plugin"):
             with self.subTest(identifier=identifier):
                 self.assertIsNotNone(self.guard.HOST_MARKER.search(identifier))
 

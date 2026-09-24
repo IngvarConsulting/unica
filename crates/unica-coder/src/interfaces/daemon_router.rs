@@ -112,6 +112,7 @@ pub(super) enum CanonicalCallOutcome {
 pub(super) type CanonicalCallHandler = dyn Fn(
         V5ToolIdentity,
         &Map<String, Value>,
+        &Map<String, Value>,
         FrontendInvocationDeadline,
         CancellationToken,
     ) -> Result<CanonicalCallOutcome, ErrorData>
@@ -139,9 +140,9 @@ type ReceiptObserver = Arc<dyn Fn(&ReceiptKey) + Send + Sync>;
 /// Build the router over a renewable protocol-v5 owner lease.
 pub(super) fn canonical_daemon_router(
     client: impl Into<V5DaemonClient>,
-    workspace_hint: String,
+    workspace: impl Into<unica_bootstrap::HostWorkspaceContext>,
 ) -> CanonicalDaemonRouter {
-    build_router(client.into(), workspace_hint, None)
+    build_router(client.into(), workspace.into(), None)
 }
 
 #[cfg(test)]
@@ -150,12 +151,12 @@ fn canonical_daemon_router_observed(
     workspace_hint: String,
     observer: ReceiptObserver,
 ) -> CanonicalDaemonRouter {
-    build_router(owner.into(), workspace_hint, Some(observer))
+    build_router(owner.into(), workspace_hint.into(), Some(observer))
 }
 
 fn build_router(
     client: V5DaemonClient,
-    workspace_hint: String,
+    workspace: unica_bootstrap::HostWorkspaceContext,
     observer: Option<ReceiptObserver>,
 ) -> CanonicalDaemonRouter {
     // The client retains the current owner lease for the frontend lifetime; every
@@ -164,7 +165,22 @@ fn build_router(
     let client = Arc::new(client);
     let call_client = Arc::clone(&client);
     let call: Arc<CanonicalCallHandler> =
-        Arc::new(move |tool, arguments, deadline, _cancellation| {
+        Arc::new(move |tool, arguments, metadata, deadline, _cancellation| {
+            // Resolve once per invocation. Never publish this choice back into
+            // shared frontend state: another call may belong to another tree.
+            let workspace_hint = match workspace.resolve(metadata) {
+                Ok(directory) => directory,
+                Err(message) => {
+                    let refusal = crate::domain::invocation::DomainResult::canonical_rejection(
+                        None,
+                        crate::domain::refusal::RefusalCode::InvalidState,
+                        message,
+                    );
+                    return task_projection::call_tool_result(&refusal)
+                        .map(CanonicalCallOutcome::Direct)
+                        .map_err(task_projection::projection_error);
+                }
+            };
             submit_and_settle(
                 &call_client,
                 &workspace_hint,
@@ -841,6 +857,7 @@ mod tests {
         (router.call)(
             V5ToolIdentity::View,
             &arguments(),
+            &Map::new(),
             deadline(host_remaining),
             CancellationToken::new(),
         )
@@ -1354,6 +1371,7 @@ mod tests {
         let rejected = call(&router, None).expect_err("overloaded daemon refuses");
         let foreign = (router.call)(
             V5ToolIdentity::Docs,
+            &Map::new(),
             &Map::new(),
             deadline(None),
             CancellationToken::new(),

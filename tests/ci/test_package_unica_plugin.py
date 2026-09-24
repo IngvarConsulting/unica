@@ -370,6 +370,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
 
         self.assertEqual(server["command"], "git")
         self.assertEqual(server["cwd"], ".")
+        self.assertEqual(server["env"]["UNICA_HOST_CONTEXT_REQUIRED"], "1")
         self.assertEqual(server["args"][0], "-c")
         self.assertTrue(server["args"][1].startswith("alias.unica-bootstrap=!"))
         self.assertIn("bootstrap/launch.sh", server["args"][1])
@@ -1410,6 +1411,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
             )
             self.assertEqual(marketplace["name"], "unica-dev")
             self.assertEqual(mcp["mcpServers"]["unica"]["command"], "./bin/linux-x64/unica")
+            self.assertEqual(mcp["mcpServers"]["unica"]["env"]["UNICA_HOST_CONTEXT_REQUIRED"], "1")
             self.assertFalse((out / "marketplace/plugins/unica/bootstrap/bin").exists())
 
 

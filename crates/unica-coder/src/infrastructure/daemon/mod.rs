@@ -47,6 +47,9 @@ fn daemon_process_command(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    for key in unica_bootstrap::host_workspace_environment_keys() {
+        command.env_remove(key);
+    }
     command
 }
 
@@ -94,6 +97,11 @@ mod tests {
         );
 
         assert_eq!(command.get_current_dir(), Some(state_root.as_path()));
+        for key in unica_bootstrap::host_workspace_environment_keys() {
+            assert!(command
+                .get_envs()
+                .any(|(name, value)| name == key && value.is_none()));
+        }
     }
 
     #[test]

@@ -1830,6 +1830,7 @@ dependencies = [
  "sha2",
  "tar",
  "ureq",
+ "url",
  "uuid",
  "windows-sys 0.59.0",
 ]

@@ -93,15 +93,9 @@ pub fn run_stdio() {
             return;
         }
     };
-    let workspace_hint = match std::env::current_dir() {
-        Ok(path) => path.to_string_lossy().into_owned(),
-        Err(error) => {
-            eprintln!("failed to determine unica MCP workspace: {error}");
-            return;
-        }
-    };
+    let workspace = unica_bootstrap::capture_host_workspace_context();
     let notice = startup_notice_from(std::env::var(STARTUP_NOTICE_ENV).ok());
-    let server = UnicaServer::canonical_v13_daemon(client, workspace_hint, notice);
+    let server = UnicaServer::canonical_v13_daemon(client, workspace, notice);
     let in_flight = server.in_flight();
 
     let runtime = match tokio::runtime::Builder::new_multi_thread()
@@ -254,10 +248,10 @@ impl UnicaServer {
 
     fn canonical_v13_daemon(
         client: V5DaemonClient,
-        workspace_hint: String,
+        workspace: unica_bootstrap::HostWorkspaceContext,
         startup_notice: Option<String>,
     ) -> Self {
-        let router = canonical_daemon_router(client, workspace_hint);
+        let router = canonical_daemon_router(client, workspace);
         Self {
             router: SurfaceToolRouter::CanonicalV13(router),
             in_flight: Arc::new(InFlightRegistry::default()),
@@ -268,7 +262,7 @@ impl UnicaServer {
 
     #[cfg(test)]
     fn with_canonical_daemon(owner: V5DaemonProcessOwner, workspace_hint: String) -> Self {
-        Self::canonical_v13_daemon(owner.into(), workspace_hint, None)
+        Self::canonical_v13_daemon(owner.into(), workspace_hint.into(), None)
     }
 
     fn in_flight(&self) -> Arc<InFlightRegistry> {
@@ -276,15 +270,25 @@ impl UnicaServer {
     }
 }
 
+struct SurfaceToolCall<'a> {
+    name: &'a str,
+    arguments: &'a Map<String, Value>,
+    metadata: &'a Map<String, Value>,
+}
+
 fn execute_surface_tool(
     router: &SurfaceToolRouter,
-    name: &str,
-    arguments: &Map<String, Value>,
+    call: SurfaceToolCall<'_>,
     cancellation: CancellationToken,
     progress: Arc<dyn ProgressSink>,
     deadline: FrontendInvocationDeadline,
     client_supports_tasks: bool,
 ) -> Result<SurfaceToolOutcome, ErrorData> {
+    let SurfaceToolCall {
+        name,
+        arguments,
+        metadata,
+    } = call;
     match router {
         SurfaceToolRouter::LegacyV12(handler) => handler(name, arguments, cancellation, progress)
             .map(Box::new)
@@ -307,7 +311,7 @@ fn execute_surface_tool(
             let tool = V5ToolIdentity::from_wire_name(name).ok_or_else(|| {
                 ErrorData::invalid_params("tool is not in the canonical v0.13 profile", None)
             })?;
-            match (router.call)(tool, arguments, deadline, cancellation)? {
+            match (router.call)(tool, arguments, metadata, deadline, cancellation)? {
                 CanonicalCallOutcome::Direct(result) => Ok(SurfaceToolOutcome::Direct(result)),
                 CanonicalCallOutcome::Task(snapshot) if client_supports_tasks => {
                     Ok(SurfaceToolOutcome::Task(snapshot))
@@ -553,13 +557,16 @@ impl ServerHandler for UnicaServer {
         // completions, logging and ui stay withheld. Tasks are advertised only
         // by the injected V13 router and initialize strips them again unless
         // the negotiated protocol is 2026-07-28.
-        let capabilities = match &self.router {
+        let mut capabilities = match &self.router {
             SurfaceToolRouter::LegacyV12(_) => ServerCapabilities::builder().enable_tools().build(),
             SurfaceToolRouter::CanonicalV13(_) => ServerCapabilities::builder()
                 .enable_tools()
                 .enable_tasks()
                 .build(),
         };
+        if matches!(&self.router, SurfaceToolRouter::CanonicalV13(_)) {
+            capabilities.experimental = Some(unica_bootstrap::host_workspace_capabilities());
+        }
         let info = InitializeResult::new(capabilities)
             .with_protocol_version(ProtocolVersion::V_2025_11_25)
             .with_server_info(Implementation::new("unica", env!("CARGO_PKG_VERSION")));
@@ -722,6 +729,12 @@ impl ServerHandler for UnicaServer {
             .and_then(RequestMetaObject::get_progress_token)
             .or_else(|| context.meta.get_progress_token());
         let arguments = request.arguments.unwrap_or_default();
+        // The SDK may place wire metadata in the request or the context.
+        // Keep it separate from model-selected tool arguments.
+        let mut metadata = context.meta.0 .0.clone();
+        if let Some(request_meta) = request.meta {
+            metadata.extend(request_meta.0 .0);
+        }
         let progress_forwarding = if let Some(progress_token) = progress_token {
             let (sender, mut receiver) =
                 tokio::sync::mpsc::unbounded_channel::<Option<ProgressEvent>>();
@@ -759,8 +772,11 @@ impl ServerHandler for UnicaServer {
             let deadline = FrontendInvocationDeadline::new(received_at, None);
             execute_surface_tool(
                 &router,
-                &handler_name,
-                &arguments,
+                SurfaceToolCall {
+                    name: &handler_name,
+                    arguments: &arguments,
+                    metadata: &metadata,
+                },
                 cancellation,
                 progress,
                 deadline,
@@ -1242,7 +1258,7 @@ mod tests {
 
     #[test]
     fn production_mcp_surface_exposes_only_canonical_v13_tools_and_task_compatibility() {
-        let canonical: Arc<CanonicalCallHandler> = Arc::new(|_, _, _, _| {
+        let canonical: Arc<CanonicalCallHandler> = Arc::new(|_, _, _, _, _| {
             direct_outcome(crate::domain::invocation::DomainResult::success(
                 "canonical",
             ))
@@ -1360,8 +1376,11 @@ mod tests {
         let deadline = FrontendInvocationDeadline::new(received, None);
         let result = execute_surface_tool(
             &v12.router,
-            "unica.check",
-            &Map::new(),
+            SurfaceToolCall {
+                name: "unica.check",
+                arguments: &Map::new(),
+                metadata: &Map::new(),
+            },
             CancellationToken::new(),
             Arc::new(NoopProgressSink),
             deadline,
@@ -1376,7 +1395,7 @@ mod tests {
 
         let daemon_count = Arc::new(AtomicUsize::new(0));
         let daemon_observed = Arc::clone(&daemon_count);
-        let canonical: Arc<CanonicalCallHandler> = Arc::new(move |tool, _, deadline, _| {
+        let canonical: Arc<CanonicalCallHandler> = Arc::new(move |tool, _, _, deadline, _| {
             assert_eq!(tool, V5ToolIdentity::Check);
             assert_eq!(deadline.remaining_at(received), Duration::from_secs(7));
             daemon_observed.fetch_add(1, Ordering::SeqCst);
@@ -1387,8 +1406,11 @@ mod tests {
         let v13 = UnicaServer::with_canonical_v13(canonical);
         let result = execute_surface_tool(
             &v13.router,
-            "unica.check",
-            &Map::new(),
+            SurfaceToolCall {
+                name: "unica.check",
+                arguments: &Map::new(),
+                metadata: &Map::new(),
+            },
             CancellationToken::new(),
             Arc::new(NoopProgressSink),
             deadline,
@@ -2212,7 +2234,7 @@ mod tests {
 
     fn canonical_profile_server() -> UnicaServer {
         let task_id = crate::domain::invocation::TaskId::new();
-        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _| {
+        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _, _| {
             Ok(CanonicalCallOutcome::Task(canonical_snapshot(
                 task_id,
                 crate::domain::invocation::InvocationStatus::Working,
@@ -2365,7 +2387,7 @@ mod tests {
         let task_id = TaskId::new();
         let executions = Arc::new(AtomicUsize::new(0));
         let execution_observed = Arc::clone(&executions);
-        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _| {
+        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _, _| {
             execution_observed.fetch_add(1, Ordering::SeqCst);
             Ok(CanonicalCallOutcome::Task(canonical_snapshot(
                 task_id,
@@ -2512,7 +2534,7 @@ mod tests {
         let executions = Arc::new(AtomicUsize::new(0));
         let execution_observed = Arc::clone(&executions);
         let direct_subject = subject.clone();
-        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, arguments, _, _| {
+        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, arguments, _, _, _| {
             execution_observed.fetch_add(1, Ordering::SeqCst);
             if arguments.get("direct").and_then(Value::as_bool) == Some(true) {
                 direct_outcome(direct_subject.clone())
@@ -2620,7 +2642,7 @@ mod tests {
         let expired = TaskId::new();
         let subject_executions = Arc::new(AtomicUsize::new(0));
         let subject_observed = Arc::clone(&subject_executions);
-        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _| {
+        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _, _| {
             subject_observed.fetch_add(1, Ordering::SeqCst);
             Ok(CanonicalCallOutcome::Task(canonical_snapshot(
                 known,
@@ -2980,8 +3002,11 @@ mod tests {
             .clone();
         let outcome = execute_surface_tool(
             &router,
-            tool_name,
-            &arguments,
+            SurfaceToolCall {
+                name: tool_name,
+                arguments: &arguments,
+                metadata: &Map::new(),
+            },
             CancellationToken::new(),
             Arc::new(NoopProgressSink),
             FrontendInvocationDeadline::new(received, Some(host_budget)),
@@ -3226,7 +3251,7 @@ mod tests {
                 Arc::new(move |_, _, _| Ok(wait_snapshot.clone()));
             let cancel = Arc::clone(&get);
             let call: Arc<CanonicalCallHandler> =
-                Arc::new(move |_, _, _, _| direct_outcome(DomainResult::success("unused")));
+                Arc::new(move |_, _, _, _, _| direct_outcome(DomainResult::success("unused")));
             let (mut client, _) = spawn_unica_server(
                 UnicaServer::with_canonical_v13_task_handlers(call, get, wait, cancel),
             );
@@ -3605,7 +3630,7 @@ mod tests {
         let task_id = TaskId::new();
         let executions = Arc::new(AtomicUsize::new(0));
         let observed = Arc::clone(&executions);
-        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _| {
+        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _, _| {
             observed.fetch_add(1, Ordering::SeqCst);
             Ok(CanonicalCallOutcome::Task(canonical_snapshot(
                 task_id,
@@ -3643,7 +3668,7 @@ mod tests {
 
         let executions_without = Arc::new(AtomicUsize::new(0));
         let observed = Arc::clone(&executions_without);
-        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _| {
+        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _, _| {
             observed.fetch_add(1, Ordering::SeqCst);
             Ok(CanonicalCallOutcome::Task(canonical_snapshot(
                 task_id,
@@ -3674,7 +3699,7 @@ mod tests {
 
         let legacy_session_executions = Arc::new(AtomicUsize::new(0));
         let observed = Arc::clone(&legacy_session_executions);
-        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _| {
+        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _, _| {
             observed.fetch_add(1, Ordering::SeqCst);
             Ok(CanonicalCallOutcome::Task(canonical_snapshot(
                 task_id,
@@ -3729,7 +3754,7 @@ mod tests {
         let task_id = TaskId::new();
         let executions = Arc::new(AtomicUsize::new(0));
         let observed = Arc::clone(&executions);
-        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _| {
+        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _, _| {
             observed.fetch_add(1, Ordering::SeqCst);
             Ok(CanonicalCallOutcome::Task(canonical_snapshot(
                 task_id,
@@ -3800,7 +3825,7 @@ mod tests {
         use crate::domain::invocation::{InvocationStatus, TaskId};
 
         let task_id = TaskId::new();
-        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _| {
+        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _, _| {
             Ok(CanonicalCallOutcome::Task(canonical_snapshot(
                 task_id,
                 InvocationStatus::Working,
@@ -3838,7 +3863,7 @@ mod tests {
         use crate::domain::invocation::{InvocationStatus, TaskId};
 
         let task_id = TaskId::new();
-        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _| {
+        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _, _| {
             Ok(CanonicalCallOutcome::Task(canonical_snapshot(
                 task_id,
                 InvocationStatus::Working,
@@ -3911,7 +3936,7 @@ mod tests {
         let task_id = TaskId::new();
         let expected = canonical_result("same canonical result");
         let direct_expected = expected.clone();
-        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, arguments, _, _| {
+        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, arguments, _, _, _| {
             if arguments.get("async").and_then(Value::as_bool) == Some(true) {
                 Ok(CanonicalCallOutcome::Task(canonical_snapshot(
                     task_id,
@@ -3978,7 +4003,7 @@ mod tests {
         );
         let call_snapshot = reversed.clone();
         let call: Arc<CanonicalCallHandler> =
-            Arc::new(move |_, _, _, _| Ok(CanonicalCallOutcome::Task(call_snapshot.clone())));
+            Arc::new(move |_, _, _, _, _| Ok(CanonicalCallOutcome::Task(call_snapshot.clone())));
         let get: Arc<CanonicalTaskHandler> = Arc::new(move |_, _| Ok(reversed.clone()));
         let server = UnicaServer::with_canonical_v13_tasks(call, Arc::clone(&get), get);
         let (mut client, _) = spawn_unica_server(server);
@@ -4030,7 +4055,7 @@ mod tests {
         let observed = Arc::clone(&executions);
         let call_near = near.clone();
         let call_over = over.clone();
-        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, arguments, _, _| {
+        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, arguments, _, _, _| {
             observed.fetch_add(1, Ordering::SeqCst);
             match arguments.get("mode").and_then(Value::as_str) {
                 Some("near-task") => Ok(CanonicalCallOutcome::Task(canonical_snapshot(
@@ -4173,7 +4198,7 @@ mod tests {
             cancellation_observed.fetch_add(1, Ordering::SeqCst);
             Ok(canonical_snapshot(known, InvocationStatus::Cancelled, None))
         });
-        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _| {
+        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _, _| {
             Ok(CanonicalCallOutcome::Task(canonical_snapshot(
                 known,
                 InvocationStatus::Working,
@@ -4318,7 +4343,7 @@ mod tests {
         }
 
         let task_id = TaskId::new();
-        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _| {
+        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _, _| {
             Ok(CanonicalCallOutcome::Task(canonical_snapshot(
                 task_id,
                 InvocationStatus::Working,

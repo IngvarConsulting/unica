@@ -313,7 +313,10 @@ def write_packaged_mcp_launcher(
     server["command"] = "git"
     server["args"] = ["-c", PACKAGED_MCP_ALIAS, "unica-bootstrap"]
     server["cwd"] = "."
-    server["env"] = {"UNICA_RUNTIME_CACHE_DIR": PACKAGED_MCP_CACHE_DIR}
+    server["env"] = {
+        "UNICA_RUNTIME_CACHE_DIR": PACKAGED_MCP_CACHE_DIR,
+        "UNICA_HOST_CONTEXT_REQUIRED": "1",
+    }
     server["startup_timeout_sec"] = PACKAGED_MCP_STARTUP_TIMEOUT_SEC
     server["note"] = (
         "Single public Unica stdio MCP orchestrator. The public Git package enters "
@@ -423,6 +426,7 @@ def write_local_debug_mcp_launcher(plugin_dir: Path, target: str, *, host: str =
         server["command"] = f"./bin/{target}/{executable}"
         server["args"] = []
         server["cwd"] = "."
+    server.setdefault("env", {})["UNICA_HOST_CONTEXT_REQUIRED"] = "1"
     server["note"] = "Development-only current-host Unica MCP binary."
     mcp_path.write_text(json.dumps(mcp, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
