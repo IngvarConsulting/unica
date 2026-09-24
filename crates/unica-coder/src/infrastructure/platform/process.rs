@@ -1109,14 +1109,12 @@ impl ManagedChild {
             if let Some(status) = self.try_wait_owned_leader()? {
                 self.process_tree.cleanup_after_leader_exit(&mut self.child);
                 self.state = ChildState::Reaped;
-                drain_line_messages(&stdout, &mut on_line, &mut first_line_error, true);
-                return Ok(finish_line_output(
-                    Some(status),
+                return Ok(finish_completed_line_output(
+                    status,
+                    &stdout,
                     stderr,
-                    false,
-                    false,
-                    false,
-                    first_line_error,
+                    &mut on_line,
+                    &mut first_line_error,
                 ));
             }
             thread::sleep(PROCESS_POLL_INTERVAL);
@@ -2488,6 +2486,29 @@ fn decode_captured_text(bytes: &[u8]) -> (String, bool) {
     }
 }
 
+fn finish_completed_line_output<F>(
+    status: ExitStatus,
+    stdout: &Option<Receiver<LineMessage>>,
+    stderr: Option<Receiver<CapturedOutput>>,
+    on_line: &mut F,
+    first_line_error: &mut Option<(usize, String)>,
+) -> ManagedLineOutput
+where
+    F: FnMut(usize, &[u8]) -> StreamControl,
+{
+    let stopped_by_consumer = drain_line_messages(stdout, on_line, first_line_error, true)
+        == StreamControl::Stop
+        && status.success();
+    finish_line_output(
+        Some(status),
+        stderr,
+        false,
+        false,
+        stopped_by_consumer,
+        first_line_error.take(),
+    )
+}
+
 fn finish_line_output(
     status: Option<ExitStatus>,
     stderr: Option<Receiver<CapturedOutput>>,
@@ -2686,6 +2707,18 @@ mod tests {
                 std::io::Write::flush(&mut std::io::stdout()).unwrap();
                 thread::sleep(Duration::from_millis(5));
             },
+            "stream_then_exit" => {
+                for _ in 0..202 {
+                    println!("x");
+                }
+            }
+            "stream_then_fail" => {
+                for _ in 0..202 {
+                    println!("x");
+                }
+                eprintln!("expected child failure");
+                std::process::exit(128);
+            }
             "process_tree_immediate_parent" => {
                 let pid_file = std::env::var_os(HELPER_PID_FILE_ENV).unwrap();
                 let mut child = Command::new(std::env::current_exe().unwrap())
@@ -3993,6 +4026,51 @@ mod tests {
         assert!(!output.cancelled);
         assert!(started.elapsed() < Duration::from_secs(2));
         assert_eq!(managed.state, ChildState::Reaped);
+    }
+
+    #[test]
+    fn completed_line_drain_keeps_stop_only_for_successful_children() {
+        for (mode, expected_stop) in [("stream_then_exit", true), ("stream_then_fail", false)] {
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "infrastructure::platform::process::tests::managed_child_test_helper",
+                    "--nocapture",
+                ])
+                .env(HELPER_ENV, mode)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let stdout = super::start_line_reader(child.stdout.take(), 1024);
+            let stderr = super::start_reader(child.stderr.take(), super::STDERR_CAPTURE_LIMIT);
+            let status = child.wait().expect("child finished before output drain");
+            let mut first_error = None;
+            let mut lines = 0;
+            let output = super::finish_completed_line_output(
+                status,
+                &stdout,
+                stderr,
+                &mut |_, _| {
+                    lines += 1;
+                    if lines == 200 {
+                        StreamControl::Stop
+                    } else {
+                        StreamControl::Continue
+                    }
+                },
+                &mut first_error,
+            );
+            assert_eq!(lines, 200, "{mode}");
+            assert_eq!(
+                output.stopped_by_consumer, expected_stop,
+                "{mode}: {output:?}"
+            );
+            assert!(!output.status_success);
+            if !expected_stop {
+                assert!(output.stderr.contains("expected child failure"));
+            }
+        }
     }
 
     #[test]
