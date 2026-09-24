@@ -198,7 +198,7 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
             # а `kind` сужает поиск по именам до одного вида узла. Оба входа
             # логические: ни один не называет файл.
             "unica.search": {"query", "corpus", "kind", "role", "scope", "regex", "limit", "cursor"},
-            "unica.check": {"at"},
+            "unica.check": {"at", "limit", "cursor"},
             "unica.diff": {"left", "right", "filter", "limit", "cursor"},
             "unica.run": {"op", "args", "dryRun", "ifRev", "infobase"},
             "unica.docs": {"query", "source"},
