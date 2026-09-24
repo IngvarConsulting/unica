@@ -6,10 +6,13 @@ use crate::domain::project_sources::SourceSetKind;
 use crate::domain::refusal::RefusalCode;
 use crate::infrastructure::metadata_kinds::metadata_kind_by_directory;
 use crate::infrastructure::platform::filesystem::{
-    RetainedChildCapability, RetainedDirectoryCapability,
+    RetainedChildCapability, RetainedDirectoryCapability, RetainedRegularFileCapability,
 };
+use std::collections::HashSet;
 use std::ffi::OsStr;
+use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 const MAX_SOURCE_SETS: usize = 64;
 const DEFAULT_MAX_DOCUMENTS: usize = 65_536;
@@ -18,6 +21,7 @@ const DEFAULT_MAX_FACT_BYTES: usize = 16 * 1024 * 1024;
 /// never needs the rest of the file.
 const DESCRIPTOR_HEAD_BYTES: usize = 8 * 1024;
 const MAX_COLLECTION_ENTRIES: usize = 65_536;
+const MAX_OMISSION_DETAILS: usize = 20;
 /// Physical child families an object owns as its own files or directories.
 const NESTED_FAMILIES: [(&str, NodeKind); 3] = [
     ("Forms", NodeKind::Form),
@@ -71,10 +75,41 @@ impl std::fmt::Display for FindBuildError {
 /// Builds the two-way directory between qualified logical addresses and where
 /// objects live in the source layout. It reads that layout only: no typed
 /// projection, no module source, no revision lease.
-#[derive(Debug)]
 pub(crate) struct WorkspaceFindDirectoryBuilder {
     max_documents: usize,
     max_total_fact_bytes: usize,
+    read_head: Arc<HeadReader>,
+}
+
+type HeadReader = dyn Fn(&RetainedRegularFileCapability, &Path) -> Result<Vec<u8>, DescriptorHeadReadError>
+    + Send
+    + Sync;
+
+#[derive(Clone, Copy)]
+enum DescriptorHeadReadError {
+    /// The retained capability could not be cloned. This is not evidence that
+    /// just one descriptor is unreadable, so the whole build refuses.
+    Capability,
+    /// I/O failed while reading this already retained regular file.
+    Local(io::ErrorKind),
+}
+
+#[derive(Debug)]
+pub(crate) struct FindBuildOutcome {
+    pub(crate) index: FindIndex,
+    pub(crate) omissions: FindOmissions,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct FindOmissions {
+    pub(crate) total: usize,
+    pub(crate) details: Vec<FindOmission>,
+}
+
+#[derive(Debug)]
+pub(crate) struct FindOmission {
+    pub(crate) source_set: String,
+    pub(crate) reason: &'static str,
 }
 
 impl Default for WorkspaceFindDirectoryBuilder {
@@ -86,6 +121,19 @@ impl Default for WorkspaceFindDirectoryBuilder {
 struct DirectoryBuild {
     documents: Vec<FindDocument>,
     fact_bytes: usize,
+    omissions: FindOmissions,
+}
+
+impl DirectoryBuild {
+    fn record_omission(&mut self, source_set: &str, reason: &'static str) {
+        self.omissions.total = self.omissions.total.saturating_add(1);
+        if self.omissions.details.len() < MAX_OMISSION_DETAILS {
+            self.omissions.details.push(FindOmission {
+                source_set: source_set.to_string(),
+                reason,
+            });
+        }
+    }
 }
 
 impl WorkspaceFindDirectoryBuilder {
@@ -93,7 +141,29 @@ impl WorkspaceFindDirectoryBuilder {
         Self {
             max_documents,
             max_total_fact_bytes,
+            read_head: Arc::new(read_descriptor_head_prefix),
         }
+    }
+
+    #[cfg(test)]
+    fn with_head_reader(mut self, reader: Arc<HeadReader>) -> Self {
+        self.read_head = reader;
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_local_read_fault_for_test(
+        self,
+        relative: &'static str,
+        kind: io::ErrorKind,
+    ) -> Self {
+        self.with_head_reader(Arc::new(move |file, path| {
+            if path == Path::new(relative) {
+                Err(DescriptorHeadReadError::Local(kind))
+            } else {
+                read_descriptor_head_prefix(file, path)
+            }
+        }))
     }
 
     #[cfg(test)]
@@ -107,6 +177,25 @@ impl WorkspaceFindDirectoryBuilder {
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> Result<FindIndex, FindBuildError> {
+        let outcome = self.build_for_search(sources, deadline, cancellation)?;
+        if outcome.omissions.total != 0 {
+            return Err(FindBuildError::new(
+                RefusalCode::ProviderUnavailable,
+                format!(
+                    "resolve cannot prove a complete source layout: {} descriptor reads failed",
+                    outcome.omissions.total
+                ),
+            ));
+        }
+        Ok(outcome.index)
+    }
+
+    pub(crate) fn build_for_search(
+        &self,
+        sources: &[LayoutFindSource<'_>],
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<FindBuildOutcome, FindBuildError> {
         if sources.len() > MAX_SOURCE_SETS {
             return Err(FindBuildError::new(
                 RefusalCode::ProviderLimitExceeded,
@@ -116,12 +205,16 @@ impl WorkspaceFindDirectoryBuilder {
         let mut build = DirectoryBuild {
             documents: Vec::new(),
             fact_bytes: 0,
+            omissions: FindOmissions::default(),
         };
         for source in sources {
             find_checkpoint(deadline, cancellation)?;
             self.add_source(source, &mut build, deadline, cancellation)?;
         }
-        Ok(FindIndex::new(build.documents))
+        Ok(FindBuildOutcome {
+            index: FindIndex::new(build.documents),
+            omissions: build.omissions,
+        })
     }
 
     fn add_source(
@@ -138,7 +231,36 @@ impl WorkspaceFindDirectoryBuilder {
             return self.add_external_source(source, build, deadline, cancellation);
         }
         let configuration = Path::new("Configuration.xml");
-        if let Some(head) = read_descriptor_head(source.root, configuration) {
+        let configuration_file = match retain_optional_child(
+            source.root,
+            OsStr::new("Configuration.xml"),
+            deadline,
+            cancellation,
+        ) {
+            Ok(Some(RetainedChildCapability::RegularFile(file))) => Some(file),
+            Ok(Some(_)) => return Err(unsafe_layout_entry()),
+            Ok(None) => None,
+            Err(error) if error.code() == RefusalCode::ProviderUnavailable => {
+                build.record_omission(source.name, "descriptor_unreadable");
+                None
+            }
+            Err(error) => return Err(error),
+        };
+        if let Some(head) = configuration_file
+            .as_ref()
+            .map(|file| {
+                self.read_descriptor_head(
+                    file,
+                    configuration,
+                    source,
+                    build,
+                    deadline,
+                    cancellation,
+                )
+            })
+            .transpose()?
+            .flatten()
+        {
             let (name, synonym) = descriptor_identity(&head);
             self.push(
                 build,
@@ -158,18 +280,32 @@ impl WorkspaceFindDirectoryBuilder {
             let Some(layout) = metadata_kind_by_directory(directory) else {
                 continue;
             };
-            let Some(RetainedChildCapability::Directory(collection)) =
-                retain_child(source.root, &entry)
-            else {
-                continue;
-            };
+            let collection =
+                match retain_enumerated_child(source.root, &entry, deadline, cancellation)? {
+                    RetainedChildCapability::Directory(collection) => collection,
+                    _ => return Err(unsafe_layout_entry()),
+                };
+            let mut proved_owners = HashSet::new();
+            let mut owner_directories = Vec::new();
             for owner in immediate_names(&collection, deadline, cancellation)? {
                 find_checkpoint(deadline, cancellation)?;
                 let Some(owner_name) = owner.to_str() else {
                     continue;
                 };
-                match retain_child(&collection, &owner) {
-                    Some(RetainedChildCapability::RegularFile(_)) => {
+                let owner_child =
+                    match retain_enumerated_child(&collection, &owner, deadline, cancellation) {
+                        Ok(child) => child,
+                        Err(error)
+                            if error.code() == RefusalCode::ProviderUnavailable
+                                && owner_name.ends_with(".xml") =>
+                        {
+                            build.record_omission(source.name, "descriptor_unreadable");
+                            continue;
+                        }
+                        Err(error) => return Err(error),
+                    };
+                match owner_child {
+                    RetainedChildCapability::RegularFile(file) => {
                         let Some(stem) = owner_name.strip_suffix(".xml") else {
                             continue;
                         };
@@ -177,7 +313,15 @@ impl WorkspaceFindDirectoryBuilder {
                         // A file whose name looks like an object is not one:
                         // only a descriptor that declares the expected owner
                         // element and name enters the directory.
-                        let Some(head) = read_descriptor_head(source.root, &relative) else {
+                        let Some(head) = self.read_descriptor_head(
+                            &file,
+                            &relative,
+                            source,
+                            build,
+                            deadline,
+                            cancellation,
+                        )?
+                        else {
                             continue;
                         };
                         if !declares_owner(&head, layout.tag, stem) {
@@ -193,20 +337,44 @@ impl WorkspaceFindDirectoryBuilder {
                             synonym.as_deref(),
                             &relative,
                         )?;
+                        proved_owners.insert(stem.to_string());
                     }
-                    Some(RetainedChildCapability::Directory(owner_root)) => {
-                        self.add_nested_families(
-                            source,
-                            build,
-                            &owner_root,
-                            layout.tag,
-                            owner_name,
-                            &PathBuf::from(directory).join(owner_name),
-                            deadline,
-                            cancellation,
-                        )?;
+                    RetainedChildCapability::Directory(owner_root) => {
+                        if owner_name.ends_with(".xml") {
+                            return Err(unsafe_layout_entry());
+                        }
+                        owner_directories.push((owner_name.to_string(), owner_root.identity()));
                     }
+                    _ if owner_name.ends_with(".xml") => return Err(unsafe_layout_entry()),
                     _ => continue,
+                }
+            }
+            for (owner_name, original_identity) in owner_directories {
+                find_checkpoint(deadline, cancellation)?;
+                if proved_owners.contains(&owner_name) {
+                    let owner_root = match retain_enumerated_child(
+                        &collection,
+                        OsStr::new(&owner_name),
+                        deadline,
+                        cancellation,
+                    )? {
+                        RetainedChildCapability::Directory(owner_root)
+                            if owner_root.identity() == original_identity =>
+                        {
+                            owner_root
+                        }
+                        _ => return Err(unsafe_layout_entry()),
+                    };
+                    self.add_nested_families(
+                        source,
+                        build,
+                        &owner_root,
+                        layout.tag,
+                        &owner_name,
+                        &PathBuf::from(directory).join(&owner_name),
+                        deadline,
+                        cancellation,
+                    )?;
                 }
             }
         }
@@ -235,17 +403,22 @@ impl WorkspaceFindDirectoryBuilder {
             let Some(stem) = entry_name.strip_suffix(".xml") else {
                 continue;
             };
-            if !matches!(
-                retain_child(source.root, &entry),
-                Some(RetainedChildCapability::RegularFile(_))
-            ) {
-                continue;
-            }
+            let file = match retain_enumerated_child(source.root, &entry, deadline, cancellation) {
+                Ok(RetainedChildCapability::RegularFile(file)) => file,
+                Err(error) if error.code() == RefusalCode::ProviderUnavailable => {
+                    build.record_omission(source.name, "descriptor_unreadable");
+                    continue;
+                }
+                Err(error) => return Err(error),
+                Ok(_) => return Err(unsafe_layout_entry()),
+            };
             let relative = PathBuf::from(entry_name);
             // A Designer dump keeps `ConfigDumpInfo.xml` next to the owner
             // descriptor; only a file that declares the expected owner element
             // is an object.
-            let Some(head) = read_descriptor_head(source.root, &relative) else {
+            let Some(head) =
+                self.read_descriptor_head(&file, &relative, source, build, deadline, cancellation)?
+            else {
                 continue;
             };
             if !declares_owner(&head, kind.as_str(), stem) {
@@ -261,19 +434,21 @@ impl WorkspaceFindDirectoryBuilder {
                 synonym.as_deref(),
                 &relative,
             )?;
-            if let Some(RetainedChildCapability::Directory(owner_root)) =
-                retain_child(source.root, OsStr::new(stem))
-            {
-                self.add_nested_families(
-                    source,
-                    build,
-                    &owner_root,
-                    kind.as_str(),
-                    stem,
-                    &PathBuf::from(stem),
-                    deadline,
-                    cancellation,
-                )?;
+            match retain_optional_child(source.root, OsStr::new(stem), deadline, cancellation)? {
+                Some(RetainedChildCapability::Directory(owner_root)) => {
+                    self.add_nested_families(
+                        source,
+                        build,
+                        &owner_root,
+                        kind.as_str(),
+                        stem,
+                        &PathBuf::from(stem),
+                        deadline,
+                        cancellation,
+                    )?;
+                }
+                Some(_) => return Err(unsafe_layout_entry()),
+                None => {}
             }
         }
         Ok(())
@@ -295,42 +470,65 @@ impl WorkspaceFindDirectoryBuilder {
     ) -> Result<(), FindBuildError> {
         for (family_directory, family_kind) in NESTED_FAMILIES {
             find_checkpoint(deadline, cancellation)?;
-            let Some(RetainedChildCapability::Directory(family)) =
-                retain_child(owner_root, OsStr::new(family_directory))
-            else {
-                continue;
+            let family = match retain_optional_child(
+                owner_root,
+                OsStr::new(family_directory),
+                deadline,
+                cancellation,
+            )? {
+                Some(RetainedChildCapability::Directory(family)) => family,
+                Some(_) => return Err(unsafe_layout_entry()),
+                None => continue,
             };
             for entry in immediate_names(&family, deadline, cancellation)? {
                 find_checkpoint(deadline, cancellation)?;
                 let Some(entry_name) = entry.to_str() else {
                     continue;
                 };
-                let (child_name, relative) = match retain_child(&family, &entry) {
-                    Some(RetainedChildCapability::RegularFile(_)) => {
+                let child = match retain_enumerated_child(&family, &entry, deadline, cancellation) {
+                    Ok(child) => child,
+                    Err(error)
+                        if error.code() == RefusalCode::ProviderUnavailable
+                            && entry_name.ends_with(".xml") =>
+                    {
+                        build.record_omission(source.name, "descriptor_unreadable");
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                };
+                let (child_name, relative, descriptor) = match child {
+                    RetainedChildCapability::RegularFile(file) => {
                         let Some(stem) = entry_name.strip_suffix(".xml") else {
                             continue;
                         };
                         (
                             stem.to_string(),
                             owner_relative.join(family_directory).join(entry_name),
+                            Some(file),
                         )
                     }
                     // A command has no descriptor file: its directory carries
                     // only the module, and the name is the directory itself.
-                    Some(RetainedChildCapability::Directory(_))
-                        if family_kind == NodeKind::Command =>
-                    {
-                        (
-                            entry_name.to_string(),
-                            owner_relative.join(family_directory).join(entry_name),
-                        )
-                    }
+                    RetainedChildCapability::Directory(_) if family_kind == NodeKind::Command => (
+                        entry_name.to_string(),
+                        owner_relative.join(family_directory).join(entry_name),
+                        None,
+                    ),
+                    _ if entry_name.ends_with(".xml") => return Err(unsafe_layout_entry()),
                     _ => continue,
                 };
                 let synonym = if family_kind == NodeKind::Command {
                     None
                 } else {
-                    let Some(head) = read_descriptor_head(source.root, &relative) else {
+                    let Some(head) = self.read_descriptor_head(
+                        descriptor.as_ref().expect("non-command has descriptor"),
+                        &relative,
+                        source,
+                        build,
+                        deadline,
+                        cancellation,
+                    )?
+                    else {
                         continue;
                     };
                     if !declares_owner(&head, family_kind.as_str(), &child_name) {
@@ -402,6 +600,112 @@ impl WorkspaceFindDirectoryBuilder {
         build.documents.push(document);
         Ok(())
     }
+
+    fn read_descriptor_head(
+        &self,
+        file: &RetainedRegularFileCapability,
+        relative: &Path,
+        source: &LayoutFindSource<'_>,
+        build: &mut DirectoryBuild,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<Vec<u8>>, FindBuildError> {
+        find_checkpoint(deadline, cancellation)?;
+        file.validate_named_identity()
+            .map_err(|_| unsafe_layout_entry())?;
+        let head = (self.read_head)(file, relative);
+        find_checkpoint(deadline, cancellation)?;
+        file.validate_named_identity()
+            .map_err(|_| unsafe_layout_entry())?;
+        match head {
+            Ok(head) => Ok(Some(head)),
+            Err(DescriptorHeadReadError::Local(io::ErrorKind::NotFound)) => {
+                Err(FindBuildError::new(
+                    RefusalCode::ConcurrentChange,
+                    "retained descriptor disappeared during reading",
+                ))
+            }
+            Err(DescriptorHeadReadError::Local(io::ErrorKind::OutOfMemory)) => {
+                Err(FindBuildError::new(
+                    RefusalCode::ProviderUnavailable,
+                    "find could not allocate the descriptor read buffer",
+                ))
+            }
+            Err(DescriptorHeadReadError::Local(_)) => {
+                build.record_omission(source.name, "descriptor_unreadable");
+                Ok(None)
+            }
+            Err(DescriptorHeadReadError::Capability) => Err(FindBuildError::new(
+                RefusalCode::ProviderUnavailable,
+                "find could not retain a descriptor read handle",
+            )),
+        }
+    }
+}
+
+fn read_descriptor_head_prefix(
+    file: &RetainedRegularFileCapability,
+    _relative: &Path,
+) -> Result<Vec<u8>, DescriptorHeadReadError> {
+    use io::{Read, Seek, SeekFrom};
+
+    let mut handle = file
+        .try_clone_file()
+        .map_err(|_| DescriptorHeadReadError::Capability)?;
+    handle
+        .seek(SeekFrom::Start(0))
+        .map_err(|error| DescriptorHeadReadError::Local(error.kind()))?;
+    let mut head = Vec::new();
+    handle
+        .take(DESCRIPTOR_HEAD_BYTES as u64)
+        .read_to_end(&mut head)
+        .map_err(|error| DescriptorHeadReadError::Local(error.kind()))?;
+    Ok(head)
+}
+
+fn retain_optional_child(
+    directory: &RetainedDirectoryCapability,
+    name: &OsStr,
+    deadline: ProviderDeadline,
+    cancellation: &CancellationToken,
+) -> Result<Option<RetainedChildCapability>, FindBuildError> {
+    find_checkpoint(deadline, cancellation)?;
+    match directory.retain_immediate_child_nofollow(name) {
+        Ok(child) => Ok(Some(child)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(child_read_error(error)),
+    }
+}
+
+fn retain_enumerated_child(
+    directory: &RetainedDirectoryCapability,
+    name: &OsStr,
+    deadline: ProviderDeadline,
+    cancellation: &CancellationToken,
+) -> Result<RetainedChildCapability, FindBuildError> {
+    find_checkpoint(deadline, cancellation)?;
+    directory
+        .retain_immediate_child_nofollow(name)
+        .map_err(child_read_error)
+}
+
+fn child_read_error(error: io::Error) -> FindBuildError {
+    let code = match error.kind() {
+        io::ErrorKind::NotFound => RefusalCode::ConcurrentChange,
+        io::ErrorKind::PermissionDenied => RefusalCode::ProviderUnavailable,
+        _ => RefusalCode::InvalidSource,
+    };
+    FindBuildError::new(
+        code,
+        "find source layout changed or could not be read safely",
+    )
+}
+
+fn unsafe_layout_entry() -> FindBuildError {
+    FindBuildError::new(
+        RefusalCode::InvalidSource,
+        "find source layout has an unexpected entry type",
+    )
 }
 
 fn immediate_names(
@@ -414,7 +718,7 @@ fn immediate_names(
             find_checkpoint(deadline, cancellation)
                 .map_err(|error| std::io::Error::other(error.to_string()))
         })
-        .map_err(|error| {
+        .map_err(|_error| {
             if cancellation.is_cancelled() {
                 FindBuildError::new(RefusalCode::Cancelled, "find directory build was cancelled")
             } else if deadline.remaining().is_zero() {
@@ -425,22 +729,10 @@ fn immediate_names(
             } else {
                 FindBuildError::new(
                     RefusalCode::ProviderUnavailable,
-                    format!("find could not read the source layout: {error}"),
+                    "find could not read the source layout",
                 )
             }
         })
-}
-
-fn retain_child(
-    directory: &RetainedDirectoryCapability,
-    name: &OsStr,
-) -> Option<RetainedChildCapability> {
-    directory.retain_immediate_child_nofollow(name).ok()
-}
-
-fn read_descriptor_head(root: &RetainedDirectoryCapability, relative: &Path) -> Option<Vec<u8>> {
-    root.read_relative_regular_prefix(relative, DESCRIPTOR_HEAD_BYTES)
-        .ok()
 }
 
 /// Reads `Name` and the first localized `Synonym` out of a descriptor head
@@ -511,9 +803,12 @@ mod tests {
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::ProviderDeadline;
     use crate::domain::project_sources::SourceSetKind;
+    use crate::domain::refusal::RefusalCode;
     use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
     use std::fs;
+    use std::io;
     use std::path::Path;
+    use std::sync::Arc;
     use std::time::Duration;
 
     fn write(path: &Path, contents: &str) {
@@ -685,7 +980,7 @@ mod tests {
     }
 
     #[test]
-    fn linked_configuration_descriptor_is_not_admitted_by_prefix_read() {
+    fn linked_configuration_descriptor_refuses_the_layout_build() {
         use crate::infrastructure::platform::testing::{
             create_file_link_fixture_for_test, FileLinkFixtureOutcome,
         };
@@ -700,8 +995,51 @@ mod tests {
             | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => return,
         }
 
-        let index = fixture.directory();
-        assert!(index.locate_address("main:Configuration").is_none());
+        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let refusal = WorkspaceFindDirectoryBuilder::default()
+            .build_for_search(
+                &[LayoutFindSource::new(
+                    "main",
+                    SourceSetKind::Configuration,
+                    &root,
+                )],
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+            .expect_err("a linked root descriptor must not look absent");
+        assert_eq!(refusal.code(), RefusalCode::InvalidSource);
+    }
+
+    #[test]
+    fn linked_nested_descriptor_refuses_instead_of_looking_complete() {
+        use crate::infrastructure::platform::testing::{
+            create_file_link_fixture_for_test, FileLinkFixtureOutcome,
+        };
+
+        let fixture = Fixture::new();
+        let descriptor = fixture
+            .source
+            .join("Catalogs/Валюты/Forms/ФормаЭлемента.xml");
+        let physical = fixture.source.join("physical-form.xml");
+        fs::rename(&descriptor, &physical).unwrap();
+        match create_file_link_fixture_for_test(&physical, &descriptor).unwrap() {
+            FileLinkFixtureOutcome::Created => {}
+            FileLinkFixtureOutcome::Unsupported
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => return,
+        }
+        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let refusal = WorkspaceFindDirectoryBuilder::default()
+            .build_for_search(
+                &[LayoutFindSource::new(
+                    "main",
+                    SourceSetKind::Configuration,
+                    &root,
+                )],
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+            .expect_err("linked nested descriptor must not become a local omission");
+        assert_eq!(refusal.code(), RefusalCode::InvalidSource);
     }
 
     #[test]
@@ -729,6 +1067,208 @@ mod tests {
     fn a_synonym_resolves_to_its_object() {
         let index = Fixture::new().directory();
         assert_eq!(single(&index, "Валюты и курсы").0, "main:Catalog.Валюты");
+    }
+
+    #[test]
+    fn unreadable_descriptor_makes_name_search_partial_but_resolve_refuses() {
+        let fixture = Fixture::new();
+        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let reader = Arc::new(
+            |file: &crate::infrastructure::platform::filesystem::RetainedRegularFileCapability,
+             relative: &Path| {
+                if relative == Path::new("Catalogs/Валюты.xml") {
+                    Err(super::DescriptorHeadReadError::Local(
+                        io::ErrorKind::PermissionDenied,
+                    ))
+                } else {
+                    super::read_descriptor_head_prefix(file, relative)
+                }
+            },
+        );
+        let builder = WorkspaceFindDirectoryBuilder::default().with_head_reader(reader);
+        let sources = [LayoutFindSource::new(
+            "main",
+            SourceSetKind::Configuration,
+            &root,
+        )];
+        let result = builder
+            .build_for_search(
+                &sources,
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+            .expect("a local read refusal keeps proven documents");
+        assert_eq!(result.omissions.total, 1);
+        assert_eq!(result.omissions.details[0].source_set, "main");
+        assert_eq!(result.omissions.details[0].reason, "descriptor_unreadable");
+        assert_eq!(single(&result.index, "Магазин").0, "main:Configuration");
+        assert!(result.index.locate_address("main:Catalog.Валюты").is_none());
+        assert!(result
+            .index
+            .locate_address("main:Catalog.Валюты.Form.ФормаЭлемента")
+            .is_none());
+        assert!(result
+            .index
+            .locate_address("main:Catalog.Валюты.Command.Обновить")
+            .is_none());
+        assert!(result
+            .index
+            .find(FindRequest::new("Валюты").unwrap())
+            .candidates()
+            .iter()
+            .all(|candidate| candidate.at() != "main:Catalog.Валюты"));
+
+        let refusal = builder
+            .build(
+                &sources,
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+            .expect_err("resolve must not use an incomplete directory");
+        assert_eq!(refusal.code(), RefusalCode::ProviderUnavailable);
+    }
+
+    #[test]
+    fn a_local_io_error_is_partial_but_handle_failure_is_a_refusal() {
+        let fixture = Fixture::new();
+        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let sources = [LayoutFindSource::new(
+            "main",
+            SourceSetKind::Configuration,
+            &root,
+        )];
+        let build_with = |fault| {
+            let reader = Arc::new(
+                move |file: &crate::infrastructure::platform::filesystem::RetainedRegularFileCapability,
+                      relative: &Path| {
+                    if relative == Path::new("Catalogs/Валюты.xml") {
+                        Err(fault)
+                    } else {
+                        super::read_descriptor_head_prefix(file, relative)
+                    }
+                },
+            );
+            WorkspaceFindDirectoryBuilder::default()
+                .with_head_reader(reader)
+                .build_for_search(
+                    &sources,
+                    ProviderDeadline::from_budget(Duration::from_secs(7)),
+                    &CancellationToken::new(),
+                )
+        };
+        let partial = build_with(super::DescriptorHeadReadError::Local(io::ErrorKind::Other))
+            .expect("an I/O error on one retained descriptor is local");
+        assert_eq!(partial.omissions.total, 1);
+        assert_eq!(single(&partial.index, "Магазин").0, "main:Configuration");
+
+        let refusal = build_with(super::DescriptorHeadReadError::Capability)
+            .expect_err("failure to retain the read handle is not local proof");
+        assert_eq!(refusal.code(), RefusalCode::ProviderUnavailable);
+    }
+
+    #[test]
+    fn cancellation_during_a_failed_descriptor_read_refuses_instead_of_returning_partial() {
+        let fixture = Fixture::new();
+        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let cancellation = CancellationToken::new();
+        let cancel_during_read = cancellation.clone();
+        let reader = Arc::new(
+            move |file: &crate::infrastructure::platform::filesystem::RetainedRegularFileCapability,
+                  relative: &Path| {
+                if relative == Path::new("Catalogs/Валюты.xml") {
+                    cancel_during_read.cancel();
+                    Err(super::DescriptorHeadReadError::Local(
+                        io::ErrorKind::PermissionDenied,
+                    ))
+                } else {
+                    super::read_descriptor_head_prefix(file, relative)
+                }
+            },
+        );
+        let refusal = WorkspaceFindDirectoryBuilder::default()
+            .with_head_reader(reader)
+            .build_for_search(
+                &[LayoutFindSource::new(
+                    "main",
+                    SourceSetKind::Configuration,
+                    &root,
+                )],
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &cancellation,
+            )
+            .expect_err("cancellation must take precedence over a local read omission");
+        assert_eq!(refusal.code(), RefusalCode::Cancelled);
+    }
+
+    #[test]
+    fn omission_diagnostics_are_bounded_without_losing_the_total() {
+        let mut build = super::DirectoryBuild {
+            documents: Vec::new(),
+            fact_bytes: 0,
+            omissions: super::FindOmissions::default(),
+        };
+        for _ in 0..=super::MAX_OMISSION_DETAILS {
+            build.record_omission("main", "descriptor_unreadable");
+        }
+        assert_eq!(build.omissions.total, super::MAX_OMISSION_DETAILS + 1);
+        assert_eq!(build.omissions.details.len(), super::MAX_OMISSION_DETAILS);
+    }
+
+    #[test]
+    fn many_owner_directories_do_not_exhaust_open_file_handles() {
+        let fixture = Fixture::new();
+        for index in 0..400 {
+            let name = format!("Item{index:03}");
+            write(
+                &fixture.source.join(format!("Catalogs/{name}.xml")),
+                &owner(&name, "Catalog", &name, ""),
+            );
+            fs::create_dir_all(fixture.source.join(format!("Catalogs/{name}/Forms"))).unwrap();
+        }
+        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let built = WorkspaceFindDirectoryBuilder::default()
+            .build_for_search(
+                &[LayoutFindSource::new(
+                    "main",
+                    SourceSetKind::Configuration,
+                    &root,
+                )],
+                ProviderDeadline::from_budget(Duration::from_secs(20)),
+                &CancellationToken::new(),
+            )
+            .expect("each owner directory should close before the next opens");
+        assert_eq!(built.omissions.total, 0);
+        assert_eq!(single(&built.index, "Item399").0, "main:Catalog.Item399");
+    }
+
+    #[test]
+    fn descriptor_identity_drift_remains_a_refusal() {
+        let fixture = Fixture::new();
+        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let descriptor = fixture.source.join("Catalogs/Валюты.xml");
+        let reader = Arc::new(
+            move |file: &crate::infrastructure::platform::filesystem::RetainedRegularFileCapability,
+                  relative: &Path| {
+                if relative == Path::new("Catalogs/Валюты.xml") {
+                    fs::rename(&descriptor, descriptor.with_extension("old")).unwrap();
+                    fs::write(&descriptor, "replacement").unwrap();
+                }
+                super::read_descriptor_head_prefix(file, relative)
+            },
+        );
+        let refusal = WorkspaceFindDirectoryBuilder::default()
+            .with_head_reader(reader)
+            .build_for_search(
+                &[LayoutFindSource::new(
+                    "main",
+                    SourceSetKind::Configuration,
+                    &root,
+                )],
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+            .expect_err("replacement after retention must refuse the build");
+        assert_eq!(refusal.code(), RefusalCode::InvalidSource);
     }
 
     #[test]

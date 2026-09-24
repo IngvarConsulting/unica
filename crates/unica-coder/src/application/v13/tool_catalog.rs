@@ -311,7 +311,7 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                 },
                 V13ToolContract {
                     name: "search",
-                    description: "Search one corpus for a query: BSL module text, or the names and synonyms of metadata objects. Optionally under one logical subtree.",
+                    description: "Search one corpus for a query: BSL module text, or the names and synonyms of metadata objects. Optionally under one logical subtree. Names results report descriptor-read coverage separately from approximate name matching.",
                     input_schema: schema(
                         json!({
                             "query": {"type": "string", "description": "Literal BSL text, symbol, or metadata name to search for."},

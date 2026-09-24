@@ -153,7 +153,7 @@ List canonical runtime operations and their invocation contract, or preview/exec
 
 ### `unica.search`
 
-Search one corpus for a query: BSL module text, or the names and synonyms of metadata objects. Optionally under one logical subtree.
+Search one corpus for a query: BSL module text, or the names and synonyms of metadata objects. Optionally under one logical subtree. Names results report descriptor-read coverage separately from approximate name matching.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |

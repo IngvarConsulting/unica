@@ -280,6 +280,111 @@ mod tests {
         daemon.finish(owner);
     }
 
+    #[test]
+    fn name_search_reports_an_injected_local_read_fault_through_the_live_daemon() {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("src");
+        std::fs::create_dir_all(source.join("Catalogs")).unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects><Catalog>Visible</Catalog><Catalog>Hidden</Catalog></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        for name in ["Visible", "Hidden"] {
+            std::fs::write(
+                source.join(format!("Catalogs/{name}.xml")),
+                format!(r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>{name}</Name></Properties><ChildObjects/></Catalog></MetaDataObject>"#),
+            )
+            .unwrap();
+        }
+        let workspace_hint = physical_root(workspace.path())
+            .to_string_lossy()
+            .into_owned();
+        let service = CanonicalV13ReadService::with_name_read_fault_for_test(
+            "Catalogs/Hidden.xml",
+            std::io::ErrorKind::Other,
+        );
+        let daemon = LiveV5Daemon::start(Arc::new(service));
+        let owner = daemon.owner();
+        let invoke = |tool, arguments| {
+            let submission = daemon.submit(
+                &owner,
+                &InvocationRequest::new(tool, arguments, workspace_hint.as_str(), 7_000).unwrap(),
+            );
+            match submission {
+                V5Submission::Direct(result) => *result,
+                V5Submission::Task(task_id) => {
+                    let terminal = daemon.wait_terminal(&owner, task_id, INTEGRATION_TASK_WAIT);
+                    assert_eq!(terminal.status(), InvocationStatus::Completed);
+                    terminal
+                        .completed_result()
+                        .cloned()
+                        .expect("name search publishes its terminal result")
+                }
+            }
+        };
+
+        let found = invoke(
+            ToolIdentity::Search,
+            serde_json::json!({"query": "Visible", "corpus": "names"}),
+        );
+        assert!(found.ok, "{found:?}");
+        assert_eq!(
+            found.data.as_ref().unwrap()["matches"][0]["at"],
+            "main:Catalog.Visible"
+        );
+        assert_eq!(
+            found.data.as_ref().unwrap()["sourceCoverage"]["complete"],
+            false
+        );
+        assert_eq!(found.data.as_ref().unwrap()["sourceCoverage"]["omitted"], 1);
+
+        let nearest = invoke(
+            ToolIdentity::Search,
+            serde_json::json!({"query": "Visibke", "corpus": "names"}),
+        );
+        assert!(nearest.ok, "{nearest:?}");
+        assert_eq!(
+            nearest.data.as_ref().unwrap()["matches"][0]["at"],
+            "main:Catalog.Visible"
+        );
+        assert_eq!(nearest.data.as_ref().unwrap()["approximate"], true);
+        assert_eq!(
+            nearest.data.as_ref().unwrap()["sourceCoverage"]["complete"],
+            false
+        );
+
+        let empty = invoke(
+            ToolIdentity::Search,
+            serde_json::json!({"query": "Absent", "corpus": "names", "kind": "Role"}),
+        );
+        assert!(empty.ok, "{empty:?}");
+        assert_eq!(
+            empty.data.as_ref().unwrap()["matches"],
+            serde_json::json!([])
+        );
+        assert_eq!(
+            empty.data.as_ref().unwrap()["sourceCoverage"]["complete"],
+            false
+        );
+
+        let exact = invoke(
+            ToolIdentity::Resolve,
+            serde_json::json!({"path": "src/Catalogs/Visible.xml"}),
+        );
+        assert!(
+            !exact.ok,
+            "resolve must not publish an incomplete directory: {exact:?}"
+        );
+        assert_eq!(exact.diagnostics[0]["code"], "provider_unavailable");
+        daemon.finish(owner);
+    }
+
     struct BlockingCanonicalService {
         executions: Arc<AtomicUsize>,
         entered: mpsc::Sender<()>,

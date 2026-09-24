@@ -106,6 +106,18 @@ impl CanonicalInvocationService for CanonicalV13ReadService {
 }
 
 impl CanonicalV13ReadService {
+    #[cfg(test)]
+    pub(super) fn with_name_read_fault_for_test(
+        relative: &'static str,
+        kind: std::io::ErrorKind,
+    ) -> Self {
+        let mut service = Self::default();
+        service.find_builder = service
+            .find_builder
+            .with_local_read_fault_for_test(relative, kind);
+        service
+    }
+
     fn execute_apply(
         &self,
         invocation: &ActorBoundExecution,
@@ -1402,17 +1414,29 @@ impl CanonicalV13ReadService {
             .iter()
             .map(|source| LayoutFindSource::new(source.name(), source.kind(), source.root()))
             .collect::<Vec<_>>();
-        let directory = match self.find_builder.build(&layout, deadline, cancellation) {
-            Ok(directory) => directory,
+        let built = match self
+            .find_builder
+            .build_for_search(&layout, deadline, cancellation)
+        {
+            Ok(built) => built,
             Err(error) => return error_result(None, error.code(), error.to_string()),
         };
         if let Some(scope) = scope {
-            if let Err((code, message)) = validate_name_scope(&directory, &scope, first.kind()) {
+            if let Err((code, message)) = validate_name_scope(&built.index, &scope, first.kind()) {
+                if built.omissions.total != 0
+                    && matches!(code, RefusalCode::NotFound | RefusalCode::InvalidState)
+                {
+                    return error_result(
+                        Some(scope.to_string()),
+                        RefusalCode::ProviderUnavailable,
+                        "name search cannot prove the requested scope in an incomplete source layout",
+                    );
+                }
                 return error_result(Some(scope.to_string()), code, message);
             }
             request = request.with_scope(scope);
         }
-        let found = directory.find(request);
+        let found = built.index.find(request);
         let matches: Vec<Value> = found
             .candidates()
             .iter()
@@ -1425,10 +1449,26 @@ impl CanonicalV13ReadService {
                 })
             })
             .collect();
-        let mut result = DomainResult::success("name search completed");
+        let mut result = DomainResult::success(if built.omissions.total == 0 {
+            "name search completed".to_string()
+        } else {
+            format!(
+                "name search has {} unreadable descriptor candidates",
+                built.omissions.total
+            )
+        });
         result.data = Some(serde_json::json!({
             "mode": "names",
             "matches": matches,
+            "sourceCoverage": {
+                "complete": built.omissions.total == 0,
+                "omitted": built.omissions.total,
+                "detailsTruncated": built.omissions.total > built.omissions.details.len(),
+                "details": built.omissions.details.iter().map(|detail| serde_json::json!({
+                    "sourceSet": detail.source_set,
+                    "reason": detail.reason,
+                })).collect::<Vec<_>>(),
+            },
             // Совпадение по близости — догадка, и она названа: читатель
             // обязан отличать «нашлось» от «похоже на».
             "approximate": found.is_nearest(),
