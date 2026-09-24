@@ -109,6 +109,7 @@ fn unreadable_name_descriptor_is_reported_without_losing_proven_matches() {
     )));
     assert_eq!(empty["ok"], true, "{empty:#}");
     assert_eq!(empty["data"]["matches"], json!([]));
+    assert_eq!(empty["data"]["approximate"], false);
     assert_eq!(empty["data"]["sourceCoverage"]["complete"], false);
     assert_eq!(empty["data"]["sourceCoverage"]["omitted"], 1);
 

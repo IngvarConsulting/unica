@@ -368,6 +368,7 @@ mod tests {
             empty.data.as_ref().unwrap()["matches"],
             serde_json::json!([])
         );
+        assert_eq!(empty.data.as_ref().unwrap()["approximate"], false);
         assert_eq!(
             empty.data.as_ref().unwrap()["sourceCoverage"]["complete"],
             false
