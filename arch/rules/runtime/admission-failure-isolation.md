@@ -1,6 +1,8 @@
 ---
 id: INV.APP.ADMISSION-FAILURE-ISOLATION
-check: []
+check:
+  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::root_view_keeps_the_same_task_and_daemon_past_the_admission_grace
+  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::root_check_keeps_the_same_task_and_original_inspection_deadline
 gap: https://github.com/IngvarConsulting/unica/issues/930
 ---
 

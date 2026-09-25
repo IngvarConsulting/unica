@@ -358,6 +358,9 @@ pub(super) enum V5CanonicalPrepareError {
 }
 
 pub(super) enum V5ActorBoundCanonicalInvocation {
+    WorkspaceInspection {
+        inspection: Arc<super::v13_workspace_bootstrap::PreparedWorkspaceInspection>,
+    },
     Workspace {
         invocation: Box<ActorBoundInvocation>,
         service: Arc<dyn CanonicalInvocationService>,
@@ -419,6 +422,9 @@ pub(super) enum V5ActorBoundCanonicalInvocation {
 }
 
 pub(super) enum V5PreparedCanonicalInvocation {
+    WorkspaceInspection {
+        inspection: Arc<super::v13_workspace_bootstrap::PreparedWorkspaceInspection>,
+    },
     Workspace {
         invocation: Box<ActorBoundInvocation>,
         class: ExecutionClass,
@@ -544,10 +550,14 @@ impl V5CanonicalInvocationRuntime {
                 DomainResult::canonical_rejection(None, RefusalCode::BadValue, summary),
             )));
         }
-        if let Some(result) =
-            super::v13_workspace_bootstrap::execute_view_bootstrap(&request, &response_deadline)
-        {
-            return Err(V5CanonicalPrepareError::Direct(Box::new(result)));
+        match super::v13_workspace_bootstrap::prepare(&request, response_deadline.clone()) {
+            super::v13_workspace_bootstrap::Preparation::NotApplicable => {}
+            super::v13_workspace_bootstrap::Preparation::Rejected(result) => {
+                return Err(V5CanonicalPrepareError::Rejected(result))
+            }
+            super::v13_workspace_bootstrap::Preparation::Ready(inspection) => {
+                return Ok(V5ActorBoundCanonicalInvocation::WorkspaceInspection { inspection });
+            }
         }
         if let Some(result) = super::v13_run_dictionary::execute_run_dictionary(&request) {
             return Err(V5CanonicalPrepareError::Direct(Box::new(result)));
@@ -710,6 +720,9 @@ impl V5ActorBoundCanonicalInvocation {
     /// they are known-long by construction.
     pub(super) fn response_deadline(&self) -> Option<InvocationResponseDeadline> {
         match self {
+            Self::WorkspaceInspection { inspection, .. } => {
+                Some(inspection.response_deadline().clone())
+            }
             Self::Workspace { invocation, .. } => Some(invocation.response_deadline().clone()),
             Self::ConfigurationTransition { .. }
             | Self::Extensions { .. }
@@ -732,6 +745,7 @@ impl V5ActorBoundCanonicalInvocation {
     pub(super) fn workspace_identity_hash(&self) -> &crate::domain::invocation::SafeIdentityHash {
         match self {
             Self::Workspace { invocation, .. } => invocation.workspace_identity_hash(),
+            Self::WorkspaceInspection { inspection } => inspection.workspace_identity_hash(),
             Self::ConfigurationTransition {
                 workspace_identity_hash,
                 ..
@@ -777,6 +791,9 @@ impl V5ActorBoundCanonicalInvocation {
 
     pub(super) fn prepare(self) -> Result<V5PreparedCanonicalInvocation, Box<DomainResult>> {
         match self {
+            Self::WorkspaceInspection { inspection, .. } => {
+                Ok(V5PreparedCanonicalInvocation::WorkspaceInspection { inspection })
+            }
             Self::Workspace {
                 invocation,
                 service,
@@ -835,7 +852,9 @@ impl V5PreparedCanonicalInvocation {
             | Self::SourceImport { .. }
             | Self::SourceExport { .. }
             | Self::ArtifactBuild { .. } => &INFOBASE_EXPORT_CLASS,
-            Self::Documentation { .. } => &ExecutionClass::InlineCandidate,
+            Self::WorkspaceInspection { .. } | Self::Documentation { .. } => {
+                &ExecutionClass::InlineCandidate
+            }
         }
     }
 
@@ -844,6 +863,7 @@ impl V5PreparedCanonicalInvocation {
         cancellation: CancellationToken,
     ) -> Result<DomainResult, InvocationFailure> {
         match self {
+            Self::WorkspaceInspection { inspection } => inspection.execute(cancellation),
             Self::Workspace {
                 invocation,
                 service,
@@ -6965,7 +6985,7 @@ struct ActorLogicalReadLease {"#,
     }
 
     #[test]
-    fn v5_view_without_at_returns_the_workspace_bootstrap_before_actor_admission() {
+    fn v5_view_without_at_prepares_root_inspection_without_source_actor_admission() {
         let workspace = tempfile::tempdir().expect("temporary empty workspace");
         let preparations = Arc::new(AtomicUsize::new(0));
         let runtime = V5CanonicalInvocationRuntime::new(
@@ -6984,15 +7004,23 @@ struct ActorLogicalReadLease {"#,
         )
         .expect("valid bootstrap request");
 
-        let result = match runtime.bind(request) {
-            Err(V5CanonicalPrepareError::Direct(result)) => result,
-            Ok(_) => panic!("workspace bootstrap must not enter actor admission"),
-            Err(other) => panic!("workspace bootstrap returned infrastructure failure: {other:?}"),
-        };
+        let bound = runtime.bind(request).expect("prepare root inspection");
+        assert!(matches!(
+            bound,
+            V5ActorBoundCanonicalInvocation::WorkspaceInspection { .. }
+        ));
+        assert_eq!(runtime.workspace_actors.entry_len_for_test().unwrap(), 0);
+        assert_eq!(preparations.load(Ordering::SeqCst), 0);
+        let prepared = bound.prepare().expect("prepare actor-free root operation");
+        assert_eq!(prepared.execution_class(), &ExecutionClass::InlineCandidate);
+        let result = prepared
+            .execute(CancellationToken::new())
+            .expect("execute root inspection");
 
         assert!(result.ok, "v5 bootstrap was misclassified: {result:?}");
         assert_eq!(result.data.as_ref().unwrap()["config"]["state"], "missing");
         assert_eq!(preparations.load(Ordering::SeqCst), 0);
+        assert_eq!(runtime.workspace_actors.entry_len_for_test().unwrap(), 0);
     }
 
     #[test]

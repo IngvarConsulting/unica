@@ -2,12 +2,13 @@ use super::protocol::InvocationRequest;
 use crate::application::invocation::InvocationResponseDeadline;
 use crate::application::invocation_store::ToolIdentity;
 use crate::domain::address::QualifiedAddress;
-use crate::domain::cancellation::CancellationToken;
+use crate::domain::cancellation::{cancelled_error, CancellationToken};
 use crate::domain::code_intelligence::ProviderDeadline;
-use crate::domain::invocation::DomainResult;
+use crate::domain::invocation::{DomainResult, InvocationFailure, SafeIdentityHash};
 use crate::domain::project_health::evaluate_project_health;
 use crate::domain::project_sources::{ProjectSourceMap, SourceFormat, SourceSetKind};
 use crate::domain::refusal::RefusalCode;
+use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::platform::secure_read::read_root_relative_regular_file;
 use crate::infrastructure::project_health::inspect_project_health;
 use crate::infrastructure::project_sources::discover_project_source_map_controlled;
@@ -15,9 +16,14 @@ use crate::infrastructure::source_roots::normalize_path_identity;
 use crate::infrastructure::workspace::discover_workspace;
 use serde::Serialize;
 use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 const PROJECT_CONFIG_MAX_BYTES: usize = 8 * 1024 * 1024;
+
+#[cfg(test)]
+pub(super) mod test_control;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct InfobaseTarget {
@@ -38,20 +44,30 @@ enum RootQuestion {
     Verdict,
 }
 
-pub(super) fn execute_view_bootstrap(
+pub(super) struct PreparedWorkspaceInspection {
+    context: WorkspaceContext,
+    question: RootQuestion,
+    response_deadline: InvocationResponseDeadline,
+    workspace_identity_hash: SafeIdentityHash,
+}
+
+pub(super) enum Preparation {
+    NotApplicable,
+    Rejected(Box<DomainResult>),
+    Ready(Arc<PreparedWorkspaceInspection>),
+}
+
+pub(super) fn prepare(
     request: &InvocationRequest,
-    deadline: &InvocationResponseDeadline,
-) -> Option<DomainResult> {
+    response_deadline: InvocationResponseDeadline,
+) -> Preparation {
     if request.arguments().contains_key("at") {
-        return None;
+        return Preparation::NotApplicable;
     }
     let question = match request.tool() {
         ToolIdentity::View => RootQuestion::Facts,
-        // Вердикт по рабочему пространству обязан отвечать и до допуска: он и
-        // объясняет, почему ни один набор не допущен. Поэтому `check {}`
-        // разбирается здесь же, а не в actor-bound службе.
         ToolIdentity::Check => RootQuestion::Verdict,
-        _ => return None,
+        _ => return Preparation::NotApplicable,
     };
     if !request.arguments().is_empty() {
         let (tool, summary) = match question {
@@ -70,23 +86,63 @@ pub(super) fn execute_view_bootstrap(
             Value::Object(Map::new()),
             "discover source sets and canonical logical addresses",
         ));
-        return Some(result);
+        return Preparation::Rejected(Box::new(result));
     }
 
-    let context = match discover_workspace(Some(PathBuf::from(request.workspace_hint()))) {
-        Ok(context) => context,
+    let discovered =
+        discover_workspace(Some(PathBuf::from(request.workspace_hint()))).and_then(|context| {
+            let canonical_root = normalize_path_identity(&context.workspace_root)?;
+            Ok((context, canonical_root))
+        });
+    let (context, canonical_root) = match discovered {
+        Ok(discovered) => discovered,
         Err(error) => {
-            return Some(DomainResult::canonical_rejection(
+            return Preparation::Rejected(Box::new(DomainResult::canonical_rejection(
                 None,
                 RefusalCode::ProviderUnavailable,
                 format!("workspace discovery failed: {error}"),
-            ))
+            )))
         }
     };
-    let config_present = project_config_present(&context.workspace_root);
-    let mut checkpoint = || deadline.checkpoint_handoff().map_err(str::to_string);
-    let source_map =
-        match discover_project_source_map_controlled(&context.workspace_root, &mut checkpoint) {
+    let mut hasher = Sha256::new();
+    hasher.update(b"unica-v13-workspace-inspection-v1\0");
+    hasher.update(canonical_root.as_os_str().as_encoded_bytes());
+    Preparation::Ready(Arc::new(PreparedWorkspaceInspection {
+        context,
+        question,
+        response_deadline,
+        workspace_identity_hash: SafeIdentityHash::from_sha256(hasher.finalize().into()),
+    }))
+}
+
+impl PreparedWorkspaceInspection {
+    pub(super) fn workspace_identity_hash(&self) -> &SafeIdentityHash {
+        &self.workspace_identity_hash
+    }
+
+    pub(super) fn response_deadline(&self) -> &InvocationResponseDeadline {
+        &self.response_deadline
+    }
+
+    pub(super) fn execute(
+        &self,
+        cancellation: CancellationToken,
+    ) -> Result<DomainResult, InvocationFailure> {
+        check_cancellation(&cancellation)?;
+        let context = &self.context;
+        let deadline = &self.response_deadline;
+        let config_present = project_config_present(&context.workspace_root);
+        let mut checkpoint = || {
+            if cancellation.is_cancelled() {
+                Err(cancelled_error("workspace inspection cancelled"))
+            } else {
+                Ok(())
+            }
+        };
+        let discovery =
+            discover_project_source_map_controlled(&context.workspace_root, &mut checkpoint);
+        check_cancellation(&cancellation)?;
+        let source_map = match discovery {
             Ok(source_map) => source_map,
             Err(error) if config_present => {
                 let mut result = DomainResult::canonical_rejection(
@@ -104,40 +160,61 @@ pub(super) fn execute_view_bootstrap(
                         ]),
                     ),
                 ]));
-                return Some(result);
+                return Ok(result);
             }
             Err(error) => {
-                return Some(DomainResult::canonical_rejection(
+                return Ok(DomainResult::canonical_rejection(
                     None,
                     RefusalCode::ProviderUnavailable,
                     format!("workspace source discovery failed: {error}"),
                 ))
             }
         };
-    let infobase = match inspect_infobase_target(&context.workspace_root, config_present) {
-        Ok(target) => target,
-        Err(error) => {
-            let mut result = DomainResult::canonical_rejection(
-                None,
-                RefusalCode::InvalidState,
-                format!("infobase target configuration is invalid: {error}"),
-            );
-            result.data = Some(object([
-                ("workspaceRoot", value(&context.workspace_root)),
-                (
-                    "config",
-                    object([
-                        ("state", Value::String("invalid".to_string())),
-                        ("path", Value::String("v8project.yaml".to_string())),
-                    ]),
-                ),
-            ]));
-            return Some(result);
-        }
-    };
-    Some(bootstrap_result(
-        &context, source_map, infobase, deadline, question,
-    ))
+        let inspected_infobase = inspect_infobase_target(&context.workspace_root, config_present);
+        check_cancellation(&cancellation)?;
+        let infobase = match inspected_infobase {
+            Ok(target) => target,
+            Err(error) => {
+                let mut result = DomainResult::canonical_rejection(
+                    None,
+                    RefusalCode::InvalidState,
+                    format!("infobase target configuration is invalid: {error}"),
+                );
+                result.data = Some(object([
+                    ("workspaceRoot", value(&context.workspace_root)),
+                    (
+                        "config",
+                        object([
+                            ("state", Value::String("invalid".to_string())),
+                            ("path", Value::String("v8project.yaml".to_string())),
+                        ]),
+                    ),
+                ]));
+                return Ok(result);
+            }
+        };
+        let result = bootstrap_result(
+            context,
+            source_map,
+            infobase,
+            deadline,
+            self.question,
+            &cancellation,
+        );
+        check_cancellation(&cancellation)?;
+        Ok(result)
+    }
+}
+
+fn check_cancellation(cancellation: &CancellationToken) -> Result<(), InvocationFailure> {
+    if cancellation.is_cancelled() {
+        Err(InvocationFailure::new(
+            "cancelled",
+            "workspace inspection cancelled",
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 fn bootstrap_result(
@@ -146,6 +223,7 @@ fn bootstrap_result(
     infobase: InfobaseTarget,
     response_deadline: &InvocationResponseDeadline,
     question: RootQuestion,
+    cancellation: &CancellationToken,
 ) -> DomainResult {
     let config_state = if source_map.config_path.is_some() {
         "configured"
@@ -164,12 +242,13 @@ fn bootstrap_result(
     let health = if source_map.source_sets.is_empty() {
         None
     } else {
+        #[cfg(test)]
+        test_control::pause_before_health(&context.workspace_root);
         let health_budget = response_deadline.remaining_handoff_budget();
-        let cancellation = CancellationToken::new();
         Some(
             inspect_project_health(
                 context,
-                &cancellation,
+                cancellation,
                 ProviderDeadline::from_budget(health_budget),
             )
             .map_err(|error| format!("{error:?}"))
@@ -686,6 +765,128 @@ mod tests {
     use crate::domain::project_sources::{
         ProjectSourceMap, ProjectSourceSet, SourceFormat, SourceSetKind,
     };
+
+    #[test]
+    fn root_inspection_discovers_sources_after_response_handoff() {
+        use super::{prepare, Preparation};
+        use crate::application::invocation::InvocationResponseDeadline;
+        use crate::application::invocation_store::ToolIdentity;
+        use crate::application::ports::Clock;
+        use crate::domain::cancellation::CancellationToken;
+        use crate::infrastructure::daemon::protocol::InvocationRequest;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+
+        struct ManualClock {
+            start: Instant,
+            elapsed_ms: AtomicU64,
+        }
+
+        impl Clock for ManualClock {
+            fn now(&self) -> Instant {
+                self.start + Duration::from_millis(self.elapsed_ms.load(Ordering::SeqCst))
+            }
+        }
+
+        for configured in [true, false] {
+            for tool in [ToolIdentity::View, ToolIdentity::Check] {
+                let workspace = tempfile::tempdir().unwrap();
+                let root = std::fs::canonicalize(workspace.path()).unwrap();
+                std::fs::create_dir(root.join("src")).unwrap();
+                std::fs::write(root.join("src/Configuration.xml"), "<MetaDataObject/>").unwrap();
+                if configured {
+                    std::fs::write(
+                        root.join("v8project.yaml"),
+                        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+                    )
+                    .unwrap();
+                }
+                let clock = Arc::new(ManualClock {
+                    start: Instant::now(),
+                    elapsed_ms: AtomicU64::new(0),
+                });
+                let request = InvocationRequest::new(
+                    tool,
+                    serde_json::json!({}),
+                    root.to_string_lossy(),
+                    7_000,
+                )
+                .unwrap();
+                let Preparation::Ready(inspection) =
+                    prepare(&request, InvocationResponseDeadline::capture(clock.clone()))
+                else {
+                    panic!("root inspection must prepare before response handoff");
+                };
+
+                clock.elapsed_ms.store(9_000, Ordering::SeqCst);
+                let result = inspection.execute(CancellationToken::new()).unwrap();
+                assert!(result.ok, "{tool:?}, configured={configured}: {result:?}");
+                let data = result.data.unwrap();
+                if tool == ToolIdentity::Check {
+                    assert_eq!(data["readinessState"], "incomplete");
+                } else {
+                    assert_eq!(data["sourceSets"][0]["name"], "main");
+                    assert_eq!(
+                        data["config"]["state"],
+                        if configured {
+                            "configured"
+                        } else {
+                            "autodetected"
+                        }
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn root_inspection_cancellation_prevents_discovery_and_late_publication() {
+        use super::{prepare, Preparation};
+        use crate::application::invocation::InvocationResponseDeadline;
+        use crate::application::invocation_store::ToolIdentity;
+        use crate::application::ports::TokioClock;
+        use crate::domain::cancellation::CancellationToken;
+        use crate::infrastructure::daemon::protocol::InvocationRequest;
+        use std::sync::Arc;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(workspace.path()).unwrap();
+        std::fs::create_dir(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("src/Configuration.xml"), "<MetaDataObject/>").unwrap();
+        let request = InvocationRequest::new(
+            ToolIdentity::Check,
+            serde_json::json!({}),
+            root.to_string_lossy(),
+            7_000,
+        )
+        .unwrap();
+        let Preparation::Ready(inspection) = prepare(
+            &request,
+            InvocationResponseDeadline::capture(Arc::new(TokioClock)),
+        ) else {
+            panic!("root inspection must prepare before source admission");
+        };
+        let pause = super::test_control::HealthInspectionPause::install(root);
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        assert_eq!(inspection.execute(cancelled).unwrap_err().code, "cancelled");
+        assert_eq!(pause.entries(), 0);
+
+        let cancellation = CancellationToken::new();
+        let worker_cancellation = cancellation.clone();
+        let worker = std::thread::spawn(move || inspection.execute(worker_cancellation));
+        pause.wait_until_entered();
+        cancellation.cancel();
+        pause.release();
+        assert_eq!(worker.join().unwrap().unwrap_err().code, "cancelled");
+        assert_eq!(pause.entries(), 1);
+    }
 
     #[test]
     fn project_config_recipe_quotes_yaml_significant_source_identity() {
