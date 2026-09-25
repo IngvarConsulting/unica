@@ -615,12 +615,21 @@ enum StoredEntryV1 {
         key: ReceiptKey,
         link: StoredTaskLinkReferenceV1,
         task: StoredTaskProjectionV1,
+        // Pending must fit the reserved 1 KiB even with real epoch timestamps.
+        // Aliases keep previously persisted v1 pending records readable.
+        #[serde(rename = "lv", alias = "lifecycleLinkVersion")]
         lifecycle_link_version: u64,
+        #[serde(rename = "ms", alias = "mutationSequence")]
         mutation_sequence: u64,
+        #[serde(rename = "tv", alias = "expectedTerminalTaskVersion")]
         expected_terminal_task_version: u64,
+        #[serde(rename = "ts", alias = "terminalStatus")]
         terminal_status: StoredClosedTerminalStatusV1,
+        #[serde(rename = "td", alias = "terminalDigest")]
         terminal_digest: TerminalDigest,
+        #[serde(rename = "te", alias = "terminalEpochMs")]
         terminal_epoch_ms: u64,
+        #[serde(rename = "ex", alias = "expiresAtEpochMs")]
         expires_at_epoch_ms: u64,
         #[serde(rename = "l")]
         retained_link_bytes: u64,
@@ -2310,6 +2319,43 @@ mod tests {
             .expect("exact TaskRetirementPending CAS");
         assert!(pending.encoded_bytes() <= 1_024);
 
+        let mut legacy =
+            serde_json::to_value(StoredEntryV1::from_catalog_entry(&CatalogEntry::Link(
+                TaskLifecycleLinkRecord::TaskRetirementPending(pending.clone()),
+            )))
+            .expect("encode pending link");
+        let legacy_fields = legacy.as_object_mut().expect("pending link object");
+        for (compact, expanded) in [
+            ("lv", "lifecycleLinkVersion"),
+            ("ms", "mutationSequence"),
+            ("tv", "expectedTerminalTaskVersion"),
+            ("ts", "terminalStatus"),
+            ("td", "terminalDigest"),
+            ("te", "terminalEpochMs"),
+            ("ex", "expiresAtEpochMs"),
+        ] {
+            let value = legacy_fields
+                .remove(compact)
+                .expect("compact pending field");
+            legacy_fields.insert(expanded.to_owned(), value);
+        }
+        assert!(
+            serde_json::to_vec(&legacy)
+                .expect("encode legacy pending")
+                .len()
+                <= MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES
+        );
+        let decoded: StoredEntryV1 =
+            serde_json::from_value(legacy.clone()).expect("read legacy pending fields");
+        assert_eq!(
+            decoded
+                .into_catalog_entry()
+                .expect("validate legacy pending"),
+            CatalogEntry::Link(TaskLifecycleLinkRecord::TaskRetirementPending(
+                pending.clone()
+            ))
+        );
+
         assert!(matches!(
             store.mark_task_bound_begun(&not_begun, 2, 1_100, deadline()),
             Err(TaskLifecycleLinkStoreError::VersionMismatch {
@@ -2319,12 +2365,102 @@ mod tests {
         ));
         drop(store);
 
+        let snapshot_path = root_path.join(STORE_SNAPSHOT_FILE);
+        let mut snapshot: serde_json::Value =
+            serde_json::from_slice(&fs::read(&snapshot_path).expect("read pending snapshot"))
+                .expect("decode pending snapshot");
+        let entries = snapshot["entries"]
+            .as_array_mut()
+            .expect("pending snapshot entries");
+        assert_eq!(entries.len(), 1);
+        entries[0] = legacy;
+        fs::write(
+            &snapshot_path,
+            serde_json::to_vec(&snapshot).expect("encode legacy snapshot"),
+        )
+        .expect("persist legacy pending snapshot");
+
         let reopened =
-            TaskLifecycleLinkStoreV5::open(&root_path, deadline()).expect("reopen store");
+            TaskLifecycleLinkStoreV5::open(&root_path, deadline()).expect("reopen legacy store");
         assert_eq!(
             reopened
                 .read_by_task_id(key.reserved_task_id(), deadline())
-                .expect("reopened pending link"),
+                .expect("reopened legacy pending link"),
+            TaskLifecycleLinkRecord::TaskRetirementPending(pending.clone())
+        );
+        reopened
+            .finalize_task_retirement(&pending, deadline())
+            .expect("finalize reopened legacy pending link");
+        assert!(matches!(
+            reopened.read_by_task_id(key.reserved_task_id(), deadline()),
+            Err(TaskLifecycleLinkStoreError::NotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn real_epoch_terminal_link_can_enter_pending_retirement_within_reserved_bytes() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let root_path = physical_root(&root);
+        let (key, link, _) = fixture(INVOCATION_A, TASK_A, "workspace-a");
+        let store = TaskLifecycleLinkStoreV5::open(&root_path, deadline()).expect("open store");
+        let epoch = 1_790_000_000_000;
+        let task = ReceiptTaskProjection::new(
+            key.reserved_task_id(),
+            key.invocation_id(),
+            epoch,
+            epoch,
+            3_600_000,
+            100,
+            1,
+        )
+        .expect("real-epoch Task projection");
+        let reservation = store
+            .reserve_task_link(key.clone(), link, deadline())
+            .expect("reserve Task link");
+        let bound = store
+            .materialize_task_bound(
+                &reservation,
+                task,
+                1,
+                epoch,
+                AttemptPhase::Begun,
+                deadline(),
+            )
+            .expect("materialize TaskBound");
+        let terminal_epoch = epoch + 100;
+        let terminal_task = ReceiptTaskProjection::new(
+            key.reserved_task_id(),
+            key.invocation_id(),
+            epoch,
+            terminal_epoch,
+            3_600_000,
+            100,
+            2,
+        )
+        .expect("real-epoch terminal projection");
+        let terminal = store
+            .publish_task_terminal_bound(
+                &bound,
+                terminal_task,
+                2,
+                ClosedTerminalStatus::Completed,
+                terminal_digest(),
+                terminal_epoch,
+                deadline(),
+            )
+            .expect("publish terminal link");
+        let pending = store
+            .begin_task_retirement(&terminal, 64, 64, deadline())
+            .expect("real-epoch terminal Task can enter pending retirement");
+        assert!(pending.encoded_bytes() <= MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES as u64);
+
+        drop(store);
+        let reopened =
+            TaskLifecycleLinkStoreV5::open(&root_path, deadline()).expect("reopen pending store");
+        assert_eq!(
+            reopened
+                .read_by_task_id(key.reserved_task_id(), deadline())
+                .expect("reopened real-epoch pending link"),
             TaskLifecycleLinkRecord::TaskRetirementPending(pending)
         );
     }
