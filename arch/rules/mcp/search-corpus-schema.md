@@ -6,7 +6,6 @@ check:
   - crates/unica-coder/src/application/v13/find.rs::exact_kind_alias_filter_limit_and_nearest_are_deterministic
   - crates/unica-coder/tests/v13_search_integration.rs::canonical_search_is_source_scoped_and_rejects_legacy_call_shape
   - crates/unica-coder/tests/v13_search_integration.rs::names_search_pages_all_ranked_matches_and_rejects_changed_answers
-gap: https://github.com/IngvarConsulting/unica/issues/871
 ---
 
 # Поиск имён и текста показывает разные сведения о совпадении
@@ -26,4 +25,4 @@ gap: https://github.com/IngvarConsulting/unica/issues/871
 если что-либо из них изменилось, продолжение отвечает `stale_cursor`.
 
 Проверки покрывают схему, внутренний справочник, публичные страницы имён и
-области основного текстового поиска через MCP. Остальной разрыв сохранён в `gap`.
+области основного текстового поиска через MCP.
