@@ -4072,6 +4072,25 @@ mod tests {
     }
 
     #[test]
+    fn completed_terminal_with_provider_score_survives_receipt_reopen() {
+        // A v8std search page can contain this exact score. Parsing it to the
+        // adjacent f64 changes the receipt digest and makes a completed docs
+        // call fail with store_failed when the ledger reopens its own record.
+        let mut result = DomainResult::success("docs page");
+        result.data = Some(json!({"hits": [{"providerScore": 916.6563720703125}]}));
+        let committed = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
+            result: Box::new(result),
+        })
+        .expect("canonical docs terminal");
+        let reopened: ReceiptTerminalOutcome =
+            serde_json::from_slice(committed.payload()).expect("reopen terminal");
+        let restored = canonical_v5_terminal(&reopened).expect("restore terminal");
+
+        assert_eq!(restored.digest(), committed.digest());
+        assert_eq!(restored.payload(), committed.payload());
+    }
+
+    #[test]
     fn canonical_terminal_uses_exact_variant_key_order_and_strict_union() {
         let completed = ReceiptTerminalOutcome::Completed {
             result: Box::new(DomainResult::success("done")),
