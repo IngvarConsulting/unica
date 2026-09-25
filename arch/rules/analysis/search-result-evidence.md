@@ -21,7 +21,6 @@ check:
   - crates/unica-coder/src/infrastructure/code_intelligence.rs::git_grep_keeps_valid_hits_but_reports_malformed_siblings_as_partial
   - crates/unica-coder/src/infrastructure/platform/process.rs::completed_line_drain_keeps_stop_only_for_successful_children
   - crates/unica-coder/src/infrastructure/code_intelligence.rs::cancelled_projection_is_not_reported_as_a_malformed_search_result
-gap: https://github.com/IngvarConsulting/unica/issues/871
 ---
 
 # Результат поиска сохраняет источник и пределы достоверности
@@ -55,4 +54,7 @@ gap: https://github.com/IngvarConsulting/unica/issues/871
 Провайдерный поиск выдаёт страницы полученного окна, сохраняя его роль,
 поставщика и полноту. Курсор не доказывает, что поставщик нашёл всё: при
 достижении его предела последняя страница сохраняет `limitReached` и нижнюю
-оценку. Продолжение за пределами окна поставщика остаётся в `gap`.
+оценку. При 200 полученных результатах ответ рекомендует уточнить запрос.
+Если окно неполно, он не обещает выдачу его хвоста. Меньшие внутренние квоты
+`bsl-analyzer` и RLM остаются видимой неполнотой, но сами по себе не означают,
+что запрос слишком широк.
