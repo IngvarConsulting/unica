@@ -400,8 +400,8 @@ MCP-изменение, падение теста с `check` и продолже
 `check` и продолжение после сжатия контекста у Claude пока не проверены.
 Независимые субагенты не заменяют проверку этого хоста.
 
-Если в worktree нет собственного `.claude/skills`, Claude Code загружает скиллы
-из `.claude/skills` основного checkout
+Если в worktree нет собственного `.claude/skills`, Claude Code с версии 2.1.277
+загружает скиллы из `.claude/skills` основного checkout
 ([Anthropic — worktrees](https://code.claude.com/docs/en/worktrees#what-worktrees-share-with-the-main-checkout)).
 В сессию попадает всё, что там лежит: файлы текущей ветки основного checkout
 и неотслеживаемые. 2026-09-26 основной checkout стоял на ветке до #995, и каждая

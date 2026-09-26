@@ -51,9 +51,9 @@ rust-analyzer --version
 
 ### Claude Code в worktree
 
-Если в worktree нет собственного `.claude/skills`, Claude Code загружает скиллы
-из `.claude/skills` основного checkout; `.claude/agents` и `.claude/commands`
-подгружаются так же
+Если в worktree нет собственного `.claude/skills`, Claude Code с версии 2.1.277
+загружает скиллы из `.claude/skills` основного checkout; `.claude/agents` и
+`.claude/commands` подгружаются так же
 ([Anthropic — worktrees](https://code.claude.com/docs/en/worktrees#what-worktrees-share-with-the-main-checkout)).
 В Unica `.claude/` не отслеживается, поэтому в сессию попадает содержимое
 `.claude/` основного checkout. Держите его на актуальном `main` и не храните там
