@@ -1,15 +1,15 @@
 # Как агент получает контекст для разработки Unica
 
-Схема обновлена 2026-09-18. Она показывает, **когда агент узнаёт ограничение
+Схема обновлена 2026-09-26. Она показывает, **когда агент узнаёт ограничение
 и что вызывает следующее чтение**. Правила продукта приняты владельцем;
 порядок разработки, тестирование, редактура и выпуск подключены через
 проектные скиллы. Этот обзор сам по себе не меняет инструкции или CI.
-Снимки внешних скиллов и MCP ниже относятся к первоначальному исследованию
+Снимки внешних скиллов ниже относятся к первоначальному исследованию
 checkout `9b286de5`; рабочий контракт всегда берётся из используемой сборки.
 
 `AI_DEV.md` читается при настройке процесса. Загружать его целиком перед каждой
-правкой не требуется: ниже есть снимки описаний скиллов и инструментов для
-сравнения. При работе описания приходят из каталога хоста, выбранного SKILL.md
+правкой не требуется: ниже есть снимки описаний скиллов для сравнения.
+При работе описания приходят из каталога хоста, выбранного SKILL.md
 и схемы инструмента. Этот снимок не становится вторым источником контрактов.
 
 ## 1. Старт сессии
@@ -43,7 +43,7 @@ Codex получает AGENTS по своей цепочке глобальны�
 Claude Code загружает CLAUDE.md с импортом `@AGENTS.md`. Тела проектных
 скиллов выбираются по общему входу; они не импортируются все на старте.
 Основание: [OpenAI — AGENTS.md](https://learn.chatgpt.com/docs/agent-configuration/agents-md),
-[Anthropic — импорт AGENTS.md](https://code.claude.com/docs/en/memory#agentsmd).
+[Anthropic — импорт AGENTS.md](https://code.claude.com/docs/en/memory#agents-md).
 
 В начале нужны доступные имена и описания скиллов, затем полное тело выбранного
 скилла, затем только нужные ему references. Наличие файла на диске или
@@ -59,6 +59,12 @@ Markdown не может убрать уже переданный контекс
 откладывает определения инструментов до поиска. В другом режиме схемы могут
 попасть в контекст сразу. Не нужно вручную перечитывать весь `tools/list`
 в каждой сессии разработки.
+
+Claude Code также загружает автопамять репозитория: индекс `MEMORY.md`
+из `~/.claude/projects/<проект>/memory/`, общий для всех worktree этого
+репозитория ([Anthropic — auto memory](https://code.claude.com/docs/en/memory#auto-memory)).
+Это локальные заметки хоста, а не часть процесса: Codex их не получает.
+Порядок работы для обоих агентов задают проектные скиллы.
 
 ## 2. Работа над задачей
 
@@ -249,9 +255,9 @@ JUnit `target/nextest/<profile>/junit.xml` и вывод
 
 CONTRIBUTING также называет следующие девять навыков
 [Agent Skills for Context Engineering](https://github.com/muratcankoylan/Agent-Skills-for-Context-Engineering/tree/6dbe1a1d868eab51a3bc9011b0f55e2891513e40/skills).
-Они не найдены в проверенных локальных каталогах навыков и не объявлены
-доступными в текущей сессии. Описания сверены с указанным commit апстрима;
-это не отчёт об установке. Загрузка нужна только для задачи, указанной в шапке.
+Их наличие зависит от установки в хосте. Описания сверены с указанным commit
+апстрима; это не отчёт об установке. Загрузка нужна только для задачи,
+указанной в шапке.
 
 - **tool-design**:
 
@@ -295,8 +301,8 @@ CONTRIBUTING также называет следующие девять нав�
 навыки внутри descriptions не означают необходимости установить весь апстрим.
 
 `unica-development` переопределяет место сохранения файлов для `brainstorming`
-и `writing-plans`. В текущей сессии
-они не зарегистрированы; в локальном кеше Superpowers найдены такие описания:
+и `writing-plans`. В исследованной сессии они не были зарегистрированы;
+в локальном кеше Superpowers найдены такие описания:
 
 - **brainstorming**: “You MUST use this before any creative work - creating features, building components, adding functionality, or modifying behavior. Explores user intent, requirements and design before implementation.”
 - **writing-plans**: “Use when you have a spec or requirements for a multi-step task, before touching code”.
@@ -327,41 +333,32 @@ CONTRIBUTING также называет следующие девять нав�
 
 ### Ожидаемые инструменты проверяемой Unica
 
-Снимок из [tool_catalog.rs](crates/unica-coder/src/application/v13/tool_catalog.rs)
+Имена, описания и схемы инструментов задают
+[tool_catalog.rs](crates/unica-coder/src/application/v13/tool_catalog.rs)
 и [task_tools.rs](crates/unica-coder/src/application/v13/task_tools.rs).
-`description` приведён без пересказа. Для вызова также нужна актуальная
-`inputSchema`; загружать все схемы в этот документ не требуется.
-Имена здесь канонические, префикс вызова назначает хост.
+Сводка с описаниями и аргументами — [docs/tool-surface.md](docs/tool-surface.md).
+Её порождает `scripts/ci/generate-tool-surface.py` из `tools/list` собранного
+бинаря, а совпадение с бинарём проверяет `tests/ci/test_tool_surface_ledger.py`.
+Копия описаний здесь не ведётся: без стража она устаревает. К 2026-09-26 три
+из одиннадцати описаний прежнего снимка уже отличались от кода.
+Имена канонические, префикс вызова назначает хост.
 
-| Tool сервера `unica` | `description` |
-| --- | --- |
-| `unica.view` | Inspect the workspace with no arguments, or read one logical 1C node by address. |
-| `unica.apply` | Preview or atomically apply typed edits to one logically addressed 1C node. |
-| `unica.resolve` | Emergency bridge between a logical address and the source layout, in both directions. Use it only when a path arrived from outside Unica - a diff, a build log, a stack trace - or when a file has to be opened outside Unica. To find an object by name use search; to read it use view. |
-| `unica.search` | Search one corpus for a query: BSL module text, or the names and synonyms of metadata objects. Optionally under one logical subtree. |
-| `unica.check` | Confirm workspace source-set admission, or validate one logical node: readability plus every validator its kind owns. |
-| `unica.diff` | Compare two readable logical nodes of the same kind without changing files. |
-| `unica.run` | List canonical runtime operations and their invocation contract, or preview/execute one implemented operation. |
-| `unica.docs` | Search bundled Unica and safe 1C documentation by topic. |
-| `unica.task.get` | Read the current durable Task state immediately without waiting or re-running the subject tool. |
-| `unica.task.result` | Wait for a Task result for a bounded interval; returns the canonical result or a new working receipt without re-running the subject tool. |
-| `unica.task.cancel` | Idempotently request cancellation and return the current durable Task state without re-running the subject tool. |
-
-Первые восемь tools входят в основной каталог. Последние три добавляются
-профилем совместимости; с native Tasks их нет. Этот выбор находится в
+Основной каталог — восемь tools: `unica.view`, `unica.apply`, `unica.resolve`,
+`unica.search`, `unica.check`, `unica.diff`, `unica.run` и `unica.docs`.
+Профиль совместимости добавляет `unica.task.get`, `unica.task.result` и
+`unica.task.cancel`; с native Tasks их нет. Этот выбор находится в
 [interfaces/mcp.rs](crates/unica-coder/src/interfaces/mcp.rs).
 Поэтому требование «всегда ровно 11 tools» неверно.
 `initialize`, `tools/list`, `tools/call` — методы протокола, не дополнительные tools.
 
-При обычной правке Rust этот каталог не дочитывается. При изменении
+При обычной правке Rust эта сводка не дочитывается. При изменении
 MCP-поведения агент получает схему затронутого tool и ответ соответствующего
 сценария; полный `tools/list` нужен при проверке состава поверхности.
 `unica.check` проверяет 1С-источники и не заменяет Rust/Python-тесты Unica.
 
-В исследованной сессии установленный плагин предоставляет более старые имена,
+В исследованной сессии установленный плагин предоставлял более старые имена,
 включая `unica.documentation.search`, а checkout — `unica.docs`.
 Наличие и успех tools установленного плагина не доказывают работу этой сборки.
-Список выше сверён по коду; живой MCP-сеанс в рамках создания схемы не запускался.
 
 ## 6. Где должна жить каждая обязанность
 
@@ -396,8 +393,20 @@ MCP-изменение, падение теста с `check` и продолже
 Для Codex подтверждены обнаружение четырёх навыков как `repo/enabled` через
 `skills/list` и выбор development/testing в новой CLI-сессии: агент прочитал
 правило, тело теста и выполнил существующую проверку платформенной границы.
-Для Claude настроен импорт, но реальный маршрут пока не проверен: локальный
-CLI не авторизован. Независимые субагенты не заменяют проверку этого хоста.
+Для Claude маршрут частично проверен 2026-09-26 в сессии Claude Code desktop
+в worktree. `CLAUDE.md` с импортом `@AGENTS.md` пришёл на старте. Проектных
+`unica-*` в каталоге скиллов хоста не было, и агент выбрал нужные по шапкам
+`.agents/skills/*/SKILL.md`, как задаёт AGENTS.md. Разбор падения теста через
+`check` и продолжение после сжатия контекста у Claude пока не проверены.
+Независимые субагенты не заменяют проверку этого хоста.
+
+Если в worktree нет собственного `.claude/skills`, Claude Code загружает скиллы
+из `.claude/skills` основного checkout
+([Anthropic — worktrees](https://code.claude.com/docs/en/worktrees#what-worktrees-share-with-the-main-checkout)).
+В сессию попадает всё, что там лежит: файлы текущей ветки основного checkout
+и неотслеживаемые. 2026-09-26 основной checkout стоял на ветке до #995, и каждая
+сессия получала устаревший скилл `release` рядом с путём к `unica-release`.
+Настройка описана в [CONTRIBUTING](CONTRIBUTING.md#claude-code-в-worktree).
 
 Runner не загружает Markdown в контекст: поиск связанного правила остаётся
 действием агента по unica-testing. Каталог внешних инструментов, уже переданный

@@ -49,6 +49,17 @@ cargo clippy --version
 rust-analyzer --version
 ```
 
+### Claude Code в worktree
+
+Если в worktree нет собственного `.claude/skills`, Claude Code загружает скиллы
+из `.claude/skills` основного checkout; `.claude/agents` и `.claude/commands`
+подгружаются так же
+([Anthropic — worktrees](https://code.claude.com/docs/en/worktrees#what-worktrees-share-with-the-main-checkout)).
+В Unica `.claude/` не отслеживается, поэтому в сессию попадает содержимое
+`.claude/` основного checkout. Держите его на актуальном `main` и не храните там
+скиллы разработки: старая ветка или неотслеживаемый файл добавят устаревший
+скилл во все сессии worktree.
+
 ## `rust-analyzer` для кодового агента
 
 Установите [`rust-analyzer`](https://rust-analyzer.github.io/book/rust_analyzer_binary.html)
