@@ -83,3 +83,15 @@ pub(super) fn assert_independent_copy(source: &Path, copied: &Path) {
 
 #[cfg(not(unix))]
 pub(super) fn assert_independent_copy(_source: &Path, _copied: &Path) {}
+
+#[cfg(unix)]
+pub(super) fn symlink_directory(target: &Path, link: &Path) -> bool {
+    std::os::unix::fs::symlink(target, link).unwrap();
+    true
+}
+
+// A Windows symlink needs a privilege the runner may lack; the caller skips the case.
+#[cfg(not(unix))]
+pub(super) fn symlink_directory(_target: &Path, _link: &Path) -> bool {
+    false
+}

@@ -5473,10 +5473,8 @@ fn output_directory_refusal_rules_are_fail_closed() {
         assert!(refusal.contains("repository tree"), "{refusal}");
     }
     assert!(!inside_absent.exists());
-    #[cfg(unix)]
-    {
-        let repo_link = root.join("repo-link");
-        std::os::unix::fs::symlink(&repo, &repo_link).unwrap();
+    let repo_link = root.join("repo-link");
+    if platform_support::symlink_directory(&repo, &repo_link) {
         let through_link = repo_link.join("new-corpus-output");
         let refusal = validate_output_directory(through_link.to_str().unwrap(), &repo, &home)
             .expect_err(
