@@ -30,8 +30,10 @@
 автоматически очищать рабочие исходники. Такой сценарий не доказывает повторный импорт
 дословного экспорта без этой компенсации.
 
-Корпус создаёт ignored-тест `generate_platform_xml_corpus` цели
-`format_8_3_27_xml_corpus`; выход задаёт `UNICA_XML_CORPUS_DIR`.
+Корпус создаёт исследование `scripts/research/xml-corpus.sh`: оно запускает
+тест `generate_platform_xml_corpus` цели `research_xml_corpus` за feature
+`research`. Каталог выхода вне дерева репозитория задай обязательной
+переменной `UNICA_XML_CORPUS_DIR`.
 Статическую проверку выполняет `scripts/dev/verify-8-3-27-xml.py`,
 платформенную — `scripts/dev/verify-8-3-27-platform.py`.
 Каталоги корпуса и evidence должны быть отдельными и пустыми перед запуском;
