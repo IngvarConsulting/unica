@@ -6,6 +6,12 @@ name: Publish Unica Marketplace
 # anchor tag, verify the candidate the way a consumer installs it, and only
 # then move the catalog. Every stage is idempotent, so rerunning the whole
 # workflow resumes a partial publication instead of corrupting it.
+#
+# Two channels share the marketplace repository. `main` is the stable catalog
+# (`unica`) and never names a prerelease. `next` is the candidate channel
+# (`unica-next`): a `-rc.N` tag reaches only it, and every stable release
+# reaches it too, so a candidate's testers update to the release it became.
+# scripts/ci/release-channel.py owns the channel rules and the SemVer order.
 
 on:
   workflow_run: # zizmor: ignore[dangerous-triggers] условие джобы gate принимает только успешный push-прогон тега этого же репозитория
@@ -31,9 +37,9 @@ concurrency:
 
 jobs:
   gate:
-    # Предвыпуск собирается и публикует ассеты, но каталога не касается: он
-    # существует для замеров и не существует для пользователей. Решает это
-    # конвейер, а не память того, кто его запускал, — иначе однажды забудут.
+    # Канал решает конвейер, а не память того, кто его запускал: стабильный
+    # выпуск идёт в main и next, кандидат `-rc.N` — только в next, прочие
+    # предвыпуски существуют для замеров и не публикуются вовсе.
     #
     # Publishing targets the IngvarConsulting marketplace and needs the shared
     # credential, so a fork must never run it — its workflow_run trigger fires
@@ -49,28 +55,33 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      promote: ${{ steps.decide.outputs.promote }}
+      channel: ${{ steps.decide.outputs.channel }}
     env:
       GH_TOKEN: ${{ github.token }}
       SOURCE_RUN_ID: ${{ github.event.workflow_run.id || inputs.source_run_id }}
     steps:
-      - name: Decide whether this release reaches consumers
+      # Правила канала берутся из коммита самого workflow, а не из тега:
+      # код тега не должен исполняться рядом с токеном маркетплейса.
+      - name: Check out the release channel rules
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: rules
+          persist-credentials: false
+          sparse-checkout: scripts/ci/release-channel.py
+          sparse-checkout-cone-mode: false
+      - name: Decide which channel this release reaches
         id: decide
         run: |
           set -euo pipefail
           tag="$(gh api "repos/IngvarConsulting/unica/actions/runs/${SOURCE_RUN_ID}" --jq .head_branch)"
-          # Суффикс после версии — предвыпуск по SemVer. Сборка его выложила,
-          # каталог о нём не узнает.
-          case "$tag" in
-            v[0-9]*.[0-9]*.[0-9]*-*) promote=false ;;
-            *) promote=true ;;
-          esac
-          echo "promote=$promote" >> "$GITHUB_OUTPUT"
-          printf '%s: promote=%s\n' "$tag" "$promote" >> "$GITHUB_STEP_SUMMARY"
+          channel="$(python3 rules/scripts/ci/release-channel.py channel "$tag")"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+          printf '%s: channel=%s\n' "$tag" "$channel" >> "$GITHUB_STEP_SUMMARY"
 
   stage:
     needs: gate
-    if: needs.gate.outputs.promote == 'true'
+    if: needs.gate.outputs.channel == 'stable' || needs.gate.outputs.channel == 'next'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     outputs:
@@ -80,7 +91,18 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.UNICA_MARKETPLACE_TOKEN }}
       SOURCE_RUN_ID: ${{ github.event.workflow_run.id || inputs.source_run_id }}
+      CHANNEL: ${{ needs.gate.outputs.channel }}
     steps:
+      # Правила канала берутся из коммита самого workflow, а не из тега:
+      # код тега не должен исполняться рядом с токеном маркетплейса.
+      - name: Check out the release channel rules
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: rules
+          persist-credentials: false
+          sparse-checkout: scripts/ci/release-channel.py
+          sparse-checkout-cone-mode: false
       - name: Require explicit cross-repository credential
         run: test -n "$GH_TOKEN"
       - name: Configure Git credentials
@@ -120,44 +142,97 @@ jobs:
           test "$run_conclusion" = "success"
           test "$run_branch" = "$RELEASE_TAG"
           gh api "repos/IngvarConsulting/unica/git/ref/tags/${RELEASE_TAG}" --silent
-      - name: Push the staged payload without changing the stable catalog
+      - name: Push the staged payload without changing any catalog
         id: push
         env:
           RELEASE_TAG: ${{ steps.identity.outputs.release_tag }}
         run: |
           set -euo pipefail
+          rules=rules/scripts/ci/release-channel.py
+          codex=.agents/plugins/marketplace.json
+          claude=.claude-plugin/marketplace.json
           gh repo clone IngvarConsulting/unica-marketplace marketplace
-          # A rerun of an old release after a newer one is live must fail here,
-          # not roll the branch back: the catalog only ever moves forward. Both
-          # host catalogs are read — guarding one would trust them to be in
-          # lockstep, which is the invariant, not a given.
-          require_forward() {
-            for catalog in .agents/plugins/marketplace.json .claude-plugin/marketplace.json; do
-              current_ref="$(sed -n 's/.*"ref"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "marketplace/$catalog" | head -n 1)"
-              newest="$(printf '%s\n%s\n' "$current_ref" "$RELEASE_TAG" | sort -V | tail -n 1)"
-              test "$newest" = "$RELEASE_TAG"
-            done
+          git -C marketplace config user.name unica-release-bot
+          git -C marketplace config user.email actions@users.noreply.github.com
+          # The release both host catalogs serve at a revision, or in the working
+          # tree without one. They must agree: guarding one would trust them to
+          # be in lockstep, which is the invariant, not a given. The value is
+          # always assigned before use, so a failed read stops the job instead
+          # of passing an empty ref for a first publication.
+          served_ref() {
+            if [ -n "${1:-}" ]; then
+              python3 "$rules" catalog-ref <(git -C marketplace show "$1:$codex") <(git -C marketplace show "$1:$claude")
+            else
+              python3 "$rules" catalog-ref "marketplace/$codex" "marketplace/$claude"
+            fi
           }
-          require_forward
+          # next рождается копией main: тот же выпуск под именем канала. Дальше
+          # всё, кроме раздаваемого плагина и каталогов канала, next берёт из
+          # main, чтобы его проверяли те же скрипты и workflow маркетплейса.
+          checkout_next() {
+            if git -C marketplace rev-parse --verify --quiet refs/remotes/origin/next > /dev/null; then
+              git -C marketplace checkout -q -B next origin/next
+            else
+              git -C marketplace checkout -q -B next origin/main
+              seed="$(served_ref)"
+              python3 "$rules" write-catalogs next "$seed" marketplace marketplace
+              git -C marketplace add "$codex" "$claude"
+              git -C marketplace commit -q -m "next: start from main at ${seed}"
+            fi
+            kept="$(mktemp -d)"
+            cp -R marketplace/plugins/unica "$kept/unica"
+            cp "marketplace/$codex" "$kept/codex.json"
+            cp "marketplace/$claude" "$kept/claude.json"
+            git -C marketplace rm -r -q .
+            git -C marketplace checkout -q origin/main -- .
+            rm -rf marketplace/plugins/unica
+            mkdir -p marketplace/plugins "marketplace/$(dirname "$codex")" "marketplace/$(dirname "$claude")"
+            cp -R "$kept/unica" marketplace/plugins/unica
+            cp "$kept/codex.json" "marketplace/$codex"
+            cp "$kept/claude.json" "marketplace/$claude"
+            git -C marketplace add -A
+            if ! git -C marketplace diff --cached --quiet; then
+              git -C marketplace commit -q -m "next: follow main outside the served plugin"
+            fi
+          }
+          # A rerun of an old release after a newer one is live must fail here,
+          # not roll a branch back: a catalog only ever moves forward, in SemVer
+          # order. A stable release stages on main; a candidate stages on next
+          # and must not be older than what either channel already serves.
+          main_ref="$(served_ref origin/main)"
+          python3 "$rules" forward "$main_ref" "$RELEASE_TAG"
+          if [ "$CHANNEL" = next ]; then
+            branch=next
+            checkout_next
+            next_ref="$(served_ref)"
+            python3 "$rules" forward "$next_ref" "$RELEASE_TAG"
+          else
+            branch=main
+            git -C marketplace checkout -q -B main origin/main
+          fi
           rm -rf marketplace/plugins/unica
           mkdir -p marketplace/plugins
           cp -R payload/plugins/unica marketplace/plugins/unica
           git -C marketplace add plugins/unica
           if git -C marketplace diff --cached --quiet; then
             # A rerun after a completed stage: the payload is already on the
-            # branch, so the staged state is whatever main already carries.
+            # branch, so the staged state is whatever the branch already carries.
+            # The push is a no-op then; it only matters for a next branch this
+            # job has just started, which exists nowhere else yet.
+            git -C marketplace push -q origin "HEAD:${branch}"
             echo "staging_sha=$(git -C marketplace rev-parse HEAD)" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          git -C marketplace -c user.name=unica-release-bot -c user.email=actions@users.noreply.github.com \
-            commit -m "stage: Unica ${RELEASE_TAG}"
+          git -C marketplace commit -q -m "stage: Unica ${RELEASE_TAG}"
           # The push may race a concurrent catalog edit; one rebase retry keeps
           # the staged tree identical because the commit carries only
-          # plugins/unica.
-          if ! git -C marketplace push origin HEAD:main; then
-            git -C marketplace -c user.name=unica-release-bot -c user.email=actions@users.noreply.github.com \
-              pull --rebase origin main
-            git -C marketplace push origin HEAD:main
+          # plugins/unica. The branch may serve a newer release by then, so the
+          # order is proven again against the state the commit now sits on.
+          if ! git -C marketplace push origin "HEAD:${branch}"; then
+            git -C marketplace pull -q --rebase origin "$branch"
+            after_rebase="$(served_ref HEAD~1)"
+            python3 "$rules" forward "$after_rebase" "$RELEASE_TAG"
+            git -C marketplace push origin "HEAD:${branch}"
           fi
           echo "staging_sha=$(git -C marketplace rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
@@ -197,17 +272,20 @@ jobs:
           git -C marketplace push origin "refs/tags/${RELEASE_TAG}"
 
   verify-fresh-install:
-    needs: [stage, tag]
+    needs: [gate, stage, tag]
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: macos-15
             target: darwin-arm64
+            python: python3
           - os: ubuntu-latest
             target: linux-x64
+            python: python3
           - os: windows-2022
             target: win-x64
+            python: python
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     env:
@@ -215,7 +293,18 @@ jobs:
       RELEASE_TAG: ${{ needs.stage.outputs.release_tag }}
       STAGING_SHA: ${{ needs.stage.outputs.staging_sha }}
       SOURCE_RUN_ID: ${{ needs.stage.outputs.source_run_id }}
+      CHANNEL: ${{ needs.gate.outputs.channel }}
     steps:
+      # Правила канала берутся из коммита самого workflow, а не из тега:
+      # код тега не должен исполняться рядом с токеном маркетплейса.
+      - name: Check out the release channel rules
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: rules
+          persist-credentials: false
+          sparse-checkout: scripts/ci/release-channel.py
+          sparse-checkout-cone-mode: false
       - name: Materialize the candidate marketplace
         shell: bash
         run: |
@@ -227,11 +316,13 @@ jobs:
         shell: bash
         env:
           DOWNLOAD_TOKEN: ${{ secrets.UNICA_MARKETPLACE_TOKEN }}
+          PYTHON: ${{ matrix.python }}
         run: |
+          set -euo pipefail
           GH_TOKEN="$DOWNLOAD_TOKEN" gh run download "$SOURCE_RUN_ID" --repo IngvarConsulting/unica --name unica-thin-marketplace --dir payload
-          mkdir -p candidate/.agents/plugins candidate/.claude-plugin
-          cp payload/.agents/plugins/marketplace.json candidate/.agents/plugins/marketplace.json
-          cp payload/.claude-plugin/marketplace.json candidate/.claude-plugin/marketplace.json
+          # The candidate is installed from the catalogs of its own channel,
+          # under the name a consumer of that channel adds.
+          "$PYTHON" rules/scripts/ci/release-channel.py write-catalogs "$CHANNEL" "$RELEASE_TAG" payload candidate
       - name: Install the current locked Codex CLI
         uses: IngvarConsulting/unica-marketplace/.github/actions/setup-locked-codex@main
         with:
@@ -251,14 +342,15 @@ jobs:
           }
           if (Get-Command node -ErrorAction SilentlyContinue) { throw 'Node.js leaked into the consumer PATH' }
           $expected = $env:RELEASE_TAG.TrimStart('v')
+          $plugin = if ($env:CHANNEL -eq 'next') { 'unica@unica-next' } else { 'unica@unica' }
           $candidate = Join-Path $env:GITHUB_WORKSPACE 'candidate'
           & $env:CODEX_BIN plugin marketplace add $candidate --json
-          & $env:CODEX_BIN plugin add unica@unica --json
+          & $env:CODEX_BIN plugin add $plugin --json
           $state = (& $env:CODEX_BIN plugin list --available --json) | ConvertFrom-Json
           $found = @($state.installed | Where-Object {
-            $_.pluginId -eq 'unica@unica' -and $_.version -eq $expected
+            $_.pluginId -eq $plugin -and $_.version -eq $expected
           })
-          if ($found.Count -ne 1) { throw "Expected exactly one installed unica@unica $expected" }
+          if ($found.Count -ne 1) { throw "Expected exactly one installed $plugin $expected" }
           $installed = Get-ChildItem -LiteralPath $env:CODEX_HOME -Filter runtime-manifest.json -Recurse -File |
             Select-Object -First 1
           if (-not $installed) { throw 'Codex did not install the Unica package' }
@@ -269,17 +361,20 @@ jobs:
           & $bootstrap verify --plugin-root $pluginRoot
 
   verify-upgrade:
-    needs: [stage, tag]
+    needs: [gate, stage, tag]
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: macos-15
             target: darwin-arm64
+            python: python3
           - os: ubuntu-latest
             target: linux-x64
+            python: python3
           - os: windows-2022
             target: win-x64
+            python: python
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     env:
@@ -287,7 +382,18 @@ jobs:
       RELEASE_TAG: ${{ needs.stage.outputs.release_tag }}
       STAGING_SHA: ${{ needs.stage.outputs.staging_sha }}
       SOURCE_RUN_ID: ${{ needs.stage.outputs.source_run_id }}
+      CHANNEL: ${{ needs.gate.outputs.channel }}
     steps:
+      # Правила канала берутся из коммита самого workflow, а не из тега:
+      # код тега не должен исполняться рядом с токеном маркетплейса.
+      - name: Check out the release channel rules
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: rules
+          persist-credentials: false
+          sparse-checkout: scripts/ci/release-channel.py
+          sparse-checkout-cone-mode: false
       - name: Materialize the candidate marketplace
         shell: bash
         run: |
@@ -301,7 +407,7 @@ jobs:
           profile: current
           target: ${{ matrix.target }}
           codex-home: ${{ runner.temp }}/codex-home
-      - name: Install the previous stable from the staged tree
+      - name: Install the previous version from the staged tree
         shell: pwsh
         env:
           TARGET: ${{ matrix.target }}
@@ -313,21 +419,26 @@ jobs:
             $env:PATH = "$env:CODEX_BIN_DIR`:/usr/bin:/bin"
           }
           if (Get-Command node -ErrorAction SilentlyContinue) { throw 'Node.js leaked into the consumer PATH' }
-          # The staging commit still carries the previous catalog: the payload
-          # replaced plugins/unica only. Installing from it seeds exactly the
-          # version a real consumer holds before this release.
+          # The staging commit still carries the previous catalog of its channel:
+          # the payload replaced plugins/unica only. Installing from it seeds
+          # exactly the version a consumer of that channel holds before this
+          # release — the previous stable on main, the previous candidate or
+          # stable on next.
+          $plugin = if ($env:CHANNEL -eq 'next') { 'unica@unica-next' } else { 'unica@unica' }
           $candidate = Join-Path $env:GITHUB_WORKSPACE 'candidate'
           & $env:CODEX_BIN plugin marketplace add $candidate --json
-          & $env:CODEX_BIN plugin add unica@unica --json
+          & $env:CODEX_BIN plugin add $plugin --json
       - name: Download the candidate catalog
         shell: bash
         env:
           DOWNLOAD_TOKEN: ${{ secrets.UNICA_MARKETPLACE_TOKEN }}
+          PYTHON: ${{ matrix.python }}
         run: |
+          set -euo pipefail
           GH_TOKEN="$DOWNLOAD_TOKEN" gh run download "$SOURCE_RUN_ID" --repo IngvarConsulting/unica --name unica-thin-marketplace --dir payload
-          mkdir -p candidate/.agents/plugins candidate/.claude-plugin
-          cp payload/.agents/plugins/marketplace.json candidate/.agents/plugins/marketplace.json
-          cp payload/.claude-plugin/marketplace.json candidate/.claude-plugin/marketplace.json
+          # The candidate is installed from the catalogs of its own channel,
+          # under the name a consumer of that channel adds.
+          "$PYTHON" rules/scripts/ci/release-channel.py write-catalogs "$CHANNEL" "$RELEASE_TAG" payload candidate
       - name: Upgrade to the candidate and verify MCP
         shell: pwsh
         env:
@@ -346,13 +457,14 @@ jobs:
           # A directory marketplace re-reads the catalog from disk, so the
           # reinstall below is what carries the consumer from the previous
           # stable to the candidate.
-          & $env:CODEX_BIN plugin remove unica@unica --json
-          & $env:CODEX_BIN plugin add unica@unica --json
+          $plugin = if ($env:CHANNEL -eq 'next') { 'unica@unica-next' } else { 'unica@unica' }
+          & $env:CODEX_BIN plugin remove $plugin --json
+          & $env:CODEX_BIN plugin add $plugin --json
           $state = (& $env:CODEX_BIN plugin list --available --json) | ConvertFrom-Json
           $found = @($state.installed | Where-Object {
-            $_.pluginId -eq 'unica@unica' -and $_.version -eq $expected
+            $_.pluginId -eq $plugin -and $_.version -eq $expected
           })
-          if ($found.Count -ne 1) { throw "Expected exactly one installed unica@unica $expected after upgrade" }
+          if ($found.Count -ne 1) { throw "Expected exactly one installed $plugin $expected after upgrade" }
           $installed = Get-ChildItem -LiteralPath $env:CODEX_HOME -Filter runtime-manifest.json -Recurse -File |
             Sort-Object LastWriteTime -Descending | Select-Object -First 1
           if (-not $installed) { throw 'Codex did not install the upgraded Unica package' }
@@ -364,15 +476,26 @@ jobs:
 
   promote:
     # The single commit point (ADR-0008): consumers see nothing until this job
-    # moves the catalog, and it runs only behind green consumer installs.
-    needs: [stage, tag, verify-fresh-install, verify-upgrade]
+    # moves a catalog, and it runs only behind green consumer installs.
+    needs: [gate, stage, tag, verify-fresh-install, verify-upgrade]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ secrets.UNICA_MARKETPLACE_TOKEN }}
       RELEASE_TAG: ${{ needs.stage.outputs.release_tag }}
       SOURCE_RUN_ID: ${{ needs.stage.outputs.source_run_id }}
+      CHANNEL: ${{ needs.gate.outputs.channel }}
     steps:
+      # Правила канала берутся из коммита самого workflow, а не из тега:
+      # код тега не должен исполняться рядом с токеном маркетплейса.
+      - name: Check out the release channel rules
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: rules
+          persist-credentials: false
+          sparse-checkout: scripts/ci/release-channel.py
+          sparse-checkout-cone-mode: false
       - name: Require explicit cross-repository credential
         run: test -n "$GH_TOKEN"
       - name: Configure Git credentials
@@ -380,46 +503,119 @@ jobs:
       - name: Download the candidate catalog
         run: |
           gh run download "$SOURCE_RUN_ID" --repo IngvarConsulting/unica --name unica-thin-marketplace --dir payload
+          test -f payload/plugins/unica/.codex-plugin/plugin.json
           test -f payload/.agents/plugins/marketplace.json
           test -f payload/.claude-plugin/marketplace.json
-      - name: Move both host catalogs to the published tag
+      - name: Move the channel catalogs to the published tag
         run: |
           set -euo pipefail
+          rules=rules/scripts/ci/release-channel.py
+          codex=.agents/plugins/marketplace.json
+          claude=.claude-plugin/marketplace.json
           gh repo clone IngvarConsulting/unica-marketplace marketplace
-          # The same forward-only guard as staging, over both host catalogs: a
-          # stale run that lost the race to a newer release fails instead of
-          # serving a rollback.
-          require_forward() {
-            # With a rev argument the catalogs are read from that revision,
-            # otherwise from the working tree.
-            for catalog in .agents/plugins/marketplace.json .claude-plugin/marketplace.json; do
-              if [ -n "${1:-}" ]; then
-                current_ref="$(git -C marketplace show "$1:$catalog" | sed -n 's/.*"ref"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
-              else
-                current_ref="$(sed -n 's/.*"ref"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "marketplace/$catalog" | head -n 1)"
-              fi
-              newest="$(printf '%s\n%s\n' "$current_ref" "$RELEASE_TAG" | sort -V | tail -n 1)"
-              test "$newest" = "$RELEASE_TAG"
-            done
+          git -C marketplace config user.name unica-release-bot
+          git -C marketplace config user.email actions@users.noreply.github.com
+          # The release both host catalogs serve at a revision, or in the working
+          # tree without one; they must agree. The value is always assigned
+          # before use, so a failed read stops the job instead of passing an
+          # empty ref for a first publication.
+          served_ref() {
+            if [ -n "${1:-}" ]; then
+              python3 "$rules" catalog-ref <(git -C marketplace show "$1:$codex") <(git -C marketplace show "$1:$claude")
+            else
+              python3 "$rules" catalog-ref "marketplace/$codex" "marketplace/$claude"
+            fi
           }
-          require_forward
-          mkdir -p marketplace/.agents/plugins marketplace/.claude-plugin
-          cp payload/.agents/plugins/marketplace.json marketplace/.agents/plugins/marketplace.json
-          cp payload/.claude-plugin/marketplace.json marketplace/.claude-plugin/marketplace.json
-          git -C marketplace add .agents/plugins/marketplace.json .claude-plugin/marketplace.json
-          if git -C marketplace diff --cached --quiet; then
-            echo "catalog already serves ${RELEASE_TAG}"
-            exit 0
+          # next рождается копией main: тот же выпуск под именем канала. Дальше
+          # всё, кроме раздаваемого плагина и каталогов канала, next берёт из
+          # main, чтобы его проверяли те же скрипты и workflow маркетплейса.
+          checkout_next() {
+            if git -C marketplace rev-parse --verify --quiet refs/remotes/origin/next > /dev/null; then
+              git -C marketplace checkout -q -B next origin/next
+            else
+              git -C marketplace checkout -q -B next origin/main
+              seed="$(served_ref)"
+              python3 "$rules" write-catalogs next "$seed" marketplace marketplace
+              git -C marketplace add "$codex" "$claude"
+              git -C marketplace commit -q -m "next: start from main at ${seed}"
+            fi
+            kept="$(mktemp -d)"
+            cp -R marketplace/plugins/unica "$kept/unica"
+            cp "marketplace/$codex" "$kept/codex.json"
+            cp "marketplace/$claude" "$kept/claude.json"
+            git -C marketplace rm -r -q .
+            git -C marketplace checkout -q origin/main -- .
+            rm -rf marketplace/plugins/unica
+            mkdir -p marketplace/plugins "marketplace/$(dirname "$codex")" "marketplace/$(dirname "$claude")"
+            cp -R "$kept/unica" marketplace/plugins/unica
+            cp "$kept/codex.json" "marketplace/$codex"
+            cp "$kept/claude.json" "marketplace/$claude"
+            git -C marketplace add -A
+            if ! git -C marketplace diff --cached --quiet; then
+              git -C marketplace commit -q -m "next: follow main outside the served plugin"
+            fi
+          }
+          # Sets `status` for the checked-out branch: 0 when the release moves
+          # it forward or it already serves the release, 1 when it serves a
+          # newer one. An unreadable catalog stops the job.
+          compare() {
+            current="$(served_ref)"
+            status=0
+            python3 "$rules" forward "$current" "$RELEASE_TAG" || status=$?
+            if [ "$status" -gt 1 ]; then exit "$status"; fi
+          }
+          # Serves the release on the checked-out branch. next carries the
+          # plugin bytes as well, so its tree describes what it serves.
+          publish() {
+            branch="$1"
+            if [ "$branch" = next ]; then
+              rm -rf marketplace/plugins/unica
+              mkdir -p marketplace/plugins
+              cp -R payload/plugins/unica marketplace/plugins/unica
+              git -C marketplace add plugins/unica
+            fi
+            target=stable
+            if [ "$branch" = next ]; then target=next; fi
+            python3 "$rules" write-catalogs "$target" "$RELEASE_TAG" payload marketplace
+            git -C marketplace add "$codex" "$claude"
+            if git -C marketplace diff --cached --quiet; then
+              echo "${branch} already serves ${RELEASE_TAG}"
+              git -C marketplace push -q origin "HEAD:${branch}"
+              return 0
+            fi
+            git -C marketplace commit -q -m "promote: Unica ${RELEASE_TAG}"
+            if ! git -C marketplace push origin "HEAD:${branch}"; then
+              git -C marketplace pull -q --rebase origin "$branch"
+              # The rebase replayed this commit onto whatever the branch holds
+              # now (HEAD~1). A conflicting catalog already failed the rebase
+              # above; an unrelated edit rebases clean — prove the move is still
+              # forward against that state before publishing it.
+              after_rebase="$(served_ref HEAD~1)"
+              python3 "$rules" forward "$after_rebase" "$RELEASE_TAG"
+              git -C marketplace push origin "HEAD:${branch}"
+            fi
+          }
+          # next moves first: at every moment it is not older than main, so a
+          # failure between the two pushes never leaves candidate testers
+          # behind stable consumers. A stable release older than the candidate
+          # next already serves leaves next alone; a stale straggler fails on
+          # main instead of serving a rollback.
+          checkout_next
+          compare
+          if [ "$status" -eq 0 ]; then
+            publish next
+          elif [ "$CHANNEL" = next ]; then
+            echo "next already serves a release newer than ${RELEASE_TAG}" >&2
+            exit 1
+          else
+            echo "next already serves a release newer than ${RELEASE_TAG} and keeps it"
           fi
-          git -C marketplace -c user.name=unica-release-bot -c user.email=actions@users.noreply.github.com \
-            commit -m "promote: Unica ${RELEASE_TAG}"
-          if ! git -C marketplace push origin HEAD:main; then
-            git -C marketplace -c user.name=unica-release-bot -c user.email=actions@users.noreply.github.com \
-              pull --rebase origin main
-            # The rebase replayed this commit onto whatever main holds now
-            # (HEAD~1). A conflicting catalog already failed the rebase above;
-            # an unrelated edit rebases clean — prove the move is still
-            # forward against that state before publishing it.
-            require_forward "HEAD~1"
-            git -C marketplace push origin HEAD:main
+          if [ "$CHANNEL" = stable ]; then
+            git -C marketplace checkout -q -B main origin/main
+            compare
+            if [ "$status" -ne 0 ]; then
+              echo "main already serves a release newer than ${RELEASE_TAG}" >&2
+              exit 1
+            fi
+            publish main
           fi

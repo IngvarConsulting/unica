@@ -907,32 +907,39 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             with self.subTest(job_id=job_id):
                 self.assertIn(job_id, jobs(self.publish))
         self.assertEqual(needs(job(self.publish, "tag")), ["stage"])
-        self.assertEqual(needs(job(self.publish, "verify-fresh-install")), ["stage", "tag"])
-        self.assertEqual(needs(job(self.publish, "verify-upgrade")), ["stage", "tag"])
-        self.assertEqual(needs(job(self.publish, "promote")), ["stage", "tag", "verify-fresh-install", "verify-upgrade"])
+        self.assertEqual(needs(job(self.publish, "verify-fresh-install")), ["gate", "stage", "tag"])
+        self.assertEqual(needs(job(self.publish, "verify-upgrade")), ["gate", "stage", "tag"])
+        self.assertEqual(
+            needs(job(self.publish, "promote")),
+            ["gate", "stage", "tag", "verify-fresh-install", "verify-upgrade"],
+        )
         # The PR ceremony is gone with the warden: nothing opens pull requests
         # and no metadata travels in branch names.
         self.assertNotIn("pr create", text)
         self.assertNotIn("codex/stage-", text)
         self.assertNotIn("codex/promote-", text)
         self.assertNotIn("mode", on["workflow_dispatch"]["inputs"])
+        stage_push = step_named(job(self.publish, "stage"), "Push the staged payload without changing any catalog")["run"]
+        promote_move = step_named(job(self.publish, "promote"), "Move the channel catalogs to the published tag")["run"]
         # Idempotent escapes: a completed stage and a completed promote are
-        # detected, and an existing tag is proven identical, never moved.
-        self.assertEqual(text.count("diff --cached --quiet"), 2)
+        # detected, and an existing tag is proven identical, never moved. The
+        # behaviour, reruns included, is exercised in test_publish_channels.
+        self.assertIn('echo "staging_sha=$(git -C marketplace rev-parse HEAD)" >> "$GITHUB_OUTPUT"\n  exit 0', stage_push)
+        self.assertIn('echo "${branch} already serves ${RELEASE_TAG}"', promote_move)
         self.assertIn('rev-parse --verify --quiet "refs/tags/${RELEASE_TAG}"', text)
         self.assertNotIn("git tag -f", text)
         self.assertNotIn("--force", text)
         # Two releases must not interleave, and a stale straggler must fail
-        # forward-only instead of rolling the catalog back — in both writers,
-        # over both host catalogs, and again after a rebase retry in promote.
+        # forward-only instead of rolling a catalog back — in both writers,
+        # over both host catalogs, in SemVer order, and again after a rebase
+        # retry.
         self.assertEqual(self.publish["concurrency"], {"group": "publish-unica-marketplace", "cancel-in-progress": False})
-        self.assertEqual(text.count("require_forward()"), 2)
-        self.assertEqual(text.count('test "$newest" = "$RELEASE_TAG"'), 2)
-        self.assertEqual(
-            text.count(".agents/plugins/marketplace.json .claude-plugin/marketplace.json"),
-            3,  # both guard loops and the promote `git add`
-        )
-        self.assertIn('require_forward "HEAD~1"', text)
+        self.assertNotIn("sort -V", text)
+        for writer in (stage_push, promote_move):
+            with self.subTest(writer=writer.splitlines()[1]):
+                self.assertIn('python3 "$rules" catalog-ref "marketplace/$codex" "marketplace/$claude"', writer)
+                self.assertIn('python3 "$rules" forward', writer)
+                self.assertIn('after_rebase="$(served_ref HEAD~1)"', writer)
         # The payload is trusted only from the successful push build of the
         # very tag its manifest declares — dispatch cannot smuggle another one.
         self.assertIn('test "$run_event" = "push"', text)
@@ -949,8 +956,13 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         # the move is a reinstall against the rewritten catalog: `plugin
         # marketplace upgrade` fetches a Git remote and refuses one.
         self.assertNotIn("plugin marketplace upgrade unica", text)
-        self.assertIn("plugin remove unica@unica --json", text)
-        self.assertEqual(text.count("plugin add unica@unica --json"), 3)
+        self.assertIn("plugin remove $plugin --json", text)
+        self.assertEqual(text.count("plugin add $plugin --json"), 3)
+        # Each channel is installed under the name its consumers add.
+        self.assertEqual(
+            text.count("$plugin = if ($env:CHANNEL -eq 'next') { 'unica@unica-next' } else { 'unica@unica' }"),
+            3,
+        )
         self.assertIn("verify --plugin-root $pluginRoot", text)
 
 
@@ -1079,13 +1091,14 @@ class ArtifactSplitPublicationTests(unittest.TestCase):
         self.assertIn("prefetch --plugin-root .build/thin/plugins/unica", script(smoke))
 
 
-class PrereleaseNeverReachesConsumersTests(unittest.TestCase):
-    """Предвыпуск собирается и публикует ассеты, но каталога не касается.
+class CandidateChannelTests(unittest.TestCase):
+    """Кандидат выпуска раздаётся только каналу next, стабильный — обоим каналам.
 
     Замерить доставку можно только на настоящем релизе: адрес архива прибит к
-    релизам репозитория. Значит нужен выпуск, который существует для нас и не
-    существует для пользователей, — и решать это должен конвейер, а не память
-    того, кто его запускал.
+    релизам репозитория. Кандидату `-rc.N` нужны тестировщики, и после выхода
+    полной версии они должны получить её обычным обновлением. Какой канал
+    получит выпуск, решает конвейер по тегу, а не память того, кто его запускал.
+    Поведение каналов проверяет test_publish_channels, исполняя сами шаги.
     """
 
     def setUp(self) -> None:
@@ -1099,17 +1112,43 @@ class PrereleaseNeverReachesConsumersTests(unittest.TestCase):
 
         self.assertEqual(normalized(release["with"]["prerelease"]), "${{ contains(github.ref_name, '-') }}")
 
-    def test_publication_asks_first_whether_this_release_is_for_consumers(self) -> None:
-        self.assertIn("gate", jobs(self.publish))
-        self.assertIn("promote", jobs(self.publish))
+    def test_publication_asks_first_which_channel_the_release_reaches(self) -> None:
+        gate = job(self.publish, "gate")
+
+        self.assertEqual(gate["outputs"], {"channel": "${{ steps.decide.outputs.channel }}"})
+        self.assertIn(
+            'python3 rules/scripts/ci/release-channel.py channel "$tag"',
+            step_named(gate, "Decide which channel this release reaches")["run"],
+        )
 
     def test_every_publishing_stage_waits_for_that_answer(self) -> None:
         # Достаточно загейтить первую стадию: остальные ждут её через `needs`.
+        # Предвыпуск не `-rc.N` существует для замеров и не публикуется.
         stage = job(self.publish, "stage")
 
         self.assertEqual(needs(stage), ["gate"])
-        self.assertEqual(condition(stage), "needs.gate.outputs.promote == 'true'")
+        self.assertEqual(
+            condition(stage),
+            "needs.gate.outputs.channel == 'stable' || needs.gate.outputs.channel == 'next'",
+        )
 
+    def test_channel_rules_come_from_the_workflow_commit_without_credentials(self) -> None:
+        # Код тега не исполняется рядом с токеном маркетплейса: правила канала
+        # берутся из коммита самого workflow, и checkout не оставляет токена.
+        for job_id in ("gate", "stage", "verify-fresh-install", "verify-upgrade", "promote"):
+            with self.subTest(job_id=job_id):
+                checkout = step_named(job(self.publish, job_id), "Check out the release channel rules")
+                self.assertTrue(checkout["uses"].startswith("actions/checkout@"))
+                self.assertEqual(
+                    checkout["with"],
+                    {
+                        "ref": "${{ github.sha }}",
+                        "path": "rules",
+                        "persist-credentials": False,
+                        "sparse-checkout": "scripts/ci/release-channel.py",
+                        "sparse-checkout-cone-mode": False,
+                    },
+                )
 
 if __name__ == "__main__":
     unittest.main()

@@ -39,6 +39,63 @@ claude plugin install unica@unica
 Claude Code 2.1.68 and earlier reject the catalog's `git-subdir` source type and
 cannot load it at all; 2.1.69 is the first release that accepts it.
 
+## Release candidates
+
+Release candidates (`X.Y.Z-rc.N`) are served by a separate marketplace,
+`unica-next`, from the `next` branch of the same repository; the stable
+`unica` catalog never serves them. The channel always holds the newest
+published version, so after the full release comes out, the update that
+brought a candidate brings the release, and later candidates follow.
+
+Keep only one of `unica@unica` and `unica@unica-next` installed: both start an
+MCP server named `unica`. On a machine without the stable plugin, skip its
+`remove` or `uninstall` line.
+
+Codex:
+
+```sh
+codex plugin marketplace add IngvarConsulting/unica-marketplace --ref next
+codex plugin remove unica@unica
+codex plugin add unica@unica-next
+```
+
+Update the same way as the stable channel, with the channel's names:
+
+```sh
+codex plugin marketplace upgrade unica-next
+codex plugin remove unica@unica-next
+codex plugin add unica@unica-next
+```
+
+Claude Code:
+
+```sh
+claude plugin marketplace add IngvarConsulting/unica-marketplace#next
+claude plugin uninstall unica@unica
+claude plugin install unica@unica-next
+```
+
+Update with `claude plugin marketplace update unica-next` and
+`claude plugin update unica@unica-next`, or turn on auto-update for
+`unica-next` in `/plugin`: Claude Code leaves it off for third-party
+marketplaces. The channel keeps its own runtime cache there, so its first start
+downloads the core again.
+
+To return to stable releases, swap the plugins back; the stable `unica`
+marketplace from [Public installation](#public-installation) must still be
+added. Until the full release is out, this returns to the previous stable
+version.
+
+```sh
+codex plugin remove unica@unica-next
+codex plugin add unica@unica
+```
+
+```sh
+claude plugin uninstall unica@unica-next
+claude plugin install unica@unica
+```
+
 ## Legacy transition boundary
 
 Unica `v0.7.8` is the immutable migration bridge. A local, duplicated, or

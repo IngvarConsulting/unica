@@ -1287,8 +1287,8 @@ class ProductContractTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn("needs: [stage, tag, verify-fresh-install, verify-upgrade]", publish)
-        self.assertIn("needs: [stage, tag]", publish)
+        self.assertIn("needs: [gate, stage, tag, verify-fresh-install, verify-upgrade]", publish)
+        self.assertIn("needs: [gate, stage, tag]", publish)
         # A published tag never moves; a rerun proves sameness instead.
         self.assertNotIn("git tag -f", publish)
         self.assertNotIn("--force", publish)
@@ -1446,18 +1446,15 @@ class ProductContractTests(unittest.TestCase):
         # catalogs together, or one host would be left pointing at a stale tag.
         self.assertIn("payload/plugins/unica/.claude-plugin/plugin.json", publish)
         self.assertIn("payload/.claude-plugin/marketplace.json", publish)
+        self.assertIn("codex=.agents/plugins/marketplace.json", publish)
+        self.assertIn("claude=.claude-plugin/marketplace.json", publish)
         self.assertIn(
-            "cp payload/.claude-plugin/marketplace.json "
-            "marketplace/.claude-plugin/marketplace.json",
+            'python3 "$rules" write-catalogs "$target" "$RELEASE_TAG" payload marketplace',
             publish,
         )
-        # Copying is not enough: an unstaged catalog would leave the promotion
-        # PR without the Claude entry while the copy assertion still passed.
-        self.assertIn(
-            "git -C marketplace add .agents/plugins/marketplace.json "
-            ".claude-plugin/marketplace.json",
-            publish,
-        )
+        # Writing is not enough: an unstaged catalog would leave the promotion
+        # commit without the Claude entry while the write assertion still passed.
+        self.assertIn('git -C marketplace add "$codex" "$claude"', publish)
         # The gate is pinned to the compatibility floor, not to the latest CLI.
         self.assertIn("@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION}", release)
         self.assertIn("CLAUDE_CLI_VERSION: 2.1.69", release)
