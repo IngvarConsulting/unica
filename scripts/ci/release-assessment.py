@@ -756,7 +756,9 @@ def run_tool_scenario(
 def pending_v13_task(payload: dict[str, Any] | None) -> tuple[str, int] | None:
     data = payload.get("data") if isinstance(payload, dict) else None
     task = data.get("task") if isinstance(data, dict) else None
-    if not isinstance(task, dict) or task.get("status") not in {"submitted", "working"}:
+    # Незавершённые статусы снимка задачи — словарь `project_task_snapshot`
+    # в crates/unica-coder/src/application/v13/task_tools.rs.
+    if not isinstance(task, dict) or task.get("status") not in {"queued", "working"}:
         return None
     task_id = task.get("taskId")
     poll_interval_ms = task.get("pollIntervalMs", 250)

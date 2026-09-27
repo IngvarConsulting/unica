@@ -568,6 +568,89 @@ for raw in sys.stdin:
             self.assertEqual(executions.read_text(encoding="utf-8"), "1")
             self.assertIsNone(payload)
 
+    def test_v13_scenario_polls_until_the_task_is_terminal(self) -> None:
+        # Снимок задачи несёт статус из словаря продукта
+        # (`project_task_snapshot`): `queued` и `working` ещё не результат и
+        # приходят с `ok=true`, принятый за результат снимок проваливает
+        # блокирующий сценарий на проверке данных. `failed` — уже результат:
+        # опрос на нём заканчивается, и сценарий падает.
+        module = load_assessment_module()
+        task_id = "f741d562-9d42-4a4f-a626-fcd5c3fb9bc4"
+
+        def snapshot(status: str, ok: bool = True) -> dict:
+            return {
+                "ok": ok,
+                "summary": "Task is still working" if ok else "Task failed",
+                "data": {"task": {"taskId": task_id, "status": status, "pollIntervalMs": 1}},
+            }
+
+        view = {
+            "ok": True,
+            "summary": "view completed",
+            "warnings": [],
+            "errors": [],
+            "artifacts": [],
+            "data": {"kind": "Configuration", "branches": []},
+        }
+        cases = {
+            "completed": ([snapshot("queued"), snapshot("working"), view], "passed", 2),
+            "failed": ([snapshot("queued"), snapshot("failed", ok=False)], "failed", 1),
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_mcp = root / ("run-unica.py" if os.name == "nt" else "run-unica")
+            fake_mcp.write_text(
+                """#!/usr/bin/env python3
+import json
+import os
+import sys
+from pathlib import Path
+
+cache = Path(os.environ["UNICA_CACHE_DIR"])
+answers = json.loads((cache / "answers.json").read_text(encoding="utf-8"))
+for raw in sys.stdin:
+    message = json.loads(raw)
+    if "id" not in message:
+        continue
+    response = {"jsonrpc": "2.0", "id": message["id"]}
+    if message["method"] == "initialize":
+        response["result"] = {"serverInfo": {"name": "unica"}}
+    elif message["method"] == "tools/call":
+        calls = cache / "tool-calls"
+        with calls.open("a", encoding="utf-8") as log:
+            log.write(message["params"]["name"] + "\\n")
+        content = answers[len(calls.read_text(encoding="utf-8").splitlines()) - 1]
+        response["result"] = {"content": [], "structuredContent": content, "isError": not content["ok"]}
+    print(json.dumps(response), flush=True)
+""",
+                encoding="utf-8",
+            )
+            fake_mcp.chmod(fake_mcp.stat().st_mode | stat.S_IXUSR)
+
+            for name, (answers, status, polls) in cases.items():
+                with self.subTest(name):
+                    cache = root / name
+                    cache.mkdir()
+                    (cache / "answers.json").write_text(json.dumps(answers), encoding="utf-8")
+
+                    scenario, payload = module.run_v13_tool_scenario(
+                        fake_mcp,
+                        bsp_root=root,
+                        cache_dir=cache,
+                        scenario_id="configuration-view",
+                        title="view",
+                        tool="unica.view",
+                        arguments={"at": "main:Configuration"},
+                        timeout_seconds=10,
+                    )
+
+                    self.assertEqual(scenario["status"], status, scenario)
+                    self.assertEqual(scenario["metrics"]["taskPolls"], polls)
+                    self.assertEqual(payload, answers[-1])
+                    calls = (cache / "tool-calls").read_text(encoding="utf-8").splitlines()
+                    self.assertEqual(calls, ["unica.view"] + ["unica.task.result"] * polls)
+
     def test_mcp_client_surfaces_injected_handshake_error(self) -> None:
         module = load_assessment_module()
 
