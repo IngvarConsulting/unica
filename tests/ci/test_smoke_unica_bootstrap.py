@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -254,6 +255,47 @@ class SmokeUnicaBootstrapTests(unittest.TestCase):
             provider = Path(observed["UNICA_PROVIDER_STATE_DIR"])
             self.assertEqual(provider.parent, provider.parent.resolve())
             self.assertEqual(provider.parent, Path(observed["CODEX_HOME"]).parent)
+
+    def test_smoke_keeps_the_verdict_when_the_daemon_holds_its_state(self) -> None:
+        # Демон, которого поднимает verify, переживает зонд: выдерживает
+        # период простоя и держит открытыми файлы в каталоге дыма. Windows их
+        # не удаляет (WinError 32 — это PermissionError), и ошибка уборки
+        # подменяла вердикт verify в обе стороны.
+        module = load_module()
+        real_unlink = os.unlink
+        locks: "list[Path]" = []
+
+        def held_unlink(path, *args, **kwargs):
+            if Path(path).name == ".receipt-authority.lock":
+                raise PermissionError(13, "held by the daemon", str(path))
+            return real_unlink(path, *args, **kwargs)
+
+        def verify(returncode: int, stderr: str):
+            def fake_run(args, **kwargs):
+                state = Path(kwargs["env"]["UNICA_PROVIDER_STATE_DIR"])
+                self.addCleanup(shutil.rmtree, state.parent, True)
+                lock = state / "daemon-p5-smoke" / ".receipt-authority" / ".receipt-authority.lock"
+                lock.parent.mkdir(parents=True)
+                lock.write_text("held", encoding="utf-8")
+                locks.append(lock)
+                return subprocess.CompletedProcess(args, returncode, "", stderr)
+
+            return fake_run
+
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self.plugin(Path(directory))
+            with patch.object(os, "unlink", held_unlink):
+                passed = verify(0, "verified Unica 0.9.1 package, runtime, and MCP tools at /cache")
+                with patch.object(module.subprocess, "run", side_effect=passed):
+                    module.smoke(plugin, "linux-x64", 2, expect_download_failure=False)
+                # Уборка действительно наткнулась на удерживаемый файл.
+                self.assertTrue(locks[0].exists())
+
+                failed = verify(3, "runtime refused the handshake")
+                with patch.object(module.subprocess, "run", side_effect=failed):
+                    with self.assertRaisesRegex(SystemExit, "exited with 3: runtime refused the handshake"):
+                        module.smoke(plugin, "linux-x64", 2, expect_download_failure=False)
+                self.assertTrue(locks[1].exists())
 
     def test_smoke_does_not_wait_for_a_descendant_holding_standard_output(self) -> None:
         module = load_module()

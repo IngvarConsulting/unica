@@ -126,7 +126,13 @@ def smoke(
     # guard below, which raises before the probe ever starts. The payload is a
     # build artifact other steps read, so it must not be left neutralised.
     try:
-        with tempfile.TemporaryDirectory(prefix="unica-bootstrap-smoke-") as directory:
+        # The daemon that verify starts outlives the probe: it waits out its idle
+        # grace period with files under this root open, and Windows refuses to
+        # delete an open file. A failed cleanup must not replace the verdict of
+        # verify; the runner discards whatever is left behind.
+        with tempfile.TemporaryDirectory(
+            prefix="unica-bootstrap-smoke-", ignore_cleanup_errors=True
+        ) as directory:
             # macOS /var is a symlink to /private/var; the daemon deliberately
             # refuses symlinks in its state path. Give it a physical root.
             root = Path(directory).resolve()
