@@ -981,8 +981,17 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         # Two releases must not interleave, and a stale straggler must fail
         # forward-only instead of rolling a catalog back — in both writers,
         # over both host catalogs, in SemVer order, and again after a rebase
-        # retry.
-        self.assertEqual(self.publish["concurrency"], {"group": "publish-unica-marketplace", "cancel-in-progress": False})
+        # retry. Every run the gate admits waits in one group, in order: with
+        # the default single pending slot a third release would cancel the
+        # one waiting. Runs the gate skips (every other build) get a group of
+        # their own and never touch that queue.
+        expected_group = (
+            "${{ (" + condition(gate) + ") && 'publish-unica-marketplace' || "
+            "format('publish-unica-marketplace-idle-{0}', github.run_id) }}"
+        )
+        self.assertEqual(normalized(self.publish["concurrency"]["group"]), normalized(expected_group))
+        self.assertEqual(self.publish["concurrency"]["queue"], "max")
+        self.assertIs(self.publish["concurrency"]["cancel-in-progress"], False)
         self.assertNotIn("sort -V", text)
         for writer in (stage_push, promote_move):
             with self.subTest(writer=writer.splitlines()[1]):
