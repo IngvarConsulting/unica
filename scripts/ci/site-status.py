@@ -9,11 +9,14 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import importlib.util
 import json
 import os
 import re
 import subprocess
 import sys
+import tempfile
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -22,6 +25,7 @@ from pathlib import Path
 LINE_BRANCH = re.compile(r"\Arelease-v(\d+)\.(\d+)\Z")
 # Линия патчей живёт ещё месяц после того, как вышла следующая minor.
 LINE_GRACE = timedelta(days=30)
+CHANNEL_RULES = Path(__file__).with_name("release-channel.py")
 
 
 def gh(repo: str, path: str) -> list:
@@ -139,6 +143,57 @@ def telegram_members(chat: str) -> str:
     return re.sub(r"[\s \xa0]", "", found.group(1)) if found else "—"
 
 
+def channel_rules():
+    spec = importlib.util.spec_from_file_location("release_channel", CHANNEL_RULES)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def served_release(marketplace: str, branch: str) -> str:
+    """Выпуск, который раздают оба каталога ветки маркетплейса.
+
+    Сверяет их то же правило, что и конвейер публикации: каталоги, которые
+    называют разные выпуски, — отказ, а не выбор одного из них.
+    """
+    rules = channel_rules()
+    with tempfile.TemporaryDirectory(prefix="catalogs-") as tmp:
+        paths = []
+        for host, catalog in (("codex", rules.CODEX_CATALOG), ("claude", rules.CLAUDE_CATALOG)):
+            document = gh(marketplace, f"contents/{catalog.as_posix()}?ref={branch}")[0]
+            path = Path(tmp) / f"{host}.json"
+            path.write_bytes(base64.b64decode(document["content"]))
+            paths.append(path)
+        return rules.catalog_ref(*paths)
+
+
+def channels(repo: str, marketplace: str) -> dict[str, str]:
+    """Что раздают канал кандидатов и стабильный каталог на момент сборки.
+
+    Версии называют каталоги веток маркетплейса, а не список релизов. Релиз
+    выходит до проверок установки: кандидат, который их не прошёл, остаётся
+    релизом, которого канал не раздавал, а стабильный выпуск попадает в
+    каталог только после них. Если каталог не прочитался или каталоги
+    разошлись, остаётся прочерк: называть версию, которую ветка раздаёт не
+    целиком, нельзя, а сайт из-за каталога не должен переставать собираться.
+    Адрес маркетплейса едет в страницу, чтобы скрипт освежал версии из того
+    же места.
+    """
+    releases = f"https://github.com/{repo}/releases"
+    status = {"marketplace": marketplace, "releases_url": releases}
+    for key, branch in (("next", "next"), ("stable", "main")):
+        try:
+            tag = served_release(marketplace, branch)
+        except Exception as error:
+            print(f"выпуск ветки {branch} маркетплейса не определён: {error}", file=sys.stderr)
+            tag = None
+        status[f"{key}_tag"] = tag or "—"
+        status[f"{key}_url"] = f"{releases}/tag/{tag}" if tag else releases
+    # Версию без `v` печатает `plugin list`; страница сверяет установку по ней.
+    status["next_version"] = status["next_tag"].removeprefix("v")
+    return status
+
+
 def summary_counts(path: Path | None) -> dict[str, str] | None:
     """Счётчики берутся из сводки собранного отчёта, а не из воздуха."""
     if path is None or not path.is_file():
@@ -163,6 +218,11 @@ def main() -> int:
     parser.add_argument("--summaries", type=Path, help="каталог data/ собранного сайта: сводка на линию")
     parser.add_argument("--print-lines", action="store_true", help="напечатать открытые линии и выйти")
     parser.add_argument("--telegram", default="unica_ai", help="публичная группа Telegram")
+    parser.add_argument(
+        "--marketplace",
+        default="IngvarConsulting/unica-marketplace",
+        help="репозиторий маркетплейса: его ветки next и main называют выпуски каналов",
+    )
     parser.add_argument("--report-url", default="allure/main/")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
@@ -200,6 +260,7 @@ def main() -> int:
         ),
         "github_stars": github_stars(args.repo),
         "telegram_members": telegram_members(args.telegram),
+        **channels(args.repo, args.marketplace),
     }
 
     # Пререлиз показывается только пока он впереди опубликованной версии:

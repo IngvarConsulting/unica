@@ -771,7 +771,8 @@ td.catalog-count { padding: 9px 12px; font-size: 13.5px; color: var(--muted); fo
 .qa-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 9px; font-size: 15px; color: var(--muted); }
 .qa-list li { position: relative; padding-left: 18px; }
 .qa-list li::before { content: ""; position: absolute; left: 2px; top: 10px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
-.qa-list code, .stub code, .setup p code, .needs code, .kv code {
+.qa-list code, .stub code, .setup p code, .needs code, .kv code,
+.channel .note code, .channel section > .wrap > p code, .card-version .sub code {
   background: color-mix(in srgb, var(--blue) 13%, transparent);
   color: var(--blue); padding: 2px 6px; border-radius: 5px; overflow-wrap: anywhere;
 }
@@ -785,3 +786,24 @@ td.catalog-count { padding: 9px 12px; font-size: 13.5px; color: var(--muted); fo
 @media (max-width: 760px) {
   .qa { grid-template-columns: 1fr; gap: 14px; padding: 20px 0; }
 }
+
+/* Канал кандидатов: один выбор агента на всю страницу. Радиокнопки стоят
+   первыми в <main>, а подписи к ним — в каждом разделе, поэтому агент,
+   выбранный в установке, остаётся выбранным в обновлении и в возврате.
+   Без скрипта выбор работает так же. Кнопки закреплены в окне: щелчок по
+   подписи внизу страницы иначе прокрутил бы её к кнопке наверх. */
+.host-pick { position: fixed; top: 0; left: 0; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+#pick-codex:checked ~ * .for-claude,
+#pick-claude:checked ~ * .for-codex { display: none; }
+#pick-codex:checked ~ * .hostbar label[for="pick-codex"],
+#pick-claude:checked ~ * .hostbar label[for="pick-claude"] { color: var(--ink); border-bottom-color: var(--blue); }
+#pick-codex:focus-visible ~ * .hostbar label[for="pick-codex"],
+#pick-claude:focus-visible ~ * .hostbar label[for="pick-claude"] { outline: 2px solid var(--blue); outline-offset: 2px; }
+.hostbar { margin-top: 20px; }
+.channel-cards { margin-top: 26px; }
+.card-version .sub code { font-size: 12px; }
+.channel .hero .note { margin: 14px 0 0; max-width: 68ch; }
+/* Команда на блок: у каждой своя кнопка копирования. */
+.cmd { position: relative; }
+.cmd + .cmd { margin-top: 10px; }
+.cmd pre { margin: 0; padding-right: 56px; }
