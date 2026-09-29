@@ -194,6 +194,41 @@ def channels(repo: str, marketplace: str) -> dict[str, str]:
     return status
 
 
+def release_date(releases: list, tag: str) -> str:
+    """Когда вышел релиз этого тега; прочерк, если такого релиза нет."""
+    for release in releases:
+        if release["tag_name"] == tag:
+            return human(moment(release["published_at"]))
+    return "—"
+
+
+def candidates(status: dict[str, object], releases: list) -> list[dict[str, str]]:
+    """Кандидат для карточки главной: то, что раздаёт канал, пока он впереди.
+
+    Карточка зовёт поставить кандидата, поэтому показывает выпуск из каталога
+    канала, а не свежий пререлиз GitHub: кандидат, не прошедший проверки
+    установки, остаётся пререлизом, которого канал не раздавал. Выпуск
+    показывается, только если он кандидат `-rc.N` и новее и стабильного
+    каталога, и последнего стабильного релиза. Полная версия сначала попадает
+    в `next`, потом в `main`, и её нельзя выдать за кандидата; а стабильная
+    карточка берёт версию из релиза, который выходит раньше, чем конвейер
+    двигает каталоги. Список из нуля или одного элемента: страница не
+    показывает «кандидата нет» вместо пустого места.
+    """
+    rules = channel_rules()
+    tag = str(status["next_tag"])
+    stable = [str(status["version"]), *([str(status["stable_tag"])] if status["stable_tag"] != "—" else [])]
+    try:
+        if rules.channel(tag) != "next":
+            return []
+        ahead = all(rules.precedence(tag) > rules.precedence(other) for other in stable)
+    except rules.TagError:
+        return []
+    if not ahead:
+        return []
+    return [{"candidate_tag": tag, "candidate_url": str(status["next_url"]), "candidate_date": release_date(releases, tag)}]
+
+
 def summary_counts(path: Path | None) -> dict[str, str] | None:
     """Счётчики берутся из сводки собранного отчёта, а не из воздуха."""
     if path is None or not path.is_file():
@@ -237,7 +272,6 @@ def main() -> int:
 
     releases = [r for r in gh(args.repo, "releases?per_page=100") if not r["draft"]]
     published = [r for r in releases if not r["prerelease"]]
-    prereleases = [r for r in releases if r["prerelease"]]
     if not published:
         raise SystemExit("у репозитория нет опубликованных релизов")
     latest = max(published, key=lambda r: moment(r["published_at"]))
@@ -263,19 +297,7 @@ def main() -> int:
         **channels(args.repo, args.marketplace),
     }
 
-    # Пререлиз показывается только пока он впереди опубликованной версии:
-    # прошлогодний rc уже ничего не готовит. Список из нуля или одного
-    # элемента: страница не показывает «планируется» вместо пустого места.
-    newest = max(prereleases, key=lambda r: moment(r["published_at"]), default=None)
-    status["prereleases"] = []
-    if newest and moment(newest["published_at"]) > moment(latest["published_at"]):
-        status["prereleases"].append(
-            {
-                "prerelease": newest["tag_name"],
-                "prerelease_date": human(moment(newest["published_at"])),
-                "prerelease_url": newest["html_url"],
-            }
-        )
+    status["candidates"] = candidates(status, releases)
 
     tested, plain = [], []
     for line in site_lines(args.branch, args.repo, now):

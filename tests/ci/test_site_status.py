@@ -115,5 +115,50 @@ class ChannelTests(unittest.TestCase):
             },
         )
 
+
+class CandidateTests(unittest.TestCase):
+    """Карточка кандидата на главной зовёт поставить то, что раздаёт канал."""
+
+    RELEASES = [
+        {"tag_name": "v0.13.0-rc.3", "published_at": "2026-09-28T20:58:22Z"},
+        {"tag_name": "v0.13.0-rc.2", "published_at": "2026-09-25T22:40:00Z"},
+        {"tag_name": "v0.12.3", "published_at": "2026-08-19T14:54:10Z"},
+    ]
+
+    def setUp(self) -> None:
+        self.module = load_module()
+
+    def candidates(self, next_tag: str, stable_tag: str, version: str) -> list[dict[str, str]]:
+        """`version` — последний стабильный релиз; по нему главная показывает стабильную версию."""
+        status = {"next_tag": next_tag, "next_url": f"https://releases/tag/{next_tag}", "stable_tag": stable_tag, "version": version}
+        return self.module.candidates(status, self.RELEASES)
+
+    def test_a_candidate_ahead_of_the_stable_version_gets_a_card_with_its_own_release_date(self) -> None:
+        self.assertEqual(self.candidates("v0.13.0-rc.3", "v0.12.3", "v0.12.3"), [{
+            "candidate_tag": "v0.13.0-rc.3",
+            "candidate_url": "https://releases/tag/v0.13.0-rc.3",
+            "candidate_date": "28.09.2026",
+        }])
+        # Каталог main не прочитался: кандидат сравнивается с релизом.
+        self.assertEqual(len(self.candidates("v0.13.0-rc.3", "—", "v0.12.3")), 1)
+
+    def test_no_card_once_the_release_is_out_or_the_channel_is_unknown(self) -> None:
+        for next_tag, stable_tag, version in (("v0.13.0", "v0.13.0", "v0.13.0"), ("—", "v0.12.3", "v0.12.3")):
+            with self.subTest(next=next_tag):
+                self.assertEqual(self.candidates(next_tag, stable_tag, version), [])
+
+    def test_a_stable_release_is_never_shown_as_a_candidate(self) -> None:
+        """Полная версия приходит в next раньше, чем в main; до main она ещё не кандидат."""
+        self.assertEqual(self.candidates("v0.13.0", "v0.12.3", "v0.13.0"), [])
+        self.assertEqual(self.candidates("v0.13.0", "v0.12.3", "v0.12.3"), [])
+
+    def test_a_candidate_older_than_the_published_release_gets_no_card(self) -> None:
+        """Релиз 0.13.0 вышел, а каталоги ещё не сдвинуты: rc.3 уже не впереди."""
+        self.assertEqual(self.candidates("v0.13.0-rc.3", "v0.12.3", "v0.13.0"), [])
+
+    def test_release_date_is_a_dash_for_an_unknown_tag(self) -> None:
+        self.assertEqual(self.module.release_date(self.RELEASES, "v0.12.3"), "19.08.2026")
+        self.assertEqual(self.module.release_date(self.RELEASES, "—"), "—")
+
 if __name__ == "__main__":
     unittest.main()

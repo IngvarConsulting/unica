@@ -84,19 +84,15 @@
     <div class="cards channel-cards">
       <div class="card card-version">
         <h3>Сейчас в канале</h3>
-        <div class="metric-row">
-          <a class="metric" href="{{next_url}}" target="_blank" rel="noopener noreferrer" data-served="next" data-text="tag">{{next_tag}}</a>
-          <span class="card-action"><a href="{{next_url}}" target="_blank" rel="noopener noreferrer" data-served="next">Заметки о выпуске →</a></span>
-        </div>
+        <span class="metric" data-served="next" data-text="tag">{{next_tag}}</span>
         <div class="sub">плагин <code>unica@unica-next</code></div>
+        <div class="card-foot"><a href="{{next_url}}" target="_blank" rel="noopener noreferrer" data-served="next">Заметки о выпуске <span class="vh" data-served="next" data-text="tag">{{next_tag}}</span> <span aria-hidden="true">→</span></a></div>
       </div>
       <div class="card card-version">
-        <h3>В стабильном каталоге</h3>
-        <div class="metric-row">
-          <a class="metric" href="{{stable_url}}" target="_blank" rel="noopener noreferrer" data-served="stable" data-text="tag">{{stable_tag}}</a>
-          <span class="card-action"><a href="{{stable_url}}" target="_blank" rel="noopener noreferrer" data-served="stable">Заметки о выпуске →</a></span>
-        </div>
+        <h3>Стабильная версия</h3>
+        <span class="metric" data-served="stable" data-text="tag">{{stable_tag}}</span>
         <div class="sub">плагин <code>unica@unica</code></div>
+        <div class="card-foot"><a href="{{stable_url}}" target="_blank" rel="noopener noreferrer" data-served="stable">Заметки о выпуске <span class="vh" data-served="stable" data-text="tag">{{stable_tag}}</span> <span aria-hidden="true">→</span></a></div>
       </div>
     </div>
     <p class="note">Канал получает кандидата вида <code>X.Y.Z-rc.N</code> после того, как тот прошёл проверки установки. Поэтому свежий пререлиз на GitHub может появиться здесь позже или не появиться вовсе.</p>
@@ -202,7 +198,7 @@
   <section id="stable">
     <div class="wrap">
       <h2>Вернуться на стабильную версию</h2>
-      <p>Вы получите версию из карточки «В стабильном каталоге»: <span data-served="stable" data-text="tag">{{stable_tag}}</span>. Первая команда нужна, только если стабильный маркетплейс <code>unica</code> ещё не добавлен.</p>
+      <p>Вы получите версию из карточки «Стабильная версия»: <span data-served="stable" data-text="tag">{{stable_tag}}</span>. Первая команда нужна, только если стабильный маркетплейс <code>unica</code> ещё не добавлен.</p>
       <div class="tabbar hostbar" aria-hidden="true">
         <label for="pick-codex">Codex</label>
         <label for="pick-claude">Claude Code</label>
