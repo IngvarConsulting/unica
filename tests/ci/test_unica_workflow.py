@@ -721,6 +721,24 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertEqual(normalized(group), normalized(expected))
         self.assertIs(self.pages["concurrency"]["cancel-in-progress"], False)
 
+    def test_publication_queue_keeps_every_admitted_release(self) -> None:
+        """Допущенные публикации ждут в одной очереди, пропущенные gate прогоны в неё не входят.
+
+        Публикацию запускает каждая сборка, а gate пропускает только push
+        тега и ручной запуск. Пустой прогон в общей группе снимал бы
+        ожидающий выпуск, а с одним местом ожидания третий допущенный прогон
+        снимал бы второй. Порядок внутри очереди GitHub не обещает: его держит
+        страж порядка версий в stage и promote.
+        """
+        gate = job(self.publish, "gate")
+        expected_group = (
+            "${{ (" + condition(gate) + ") && 'publish-unica-marketplace' || "
+            "format('publish-unica-marketplace-idle-{0}', github.run_id) }}"
+        )
+        self.assertEqual(normalized(self.publish["concurrency"]["group"]), normalized(expected_group))
+        self.assertEqual(self.publish["concurrency"]["queue"], "max")
+        self.assertIs(self.publish["concurrency"]["cancel-in-progress"], False)
+
     def test_guards_ship_findings_to_code_scanning_not_the_gate(self) -> None:
         """Находка линтера — не исход теста: SARIF в Code Scanning, гейт не краснеет."""
         guards = job(self.release, "guards")
@@ -978,20 +996,10 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn('rev-parse --verify --quiet "refs/tags/${RELEASE_TAG}"', text)
         self.assertNotIn("git tag -f", text)
         self.assertNotIn("--force", text)
-        # Two releases must not interleave, and a stale straggler must fail
-        # forward-only instead of rolling a catalog back — in both writers,
-        # over both host catalogs, in SemVer order, and again after a rebase
-        # retry. Every run the gate admits waits in one group, in order: with
-        # the default single pending slot a third release would cancel the
-        # one waiting. Runs the gate skips (every other build) get a group of
-        # their own and never touch that queue.
-        expected_group = (
-            "${{ (" + condition(gate) + ") && 'publish-unica-marketplace' || "
-            "format('publish-unica-marketplace-idle-{0}', github.run_id) }}"
-        )
-        self.assertEqual(normalized(self.publish["concurrency"]["group"]), normalized(expected_group))
-        self.assertEqual(self.publish["concurrency"]["queue"], "max")
-        self.assertIs(self.publish["concurrency"]["cancel-in-progress"], False)
+        # A stale straggler must fail forward-only instead of rolling a
+        # catalog back — in both writers, over both host catalogs, in SemVer
+        # order, and again after a rebase retry. That two releases never
+        # interleave is test_publication_queue_keeps_every_admitted_release.
         self.assertNotIn("sort -V", text)
         for writer in (stage_push, promote_move):
             with self.subTest(writer=writer.splitlines()[1]):

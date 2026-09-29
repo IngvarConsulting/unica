@@ -35,8 +35,9 @@ permissions:
 # and cancels it when the next one arrives, so a third release — or a rerun
 # of a failed one — would silently drop the release waiting before it.
 # Only runs the gate admits share that group. Every other build — pull
-# requests, the merge queue, main — starts this workflow too and is skipped
-# by the gate; those runs get a group of their own, so they neither hold the
+# requests, the merge queue, branch pushes, manual and nightly runs — starts
+# this workflow too and is skipped by the gate; those runs get a group of
+# their own, so they neither hold the
 # group while a release arrives nor take a place in its queue. The condition
 # is the gate's; a test keeps the two equal.
 concurrency:
