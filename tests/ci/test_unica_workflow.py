@@ -672,6 +672,55 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
                 self.assertNotIn("github.event_name == 'push'", expression)
         self.assertIn("jobs?per_page=100", script(build))
 
+    def test_pages_build_main_once_the_queue_merged_its_tree(self) -> None:
+        """Сайт ждёт вливания проверенного очередью дерева и собирается из main, а не из коммита очереди.
+
+        Без ожидания сайт брал прежний main и отставал на одно вливание. Из
+        коммита очереди собирать нельзя: снятый с очереди pull request тоже даёт
+        успешный прогон, а прогоны пачки кончаются не по порядку. Любой источник
+        берёт main, какой он сейчас: прогон, отложенный группой, иначе выложил
+        бы main старше опубликованного.
+        """
+        build = job(self.pages, "build")
+        wait = step_named(build, "Дождаться вливания проверенного очередью дерева")
+        self.assertEqual(
+            condition(wait),
+            "github.event.workflow_run.event == 'merge_group' && github.event.workflow_run.conclusion == 'success'",
+        )
+        self.assertIs(wait["continue-on-error"], True)
+        self.assertIn("scripts/ci/await-queue-merge.py", wait["run"])
+        self.assertEqual(wait["env"]["QUEUE_SHA"], "${{ github.event.workflow_run.head_sha }}")
+        self.assertEqual(wait["env"]["QUEUE_BRANCH"], "${{ github.event.workflow_run.head_branch }}")
+
+        # Скрипт ожидания исполняется из дерева события, страницы — из main;
+        # коммит очереди не попадает в checkout никогда.
+        first, current = steps_using(build, "actions/checkout")
+        self.assertNotIn("ref", first["with"])
+        self.assertEqual(current["with"]["ref"], "main")
+        self.assertNotIn("if", current)
+        for checkout in (first, current):
+            self.assertIs(checkout["with"]["persist-credentials"], False)
+        # Второй checkout чистит рабочий каталог: до него — только то, что его
+        # переживает (Python в tool cache) или нужно для ожидания.
+        order = steps(build)
+        self.assertEqual(
+            order[: order.index(current)],
+            [first, steps_using(build, "actions/setup-python")[0], wait],
+        )
+
+        # Подвал называет дерево, из которого собраны страницы, и ведёт на него.
+        rebuild = step_named(build, "Пересобрать страницы с итоговым статусом")
+        self.assertIn('--sha "$(git rev-parse HEAD)"', rebuild["run"])
+        self.assertNotIn("--run-url", rebuild["run"])
+
+    def test_pages_runs_the_build_skips_stay_out_of_the_publishing_group(self) -> None:
+        """Прогон, который build отсечёт, не вытесняет ожидающий прогон с результатами."""
+        group = self.pages["concurrency"]["group"]
+        build = condition(job(self.pages, "build"))
+        expected = "${{ (" + build + ") && 'unica-pages' || format('unica-pages-idle-{0}', github.run_id) }}"
+        self.assertEqual(normalized(group), normalized(expected))
+        self.assertIs(self.pages["concurrency"]["cancel-in-progress"], False)
+
     def test_guards_ship_findings_to_code_scanning_not_the_gate(self) -> None:
         """Находка линтера — не исход теста: SARIF в Code Scanning, гейт не краснеет."""
         guards = job(self.release, "guards")
