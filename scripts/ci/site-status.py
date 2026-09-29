@@ -229,17 +229,37 @@ def candidates(status: dict[str, object], releases: list) -> list[dict[str, str]
     return [{"candidate_tag": tag, "candidate_url": str(status["next_url"]), "candidate_date": release_date(releases, tag)}]
 
 
+def plural(count: int, one: str, few: str, many: str) -> str:
+    """Форма слова при числе: 1 тест, 2 теста, 5 тестов, 11 тестов, 21 тест."""
+    if count % 10 == 1 and count % 100 != 11:
+        return one
+    if 2 <= count % 10 <= 4 and not 12 <= count % 100 <= 14:
+        return few
+    return many
+
+
 def summary_counts(path: Path | None) -> dict[str, str] | None:
-    """Счётчики берутся из сводки собранного отчёта, а не из воздуха."""
+    """Счётчики берутся из сводки собранного отчёта, а не из воздуха.
+
+    Слово при числе считается здесь же: зашитое в страницу «теста» верно
+    только для чисел на 2–4, а «785 теста» и «1 прошли» читаются как ошибка.
+    """
     if path is None or not path.is_file():
         return None
     statistic = json.loads(path.read_text(encoding="utf-8")).get("statistic", {})
     total = statistic.get("total", 0)
+    passed = statistic.get("passed", 0)
+    failed = statistic.get("failed", 0) + statistic.get("broken", 0)
+    skipped = statistic.get("skipped", 0)
     return {
         "tests_total": f"{total}",
-        "tests_passed": f"{statistic.get('passed', 0)}",
-        "tests_failed": f"{statistic.get('failed', 0) + statistic.get('broken', 0)}",
-        "tests_skipped": f"{statistic.get('skipped', 0)}",
+        "tests_total_word": plural(total, "тест", "теста", "тестов"),
+        "tests_passed": f"{passed}",
+        "tests_passed_word": plural(passed, "прошёл", "прошли", "прошли"),
+        "tests_failed": f"{failed}",
+        "tests_failed_word": plural(failed, "упал", "упали", "упали"),
+        "tests_skipped": f"{skipped}",
+        "tests_skipped_word": plural(skipped, "пропущен", "пропущены", "пропущены"),
     }
 
 

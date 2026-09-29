@@ -8,6 +8,8 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -46,7 +48,14 @@ class HomeStateCardsTests(unittest.TestCase):
         status: dict[str, object] = {name: f"<{name}>" for name in self.render.placeholders(outside)}
         status.update(version="v0.12.3", version_url=f"{RELEASES_URL}/tag/v0.12.3", version_date="19.08.2026")
         status["candidates"] = self.site_status.candidates(channel, RELEASES)
-        status["tested_lines"] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            summary = Path(tmp) / "summary.json"
+            summary.write_text(json.dumps({"statistic": {"total": 785, "passed": 781, "failed": 2, "skipped": 2}}), encoding="utf-8")
+            counts = self.site_status.summary_counts(summary)
+        status["tested_lines"] = [{
+            "line": "main", "build_sha": "a548443", "build_date": "29.09.2026",
+            "build_url": "https://github.com/IngvarConsulting/unica/actions", "report_url": "allure/main/", **counts,
+        }]
         return self.render.render(self.template, status)
 
     def test_the_candidate_card_leads_to_the_channel_page_while_the_channel_is_ahead(self) -> None:
@@ -65,6 +74,14 @@ class HomeStateCardsTests(unittest.TestCase):
         self.assertIn('<span class="metric">v0.12.3</span>', page)
         self.assertIn("опубликована 19.08.2026", page)
         self.assertNotIn("{{", page)
+
+    def test_the_line_card_words_agree_with_their_counts(self) -> None:
+        """«785 теста» и «781 прошли» — ошибки; слово приходит со статусом."""
+        page = self.page("v0.13.0-rc.3")
+
+        self.assertIn("785 <small>тестов</small>", page)
+        self.assertIn("781 прошёл", page)
+        self.assertIn("2 упали", page)
 
 
 if __name__ == "__main__":

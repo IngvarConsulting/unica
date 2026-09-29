@@ -113,11 +113,11 @@
       <!-- repeat: tested_lines -->
       <div class="card card-line">
         <h3 class="ident line-head"><svg class="branch-icon" viewBox="0 0 14 14" aria-hidden="true"><circle cx="4" cy="3" r="1.7"/><circle cx="4" cy="11" r="1.7"/><circle cx="10.5" cy="3" r="1.7"/><path d="M4 4.7v4.6M10.5 4.7v1.2c0 1.7-1.4 3.1-3.1 3.1H4"/></svg>{{line}}<span class="line-run"><a href="{{build_url}}" target="_blank" rel="noopener noreferrer">{{build_sha}}</a> от {{build_date}}</span></h3>
-        <span class="metric">{{tests_total}} <small>теста</small></span>
+        <span class="metric">{{tests_total}} <small>{{tests_total_word}}</small></span>
         <div class="sub stats">
-          <span class="stat"><span class="dot dot-ok"></span>{{tests_passed}} прошли</span>
-          <span class="stat"><span class="dot dot-bad"></span>{{tests_failed}} упали</span>
-          <span class="stat"><span class="dot dot-skip"></span>{{tests_skipped}} пропущены</span>
+          <span class="stat"><span class="dot dot-ok"></span>{{tests_passed}} {{tests_passed_word}}</span>
+          <span class="stat"><span class="dot dot-bad"></span>{{tests_failed}} {{tests_failed_word}}</span>
+          <span class="stat"><span class="dot dot-skip"></span>{{tests_skipped}} {{tests_skipped_word}}</span>
         </div>
         <div class="card-foot"><a href="{{report_url}}" target="_blank" rel="noopener noreferrer">Отчёт Allure <span class="vh">{{line}}</span> <span aria-hidden="true">→</span></a></div>
       </div>

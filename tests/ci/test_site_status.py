@@ -6,6 +6,7 @@ import base64
 import importlib.util
 import json
 import subprocess
+import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -159,6 +160,35 @@ class CandidateTests(unittest.TestCase):
     def test_release_date_is_a_dash_for_an_unknown_tag(self) -> None:
         self.assertEqual(self.module.release_date(self.RELEASES, "v0.12.3"), "19.08.2026")
         self.assertEqual(self.module.release_date(self.RELEASES, "—"), "—")
+
+
+class CountWordTests(unittest.TestCase):
+    """Слово при числе в карточке линии согласуется с числом."""
+
+    def setUp(self) -> None:
+        self.module = load_module()
+
+    def test_the_word_agrees_with_the_count(self) -> None:
+        cases = {
+            0: "тестов", 1: "тест", 2: "теста", 4: "теста", 5: "тестов", 11: "тестов", 12: "тестов",
+            14: "тестов", 21: "тест", 22: "теста", 25: "тестов", 111: "тестов", 785: "тестов", 15653: "теста",
+        }
+        for count, word in cases.items():
+            with self.subTest(count):
+                self.assertEqual(self.module.plural(count, "тест", "теста", "тестов"), word)
+
+    def test_the_line_card_counts_carry_their_words(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            summary = Path(tmp) / "summary.json"
+            summary.write_text(json.dumps({"statistic": {"total": 785, "passed": 781, "failed": 1, "broken": 1, "skipped": 2}}), encoding="utf-8")
+            counts = self.module.summary_counts(summary)
+
+        self.assertEqual(counts, {
+            "tests_total": "785", "tests_total_word": "тестов",
+            "tests_passed": "781", "tests_passed_word": "прошёл",
+            "tests_failed": "2", "tests_failed_word": "упали",
+            "tests_skipped": "2", "tests_skipped_word": "пропущены",
+        })
 
 if __name__ == "__main__":
     unittest.main()
