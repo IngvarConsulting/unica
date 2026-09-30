@@ -2952,7 +2952,7 @@ fn main() {
                 "validate_named_identity",
                 "read_immediate_names_bounded",
                 "retain_immediate_child_nofollow",
-                "read_bounded",
+                "open_named_identity_for_read",
                 "remaining",
                 "is_cancelled",
                 "match_starts",
@@ -2982,8 +2982,8 @@ fn main() {
             for bound in [
                 "CANONICAL_SEARCH_MAX_ENTRIES",
                 "CANONICAL_SEARCH_MAX_DEPTH",
-                "CANONICAL_SEARCH_MAX_FILE_BYTES",
-                "CANONICAL_SEARCH_MAX_TOTAL_BYTES",
+                "CANONICAL_SEARCH_MAX_LINE_BYTES",
+                "read_search_line_bounded",
             ] {
                 if !body.contains(bound) {
                     return Err(format!("literal search must preserve the `{bound}` bound"));
@@ -3728,7 +3728,7 @@ fn main() {
                 "search_bsl_literal",
                 (
                     true,
-                    "fn search_bsl_literal(&self, matcher: &super::super::v13_read_modes::SearchMatcher, skip: &mut usize, limit: usize, scope_prefix: Option<&str>, scope_at: &QualifiedAddress, cancellation: &CancellationToken,) -> Result<Vec<serde_json::Value>, String>",
+                    "fn search_bsl_literal(&self, matcher: &super::super::v13_read_modes::SearchMatcher, skip: &mut usize, limit: usize, scope_prefix: Option<&str>, scope_at: &QualifiedAddress, cancellation: &CancellationToken,) -> Result<LiteralSearchScan, String>",
                     "",
                 ),
             ),

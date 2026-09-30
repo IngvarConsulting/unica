@@ -4354,7 +4354,7 @@ pub(crate) mod tests {
     #[test]
     fn worker_stream_tail_redacts_output_before_retaining_it() {
         let mut tail = StreamTail::spawn(Cursor::new(
-            b"build started\nPwd=stream-secret\ncompleted\n".to_vec(),
+            b"build started\n--connection Srvr=server;Ref=private-ib;Usr=service;Pwd=connection-secret\nPwd=stream-secret\ncompleted\n".to_vec(),
         ));
         assert!(!tail.finish().expect("finish output reader"));
         let output = tail.tail(OUTPUT_TAIL_BYTES).expect("read output tail");
@@ -4363,8 +4363,19 @@ pub(crate) mod tests {
 
         assert!(receipt.is_none());
         assert!(!receipt_truncated);
-        assert!(output.contains("Pwd=<redacted>"));
-        assert!(!output.contains("stream-secret"));
+        assert!(output.contains("--connection <redacted>\nPwd=<redacted>\ncompleted"));
+        for secret in [
+            "server",
+            "private-ib",
+            "service",
+            "connection-secret",
+            "stream-secret",
+        ] {
+            assert!(
+                !output.contains(secret),
+                "worker output leaked {secret}: {output}"
+            );
+        }
     }
 
     #[test]

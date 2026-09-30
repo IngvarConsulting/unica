@@ -513,6 +513,382 @@ fn a_long_single_line_can_be_read_across_more_than_one_hundred_search_pages() {
 }
 
 #[test]
+fn text_search_pages_matches_after_two_mebibytes_of_source() {
+    let root = tempfile::tempdir().expect("large search root");
+    let workspace = root.path();
+    std::fs::create_dir_all(workspace.join("CommonModules/Main/Ext")).expect("module directory");
+    std::fs::write(
+        workspace.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\n",
+    )
+    .expect("workspace manifest");
+    std::fs::write(
+        workspace.join("Configuration.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"><Properties><Name>Main</Name></Properties><ChildObjects><CommonModule>Main</CommonModule></ChildObjects></Configuration></MetaDataObject>"#,
+    )
+    .expect("configuration");
+    let mut source = format!("// {}\r\n", "x".repeat(96)).repeat(24_000);
+    source.push_str(&"// яNeedle\r\n".repeat(51));
+    assert!(source.len() > 2 * 1024 * 1024);
+    std::fs::write(workspace.join("CommonModules/Main/Ext/Module.bsl"), source)
+        .expect("large module");
+
+    let mut mcp = McpProcess::start(workspace);
+    let initialized = mcp.exchange(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                   "clientInfo": {"name": "v13-search-large", "version": "1"}}
+    }));
+    assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
+    mcp.notify(json!({"jsonrpc":"2.0", "method":"notifications/initialized", "params":{}}));
+
+    let first = domain_result(&mcp.exchange(call_tool(
+        2,
+        "unica.search",
+        json!({"query": "Needle", "scope": "main:Configuration", "limit": 50}),
+    )));
+    assert_eq!(first["ok"], true, "{first:#}");
+    let matches = first["data"]["matches"].as_array().expect("first page");
+    assert_eq!(matches.len(), 50);
+    assert_eq!(matches[0]["line"], 24_001);
+    assert_eq!(matches[0]["column"], 5);
+    assert_eq!(matches[0]["snippet"], "// яNeedle");
+    assert!(matches.iter().all(|hit| hit.get("file").is_none()));
+    let cursor = first["cursor"].as_str().expect("remaining match");
+    let second = domain_result(&mcp.exchange(call_tool(
+        3,
+        "unica.search",
+        json!({"query": "Needle", "scope": "main:Configuration", "limit": 50, "cursor": cursor}),
+    )));
+    assert_eq!(second["ok"], true, "{second:#}");
+    assert_eq!(second["data"]["matches"].as_array().map(Vec::len), Some(1));
+    assert_eq!(second["data"]["matches"][0]["line"], 24_051);
+    assert_eq!(second["page"]["stoppedBy"], "complete");
+
+    let anchored = domain_result(&mcp.exchange(call_tool(
+        4,
+        "unica.search",
+        json!({"query": "^// яNeedle$", "regex": true, "scope": "main:Configuration"}),
+    )));
+    assert_eq!(anchored["ok"], true, "{anchored:#}");
+    assert_eq!(
+        anchored["data"]["matches"].as_array().map(Vec::len),
+        Some(20)
+    );
+    assert_eq!(anchored["data"]["matches"][0]["column"], 1);
+    mcp.finish();
+}
+
+#[test]
+fn text_search_reads_more_than_thirty_two_mebibytes_across_sources() {
+    let root = tempfile::tempdir().expect("large corpus root");
+    let workspace = root.path();
+    std::fs::write(
+        workspace.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\n",
+    )
+    .expect("workspace manifest");
+    std::fs::write(
+        workspace.join("Configuration.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"><Properties><Name>Main</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+    )
+    .expect("configuration");
+    let source_line = format!("// {}\n", "x".repeat(65_532));
+    assert_eq!(source_line.len(), 64 * 1024);
+    let source_body = source_line.repeat(16);
+    for index in 0..33 {
+        let mut source = source_body.clone();
+        if index == 32 {
+            source.push_str("// LastNeedle\n");
+        }
+        std::fs::write(workspace.join(format!("Module{index:02}.bsl")), source)
+            .expect("corpus module");
+    }
+
+    let mut mcp = McpProcess::start(workspace);
+    let initialized = mcp.exchange(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                   "clientInfo": {"name": "v13-search-large-corpus", "version": "1"}}
+    }));
+    assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
+    mcp.notify(json!({"jsonrpc":"2.0", "method":"notifications/initialized", "params":{}}));
+
+    let result = domain_result(&mcp.exchange(call_tool(
+        2,
+        "unica.search",
+        json!({"query": "LastNeedle", "scope": "main:Configuration"}),
+    )));
+    assert_eq!(result["ok"], true, "{result:#}");
+    assert_eq!(result["data"]["matches"].as_array().map(Vec::len), Some(1));
+    assert_eq!(result["data"]["matches"][0]["line"], 17);
+    assert_eq!(result["page"]["stoppedBy"], "complete");
+    mcp.finish();
+}
+
+#[test]
+fn text_search_preserves_whole_line_regex_beyond_two_mebibytes() {
+    let root = tempfile::tempdir().expect("long regex line root");
+    let workspace = root.path();
+    std::fs::write(
+        workspace.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\n",
+    )
+    .expect("workspace manifest");
+    std::fs::write(
+        workspace.join("Configuration.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"><Properties><Name>Main</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+    )
+    .expect("configuration");
+    std::fs::write(
+        workspace.join("SessionModule.bsl"),
+        format!("// {}Needle\r\n", "x".repeat(2 * 1024 * 1024 + 1)),
+    )
+    .expect("single long source line");
+
+    let mut mcp = McpProcess::start(workspace);
+    let initialized = mcp.exchange(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                   "clientInfo": {"name": "v13-search-long-regex", "version": "1"}}
+    }));
+    assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
+    mcp.notify(json!({"jsonrpc":"2.0", "method":"notifications/initialized", "params":{}}));
+
+    let result = domain_result(&mcp.exchange(call_tool(
+        2,
+        "unica.search",
+        json!({"query": "^// x+Needle$", "regex": true, "scope": "main:Configuration"}),
+    )));
+    assert_eq!(result["ok"], true, "{result:#}");
+    assert_eq!(result["data"]["matches"].as_array().map(Vec::len), Some(1));
+    assert_eq!(result["data"]["matches"][0]["line"], 1);
+    assert_eq!(result["data"]["matches"][0]["column"], 1);
+    assert_eq!(result["page"]["stoppedBy"], "complete");
+    mcp.finish();
+}
+
+#[test]
+fn unreadable_source_lines_keep_other_hits_and_truthful_coverage_across_pages() {
+    let root = tempfile::tempdir().expect("overlong search root");
+    let workspace = root.path();
+    std::fs::write(
+        workspace.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\n",
+    )
+    .expect("workspace manifest");
+    std::fs::write(
+        workspace.join("Configuration.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"><Properties><Name>Main</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+    )
+    .expect("configuration");
+    std::fs::write(workspace.join("A.bsl"), "// Needle\n".repeat(21))
+        .expect("first source with a continuation");
+    std::fs::write(
+        workspace.join("B.bsl"),
+        format!("// {}Needle\n", "x".repeat(8 * 1024 * 1024)),
+    )
+    .expect("overlong source line");
+    std::fs::write(workspace.join("C.bsl"), b"// Needle\n\xff").expect("source with invalid UTF-8");
+    std::fs::write(workspace.join("D.bsl"), "// Needle\n".repeat(21))
+        .expect("source after the uncovered files");
+    std::fs::write(workspace.join("E.bsl"), "// Needle\n")
+        .expect("last source after the intermediate page");
+
+    let mut mcp = McpProcess::start(workspace);
+    let initialized = mcp.exchange(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                   "clientInfo": {"name": "v13-search-overlong", "version": "1"}}
+    }));
+    assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
+    mcp.notify(json!({"jsonrpc":"2.0", "method":"notifications/initialized", "params":{}}));
+
+    let first = domain_result(&mcp.exchange(call_tool(
+        2,
+        "unica.search",
+        json!({"query": "Needle", "scope": "main:Configuration"}),
+    )));
+    assert_eq!(first["ok"], true, "{first:#}");
+    assert_eq!(first["page"]["stoppedBy"], "limit");
+    assert_eq!(first["data"]["fileCoverage"]["complete"], false);
+    assert_eq!(first["data"]["fileCoverage"]["scanComplete"], false);
+    let cursor = first["cursor"].as_str().expect("unread part of corpus");
+    let partial = domain_result(&mcp.exchange(call_tool(
+        3,
+        "unica.search",
+        json!({"query": "Needle", "scope": "main:Configuration", "cursor": cursor}),
+    )));
+    assert_eq!(partial["ok"], true, "{partial:#}");
+    assert!(partial["summary"].as_str().unwrap().contains("partial"));
+    assert_eq!(
+        partial["data"]["matches"].as_array().map(Vec::len),
+        Some(20)
+    );
+    assert_eq!(partial["data"]["fileCoverage"]["complete"], false);
+    assert_eq!(partial["data"]["fileCoverage"]["scanComplete"], false);
+    assert_eq!(partial["data"]["fileCoverage"]["uncovered"], 2);
+    assert_eq!(
+        partial["data"]["fileCoverage"]["uncoveredIsLowerBound"],
+        true
+    );
+    assert_eq!(partial["data"]["fileCoverage"]["detailsTruncated"], false);
+    let details = partial["data"]["fileCoverage"]["details"]
+        .as_array()
+        .expect("uncovered files");
+    assert_eq!(details.len(), 2);
+    assert_eq!(details[0]["sourceSet"], "main");
+    assert_eq!(details[0]["reason"], "line_too_long");
+    assert_eq!(details[1]["reason"], "invalid_utf8");
+    assert_eq!(details[0]["fileId"], "bsl-2");
+    assert_eq!(details[1]["fileId"], "bsl-3");
+    assert_eq!(partial["page"]["stoppedBy"], "limit");
+    let partial_cursor = partial["cursor"].as_str().expect("remaining hits");
+    assert!(!partial.to_string().contains("B.bsl"));
+    assert!(!partial.to_string().contains("C.bsl"));
+    assert!(!partial
+        .to_string()
+        .contains(&workspace.display().to_string()));
+    let replay = domain_result(&mcp.exchange(call_tool(
+        4,
+        "unica.search",
+        json!({"query": "Needle", "scope": "main:Configuration", "cursor": cursor}),
+    )));
+    assert_eq!(
+        replay, partial,
+        "cursor replay preserves omissions and hits"
+    );
+    let terminal = domain_result(&mcp.exchange(call_tool(
+        5,
+        "unica.search",
+        json!({"query": "Needle", "scope": "main:Configuration", "cursor": partial_cursor}),
+    )));
+    assert_eq!(terminal["ok"], true, "{terminal:#}");
+    assert!(terminal["summary"].as_str().unwrap().contains("partial"));
+    assert_eq!(
+        terminal["data"]["matches"].as_array().map(Vec::len),
+        Some(4)
+    );
+    assert_eq!(terminal["data"]["fileCoverage"]["scanComplete"], true);
+    assert_eq!(terminal["data"]["fileCoverage"]["complete"], false);
+    assert_eq!(terminal["data"]["fileCoverage"]["uncovered"], 2);
+    assert_eq!(
+        terminal["data"]["fileCoverage"]["uncoveredIsLowerBound"],
+        false
+    );
+    assert_eq!(
+        terminal["data"]["fileCoverage"]["details"],
+        Value::Array(details.clone())
+    );
+    assert_eq!(terminal["page"]["stoppedBy"], "complete");
+    assert!(terminal.get("cursor").is_none());
+    mcp.finish();
+}
+
+#[test]
+fn text_file_coverage_counts_all_uncovered_files_when_details_are_capped() {
+    let root = tempfile::tempdir().expect("uncovered search root");
+    let workspace = root.path();
+    std::fs::write(
+        workspace.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\n",
+    )
+    .expect("workspace manifest");
+    std::fs::write(
+        workspace.join("Configuration.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"><Properties><Name>Main</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+    )
+    .expect("configuration");
+    for index in 0..33 {
+        std::fs::write(workspace.join(format!("Bad{index:02}.bsl")), b"\xff")
+            .expect("undecodable BSL source");
+    }
+    std::fs::write(workspace.join("Good.bsl"), "// Needle\n").expect("readable BSL source");
+
+    let mut mcp = McpProcess::start(workspace);
+    let initialized = mcp.exchange(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                   "clientInfo": {"name": "v13-search-uncovered", "version": "1"}}
+    }));
+    assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
+    mcp.notify(json!({"jsonrpc":"2.0", "method":"notifications/initialized", "params":{}}));
+
+    let result = domain_result(&mcp.exchange(call_tool(
+        2,
+        "unica.search",
+        json!({"query": "Needle", "scope": "main:Configuration"}),
+    )));
+    assert_eq!(result["ok"], true, "{result:#}");
+    assert_eq!(result["data"]["matches"].as_array().map(Vec::len), Some(1));
+    assert_eq!(result["data"]["fileCoverage"]["scanComplete"], true);
+    assert_eq!(result["data"]["fileCoverage"]["complete"], false);
+    assert_eq!(result["data"]["fileCoverage"]["uncovered"], 33);
+    assert_eq!(
+        result["data"]["fileCoverage"]["uncoveredIsLowerBound"],
+        false
+    );
+    assert_eq!(result["data"]["fileCoverage"]["detailsTruncated"], true);
+    let details = result["data"]["fileCoverage"]["details"]
+        .as_array()
+        .expect("bounded uncovered details");
+    assert_eq!(details.len(), 32);
+    assert_eq!(details[0]["fileId"], "bsl-1");
+    assert_eq!(details[31]["fileId"], "bsl-32");
+    assert!(details
+        .iter()
+        .all(|detail| detail["reason"] == "invalid_utf8"));
+    assert!(!result.to_string().contains("Bad00.bsl"));
+    assert_eq!(result["page"]["stoppedBy"], "complete");
+    mcp.finish();
+}
+
+#[test]
+fn text_search_refuses_unvisited_depth_instead_of_claiming_complete_coverage() {
+    let root = tempfile::tempdir().expect("deep search root");
+    let workspace = root.path();
+    std::fs::write(
+        workspace.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\n",
+    )
+    .expect("workspace manifest");
+    std::fs::write(
+        workspace.join("Configuration.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"><Properties><Name>Main</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+    )
+    .expect("configuration");
+    let mut directory = workspace.to_path_buf();
+    for index in 0..33 {
+        directory.push(format!("Nested{index:02}"));
+        std::fs::create_dir(&directory).expect("nested source directory");
+    }
+    std::fs::write(directory.join("Module.bsl"), "// Needle\n")
+        .expect("source beyond the retained depth budget");
+
+    let mut mcp = McpProcess::start(workspace);
+    let initialized = mcp.exchange(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                   "clientInfo": {"name": "v13-search-depth", "version": "1"}}
+    }));
+    assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
+    mcp.notify(json!({"jsonrpc":"2.0", "method":"notifications/initialized", "params":{}}));
+
+    let result = domain_result(&mcp.exchange(call_tool(
+        2,
+        "unica.search",
+        json!({"query": "Needle", "scope": "main:Configuration"}),
+    )));
+    assert_eq!(result["ok"], false, "{result:#}");
+    assert_eq!(result["diagnostics"][0]["code"], "provider_unavailable");
+    assert!(result["summary"].as_str().unwrap().contains("depth limit"));
+    assert!(result.get("data").is_none());
+    assert!(result.get("cursor").is_none());
+    assert!(!result.to_string().contains("Nested32"));
+    mcp.finish();
+}
+
+#[test]
 fn scoped_text_search_does_not_need_a_projected_view_of_the_root() {
     let root = tempfile::tempdir().expect("independent text search root");
     let workspace = root.path();
