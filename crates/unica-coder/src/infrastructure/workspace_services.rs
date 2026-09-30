@@ -1202,6 +1202,13 @@ impl ServiceSpawner for SystemServiceSpawner {
         deadline.remaining(cancellation)?;
         let exe = env::current_exe()
             .map_err(|err| format!("failed to locate current unica executable: {err}"))?;
+        // Unit tests run inside libtest, which cannot serve --workspace-service.
+        // Exercise the real built Unica service while retaining the test-only
+        // downloader in the invoking process.
+        #[cfg(test)]
+        let exe = env::var_os("UNICA_TEST_WORKSPACE_SERVICE_EXE")
+            .map(PathBuf::from)
+            .unwrap_or(exe);
         let mut command = Command::new(exe);
         command
             .arg("--workspace-service")
