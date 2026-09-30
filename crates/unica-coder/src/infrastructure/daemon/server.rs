@@ -1646,7 +1646,7 @@ pub(crate) mod actor_capacity_tests {
     }
 
     #[test]
-    fn canonical_run_and_role_search_install_then_execute_selected_providers() {
+    fn canonical_run_and_role_search_deliver_engines_and_run_supported_providers() {
         const CHILD: &str = "UNICA_CANONICAL_DELIVERY_SUCCESS_CHILD";
         const ROOT: &str = "UNICA_CANONICAL_DELIVERY_SUCCESS_ROOT";
         if std::env::var_os(CHILD).is_some() {
@@ -1947,38 +1947,54 @@ fn main() {
                 search.data.as_ref().unwrap()["matches"][0]["hits"],
                 serde_json::json!([])
             );
+            let revision_fence_supported = matches!(
+                crate::infrastructure::platform::source_revision_fence::expected_platform_fence_capability_for_test(
+                    &workspace.join("src"),
+                ),
+                crate::infrastructure::platform::source_revision_fence::FenceCapability::ProvenFast
+            );
             let mut semantic = submit_canonical(
                 &runtime,
                 &workspace,
                 ToolIdentity::Search,
                 serde_json::json!({"query":"Needle","role":"semantic"}),
             );
-            for _ in 0..5 {
-                if semantic.ok {
-                    break;
+            if revision_fence_supported {
+                for _ in 0..5 {
+                    if semantic.ok {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    semantic = submit_canonical(
+                        &runtime,
+                        &workspace,
+                        ToolIdentity::Search,
+                        serde_json::json!({"query":"Needle","role":"semantic"}),
+                    );
                 }
-                std::thread::sleep(std::time::Duration::from_millis(200));
-                semantic = submit_canonical(
-                    &runtime,
-                    &workspace,
-                    ToolIdentity::Search,
-                    serde_json::json!({"query":"Needle","role":"semantic"}),
+                assert!(
+                    semantic.ok,
+                    "{semantic:?}; index={:?}; rlm={:?}",
+                    std::fs::read_to_string(root.join("index")),
+                    std::fs::read_to_string(root.join("semantic"))
                 );
+                assert_eq!(
+                    std::fs::read_to_string(root.join("semantic")).unwrap(),
+                    "rlm-bsl-mcp invoked"
+                );
+                assert_eq!(
+                    semantic.data.as_ref().unwrap()["matches"][0]["provider"],
+                    "rlm"
+                );
+            } else {
+                // The published non-APFS/non-macOS revision fence deliberately
+                // refuses RLM freshness before index or provider execution.
+                // Engine delivery still happens first and must be verified.
+                assert!(!semantic.ok, "{semantic:?}");
+                assert_eq!(semantic.diagnostics[0]["code"], "provider_unavailable");
+                assert!(!root.join("index").exists());
+                assert!(!root.join("semantic").exists());
             }
-            assert!(
-                semantic.ok,
-                "{semantic:?}; index={:?}; rlm={:?}",
-                std::fs::read_to_string(root.join("index")),
-                std::fs::read_to_string(root.join("semantic"))
-            );
-            assert_eq!(
-                std::fs::read_to_string(root.join("semantic")).unwrap(),
-                "rlm-bsl-mcp invoked"
-            );
-            assert_eq!(
-                semantic.data.as_ref().unwrap()["matches"][0]["provider"],
-                "rlm"
-            );
             for (name, version) in [("v8-runner", "0.11.2"), ("bsl-analyzer", "0.2.67")] {
                 assert!(cache
                     .join(name)
@@ -1991,6 +2007,19 @@ fn main() {
                 .join(format!("1.33.0--{rlm_digest}"))
                 .join(target)
                 .is_dir());
+            for tool in ["rlm-bsl-index", "rlm-bsl-mcp"] {
+                let resolved =
+                    crate::infrastructure::bundled_tools::resolve_bundled_tool(&plugin, tool, true)
+                        .unwrap();
+                assert_eq!(
+                    format!(
+                        "{:x}",
+                        Sha256::digest(std::fs::read(resolved.program).unwrap())
+                    ),
+                    digest,
+                    "{tool} must resolve to the checked delivery"
+                );
+            }
             assert_eq!(downloader.1.load(std::sync::atomic::Ordering::SeqCst), 3);
             // The real service normally lives for hours. Wait for its short
             // idle shutdown before the parent removes this isolated tempdir.
@@ -2067,7 +2096,7 @@ fn main() {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "infrastructure::daemon::server::actor_capacity_tests::canonical_run_and_role_search_install_then_execute_selected_providers",
+                "infrastructure::daemon::server::actor_capacity_tests::canonical_run_and_role_search_deliver_engines_and_run_supported_providers",
                 "--nocapture",
             ])
             .env(CHILD, "1")
