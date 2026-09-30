@@ -1857,6 +1857,7 @@ fn main() {
             std::env::set_var("UNICA_ARTIFACT_CACHE", &cache);
             std::env::set_var("UNICA_RUNTIME_MANIFEST", &release_path);
             std::env::set_var("UNICA_TEST_PROVIDER_MARKER_DIR", &root);
+            std::env::set_var("UNICA_WORKSPACE_SERVICE_IDLE_SECS", "1");
             let server = std::env::current_exe()
                 .unwrap()
                 .parent()
@@ -1991,6 +1992,24 @@ fn main() {
                 .join(target)
                 .is_dir());
             assert_eq!(downloader.1.load(std::sync::atomic::Ordering::SeqCst), 3);
+            // The real service normally lives for hours. Wait for its short
+            // idle shutdown before the parent removes this isolated tempdir.
+            let services = workspace.join(".build/unica/services");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                let live_record = std::fs::read_dir(&services)
+                    .unwrap()
+                    .flatten()
+                    .any(|entry| entry.path().join("service.json").is_file());
+                if !live_record {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "workspace service did not stop after idle timeout"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
             return;
         }
 
