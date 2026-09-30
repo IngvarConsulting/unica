@@ -1992,6 +1992,7 @@ fn main() {
                 // Engine delivery still happens first and must be verified.
                 assert!(!semantic.ok, "{semantic:?}");
                 assert_eq!(semantic.diagnostics[0]["code"], "provider_unavailable");
+                assert_eq!(semantic.summary, "`semantic` search did not complete");
                 assert!(!root.join("index").exists());
                 assert!(!root.join("semantic").exists());
             }
@@ -2103,12 +2104,10 @@ fn main() {
             .env(ROOT, root.path())
             .output()
             .unwrap();
-        assert!(
-            output.status.success(),
-            "{}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stdout.contains("running 1 test"), "{stdout}\n{stderr}");
+        assert!(output.status.success(), "{stdout}\n{stderr}");
     }
 
     #[test]
