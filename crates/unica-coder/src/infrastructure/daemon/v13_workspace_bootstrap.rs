@@ -964,6 +964,62 @@ mod tests {
     }
 
     #[test]
+    fn root_eol_timeout_keeps_earlier_attribute_failure() {
+        use super::{prepare, Preparation, RootCheckContinuationStore};
+        use crate::application::invocation::InvocationResponseDeadline;
+        use crate::application::invocation_store::ToolIdentity;
+        use crate::application::ports::TokioClock;
+        use crate::domain::cancellation::CancellationToken;
+        use crate::infrastructure::daemon::protocol::InvocationRequest;
+        use crate::infrastructure::project_health::resources::stop_staged_eol_after_for_test;
+        use std::sync::Arc;
+
+        let (_workspace, root) = eol_check_fixture();
+        std::fs::write(
+            root.join(".gitattributes"),
+            "src/Configuration.xml text eol=lf\n",
+        )
+        .unwrap();
+        let output = std::process::Command::new("git")
+            .args(["add", ".gitattributes"])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let request = InvocationRequest::new(
+            ToolIdentity::Check,
+            serde_json::json!({}),
+            root.to_string_lossy(),
+            7_000,
+        )
+        .unwrap();
+        stop_staged_eol_after_for_test(0);
+        let Preparation::Ready(inspection) = prepare(
+            &request,
+            InvocationResponseDeadline::capture(Arc::new(TokioClock)),
+            &RootCheckContinuationStore::default(),
+        ) else {
+            panic!("root check must prepare");
+        };
+        let result = inspection.execute(CancellationToken::new()).unwrap();
+        let data = result.data.unwrap();
+        assert_eq!(data["readinessState"], "incomplete");
+        assert!(data["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| { diagnostic["code"] == "git.text_policy_missing" }));
+        assert!(data["checks"].as_array().unwrap().iter().any(|check| {
+            check["id"] == "repository.attributes" && check["status"] == "failed"
+        }));
+        assert!(data["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|check| { check["id"] == "repository.index_eol" && check["status"] == "notRun" }));
+    }
+
+    #[test]
     fn root_check_does_not_recommend_repeat_for_fixed_failure_or_full_checkpoint() {
         use super::{prepare, Preparation, RootCheckContinuationStore};
         use crate::application::invocation::InvocationResponseDeadline;

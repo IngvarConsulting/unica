@@ -8,8 +8,11 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/v13_workspace_bootstrap.rs::root_inspection_discovers_sources_after_response_handoff
   - crates/unica-coder/src/infrastructure/daemon/v13_workspace_bootstrap.rs::root_check_repeats_after_eol_timeout_and_finishes_with_shared_checkpoint
   - crates/unica-coder/src/infrastructure/daemon/v13_workspace_bootstrap.rs::root_check_does_not_recommend_repeat_for_fixed_failure_or_full_checkpoint
+  - crates/unica-coder/src/infrastructure/daemon/v13_workspace_bootstrap.rs::root_eol_timeout_keeps_earlier_attribute_failure
   - crates/unica-coder/src/infrastructure/project_health/resources.rs::continued_repository_eol_resumes_after_a_staged_timeout_and_rechecks_working_bytes
   - crates/unica-coder/src/infrastructure/project_health/resources.rs::continued_working_eol_rejects_a_new_file_and_late_cancellation
+  - crates/unica-coder/src/infrastructure/project_health/resources.rs::continued_staged_eol_malformed_protocol_keeps_attribute_findings
+  - crates/unica-coder/src/infrastructure/project_health/resources.rs::final_index_change_invalidates_earlier_attribute_findings
 gap: https://github.com/IngvarConsulting/unica/issues/970
 ---
 

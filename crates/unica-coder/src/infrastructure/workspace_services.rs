@@ -2158,9 +2158,12 @@ impl WorkspaceServiceRuntime {
             Ok(revisions) => revisions,
             Err(error) => return ServiceResponse::error(error),
         };
-        let revision = match self.actor.read(&binding, |_source_root| {
-            revisions.snapshot(ProviderDeadline::from_budget(timeout), cancellation)
-        }) {
+        let revision = match self.actor_bound_rlm_revision(
+            &binding,
+            &revisions,
+            ProviderDeadline::from_budget(timeout),
+            cancellation,
+        ) {
             Ok(revision) => revision,
             Err(error) => return ServiceResponse::error(error),
         };
@@ -2202,6 +2205,19 @@ impl WorkspaceServiceRuntime {
             }
         }
         self.source_revision_service(&self.provider_binding()?)
+    }
+
+    fn actor_bound_rlm_revision(
+        &self,
+        binding: &ProviderRootBinding,
+        revisions: &SourceRevisionService,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<SourceRevision, String> {
+        let retained_root = binding.retained_root();
+        self.actor.read(binding, |_source_root| {
+            revisions.snapshot_retained(&retained_root, deadline, cancellation)
+        })
     }
 
     fn provider_binding(&self) -> Result<ProviderRootBinding, String> {
@@ -2280,24 +2296,54 @@ impl WorkspaceServiceRuntime {
         }
         let binding = match self.provider_binding() {
             Ok(binding) => binding,
-            Err(error) => return ServiceResponse::error(error),
+            Err(error) => {
+                let stale_session = self
+                    .rlm()
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .take();
+                if let Some(stale_session) = stale_session {
+                    self.retire_session(stale_session);
+                }
+                return ServiceResponse::error(error);
+            }
         };
         let mut rlm = self.rlm().lock().unwrap_or_else(|error| error.into_inner());
         let mut stale_session = None;
         let revisions = match self.rlm_source_revision_service() {
             Ok(revisions) => revisions,
-            Err(error) => return ServiceResponse::error(error),
+            Err(error) => {
+                let stale_session = rlm.take();
+                drop(rlm);
+                if let Some(stale_session) = stale_session {
+                    self.retire_session(stale_session);
+                }
+                return ServiceResponse::error(error);
+            }
         };
-        let pre_execution_revision = match self.actor.read(&binding, |_source_root| {
-            deadline
+        let pre_execution_revision =
+            match deadline
                 .remaining_cancellable(cancellation)
                 .and_then(|remaining| {
-                    revisions.snapshot(ProviderDeadline::from_budget(remaining), cancellation)
-                })
-        }) {
-            Ok(revision) => revision,
-            Err(error) => return ServiceResponse::error(error),
-        };
+                    self.actor_bound_rlm_revision(
+                        &binding,
+                        &revisions,
+                        ProviderDeadline::from_budget(remaining),
+                        cancellation,
+                    )
+                }) {
+                Ok(revision) => revision,
+                Err(error) => {
+                    if self.validate_provider_binding(&binding).is_err() {
+                        let stale_session = rlm.take();
+                        drop(rlm);
+                        if let Some(stale_session) = stale_session {
+                            self.retire_session(stale_session);
+                        }
+                    }
+                    return ServiceResponse::error(error);
+                }
+            };
         let pre_execution_generation = pre_execution_revision.generation;
         if observe_source_generation(
             self.rlm_source_generation(),
@@ -2322,7 +2368,16 @@ impl WorkspaceServiceRuntime {
             ))
         }) {
             Ok(readiness) => readiness,
-            Err(error) => return ServiceResponse::error(error),
+            Err(error) => {
+                if self.validate_provider_binding(&binding).is_err() {
+                    let stale_session = rlm.take();
+                    drop(rlm);
+                    if let Some(stale_session) = stale_session {
+                        self.retire_session(stale_session);
+                    }
+                }
+                return ServiceResponse::error(error);
+            }
         };
         if !matches!(pre_execution_readiness, IndexReadiness::Ready { .. }) {
             let stale_session = rlm.take();
@@ -2354,16 +2409,25 @@ impl WorkspaceServiceRuntime {
         });
         match result {
             Ok(output) => {
-                let post_execution_revision = match self.actor.read(&binding, |_source_root| {
-                    deadline
-                        .remaining_cancellable(cancellation)
-                        .and_then(|remaining| {
-                            revisions
-                                .snapshot(ProviderDeadline::from_budget(remaining), cancellation)
-                        })
-                }) {
+                let post_execution_revision = match deadline
+                    .remaining_cancellable(cancellation)
+                    .and_then(|remaining| {
+                        self.actor_bound_rlm_revision(
+                            &binding,
+                            &revisions,
+                            ProviderDeadline::from_budget(remaining),
+                            cancellation,
+                        )
+                    }) {
                     Ok(revision) => revision,
-                    Err(error) => return ServiceResponse::error(error),
+                    Err(error) => {
+                        let stale_session = rlm.take();
+                        drop(rlm);
+                        if let Some(stale_session) = stale_session {
+                            self.retire_session(stale_session);
+                        }
+                        return ServiceResponse::error(error);
+                    }
                 };
                 // Deliberately re-checked against the generation this read was
                 // admitted under, not the one observed just now: a background
@@ -2378,7 +2442,14 @@ impl WorkspaceServiceRuntime {
                     ))
                 }) {
                     Ok(readiness) => readiness,
-                    Err(error) => return ServiceResponse::error(error),
+                    Err(error) => {
+                        let stale_session = rlm.take();
+                        drop(rlm);
+                        if let Some(stale_session) = stale_session {
+                            self.retire_session(stale_session);
+                        }
+                        return ServiceResponse::error(error);
+                    }
                 };
                 let post_execution_readiness = match (
                     post_execution_revision == pre_execution_revision,
@@ -2414,11 +2485,13 @@ impl WorkspaceServiceRuntime {
                 }
             }
             Err(error) => {
-                let stale_session = if rlm.as_mut().is_some_and(|session| !session.is_reusable()) {
-                    rlm.take()
-                } else {
-                    None
-                };
+                let root_changed = self.validate_provider_binding(&binding).is_err();
+                let stale_session =
+                    if root_changed || rlm.as_mut().is_some_and(|session| !session.is_reusable()) {
+                        rlm.take()
+                    } else {
+                        None
+                    };
                 drop(rlm);
                 if let Some(stale_session) = stale_session {
                     self.retire_session(stale_session);
@@ -4620,7 +4693,15 @@ mod tests {
     use super::*;
     use crate::application::shared_work::ProviderHostKey;
     use crate::domain::workspace::WorkspaceContext;
+    use crate::infrastructure::platform::filesystem::supports_retained_root_replacement_test;
+    use crate::infrastructure::platform::source_revision_fence::{
+        expected_platform_fence_capability_for_test, FenceCapability, FenceOutcome,
+        SourceRevisionFence,
+    };
     use crate::infrastructure::platform::testing;
+    use crate::infrastructure::source_revision::{
+        set_retained_scan_test_mutation, RetainedScanTestMutationPoint,
+    };
     use crate::infrastructure::source_roots::source_generation;
     use std::fs;
     use std::path::Path;
@@ -7323,6 +7404,15 @@ fn main() {
                 &CancellationToken::new(),
             )
             .unwrap();
+        write_ready_rlm_status_for_revision(context, source_root, &revision);
+        (revision, revision_service)
+    }
+
+    fn write_ready_rlm_status_for_revision(
+        context: &WorkspaceContext,
+        source_root: &Path,
+        revision: &SourceRevision,
+    ) {
         let db_path = rlm_generation_root(context, source_root)
             .unwrap()
             .join("test/bsl_index.db");
@@ -7349,7 +7439,6 @@ fn main() {
             serde_json::to_string_pretty(&status).unwrap() + "\n",
         )
         .unwrap();
-        (revision, revision_service)
     }
 
     fn write_active_rlm_index_lock(context: &WorkspaceContext, source_root: &Path) {
@@ -7453,7 +7542,9 @@ fn main() {
         fs::write(&execute_release, "release").unwrap();
         let response = caller.join().unwrap();
         let session_retired = runtime.rlm().lock().unwrap().is_none();
-        wait_for_atomic_value(&maintenance_requests, 1, Duration::from_secs(2));
+        if response.index_status.is_some() {
+            wait_for_atomic_value(&maintenance_requests, 1, Duration::from_secs(2));
+        }
         let maintenance_requests = maintenance_requests.load(Ordering::Acquire);
         let maintenance_revisions = maintenance_revisions.lock().unwrap().clone();
         let teardown_drained = runtime.session_teardowns().drain(SESSION_TEARDOWN_GRACE);
@@ -8900,6 +8991,174 @@ fn main() {
             observation.teardown_drained,
             "retired fake RLM session teardown exceeded the shutdown grace"
         );
+    }
+
+    #[test]
+    fn rlm_execute_rejects_replaced_root_and_retires_its_session() {
+        if !supports_retained_root_replacement_test() {
+            return;
+        }
+        let observation = run_blocking_rlm_execute(
+            "rlm-root-replaced-during-execute",
+            |context, source_root, module| {
+                let replacement = context.workspace_root.join("src-replacement");
+                fs::rename(source_root, &replacement).unwrap();
+                fs::create_dir_all(module.parent().unwrap()).unwrap();
+                fs::write(module, "Процедура Smoke()\nКонецПроцедуры\n").unwrap();
+            },
+        );
+
+        assert!(!observation.response.ok, "{:?}", observation.response);
+        assert!(observation.response.result_text.is_none());
+        assert!(observation.response.stderr.is_none());
+        assert!(
+            observation.session_retired,
+            "a session bound to the replaced root must not be reused: {:?}",
+            observation.response
+        );
+        assert!(observation.teardown_drained);
+    }
+
+    #[test]
+    fn rlm_executes_from_actor_retained_revision_without_a_platform_fence() {
+        struct UnsupportedRlmFence;
+
+        impl SourceRevisionFence for UnsupportedRlmFence {
+            fn capability(&self) -> FenceCapability {
+                FenceCapability::Unsupported
+            }
+
+            fn flush(
+                &self,
+                _deadline: ProviderDeadline,
+                _cancellation: &CancellationToken,
+            ) -> Result<FenceOutcome, String> {
+                panic!("unsupported fence must not be flushed")
+            }
+        }
+
+        let context = test_context("rlm-retained-revision");
+        let source_root = context.workspace_root.join("src");
+        fs::write(
+            source_root.join("CommonModules/SmokeModule.bsl"),
+            "Процедура Smoke()\nКонецПроцедуры\n",
+        )
+        .unwrap();
+        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
+        let record = test_record(&identity, 1, env!("CARGO_PKG_VERSION"));
+        let mut runtime = WorkspaceServiceRuntime::new(identity, &record);
+        if expected_platform_fence_capability_for_test(&source_root) == FenceCapability::ProvenFast
+        {
+            let revisions = Arc::new(
+                SourceRevisionService::new_with_fence_for_test(
+                    &context,
+                    &source_root,
+                    crate::infrastructure::source_revision::WorkspaceStateScope::LegacyPhysical,
+                    Arc::new(UnsupportedRlmFence),
+                )
+                .unwrap(),
+            );
+            *runtime.rlm_source_revisions_for_test().lock().unwrap() = Some(revisions);
+        }
+        let revisions = runtime.rlm_source_revision_service().unwrap();
+        let binding = runtime.provider_binding().unwrap();
+        let revision = revisions
+            .snapshot_retained(
+                &binding.retained_root(),
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        write_ready_rlm_status_for_revision(&context, &source_root, &revision);
+
+        let fixture = blocking_rlm_fixture();
+        let execute_started = context.cache_root.join("linux-rlm-execute-started.txt");
+        let execute_release = context.cache_root.join("linux-rlm-execute-release.txt");
+        fs::write(&execute_release, "release").unwrap();
+        runtime.runtime_mut_for_test().rlm_starter = Arc::new({
+            let fixture = fixture.clone();
+            let execute_started = execute_started.clone();
+            let execute_release = execute_release.clone();
+            move |_context, source_root, cancellation| {
+                let mut command = Command::new(&fixture);
+                command.args([&execute_started, &execute_release]);
+                Ok(RlmMcpSession {
+                    transport: PersistentMcpSession::start_with_command(command, cancellation)?,
+                    source_root: source_root.to_path_buf(),
+                    session_id: None,
+                })
+            }
+        });
+
+        let response = runtime.handle_rlm_mcp(
+            WorkspaceRlmOperation::Search {
+                query: "Smoke".to_string(),
+                limit: 20,
+            },
+            5,
+            0,
+            &CancellationToken::new(),
+        );
+        assert!(response.ok, "{response:?}");
+        assert!(execute_started.is_file(), "RLM provider was never invoked");
+        assert!(
+            response
+                .result_text
+                .as_deref()
+                .is_some_and(|text| text.contains("old-index-result")),
+            "{response:?}"
+        );
+        drop(runtime);
+        cleanup(&context);
+    }
+
+    #[test]
+    fn rlm_cancellation_during_retained_capture_stops_before_provider_start() {
+        let context = test_context("rlm-cancel-retained-capture");
+        let source_root = context.workspace_root.join("src");
+        fs::write(
+            source_root.join("CommonModules/SmokeModule.bsl"),
+            "Процедура Smoke()\nКонецПроцедуры\n",
+        )
+        .unwrap();
+        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
+        let record = test_record(&identity, 1, env!("CARGO_PKG_VERSION"));
+        let mut runtime = WorkspaceServiceRuntime::new(identity, &record);
+        let starts = Arc::new(AtomicUsize::new(0));
+        runtime.runtime_mut_for_test().rlm_starter = Arc::new({
+            let starts = Arc::clone(&starts);
+            move |_context, _source_root, _cancellation| {
+                starts.fetch_add(1, Ordering::AcqRel);
+                Err("provider must not start after cancellation".to_string())
+            }
+        });
+        let cancellation = CancellationToken::new();
+        let _cancel_during_scan =
+            set_retained_scan_test_mutation(RetainedScanTestMutationPoint::ScanStart, {
+                let cancellation = cancellation.clone();
+                move || cancellation.cancel()
+            });
+
+        let response = runtime.handle_rlm_mcp(
+            WorkspaceRlmOperation::Search {
+                query: "Smoke".to_string(),
+                limit: 20,
+            },
+            5,
+            0,
+            &cancellation,
+        );
+        assert!(!response.ok, "{response:?}");
+        assert!(
+            response
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("cancelled")),
+            "{response:?}"
+        );
+        assert_eq!(starts.load(Ordering::Acquire), 0);
+        drop(runtime);
+        cleanup(&context);
     }
 
     #[test]
