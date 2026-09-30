@@ -35,6 +35,7 @@ pub(crate) struct GitIndexEntry {
 
 const MAX_STAGED_IGNORE_FILES: usize = 1024;
 const MAX_STAGED_IGNORE_TOTAL_BYTES: usize = 8 * 1024 * 1024;
+const MAX_STAGED_IGNORE_BATCH_METADATA_BYTES: usize = MAX_STAGED_IGNORE_FILES * 128;
 const MAX_EXPANDED_REPOSITORY_FACTS: usize = 4096;
 const MAX_EXPANDED_REPOSITORY_FACT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_AMBIGUOUS_OWNER_REASON_BYTES: usize = 512;
@@ -2207,17 +2208,8 @@ fn materialize_staged_ignore_files(
     if let StagedBlobReadSafety::Blocked(reason) = blob_read_safety {
         return Err(StagedIgnoreMaterializationError::Incomplete(reason.clone()));
     }
-    let mut total_bytes = 0_usize;
     let mut materialized_directories = MaterializedGitDirectories::default();
-    for (path, oid) in staged_ignore_files {
-        if cancellation.is_cancelled() {
-            return Err(StagedIgnoreMaterializationError::Cancelled);
-        }
-        if deadline.remaining().is_zero() {
-            return Err(StagedIgnoreMaterializationError::Incomplete(
-                "staged .gitignore blob inspection timed out".into(),
-            ));
-        }
+    for (path, oid) in &staged_ignore_files {
         let relative = Path::new(path);
         if relative.is_absolute()
             || relative
@@ -2228,14 +2220,18 @@ fn materialize_staged_ignore_files(
                 "staged .gitignore path is not a safe repository-relative path: {path}"
             )));
         }
-        let target = root.path().join(relative);
+        if !matches!(oid.len(), 40 | 64) || !oid.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(StagedIgnoreMaterializationError::Incomplete(format!(
+                "staged .gitignore path does not have a valid Git blob object id: {path}"
+            )));
+        }
         let relative_parent = relative.parent().ok_or_else(|| {
             StagedIgnoreMaterializationError::Incomplete(format!(
                 "staged .gitignore path has no parent: {path}"
             ))
         })?;
         let policy_path = MaterializedGitPath {
-            path: path.into(),
+            path: (*path).into(),
             role: "staged ignore policy",
         };
         materialize_exact_git_directories(
@@ -2246,6 +2242,25 @@ fn materialize_staged_ignore_files(
             cancellation,
             deadline,
         )?;
+    }
+    let blobs = read_staged_ignore_blobs(
+        runner,
+        repository_root,
+        &staged_ignore_files,
+        cancellation,
+        deadline,
+    )?;
+    for (path, oid) in staged_ignore_files {
+        if cancellation.is_cancelled() {
+            return Err(StagedIgnoreMaterializationError::Cancelled);
+        }
+        if deadline.remaining().is_zero() {
+            return Err(StagedIgnoreMaterializationError::Incomplete(
+                "staged .gitignore blob inspection timed out".into(),
+            ));
+        }
+        let relative = Path::new(path);
+        let target = root.path().join(relative);
         let mut target_file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -2260,56 +2275,11 @@ fn materialize_staged_ignore_files(
                 };
                 StagedIgnoreMaterializationError::Incomplete(reason)
             })?;
-        let command = process_command_vec(
-            repository_root,
-            vec![
-                "--no-replace-objects".into(),
-                "cat-file".into(),
-                "blob".into(),
-                oid.into(),
-            ],
-            cancellation,
-            deadline,
-        );
-        let remaining = MAX_STAGED_IGNORE_TOTAL_BYTES.saturating_sub(total_bytes);
-        let mut command = command;
-        command.capture_limits = Some((
-            remaining.saturating_add(1),
-            crate::infrastructure::platform::STDERR_CAPTURE_LIMIT,
-        ));
-        let output = match sticky_process_result(runner.run(&command), cancellation) {
-            Ok(output) => output,
-            Err(_) if cancellation.is_cancelled() => {
-                return Err(StagedIgnoreMaterializationError::Cancelled)
-            }
-            Err(reason) => return Err(StagedIgnoreMaterializationError::Incomplete(reason)),
-        };
-        if output.cancelled || cancellation.is_cancelled() {
-            return Err(StagedIgnoreMaterializationError::Cancelled);
-        }
-        if !output.status_success || output.timed_out || output_incomplete(&output) {
-            let reason = if output.timed_out {
-                "staged .gitignore blob inspection timed out".into()
-            } else if output_incomplete(&output) {
-                completeness_reason(&output)
-            } else {
-                nonzero_reason(&output)
-            };
-            return Err(StagedIgnoreMaterializationError::Incomplete(reason));
-        }
-        total_bytes = total_bytes.saturating_add(output.stdout.len());
-        if total_bytes > MAX_STAGED_IGNORE_TOTAL_BYTES {
-            return Err(StagedIgnoreMaterializationError::Incomplete(format!(
-                "staged .gitignore policy exceeds {MAX_STAGED_IGNORE_TOTAL_BYTES} bytes"
-            )));
-        }
-        target_file
-            .write_all(output.stdout.as_bytes())
-            .map_err(|error| {
-                StagedIgnoreMaterializationError::Incomplete(format!(
-                    "write staged .gitignore blob {path}: {error}"
-                ))
-            })?;
+        target_file.write_all(&blobs[oid]).map_err(|error| {
+            StagedIgnoreMaterializationError::Incomplete(format!(
+                "write staged .gitignore blob {path}: {error}"
+            ))
+        })?;
     }
     for candidate in candidates {
         let candidate = Path::new(&candidate.repo_path);
@@ -2333,6 +2303,177 @@ fn materialize_staged_ignore_files(
         )?;
     }
     Ok(root)
+}
+
+fn read_staged_ignore_blobs(
+    runner: &dyn ProcessRunner,
+    repository_root: &Path,
+    files: &[(&str, &str)],
+    cancellation: &CancellationToken,
+    deadline: ProviderDeadline,
+) -> Result<BTreeMap<String, Vec<u8>>, StagedIgnoreMaterializationError> {
+    let oids = files.iter().map(|(_, oid)| *oid).collect::<BTreeSet<_>>();
+    let mut input = Vec::new();
+    for oid in &oids {
+        input.extend_from_slice(oid.as_bytes());
+        input.push(b'\n');
+    }
+    let check = run_staged_ignore_batch(
+        runner,
+        repository_root,
+        "--batch-check=%(objectname) %(objecttype) %(objectsize)",
+        &input,
+        MAX_STAGED_IGNORE_BATCH_METADATA_BYTES + 1,
+        cancellation,
+        deadline,
+    )?;
+    let mut sizes = BTreeMap::<&str, usize>::new();
+    let lines = check.stdout.lines().collect::<Vec<_>>();
+    if lines.len() != oids.len() || !check.stdout.ends_with('\n') {
+        return Err(StagedIgnoreMaterializationError::Incomplete(
+            "Git returned incomplete staged .gitignore blob metadata".into(),
+        ));
+    }
+    for (oid, line) in oids.iter().zip(lines) {
+        let mut fields = line.split(' ');
+        let (Some(actual_oid), Some("blob"), Some(raw_size), None) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
+        else {
+            return Err(StagedIgnoreMaterializationError::Incomplete(format!(
+                "Git returned invalid staged .gitignore blob metadata for {oid}"
+            )));
+        };
+        if actual_oid != *oid {
+            return Err(StagedIgnoreMaterializationError::Incomplete(format!(
+                "Git returned the wrong staged .gitignore blob object id for {oid}"
+            )));
+        }
+        let size = raw_size.parse::<usize>().map_err(|_| {
+            StagedIgnoreMaterializationError::Incomplete(format!(
+                "Git returned an invalid staged .gitignore blob size for {oid}"
+            ))
+        })?;
+        sizes.insert(oid, size);
+    }
+    let mut total_bytes = 0_usize;
+    for (_, oid) in files {
+        total_bytes = total_bytes
+            .checked_add(sizes[oid])
+            .unwrap_or(MAX_STAGED_IGNORE_TOTAL_BYTES + 1);
+        if total_bytes > MAX_STAGED_IGNORE_TOTAL_BYTES {
+            return Err(StagedIgnoreMaterializationError::Incomplete(format!(
+                "staged .gitignore policy exceeds {MAX_STAGED_IGNORE_TOTAL_BYTES} bytes"
+            )));
+        }
+    }
+    let mut expected_batch_bytes = 0_usize;
+    for oid in &oids {
+        expected_batch_bytes += oid.len() + " blob ".len() + sizes[oid].to_string().len() + 1;
+        expected_batch_bytes += sizes[oid] + 1;
+    }
+    let batch = run_staged_ignore_batch(
+        runner,
+        repository_root,
+        "--batch",
+        &input,
+        expected_batch_bytes + 1,
+        cancellation,
+        deadline,
+    )?;
+    let output = batch.stdout.as_bytes();
+    let mut cursor = 0_usize;
+    let mut blobs = BTreeMap::new();
+    for oid in oids {
+        if cancellation.is_cancelled() {
+            return Err(StagedIgnoreMaterializationError::Cancelled);
+        }
+        if deadline.remaining().is_zero() {
+            return Err(StagedIgnoreMaterializationError::Incomplete(
+                "staged .gitignore blob inspection timed out".into(),
+            ));
+        }
+        let size = sizes[oid];
+        let header = format!("{oid} blob {size}\n");
+        if !output[cursor..].starts_with(header.as_bytes()) {
+            return Err(StagedIgnoreMaterializationError::Incomplete(format!(
+                "Git returned invalid staged .gitignore batch framing for {oid}"
+            )));
+        }
+        cursor += header.len();
+        let end = cursor.checked_add(size).ok_or_else(|| {
+            StagedIgnoreMaterializationError::Incomplete(
+                "Git returned an oversized staged .gitignore blob".into(),
+            )
+        })?;
+        if output.get(end) != Some(&b'\n') {
+            return Err(StagedIgnoreMaterializationError::Incomplete(format!(
+                "Git returned incomplete staged .gitignore blob bytes for {oid}"
+            )));
+        }
+        blobs.insert(oid.to_owned(), output[cursor..end].to_vec());
+        cursor = end + 1;
+    }
+    if cursor != output.len() {
+        return Err(StagedIgnoreMaterializationError::Incomplete(
+            "Git returned unexpected trailing staged .gitignore blob bytes".into(),
+        ));
+    }
+    Ok(blobs)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_staged_ignore_batch(
+    runner: &dyn ProcessRunner,
+    repository_root: &Path,
+    mode: &str,
+    input: &[u8],
+    capture_limit: usize,
+    cancellation: &CancellationToken,
+    deadline: ProviderDeadline,
+) -> Result<ProcessOutput, StagedIgnoreMaterializationError> {
+    if cancellation.is_cancelled() {
+        return Err(StagedIgnoreMaterializationError::Cancelled);
+    }
+    if deadline.remaining().is_zero() {
+        return Err(StagedIgnoreMaterializationError::Incomplete(
+            "staged .gitignore blob inspection timed out".into(),
+        ));
+    }
+    let mut command = process_command_vec(
+        repository_root,
+        vec![
+            "--no-replace-objects".into(),
+            "cat-file".into(),
+            mode.into(),
+        ],
+        cancellation,
+        deadline,
+    );
+    command.capture_limits = Some((
+        capture_limit,
+        crate::infrastructure::platform::STDERR_CAPTURE_LIMIT,
+    ));
+    let output = match sticky_process_result(runner.run_with_input(&command, input), cancellation) {
+        Ok(output) => output,
+        Err(_) if cancellation.is_cancelled() => {
+            return Err(StagedIgnoreMaterializationError::Cancelled)
+        }
+        Err(reason) => return Err(StagedIgnoreMaterializationError::Incomplete(reason)),
+    };
+    if output.cancelled || cancellation.is_cancelled() {
+        return Err(StagedIgnoreMaterializationError::Cancelled);
+    }
+    if !output.status_success || output.timed_out || output_incomplete(&output) {
+        let reason = if output.timed_out {
+            "staged .gitignore blob inspection timed out".into()
+        } else if output_incomplete(&output) {
+            completeness_reason(&output)
+        } else {
+            nonzero_reason(&output)
+        };
+        return Err(StagedIgnoreMaterializationError::Incomplete(reason));
+    }
+    Ok(output)
 }
 
 fn materialize_exact_git_directories(
@@ -3122,6 +3263,356 @@ mod tests {
     }
 
     #[test]
+    fn project_health_git_ignore_materializes_distinct_staged_blobs_with_bounded_processes() {
+        struct BatchOnlyRunner {
+            calls: RefCell<Vec<(Vec<String>, Vec<u8>)>>,
+            first_oid: String,
+            second_oid: String,
+        }
+
+        impl ProcessRunner for BatchOnlyRunner {
+            fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
+                panic!(
+                    "one child per staged .gitignore is not bounded: {:?}",
+                    command.args
+                );
+            }
+
+            fn run_with_input(
+                &self,
+                command: &ProcessCommand,
+                input: &[u8],
+            ) -> Result<ProcessOutput, String> {
+                self.calls
+                    .borrow_mut()
+                    .push((command.args.clone(), input.to_vec()));
+                let first = &self.first_oid;
+                let second = &self.second_oid;
+                if command
+                    .args
+                    .iter()
+                    .any(|arg| arg.starts_with("--batch-check="))
+                {
+                    Ok(process_output(
+                        true,
+                        &format!("{first} blob 4\n{second} blob 4\n"),
+                    ))
+                } else if command.args.iter().any(|arg| arg == "--batch") {
+                    Ok(process_output(
+                        true,
+                        &format!("{first} blob 4\none\n\n{second} blob 4\nt\0o\n\n"),
+                    ))
+                } else {
+                    panic!(
+                        "unexpected staged .gitignore Git command: {:?}",
+                        command.args
+                    );
+                }
+            }
+        }
+
+        let repository = TempDir::new().unwrap();
+        let first_oid = "a".repeat(40);
+        let second_oid = "b".repeat(40);
+        let runner = BatchOnlyRunner {
+            calls: RefCell::new(Vec::new()),
+            first_oid: first_oid.clone(),
+            second_oid: second_oid.clone(),
+        };
+        let materialized = materialize_staged_ignore_files(
+            &runner,
+            repository.path(),
+            &[
+                GitIndexEntry {
+                    repo_path: "src/first/.gitignore".into(),
+                    blob_oid: Some(first_oid.clone()),
+                    mode: Some("100644".into()),
+                },
+                GitIndexEntry {
+                    repo_path: "src/second/.gitignore".into(),
+                    blob_oid: Some(second_oid.clone()),
+                    mode: Some("100644".into()),
+                },
+            ],
+            &[],
+            &StagedBlobReadSafety::LocalOnlyGuaranteed,
+            &CancellationToken::new(),
+            ProviderDeadline::from_budget(Duration::from_secs(7)),
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::read(materialized.path().join("src/first/.gitignore")).unwrap(),
+            b"one\n"
+        );
+        assert_eq!(
+            fs::read(materialized.path().join("src/second/.gitignore")).unwrap(),
+            b"t\0o\n"
+        );
+        let calls = runner.calls.borrow();
+        assert_eq!(calls.len(), 2);
+        let expected_input = format!("{first_oid}\n{second_oid}\n").into_bytes();
+        for (_, input) in calls.iter() {
+            assert_eq!(*input, expected_input);
+        }
+    }
+
+    #[test]
+    fn project_health_git_ignore_batch_reads_1024_real_staged_blobs_with_two_children() {
+        struct CountingGitRunner<'a> {
+            inner: &'a dyn ProcessRunner,
+            commands: RefCell<Vec<Vec<String>>>,
+        }
+
+        impl ProcessRunner for CountingGitRunner<'_> {
+            fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
+                self.commands.borrow_mut().push(command.args.clone());
+                self.inner.run(command)
+            }
+
+            fn run_with_input(
+                &self,
+                command: &ProcessCommand,
+                input: &[u8],
+            ) -> Result<ProcessOutput, String> {
+                self.commands.borrow_mut().push(command.args.clone());
+                self.inner.run_with_input(command, input)
+            }
+        }
+
+        let repository = TempDir::new().unwrap();
+        git(repository.path(), &["init"]);
+        for index in 0..super::MAX_STAGED_IGNORE_FILES {
+            let directory = repository.path().join(format!("policy/{index:04}"));
+            fs::create_dir_all(&directory).unwrap();
+            fs::write(
+                directory.join(".gitignore"),
+                format!("ignored-{index:04}\n"),
+            )
+            .unwrap();
+        }
+        git(repository.path(), &["add", "policy"]);
+        let output = Command::new("git")
+            .args(["ls-files", "--cached", "--stage", "-z"])
+            .current_dir(repository.path())
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let entries = parse_git_index_entries(&String::from_utf8(output.stdout).unwrap()).unwrap();
+        assert_eq!(entries.len(), super::MAX_STAGED_IGNORE_FILES);
+        let runner = CountingGitRunner {
+            inner: crate::infrastructure::internal_adapters::system_process_runner(),
+            commands: RefCell::new(Vec::new()),
+        };
+
+        let materialized = materialize_staged_ignore_files(
+            &runner,
+            repository.path(),
+            &entries,
+            &[],
+            &StagedBlobReadSafety::LocalOnlyGuaranteed,
+            &CancellationToken::new(),
+            ProviderDeadline::from_budget(Duration::from_secs(30)),
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::read(materialized.path().join("policy/0000/.gitignore")).unwrap(),
+            b"ignored-0000\n"
+        );
+        assert_eq!(
+            fs::read(materialized.path().join("policy/1023/.gitignore")).unwrap(),
+            b"ignored-1023\n"
+        );
+        let commands = runner.commands.borrow();
+        assert_eq!(
+            commands.len(),
+            2,
+            "one child per blob exceeds the check budget"
+        );
+        assert!(commands[0]
+            .iter()
+            .any(|arg| arg.starts_with("--batch-check=")));
+        assert!(commands[1].iter().any(|arg| arg == "--batch"));
+    }
+
+    #[test]
+    fn project_health_git_ignore_batch_reuses_duplicate_oid_but_charges_each_path() {
+        let repository = TempDir::new().unwrap();
+        let oid = "a".repeat(40);
+        let entries = [
+            GitIndexEntry {
+                repo_path: "first/.gitignore".into(),
+                blob_oid: Some(oid.clone()),
+                mode: Some("100644".into()),
+            },
+            GitIndexEntry {
+                repo_path: "second/.gitignore".into(),
+                blob_oid: Some(oid.clone()),
+                mode: Some("100644".into()),
+            },
+        ];
+        let runner = SequenceRunner::outputs(vec![
+            process_output(true, &format!("{oid} blob 4\n")),
+            process_output(true, &format!("{oid} blob 4\none\n\n")),
+        ]);
+        let materialized = materialize_staged_ignore_files(
+            &runner,
+            repository.path(),
+            &entries,
+            &[],
+            &StagedBlobReadSafety::LocalOnlyGuaranteed,
+            &CancellationToken::new(),
+            ProviderDeadline::from_budget(Duration::from_secs(7)),
+        )
+        .unwrap();
+        for path in ["first/.gitignore", "second/.gitignore"] {
+            assert_eq!(fs::read(materialized.path().join(path)).unwrap(), b"one\n");
+        }
+        assert_eq!(runner.commands.borrow().len(), 2);
+
+        let too_large = SequenceRunner::outputs(vec![process_output(
+            true,
+            &format!("{oid} blob {}\n", 5 * 1024 * 1024),
+        )]);
+        let error = materialize_staged_ignore_files(
+            &too_large,
+            repository.path(),
+            &entries,
+            &[],
+            &StagedBlobReadSafety::LocalOnlyGuaranteed,
+            &CancellationToken::new(),
+            ProviderDeadline::from_budget(Duration::from_secs(7)),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            StagedIgnoreMaterializationError::Incomplete(ref reason)
+                if reason.contains("exceeds 8388608 bytes")
+        ));
+        assert_eq!(too_large.commands.borrow().len(), 1);
+    }
+
+    #[test]
+    fn project_health_git_ignore_batch_rejects_wrong_oid_type_size_and_framing() {
+        let repository = TempDir::new().unwrap();
+        let oid = "a".repeat(40);
+        let files = [(".gitignore", oid.as_str())];
+        let cases = [
+            (
+                format!("{} blob 4\n", "b".repeat(40)),
+                None,
+                "wrong staged .gitignore blob object id",
+            ),
+            (
+                format!("{oid} tree 4\n"),
+                None,
+                "invalid staged .gitignore blob metadata",
+            ),
+            (
+                format!("{oid} blob unknown\n"),
+                None,
+                "invalid staged .gitignore blob size",
+            ),
+            (
+                format!("{oid} blob 4\n"),
+                Some(format!("{} blob 4\none\n\n", "b".repeat(40))),
+                "invalid staged .gitignore batch framing",
+            ),
+            (
+                format!("{oid} blob 4\n"),
+                Some(format!("{oid} blob 5\none\n\n")),
+                "invalid staged .gitignore batch framing",
+            ),
+            (
+                format!("{oid} blob 4\n"),
+                Some(format!("{oid} blob 4\none\n")),
+                "incomplete staged .gitignore blob bytes",
+            ),
+            (
+                format!("{oid} blob 4\n"),
+                Some(format!("{oid} blob 4\none\n\nextra")),
+                "unexpected trailing staged .gitignore blob bytes",
+            ),
+        ];
+        for (metadata, blob_response, expected_reason) in cases {
+            let mut outputs = vec![process_output(true, &metadata)];
+            if let Some(response) = blob_response {
+                outputs.push(process_output(true, &response));
+            }
+            let runner = SequenceRunner::outputs(outputs);
+            let error = super::read_staged_ignore_blobs(
+                &runner,
+                repository.path(),
+                &files,
+                &CancellationToken::new(),
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+            )
+            .unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    StagedIgnoreMaterializationError::Incomplete(ref reason)
+                        if reason.contains(expected_reason)
+                ),
+                "{error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn project_health_git_ignore_batch_rejects_invalid_utf8_without_per_blob_retry() {
+        let repository = TempDir::new().unwrap();
+        let oid = "a".repeat(40);
+        let mut binary_output = process_output(true, &format!("{oid} blob 1\n�\n"));
+        binary_output.stdout_had_invalid_utf8 = true;
+        let runner = SequenceRunner::outputs(vec![
+            process_output(true, &format!("{oid} blob 1\n")),
+            binary_output,
+        ]);
+        let error = super::read_staged_ignore_blobs(
+            &runner,
+            repository.path(),
+            &[(".gitignore", oid.as_str())],
+            &CancellationToken::new(),
+            ProviderDeadline::from_budget(Duration::from_secs(7)),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            StagedIgnoreMaterializationError::Incomplete(ref reason)
+                if reason.contains("invalid UTF-8")
+        ));
+        assert_eq!(runner.commands.borrow().len(), 2);
+    }
+
+    #[test]
+    fn project_health_git_ignore_batch_rejects_truncated_output_without_per_blob_retry() {
+        let repository = TempDir::new().unwrap();
+        let oid = "a".repeat(40);
+        let mut truncated = process_output(true, &format!("{oid} blob 4\none"));
+        truncated.stdout_truncated = true;
+        let runner = SequenceRunner::outputs(vec![
+            process_output(true, &format!("{oid} blob 4\n")),
+            truncated,
+        ]);
+        let error = super::read_staged_ignore_blobs(
+            &runner,
+            repository.path(),
+            &[(".gitignore", oid.as_str())],
+            &CancellationToken::new(),
+            ProviderDeadline::from_budget(Duration::from_secs(7)),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            StagedIgnoreMaterializationError::Incomplete(ref reason)
+                if reason.contains("stdout was truncated")
+        ));
+        assert_eq!(runner.commands.borrow().len(), 2);
+    }
+
+    #[test]
     fn project_health_git_ignore_rejects_host_identity_collisions() {
         let repository = TempDir::new().unwrap();
         let repository_identity = normalize_path_identity(repository.path()).unwrap();
@@ -3132,7 +3623,7 @@ mod tests {
         {
             return;
         }
-        let runner = SequenceRunner::outputs(vec![process_output(true, "")]);
+        let runner = SequenceRunner::outputs(Vec::new());
         let entries = [
             GitIndexEntry {
                 repo_path: "src/A/.gitignore".into(),
@@ -3170,7 +3661,7 @@ mod tests {
                 },
             }
         );
-        assert_eq!(runner.commands.borrow().len(), 1);
+        assert!(runner.commands.borrow().is_empty());
     }
 
     #[test]
@@ -3210,9 +3701,10 @@ mod tests {
     #[test]
     fn project_health_git_ignore_bounds_total_staged_policy_bytes() {
         let repository = TempDir::new().unwrap();
+        let oid = "a".repeat(40);
         let runner = SequenceRunner::outputs(vec![process_output(
             true,
-            &"x".repeat(super::MAX_STAGED_IGNORE_TOTAL_BYTES + 1),
+            &format!("{oid} blob {}\n", super::MAX_STAGED_IGNORE_TOTAL_BYTES + 1),
         )]);
 
         let error = materialize_staged_ignore_files(
@@ -3220,7 +3712,7 @@ mod tests {
             repository.path(),
             &[GitIndexEntry {
                 repo_path: ".gitignore".into(),
-                blob_oid: Some("a".repeat(40)),
+                blob_oid: Some(oid),
                 mode: Some("100644".into()),
             }],
             &[],
@@ -3240,8 +3732,12 @@ mod tests {
         );
         assert_eq!(
             runner.commands.borrow()[0].capture_limits,
-            Some((super::MAX_STAGED_IGNORE_TOTAL_BYTES + 1, 256 * 1024))
+            Some((
+                super::MAX_STAGED_IGNORE_BATCH_METADATA_BYTES + 1,
+                256 * 1024
+            ))
         );
+        assert_eq!(runner.commands.borrow().len(), 1);
     }
 
     #[test]
