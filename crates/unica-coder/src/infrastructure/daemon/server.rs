@@ -341,6 +341,8 @@ pub(super) struct V5CanonicalInvocationRuntime {
     service: Arc<dyn CanonicalInvocationService>,
     clock: Arc<dyn Clock>,
     documentation_cursors: Arc<crate::application::result_store::SearchCursorStore>,
+    root_check_continuations:
+        Arc<crate::infrastructure::project_health::resources::RootCheckContinuationStore>,
     workspace_actors: WorkspaceActorRegistry,
     deliveries: Arc<crate::infrastructure::engine_delivery::DeliveryDesk>,
     provider_hosts: Arc<ProviderHostOwner>,
@@ -478,6 +480,9 @@ impl V5CanonicalInvocationRuntime {
             documentation_cursors: Arc::new(
                 crate::application::result_store::SearchCursorStore::default(),
             ),
+            root_check_continuations: Arc::new(
+                crate::infrastructure::project_health::resources::RootCheckContinuationStore::default(),
+            ),
             workspace_actors,
             deliveries: Arc::new(crate::infrastructure::engine_delivery::DeliveryDesk::default()),
             provider_hosts: Arc::new(ProviderHostOwner::default()),
@@ -550,7 +555,11 @@ impl V5CanonicalInvocationRuntime {
                 DomainResult::canonical_rejection(None, RefusalCode::BadValue, summary),
             )));
         }
-        match super::v13_workspace_bootstrap::prepare(&request, response_deadline.clone()) {
+        match super::v13_workspace_bootstrap::prepare(
+            &request,
+            response_deadline.clone(),
+            &self.root_check_continuations,
+        ) {
             super::v13_workspace_bootstrap::Preparation::NotApplicable => {}
             super::v13_workspace_bootstrap::Preparation::Rejected(result) => {
                 return Err(V5CanonicalPrepareError::Rejected(result))

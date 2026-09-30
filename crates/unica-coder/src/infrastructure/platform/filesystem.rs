@@ -1514,6 +1514,49 @@ pub(crate) fn file_identity(file: &fs::File) -> io::Result<FileIdentity> {
     })
 }
 
+#[cfg(unix)]
+pub(crate) fn file_change_time(
+    _file: &fs::File,
+    metadata: &fs::Metadata,
+) -> io::Result<(i64, i64)> {
+    use std::os::unix::fs::MetadataExt;
+
+    Ok((metadata.ctime(), metadata.ctime_nsec()))
+}
+
+#[cfg(windows)]
+pub(crate) fn file_change_time(
+    file: &fs::File,
+    _metadata: &fs::Metadata,
+) -> io::Result<(i64, i64)> {
+    use std::mem::size_of;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileBasicInfo, GetFileInformationByHandleEx, FILE_BASIC_INFO,
+    };
+
+    let mut information = FILE_BASIC_INFO {
+        CreationTime: 0,
+        LastAccessTime: 0,
+        LastWriteTime: 0,
+        ChangeTime: 0,
+        FileAttributes: 0,
+    };
+    // SAFETY: the file handle remains open and `information` has the Win32 layout and size.
+    if unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileBasicInfo,
+            (&mut information as *mut FILE_BASIC_INFO).cast(),
+            size_of::<FILE_BASIC_INFO>() as u32,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok((information.ChangeTime, 0))
+}
+
 #[cfg(windows)]
 pub(crate) fn hard_link_count(file: &fs::File) -> io::Result<u64> {
     Ok(u64::from(windows_file_information(file)?.nNumberOfLinks))

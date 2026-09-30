@@ -15,7 +15,7 @@ use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::internal_adapters::{system_process_runner, ProcessRunner};
 use git::GitRepositoryInspector;
 use layout::SourceLayoutInspector;
-use resources::{resource_observations, SourceResourcePolicyInspector};
+use resources::{resource_observations, ResourceContinuation, SourceResourcePolicyInspector};
 #[cfg(test)]
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -451,7 +451,28 @@ pub(crate) fn inspect_project_health(
     cancellation: &CancellationToken,
     deadline: ProviderDeadline,
 ) -> Result<ProjectHealthSnapshot, ProjectHealthInspectionError> {
-    inspect_project_health_with(context, cancellation, deadline, system_process_runner())
+    inspect_project_health_with(
+        context,
+        cancellation,
+        deadline,
+        system_process_runner(),
+        None,
+    )
+}
+
+pub(crate) fn inspect_project_health_continued(
+    context: &WorkspaceContext,
+    cancellation: &CancellationToken,
+    deadline: ProviderDeadline,
+    continuation: Option<&mut ResourceContinuation>,
+) -> Result<ProjectHealthSnapshot, ProjectHealthInspectionError> {
+    inspect_project_health_with(
+        context,
+        cancellation,
+        deadline,
+        system_process_runner(),
+        continuation,
+    )
 }
 
 #[cfg(test)]
@@ -461,7 +482,7 @@ pub(crate) fn inspect_project_health_with_runner(
     deadline: ProviderDeadline,
     runner: &dyn ProcessRunner,
 ) -> Result<ProjectHealthSnapshot, ProjectHealthInspectionError> {
-    inspect_project_health_with(context, cancellation, deadline, runner)
+    inspect_project_health_with(context, cancellation, deadline, runner, None)
 }
 
 fn inspect_project_health_with(
@@ -469,6 +490,7 @@ fn inspect_project_health_with(
     cancellation: &CancellationToken,
     deadline: ProviderDeadline,
     runner: &dyn ProcessRunner,
+    continuation: Option<&mut ResourceContinuation>,
 ) -> Result<ProjectHealthSnapshot, ProjectHealthInspectionError> {
     let layout = SourceLayoutInspector::inspect(context, cancellation, deadline)?;
     if cancellation.is_cancelled() {
@@ -651,13 +673,14 @@ fn inspect_project_health_with(
             && !eligible_resource_roots.is_empty()
     }) {
         let resources = SourceResourcePolicyInspector::with_process_runner(runner)
-            .inspect_excluding(
+            .inspect_excluding_continued(
                 repository_root,
                 &eligible_resource_roots,
                 &git.entries,
                 &excluded_config_dump_info_paths,
                 cancellation,
                 deadline,
+                continuation,
             )?;
         merge_resource_observations(
             &mut resource_matrix,

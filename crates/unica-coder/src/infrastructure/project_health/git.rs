@@ -1858,13 +1858,13 @@ pub(crate) fn parse_git_index_entries(stdout: &str) -> Result<Vec<GitIndexEntry>
     })
 }
 
-enum IndexParseError {
+pub(super) enum IndexParseError {
     Malformed(String),
     Cancelled,
     TimedOut,
 }
 
-fn parse_git_index_entries_controlled(
+pub(super) fn parse_git_index_entries_controlled(
     stdout: &str,
     cancellation: &CancellationToken,
     deadline: ProviderDeadline,

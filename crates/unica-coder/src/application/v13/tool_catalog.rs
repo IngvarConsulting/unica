@@ -329,7 +329,7 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                 },
                 V13ToolContract {
                     name: "check",
-                    description: "Confirm workspace source-set admission, or validate one logical node: readability plus every validator its kind owns. Node diagnostics are returned in stable pages.",
+                    description: "Confirm workspace source-set admission, or validate one logical node: readability plus every validator its kind owns. An incomplete workspace check can continue by calling unica.check with an empty object again; each call uses its own deadline. Node diagnostics are returned in stable pages.",
                     input_schema: schema(
                         json!({
                             "at": logical_address(),
