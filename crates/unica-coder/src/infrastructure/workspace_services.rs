@@ -4693,6 +4693,7 @@ mod tests {
     use super::*;
     use crate::application::shared_work::ProviderHostKey;
     use crate::domain::workspace::WorkspaceContext;
+    use crate::infrastructure::platform::filesystem::supports_retained_root_replacement_test;
     use crate::infrastructure::platform::source_revision_fence::{
         expected_platform_fence_capability_for_test, FenceCapability, FenceOutcome,
         SourceRevisionFence,
@@ -8994,6 +8995,9 @@ fn main() {
 
     #[test]
     fn rlm_execute_rejects_replaced_root_and_retires_its_session() {
+        if !supports_retained_root_replacement_test() {
+            return;
+        }
         let observation = run_blocking_rlm_execute(
             "rlm-root-replaced-during-execute",
             |context, source_root, module| {
