@@ -21,6 +21,7 @@ use super::v13_infobase_exports::{
     digest_optional_workspace_file, digest_required_workspace_file, missing_runner_rejection,
     resolve_bundled_runner, runner_rejection, CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
 };
+use super::v13_source_set_name::{source_set_name_guidance, valid_source_set_name};
 use crate::application::invocation_store::ToolIdentity;
 use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
 use crate::domain::invocation::{DomainResult, SafeIdentityHash};
@@ -39,7 +40,6 @@ pub(super) const OPERATION: &str = "push";
 /// Имя команды в конверте раннера: словарь читается как слой и направление,
 /// раннер называет свои команды по-своему.
 const RUNNER_COMMAND: &str = "build";
-const SOURCE_SET_NAME_MAX: usize = 64;
 const STEPS_MAX: usize = 64;
 
 #[derive(Debug, Clone)]
@@ -178,7 +178,7 @@ fn parse_import_arguments(args: &Map<String, Value>) -> Result<ImportArguments, 
         Some(_) => {
             return Err(reject(
                 RefusalCode::BadValue,
-                format!("push sourceSet must be the name of a source set declared in v8project.yaml: up to {SOURCE_SET_NAME_MAX} letters, digits, `_`, `-` or `.`"),
+                source_set_name_guidance(OPERATION),
             ))
         }
     };
@@ -196,15 +196,6 @@ fn parse_import_arguments(args: &Map<String, Value>) -> Result<ImportArguments, 
         source_set,
         full_rebuild,
     })
-}
-
-fn valid_source_set_name(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= SOURCE_SET_NAME_MAX
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
-        && !value.starts_with('.')
 }
 
 /// Состояние входов, обязанное совпасть у превью и применения: проектный файл
@@ -1026,6 +1017,67 @@ mod tests {
             result.diagnostics[0]["code"], "invalid_result",
             "{result:?}"
         );
+    }
+
+    #[test]
+    fn preview_accepts_cyrillic_and_legacy_ascii_source_set_from_public_run_request() {
+        for name in ["Доработки", "1foo"] {
+            let root = workspace();
+            let config = root.path().join(CONFIG_NAME);
+            let yaml = fs::read_to_string(&config)
+                .unwrap()
+                .replace("ext-sales", name);
+            fs::write(config, yaml).unwrap();
+            let request = InvocationRequest::new(
+                ToolIdentity::Run,
+                json!({"op": "push", "args": {"sourceSet": name, "force": true}, "dryRun": true}),
+                root.path().display().to_string(),
+                7000,
+            )
+            .unwrap();
+            let prepared = PreparedSourceImport::parse(&request).expect("declared source set");
+            let runner =
+                SequenceRunner::new(vec![process(envelope(&[(name, full())], false), true)]);
+            let result = run(root.path(), &prepared, &runner);
+            assert!(result.ok, "{name}: {result:?}");
+            assert_eq!(
+                result.data.as_ref().unwrap()["plan"]["steps"][0]["sourceSet"],
+                name
+            );
+            assert!(runner
+                .joined_args(0)
+                .ends_with(&format!("build --source-set {name} --dry-run")));
+            assert!(result.changed.is_empty());
+        }
+    }
+
+    #[test]
+    fn preview_of_all_sets_accepts_cyrillic_runner_step() {
+        let root = workspace();
+        let config = root.path().join(CONFIG_NAME);
+        let yaml = fs::read_to_string(&config)
+            .unwrap()
+            .replace("ext-sales", "Доработки");
+        fs::write(config, yaml).unwrap();
+        let request = InvocationRequest::new(
+            ToolIdentity::Run,
+            json!({"op": "push", "args": {"force": true}, "dryRun": true}),
+            root.path().display().to_string(),
+            7000,
+        )
+        .unwrap();
+        let prepared = PreparedSourceImport::parse(&request).unwrap();
+        let runner = SequenceRunner::new(vec![process(
+            envelope(&[("main", full()), ("Доработки", full())], false),
+            true,
+        )]);
+        let result = run(root.path(), &prepared, &runner);
+        assert!(result.ok, "{result:?}");
+        assert_eq!(
+            result.data.as_ref().unwrap()["plan"]["steps"][1]["sourceSet"],
+            "Доработки"
+        );
+        assert!(result.changed.is_empty());
     }
 
     #[test]
