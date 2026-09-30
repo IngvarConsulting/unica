@@ -1,3 +1,4 @@
+use crate::application::invocation::INVOCATION_HANDOFF_WINDOW;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::project_health::{
@@ -1828,15 +1829,9 @@ impl<'a> SourceResourcePolicyInspector<'a> {
         let mut result = BTreeMap::new();
         let mut pending = Vec::<(&RepositoryResource, EvidenceKey)>::new();
         let mut pending_bytes = 0_usize;
+        let mut completed_batches = 0_usize;
         for resource in resources {
-            if let Err(error) = resource_protocol_checkpoint(cancellation, deadline) {
-                if error == ResourceProtocolParseError::TimedOut && !pending.is_empty() {
-                    // The pending group consumed the remaining budget before Git ran.
-                    // Retry with fewer paths instead of rebuilding the same group.
-                    continuation.reduce_index_eol_batch(pending.len());
-                }
-                return Err(error);
-            }
+            resource_protocol_checkpoint(cancellation, deadline)?;
             let path = &resource.repo_path;
             let staged_attributes = staged.get(path).ok_or_else(|| {
                 ResourceProtocolParseError::Malformed(format!(
@@ -1874,6 +1869,7 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                         &mut result,
                         cancellation,
                         deadline,
+                        completed_batches == 0,
                     )?;
                 }
                 return Err(ResourceProtocolParseError::TimedOut);
@@ -1894,7 +1890,9 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                     &mut result,
                     cancellation,
                     deadline,
+                    completed_batches == 0,
                 )?;
+                completed_batches += 1;
                 pending.clear();
                 pending_bytes = 0;
             }
@@ -1909,8 +1907,12 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                 &mut result,
                 cancellation,
                 deadline,
+                completed_batches == 0,
             )?;
         }
+        // A completed index pass proves the retained paths for this snapshot;
+        // start at full throughput when a later revision adds new work.
+        continuation.index_eol_batch_files = None;
         Ok(result)
     }
 
@@ -1923,12 +1925,19 @@ impl<'a> SourceResourcePolicyInspector<'a> {
         result: &mut BTreeMap<String, EolValues>,
         cancellation: &CancellationToken,
         deadline: ProviderDeadline,
+        first_batch: bool,
     ) -> Result<(), ResourceProtocolParseError> {
+        let budget_at_start = deadline.remaining();
         let inspected =
             self.inspect_index_eol_batch(repository_root, batch, cancellation, deadline);
         let inspected = match inspected {
             Err(ResourceProtocolParseError::TimedOut) => {
-                continuation.reduce_index_eol_batch(batch.len());
+                // A later batch normally inherits only the tail of this call's
+                // deadline. Only a first batch given at least half of the
+                // seven-second handoff window can indicate an oversized group.
+                if first_batch && budget_at_start >= INVOCATION_HANDOFF_WINDOW / 2 {
+                    continuation.reduce_index_eol_batch(batch.len());
+                }
                 return Err(ResourceProtocolParseError::TimedOut);
             }
             other => other?,
@@ -4795,10 +4804,194 @@ mod tests {
         }));
         assert_eq!(*runner.eol_batch_sizes.borrow(), vec![32, 32, 2]);
         assert_eq!(continuation.index_eol.len(), 66);
+        assert_eq!(continuation.index_eol_batch_files(), 64);
     }
 
     #[test]
-    fn continued_repository_eol_reduces_pending_batch_when_deadline_expires_before_git() {
+    fn continued_repository_eol_keeps_batch_width_after_short_first_budget() {
+        static ORIGIN: OnceLock<Instant> = OnceLock::new();
+
+        fn fixed_clock() -> Instant {
+            *ORIGIN.get_or_init(Instant::now)
+        }
+
+        struct TimeoutFirstEolRunner(Cell<bool>);
+
+        impl ProcessRunner for TimeoutFirstEolRunner {
+            fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
+                let mut output = crate::infrastructure::internal_adapters::system_process_runner()
+                    .run(command)?;
+                if command.args.iter().any(|arg| arg == "--eol") {
+                    self.0.set(true);
+                    output.status_success = false;
+                    output.timed_out = true;
+                }
+                Ok(output)
+            }
+
+            fn run_with_input(
+                &self,
+                command: &ProcessCommand,
+                input: &[u8],
+            ) -> Result<ProcessOutput, String> {
+                crate::infrastructure::internal_adapters::system_process_runner()
+                    .run_with_input(command, input)
+            }
+        }
+
+        let fixture = policy_fixture();
+        git(&fixture.root, &["add", "src"]);
+        let cancellation = CancellationToken::new();
+        let layout = SourceLayoutInspector::inspect(
+            &fixture.context,
+            &cancellation,
+            ProviderDeadline::from_budget(Duration::from_secs(15)),
+        )
+        .unwrap();
+        let repository = GitRepositoryInspector::new()
+            .inspect_base(
+                &fixture.context,
+                &layout,
+                &cancellation,
+                ProviderDeadline::from_budget(Duration::from_secs(15)),
+            )
+            .unwrap();
+        let runner = TimeoutFirstEolRunner(Cell::new(false));
+        let mut continuation = super::ResourceContinuation::default();
+        let incomplete = SourceResourcePolicyInspector::with_process_runner(&runner)
+            .inspect_excluding_continued(
+                repository.repository_root.as_ref().unwrap(),
+                &layout.roots,
+                &repository.entries,
+                &Default::default(),
+                &cancellation,
+                ProviderDeadline::with_clock(fixed_clock() + Duration::from_secs(3), fixed_clock),
+                Some(&mut continuation),
+            )
+            .unwrap();
+        assert!(
+            runner.0.get(),
+            "the first EOL Git batch must reach the runner"
+        );
+        assert!(incomplete.observations.iter().any(|observation| {
+            observation.id == ProjectCheckId::RepositoryIndexEol
+                && matches!(observation.outcome, ProjectCheckOutcome::NotRun { .. })
+        }));
+        assert!(continuation.index_eol.is_empty());
+        assert_eq!(continuation.index_eol_batch_files(), 64);
+    }
+
+    #[test]
+    fn continued_repository_eol_keeps_batch_width_across_later_timeouts() {
+        struct TimeoutAfterSuccessfulBatchRunner {
+            eol_calls: Cell<usize>,
+            completed_batch_sizes: RefCell<Vec<usize>>,
+        }
+
+        impl ProcessRunner for TimeoutAfterSuccessfulBatchRunner {
+            fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
+                let mut output = crate::infrastructure::internal_adapters::system_process_runner()
+                    .run(command)?;
+                if command.args.iter().any(|arg| arg == "--eol") {
+                    let call = self.eol_calls.get() + 1;
+                    self.eol_calls.set(call);
+                    if matches!(call, 2 | 4) {
+                        output.status_success = false;
+                        output.timed_out = true;
+                    } else {
+                        self.completed_batch_sizes
+                            .borrow_mut()
+                            .push(output.stdout.matches('\0').count());
+                    }
+                }
+                Ok(output)
+            }
+
+            fn run_with_input(
+                &self,
+                command: &ProcessCommand,
+                input: &[u8],
+            ) -> Result<ProcessOutput, String> {
+                crate::infrastructure::internal_adapters::system_process_runner()
+                    .run_with_input(command, input)
+            }
+        }
+
+        let fixture = policy_fixture();
+        fs::write(fixture.root.join(".gitattributes"), "*.xml text eol=lf\n").unwrap();
+        for number in 0..199 {
+            fs::write(
+                fixture.root.join(format!("src/File{number:03}.xml")),
+                format!("<Object name=\"{number}\"/>\n"),
+            )
+            .unwrap();
+        }
+        git(&fixture.root, &["add", ".gitattributes", "src"]);
+        let cancellation = CancellationToken::new();
+        let layout = SourceLayoutInspector::inspect(
+            &fixture.context,
+            &cancellation,
+            ProviderDeadline::from_budget(Duration::from_secs(15)),
+        )
+        .unwrap();
+        let repository = GitRepositoryInspector::new()
+            .inspect_base(
+                &fixture.context,
+                &layout,
+                &cancellation,
+                ProviderDeadline::from_budget(Duration::from_secs(15)),
+            )
+            .unwrap();
+        let root = repository.repository_root.as_ref().unwrap();
+        let runner = TimeoutAfterSuccessfulBatchRunner {
+            eol_calls: Cell::new(0),
+            completed_batch_sizes: RefCell::new(Vec::new()),
+        };
+        let mut continuation = super::ResourceContinuation::default();
+        for expected_retained in [64, 128] {
+            continuation.progress = Default::default();
+            let incomplete = SourceResourcePolicyInspector::with_process_runner(&runner)
+                .inspect_excluding_continued(
+                    root,
+                    &layout.roots,
+                    &repository.entries,
+                    &Default::default(),
+                    &cancellation,
+                    ProviderDeadline::from_budget(Duration::from_secs(15)),
+                    Some(&mut continuation),
+                )
+                .unwrap();
+            assert!(incomplete.observations.iter().any(|observation| {
+                observation.id == ProjectCheckId::RepositoryIndexEol
+                    && matches!(observation.outcome, ProjectCheckOutcome::NotRun { .. })
+            }));
+            assert_eq!(continuation.index_eol.len(), expected_retained);
+            assert_eq!(continuation.index_eol_batch_files(), 64);
+        }
+
+        continuation.progress = Default::default();
+        let completed = SourceResourcePolicyInspector::with_process_runner(&runner)
+            .inspect_excluding_continued(
+                root,
+                &layout.roots,
+                &repository.entries,
+                &Default::default(),
+                &cancellation,
+                ProviderDeadline::from_budget(Duration::from_secs(15)),
+                Some(&mut continuation),
+            )
+            .unwrap();
+        assert!(completed.observations.iter().any(|observation| {
+            observation.id == ProjectCheckId::RepositoryIndexEol
+                && !matches!(observation.outcome, ProjectCheckOutcome::NotRun { .. })
+        }));
+        assert_eq!(continuation.index_eol.len(), 200);
+        assert_eq!(*runner.completed_batch_sizes.borrow(), vec![64, 64, 64, 8]);
+        assert_eq!(continuation.index_eol_batch_files(), 64);
+    }
+
+    #[test]
+    fn continued_repository_eol_keeps_pending_batch_size_when_deadline_expires_before_git() {
         thread_local! {
             static TICKS: Cell<u64> = const { Cell::new(0) };
         }
@@ -4859,7 +5052,7 @@ mod tests {
             );
         assert_eq!(result, Err(super::ResourceProtocolParseError::TimedOut));
         assert!(continuation.index_eol.is_empty());
-        assert_eq!(continuation.index_eol_batch_files(), 1);
+        assert_eq!(continuation.index_eol_batch_files(), 64);
     }
 
     #[test]
