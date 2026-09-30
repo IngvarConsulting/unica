@@ -20,6 +20,7 @@ use crate::infrastructure::project_health::{
     SourceRootOwnerIndex, SourceRootOwnerIndexError, SourceRootOwnerLookupError,
 };
 use crate::infrastructure::source_roots::normalize_path_identity;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fs::{self, File};
@@ -39,13 +40,15 @@ const MAX_CLASSIFIED_RESOURCES: usize = 65_536;
 const MAX_RESOURCE_OWNER_EXPANSION_BYTES: usize = 8 * 1024 * 1024;
 const MAX_RESOURCE_OWNERSHIP_REASON_BYTES: usize = 512;
 const MAX_CONTINUATION_WORKSPACES: usize = 4;
-const MAX_CONTINUATION_EVIDENCE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_CONTINUATION_EVIDENCE_BYTES: usize = 32 * 1024 * 1024;
 const CONTINUATION_TTL: Duration = Duration::from_secs(15 * 60);
 
 #[cfg(test)]
 thread_local! {
     static BEFORE_WORKING_REVALIDATION: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         std::cell::RefCell::new(None);
+    static STAGED_EOL_STOP_AFTER: std::cell::Cell<Option<usize>> =
+        const { std::cell::Cell::new(None) };
 }
 
 #[cfg(test)]
@@ -59,6 +62,31 @@ fn run_working_revalidation_test_hook() {
 
 #[cfg(not(test))]
 fn run_working_revalidation_test_hook() {}
+
+#[cfg(test)]
+pub(crate) fn stop_staged_eol_after_for_test(completed: usize) {
+    STAGED_EOL_STOP_AFTER.with(|slot| slot.set(Some(completed)));
+}
+
+#[cfg(test)]
+fn staged_eol_test_timeout() -> bool {
+    STAGED_EOL_STOP_AFTER.with(|slot| match slot.get() {
+        Some(0) => {
+            slot.set(None);
+            true
+        }
+        Some(remaining) => {
+            slot.set(Some(remaining - 1));
+            false
+        }
+        None => false,
+    })
+}
+
+#[cfg(not(test))]
+fn staged_eol_test_timeout() -> bool {
+    false
+}
 
 #[derive(Default)]
 pub(crate) struct RootCheckContinuationStore {
@@ -108,22 +136,51 @@ pub(crate) struct ResourceInspectionProgress {
     pub(crate) staged_eol_retained: usize,
     pub(crate) working_eol_retained: usize,
     pub(crate) capacity_limited: bool,
+    pub(crate) continuable_eol_timeout: bool,
 }
 
 #[derive(Default)]
 pub(crate) struct ResourceContinuation {
-    index_eol: BTreeMap<String, IndexEolEvidence>,
-    working_eol: BTreeMap<String, WorkingEolEvidence>,
+    index_eol: BTreeMap<EvidenceKey, IndexEol>,
+    working_eol: BTreeMap<EvidenceKey, WorkingEolEvidence>,
     evidence_bytes: usize,
     pub(crate) progress: ResourceInspectionProgress,
+    #[cfg(test)]
+    limit_override: Option<usize>,
 }
 
-#[derive(Clone)]
-struct IndexEolEvidence {
-    oid: String,
-    staged_attributes: AttributeValues,
-    effective_attributes: AttributeValues,
-    eol: EolValues,
+type EvidenceKey = [u8; 32];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IndexEol {
+    Lf,
+    CrLf,
+    Mixed,
+    None,
+    Binary,
+}
+
+impl IndexEol {
+    fn from_git(value: &str) -> Option<Self> {
+        match value {
+            "lf" => Some(Self::Lf),
+            "crlf" => Some(Self::CrLf),
+            "mixed" => Some(Self::Mixed),
+            "none" => Some(Self::None),
+            "-text" => Some(Self::Binary),
+            _ => None,
+        }
+    }
+
+    fn as_git(self) -> &'static str {
+        match self {
+            Self::Lf => "lf",
+            Self::CrLf => "crlf",
+            Self::Mixed => "mixed",
+            Self::None => "none",
+            Self::Binary => "-text",
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -141,91 +198,111 @@ struct WorkingFileFingerprint {
 }
 
 impl ResourceContinuation {
-    fn index_charge(path: &str, evidence: &IndexEolEvidence) -> usize {
-        256 + path.len()
-            + evidence.oid.len()
-            + evidence.staged_attributes.text.len()
-            + evidence.staged_attributes.eol.len()
-            + evidence.staged_attributes.filter.len()
-            + evidence.effective_attributes.text.len()
-            + evidence.effective_attributes.eol.len()
-            + evidence.effective_attributes.filter.len()
-            + evidence.eol.index.len()
-            + evidence.eol.worktree.len()
+    // BTreeMap nodes reserve up to 11 slots but may hold only five entries
+    // after splits. Twice the fixed-size pair plus 64 bytes per entry covers
+    // that occupancy, child pointers, headers, and allocator metadata.
+    const INDEX_CHARGE: usize = 2 * std::mem::size_of::<(EvidenceKey, IndexEol)>() + 64;
+    const WORKING_CHARGE: usize = 2 * std::mem::size_of::<(EvidenceKey, WorkingEolEvidence)>() + 64;
+
+    fn evidence_limit(&self) -> usize {
+        #[cfg(test)]
+        if let Some(limit) = self.limit_override {
+            return limit;
+        }
+        MAX_CONTINUATION_EVIDENCE_BYTES
     }
 
-    fn working_charge(path: &str) -> usize {
-        256 + path.len()
+    #[cfg(test)]
+    pub(crate) fn set_test_evidence_limit(&mut self, limit: usize) {
+        self.limit_override = Some(limit);
     }
 
-    fn retain_index_paths(&mut self, paths: &BTreeSet<&str>) {
-        self.index_eol
-            .retain(|path, _| paths.contains(path.as_str()));
+    fn retain_current(&mut self, index: &BTreeSet<EvidenceKey>, working: &BTreeSet<EvidenceKey>) {
+        self.index_eol.retain(|key, _| index.contains(key));
+        self.working_eol.retain(|key, _| working.contains(key));
         self.evidence_bytes = self
             .index_eol
-            .iter()
-            .map(|(path, evidence)| Self::index_charge(path, evidence))
-            .sum::<usize>()
-            .saturating_add(
-                self.working_eol
-                    .keys()
-                    .map(|path| Self::working_charge(path))
-                    .sum::<usize>(),
-            );
+            .len()
+            .saturating_mul(Self::INDEX_CHARGE)
+            .saturating_add(self.working_eol.len().saturating_mul(Self::WORKING_CHARGE));
     }
 
-    fn remember_index(&mut self, path: String, evidence: IndexEolEvidence) {
-        let old_charge = self
-            .index_eol
-            .get(&path)
-            .map_or(0, |previous| Self::index_charge(&path, previous));
-        let new_charge = Self::index_charge(&path, &evidence);
-        let next_bytes = self
-            .evidence_bytes
-            .saturating_sub(old_charge)
-            .saturating_add(new_charge);
-        if next_bytes > MAX_CONTINUATION_EVIDENCE_BYTES {
-            self.progress.capacity_limited = true;
-        } else {
-            self.index_eol.insert(path, evidence);
-            self.evidence_bytes = next_bytes;
-        }
-    }
-
-    fn forget_index(&mut self, path: &str) {
-        if let Some(previous) = self.index_eol.remove(path) {
-            self.evidence_bytes = self
-                .evidence_bytes
-                .saturating_sub(Self::index_charge(path, &previous));
-        }
-    }
-
-    fn remember_working(&mut self, path: String, evidence: WorkingEolEvidence) {
-        let new_charge = Self::working_charge(&path);
-        let old_charge = if self.working_eol.contains_key(&path) {
-            new_charge
-        } else {
+    fn remember_index(&mut self, key: EvidenceKey, eol: IndexEol) {
+        let new_charge = if self.index_eol.contains_key(&key) {
             0
+        } else {
+            Self::INDEX_CHARGE
         };
-        let next_bytes = self
-            .evidence_bytes
-            .saturating_sub(old_charge)
-            .saturating_add(new_charge);
-        if next_bytes > MAX_CONTINUATION_EVIDENCE_BYTES {
+        let next_bytes = self.evidence_bytes.saturating_add(new_charge);
+        if next_bytes > self.evidence_limit() {
             self.progress.capacity_limited = true;
         } else {
-            self.working_eol.insert(path, evidence);
+            self.index_eol.insert(key, eol);
             self.evidence_bytes = next_bytes;
         }
     }
 
-    fn forget_working(&mut self, path: &str) {
-        if self.working_eol.remove(path).is_some() {
-            self.evidence_bytes = self
-                .evidence_bytes
-                .saturating_sub(Self::working_charge(path));
+    fn forget_index(&mut self, key: &EvidenceKey) {
+        if self.index_eol.remove(key).is_some() {
+            self.evidence_bytes = self.evidence_bytes.saturating_sub(Self::INDEX_CHARGE);
         }
     }
+
+    fn remember_working(&mut self, key: EvidenceKey, evidence: WorkingEolEvidence) {
+        let new_charge = if self.working_eol.contains_key(&key) {
+            0
+        } else {
+            Self::WORKING_CHARGE
+        };
+        let next_bytes = self.evidence_bytes.saturating_add(new_charge);
+        if next_bytes > self.evidence_limit() {
+            self.progress.capacity_limited = true;
+        } else {
+            self.working_eol.insert(key, evidence);
+            self.evidence_bytes = next_bytes;
+        }
+    }
+
+    fn forget_working(&mut self, key: &EvidenceKey) {
+        if self.working_eol.remove(key).is_some() {
+            self.evidence_bytes = self.evidence_bytes.saturating_sub(Self::WORKING_CHARGE);
+        }
+    }
+}
+
+fn hash_evidence_field(hasher: &mut Sha256, field: &str) {
+    hasher.update((field.len() as u64).to_be_bytes());
+    hasher.update(field.as_bytes());
+}
+
+fn index_evidence_key(
+    path: &str,
+    oid: &str,
+    staged: &AttributeValues,
+    effective: &AttributeValues,
+) -> EvidenceKey {
+    let mut hasher = Sha256::new();
+    hasher.update(b"unica-index-eol-v1\0");
+    for field in [
+        path,
+        oid,
+        &staged.text,
+        &staged.eol,
+        &staged.filter,
+        &effective.text,
+        &effective.eol,
+        &effective.filter,
+    ] {
+        hash_evidence_field(&mut hasher, field);
+    }
+    hasher.finalize().into()
+}
+
+fn working_evidence_key(path: &str) -> EvidenceKey {
+    let mut hasher = Sha256::new();
+    hasher.update(b"unica-working-eol-v1\0");
+    hash_evidence_field(&mut hasher, path);
+    hasher.finalize().into()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1043,15 +1120,7 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                 facts,
             });
         }
-        let eol_entries = expected_text_resources
-            .iter()
-            .map(|resource| GitIndexEntry {
-                repo_path: resource.repo_path.clone(),
-                blob_oid: Some(resource.blob_oid.clone()),
-                mode: Some("100644".into()),
-            })
-            .collect::<Vec<_>>();
-        let eol = if eol_entries.is_empty() {
+        let eol = if expected_text_resources.is_empty() {
             BTreeMap::new()
         } else if let Some(state) = continuation.as_deref_mut() {
             match self.incremental_index_eol(
@@ -1068,6 +1137,7 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                     return Err(ProjectHealthInspectionError::Cancelled)
                 }
                 Err(ResourceProtocolParseError::TimedOut) => {
+                    state.progress.continuable_eol_timeout = true;
                     return Ok(timeout_policy(
                         observations,
                         ProjectCheckId::RepositoryIndexEol,
@@ -1082,6 +1152,14 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                 }
             }
         } else {
+            let eol_entries = expected_text_resources
+                .iter()
+                .map(|resource| GitIndexEntry {
+                    repo_path: resource.repo_path.clone(),
+                    blob_oid: Some(resource.blob_oid.clone()),
+                    mode: Some("100644".into()),
+                })
+                .collect::<Vec<_>>();
             let eol_entry_refs = eol_entries.iter().collect::<Vec<_>>();
             let eol_index = match self.create_isolated_index(
                 repository_root,
@@ -1216,6 +1294,9 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                 return Err(ProjectHealthInspectionError::Cancelled)
             }
             Err(ResourceProtocolParseError::TimedOut) => {
+                if let Some(state) = continuation.as_deref_mut() {
+                    state.progress.continuable_eol_timeout = true;
+                }
                 let reason = "Git index EOL evaluation exceeded the inspection deadline";
                 mark_check_not_run(
                     &mut observations,
@@ -1403,6 +1484,9 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                 reason,
             });
         } else if working_timed_out || (continuation.is_some() && deadline.remaining().is_zero()) {
+            if let Some(state) = continuation.as_deref_mut() {
+                state.progress.continuable_eol_timeout = true;
+            }
             let reason = "deadline expired during working EOL inspection";
             mark_check_not_run(
                 &mut observations,
@@ -1703,11 +1787,32 @@ impl<'a> SourceResourcePolicyInspector<'a> {
         cancellation: &CancellationToken,
         deadline: ProviderDeadline,
     ) -> Result<BTreeMap<String, EolValues>, ResourceProtocolParseError> {
-        let current_paths = resources
-            .iter()
-            .map(|resource| resource.repo_path.as_str())
-            .collect::<BTreeSet<_>>();
-        continuation.retain_index_paths(&current_paths);
+        let mut current_index = BTreeSet::new();
+        let mut current_working = BTreeSet::new();
+        for (position, resource) in resources.iter().enumerate() {
+            if position.is_multiple_of(256) {
+                resource_protocol_checkpoint(cancellation, deadline)?;
+            }
+            let path = &resource.repo_path;
+            let staged_attributes = staged.get(path).ok_or_else(|| {
+                ResourceProtocolParseError::Malformed(format!(
+                    "staged Git attribute policy omitted {path}"
+                ))
+            })?;
+            let effective_attributes = effective.get(path).ok_or_else(|| {
+                ResourceProtocolParseError::Malformed(format!(
+                    "effective Git attribute policy omitted {path}"
+                ))
+            })?;
+            current_index.insert(index_evidence_key(
+                path,
+                &resource.blob_oid,
+                staged_attributes,
+                effective_attributes,
+            ));
+            current_working.insert(working_evidence_key(path));
+        }
+        continuation.retain_current(&current_index, &current_working);
         let mut result = BTreeMap::new();
         for resource in resources {
             resource_protocol_checkpoint(cancellation, deadline)?;
@@ -1722,15 +1827,22 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                     "effective Git attribute policy omitted {path}"
                 ))
             })?;
-            let cached = continuation.index_eol.get(path).filter(|evidence| {
-                evidence.oid == resource.blob_oid
-                    && evidence.staged_attributes == *staged_attributes
-                    && evidence.effective_attributes == *effective_attributes
-            });
-            let eol = if let Some(cached) = cached {
-                cached.eol.clone()
+            let key = index_evidence_key(
+                path,
+                &resource.blob_oid,
+                staged_attributes,
+                effective_attributes,
+            );
+            let eol = if let Some(cached) = continuation.index_eol.get(&key) {
+                EolValues {
+                    index: cached.as_git().into(),
+                    worktree: String::new(),
+                }
             } else {
-                continuation.forget_index(path);
+                if staged_eol_test_timeout() {
+                    return Err(ResourceProtocolParseError::TimedOut);
+                }
+                continuation.forget_index(&key);
                 let entry = GitIndexEntry {
                     repo_path: path.clone(),
                     blob_oid: Some(resource.blob_oid.clone()),
@@ -1785,18 +1897,15 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                     .get(path)
                     .expect("parser checks the expected path")
                     .clone();
-                continuation.remember_index(
-                    path.clone(),
-                    IndexEolEvidence {
-                        oid: resource.blob_oid.clone(),
-                        staged_attributes: staged_attributes.clone(),
-                        effective_attributes: effective_attributes.clone(),
-                        eol: eol.clone(),
-                    },
-                );
+                let index_eol = IndexEol::from_git(&eol.index).ok_or_else(|| {
+                    ResourceProtocolParseError::Malformed(format!(
+                        "git ls-files --eol returned unsupported index EOL metadata for {path}"
+                    ))
+                })?;
+                continuation.remember_index(key, index_eol);
                 eol
             };
-            if continuation.index_eol.contains_key(path) {
+            if continuation.index_eol.contains_key(&key) {
                 continuation.progress.staged_eol_retained += 1;
             }
             result.insert(path.clone(), eol);
@@ -2849,11 +2958,12 @@ fn inspect_working_eol_continued(
     cancellation: &CancellationToken,
     deadline: ProviderDeadline,
 ) -> Result<(Option<WorkingEol>, Option<WorkingFileFingerprint>), WorkingEolInspectionError> {
-    let path = repo_path.to_string_lossy().into_owned();
+    let path = repo_path.to_string_lossy();
+    let key = working_evidence_key(&path);
     let mut file = match open_repository_regular_file_nofollow(repository_root, repo_path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            continuation.forget_working(&path);
+            continuation.forget_working(&key);
             return Ok((None, None));
         }
         Err(error) => return Err(WorkingEolInspectionError::Incomplete(error.to_string())),
@@ -2866,13 +2976,13 @@ fn inspect_working_eol_continued(
             MAX_WORKING_EOL_FILE_BYTES
         )));
     }
-    if let Some(cached) = continuation.working_eol.get(&path) {
+    if let Some(cached) = continuation.working_eol.get(&key) {
         if cached.fingerprint == before {
             continuation.progress.working_eol_retained += 1;
             return Ok((Some(cached.eol), Some(before)));
         }
     }
-    continuation.forget_working(&path);
+    continuation.forget_working(&key);
     let eol = inspect_working_eol_reader(&mut file, cancellation, deadline)?;
     let after = working_file_fingerprint(&file)
         .map_err(|error| WorkingEolInspectionError::Incomplete(error.to_string()))?;
@@ -2893,13 +3003,13 @@ fn inspect_working_eol_continued(
     }
     if let Some(eol) = eol {
         continuation.remember_working(
-            path.clone(),
+            key,
             WorkingEolEvidence {
                 fingerprint: before.clone(),
                 eol,
             },
         );
-        if continuation.working_eol.contains_key(&path) {
+        if continuation.working_eol.contains_key(&key) {
             continuation.progress.working_eol_retained += 1;
         }
     }
@@ -3073,6 +3183,7 @@ mod tests {
         InspectedSourceRoot, SourceLayoutInspector,
     };
     use std::cell::{Cell, RefCell};
+    use std::collections::BTreeSet;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::process::Command;
@@ -3080,6 +3191,83 @@ mod tests {
     use std::sync::OnceLock;
     use std::time::{Duration, Instant};
     use tempfile::TempDir;
+
+    #[test]
+    fn continuation_checkpoint_retains_maximum_text_resources_with_fixed_charge() {
+        let fixture = policy_fixture();
+        let file = fs::File::open(fixture.root.join("src/Configuration.xml")).unwrap();
+        let fingerprint = super::working_file_fingerprint(&file).unwrap();
+        let mut path = String::with_capacity(1024 * 1024);
+        let mut text = String::with_capacity(1024 * 1024);
+        text.push_str("set");
+        let attributes = super::AttributeValues {
+            text,
+            eol: "lf".into(),
+            filter: "unspecified".into(),
+        };
+        let oid = "a".repeat(64);
+        let mut continuation = super::ResourceContinuation::default();
+        const {
+            assert!(
+                MAX_CLASSIFIED_RESOURCES
+                    * (super::ResourceContinuation::INDEX_CHARGE
+                        + super::ResourceContinuation::WORKING_CHARGE)
+                    <= super::MAX_CONTINUATION_EVIDENCE_BYTES
+            );
+        }
+        for number in 0..MAX_CLASSIFIED_RESOURCES {
+            path.clear();
+            path.push_str(&format!("src/{number:05}.xml"));
+            let index_key = super::index_evidence_key(&path, &oid, &attributes, &attributes);
+            let working_key = super::working_evidence_key(&path);
+            continuation.remember_index(index_key, super::IndexEol::Lf);
+            continuation.remember_working(
+                working_key,
+                super::WorkingEolEvidence {
+                    fingerprint: fingerprint.clone(),
+                    eol: super::WorkingEol::Supported,
+                },
+            );
+        }
+        assert_eq!(continuation.index_eol.len(), MAX_CLASSIFIED_RESOURCES);
+        assert_eq!(continuation.working_eol.len(), MAX_CLASSIFIED_RESOURCES);
+        assert!(!continuation.progress.capacity_limited);
+        assert_eq!(
+            continuation.evidence_bytes,
+            MAX_CLASSIFIED_RESOURCES
+                * (super::ResourceContinuation::INDEX_CHARGE
+                    + super::ResourceContinuation::WORKING_CHARGE)
+        );
+
+        // Removing a source set must release both kinds of retained evidence.
+        continuation.retain_current(&BTreeSet::new(), &BTreeSet::new());
+        assert!(continuation.index_eol.is_empty());
+        assert!(continuation.working_eol.is_empty());
+        assert_eq!(continuation.evidence_bytes, 0);
+    }
+
+    #[test]
+    fn continuation_checkpoint_reports_capacity_instead_of_repeating_a_stalled_suffix() {
+        let mut continuation = super::ResourceContinuation {
+            limit_override: Some(super::ResourceContinuation::INDEX_CHARGE),
+            ..Default::default()
+        };
+        let first = [1; 32];
+        let second = [2; 32];
+        continuation.remember_index(first, super::IndexEol::Lf);
+        continuation.remember_index(second, super::IndexEol::CrLf);
+        assert_eq!(continuation.index_eol.len(), 1);
+        assert!(continuation.progress.capacity_limited);
+        continuation.retain_current(&BTreeSet::from([second]), &BTreeSet::new());
+        assert_eq!(continuation.evidence_bytes, 0);
+        continuation.progress = Default::default();
+        continuation.remember_index(second, super::IndexEol::CrLf);
+        assert_eq!(
+            continuation.index_eol.get(&second),
+            Some(&super::IndexEol::CrLf)
+        );
+        assert!(!continuation.progress.capacity_limited);
+    }
 
     #[test]
     fn project_health_repository_policy_classifies_platform_xml_roles_exactly() {
@@ -4253,7 +4441,11 @@ mod tests {
             matches!(fact, ProjectHealthFact::MixedEol { path, .. } if path == "src/A.xml")
         }));
 
-        let old_oid = continuation.index_eol["src/A.xml"].oid.clone();
+        let old_keys = continuation
+            .index_eol
+            .keys()
+            .copied()
+            .collect::<BTreeSet<_>>();
         git(&fixture.root, &["add", "src/A.xml"]);
         let restaged = GitRepositoryInspector::new()
             .inspect_base(
@@ -4275,7 +4467,67 @@ mod tests {
                 Some(&mut continuation),
             )
             .unwrap();
-        assert_ne!(continuation.index_eol["src/A.xml"].oid, old_oid);
+        assert_ne!(
+            continuation
+                .index_eol
+                .keys()
+                .copied()
+                .collect::<BTreeSet<_>>(),
+            old_keys
+        );
+        assert_eq!(continuation.progress.staged_eol_retained, 2);
+
+        let current_oid = restaged
+            .entries
+            .iter()
+            .find(|entry| entry.repo_path == "src/A.xml")
+            .unwrap()
+            .blob_oid
+            .clone();
+        let old_keys = continuation
+            .index_eol
+            .keys()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        fs::write(fixture.root.join(".gitattributes"), "*.xml text eol=crlf\n").unwrap();
+        git(&fixture.root, &["add", ".gitattributes"]);
+        let changed_attributes = GitRepositoryInspector::new()
+            .inspect_base(
+                &fixture.context,
+                &layout,
+                &cancellation,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+            )
+            .unwrap();
+        assert_eq!(
+            changed_attributes
+                .entries
+                .iter()
+                .find(|entry| entry.repo_path == "src/A.xml")
+                .unwrap()
+                .blob_oid,
+            current_oid
+        );
+        continuation.progress = Default::default();
+        SourceResourcePolicyInspector::new()
+            .inspect_excluding_continued(
+                root,
+                &layout.roots,
+                &changed_attributes.entries,
+                &Default::default(),
+                &cancellation,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                Some(&mut continuation),
+            )
+            .unwrap();
+        assert_ne!(
+            continuation
+                .index_eol
+                .keys()
+                .copied()
+                .collect::<BTreeSet<_>>(),
+            old_keys
+        );
         assert_eq!(continuation.progress.staged_eol_retained, 2);
     }
 

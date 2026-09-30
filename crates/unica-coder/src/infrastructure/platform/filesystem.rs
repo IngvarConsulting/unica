@@ -1611,6 +1611,17 @@ pub(crate) fn file_identity(_file: &fs::File) -> io::Result<FileIdentity> {
     ))
 }
 
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn file_change_time(
+    _file: &fs::File,
+    _metadata: &fs::Metadata,
+) -> io::Result<(i64, i64)> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "file change time is not available on this host",
+    ))
+}
+
 #[cfg(unix)]
 fn unix_child_name(name: &std::ffi::OsStr) -> io::Result<std::ffi::CString> {
     use std::ffi::CString;

@@ -6,6 +6,8 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_view_without_at_bootstraps_an_empty_workspace
   - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_view_bootstrap_does_not_equate_git_presence_with_repository_readiness
   - crates/unica-coder/src/infrastructure/daemon/v13_workspace_bootstrap.rs::root_inspection_discovers_sources_after_response_handoff
+  - crates/unica-coder/src/infrastructure/daemon/v13_workspace_bootstrap.rs::root_check_repeats_after_eol_timeout_and_finishes_with_shared_checkpoint
+  - crates/unica-coder/src/infrastructure/daemon/v13_workspace_bootstrap.rs::root_check_does_not_recommend_repeat_for_fixed_failure_or_full_checkpoint
   - crates/unica-coder/src/infrastructure/project_health/resources.rs::continued_repository_eol_resumes_after_a_staged_timeout_and_rechecks_working_bytes
   - crates/unica-coder/src/infrastructure/project_health/resources.rs::continued_working_eol_rejects_a_new_file_and_late_cancellation
 gap: https://github.com/IngvarConsulting/unica/issues/970
@@ -34,8 +36,12 @@ preview-вызовы `download` и `dump`, затем корневой `check`.
 
 Проверка готовности использует оставшийся срок запроса. Неполный обход
 не объявляется полной проверкой: ответ отмечает `readinessState: incomplete`.
-Такой ответ предлагает повторить `unica.check {}`. Новый вызов получает
-собственный срок и может продолжить ограниченный по памяти обход ресурсов.
+Если незавершённый EOL-обход превысил срок и ёмкость сохранённого состояния
+позволяет продолжить, ответ предлагает повторить `unica.check {}`. Статический
+сбой такой рекомендации не получает. При исчерпании ёмкости ответ сообщает об
+этом диагностикой и не обещает прогресс от повторения того же вызова. Новый
+вызов получает собственный срок и может продолжить ограниченный по памяти
+обход ресурсов.
 До полного вердикта он заново сверяет Git index, атрибуты и изменяемые
 рабочие файлы; утрата или устаревание сохранённого состояния не означает
 готовности репозитория.
