@@ -1343,6 +1343,22 @@ impl RetainedRegularFileCapability {
         self.validate_named_identity_relative()
     }
 
+    /// Reopen the retained name with an independent file offset, while proving
+    /// that it still names the admitted regular file. A cloned descriptor
+    /// shares its offset on supported hosts and is unsafe for concurrent
+    /// streaming readers.
+    pub(crate) fn open_named_identity_for_read(&self) -> io::Result<fs::File> {
+        self.parent.validate_named_identity()?;
+        let reopened = open_regular_child_nofollow(&self.parent.retained.directory, &self.name)?;
+        if file_identity(&reopened)? != self.identity {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "named regular-file identity changed after capability admission",
+            ));
+        }
+        Ok(reopened)
+    }
+
     pub(crate) fn validate_named_identity_relative(&self) -> io::Result<()> {
         let rebound = open_regular_child_nofollow(&self.parent.retained.directory, &self.name)?;
         if file_identity(&rebound)? != self.identity {
@@ -5826,6 +5842,32 @@ mod tests {
 
     #[cfg(windows)]
     use super::strip_windows_extended_length_prefix;
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn retained_file_reopen_gives_streaming_readers_independent_offsets() {
+        use super::RetainedDirectoryCapability;
+        use std::io::Read;
+
+        let root = unique_temp_root("independent-retained-readers");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("source.bsl"), b"first\nsecond\n").unwrap();
+        let physical_root = fs::canonicalize(&root).unwrap();
+        let directory = RetainedDirectoryCapability::open(&physical_root).unwrap();
+        let retained = directory
+            .retain_regular_child(std::ffi::OsStr::new("source.bsl"))
+            .unwrap();
+        let mut first = retained.open_named_identity_for_read().unwrap();
+        let mut second = retained.open_named_identity_for_read().unwrap();
+        let mut first_byte = [0_u8; 1];
+        let mut second_byte = [0_u8; 1];
+        first.read_exact(&mut first_byte).unwrap();
+        second.read_exact(&mut second_byte).unwrap();
+        assert_eq!(first_byte, *b"f");
+        assert_eq!(second_byte, *b"f");
+        drop((first, second, retained, directory));
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[cfg(any(unix, windows))]
     #[test]

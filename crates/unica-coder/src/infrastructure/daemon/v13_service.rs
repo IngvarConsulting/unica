@@ -1075,6 +1075,9 @@ impl CanonicalV13ReadService {
         let offset = cursor.as_ref().map_or(0, |(_, cursor)| cursor.offset);
         let mut skip = offset;
         let mut matches = Vec::new();
+        let mut uncovered = 0_usize;
+        let mut uncovered_details = Vec::new();
+        let mut scan_complete = true;
         for source in selected {
             let scope_at = scope.clone().unwrap_or_else(|| {
                 QualifiedAddress::parse(&format!("{}:Configuration", source.source_set_name()))
@@ -1098,14 +1101,32 @@ impl CanonicalV13ReadService {
                 &scope_at,
                 cancellation,
             ) {
-                Ok(found) => matches.extend(found),
+                Ok(found) => {
+                    matches.extend(found.matches);
+                    uncovered += found.uncovered;
+                    uncovered_details.extend(
+                        found
+                            .details
+                            .into_iter()
+                            .take(32_usize.saturating_sub(uncovered_details.len())),
+                    );
+                    scan_complete &= found.scan_complete;
+                }
                 Err(error) => return error_result(None, RefusalCode::ProviderUnavailable, error),
             }
             if matches.len() > limit {
+                scan_complete = false;
                 break;
             }
         }
-        self.search_page(matches, cursor, binding)
+        self.search_page(
+            matches,
+            cursor,
+            binding,
+            uncovered,
+            uncovered_details,
+            scan_complete,
+        )
     }
 
     fn search_page(
@@ -1113,9 +1134,31 @@ impl CanonicalV13ReadService {
         matches: Vec<Value>,
         cursor: Option<(&str, StoredSearchCursor)>,
         binding: SearchCursorBinding,
+        uncovered: usize,
+        uncovered_details: Vec<Value>,
+        scan_complete: bool,
     ) -> DomainResult {
-        let summary = format!("{} BSL search completed", binding.mode);
-        self.search_page_with_data(matches, cursor, binding, summary, Map::new())
+        let state = if uncovered > 0 {
+            "partial"
+        } else if scan_complete {
+            "completed"
+        } else {
+            "in progress"
+        };
+        let summary = format!("{} BSL search {state}", binding.mode);
+        let mut extra_data = Map::new();
+        extra_data.insert(
+            "fileCoverage".to_owned(),
+            json!({
+                "complete": scan_complete && uncovered == 0,
+                "scanComplete": scan_complete,
+                "uncovered": uncovered,
+                "uncoveredIsLowerBound": !scan_complete,
+                "detailsTruncated": uncovered > uncovered_details.len(),
+                "details": uncovered_details,
+            }),
+        );
+        self.search_page_with_data(matches, cursor, binding, summary, extra_data)
     }
 
     fn search_page_with_data(

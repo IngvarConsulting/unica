@@ -24,14 +24,78 @@ use crate::infrastructure::workspace_actor::{
     WorkspaceActorRegistry, WorkspaceActorRegistryError, WorkspaceLogicalReadFence,
     WorkspaceRevisionFence, WorkspaceSourceSetInput,
 };
+use std::io::BufRead;
 use std::sync::Arc;
 use std::time::Duration;
 
 const ACTOR_OPERATION_BUDGET: Duration = Duration::from_secs(7);
 const CANONICAL_SEARCH_MAX_ENTRIES: usize = 16_384;
-const CANONICAL_SEARCH_MAX_FILE_BYTES: usize = 2 * 1024 * 1024;
-const CANONICAL_SEARCH_MAX_TOTAL_BYTES: usize = 32 * 1024 * 1024;
+// Regex anchors and Unicode columns require a complete line. Keep that
+// indivisible unit bounded; neither file nor corpus size is a memory budget.
+const CANONICAL_SEARCH_MAX_LINE_BYTES: usize = 8 * 1024 * 1024;
 const CANONICAL_SEARCH_MAX_DEPTH: usize = 32;
+const CANONICAL_SEARCH_MAX_UNCOVERED_DETAILS: usize = 32;
+
+#[derive(Default)]
+pub(in crate::infrastructure::daemon) struct LiteralSearchScan {
+    pub(in crate::infrastructure::daemon) matches: Vec<serde_json::Value>,
+    pub(in crate::infrastructure::daemon) uncovered: usize,
+    pub(in crate::infrastructure::daemon) details: Vec<serde_json::Value>,
+    pub(in crate::infrastructure::daemon) scan_complete: bool,
+}
+
+impl LiteralSearchScan {
+    fn complete() -> Self {
+        Self {
+            scan_complete: true,
+            ..Self::default()
+        }
+    }
+
+    fn mark_uncovered(&mut self, source_set: &str, file_ordinal: usize, reason: &str) {
+        self.uncovered += 1;
+        if self.details.len() < CANONICAL_SEARCH_MAX_UNCOVERED_DETAILS {
+            let mut detail = serde_json::Map::new();
+            detail.insert("sourceSet".to_owned(), source_set.into());
+            // The ordinal is stable under a cursor's scope and revision
+            // binding, but reveals no retained-relative path.
+            detail.insert("fileId".to_owned(), format!("bsl-{file_ordinal}").into());
+            detail.insert("reason".to_owned(), reason.into());
+            self.details.push(serde_json::Value::Object(detail));
+        }
+    }
+}
+
+fn read_search_line_bounded(
+    reader: &mut impl BufRead,
+    line: &mut Vec<u8>,
+    max_bytes: usize,
+    mut checkpoint: impl FnMut() -> std::io::Result<()>,
+) -> std::io::Result<bool> {
+    line.clear();
+    loop {
+        checkpoint()?;
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return Ok(!line.is_empty());
+        }
+        let count = available
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(available.len(), |index| index + 1);
+        if count > max_bytes.saturating_sub(line.len()) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::FileTooLarge,
+                format!("source line exceeds the {max_bytes}-byte search limit"),
+            ));
+        }
+        line.extend_from_slice(&available[..count]);
+        reader.consume(count);
+        if line.last() == Some(&b'\n') {
+            return Ok(true);
+        }
+    }
+}
 
 #[derive(Clone)]
 pub(crate) struct ActorBoundInvocation {
@@ -132,7 +196,7 @@ impl ActorReadSourceCapability {
         scope_prefix: Option<&str>,
         scope_at: &QualifiedAddress,
         cancellation: &CancellationToken,
-    ) -> Result<Vec<serde_json::Value>, String> {
+    ) -> Result<LiteralSearchScan, String> {
         use crate::infrastructure::platform::filesystem::RetainedChildCapability;
 
         // A raw OS error carries no recovery signal for the caller; every
@@ -158,7 +222,7 @@ impl ActorReadSourceCapability {
                         .retain_immediate_child_nofollow(std::ffi::OsStr::new(component))
                     {
                         Ok(child) => child,
-                        Err(error) if vanished(&error) => return Ok(Vec::new()),
+                        Err(error) if vanished(&error) => return Ok(LiteralSearchScan::complete()),
                         Err(error) => {
                             return Err(context("could not open the scope subtree", error))
                         }
@@ -171,7 +235,9 @@ impl ActorReadSourceCapability {
                             )
                         }
                         RetainedChildCapability::RegularFile(_)
-                        | RetainedChildCapability::Unsupported => return Ok(Vec::new()),
+                        | RetainedChildCapability::Unsupported => {
+                            return Ok(LiteralSearchScan::complete())
+                        }
                     }
                 }
                 (relative, directory)
@@ -179,8 +245,8 @@ impl ActorReadSourceCapability {
         };
         let mut stack = vec![(start_relative, start_directory, 0_usize)];
         let mut visited_entries = 0_usize;
-        let mut read_bytes = 0_usize;
-        let mut matches = Vec::new();
+        let mut scan = LiteralSearchScan::complete();
+        let mut file_ordinal = 0_usize;
         while let Some((relative_directory, directory, depth)) = stack.pop() {
             if cancellation.is_cancelled() {
                 return Err("canonical search was cancelled".to_string());
@@ -220,10 +286,7 @@ impl ActorReadSourceCapability {
                 if visited_entries > CANONICAL_SEARCH_MAX_ENTRIES {
                     return Err("canonical search exceeded its retained entry limit".to_string());
                 }
-                let Some(name_text) = name.to_str() else {
-                    continue;
-                };
-                let relative = relative_directory.join(name_text);
+                let relative = relative_directory.join(&name);
                 let child = match directory.retain_immediate_child_nofollow(&name) {
                     Ok(child) => child,
                     Err(error) if vanished(&error) => continue,
@@ -237,44 +300,85 @@ impl ActorReadSourceCapability {
                     {
                         stack.push((relative, child_directory, depth + 1));
                     }
+                    RetainedChildCapability::Directory(_) => {
+                        return Err("canonical search exceeded its retained depth limit".to_string())
+                    }
                     RetainedChildCapability::RegularFile(file)
                         if relative
                             .extension()
                             .and_then(std::ffi::OsStr::to_str)
                             .is_some_and(|extension| extension.eq_ignore_ascii_case("bsl")) =>
                     {
-                        match file.validate_named_identity() {
-                            Ok(()) => {}
+                        file_ordinal += 1;
+                        let opened = match file.open_named_identity_for_read() {
+                            Ok(opened) => opened,
                             Err(error) if vanished(&error) => continue,
                             Err(error) => {
                                 return Err(context("lost a retained source file", error))
                             }
-                        }
-                        let bytes = match file.read_bounded(CANONICAL_SEARCH_MAX_FILE_BYTES) {
-                            Ok(bytes) => bytes,
-                            Err(error) if vanished(&error) => continue,
-                            Err(error) => {
-                                return Err(context("could not read a source file", error))
-                            }
                         };
-                        read_bytes = read_bytes.saturating_add(bytes.len());
-                        if read_bytes > CANONICAL_SEARCH_MAX_TOTAL_BYTES {
-                            return Err(
-                                "canonical search exceeded its retained byte limit".to_string()
+                        let mut reader = std::io::BufReader::new(opened);
+                        let mut raw_line = Vec::new();
+                        let mut line_index = 0_usize;
+                        loop {
+                            let has_line = read_search_line_bounded(
+                                &mut reader,
+                                &mut raw_line,
+                                CANONICAL_SEARCH_MAX_LINE_BYTES,
+                                || {
+                                    if cancellation.is_cancelled() {
+                                        Err(std::io::Error::new(
+                                            std::io::ErrorKind::Interrupted,
+                                            "canonical search was cancelled",
+                                        ))
+                                    } else if self.deadline.remaining().is_zero() {
+                                        Err(std::io::Error::new(
+                                            std::io::ErrorKind::TimedOut,
+                                            "canonical search operation deadline elapsed",
+                                        ))
+                                    } else {
+                                        Ok(())
+                                    }
+                                },
                             );
-                        }
-                        let Ok(text) = std::str::from_utf8(&bytes) else {
-                            continue;
-                        };
-                        for (line_index, line) in text.lines().enumerate() {
-                            if cancellation.is_cancelled() {
-                                return Err("canonical search was cancelled".to_string());
+                            let has_line = match has_line {
+                                Ok(has_line) => has_line,
+                                Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => {
+                                    scan.mark_uncovered(
+                                        self.binding.source_set_name(),
+                                        file_ordinal,
+                                        "line_too_long",
+                                    );
+                                    break;
+                                }
+                                Err(error)
+                                    if matches!(
+                                        error.kind(),
+                                        std::io::ErrorKind::Interrupted
+                                            | std::io::ErrorKind::TimedOut
+                                    ) =>
+                                {
+                                    return Err(error.to_string())
+                                }
+                                Err(error) => {
+                                    return Err(context("could not read a source file", error))
+                                }
+                            };
+                            if !has_line {
+                                break;
                             }
-                            if self.deadline.remaining().is_zero() {
-                                return Err(
-                                    "canonical search operation deadline elapsed".to_string()
+                            line_index += 1;
+                            let Ok(text) = std::str::from_utf8(&raw_line) else {
+                                scan.mark_uncovered(
+                                    self.binding.source_set_name(),
+                                    file_ordinal,
+                                    "invalid_utf8",
                                 );
-                            }
+                                break;
+                            };
+                            let line = text.strip_suffix('\n').map_or(text, |without_lf| {
+                                without_lf.strip_suffix('\r').unwrap_or(without_lf)
+                            });
                             let mut previous_byte = 0;
                             let mut column = 1;
                             let mut snippet = None::<String>;
@@ -300,7 +404,7 @@ impl ActorReadSourceCapability {
                                 );
                                 item.insert(
                                     "line".to_string(),
-                                    serde_json::Value::from(line_index + 1),
+                                    serde_json::Value::from(line_index),
                                 );
                                 item.insert("column".to_string(), serde_json::Value::from(column));
                                 item.insert(
@@ -313,21 +417,21 @@ impl ActorReadSourceCapability {
                                             .clone(),
                                     ),
                                 );
-                                matches.push(serde_json::Value::Object(item));
-                                if matches.len() == limit {
-                                    return Ok(matches);
+                                scan.matches.push(serde_json::Value::Object(item));
+                                if scan.matches.len() == limit {
+                                    scan.scan_complete = false;
+                                    return Ok(scan);
                                 }
                             }
                         }
                     }
-                    RetainedChildCapability::Directory(_)
-                    | RetainedChildCapability::RegularFile(_)
+                    RetainedChildCapability::RegularFile(_)
                     | RetainedChildCapability::ReparsePoint
                     | RetainedChildCapability::Unsupported => {}
                 }
             }
         }
-        Ok(matches)
+        Ok(scan)
     }
 }
 
@@ -1372,4 +1476,21 @@ pub(super) enum UnadmittedCause {
     },
     /// Наборы отобраны, но актор их не связал.
     ActorBindingFailed { stage: &'static str },
+}
+
+#[cfg(test)]
+mod search_line_tests {
+    use super::read_search_line_bounded;
+    use std::io::{BufReader, Cursor, ErrorKind};
+
+    #[test]
+    fn overlong_line_refuses_before_retaining_unbounded_bytes() {
+        let mut reader = BufReader::with_capacity(3, Cursor::new(b"abcdefghij\n"));
+        let mut line = Vec::new();
+        let error = read_search_line_bounded(&mut reader, &mut line, 8, || Ok(()))
+            .expect_err("a line beyond the search limit must not be matched in fragments");
+        assert_eq!(error.kind(), ErrorKind::FileTooLarge);
+        assert!(error.to_string().contains("source line exceeds"));
+        assert!(line.len() <= 8);
+    }
 }
