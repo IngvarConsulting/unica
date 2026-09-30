@@ -56,12 +56,11 @@ def render_tools_lock_version(original: str, version: str, path: Path) -> str:
 
 
 def bump(repo_root: Path, version: str) -> list[str]:
-    """Render every file first, then write.
+    """Read and render every required file before starting writes.
 
-    A malformed file part-way through the list would otherwise leave the
-    repository straddling two versions, which is the exact state the version
-    contract exists to forbid. Rendering everything before touching disk keeps a
-    failure a no-op.
+    Missing inputs and parsing/rendering failures leave all files unchanged.
+    Writes are sequential, not transactional: a write failure can leave a
+    partial update. Return the repository-relative paths that were changed.
     """
     plugin = repo_root / "plugins" / "unica"
     targets = [

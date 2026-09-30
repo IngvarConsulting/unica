@@ -246,6 +246,11 @@ def _validate_baseline(baseline: dict[str, Any]) -> tuple[str, set[str]]:
 def _validate_package(
     package: dict[str, Any], package_dir: Path, expected_source_commit: str
 ) -> dict[str, Any]:
+    """Bind package evidence to the expected source commit and downloaded bytes.
+
+    Even when hashes match, every host manifest must declare the evidence's
+    version and the runtime manifest must exist. This is not a runtime check.
+    """
     if package.get("schemaVersion") != SCHEMA_VERSION:
         raise ProofError(f"package evidence schemaVersion must be {SCHEMA_VERSION}")
     if package.get("packageHashFormat") != PACKAGE_HASH_FORMAT:

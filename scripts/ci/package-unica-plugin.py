@@ -413,7 +413,11 @@ def write_claude_marketplace(plugin_dir: Path, dest_path: Path, *, source: dict 
 def write_zcode_local_marketplace(
     plugin_dir: Path, dest_path: Path, *, marketplace_name: str
 ) -> None:
-    """Use ZCode's native local catalog with a source relative to its root."""
+    """Write a local catalog using plugin_dir for manifest metadata.
+
+    The caller must place the plugin at ./plugins/unica beneath the catalog's
+    parent directory; plugin_dir itself does not determine the source path.
+    """
     manifest = json.loads(
         (plugin_dir / HOST_MANIFEST_DIRS["zcode"] / "plugin.json").read_text(encoding="utf-8")
     )
@@ -771,6 +775,11 @@ def package_local_debug(
     target: str,
     host: str = "codex",
 ) -> None:
+    """Recreate out_dir/marketplace as a single-target development package.
+
+    Existing marketplace contents are replaced. This prepares files only;
+    installation and registration with the selected host remain separate steps.
+    """
     plugin_src = repo_root / "plugins" / "unica"
     marketplace_src = repo_root / ".agents" / "plugins" / "marketplace.json"
     marketplace_dir = out_dir / "marketplace"
