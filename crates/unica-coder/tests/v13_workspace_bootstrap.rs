@@ -126,6 +126,152 @@ fn read_stdout_lines(stdout: ChildStdout, sender: mpsc::Sender<String>) {
     }
 }
 
+// The aggregate size is deliberately above the retired 256 MiB policy limit,
+// while every staged and working resource stays below the per-file bound.
+#[test]
+fn canonical_check_has_no_aggregate_size_refusal_above_256_mib() {
+    let root = tempfile::tempdir().expect("large repository integration root");
+    let workspace = root.path().join("workspace");
+    let state = root.path().join("state");
+    std::fs::create_dir_all(workspace.join("src/Corpus")).unwrap();
+    std::fs::create_dir(&state).unwrap();
+    std::fs::write(
+        workspace.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+    )
+    .unwrap();
+    std::fs::write(
+        workspace.join("src/Configuration.xml"),
+        "<MetaDataObject/>\n",
+    )
+    .unwrap();
+    std::fs::write(
+        workspace.join(".gitignore"),
+        "**/.build/\nConfigDumpInfo.xml\nDumpFilesIndex.txt\n",
+    )
+    .unwrap();
+    std::fs::write(
+        workspace.join(".gitattributes"),
+        "*.xml text eol=lf\n*.bsl text eol=lf\n",
+    )
+    .unwrap();
+
+    let first = workspace.join("src/Corpus/Module0.bsl");
+    let mut file = std::fs::File::create(&first).unwrap();
+    let chunk = [b'x'; 64 * 1024];
+    for _ in 0..(31 * 1024 * 1024 / chunk.len()) {
+        file.write_all(&chunk).unwrap();
+    }
+    drop(file);
+    for index in 1..9 {
+        let path = workspace.join(format!("src/Corpus/Module{index}.bsl"));
+        if std::fs::hard_link(&first, &path).is_err() {
+            std::fs::copy(&first, &path).unwrap();
+        }
+    }
+    assert!(9 * std::fs::metadata(&first).unwrap().len() > 256 * 1024 * 1024);
+
+    for arguments in [vec!["init"], vec!["add", "."]] {
+        let output = Command::new("git")
+            .args(&arguments)
+            .current_dir(&workspace)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {arguments:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let mut mcp = McpProcess::start(&workspace, &state);
+    mcp.exchange(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-11-25",
+            "capabilities": {},
+            "clientInfo": {"name": "large-repository-check-ci", "version": "1"}
+        }
+    }));
+    mcp.notify(json!({
+        "jsonrpc": "2.0", "method": "notifications/initialized", "params": {}
+    }));
+    let check_started = Instant::now();
+    let mut response = mcp.exchange(json!({
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {"name": "unica.check", "arguments": {}}
+    }));
+    for id in 3..=7 {
+        let Some(task_id) =
+            response["result"]["structuredContent"]["data"]["task"]["taskId"].as_str()
+        else {
+            break;
+        };
+        response = mcp.exchange(json!({
+            "jsonrpc": "2.0", "id": id, "method": "tools/call",
+            "params": {
+                "name": "unica.task.result",
+                "arguments": {"taskId": task_id, "waitMs": 7000}
+            }
+        }));
+    }
+    let result = &response["result"]["structuredContent"];
+    assert_eq!(result["ok"], true, "{response:#}");
+    let data = &result["data"];
+    if data["readinessState"] == "incomplete" {
+        // A slow host may spend the request's seven-second inspection budget.
+        // That is an honest incomplete result, unlike a hard aggregate cap.
+        assert!(
+            check_started.elapsed() >= Duration::from_secs(7),
+            "inspection stopped before the request deadline: {response:#}"
+        );
+        assert_eq!(data["repositoryReady"], false, "{response:#}");
+        assert!(
+            data["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|diagnostic| {
+                    diagnostic["code"] == "git.inspection_timeout"
+                        || (diagnostic["code"] == "git.inspection_incomplete"
+                            && diagnostic["evidence"].as_array().is_some_and(|items| {
+                                items.iter().any(|item| {
+                                    item.as_str().is_some_and(|text| {
+                                        text.contains("deadline") || text.contains("timed out")
+                                    })
+                                })
+                            }))
+                }),
+            "incomplete inspection must identify its deadline: {response:#}"
+        );
+    } else {
+        assert_eq!(data["readinessState"], "complete", "{response:#}");
+        assert_eq!(data["repositoryReady"], true, "{response:#}");
+    }
+    assert!(
+        !serde_json::to_string(data)
+            .unwrap()
+            .contains("bytes in total"),
+        "aggregate resource size must not be an admission criterion: {response:#}"
+    );
+    for check in [
+        "repository.index_eol",
+        "repository.working_eol",
+        "repository.lfs",
+    ] {
+        assert!(
+            data["checks"].as_array().unwrap().iter().any(|row| {
+                row["id"] == check
+                    && row["sourceSet"] == "main"
+                    && (row["status"] == "passed"
+                        || (data["readinessState"] == "incomplete" && row["status"] == "notRun"))
+            }),
+            "{check}: {response:#}"
+        );
+    }
+    mcp.finish();
+}
+
 #[test]
 #[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn canonical_stdio_bootstraps_an_empty_workspace_before_address_discovery() {
