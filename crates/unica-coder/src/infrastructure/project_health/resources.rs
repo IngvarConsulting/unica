@@ -1831,6 +1831,8 @@ impl<'a> SourceResourcePolicyInspector<'a> {
         for resource in resources {
             if let Err(error) = resource_protocol_checkpoint(cancellation, deadline) {
                 if error == ResourceProtocolParseError::TimedOut && !pending.is_empty() {
+                    // The pending group consumed the remaining budget before Git ran.
+                    // Retry with fewer paths instead of rebuilding the same group.
                     continuation.reduce_index_eol_batch(pending.len());
                 }
                 return Err(error);
