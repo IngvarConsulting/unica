@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Assemble Codex and Claude marketplace packages from built Unica tool artifacts."""
+"""Assemble Codex, Claude and ZCode packages from built Unica tool artifacts."""
 
 from __future__ import annotations
 
@@ -24,11 +24,14 @@ V8_RUNNER_REPOSITORY = "https://github.com/IngvarConsulting/v8-runner-rust"
 # именем. Форму объявляет издатель типом содержимого.
 DELIVERY_MEDIA_TYPES = ("application/gzip", "application/octet-stream")
 DISPLAY_NAME = "Unica"
-# One plugin directory serves both hosts. Each host reads its own manifest
-# directory and ignores the other, and the single `.mcp.json` launcher resolves
-# the plugin root from whichever host variable is present, so the package ships
-# one copy of the bootstrap matrix instead of one per host.
-HOST_MANIFEST_DIRS = {"codex": ".codex-plugin", "claude": ".claude-plugin"}
+# One plugin directory serves all hosts. Each reads its own manifest and the
+# shared `.mcp.json`, so the bootstrap matrix ships only once. ZCode expands
+# the Claude root/data aliases used by the shared launcher.
+HOST_MANIFEST_DIRS = {
+    "codex": ".codex-plugin",
+    "claude": ".claude-plugin",
+    "zcode": ".zcode-plugin",
+}
 CLAUDE_MARKETPLACE_PATH = Path(".claude-plugin") / "marketplace.json"
 SOURCE_PACKAGE_IGNORES = {"bin", ".DS_Store", "__pycache__", ".pytest_cache"}
 DISALLOWED_ARCHIVE_PARTS = {".build", "dist", "__pycache__", ".pytest_cache"}
@@ -246,7 +249,7 @@ def load_tool_bundles(
 
 
 def read_release_version(plugin_src: Path) -> str:
-    """Return the release version both host manifests agree on."""
+    """Return the release version all host manifests agree on."""
     versions = {}
     for host, manifest_dir in HOST_MANIFEST_DIRS.items():
         manifest_path = plugin_src / manifest_dir / "plugin.json"
@@ -281,7 +284,7 @@ def write_manifest(plugin_dir: Path, grouped_tools: dict[str, dict], lock_file: 
     path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-# One launcher, both hosts. Claude Code rewrites `${CLAUDE_PLUGIN_ROOT}` in the
+# Claude Code and ZCode rewrite `${CLAUDE_PLUGIN_ROOT}` in the shared
 # alias before the shell sees it, so `root` is already absolute there; Codex
 # leaves the token alone, the shell expands it to the empty string, and the
 # original `$PWD/${GIT_PREFIX:-}` resolution takes over unchanged.
@@ -328,7 +331,7 @@ def write_packaged_mcp_launcher(
 
 
 def assert_host_manifests_present(plugin_dir: Path) -> None:
-    """Both hosts must find their manifest in the shared plugin directory."""
+    """Every host must find its manifest in the shared plugin directory."""
     for host, manifest_dir in sorted(HOST_MANIFEST_DIRS.items()):
         manifest = plugin_dir / manifest_dir / "plugin.json"
         if not manifest.is_file():
@@ -407,6 +410,28 @@ def write_claude_marketplace(plugin_dir: Path, dest_path: Path, *, source: dict 
     dest_path.write_text(json.dumps(catalog, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def write_zcode_local_marketplace(
+    plugin_dir: Path, dest_path: Path, *, marketplace_name: str
+) -> None:
+    """Use ZCode's native local catalog with a source relative to its root."""
+    manifest = json.loads(
+        (plugin_dir / HOST_MANIFEST_DIRS["zcode"] / "plugin.json").read_text(encoding="utf-8")
+    )
+    catalog = {
+        "name": marketplace_name,
+        "plugins": [
+            {
+                "name": manifest["name"],
+                "source": f"./plugins/{PLUGIN_ID}",
+                "version": manifest["version"],
+                "description": manifest["description"],
+            }
+        ],
+    }
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    dest_path.write_text(json.dumps(catalog, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
 def write_local_debug_mcp_launcher(plugin_dir: Path, target: str, *, host: str = "codex") -> None:
     if target not in SUPPORTED_TARGETS:
         raise SystemExit(f"unsupported local debug target: {target}")
@@ -416,9 +441,9 @@ def write_local_debug_mcp_launcher(plugin_dir: Path, target: str, *, host: str =
     mcp_path = plugin_dir / ".mcp.json"
     mcp = json.loads(mcp_path.read_text(encoding="utf-8"))
     server = mcp["mcpServers"]["unica"]
-    if host == "claude":
-        # Claude Code does not run plugin servers from the plugin root, so the
-        # binary is addressed absolutely instead of through cwd.
+    if host in {"claude", "zcode"}:
+        # These hosts may launch outside the plugin root. Both expand this token,
+        # so the binary is addressed absolutely instead of through cwd.
         server["command"] = "${CLAUDE_PLUGIN_ROOT}/bin/" + f"{target}/{executable}"
         server["args"] = []
         server.pop("cwd", None)
@@ -782,6 +807,12 @@ def package_local_debug(
             marketplace_dir / CLAUDE_MARKETPLACE_PATH,
             source=f"./plugins/{PLUGIN_ID}",
         )
+    elif host == "zcode":
+        write_zcode_local_marketplace(
+            plugin_dst,
+            marketplace_dir / "marketplace.json",
+            marketplace_name=marketplace_name,
+        )
     assert_archive_clean(marketplace_dir)
 
 
@@ -869,8 +900,8 @@ def main() -> None:
         source=claude_plugin_source(release_tag=args.release_tag),
     )
 
-    json.loads((plugin_dst / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
-    json.loads((plugin_dst / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+    for manifest_dir in HOST_MANIFEST_DIRS.values():
+        json.loads((plugin_dst / manifest_dir / "plugin.json").read_text(encoding="utf-8"))
     json.loads((plugin_dst / ".mcp.json").read_text(encoding="utf-8"))
     json.loads((plugin_dst / "runtime-manifest.json").read_text(encoding="utf-8"))
     json.loads((marketplace_dst / "marketplace.json").read_text(encoding="utf-8"))

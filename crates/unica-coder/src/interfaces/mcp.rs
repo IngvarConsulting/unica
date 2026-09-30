@@ -2380,6 +2380,77 @@ mod tests {
         surface_profiles_case().await;
     }
 
+    #[tokio::test]
+    async fn canonical_wire_preserves_optional_arguments_and_minimal_calls() {
+        for protocol in ["2024-11-05", "2025-11-25", "2026-07-28"] {
+            let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let received = Arc::clone(&observed);
+            let call: Arc<CanonicalCallHandler> = Arc::new(move |tool, arguments, _, _, _| {
+                assert_eq!(tool, V5ToolIdentity::Run);
+                received.lock().unwrap().push(arguments.clone());
+                direct_outcome(crate::domain::invocation::DomainResult::success(
+                    "transport accepted the unchanged request",
+                ))
+            });
+            let (mut client, _) = spawn_unica_server(UnicaServer::with_canonical_v13(call));
+            client
+                .send(json!({
+                    "jsonrpc":"2.0", "id":0, "method":"initialize",
+                    "params":{
+                        "protocolVersion":protocol,
+                        "capabilities":{},
+                        "clientInfo":{"name":"optional-arguments-client","version":"1"}
+                    }
+                }))
+                .await;
+            let initialized = client.receive().await;
+            assert!(initialized.get("error").is_none(), "{initialized}");
+            client
+                .send(json!({"jsonrpc":"2.0", "id":1, "method":"tools/list", "params":{}}))
+                .await;
+            let listed = client.receive().await;
+            let tools = listed["result"]["tools"].as_array().expect("listed tools");
+            let run = tools
+                .iter()
+                .find(|tool| tool["name"] == "unica.run")
+                .unwrap();
+            let schema = &run["inputSchema"];
+            assert_eq!(schema["required"], json!([]));
+            assert_eq!(schema["additionalProperties"], false);
+            let validator = jsonschema::validator_for(schema).expect("valid wire schema");
+            let minimal_calls = [json!({}), json!({"op":"push", "dryRun":true})];
+            for (index, arguments) in minimal_calls.iter().enumerate() {
+                validator
+                    .validate(arguments)
+                    .expect("minimal request accepted by wire schema");
+                client
+                    .send(json!({
+                        "jsonrpc":"2.0", "id":index + 2, "method":"tools/call",
+                        "params":{"name":"unica.run", "arguments":arguments}
+                    }))
+                    .await;
+                let response = client.receive().await;
+                assert!(response.get("error").is_none(), "{response}");
+            }
+            assert!(!validator.is_valid(&json!({"allExtensions":false})));
+            assert!(!validator.is_valid(&json!({"op":null})));
+            assert!(!validator.is_valid(&json!({"dryRun":"true"})));
+            let received = observed.lock().unwrap().clone();
+            assert_eq!(received.len(), minimal_calls.len());
+            for (actual, expected) in received.iter().zip(minimal_calls) {
+                assert_eq!(Value::Object(actual.clone()), expected);
+            }
+            for (name, required) in [
+                ("unica.docs", json!(["query"])),
+                ("unica.diff", json!(["left", "right"])),
+            ] {
+                let tool = tools.iter().find(|tool| tool["name"] == name).unwrap();
+                assert_eq!(tool["inputSchema"]["required"], required);
+            }
+            client.shutdown().await;
+        }
+    }
+
     async fn compatibility_receipts_case() {
         use crate::domain::invocation::{InvocationStatus, TaskId};
         use std::sync::atomic::AtomicUsize;

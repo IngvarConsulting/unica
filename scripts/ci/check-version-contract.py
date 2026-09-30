@@ -23,6 +23,11 @@ def read_version_contract(repo_root: Path) -> dict[str, str]:
             encoding="utf-8"
         )
     )
+    zcode_plugin = json.loads(
+        (repo_root / "plugins" / "unica" / ".zcode-plugin" / "plugin.json").read_text(
+            encoding="utf-8"
+        )
+    )
     tools_lock = json.loads(
         (repo_root / "plugins" / "unica" / "third-party" / "tools.lock.json").read_text(
             encoding="utf-8"
@@ -36,6 +41,7 @@ def read_version_contract(repo_root: Path) -> dict[str, str]:
         "workspace": workspace["workspace"]["package"]["version"],
         "plugin": plugin["version"],
         "claude-plugin": claude_plugin["version"],
+        "zcode-plugin": zcode_plugin["version"],
         "tools-lock-unica": unica_tools[0]["version"],
     }
 

@@ -235,29 +235,43 @@ mod tests {
     }
 
     #[test]
+    fn workspace_environment_keys_include_both_aliases_once() {
+        assert_eq!(
+            host_workspace_environment_keys(),
+            vec!["CLAUDE_PROJECT_DIR", "ZCODE_PROJECT_DIR"]
+        );
+        assert_eq!(
+            host_workspace_capabilities(),
+            BTreeMap::from([("codex/sandbox-state-meta".to_owned(), Map::new())])
+        );
+    }
+
+    #[test]
     fn request_context_overrides_launch_environment_and_does_not_leak_to_next_request() {
         let fixture = Fixture::new();
-        let context = capture_with(
-            &env(&[("CLAUDE_PROJECT_DIR", fixture.0.clone().into())]),
-            Ok(fixture.0.clone()),
-        );
-        for value in [
-            fixture.project().to_str().unwrap().to_owned(),
-            url::Url::from_file_path(fixture.project())
-                .unwrap()
-                .to_string(),
-        ] {
+        for key in ["CLAUDE_PROJECT_DIR", "ZCODE_PROJECT_DIR"] {
+            let context = capture_with(
+                &env(&[(key, fixture.0.clone().into())]),
+                Ok(fixture.project()),
+            );
+            for value in [
+                fixture.project().to_str().unwrap().to_owned(),
+                url::Url::from_file_path(fixture.project())
+                    .unwrap()
+                    .to_string(),
+            ] {
+                assert_eq!(
+                    context
+                        .resolve(&metadata(serde_json::json!({"sandboxCwd": value})))
+                        .unwrap(),
+                    fixture.project().to_str().unwrap()
+                );
+            }
             assert_eq!(
-                context
-                    .resolve(&metadata(serde_json::json!({"sandboxCwd": value})))
-                    .unwrap(),
-                fixture.project().to_str().unwrap()
+                context.resolve(&Map::new()).unwrap(),
+                fixture.0.to_str().unwrap()
             );
         }
-        assert_eq!(
-            context.resolve(&Map::new()).unwrap(),
-            fixture.0.to_str().unwrap()
-        );
     }
 
     #[test]
@@ -295,22 +309,33 @@ mod tests {
     #[test]
     fn environment_aliases_must_resolve_to_one_directory() {
         let fixture = Fixture::new();
-        let agreeing = [
-            ("ZCODE_PROJECT_DIR", fixture.0.clone().into()),
-            ("CLAUDE_PROJECT_DIR", fixture.0.join(".").into()),
-        ];
-        assert_eq!(
-            capture_with(&env(&agreeing), Err("no cwd".into()))
+        for values in [
+            vec![("ZCODE_PROJECT_DIR", fixture.0.clone().into())],
+            vec![("CLAUDE_PROJECT_DIR", fixture.0.clone().into())],
+            vec![
+                ("ZCODE_PROJECT_DIR", fixture.0.clone().into()),
+                ("CLAUDE_PROJECT_DIR", fixture.0.clone().into()),
+            ],
+            vec![
+                (
+                    "ZCODE_PROJECT_DIR",
+                    fixture.0.join("Проект с пробелом/..").into(),
+                ),
+                ("CLAUDE_PROJECT_DIR", fixture.0.clone().into()),
+            ],
+        ] {
+            let selected = capture_with(&env(&values), Err("no cwd".into()))
                 .resolve(&Map::new())
-                .unwrap(),
-            fixture.0.to_str().unwrap()
-        );
+                .unwrap();
+            assert_eq!(Path::new(&selected).canonicalize().unwrap(), fixture.0);
+        }
         let conflicting = [
             ("ZCODE_PROJECT_DIR", fixture.0.clone().into()),
             ("CLAUDE_PROJECT_DIR", fixture.project().into()),
         ];
         let context = capture_with(&env(&conflicting), Ok(fixture.0.clone()));
-        assert!(context.resolve(&Map::new()).is_err());
+        let error = context.resolve(&Map::new()).unwrap_err();
+        assert!(error.contains("conflicting directories"), "{error}");
         assert_eq!(
             context
                 .resolve(&metadata(
@@ -324,17 +349,17 @@ mod tests {
     #[test]
     fn declared_invalid_environment_is_not_treated_as_absent() {
         let fixture = Fixture::new();
-        for value in [
-            OsString::new(),
-            "relative".into(),
-            fixture.0.join("bad\npath").into(),
-            fixture.0.join("bad\0path").into(),
-        ] {
-            let context = capture_with(
-                &env(&[("CLAUDE_PROJECT_DIR", value)]),
-                Ok(fixture.0.clone()),
-            );
-            assert!(context.resolve(&Map::new()).is_err());
+        for key in ["CLAUDE_PROJECT_DIR", "ZCODE_PROJECT_DIR"] {
+            for value in [
+                OsString::new(),
+                "relative".into(),
+                "${ZCODE_PROJECT_DIR}".into(),
+                fixture.0.join("bad\npath").into(),
+                fixture.0.join("bad\0path").into(),
+            ] {
+                let context = capture_with(&env(&[(key, value)]), Ok(fixture.0.clone()));
+                assert!(context.resolve(&Map::new()).is_err());
+            }
         }
     }
 

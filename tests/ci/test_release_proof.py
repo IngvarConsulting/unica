@@ -33,7 +33,7 @@ class ReleaseProofTests(unittest.TestCase):
         self.tempdir = tempfile.TemporaryDirectory()
         self.package_dir = Path(self.tempdir.name) / "marketplace"
         plugin_dir = self.package_dir / "plugins" / "unica"
-        for host in (".codex-plugin", ".claude-plugin"):
+        for host in (".codex-plugin", ".claude-plugin", ".zcode-plugin"):
             manifest_dir = plugin_dir / host
             manifest_dir.mkdir(parents=True, exist_ok=True)
             (manifest_dir / "plugin.json").write_text(
@@ -113,7 +113,7 @@ class ReleaseProofTests(unittest.TestCase):
 
     def package(self, **overrides: object) -> dict:
         version = str(overrides.get("pluginVersion", "0.12.0"))
-        for host in (".codex-plugin", ".claude-plugin"):
+        for host in (".codex-plugin", ".claude-plugin", ".zcode-plugin"):
             (self.package_dir / "plugins" / "unica" / host / "plugin.json").write_text(
                 json.dumps({"name": "unica", "version": version}),
                 encoding="utf-8",
@@ -271,6 +271,22 @@ class ReleaseProofTests(unittest.TestCase):
                 native_wires=native_wires,
                 compatibility_wires=compatibility_wires,
             )
+
+    def test_proof_rejects_a_missing_zcode_manifest_even_with_matching_hashes(self) -> None:
+        package = self.package()
+        (self.package_dir / "plugins/unica/.zcode-plugin/plugin.json").unlink()
+        package["packageSha256"] = self.module.tree_sha256(self.package_dir)
+        with self.assertRaisesRegex(self.module.ProofError, r"\.zcode-plugin"):
+            self.evaluate(package=package)
+
+    def test_proof_rejects_a_different_zcode_version_even_with_matching_hashes(self) -> None:
+        package = self.package()
+        (self.package_dir / "plugins/unica/.zcode-plugin/plugin.json").write_text(
+            json.dumps({"name": "unica", "version": "0.0.1"}), encoding="utf-8"
+        )
+        package["packageSha256"] = self.module.tree_sha256(self.package_dir)
+        with self.assertRaisesRegex(self.module.ProofError, "host manifest versions"):
+            self.evaluate(package=package)
 
     def test_proof_rejects_hashes_not_matching_downloaded_package(self) -> None:
         with self.assertRaisesRegex(self.module.ProofError, "packageSha256 does not match"):

@@ -723,10 +723,11 @@ jobs:
           --release-tag "$RELEASE_TAG"
           --source-commit "${{ github.sha }}"
           --out-dir dist/thin
-      - name: Require both host contracts in the shared plugin directory
+      - name: Require all three host contracts in the shared plugin directory
         run: |
           test -f dist/thin/marketplace/plugins/unica/.codex-plugin/plugin.json
           test -f dist/thin/marketplace/plugins/unica/.claude-plugin/plugin.json
+          test -f dist/thin/marketplace/plugins/unica/.zcode-plugin/plugin.json
           test -f dist/thin/marketplace/.agents/plugins/marketplace.json
           test -f dist/thin/marketplace/.claude-plugin/marketplace.json
       # Pinned to the oldest supported client rather than the latest, so the gate

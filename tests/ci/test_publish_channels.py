@@ -38,7 +38,7 @@ exit 64
 
 
 def write_plugin(root: Path, version: str) -> None:
-    for manifest in (".codex-plugin", ".claude-plugin"):
+    for manifest in (".codex-plugin", ".claude-plugin", ".zcode-plugin"):
         path = root / "plugins" / "unica" / manifest / "plugin.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"name": "unica", "version": version}), encoding="utf-8")
@@ -123,7 +123,12 @@ class PublishChannelTests(unittest.TestCase):
         return {branch: self.marketplace("rev-parse", branch) for branch in sorted(self.branches())}
 
     def plugin_version(self, branch: str) -> str:
-        return json.loads(self.marketplace("show", f"{branch}:plugins/unica/.codex-plugin/plugin.json"))["version"]
+        versions = [
+            json.loads(self.marketplace("show", f"{branch}:plugins/unica/{manifest}/plugin.json"))["version"]
+            for manifest in (".codex-plugin", ".claude-plugin", ".zcode-plugin")
+        ]
+        self.assertEqual(len(set(versions)), 1, versions)
+        return versions[0]
 
     def change_main(self, message: str, edit) -> None:
         """Commit an unrelated maintenance change to the marketplace main branch."""
@@ -157,8 +162,7 @@ class PublishChannelTests(unittest.TestCase):
         self.assertEqual(self.marketplace("rev-parse", "main"), main_before)
         self.assertEqual(self.served("main"), ("unica", "v0.12.3", "v0.12.3"))
         self.assertEqual(self.served("next"), ("unica-next", "v0.13.0-rc.3", "v0.13.0-rc.3"))
-        plugin = json.loads(self.marketplace("show", "next:plugins/unica/.codex-plugin/plugin.json"))
-        self.assertEqual(plugin["version"], "0.13.0-rc.3")
+        self.assertEqual(self.plugin_version("next"), "0.13.0-rc.3")
         # Канал рождается копией основного, а не пустым: до первого кандидата
         # его подписчики получают действующий стабильный выпуск.
         history = self.marketplace("log", "--format=%s", "next").splitlines()

@@ -5,13 +5,15 @@ public stdio MCP server named `unica`. Prompt-visible skills call native
 `unica.*` tools; bundled analyzers, runners, indexes, and the standards adapter
 remain private implementation details.
 
-One plugin directory serves both Codex and Claude Code. Each host reads its own
-manifest, `.codex-plugin/plugin.json` or `.claude-plugin/plugin.json`, and
-ignores the other.
+One plugin directory serves Codex, Claude Code, and ZCode. Their native
+manifests are `.codex-plugin/plugin.json`, `.claude-plugin/plugin.json`, and
+`.zcode-plugin/plugin.json`; all use the same `.mcp.json`, skills, and runtime.
+ZCode prefers its native manifest rather than loading a second plugin.
 
 ## Public installation
 
-Prerequisites are Git and one host: Codex CLI, or Claude Code 2.1.69 or newer.
+Prerequisites are Git and one host: Codex CLI, Claude Code 2.1.69 or newer,
+or ZCode Desktop with native plugin support (the integration contract targets 3.14.4).
 Node.js, Python, download utilities, and archive utilities are not consumer
 dependencies.
 
@@ -38,6 +40,23 @@ claude plugin install unica@unica
 
 Claude Code 2.1.68 and earlier reject the catalog's `git-subdir` source type and
 cannot load it at all; 2.1.69 is the first release that accepts it.
+
+### ZCode
+
+In **Plugin Marketplace → Add → Add Plugin Marketplace**, add a release
+marketplace containing the native ZCode manifest, or the root of a generated
+local-debug marketplace. Install Unica from **Personal** and manage it in
+**Settings → Plugins**. Keep only one Unica installation enabled. Refresh the
+marketplace and update the whole plugin; do not replace just the runtime binary
+or edit the installed cache.
+
+Start a fresh task using the same model/provider and request `unica.run {}`.
+It must return the current operation dictionary without starting 1C or requiring
+unrelated arguments. An old task can retain the legacy `runtime.execute`
+schema. A successful package build or direct MCP `tools/list` does not prove
+that the model received the schema unchanged; the fresh-task trial is a separate
+acceptance step. The reported optional-field discrepancy is tracked in
+[#1032](https://github.com/IngvarConsulting/unica/issues/1032).
 
 ## Release candidates
 
@@ -163,9 +182,10 @@ runs `bootstrap/launch.sh`, which selects exactly one bootstrap:
 - `win-x64` under Git for Windows.
 
 The alias resolves the plugin root from whichever host it runs under. Claude
-Code rewrites `${CLAUDE_PLUGIN_ROOT}` before the shell sees it; Codex leaves the
-token unset, and the shell falls back to Git's own `$PWD`/`$GIT_PREFIX` pair.
-One launcher therefore serves both hosts without a per-host package.
+Code and ZCode rewrite `${CLAUDE_PLUGIN_ROOT}` before the shell sees it; Codex
+leaves the token unset, and the shell falls back to Git's own `$PWD`/`$GIT_PREFIX`
+pair. ZCode also publishes `ZCODE_PLUGIN_ROOT` as an alias. One launcher serves
+all three hosts without a separate server or schema translator.
 
 The bootstrap downloads only `unica-runtime-<target>.tar.gz` before MCP startup.
 It reads the release-pinned `runtime-manifest.json`, verifies archive and file
@@ -178,7 +198,18 @@ The cache is `$CODEX_HOME/unica/runtimes` under Codex and
 updates. Packaged `.mcp.json` passes the Claude token through
 `UNICA_RUNTIME_CACHE_DIR`; a host that does not substitute it forwards the
 literal token, and the bootstrap discards any value that still contains `${`
-rather than creating a directory named after it.
+rather than creating a directory named after it. ZCode publishes
+`ZCODE_PLUGIN_DATA` and the compatible `CLAUDE_PLUGIN_DATA` with the same value;
+its runtime cache is below that plugin-data directory. The host façade also
+recognizes `ZCODE_PLUGIN_DATA` without the compatible alias. Published data roots
+precede `CODEX_HOME`; explicit `UNICA_RUNTIME_CACHE_DIR` and
+`UNICA_PROVIDER_STATE_DIR` retain priority. Provider state defaults to
+`<plugin-data>/unica/provider-state`. No prior cache is migrated or deleted.
+
+The plugin-data directory is not a workspace identity. ZCode supplies
+`ZCODE_PROJECT_DIR` and the compatible `CLAUDE_PROJECT_DIR`; conflicting project
+paths are rejected. The existing canonical workspace/profile keys continue to
+isolate project state.
 
 Each installed artifact lives below
 `<artifact>/<version>--<asset-sha256>/<target>`. The SHA-256 component prevents
@@ -189,7 +220,10 @@ roots, and internal launches re-check the pinned binary hash.
 The core download happens inside the host's MCP startup budget. Packaged
 `.mcp.json` therefore declares `startup_timeout_sec`, which bounds this
 pre-startup transfer. The host waits for the core to be verified and published
-before it starts MCP; a host that does not know the key ignores it.
+before it starts MCP; a host that does not know the key ignores it. ZCode 3.14.4
+ignores this Codex startup key. Do not substitute a global tool-call timeout:
+startup and operation budgets are distinct. Use the verified bootstrap
+`prefetch` before a cold install when the host startup window is insufficient.
 
 After startup, engine delivery is non-blocking for concurrent callers. The
 first call that needs an absent engine starts one server-owned delivery from the
@@ -259,6 +293,14 @@ claude --plugin-dir ./plugins/unica
 
 To package a current-host Claude debug build instead, pass
 `--local-debug-host claude` to `scripts/ci/package-unica-plugin.py`.
+
+For ZCode, use `--local-debug-host zcode`, an explicit
+`--local-debug-target`, and a separate `--marketplace-name unica-zcode-dev`.
+The packager writes a root `marketplace.json` with a relative plugin source
+and an absolute-root binary launcher. Add the generated `marketplace/`
+directory in the Desktop marketplace UI; do not install the source checkout's
+Cargo launcher as the local binary package. Registration, installation and
+fresh-task acceptance are manual steps. No global ZCode CLI is required.
 
 ## Release pipeline
 

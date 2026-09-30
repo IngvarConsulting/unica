@@ -162,6 +162,9 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
 
     def test_package_contract_changes_require_package_contour(self) -> None:
         for path in (
+            "plugins/unica/.codex-plugin/plugin.json",
+            "plugins/unica/.claude-plugin/plugin.json",
+            "plugins/unica/.zcode-plugin/plugin.json",
             "plugins/unica/.mcp.json",
             "plugins/unica/third-party/tools.lock.json",
             "scripts/ci/package-unica-runtime.py",

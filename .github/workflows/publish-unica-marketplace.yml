@@ -131,6 +131,7 @@ jobs:
         run: |
           test -f payload/plugins/unica/.codex-plugin/plugin.json
           test -f payload/plugins/unica/.claude-plugin/plugin.json
+          test -f payload/plugins/unica/.zcode-plugin/plugin.json
           test -f payload/plugins/unica/.mcp.json
           test -f payload/plugins/unica/runtime-manifest.json
           test -f payload/.agents/plugins/marketplace.json
@@ -522,6 +523,8 @@ jobs:
         run: |
           gh run download "$SOURCE_RUN_ID" --repo IngvarConsulting/unica --name unica-thin-marketplace --dir payload
           test -f payload/plugins/unica/.codex-plugin/plugin.json
+          test -f payload/plugins/unica/.claude-plugin/plugin.json
+          test -f payload/plugins/unica/.zcode-plugin/plugin.json
           test -f payload/.agents/plugins/marketplace.json
           test -f payload/.claude-plugin/marketplace.json
       - name: Move the channel catalogs to the published tag

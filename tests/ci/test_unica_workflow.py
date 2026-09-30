@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import fnmatch
 import re
+import subprocess
+import tempfile
 import unittest
 from collections.abc import Iterator
 from pathlib import Path
@@ -839,6 +841,37 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIs(marketplace.get("include-hidden-files"), True)
         self.assertEqual(marketplace.get("retention-days"), 90)
         self.assertNotIn("unica-codex-marketplace-${{ matrix.target }}", list(strings(self.release)))
+
+    def test_package_and_publication_file_gates_require_all_three_manifests(self) -> None:
+        gates = (
+            (job(self.release, "package-thin"), "dist/thin/marketplace"),
+            (job(self.publish, "stage"), "payload"),
+            (job(self.publish, "promote"), "payload"),
+        )
+        manifests = (
+            "plugins/unica/.codex-plugin/plugin.json",
+            "plugins/unica/.claude-plugin/plugin.json",
+            "plugins/unica/.zcode-plugin/plugin.json",
+        )
+        for node, prefix in gates:
+            gate = next(step for step in steps(node) if f"test -f {prefix}/{manifests[0]}" in step.get("run", ""))
+            with self.subTest(job=prefix, step=gate["name"]), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                for relative in (*manifests, "plugins/unica/.mcp.json", "plugins/unica/runtime-manifest.json", ".agents/plugins/marketplace.json", ".claude-plugin/marketplace.json"):
+                    target = root / prefix / relative
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text("{}\n", encoding="utf-8")
+                # Only the download is replaced; execute the workflow's file gate.
+                shell = "gh() { :; }\n" + gate["run"]
+                valid = subprocess.run(["bash", "-e", "-c", shell], cwd=root, capture_output=True, text=True, check=False)
+                self.assertEqual(valid.returncode, 0, valid.stderr)
+                for relative in manifests:
+                    with self.subTest(missing=relative):
+                        target = root / prefix / relative
+                        target.unlink()
+                        missing = subprocess.run(["bash", "-e", "-c", shell], cwd=root, capture_output=True, text=True, check=False)
+                        target.write_text("{}\n", encoding="utf-8")
+                        self.assertNotEqual(missing.returncode, 0, f"{gate['name']} accepted missing {relative}")
 
     def test_intermediate_non_marketplace_artifacts_expire_after_one_day(self) -> None:
         assessment = job(self.release, "release-assessment")

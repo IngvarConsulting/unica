@@ -1349,21 +1349,50 @@ class ProductContractTests(unittest.TestCase):
                 target.write_text(
                     (repo_root / relative).read_text(encoding="utf-8"), encoding="utf-8"
                 )
-            # Synthesised rather than copied so the Claude manifest is covered on
-            # branches that do not carry it yet.
-            claude = work / "plugins/unica/.claude-plugin/plugin.json"
-            claude.parent.mkdir(parents=True, exist_ok=True)
-            claude.write_text(
-                json.dumps({"name": "unica", "version": "0.0.0"}) + "\n", encoding="utf-8"
-            )
+            for directory in (".claude-plugin", ".zcode-plugin"):
+                manifest = work / "plugins/unica" / directory / "plugin.json"
+                manifest.parent.mkdir(parents=True, exist_ok=True)
+                manifest.write_text(
+                    json.dumps({"name": "unica", "version": "0.0.0"}) + "\n", encoding="utf-8"
+                )
 
             changed = module.bump(work, "9.8.7")
             values = contract_module.read_version_contract(work)
-            claude_version = json.loads(claude.read_text(encoding="utf-8"))["version"]
+            for directory in (".codex-plugin", ".claude-plugin", ".zcode-plugin"):
+                manifest = work / "plugins/unica" / directory / "plugin.json"
+                self.assertEqual(json.loads(manifest.read_text(encoding="utf-8"))["version"], "9.8.7")
+                self.assertIn(f"plugins/unica/{directory}/plugin.json", changed)
+            self.assertEqual(module.bump(work, "9.8.7"), [])
 
         self.assertEqual(set(values.values()), {"9.8.7"}, values)
-        self.assertEqual(claude_version, "9.8.7")
-        self.assertIn("plugins/unica/.claude-plugin/plugin.json", changed)
+
+    def test_bump_version_refuses_missing_or_malformed_zcode_without_writes(self) -> None:
+        module_path = REPO_ROOT / "scripts/dev/bump-version.py"
+        spec = importlib.util.spec_from_file_location("bump_version", module_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        for payload in (None, "{invalid-json"):
+            with self.subTest(zcode=payload), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                before = {}
+                for relative in (
+                    "Cargo.toml", "plugins/unica/.codex-plugin/plugin.json",
+                    "plugins/unica/.claude-plugin/plugin.json", "plugins/unica/third-party/tools.lock.json",
+                ):
+                    target = root / relative
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    before[relative] = (REPO_ROOT / relative).read_bytes()
+                    target.write_bytes(before[relative])
+                if payload is not None:
+                    zcode = root / "plugins/unica/.zcode-plugin/plugin.json"
+                    zcode.parent.mkdir()
+                    zcode.write_text(payload, encoding="utf-8")
+                    before[zcode.relative_to(root).as_posix()] = zcode.read_bytes()
+                with self.assertRaises((SystemExit, json.JSONDecodeError)):
+                    module.bump(root, "9.8.7")
+                self.assertEqual(
+                    {relative: (root / relative).read_bytes() for relative in before}, before
+                )
 
     def test_bump_version_writes_nothing_when_a_later_file_is_malformed(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
@@ -1380,6 +1409,10 @@ class ProductContractTests(unittest.TestCase):
             cargo.write_text(
                 (repo_root / "Cargo.toml").read_text(encoding="utf-8"), encoding="utf-8"
             )
+            for directory in (".codex-plugin", ".claude-plugin", ".zcode-plugin"):
+                manifest = work / "plugins/unica" / directory / "plugin.json"
+                manifest.parent.mkdir(parents=True, exist_ok=True)
+                manifest.write_text(json.dumps({"version": "0.0.1"}), encoding="utf-8")
             lock = work / "plugins/unica/third-party/tools.lock.json"
             lock.parent.mkdir(parents=True, exist_ok=True)
             # Two unica entries: valid JSON, but no single version to set.

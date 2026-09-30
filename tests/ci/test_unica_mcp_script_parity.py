@@ -2070,6 +2070,7 @@ def prepare_reader_standins(temp_root: Path) -> tuple[Path, dict[str, str], Path
         ".mcp.json",
         ".codex-plugin/plugin.json",
         ".claude-plugin/plugin.json",
+        ".zcode-plugin/plugin.json",
     ]:
         source = PLUGIN_ROOT / manifest_name
         target = plugin_root / manifest_name
@@ -2941,6 +2942,19 @@ def normalize_snapshot_text(text: str, workspace: Path) -> str:
 
 
 class ReaderStandinFixtureTests(unittest.TestCase):
+    def test_reader_standins_include_the_zcode_manifest_and_shared_mcp(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch(
+            __name__ + ".current_reader_standin_target",
+            return_value=("linux-x64", "x86_64-unknown-linux-gnu", ""),
+        ):
+            plugin_root, _env, _log = prepare_reader_standins(Path(tmp))
+            for relative in (
+                ".codex-plugin/plugin.json", ".claude-plugin/plugin.json",
+                ".zcode-plugin/plugin.json", ".mcp.json",
+            ):
+                with self.subTest(resource=relative):
+                    self.assertEqual((plugin_root / relative).read_bytes(), (PLUGIN_ROOT / relative).read_bytes())
+
     def test_windows_target_is_not_claimed_without_native_launchers(self) -> None:
         with (
             mock.patch.object(sys, "platform", "win32"),

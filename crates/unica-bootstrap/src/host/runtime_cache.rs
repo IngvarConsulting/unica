@@ -94,8 +94,8 @@ fn resolve_provider_state_root(read_env: ReadEnv<'_>) -> Result<PathBuf> {
 
 fn published_data_dir(host: &PluginHost, read_env: ReadEnv<'_>) -> Option<PathBuf> {
     let data_dir = host.data_dir?;
-    let value = read_env(data_dir.env)?;
-    Some(join_segments(PathBuf::from(value), data_dir.runtime_subdir))
+    let root = ready_path_env(read_env, data_dir.env)?;
+    Some(join_segments(root, data_dir.runtime_subdir))
 }
 
 fn declared_home_root(host: &PluginHost, read_env: ReadEnv<'_>) -> Option<PathBuf> {
@@ -118,8 +118,8 @@ fn user_home_root(host: &PluginHost, read_env: ReadEnv<'_>) -> Option<PathBuf> {
 
 fn published_provider_state(host: &PluginHost, read_env: ReadEnv<'_>) -> Option<PathBuf> {
     let data_dir = host.data_dir?;
-    let value = non_empty_env(read_env, data_dir.env)?;
-    Some(provider_state_subdirectory(PathBuf::from(value)))
+    let root = ready_path_env(read_env, data_dir.env)?;
+    Some(provider_state_subdirectory(root))
 }
 
 fn declared_provider_state(host: &PluginHost, read_env: ReadEnv<'_>) -> Option<PathBuf> {
@@ -136,6 +136,14 @@ fn user_provider_state(host: &PluginHost, read_env: ReadEnv<'_>) -> Option<PathB
     Some(provider_state_subdirectory(
         PathBuf::from(value).join(home_root.user_home_segment),
     ))
+}
+
+// A published directory is usable only after the host expands its tokens.
+// Skip invalid values without changing the source or descriptor priority.
+fn ready_path_env(read_env: ReadEnv<'_>, name: &str) -> Option<PathBuf> {
+    non_empty_env(read_env, name)
+        .filter(|value| !value.to_string_lossy().contains(UNEXPANDED_TOKEN))
+        .map(PathBuf::from)
 }
 
 fn non_empty_env(read_env: ReadEnv<'_>, name: &str) -> Option<OsString> {
@@ -211,10 +219,120 @@ mod tests {
     }
 
     #[test]
+    fn zcode_published_data_directory_outranks_host_homes() {
+        for homes in [
+            vec![],
+            vec![
+                ("CODEX_HOME", "/elsewhere/.codex"),
+                ("HOME", "/home/user"),
+                ("USERPROFILE", "C:/Users/user"),
+            ],
+        ] {
+            let mut values = homes;
+            values.push(("ZCODE_PLUGIN_DATA", "/data/zcode"));
+            assert_eq!(
+                resolve(&values).unwrap(),
+                PathBuf::from("/data/zcode").join("runtimes")
+            );
+            assert_eq!(
+                resolve_provider_state(&values).unwrap(),
+                PathBuf::from("/data/zcode")
+                    .join("unica")
+                    .join("provider-state")
+            );
+        }
+    }
+
+    #[test]
+    fn published_data_aliases_keep_existing_claude_priority() {
+        for zcode in ["/data/claude", "/data/zcode"] {
+            let values = [
+                ("ZCODE_PLUGIN_DATA", zcode),
+                ("CLAUDE_PLUGIN_DATA", "/data/claude"),
+                ("CODEX_HOME", "/elsewhere/.codex"),
+            ];
+            assert_eq!(
+                resolve(&values).unwrap(),
+                PathBuf::from("/data/claude").join("runtimes")
+            );
+            assert_eq!(
+                resolve_provider_state(&values).unwrap(),
+                PathBuf::from("/data/claude")
+                    .join("unica")
+                    .join("provider-state")
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_published_data_falls_through_to_the_next_ready_source() {
+        for invalid in ["", "${ZCODE_PLUGIN_DATA}", "/data/${PLUGIN_DATA}"] {
+            let values = [
+                ("CLAUDE_PLUGIN_DATA", invalid),
+                ("ZCODE_PLUGIN_DATA", "/data/zcode"),
+                ("CODEX_HOME", "/elsewhere/.codex"),
+            ];
+            assert_eq!(
+                resolve(&values).unwrap(),
+                PathBuf::from("/data/zcode").join("runtimes")
+            );
+            assert_eq!(
+                resolve_provider_state(&values).unwrap(),
+                PathBuf::from("/data/zcode")
+                    .join("unica")
+                    .join("provider-state")
+            );
+
+            let values = [
+                ("ZCODE_PLUGIN_DATA", invalid),
+                ("CODEX_HOME", "/elsewhere/.codex"),
+            ];
+            assert_eq!(
+                resolve(&values).unwrap(),
+                PathBuf::from("/elsewhere/.codex")
+                    .join("unica")
+                    .join("runtimes")
+            );
+            assert_eq!(
+                resolve_provider_state(&values).unwrap(),
+                PathBuf::from("/elsewhere/.codex")
+                    .join("unica")
+                    .join("provider-state")
+            );
+            assert!(resolve(&[("ZCODE_PLUGIN_DATA", invalid)]).is_err());
+            assert!(resolve_provider_state(&[("ZCODE_PLUGIN_DATA", invalid)]).is_err());
+        }
+    }
+
+    #[test]
+    fn unexpanded_overrides_fall_through_to_zcode_data() {
+        let values = [
+            ("UNICA_RUNTIME_CACHE_DIR", "${CLAUDE_PLUGIN_DATA}/runtimes"),
+            (
+                "UNICA_PROVIDER_STATE_DIR",
+                "${CLAUDE_PLUGIN_DATA}/unica/provider-state",
+            ),
+            ("ZCODE_PLUGIN_DATA", "/data/zcode"),
+            ("CODEX_HOME", "/elsewhere/.codex"),
+        ];
+        assert_eq!(
+            resolve(&values).unwrap(),
+            PathBuf::from("/data/zcode").join("runtimes")
+        );
+        assert_eq!(
+            resolve_provider_state(&values).unwrap(),
+            PathBuf::from("/data/zcode")
+                .join("unica")
+                .join("provider-state")
+        );
+    }
+
+    #[test]
     fn provider_state_explicit_override_outranks_every_host_source() {
         let root = resolve_provider_state(&[
             ("UNICA_PROVIDER_STATE_DIR", "/state/unica"),
             ("CLAUDE_PLUGIN_DATA", "/data/claude"),
+            ("ZCODE_PLUGIN_DATA", "/data/zcode"),
             ("CODEX_HOME", "/home/user/.codex"),
             ("HOME", "/home/user"),
         ])
@@ -347,6 +465,7 @@ mod tests {
         let error = resolve_provider_state(&[
             ("UNICA_PROVIDER_STATE_DIR", ""),
             ("CLAUDE_PLUGIN_DATA", ""),
+            ("ZCODE_PLUGIN_DATA", ""),
             ("CODEX_HOME", ""),
             ("HOME", ""),
             ("USERPROFILE", ""),
@@ -355,7 +474,7 @@ mod tests {
 
         assert_eq!(
             error.to_string(),
-            "CLAUDE_PLUGIN_DATA, CODEX_HOME, HOME, or USERPROFILE is required for persistent provider state"
+            "CLAUDE_PLUGIN_DATA, ZCODE_PLUGIN_DATA, CODEX_HOME, HOME, or USERPROFILE is required for persistent provider state"
         );
     }
 
@@ -365,7 +484,7 @@ mod tests {
 
         assert_eq!(
             error.to_string(),
-            "CLAUDE_PLUGIN_DATA, CODEX_HOME, HOME, or USERPROFILE is required for persistent provider state"
+            "CLAUDE_PLUGIN_DATA, ZCODE_PLUGIN_DATA, CODEX_HOME, HOME, or USERPROFILE is required for persistent provider state"
         );
     }
 
@@ -374,6 +493,7 @@ mod tests {
         let root = resolve(&[
             ("UNICA_RUNTIME_CACHE_DIR", "/cache/unica"),
             ("CLAUDE_PLUGIN_DATA", "/data/claude"),
+            ("ZCODE_PLUGIN_DATA", "/data/zcode"),
             ("CODEX_HOME", "/home/user/.codex"),
             ("HOME", "/home/user"),
         ])

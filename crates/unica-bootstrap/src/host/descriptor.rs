@@ -52,7 +52,7 @@ pub(super) struct PluginHost {
 }
 
 /// Known hosts, in the order the bootstrap consults them.
-pub(super) const KNOWN: &[PluginHost] = &[CODEX, CLAUDE];
+pub(super) const KNOWN: &[PluginHost] = &[CODEX, CLAUDE, ZCODE];
 
 /// Codex does not scan `skills/`, so its manifest has to name the directory. It
 /// publishes no per-plugin data directory, so the runtime cache is derived from
@@ -78,13 +78,28 @@ const CODEX: PluginHost = PluginHost {
 /// naming either in the manifest would load it twice (ADR-0012). It hands every
 /// plugin its own data directory, which is where the runtime cache belongs.
 const CLAUDE: PluginHost = PluginHost {
-    workspace_environment: &["ZCODE_PROJECT_DIR", "CLAUDE_PROJECT_DIR"],
+    workspace_environment: &["CLAUDE_PROJECT_DIR"],
     workspace_metadata: None,
     manifest_dir: ".claude-plugin",
     expects_skills_pointer: false,
     expects_manifest_servers: false,
     data_dir: Some(HostDataDir {
         env: "CLAUDE_PLUGIN_DATA",
+        runtime_subdir: &["runtimes"],
+    }),
+    home_root: None,
+};
+
+/// ZCode uses explicit discovery pointers and publishes its own plugin data
+/// directory. Its compatible Claude aliases are read by the preceding descriptor.
+const ZCODE: PluginHost = PluginHost {
+    workspace_environment: &["ZCODE_PROJECT_DIR"],
+    workspace_metadata: None,
+    manifest_dir: ".zcode-plugin",
+    expects_skills_pointer: true,
+    expects_manifest_servers: true,
+    data_dir: Some(HostDataDir {
+        env: "ZCODE_PLUGIN_DATA",
         runtime_subdir: &["runtimes"],
     }),
     home_root: None,
