@@ -1138,16 +1138,15 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                 }
                 Err(ResourceProtocolParseError::TimedOut) => {
                     state.progress.continuable_eol_timeout = true;
-                    return Ok(timeout_policy(
-                        observations,
-                        ProjectCheckId::RepositoryIndexEol,
+                    return Ok(retain_prior_facts(
+                        timeout_policy(observations, ProjectCheckId::RepositoryIndexEol),
+                        facts,
                     ));
                 }
                 Err(ResourceProtocolParseError::Malformed(reason)) => {
-                    return Ok(incomplete_policy(
-                        observations,
-                        ProjectCheckId::RepositoryIndexEol,
-                        reason,
+                    return Ok(retain_prior_facts(
+                        incomplete_policy(observations, ProjectCheckId::RepositoryIndexEol, reason),
+                        facts,
                     ));
                 }
             }
@@ -1313,10 +1312,9 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                 });
             }
             Err(ResourceProtocolParseError::Malformed(reason)) => {
-                return Ok(incomplete_policy(
-                    observations,
-                    ProjectCheckId::RepositoryIndexEol,
-                    reason,
+                return Ok(retain_prior_facts(
+                    incomplete_policy(observations, ProjectCheckId::RepositoryIndexEol, reason),
+                    facts,
                 ));
             }
         };
@@ -1578,6 +1576,9 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                     && matches!(observation.outcome, ProjectCheckOutcome::NotRun { .. })
             })
         {
+            // A failed final fence cannot substantiate any earlier resource
+            // finding. The helpers restart NotRun at RepositoryAttributes and
+            // intentionally discard the facts from the old index snapshot.
             if deadline.remaining().is_zero() {
                 return Ok(timeout_policy(
                     observations,
@@ -2738,6 +2739,15 @@ fn incomplete_policy(
             reason,
         }],
     }
+}
+
+fn retain_prior_facts(
+    mut policy: RepositoryPolicyInspection,
+    mut prior_facts: Vec<ProjectHealthFact>,
+) -> RepositoryPolicyInspection {
+    prior_facts.append(&mut policy.facts);
+    policy.facts = prior_facts;
+    policy
 }
 
 fn timeout_policy(
@@ -4529,6 +4539,144 @@ mod tests {
             old_keys
         );
         assert_eq!(continuation.progress.staged_eol_retained, 2);
+    }
+
+    #[test]
+    fn continued_staged_eol_malformed_protocol_keeps_attribute_findings() {
+        struct MalformedEolRunner;
+
+        impl ProcessRunner for MalformedEolRunner {
+            fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
+                if command.args.iter().any(|argument| argument == "--eol") {
+                    return Ok(success_output("malformed\0"));
+                }
+                crate::infrastructure::internal_adapters::system_process_runner().run(command)
+            }
+
+            fn run_with_input(
+                &self,
+                command: &ProcessCommand,
+                input: &[u8],
+            ) -> Result<ProcessOutput, String> {
+                crate::infrastructure::internal_adapters::system_process_runner()
+                    .run_with_input(command, input)
+            }
+        }
+
+        let fixture = policy_fixture();
+        fs::write(fixture.root.join("src/A.xml"), "<A/>\n").unwrap();
+        fs::write(
+            fixture.root.join(".gitattributes"),
+            "src/Configuration.xml text eol=lf\n",
+        )
+        .unwrap();
+        git(&fixture.root, &["add", ".gitattributes", "src"]);
+        let cancellation = CancellationToken::new();
+        let layout = SourceLayoutInspector::inspect(
+            &fixture.context,
+            &cancellation,
+            ProviderDeadline::from_budget(Duration::from_secs(5)),
+        )
+        .unwrap();
+        let repository = GitRepositoryInspector::new()
+            .inspect_base(
+                &fixture.context,
+                &layout,
+                &cancellation,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+            )
+            .unwrap();
+        let mut continuation = super::ResourceContinuation::default();
+        let policy = SourceResourcePolicyInspector::with_process_runner(&MalformedEolRunner)
+            .inspect_excluding_continued(
+                repository.repository_root.as_ref().unwrap(),
+                &layout.roots,
+                &repository.entries,
+                &Default::default(),
+                &cancellation,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                Some(&mut continuation),
+            )
+            .unwrap();
+        assert!(policy.facts.iter().any(|fact| {
+            matches!(fact, ProjectHealthFact::TextPolicyMissing { path, .. } if path == "src/A.xml")
+        }));
+        assert!(policy.facts.iter().any(|fact| {
+            matches!(
+                fact,
+                ProjectHealthFact::GitInspectionIncomplete {
+                    check: ProjectCheckId::RepositoryIndexEol,
+                    ..
+                }
+            )
+        }));
+        assert!(policy.observations.iter().any(|observation| {
+            observation.id == ProjectCheckId::RepositoryAttributes
+                && matches!(observation.outcome, ProjectCheckOutcome::Completed)
+        }));
+    }
+
+    #[test]
+    fn final_index_change_invalidates_earlier_attribute_findings() {
+        let fixture = policy_fixture();
+        fs::write(fixture.root.join("src/A.xml"), "<A/>\n").unwrap();
+        fs::write(
+            fixture.root.join(".gitattributes"),
+            "src/Configuration.xml text eol=lf\n",
+        )
+        .unwrap();
+        git(&fixture.root, &["add", ".gitattributes", "src"]);
+        let cancellation = CancellationToken::new();
+        let layout = SourceLayoutInspector::inspect(
+            &fixture.context,
+            &cancellation,
+            ProviderDeadline::from_budget(Duration::from_secs(5)),
+        )
+        .unwrap();
+        let repository = GitRepositoryInspector::new()
+            .inspect_base(
+                &fixture.context,
+                &layout,
+                &cancellation,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+            )
+            .unwrap();
+        let root = fixture.root.clone();
+        super::BEFORE_WORKING_REVALIDATION.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || {
+                fs::write(root.join(".gitignore"), "*.scratch\n").unwrap();
+                git(&root, &["add", ".gitignore"]);
+            }));
+        });
+        let mut continuation = super::ResourceContinuation::default();
+        let policy = SourceResourcePolicyInspector::new()
+            .inspect_excluding_continued(
+                repository.repository_root.as_ref().unwrap(),
+                &layout.roots,
+                &repository.entries,
+                &Default::default(),
+                &cancellation,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                Some(&mut continuation),
+            )
+            .unwrap();
+        assert!(policy.observations.iter().any(|observation| {
+            observation.id == ProjectCheckId::RepositoryAttributes
+                && matches!(observation.outcome, ProjectCheckOutcome::NotRun { .. })
+        }));
+        assert!(policy.facts.iter().any(|fact| {
+            matches!(
+                fact,
+                ProjectHealthFact::GitInspectionIncomplete {
+                    check: ProjectCheckId::RepositoryAttributes,
+                    ..
+                }
+            )
+        }));
+        assert!(!policy
+            .facts
+            .iter()
+            .any(|fact| { matches!(fact, ProjectHealthFact::TextPolicyMissing { .. }) }));
     }
 
     #[test]
