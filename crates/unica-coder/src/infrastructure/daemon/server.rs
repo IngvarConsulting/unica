@@ -1930,7 +1930,19 @@ fn main() {
                 ToolIdentity::Search,
                 serde_json::json!({"query":"Needle","role":"symbol"}),
             );
-            assert!(search.ok, "{search:?}");
+            assert!(
+                search.ok,
+                "{search:?}; marker={:?}; analyzer_cache_sha_verified={}",
+                std::fs::read_to_string(root.join("search")).ok(),
+                crate::infrastructure::bundled_tools::resolve_bundled_tool(
+                    &plugin,
+                    "bsl-analyzer",
+                    true
+                )
+                .ok()
+                .and_then(|resolved| std::fs::read(resolved.program).ok())
+                .is_some_and(|bytes| format!("{:x}", Sha256::digest(bytes)) == digest)
+            );
             assert_eq!(
                 std::fs::read_to_string(root.join("search")).unwrap(),
                 "bsl-analyzer invoked"
@@ -1947,55 +1959,42 @@ fn main() {
                 search.data.as_ref().unwrap()["matches"][0]["hits"],
                 serde_json::json!([])
             );
-            let revision_fence_supported = matches!(
-                crate::infrastructure::platform::source_revision_fence::expected_platform_fence_capability_for_test(
-                    &workspace.join("src"),
-                ),
-                crate::infrastructure::platform::source_revision_fence::FenceCapability::ProvenFast
-            );
             let mut semantic = submit_canonical(
                 &runtime,
                 &workspace,
                 ToolIdentity::Search,
                 serde_json::json!({"query":"Needle","role":"semantic"}),
             );
-            if revision_fence_supported {
-                for _ in 0..5 {
-                    if semantic.ok {
-                        break;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(200));
-                    semantic = submit_canonical(
-                        &runtime,
-                        &workspace,
-                        ToolIdentity::Search,
-                        serde_json::json!({"query":"Needle","role":"semantic"}),
-                    );
+            for _ in 0..5 {
+                if semantic.ok {
+                    break;
                 }
-                assert!(
-                    semantic.ok,
-                    "{semantic:?}; index={:?}; rlm={:?}",
-                    std::fs::read_to_string(root.join("index")),
-                    std::fs::read_to_string(root.join("semantic"))
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                semantic = submit_canonical(
+                    &runtime,
+                    &workspace,
+                    ToolIdentity::Search,
+                    serde_json::json!({"query":"Needle","role":"semantic"}),
                 );
-                assert_eq!(
-                    std::fs::read_to_string(root.join("semantic")).unwrap(),
-                    "rlm-bsl-mcp invoked"
-                );
-                assert_eq!(
-                    semantic.data.as_ref().unwrap()["matches"][0]["provider"],
-                    "rlm"
-                );
-            } else {
-                // The published non-APFS/non-macOS revision fence deliberately
-                // refuses RLM freshness before index or provider execution.
-                // Engine delivery still happens first and must be verified.
-                assert!(!semantic.ok, "{semantic:?}");
-                assert_eq!(semantic.diagnostics[0]["code"], "provider_unavailable");
-                assert_eq!(semantic.summary, "`semantic` search did not complete");
-                assert!(!root.join("index").exists());
-                assert!(!root.join("semantic").exists());
             }
+            assert!(
+                semantic.ok,
+                "{semantic:?}; index={:?}; rlm={:?}",
+                std::fs::read_to_string(root.join("index")),
+                std::fs::read_to_string(root.join("semantic"))
+            );
+            assert_eq!(
+                std::fs::read_to_string(root.join("index")).unwrap(),
+                "rlm-bsl-index invoked"
+            );
+            assert_eq!(
+                std::fs::read_to_string(root.join("semantic")).unwrap(),
+                "rlm-bsl-mcp invoked"
+            );
+            assert_eq!(
+                semantic.data.as_ref().unwrap()["matches"][0]["provider"],
+                "rlm"
+            );
             for (name, version) in [("v8-runner", "0.11.2"), ("bsl-analyzer", "0.2.67")] {
                 assert!(cache
                     .join(name)
