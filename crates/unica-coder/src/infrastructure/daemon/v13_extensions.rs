@@ -29,6 +29,20 @@ enum Operation {
     Delete,
     Activate,
 }
+
+const IBCMD_DBMS_REQUIRED: &str = "server-based IBCMD connection requires infobase.dbms";
+
+fn published_runner_error(operation: Operation, code: &str, message: &str) -> String {
+    // This exact v8-runner diagnostic is a known, credential-free constant.
+    // General runner prose still goes through the fail-closed secret redactor.
+    if operation == Operation::List && code == "invalid_argument" && message == IBCMD_DBMS_REQUIRED
+    {
+        message.to_owned()
+    } else {
+        redactor(message)
+    }
+}
+
 impl Operation {
     fn parse(name: &str) -> Option<Self> {
         match name {
@@ -342,14 +356,15 @@ impl PreparedExtensions {
             ));
         }
         if !output.status_success || envelope["ok"] != true {
+            let code = envelope["error"]["code"]
+                .as_str()
+                .unwrap_or("provider_failed");
             return Err(runner_rejection(
                 Some(self.operation.name().into()),
-                envelope["error"]["code"]
-                    .as_str()
-                    .unwrap_or("provider_failed"),
+                code,
                 envelope["error"]["message"]
                     .as_str()
-                    .map(redactor)
+                    .map(|message| published_runner_error(self.operation, code, message))
                     .unwrap_or_else(|| "v8-runner failed without a typed message".into()),
             ));
         }
@@ -1005,6 +1020,65 @@ mod tests {
         assert!(!result.ok);
         assert!(result.changed.is_empty());
         assert_eq!(result.diagnostics[0]["detailCode"], "provider_absent");
+    }
+
+    #[test]
+    fn extension_list_keeps_known_dbms_requirement_without_exposing_other_runner_text() {
+        let root = tempfile::tempdir().unwrap();
+        let prepared = fixture(root.path(), Operation::List);
+        let known = "server-based IBCMD connection requires infobase.dbms";
+        let exact = prepared.execute_with(
+            &SequenceRunner::new(vec![json!({
+                "ok": false,
+                "command": "extensions",
+                "error": {"code": "invalid_argument", "message": known}
+            })]),
+            &tool(root.path()),
+            super::super::runner_011::VERSION,
+            CancellationToken::new(),
+        );
+        assert!(!exact.ok);
+        assert_eq!(exact.summary, known);
+        assert_eq!(exact.diagnostics[0]["message"], known);
+        assert_eq!(exact.diagnostics[0]["code"], "bad_value");
+
+        for (operation, code) in [
+            (Operation::List, "environment_unavailable"),
+            (Operation::Delete, "invalid_argument"),
+        ] {
+            let other = fixture(root.path(), operation).execute_with(
+                &SequenceRunner::new(vec![json!({
+                    "ok": false,
+                    "command": "extensions",
+                    "error": {"code": code, "message": known}
+                })]),
+                &tool(root.path()),
+                super::super::runner_011::VERSION,
+                CancellationToken::new(),
+            );
+            assert!(
+                !other.summary.contains("requires infobase.dbms"),
+                "{other:?}"
+            );
+        }
+
+        for message in [
+            "password private-secret",
+            "server-based IBCMD connection requires infobase.dbms Pwd=private-secret",
+        ] {
+            let result = prepared.execute_with(
+                &SequenceRunner::new(vec![json!({
+                    "ok": false,
+                    "command": "extensions",
+                    "error": {"code": "invalid_argument", "message": message}
+                })]),
+                &tool(root.path()),
+                super::super::runner_011::VERSION,
+                CancellationToken::new(),
+            );
+            let published = serde_json::to_string(&result).unwrap();
+            assert!(!published.contains("private-secret"), "{published}");
+        }
     }
 
     #[test]

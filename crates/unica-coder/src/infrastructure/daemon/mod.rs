@@ -21,6 +21,7 @@ mod v13_run_dictionary;
 mod v13_service;
 mod v13_source_export;
 mod v13_source_import;
+mod v13_source_set_name;
 mod v13_workspace_bootstrap;
 
 use identity::CoreIdentity;

@@ -28,11 +28,9 @@ use tempfile::TempDir;
 pub(crate) const LFS_SINGLE_FILE_THRESHOLD_BYTES: u64 = 10 * 1024 * 1024;
 pub(crate) const LFS_AGGREGATE_THRESHOLD_BYTES: u64 = 100 * 1024 * 1024;
 pub(crate) const MAX_WORKING_EOL_FILE_BYTES: u64 = 32 * 1024 * 1024;
-pub(crate) const MAX_WORKING_EOL_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_STAGED_POLICY_FILES: usize = 1024;
 const MAX_STAGED_POLICY_TOTAL_BYTES: usize = 8 * 1024 * 1024;
 const MAX_INDEX_EOL_FILE_BYTES: usize = 32 * 1024 * 1024;
-const MAX_INDEX_EOL_TOTAL_BYTES: usize = 256 * 1024 * 1024;
 const MAX_CLASSIFIED_RESOURCES: usize = 65_536;
 const MAX_RESOURCE_OWNER_EXPANSION_BYTES: usize = 8 * 1024 * 1024;
 const MAX_RESOURCE_OWNERSHIP_REASON_BYTES: usize = 512;
@@ -654,7 +652,7 @@ impl<'a> SourceResourcePolicyInspector<'a> {
             repository_root,
             &staged_attribute_entries,
             MAX_STAGED_POLICY_TOTAL_BYTES,
-            MAX_STAGED_POLICY_TOTAL_BYTES,
+            Some(MAX_STAGED_POLICY_TOTAL_BYTES),
             "staged attribute policy",
             cancellation,
             deadline,
@@ -1001,7 +999,6 @@ impl<'a> SourceResourcePolicyInspector<'a> {
             ProjectCheckId::RepositoryIndexEol,
             &incomplete_source_sets,
         );
-        let mut total_working_bytes = 0_u64;
         let mut working_incomplete_source_sets = BTreeSet::new();
         let mut working_timed_out = false;
         let mut working_facts = Vec::new();
@@ -1032,7 +1029,6 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                     match inspect_working_eol(
                         repository_root,
                         Path::new(&resource.repo_path),
-                        &mut total_working_bytes,
                         cancellation,
                         deadline,
                     ) {
@@ -1260,7 +1256,7 @@ impl<'a> SourceResourcePolicyInspector<'a> {
             repository_root,
             &entries.iter().collect::<Vec<_>>(),
             MAX_INDEX_EOL_FILE_BYTES,
-            MAX_INDEX_EOL_TOTAL_BYTES,
+            None,
             "staged text resource policy",
             cancellation,
             deadline,
@@ -1273,7 +1269,7 @@ impl<'a> SourceResourcePolicyInspector<'a> {
         repository_root: &Path,
         entries: &[&GitIndexEntry],
         max_file_bytes: usize,
-        max_total_bytes: usize,
+        max_total_bytes: Option<usize>,
         label: &str,
         cancellation: &CancellationToken,
         deadline: ProviderDeadline,
@@ -1359,7 +1355,7 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                 ));
             }
             total = total.saturating_add(size);
-            if total > max_total_bytes {
+            if let Some(max_total_bytes) = max_total_bytes.filter(|bound| total > *bound) {
                 return Err(format!(
                     "{label} is {total} bytes; inspection supports at most {max_total_bytes} bytes in total"
                 ));
@@ -2259,7 +2255,6 @@ impl std::fmt::Display for WorkingEolInspectionError {
 fn inspect_working_eol(
     repository_root: &Path,
     repo_path: &Path,
-    total_working_bytes: &mut u64,
     cancellation: &CancellationToken,
     deadline: ProviderDeadline,
 ) -> Result<Option<WorkingEol>, WorkingEolInspectionError> {
@@ -2277,19 +2272,11 @@ fn inspect_working_eol(
             MAX_WORKING_EOL_FILE_BYTES
         )));
     }
-    inspect_working_eol_reader(
-        file,
-        metadata.len(),
-        total_working_bytes,
-        cancellation,
-        deadline,
-    )
+    inspect_working_eol_reader(file, cancellation, deadline)
 }
 
 fn inspect_working_eol_reader(
     mut file: impl Read,
-    metadata_len: u64,
-    total_working_bytes: &mut u64,
     cancellation: &CancellationToken,
     deadline: ProviderDeadline,
 ) -> Result<Option<WorkingEol>, WorkingEolInspectionError> {
@@ -2319,12 +2306,6 @@ fn inspect_working_eol_reader(
                 MAX_WORKING_EOL_FILE_BYTES
             )));
         }
-        if total_working_bytes.saturating_add(bytes_read) > MAX_WORKING_EOL_TOTAL_BYTES {
-            return Err(WorkingEolInspectionError::Incomplete(format!(
-                "working text total exceeds {} bytes",
-                MAX_WORKING_EOL_TOTAL_BYTES
-            )));
-        }
         for byte in &buffer[..count] {
             if previous_cr {
                 if *byte == b'\n' {
@@ -2344,14 +2325,6 @@ fn inspect_working_eol_reader(
     }
     if previous_cr {
         bare_cr = true;
-    }
-    let accounted_bytes = metadata_len.max(bytes_read);
-    *total_working_bytes = total_working_bytes.saturating_add(accounted_bytes);
-    if *total_working_bytes > MAX_WORKING_EOL_TOTAL_BYTES {
-        return Err(WorkingEolInspectionError::Incomplete(format!(
-            "working text total exceeds {} bytes",
-            MAX_WORKING_EOL_TOTAL_BYTES
-        )));
     }
     let styles = usize::from(lf) + usize::from(crlf) + usize::from(bare_cr);
     Ok(Some(if styles > 1 {
@@ -3406,7 +3379,6 @@ mod tests {
         let error = inspect_working_eol(
             &physical_root,
             Path::new("link.xml"),
-            &mut 0,
             &CancellationToken::new(),
             ProviderDeadline::from_budget(Duration::from_secs(1)),
         )
@@ -3442,7 +3414,6 @@ mod tests {
         let error = inspect_working_eol(
             &physical_root,
             Path::new("large.xml"),
-            &mut 0,
             &CancellationToken::new(),
             deadline,
         )
@@ -3453,12 +3424,10 @@ mod tests {
     }
 
     #[test]
-    fn project_health_worktree_eol_counts_bytes_read_after_metadata_snapshot() {
+    fn project_health_worktree_eol_enforces_file_bound_while_reading() {
         let bytes = vec![b'x'; super::MAX_WORKING_EOL_FILE_BYTES as usize + 1];
         let error = super::inspect_working_eol_reader(
             std::io::Cursor::new(bytes),
-            0,
-            &mut 0,
             &CancellationToken::new(),
             ProviderDeadline::from_budget(Duration::from_secs(2)),
         )
@@ -3468,18 +3437,66 @@ mod tests {
     }
 
     #[test]
-    fn project_health_worktree_eol_stops_at_aggregate_byte_budget() {
-        let mut total = super::MAX_WORKING_EOL_TOTAL_BYTES - 1;
-        let error = super::inspect_working_eol_reader(
-            std::io::Cursor::new(b"xx"),
-            2,
-            &mut total,
-            &CancellationToken::new(),
-            ProviderDeadline::from_budget(Duration::from_secs(2)),
-        )
-        .unwrap_err();
+    fn project_health_worktree_eol_scans_bounded_files_past_former_total_limit() {
+        use std::io::Read;
 
-        assert!(error.to_string().contains("working text total exceeds"));
+        let file_bytes = 31 * 1024 * 1024_u64;
+        assert!(file_bytes * 9 > 256 * 1024 * 1024);
+        for _ in 0..9 {
+            let result = super::inspect_working_eol_reader(
+                std::io::repeat(b'x').take(file_bytes),
+                &CancellationToken::new(),
+                ProviderDeadline::from_budget(Duration::from_secs(30)),
+            )
+            .unwrap();
+            assert_eq!(result, Some(super::WorkingEol::Supported));
+        }
+    }
+
+    #[test]
+    fn project_health_index_eol_accepts_large_aggregate_of_bounded_blobs() {
+        struct LargeBlobMetadataRunner;
+
+        impl ProcessRunner for LargeBlobMetadataRunner {
+            fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
+                AttributeProbeRunner::default().run(command)
+            }
+
+            fn run_with_input(
+                &self,
+                command: &ProcessCommand,
+                input: &[u8],
+            ) -> Result<ProcessOutput, String> {
+                if command.args.iter().any(|arg| arg == "cat-file") {
+                    let rows = std::str::from_utf8(input)
+                        .unwrap()
+                        .lines()
+                        .map(|oid| format!("{oid} blob {}\n", 31 * 1024 * 1024))
+                        .collect::<String>();
+                    return Ok(success_output(&rows));
+                }
+                AttributeProbeRunner::default().run_with_input(command, input)
+            }
+        }
+
+        let root = TempDir::new().unwrap();
+        let resources = (0..9)
+            .map(|index| super::RepositoryResource {
+                source_set: "main".into(),
+                repo_path: format!("src/Module{index}.bsl"),
+                worktree_path: root.path().join(format!("src/Module{index}.bsl")),
+                kind: RepositoryResourceKind::Text,
+                blob_oid: format!("{index:040x}"),
+            })
+            .collect::<Vec<_>>();
+        SourceResourcePolicyInspector::with_process_runner(&LargeBlobMetadataRunner)
+            .validate_resource_blob_sizes(
+                root.path(),
+                &resources.iter().collect::<Vec<_>>(),
+                &CancellationToken::new(),
+                ProviderDeadline::from_budget(Duration::from_secs(2)),
+            )
+            .expect("nine 31 MiB blobs fit the per-file bound without a total-memory bound");
     }
 
     #[test]

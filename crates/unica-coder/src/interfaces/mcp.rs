@@ -1,10 +1,11 @@
 //! Public `unica` stdio MCP server on the official Rust SDK (`rmcp`).
 //!
-//! ADR-0013: the SDK owns the JSON-RPC loop, handshake, protocol version
-//! negotiation, per-request task spawning, `ping`, and `notifications/cancelled`
-//! bookkeeping. This module only maps SDK requests onto the transport-neutral
-//! application layer (ADR-0002) and keeps the tool contract data-driven from
-//! operation descriptors (ADR-0001) instead of SDK macros.
+//! ADR-0013: the SDK owns the JSON-RPC loop and handshake after the optional
+//! initial `server/discover` probe, protocol version negotiation, per-request
+//! task spawning, `ping`, and `notifications/cancelled` bookkeeping. This
+//! module maps SDK requests onto the transport-neutral application layer
+//! (ADR-0002) and keeps the tool contract data-driven from operation
+//! descriptors (ADR-0001) instead of SDK macros.
 
 use super::daemon_router::{
     canonical_daemon_router, CanonicalCallOutcome, CanonicalDaemonRouter,
@@ -25,13 +26,15 @@ use crate::domain::progress::{NoopProgressSink, ProgressEvent, ProgressSink};
 use crate::domain::refusal::RefusalDetail;
 use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, CancelTaskParams,
-    ContentBlock, ErrorCode, ErrorData, GetTaskParams, GetTaskResult, Implementation,
-    InitializeRequestParams, InitializeResult, ListPromptsResult, ListResourceTemplatesResult,
-    ListResourcesResult, ListToolsResult, NotificationMetaObject, PaginatedRequestParams,
-    ProgressNotificationParam, ProgressToken, ProtocolVersion, RequestMetaObject,
-    ServerCapabilities, ServerInfo, Tool, UpdateTaskParams, TASKS_EXTENSION_ID,
+    ClientJsonRpcMessage, ClientRequest, ContentBlock, DiscoverResult, ErrorCode, ErrorData,
+    GetMeta, GetTaskParams, GetTaskResult, Implementation, InitializeRequestParams,
+    InitializeResult, ListPromptsResult, ListResourceTemplatesResult, ListResourcesResult,
+    ListToolsResult, NotificationMetaObject, PaginatedRequestParams, ProgressNotificationParam,
+    ProgressToken, ProtocolVersion, RequestMetaObject, ServerCapabilities, ServerInfo,
+    ServerJsonRpcMessage, ServerResult, Tool, UpdateTaskParams, TASKS_EXTENSION_ID,
 };
 use rmcp::service::{RequestContext, ServerInitializeError};
+use rmcp::transport::Transport;
 use rmcp::{RoleServer, ServerHandler, ServiceExt};
 use serde_json::{Map, Value};
 use std::collections::HashSet;
@@ -109,7 +112,10 @@ pub fn run_stdio() {
         }
     };
     runtime.block_on(async move {
-        match server.serve(rmcp::transport::stdio()).await {
+        let (stdin, stdout) = rmcp::transport::stdio();
+        let transport = rmcp::transport::async_rw::AsyncRwTransport::new_server(stdin, stdout);
+        let transport = DiscoveryProbeTransport::new(transport, &server);
+        match server.serve(transport).await {
             Ok(running) => {
                 let _ = running.waiting().await;
             }
@@ -128,6 +134,79 @@ pub fn run_stdio() {
         );
     }
     runtime.shutdown_timeout(RUNTIME_SHUTDOWN_GRACE);
+}
+
+/// `rmcp` treats its first `server/discover` as a permanent modern opener. A
+/// host may probe first and then choose `initialize`; answer only that initial
+/// probe before handing the actual opener to the SDK. Once an opener reaches
+/// the SDK, all requests and their protocol checks belong to it unchanged.
+struct DiscoveryProbeTransport<T> {
+    inner: T,
+    discovery: DiscoverResult,
+    awaiting_opener: bool,
+}
+
+impl<T> DiscoveryProbeTransport<T> {
+    fn new(inner: T, server: &UnicaServer) -> Self {
+        Self {
+            inner,
+            discovery: DiscoverResult::from_server_info(
+                server.supported_protocol_versions().into_owned(),
+                server.get_info(),
+            ),
+            awaiting_opener: true,
+        }
+    }
+}
+
+impl<T: Transport<RoleServer>> Transport<RoleServer> for DiscoveryProbeTransport<T> {
+    type Error = T::Error;
+
+    fn send(
+        &mut self,
+        item: ServerJsonRpcMessage,
+    ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send + 'static {
+        self.inner.send(item)
+    }
+
+    async fn receive(&mut self) -> Option<ClientJsonRpcMessage> {
+        while self.awaiting_opener {
+            let message = self.inner.receive().await?;
+            if let ClientJsonRpcMessage::Request(request) = &message {
+                match &request.request {
+                    ClientRequest::DiscoverRequest(_)
+                        if request
+                            .request
+                            .get_meta()
+                            .missing_required_keys(&ProtocolVersion::V_2026_07_28)
+                            .is_empty()
+                            && request.request.get_meta().protocol_version().is_some_and(
+                                |version| self.discovery.supported_versions.contains(&version),
+                            ) =>
+                    {
+                        let response = ServerJsonRpcMessage::response(
+                            ServerResult::DiscoverResult(self.discovery.clone()),
+                            request.id.clone(),
+                        );
+                        if let Err(error) = self.inner.send(response).await {
+                            eprintln!("unica mcp discovery probe response failed: {error}");
+                            return None;
+                        }
+                        continue;
+                    }
+                    ClientRequest::PingRequest(_) => return Some(message),
+                    _ => {}
+                }
+            }
+            self.awaiting_opener = false;
+            return Some(message);
+        }
+        self.inner.receive().await
+    }
+
+    fn close(&mut self) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
+        self.inner.close()
+    }
 }
 
 fn drain_mcp_shutdown(in_flight: &InFlightRegistry, grace: Duration) -> bool {
@@ -1606,12 +1685,17 @@ mod tests {
         }
 
         async fn receive(&mut self) -> Value {
+            let line = self.receive_raw().await;
+            serde_json::from_str(&line).expect("MCP server emitted invalid JSON")
+        }
+
+        async fn receive_raw(&mut self) -> String {
             let line = timeout(TEST_STEP, self.reader.next_line())
                 .await
                 .expect("timed out waiting for MCP response")
                 .expect("MCP transport failed")
                 .expect("MCP server closed the stream before responding");
-            serde_json::from_str(&line).expect("MCP server emitted invalid JSON")
+            line
         }
 
         async fn initialize(&mut self) -> Value {
@@ -1662,7 +1746,10 @@ mod tests {
         let (client_io, server_io) = tokio::io::duplex(4 * 1024 * 1024);
         let in_flight = server.in_flight();
         let server = tokio::spawn(async move {
-            match server.serve(server_io).await {
+            let (read, write) = tokio::io::split(server_io);
+            let transport = rmcp::transport::async_rw::AsyncRwTransport::new_server(read, write);
+            let transport = DiscoveryProbeTransport::new(transport, &server);
+            match server.serve(transport).await {
                 Ok(running) => {
                     let _ = running.waiting().await;
                 }
@@ -1680,6 +1767,25 @@ mod tests {
             },
             in_flight,
         )
+    }
+
+    fn spawn_unwrapped_unica_server(server: UnicaServer) -> McpClient {
+        let (client_io, server_io) = tokio::io::duplex(4 * 1024 * 1024);
+        let server = tokio::spawn(async move {
+            match server.serve(server_io).await {
+                Ok(running) => {
+                    let _ = running.waiting().await;
+                }
+                Err(ServerInitializeError::ConnectionClosed(_)) => {}
+                Err(error) => panic!("test MCP server failed to initialize: {error}"),
+            }
+        });
+        let (read_half, writer) = tokio::io::split(client_io);
+        McpClient {
+            writer,
+            reader: BufReader::new(read_half).lines(),
+            server,
+        }
     }
 
     fn application_handler() -> Arc<ToolCallHandler> {
@@ -4503,7 +4609,7 @@ mod tests {
 
     #[tokio::test]
     async fn modern_discover_can_open_the_connection() {
-        let (mut client, _) = spawn_server(application_handler());
+        let (mut client, _) = spawn_unica_server(canonical_profile_server());
         client
             .send(json!({
                 "jsonrpc": "2.0",
@@ -4529,6 +4635,153 @@ mod tests {
             result["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
             "unica"
         );
+        client
+            .send(json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/list",
+                "params": { "_meta": modern_tasks_meta() }
+            }))
+            .await;
+        let listed = client.receive().await;
+        assert_eq!(listed["result"]["resultType"], "complete", "{listed}");
+        let names = listed["result"]["tools"]
+            .as_array()
+            .expect("modern tools/list must succeed")
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        assert_v13_profile_names(&names, true);
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn discovery_probe_response_matches_unwrapped_sdk_bytes() {
+        let probe = json!({
+            "jsonrpc": "2.0", "id": "probe", "method": "server/discover",
+            "params": { "_meta": modern_meta() }
+        });
+        let (mut wrapped, _) = spawn_unica_server(canonical_profile_server());
+        let mut sdk = spawn_unwrapped_unica_server(canonical_profile_server());
+        wrapped.send(probe.clone()).await;
+        sdk.send(probe).await;
+        assert_eq!(wrapped.receive_raw().await, sdk.receive_raw().await);
+        wrapped.shutdown().await;
+        sdk.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn discover_probe_followed_by_legacy_initialize_serves_compatibility_tools() {
+        let (mut client, _) = spawn_unica_server(canonical_profile_server());
+        client
+            .send(json!({
+                "jsonrpc": "2.0", "id": 0, "method": "server/discover",
+                "params": { "_meta": modern_meta() }
+            }))
+            .await;
+        let discovered = client.receive().await;
+        assert_eq!(
+            discovered["result"]["resultType"], "complete",
+            "{discovered}"
+        );
+        client
+            .send(json!({
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {},
+                    "clientInfo": {"name": "probing-host", "version": "1"}
+                }
+            }))
+            .await;
+        let initialized = client.receive().await;
+        assert_eq!(initialized["result"]["protocolVersion"], "2025-11-25");
+        assert!(
+            initialized["result"]["capabilities"]["extensions"][TASKS_EXTENSION_ID].is_null(),
+            "legacy initialize must not negotiate Tasks: {initialized}"
+        );
+        client
+            .send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+            .await;
+        client
+            .send(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}))
+            .await;
+        let listed = client.receive().await;
+        let names = listed["result"]["tools"]
+            .as_array()
+            .expect("a legacy tools/list must succeed")
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        assert_v13_profile_names(&names, false);
+        assert!(listed["result"].get("resultType").is_none());
+        assert_v13_profile_names(
+            &listed_tool_names(&mut client, 3, Some(modern_tasks_meta())).await,
+            false,
+        );
+        client
+            .send(json!({
+                "jsonrpc": "2.0", "id": 4, "method": "tasks/get",
+                "params": {"taskId": "not-a-task"}
+            }))
+            .await;
+        let unavailable = client.receive().await;
+        assert_eq!(unavailable["error"]["code"], -32021, "{unavailable}");
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn queued_ping_discovery_and_legacy_initialize_keep_every_frame() {
+        let (mut client, _) = spawn_unica_server(canonical_profile_server());
+        let frames = [
+            json!({"jsonrpc": "2.0", "id": 0, "method": "ping"}),
+            json!({
+                "jsonrpc": "2.0", "id": 1, "method": "server/discover",
+                "params": {"_meta": modern_meta()}
+            }),
+            json!({
+                "jsonrpc": "2.0", "id": 2, "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {},
+                    "clientInfo": {"name": "batched-host", "version": "1"}
+                }
+            }),
+            json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+            json!({"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}}),
+        ];
+        let batch = frames
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        client.writer.write_all(batch.as_bytes()).await.unwrap();
+        client.writer.flush().await.unwrap();
+        for id in 0..=3 {
+            let response = client.receive().await;
+            assert_eq!(response["id"], id, "lost or duplicated frame: {response}");
+            assert!(response.get("error").is_none(), "{response}");
+        }
+        client
+            .send(json!({"jsonrpc": "2.0", "id": 4, "method": "tools/list", "params": {}}))
+            .await;
+        assert_eq!(client.receive().await["id"], 4);
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn unsupported_discovery_version_still_uses_sdk_error() {
+        let (mut client, _) = spawn_unica_server(canonical_profile_server());
+        client
+            .send(json!({
+                "jsonrpc": "2.0", "id": 0, "method": "server/discover",
+                "params": {"_meta": {
+                    "io.modelcontextprotocol/protocolVersion": "2099-01-01",
+                    "io.modelcontextprotocol/clientCapabilities": {}
+                }}
+            }))
+            .await;
+        let response = client.receive().await;
+        assert_eq!(response["error"]["code"], -32022, "{response}");
         client.shutdown().await;
     }
 
@@ -4631,43 +4884,49 @@ mod tests {
     async fn modern_partial_meta_opener_is_rejected_before_serving() {
         // A direct-first request with an incomplete reserved set is not a
         // silent legacy downgrade: admission refuses the connection.
-        let (client_io, server_io) = tokio::io::duplex(4 * 1024 * 1024);
-        let server = UnicaServer::legacy_for_test(application_handler());
-        let handle = tokio::spawn(async move {
-            server
-                .serve(server_io)
+        for method in ["tools/list", "server/discover"] {
+            let (client_io, server_io) = tokio::io::duplex(4 * 1024 * 1024);
+            let server = UnicaServer::legacy_for_test(application_handler());
+            let handle = tokio::spawn(async move {
+                let (read, write) = tokio::io::split(server_io);
+                let transport =
+                    rmcp::transport::async_rw::AsyncRwTransport::new_server(read, write);
+                let transport = DiscoveryProbeTransport::new(transport, &server);
+                server
+                    .serve(transport)
+                    .await
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            });
+            let (read_half, mut writer) = tokio::io::split(client_io);
+            let mut reader = BufReader::new(read_half).lines();
+            let mut line = json!({
+                "jsonrpc": "2.0",
+                "id": 0,
+                "method": method,
+                "params": { "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+                } }
+            })
+            .to_string();
+            line.push('\n');
+            writer.write_all(line.as_bytes()).await.unwrap();
+            writer.flush().await.unwrap();
+            let next = timeout(TEST_STEP, reader.next_line())
                 .await
-                .map(|_| ())
-                .map_err(|error| error.to_string())
-        });
-        let (read_half, mut writer) = tokio::io::split(client_io);
-        let mut reader = BufReader::new(read_half).lines();
-        let mut line = json!({
-            "jsonrpc": "2.0",
-            "id": 0,
-            "method": "tools/list",
-            "params": { "_meta": {
-                "io.modelcontextprotocol/protocolVersion": "2026-07-28"
-            } }
-        })
-        .to_string();
-        line.push('\n');
-        writer.write_all(line.as_bytes()).await.unwrap();
-        writer.flush().await.unwrap();
-        let next = timeout(TEST_STEP, reader.next_line())
-            .await
-            .expect("timed out waiting for admission verdict")
-            .expect("MCP transport failed");
-        assert!(
-            next.is_none(),
-            "admission must close without serving, got {next:?}"
-        );
-        let outcome = handle.await.unwrap();
-        let error = outcome.expect_err("admission failure surfaces as a serve error");
-        assert!(
-            error.to_lowercase().contains("initialize"),
-            "unexpected admission error: {error}"
-        );
+                .expect("timed out waiting for admission verdict")
+                .expect("MCP transport failed");
+            assert!(
+                next.is_none(),
+                "{method}: admission must close without serving, got {next:?}"
+            );
+            let outcome = handle.await.unwrap();
+            let error = outcome.expect_err("admission failure surfaces as a serve error");
+            assert!(
+                error.to_lowercase().contains("initialize"),
+                "{method}: unexpected admission error: {error}"
+            );
+        }
     }
 
     #[tokio::test]
