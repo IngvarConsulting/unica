@@ -203,8 +203,11 @@ rather than creating a directory named after it. ZCode publishes
 its runtime cache is below that plugin-data directory. The host façade also
 recognizes `ZCODE_PLUGIN_DATA` without the compatible alias. Published data roots
 precede `CODEX_HOME`; explicit `UNICA_RUNTIME_CACHE_DIR` and
-`UNICA_PROVIDER_STATE_DIR` retain priority. Provider state defaults to
-`<plugin-data>/unica/provider-state`. No prior cache is migrated or deleted.
+`UNICA_PROVIDER_STATE_DIR` retain priority. Bootstrap-launched provider state
+defaults to `<plugin-data>/unica/provider-state`. The local-debug package starts
+the core directly instead: without `UNICA_PROVIDER_STATE_DIR`, the core uses
+`~/.unica/provider-state`. Neither path is a workspace identity. No prior cache
+is migrated or deleted.
 
 The plugin-data directory is not a workspace identity. ZCode supplies
 `ZCODE_PROJECT_DIR` and the compatible `CLAUDE_PROJECT_DIR`; conflicting project
