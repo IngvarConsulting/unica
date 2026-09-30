@@ -322,6 +322,8 @@ pub enum RefusalDetail {
     /// Поставщика нет: справка не установлена, поставщик диагностик не
     /// стартовал.
     ProviderAbsent,
+    /// Поставка выбранного движка ещё идёт: тот же вызов можно повторить.
+    DeliveryInProgress,
     /// Спросили не у того вида набора.
     WrongSourceKind,
     /// Предмет не помещается в ответ целиком.
@@ -344,6 +346,7 @@ impl RefusalDetail {
         match self {
             Self::SourceUnreadable => "source_unreadable",
             Self::ProviderAbsent => "provider_absent",
+            Self::DeliveryInProgress => "delivery_in_progress",
             Self::WrongSourceKind => "wrong_source_kind",
             Self::InventoryTooLarge => "inventory_too_large",
             Self::CachePoisoned => "cache_poisoned",
@@ -358,6 +361,7 @@ impl RefusalDetail {
         match self {
             Self::SourceUnreadable
             | Self::ProviderAbsent
+            | Self::DeliveryInProgress
             | Self::WrongSourceKind
             | Self::InventoryTooLarge
             | Self::CachePoisoned => RefusalCode::ProviderUnavailable,
@@ -372,6 +376,7 @@ impl RefusalDetail {
         match self {
             Self::SourceUnreadable => Outcome::FixSource,
             Self::ProviderAbsent | Self::BackendIncompatible => Outcome::NeedsHuman,
+            Self::DeliveryInProgress => Outcome::RetryAsIs,
             Self::WrongSourceKind => Outcome::FixCall,
             Self::InventoryTooLarge => Outcome::GoElsewhere,
             Self::BackendBusy => Outcome::RetryAsIs,
@@ -386,9 +391,10 @@ impl RefusalDetail {
     }
 
     /// Все уточнения — для проверок полноты.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::SourceUnreadable,
         Self::ProviderAbsent,
+        Self::DeliveryInProgress,
         Self::WrongSourceKind,
         Self::InventoryTooLarge,
         Self::CachePoisoned,
