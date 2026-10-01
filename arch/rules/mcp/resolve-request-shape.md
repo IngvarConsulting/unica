@@ -16,6 +16,10 @@ check:
   - crates/unica-coder/src/infrastructure/v13_find.rs::point_lookup_uses_the_full_layout_path_even_with_a_shorter_suffix
   - crates/unica-coder/src/infrastructure/v13_find.rs::absolute_common_module_path_skips_a_broken_alias_in_another_source
   - crates/unica-coder/src/infrastructure/v13_find.rs::absolute_lookup_keeps_distinct_source_roots_with_different_case
+  - crates/unica-coder/src/infrastructure/v13_find.rs::absolute_lookup_refuses_a_replaced_requested_root_ancestor
+  - crates/unica-coder/src/infrastructure/v13_find.rs::absolute_lookup_skips_a_foreign_root_at_the_target_files_depth
+  - crates/unica-coder/src/infrastructure/v13_find.rs::absolute_lookup_distinguishes_a_file_from_a_case_folded_foreign_root
+  - crates/unica-coder/src/infrastructure/v13_find.rs::absolute_lookup_does_not_open_a_damaged_case_distinct_foreign_parent
   - crates/unica-coder/src/infrastructure/v13_find.rs::relative_source_prefix_skips_linked_collections_in_another_source
   - crates/unica-coder/src/infrastructure/v13_find.rs::point_lookup_checks_the_owner_of_a_nested_object
   - crates/unica-coder/src/infrastructure/v13_find.rs::point_lookup_nested_path_ignores_an_unrelated_linked_owner_directory

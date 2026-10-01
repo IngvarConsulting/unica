@@ -1814,12 +1814,64 @@ fn absolute_query_relative_path(
         if ancestor.components().count() != root_depth {
             continue;
         }
-        let reopened = match RetainedDirectoryCapability::open(ancestor) {
-            Ok(reopened) => reopened,
-            Err(_) => return Ok(None),
-        };
-        if reopened.identity() != source.root.identity() {
+        // At each component, the *query* parent's real filesystem policy
+        // decides name equivalence. This avoids opening a foreign A/a parent
+        // on a case-sensitive FS and also accepts physical Unicode aliases.
+        let source_prefixes = source.root.path().ancestors().collect::<Vec<_>>();
+        let query_prefixes = ancestor.ancestors().collect::<Vec<_>>();
+        if source_prefixes.len() != query_prefixes.len() {
             return Ok(None);
+        }
+        let mut prefixes = source_prefixes
+            .iter()
+            .rev()
+            .zip(query_prefixes.iter().rev());
+        let Some((source_anchor, query_anchor)) = prefixes.next() else {
+            return Ok(None);
+        };
+        if source_anchor
+            .to_str()
+            .zip(query_anchor.to_str())
+            .is_none_or(|(source, query)| {
+                normalize_layout_path(source) != normalize_layout_path(query)
+            })
+        {
+            return Ok(None);
+        }
+        let mut current =
+            RetainedDirectoryCapability::open(query_anchor).map_err(child_read_error)?;
+        for (source_prefix, query_prefix) in prefixes {
+            find_checkpoint(deadline, cancellation)?;
+            let (Some(source_name), Some(query_name)) =
+                (source_prefix.file_name(), query_prefix.file_name())
+            else {
+                return Ok(None);
+            };
+            if !current
+                .child_names_equivalent(source_name, query_name)
+                .map_err(child_read_error)?
+            {
+                return Ok(None);
+            }
+            current = match retain_optional_child(&current, query_name, deadline, cancellation)? {
+                Some(RetainedChildCapability::Directory(child)) => {
+                    child.validate_named_identity().map_err(child_read_error)?;
+                    child
+                }
+                None => {
+                    return Err(FindBuildError::new(
+                        RefusalCode::ConcurrentChange,
+                        "resolve source root changed during path lookup",
+                    ));
+                }
+                Some(_) => return Err(unsafe_layout_entry()),
+            };
+        }
+        if current.identity() != source.root.identity() {
+            return Err(FindBuildError::new(
+                RefusalCode::ConcurrentChange,
+                "resolve source root changed during path lookup",
+            ));
         }
         let relative = query_path
             .strip_prefix(ancestor)
@@ -2804,6 +2856,22 @@ mod tests {
                     .unwrap()
                     .expect("case-insensitive root spelling names the retained root");
                 assert_eq!(found.at(), "main:Catalog.X");
+                let moved = workspace.join("src/moved-A");
+                fs::rename(&upper, &moved).unwrap();
+                fs::write(&upper, "replaced root").unwrap();
+                let error = WorkspaceFindDirectoryBuilder::default()
+                    .locate_path(
+                        &[LayoutFindSource::new(
+                            "main",
+                            SourceSetKind::Configuration,
+                            &root,
+                        )],
+                        lower.join("Catalogs/X.xml").to_str().unwrap(),
+                        ProviderDeadline::from_budget(Duration::from_secs(7)),
+                        &CancellationToken::new(),
+                    )
+                    .expect_err("a replaced case-variant root must not look absent");
+                assert_eq!(error.code(), RefusalCode::InvalidSource);
                 return;
             }
             Err(error) => panic!("could not create case-distinct source root: {error}"),
@@ -2847,6 +2915,166 @@ mod tests {
                 RefusalCode::InvalidSource
             );
         }
+    }
+
+    #[test]
+    fn absolute_lookup_refuses_a_replaced_requested_root_ancestor() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().canonicalize().unwrap();
+        let source = workspace.join("src");
+        write(
+            &source.join("Catalogs/X.xml"),
+            &owner("X", "Catalog", "X", ""),
+        );
+        let retained = RetainedDirectoryCapability::open(&source).unwrap();
+        let moved = workspace.join("moved-src");
+        if let Err(error) = fs::rename(&source, &moved) {
+            if error.kind() == io::ErrorKind::PermissionDenied {
+                return;
+            }
+            panic!("could not replace retained source root: {error}");
+        }
+        fs::write(&source, "replaced source root").unwrap();
+
+        let error = WorkspaceFindDirectoryBuilder::default()
+            .locate_path(
+                &[LayoutFindSource::new(
+                    "main",
+                    SourceSetKind::Configuration,
+                    &retained,
+                )],
+                source.join("Catalogs/X.xml").to_str().unwrap(),
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+            .expect_err("a replaced requested source ancestor must not look absent");
+        assert_eq!(error.code(), RefusalCode::InvalidSource);
+    }
+
+    #[test]
+    fn absolute_lookup_skips_a_foreign_root_at_the_target_files_depth() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().canonicalize().unwrap();
+        write(
+            &workspace.join("Catalogs/X.xml"),
+            &owner("X", "Catalog", "X", ""),
+        );
+        fs::create_dir_all(workspace.join("Other/Deep")).unwrap();
+        let main = RetainedDirectoryCapability::open(&workspace).unwrap();
+        let foreign = RetainedDirectoryCapability::open(&workspace.join("Other/Deep")).unwrap();
+        let found = WorkspaceFindDirectoryBuilder::default()
+            .locate_path(
+                &[
+                    LayoutFindSource::new("main", SourceSetKind::Configuration, &main),
+                    LayoutFindSource::new("foreign", SourceSetKind::Extension, &foreign),
+                ],
+                workspace.join("Catalogs/X.xml").to_str().unwrap(),
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+            .unwrap()
+            .expect("foreign root must not reopen the target XML as its own root");
+        assert_eq!(found.at(), "main:Catalog.X");
+    }
+
+    #[test]
+    fn absolute_lookup_distinguishes_a_file_from_a_case_folded_foreign_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().canonicalize().unwrap();
+        write(
+            &workspace.join("Catalogs/X.xml"),
+            &owner("X", "Catalog", "X", ""),
+        );
+        let collection = RetainedDirectoryCapability::open(&workspace.join("Catalogs")).unwrap();
+        if collection
+            .child_names_equivalent(std::ffi::OsStr::new("X.xml"), std::ffi::OsStr::new("x.xml"))
+            .unwrap()
+        {
+            return;
+        }
+        let foreign_path = workspace.join("Catalogs/x.xml");
+        write(
+            &foreign_path.join("Configuration.xml"),
+            &owner("Foreign", "Configuration", "Foreign", ""),
+        );
+        let main = RetainedDirectoryCapability::open(&workspace).unwrap();
+        let foreign = RetainedDirectoryCapability::open(&foreign_path).unwrap();
+        let found = WorkspaceFindDirectoryBuilder::default()
+            .locate_path(
+                &[
+                    LayoutFindSource::new("main", SourceSetKind::Configuration, &main),
+                    LayoutFindSource::new("foreign", SourceSetKind::Extension, &foreign),
+                ],
+                workspace.join("Catalogs/X.xml").to_str().unwrap(),
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+            .unwrap()
+            .expect("foreign directory must not block the requested file");
+        assert_eq!(found.at(), "main:Catalog.X");
+        let moved = workspace.join("moved-foreign");
+        fs::rename(&foreign_path, &moved).unwrap();
+        fs::write(&foreign_path, "replaced foreign root").unwrap();
+        let still_found = WorkspaceFindDirectoryBuilder::default()
+            .locate_path(
+                &[
+                    LayoutFindSource::new("main", SourceSetKind::Configuration, &main),
+                    LayoutFindSource::new("foreign", SourceSetKind::Extension, &foreign),
+                ],
+                workspace.join("Catalogs/X.xml").to_str().unwrap(),
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+            .unwrap()
+            .expect("damaged case-distinct foreign root must not block X.xml");
+        assert_eq!(still_found.at(), "main:Catalog.X");
+    }
+
+    #[test]
+    fn absolute_lookup_does_not_open_a_damaged_case_distinct_foreign_parent() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().canonicalize().unwrap();
+        let upper = workspace.join("src/A");
+        let lower = workspace.join("src/a");
+        write(
+            &lower.join("nested/Catalogs/X.xml"),
+            &owner("X", "Catalog", "X", ""),
+        );
+        match fs::create_dir_all(upper.join("nested")) {
+            Ok(()) => {}
+            Err(error) => panic!("could not create foreign parent: {error}"),
+        }
+        let src = RetainedDirectoryCapability::open(&workspace.join("src")).unwrap();
+        if src
+            .child_names_equivalent(std::ffi::OsStr::new("A"), std::ffi::OsStr::new("a"))
+            .unwrap()
+        {
+            return;
+        }
+        let main = RetainedDirectoryCapability::open(&lower.join("nested")).unwrap();
+        let foreign = RetainedDirectoryCapability::open(&upper.join("nested")).unwrap();
+        let moved = workspace.join("moved-A");
+        if let Err(error) = fs::rename(&upper, &moved) {
+            if error.kind() == io::ErrorKind::PermissionDenied {
+                return;
+            }
+            panic!("could not replace foreign source parent: {error}");
+        }
+        fs::write(&upper, "replaced foreign parent").unwrap();
+
+        let found = WorkspaceFindDirectoryBuilder::default()
+            .locate_path(
+                &[
+                    LayoutFindSource::new("main", SourceSetKind::Configuration, &main),
+                    LayoutFindSource::new("foreign", SourceSetKind::Extension, &foreign),
+                ],
+                lower.join("nested/Catalogs/X.xml").to_str().unwrap(),
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+            .unwrap()
+            .expect("a damaged foreign parent must not block the requested source");
+        assert_eq!(found.at(), "main:Catalog.X");
     }
 
     #[test]

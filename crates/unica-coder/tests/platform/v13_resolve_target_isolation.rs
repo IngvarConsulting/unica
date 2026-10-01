@@ -427,7 +427,7 @@ fn resolve_path_succeeds_above_the_full_directory_byte_budget() {
     // a fact. These unrelated valid objects alone exceed its 16 MiB budget.
     const UNRELATED: usize = 1_200;
     const SYNONYM_BYTES: usize = 7_200;
-    assert!(UNRELATED * SYNONYM_BYTES * 2 > 16 * 1024 * 1024);
+    const _: () = assert!(UNRELATED * SYNONYM_BYTES * 2 > 16 * 1024 * 1024);
     let synonym = "Q".repeat(SYNONYM_BYTES);
     for index in 0..UNRELATED {
         let name = format!("U{index:04}");
