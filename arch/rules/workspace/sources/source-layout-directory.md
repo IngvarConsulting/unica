@@ -12,12 +12,20 @@ check:
   - crates/unica-coder/src/infrastructure/v13_find.rs::a_file_that_is_not_an_owner_descriptor_never_becomes_an_object
   - crates/unica-coder/src/infrastructure/v13_find.rs::a_descriptor_whose_attributes_start_on_a_new_line_is_still_an_object
   - crates/unica-coder/src/infrastructure/v13_find.rs::large_configuration_descriptor_still_has_a_layout_address
+  - crates/unica-coder/src/infrastructure/v13_find.rs::point_lookup_ignores_the_search_collection_entry_limit
+  - crates/unica-coder/src/infrastructure/v13_find.rs::point_lookup_refuses_when_target_name_is_outside_the_descriptor_sample
+  - crates/unica-coder/src/infrastructure/v13_find.rs::point_lookup_refuses_an_existing_broken_target_descriptor
+  - crates/unica-coder/src/infrastructure/v13_find.rs::point_lookup_refuses_an_existing_broken_external_target_descriptor
+  - crates/unica-coder/src/infrastructure/daemon/mod.rs::resolve_path_ignores_the_full_directory_entry_budget
+gap: https://github.com/IngvarConsulting/unica/issues/976
 ---
 
 # Справочник раскладки связывает объект с его местом в исходниках
 
-Справочник для поиска имён и разрешения путей связывает имя, синоним
-и логический адрес объекта с его файлом или каталогом. Он содержит объекты
+Справочник для поиска имён связывает имя, синоним и логический адрес объекта
+с его файлом или каталогом. Разрешение конкретного пути доказывает эту же
+связь точечно по запрошенному объекту и необходимым владельцам, не строя
+полный справочник. Эти операции охватывают объекты
 и их формы, макеты и команды; методы, области кода, реквизиты и другие
 внутренние узлы в него не входят.
 
@@ -27,7 +35,14 @@ check:
 `ConfigDumpInfo.xml` и вымышленный путь выгрузки конфигурации не выдаются
 за внешний объект.
 
-Построение справочника ограничено числом наборов исходников, числом записей
-и суммарным объёмом фактов. Превышение даёт
+Построение полного справочника для поиска имён ограничено числом наборов
+исходников, числом записей, размером перечисляемой коллекции и суммарным
+объёмом фактов. Разрешение конкретного пути сохраняет ограничение числа
+наборов, но не наследует совокупные ограничения полного справочника или
+размер перечисляемой коллекции. Подтверждение владельца по-прежнему берёт
+начало XML-дескриптора; если существующий целевой дескриптор не подтверждён
+этой выборкой, вызов отказывает, а не возвращает ложный `not_found`.
+Полноценное потоковое подтверждение XML остаётся открытым пробелом.
+Превышение применимого предела даёт
 `provider_limit_exceeded`, отмена — `cancelled`, истечение переданного
 срока — `deadline_exceeded`.

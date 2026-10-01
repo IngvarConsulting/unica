@@ -90,12 +90,22 @@ impl std::fmt::Display for FindBuildError {
     }
 }
 
+impl From<io::Error> for FindBuildError {
+    fn from(_error: io::Error) -> Self {
+        Self::with_detail(
+            RefusalDetail::SourceUnreadable,
+            "resolve could not enumerate the retained source directory",
+        )
+    }
+}
+
 /// Builds the two-way directory between qualified logical addresses and where
 /// objects live in the source layout. It reads that layout only: no typed
 /// projection, no module source, no revision lease.
 pub(crate) struct WorkspaceFindDirectoryBuilder {
     max_documents: usize,
     max_total_fact_bytes: usize,
+    max_collection_entries: usize,
     read_head: Arc<HeadReader>,
 }
 
@@ -159,6 +169,7 @@ impl WorkspaceFindDirectoryBuilder {
         Self {
             max_documents,
             max_total_fact_bytes,
+            max_collection_entries: MAX_COLLECTION_ENTRIES,
             read_head: Arc::new(read_descriptor_head_prefix),
         }
     }
@@ -185,8 +196,19 @@ impl WorkspaceFindDirectoryBuilder {
     }
 
     #[cfg(test)]
-    fn with_document_limit(max_documents: usize) -> Self {
+    pub(crate) fn with_document_limit(max_documents: usize) -> Self {
         Self::with_limits(max_documents, DEFAULT_MAX_FACT_BYTES)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_fact_byte_limit_for_test(max_fact_bytes: usize) -> Self {
+        Self::with_limits(DEFAULT_MAX_DOCUMENTS, max_fact_bytes)
+    }
+
+    #[cfg(test)]
+    fn with_collection_limit_for_test(mut self, max_collection_entries: usize) -> Self {
+        self.max_collection_entries = max_collection_entries;
+        self
     }
 
     pub(crate) fn build(
@@ -233,6 +255,424 @@ impl WorkspaceFindDirectoryBuilder {
             index: FindIndex::new(build.documents),
             omissions: build.omissions,
         })
+    }
+
+    /// Resolve only paths that could be the requested object. The name-search
+    /// directory still owns its aggregate fact budget; a point lookup must not
+    /// read unrelated descriptors or charge their facts before answering.
+    pub(crate) fn locate_path(
+        &self,
+        sources: &[LayoutFindSource<'_>],
+        path: &str,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<FindDocument>, FindBuildError> {
+        if sources.len() > MAX_SOURCE_SETS {
+            return Err(FindBuildError::new(
+                RefusalCode::ProviderLimitExceeded,
+                "find source-set count exceeds the bounded workspace limit",
+            ));
+        }
+        // FindIndex::locate_path accepts the stored layout path as a
+        // segment-aligned suffix of an absolute or workspace-relative query.
+        let normalized = path.trim().replace('\\', "/").to_lowercase();
+        let parts = normalized.split('/').collect::<Vec<_>>();
+        // The full index chooses the longest stored path. Probe equal-length
+        // candidates in every source set before trying shorter fallbacks, so
+        // a damaged, unrelated fallback cannot block an exact target.
+        for depth in [4, 3, 2, 1] {
+            let mut located = None;
+            for source in sources {
+                find_checkpoint(deadline, cancellation)?;
+                source
+                    .root
+                    .validate_named_identity()
+                    .map_err(|_| unsafe_layout_entry())?;
+                self.locate_path_in_source(
+                    source,
+                    &parts,
+                    depth,
+                    deadline,
+                    cancellation,
+                    &mut located,
+                )?;
+                source
+                    .root
+                    .validate_named_identity()
+                    .map_err(|_| unsafe_layout_entry())?;
+            }
+            if located.is_some() {
+                find_checkpoint(deadline, cancellation)?;
+                return Ok(located);
+            }
+        }
+        find_checkpoint(deadline, cancellation)?;
+        Ok(None)
+    }
+
+    fn locate_path_in_source(
+        &self,
+        source: &LayoutFindSource<'_>,
+        parts: &[&str],
+        depth: usize,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+        located: &mut Option<FindDocument>,
+    ) -> Result<(), FindBuildError> {
+        if matches!(
+            source.kind,
+            SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+        ) {
+            let kind = if source.kind == SourceSetKind::ExternalProcessor {
+                NodeKind::ExternalDataProcessor
+            } else {
+                NodeKind::ExternalReport
+            };
+            if depth == 1 {
+                let Some(&name) = parts.last() else {
+                    return Ok(());
+                };
+                for entry in matching_names(source.root, name, deadline, cancellation)? {
+                    let Some(stem) = entry.to_str().and_then(|name| name.strip_suffix(".xml"))
+                    else {
+                        continue;
+                    };
+                    if entry
+                        .to_str()
+                        .is_some_and(|name| name.eq_ignore_ascii_case("ConfigDumpInfo.xml"))
+                    {
+                        continue;
+                    }
+                    let relative = PathBuf::from(&entry);
+                    let file =
+                        match retain_enumerated_child(source.root, &entry, deadline, cancellation)?
+                        {
+                            RetainedChildCapability::RegularFile(file) => file,
+                            _ => return Err(unsafe_layout_entry()),
+                        };
+                    let (_, synonym) = require_target_identity(self.read_target_identity(
+                        &file,
+                        &relative,
+                        source,
+                        kind.as_str(),
+                        Some(stem),
+                        deadline,
+                        cancellation,
+                    )?)?;
+                    add_path_match(
+                        located,
+                        find_document(
+                            source,
+                            &format!("{}:{}.{stem}", source.name, kind.as_str()),
+                            kind.as_str(),
+                            stem,
+                            synonym.as_deref(),
+                            &relative,
+                        ),
+                    )?;
+                }
+            }
+            if depth == 3 && parts.len() >= 3 {
+                self.locate_nested_path(
+                    source,
+                    None,
+                    &parts[parts.len() - 3..],
+                    kind.as_str(),
+                    deadline,
+                    cancellation,
+                    located,
+                )?;
+            }
+            return Ok(());
+        }
+
+        if depth == 1 && parts.last() == Some(&"configuration.xml") {
+            if let Some(child) = retain_optional_child(
+                source.root,
+                OsStr::new("Configuration.xml"),
+                deadline,
+                cancellation,
+            )? {
+                let RetainedChildCapability::RegularFile(file) = child else {
+                    return Err(unsafe_layout_entry());
+                };
+                let relative = Path::new("Configuration.xml");
+                let (name, synonym) = require_target_identity(self.read_target_identity(
+                    &file,
+                    relative,
+                    source,
+                    NodeKind::Configuration.as_str(),
+                    None,
+                    deadline,
+                    cancellation,
+                )?)?;
+                add_path_match(
+                    located,
+                    find_document(
+                        source,
+                        &format!("{}:Configuration", source.name),
+                        NodeKind::Configuration.as_str(),
+                        &name,
+                        synonym.as_deref(),
+                        relative,
+                    ),
+                )?;
+            }
+        }
+        if depth == 2 && parts.len() >= 2 {
+            let tail = &parts[parts.len() - 2..];
+            for directory in matching_names(source.root, tail[0], deadline, cancellation)? {
+                let Some(directory_name) = directory.to_str() else {
+                    continue;
+                };
+                let Some(layout) = metadata_kind_by_directory(directory_name) else {
+                    continue;
+                };
+                let collection =
+                    match retain_enumerated_child(source.root, &directory, deadline, cancellation)?
+                    {
+                        RetainedChildCapability::Directory(collection) => collection,
+                        _ => return Err(unsafe_layout_entry()),
+                    };
+                for entry in matching_names(&collection, tail[1], deadline, cancellation)? {
+                    let Some(stem) = entry.to_str().and_then(|name| name.strip_suffix(".xml"))
+                    else {
+                        continue;
+                    };
+                    let relative = PathBuf::from(directory_name).join(&entry);
+                    let file =
+                        match retain_enumerated_child(&collection, &entry, deadline, cancellation)?
+                        {
+                            RetainedChildCapability::RegularFile(file) => file,
+                            _ => return Err(unsafe_layout_entry()),
+                        };
+                    let (_, synonym) = require_target_identity(self.read_target_identity(
+                        &file,
+                        &relative,
+                        source,
+                        layout.tag,
+                        Some(stem),
+                        deadline,
+                        cancellation,
+                    )?)?;
+                    add_path_match(
+                        located,
+                        find_document(
+                            source,
+                            &format!("{}:{}.{stem}", source.name, layout.tag),
+                            layout.tag,
+                            stem,
+                            synonym.as_deref(),
+                            &relative,
+                        ),
+                    )?;
+                }
+            }
+        }
+        if depth == 4 && parts.len() >= 4 {
+            let tail = &parts[parts.len() - 4..];
+            for directory in matching_names(source.root, tail[0], deadline, cancellation)? {
+                let Some(directory_name) = directory.to_str() else {
+                    continue;
+                };
+                let Some(layout) = metadata_kind_by_directory(directory_name) else {
+                    continue;
+                };
+                let collection =
+                    match retain_enumerated_child(source.root, &directory, deadline, cancellation)?
+                    {
+                        RetainedChildCapability::Directory(collection) => collection,
+                        _ => return Err(unsafe_layout_entry()),
+                    };
+                self.locate_nested_path(
+                    source,
+                    Some((&collection, directory_name)),
+                    &tail[1..],
+                    layout.tag,
+                    deadline,
+                    cancellation,
+                    located,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn locate_nested_path(
+        &self,
+        source: &LayoutFindSource<'_>,
+        collection: Option<(&RetainedDirectoryCapability, &str)>,
+        parts: &[&str],
+        owner_kind: &str,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+        located: &mut Option<FindDocument>,
+    ) -> Result<(), FindBuildError> {
+        let [owner_query, family_query, leaf_query] = parts else {
+            return Ok(());
+        };
+        if !NESTED_FAMILIES
+            .iter()
+            .any(|(family, _)| family.to_lowercase() == *family_query)
+        {
+            return Ok(());
+        }
+        let parent = collection.map_or(source.root, |(root, _)| root);
+        for owner_name in matching_names(parent, owner_query, deadline, cancellation)? {
+            let Some(owner_name_text) = owner_name.to_str() else {
+                continue;
+            };
+            let owner_root =
+                match retain_enumerated_child(parent, &owner_name, deadline, cancellation)? {
+                    RetainedChildCapability::Directory(owner_root) => owner_root,
+                    RetainedChildCapability::RegularFile(_) => continue,
+                    _ => return Err(unsafe_layout_entry()),
+                };
+            for (family_name, family_kind) in NESTED_FAMILIES {
+                if family_name.to_lowercase() != *family_query {
+                    continue;
+                }
+                let Some(family) = retain_optional_child(
+                    &owner_root,
+                    OsStr::new(family_name),
+                    deadline,
+                    cancellation,
+                )?
+                else {
+                    continue;
+                };
+                let RetainedChildCapability::Directory(family) = family else {
+                    return Err(unsafe_layout_entry());
+                };
+                for child_name in matching_names(&family, leaf_query, deadline, cancellation)? {
+                    let Some(child_name_text) = child_name.to_str() else {
+                        continue;
+                    };
+                    let descriptor_name = format!("{owner_name_text}.xml");
+                    let Some(owner_descriptor) = retain_optional_child(
+                        parent,
+                        OsStr::new(&descriptor_name),
+                        deadline,
+                        cancellation,
+                    )?
+                    else {
+                        return Err(unsafe_layout_entry());
+                    };
+                    let RetainedChildCapability::RegularFile(owner_file) = owner_descriptor else {
+                        return Err(unsafe_layout_entry());
+                    };
+                    let owner_descriptor_relative = collection.map_or_else(
+                        || PathBuf::from(&descriptor_name),
+                        |(_, name)| PathBuf::from(name).join(&descriptor_name),
+                    );
+                    require_target_identity(self.read_target_identity(
+                        &owner_file,
+                        &owner_descriptor_relative,
+                        source,
+                        owner_kind,
+                        Some(owner_name_text),
+                        deadline,
+                        cancellation,
+                    )?)?;
+                    let owner_relative = collection.map_or_else(
+                        || PathBuf::from(owner_name_text),
+                        |(_, name)| PathBuf::from(name).join(owner_name_text),
+                    );
+                    let relative = owner_relative.join(family_name).join(&child_name);
+                    let child =
+                        retain_enumerated_child(&family, &child_name, deadline, cancellation)?;
+                    let (nested_name, synonym) = if family_kind == NodeKind::Command {
+                        let command = match child {
+                            RetainedChildCapability::Directory(command) => command,
+                            // The platform has no Commands/<Name>.xml owner file.
+                            RetainedChildCapability::RegularFile(_) => continue,
+                            _ => return Err(unsafe_layout_entry()),
+                        };
+                        command
+                            .validate_named_identity()
+                            .map_err(|_| unsafe_layout_entry())?;
+                        (child_name_text, None)
+                    } else {
+                        let Some(stem) = child_name_text.strip_suffix(".xml") else {
+                            continue;
+                        };
+                        let RetainedChildCapability::RegularFile(file) = child else {
+                            return Err(unsafe_layout_entry());
+                        };
+                        let (_, synonym) = require_target_identity(self.read_target_identity(
+                            &file,
+                            &relative,
+                            source,
+                            family_kind.as_str(),
+                            Some(stem),
+                            deadline,
+                            cancellation,
+                        )?)?;
+                        (stem, synonym)
+                    };
+                    add_path_match(
+                        located,
+                        find_document(
+                            source,
+                            &format!(
+                                "{}:{owner_kind}.{owner_name_text}.{}.{nested_name}",
+                                source.name,
+                                family_kind.as_str()
+                            ),
+                            family_kind.as_str(),
+                            nested_name,
+                            synonym.as_deref(),
+                            &relative,
+                        ),
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn read_target_identity(
+        &self,
+        file: &RetainedRegularFileCapability,
+        relative: &Path,
+        source: &LayoutFindSource<'_>,
+        kind: &str,
+        expected_name: Option<&str>,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<(String, Option<String>)>, FindBuildError> {
+        let mut evidence = DirectoryBuild {
+            documents: Vec::new(),
+            fact_bytes: 0,
+            omissions: FindOmissions::default(),
+        };
+        let head = self.read_descriptor_head(
+            file,
+            relative,
+            source,
+            &mut evidence,
+            deadline,
+            cancellation,
+        )?;
+        let head = head.ok_or_else(|| {
+            FindBuildError::with_detail(
+                RefusalDetail::SourceUnreadable,
+                "resolve cannot read the requested descriptor",
+            )
+        })?;
+        let (name, synonym) = descriptor_identity(&head);
+        let Some(name) = name else {
+            return Ok(None);
+        };
+        if expected_name.is_some_and(|expected| expected != name) {
+            return Ok(None);
+        }
+        if !declares_owner(&head, kind, &name) {
+            return Ok(None);
+        }
+        Ok(Some((name, synonym)))
     }
 
     fn add_source(
@@ -290,7 +730,12 @@ impl WorkspaceFindDirectoryBuilder {
                 configuration,
             )?;
         }
-        for entry in immediate_names(source.root, deadline, cancellation)? {
+        for entry in immediate_names(
+            source.root,
+            self.max_collection_entries,
+            deadline,
+            cancellation,
+        )? {
             find_checkpoint(deadline, cancellation)?;
             let Some(directory) = entry.to_str() else {
                 continue;
@@ -306,7 +751,12 @@ impl WorkspaceFindDirectoryBuilder {
             let mut proved_owners = HashSet::new();
             let mut owner_directories = Vec::new();
             let mut unsafe_owner_directories = HashSet::new();
-            for owner in immediate_names(&collection, deadline, cancellation)? {
+            for owner in immediate_names(
+                &collection,
+                self.max_collection_entries,
+                deadline,
+                cancellation,
+            )? {
                 find_checkpoint(deadline, cancellation)?;
                 let Some(owner_name) = owner.to_str() else {
                     continue;
@@ -425,7 +875,12 @@ impl WorkspaceFindDirectoryBuilder {
         } else {
             NodeKind::ExternalReport
         };
-        for entry in immediate_names(source.root, deadline, cancellation)? {
+        for entry in immediate_names(
+            source.root,
+            self.max_collection_entries,
+            deadline,
+            cancellation,
+        )? {
             find_checkpoint(deadline, cancellation)?;
             let Some(entry_name) = entry.to_str() else {
                 continue;
@@ -510,7 +965,9 @@ impl WorkspaceFindDirectoryBuilder {
                 Some(_) => return Err(unsafe_layout_entry()),
                 None => continue,
             };
-            for entry in immediate_names(&family, deadline, cancellation)? {
+            for entry in
+                immediate_names(&family, self.max_collection_entries, deadline, cancellation)?
+            {
                 find_checkpoint(deadline, cancellation)?;
                 let Some(entry_name) = entry.to_str() else {
                     continue;
@@ -676,6 +1133,96 @@ impl WorkspaceFindDirectoryBuilder {
     }
 }
 
+fn matching_names(
+    directory: &RetainedDirectoryCapability,
+    normalized_name: &str,
+    deadline: ProviderDeadline,
+    cancellation: &CancellationToken,
+) -> Result<Vec<std::ffi::OsString>, FindBuildError> {
+    let mut found = Vec::new();
+    directory.visit_immediate_names(|name| {
+        find_checkpoint(deadline, cancellation)?;
+        if name
+            .to_str()
+            .is_some_and(|name| name.to_lowercase() == normalized_name)
+        {
+            if !found.is_empty() {
+                return Err(FindBuildError::new(
+                    RefusalCode::BadValue,
+                    "resolve path has case-insensitive filesystem ambiguity",
+                ));
+            }
+            found.push(name);
+        }
+        Ok(())
+    })?;
+    Ok(found)
+}
+
+fn require_target_identity(
+    identity: Option<(String, Option<String>)>,
+) -> Result<(String, Option<String>), FindBuildError> {
+    identity.ok_or_else(|| {
+        FindBuildError::new(
+            RefusalCode::InvalidSource,
+            "resolve target descriptor does not declare the expected owner and name",
+        )
+    })
+}
+
+fn find_document(
+    source: &LayoutFindSource<'_>,
+    at: &str,
+    kind: &str,
+    name: &str,
+    synonym: Option<&str>,
+    relative: &Path,
+) -> Option<FindDocument> {
+    if QualifiedAddress::parse(at)
+        .ok()
+        .is_none_or(|address| address.source_set() != source.name)
+    {
+        return None;
+    }
+    let path = path_text(relative);
+    let mut facts = vec![
+        FindFact::new(FindFactKind::Name, name),
+        FindFact::new(FindFactKind::ExportPath, &path),
+    ];
+    if let Some(synonym) = synonym.filter(|value| !value.is_empty() && *value != name) {
+        facts.push(FindFact::new(FindFactKind::Synonym, synonym));
+    }
+    let title = synonym.filter(|value| !value.is_empty()).unwrap_or(name);
+    Some(FindDocument::new(at, kind, title, facts).with_path(path))
+}
+
+fn add_path_match(
+    located: &mut Option<FindDocument>,
+    candidate: Option<FindDocument>,
+) -> Result<(), FindBuildError> {
+    let Some(candidate) = candidate else {
+        return Ok(());
+    };
+    if let Some(previous) = located {
+        let previous_len = previous.placed_path().map_or(0, str::len);
+        let candidate_len = candidate.placed_path().map_or(0, str::len);
+        if candidate_len > previous_len {
+            *previous = candidate;
+        } else if candidate_len == previous_len
+            && (previous.at() != candidate.at()
+                || previous.placed_path() != candidate.placed_path())
+        {
+            return Err(FindBuildError::new(
+                RefusalCode::BadValue,
+                "resolve path matches multiple equally specific objects; use their logical address",
+            ));
+        }
+    } else {
+        *located = Some(candidate);
+    }
+    Ok(())
+}
+
 fn read_descriptor_head_prefix(
     file: &RetainedRegularFileCapability,
     _relative: &Path,
@@ -748,11 +1295,12 @@ fn unsafe_layout_entry() -> FindBuildError {
 
 fn immediate_names(
     directory: &RetainedDirectoryCapability,
+    maximum_entries: usize,
     deadline: ProviderDeadline,
     cancellation: &CancellationToken,
 ) -> Result<Vec<std::ffi::OsString>, FindBuildError> {
     directory
-        .read_immediate_names_bounded(MAX_COLLECTION_ENTRIES, || {
+        .read_immediate_names_bounded(maximum_entries, || {
             find_checkpoint(deadline, cancellation)
                 .map_err(|error| std::io::Error::other(error.to_string()))
         })
@@ -1013,6 +1561,372 @@ mod tests {
     }
 
     #[test]
+    fn point_lookup_preserves_full_relative_paths_and_checks_every_source_before_not_found() {
+        let fixture = Fixture::new();
+        let empty = tempfile::tempdir().unwrap();
+        let empty_root =
+            RetainedDirectoryCapability::open(&empty.path().canonicalize().unwrap()).unwrap();
+        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let sources = [
+            LayoutFindSource::new("empty", SourceSetKind::Configuration, &empty_root),
+            LayoutFindSource::new("main", SourceSetKind::Configuration, &root),
+        ];
+        let builder = WorkspaceFindDirectoryBuilder::default();
+        let locate = |path: &str| {
+            builder.locate_path(
+                &sources,
+                path,
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+        };
+        for (path, expected) in [
+            ("Configuration.xml", "main:Configuration"),
+            ("Catalogs/Валюты.xml", "main:Catalog.Валюты"),
+            ("src/Catalogs/Валюты.xml", "main:Catalog.Валюты"),
+            ("/workspace/src/catalogs/валюты.XML", "main:Catalog.Валюты"),
+            (
+                r"C:\workspace\src\Catalogs\Валюты.xml",
+                "main:Catalog.Валюты",
+            ),
+            (
+                "Catalogs/Валюты/Forms/ФормаЭлемента.xml",
+                "main:Catalog.Валюты.Form.ФормаЭлемента",
+            ),
+            (
+                "Catalogs/Валюты/Templates/Печать.xml",
+                "main:Catalog.Валюты.Template.Печать",
+            ),
+            (
+                "Catalogs/Валюты/Commands/Обновить",
+                "main:Catalog.Валюты.Command.Обновить",
+            ),
+        ] {
+            let entry = locate(path).unwrap().expect("unique suffix is placed");
+            assert_eq!(entry.at(), expected, "{path}");
+            assert!(entry.placed_path().is_some(), "{path}");
+        }
+        for path in [
+            "алюты.xml",
+            "Валюты.xml",
+            "Forms/ФормаЭлемента.xml",
+            "Catalogs/Нет.xml",
+        ] {
+            assert!(locate(path).unwrap().is_none(), "{path}");
+        }
+    }
+
+    #[test]
+    fn point_lookup_refuses_ambiguous_paths_across_admitted_sources() {
+        let first = Fixture::new();
+        let second = Fixture::new();
+        let first_root = RetainedDirectoryCapability::open(&first.source).unwrap();
+        let second_root = RetainedDirectoryCapability::open(&second.source).unwrap();
+        let error = WorkspaceFindDirectoryBuilder::default()
+            .locate_path(
+                &[
+                    LayoutFindSource::new("main", SourceSetKind::Configuration, &first_root),
+                    LayoutFindSource::new("other", SourceSetKind::Configuration, &second_root),
+                ],
+                "Catalogs/Валюты.xml",
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+            .expect_err("a suffix shared by two objects cannot select one");
+        assert_eq!(error.code(), RefusalCode::BadValue);
+    }
+
+    #[test]
+    fn point_lookup_prefers_the_longest_stored_path() {
+        let fixture = Fixture::new();
+        write(
+            &fixture.source.join("Catalogs/Configuration.xml"),
+            &owner("Configuration", "Catalog", "Configuration", ""),
+        );
+        write(&fixture.source.join("Configuration.xml"), "<broken");
+        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let entry = WorkspaceFindDirectoryBuilder::default()
+            .locate_path(
+                &[LayoutFindSource::new(
+                    "main",
+                    SourceSetKind::Configuration,
+                    &root,
+                )],
+                "src/Catalogs/Configuration.xml",
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+            .unwrap()
+            .expect("the more specific stored path wins");
+        assert_eq!(entry.at(), "main:Catalog.Configuration");
+
+        write(
+            &fixture.source.join("Configuration.xml"),
+            &owner("Магазин", "Configuration", "Магазин", ""),
+        );
+        fs::remove_file(fixture.source.join("Catalogs/Configuration.xml")).unwrap();
+        let fallback = WorkspaceFindDirectoryBuilder::default()
+            .locate_path(
+                &[LayoutFindSource::new(
+                    "main",
+                    SourceSetKind::Configuration,
+                    &root,
+                )],
+                "src/Catalogs/Configuration.xml",
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+            .unwrap()
+            .expect("the root descriptor is a valid shorter suffix");
+        assert_eq!(fallback.at(), "main:Configuration");
+    }
+
+    #[test]
+    fn point_lookup_checks_the_owner_of_a_nested_object() {
+        let fixture = Fixture::new();
+        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let path = "Catalogs/Валюты/Forms/ФормаЭлемента.xml";
+        let lookup = |builder: WorkspaceFindDirectoryBuilder| {
+            builder.locate_path(
+                &[LayoutFindSource::new(
+                    "main",
+                    SourceSetKind::Configuration,
+                    &root,
+                )],
+                path,
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+        };
+        let entry = lookup(WorkspaceFindDirectoryBuilder::default())
+            .unwrap()
+            .expect("the form and its owner are proven");
+        assert_eq!(entry.at(), "main:Catalog.Валюты.Form.ФормаЭлемента");
+
+        let error = lookup(
+            WorkspaceFindDirectoryBuilder::default()
+                .with_local_read_fault_for_test("Catalogs/Валюты.xml", io::ErrorKind::Other),
+        )
+        .expect_err("an unreadable owner must block the nested path");
+        assert_eq!(
+            error.detail(),
+            Some(crate::domain::refusal::RefusalDetail::SourceUnreadable)
+        );
+    }
+
+    #[test]
+    fn point_lookup_does_not_publish_a_command_xml_lookalike() {
+        let fixture = Fixture::new();
+        write(
+            &fixture.source.join("Catalogs/Валюты/Commands/Ложная.xml"),
+            &owner("Ложная", "Command", "Ложная", ""),
+        );
+        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let builder = WorkspaceFindDirectoryBuilder::default();
+        let source = [LayoutFindSource::new(
+            "main",
+            SourceSetKind::Configuration,
+            &root,
+        )];
+        assert!(builder
+            .locate_path(
+                &source,
+                "Catalogs/Валюты/Commands/Ложная.xml",
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            builder
+                .locate_path(
+                    &source,
+                    "Catalogs/Валюты/Commands/Обновить",
+                    ProviderDeadline::from_budget(Duration::from_secs(7)),
+                    &CancellationToken::new(),
+                )
+                .unwrap()
+                .unwrap()
+                .at(),
+            "main:Catalog.Валюты.Command.Обновить"
+        );
+    }
+
+    #[test]
+    fn point_lookup_refuses_a_linked_target_descriptor() {
+        use crate::infrastructure::platform::testing::{
+            create_file_link_fixture_for_test, FileLinkFixtureOutcome,
+        };
+
+        let fixture = Fixture::new();
+        let descriptor = fixture.source.join("Catalogs/Валюты.xml");
+        let physical = fixture.source.join("physical-owner.xml");
+        fs::rename(&descriptor, &physical).unwrap();
+        match create_file_link_fixture_for_test(&physical, &descriptor).unwrap() {
+            FileLinkFixtureOutcome::Created => {}
+            FileLinkFixtureOutcome::Unsupported
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => return,
+        }
+        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let error = WorkspaceFindDirectoryBuilder::default()
+            .locate_path(
+                &[LayoutFindSource::new(
+                    "main",
+                    SourceSetKind::Configuration,
+                    &root,
+                )],
+                "Catalogs/Валюты.xml",
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+            .expect_err("a linked target cannot stand for the admitted source file");
+        assert_eq!(error.code(), RefusalCode::InvalidSource);
+    }
+
+    #[test]
+    fn point_lookup_refuses_an_existing_broken_target_descriptor() {
+        let fixture = Fixture::new();
+        write(
+            &fixture.source.join("Catalogs/Валюты.xml"),
+            "<MetaDataObject><Catalog><Properties></Properties></Catalog></MetaDataObject>",
+        );
+        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let error = WorkspaceFindDirectoryBuilder::default()
+            .locate_path(
+                &[LayoutFindSource::new(
+                    "main",
+                    SourceSetKind::Configuration,
+                    &root,
+                )],
+                "Catalogs/Валюты.xml",
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+            .expect_err("a broken requested descriptor must not look absent");
+        assert_eq!(error.code(), RefusalCode::InvalidSource);
+    }
+
+    #[test]
+    fn point_lookup_refuses_an_existing_broken_external_target_descriptor() {
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().canonicalize().unwrap();
+        write(
+            &path.join("Импорт.xml"),
+            "<MetaDataObject><ExternalReport><Properties><Name>Импорт</Name></Properties></ExternalReport></MetaDataObject>",
+        );
+        let root = RetainedDirectoryCapability::open(&path).unwrap();
+        let error = WorkspaceFindDirectoryBuilder::default()
+            .locate_path(
+                &[LayoutFindSource::new(
+                    "processor",
+                    SourceSetKind::ExternalProcessor,
+                    &root,
+                )],
+                "Импорт.xml",
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+            .expect_err("the existing external target must declare its actual kind");
+        assert_eq!(error.code(), RefusalCode::InvalidSource);
+    }
+
+    #[test]
+    fn point_lookup_observes_cancellation_and_deadline() {
+        let fixture = Fixture::new();
+        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let source = [LayoutFindSource::new(
+            "main",
+            SourceSetKind::Configuration,
+            &root,
+        )];
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        let builder = WorkspaceFindDirectoryBuilder::default();
+        let error = builder
+            .locate_path(
+                &source,
+                "Catalogs/Валюты.xml",
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &cancelled,
+            )
+            .unwrap_err();
+        assert_eq!(error.code(), RefusalCode::Cancelled);
+        let error = builder
+            .locate_path(
+                &source,
+                "Catalogs/Валюты.xml",
+                ProviderDeadline::from_budget(Duration::ZERO),
+                &CancellationToken::new(),
+            )
+            .unwrap_err();
+        assert_eq!(error.code(), RefusalCode::DeadlineExceeded);
+    }
+
+    #[test]
+    fn point_lookup_refuses_when_target_name_is_outside_the_descriptor_sample() {
+        let fixture = Fixture::new();
+        for path in ["Catalogs/Валюты.xml", "Configuration.xml"] {
+            let descriptor = fixture.source.join(path);
+            let original = fs::read_to_string(&descriptor).unwrap();
+            let late = original.replace(
+                "<Properties><Name>",
+                &format!(
+                    "<Properties><!-- {} --><Name>",
+                    " ".repeat(DESCRIPTOR_HEAD_BYTES)
+                ),
+            );
+            write(&descriptor, &late);
+        }
+        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        for path in ["Catalogs/Валюты.xml", "Configuration.xml"] {
+            let error = WorkspaceFindDirectoryBuilder::default()
+                .locate_path(
+                    &[LayoutFindSource::new(
+                        "main",
+                        SourceSetKind::Configuration,
+                        &root,
+                    )],
+                    path,
+                    ProviderDeadline::from_budget(Duration::from_secs(7)),
+                    &CancellationToken::new(),
+                )
+                .expect_err("an unproven existing target cannot look absent");
+            assert_eq!(error.code(), RefusalCode::InvalidSource, "{path}");
+        }
+    }
+
+    #[test]
+    fn point_lookup_ignores_the_search_collection_entry_limit() {
+        let fixture = Fixture::new();
+        fs::write(fixture.source.join("Catalogs/unrelated.xml"), []).unwrap();
+        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let source = [LayoutFindSource::new(
+            "main",
+            SourceSetKind::Configuration,
+            &root,
+        )];
+        let builder = WorkspaceFindDirectoryBuilder::default().with_collection_limit_for_test(2);
+        let error = builder
+            .build(
+                &source,
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+            .expect_err("the complete search directory has a separate collection limit");
+        assert_eq!(error.code(), RefusalCode::ProviderLimitExceeded);
+        let entry = builder
+            .locate_path(
+                &source,
+                "Catalogs/Валюты.xml",
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+            .unwrap()
+            .expect("the target does not inherit the search collection limit");
+        assert_eq!(entry.at(), "main:Catalog.Валюты");
+    }
+
+    #[test]
     fn large_configuration_descriptor_still_has_a_layout_address() {
         let fixture = Fixture::new();
         let descriptor = fixture.source.join("Configuration.xml");
@@ -1056,6 +1970,47 @@ mod tests {
             )
             .expect_err("a linked root descriptor must not look absent");
         assert_eq!(refusal.code(), RefusalCode::InvalidSource);
+    }
+
+    #[test]
+    fn point_lookup_nested_path_ignores_an_unrelated_linked_owner_directory() {
+        use crate::infrastructure::platform::testing::{
+            create_directory_link_fixture_for_test, FileLinkFixtureOutcome,
+        };
+
+        let fixture = Fixture::new();
+        write(
+            &fixture.source.join("Catalogs/Скрытый.xml"),
+            &owner("Скрытый", "Catalog", "Скрытый", ""),
+        );
+        let physical = fixture.source.join("physical-hidden");
+        fs::create_dir_all(&physical).unwrap();
+        match create_directory_link_fixture_for_test(
+            &physical,
+            fixture.source.join("Catalogs/Скрытый"),
+        )
+        .unwrap()
+        {
+            FileLinkFixtureOutcome::Created => {}
+            FileLinkFixtureOutcome::Unsupported
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => return,
+        }
+
+        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let found = WorkspaceFindDirectoryBuilder::default()
+            .locate_path(
+                &[LayoutFindSource::new(
+                    "main",
+                    SourceSetKind::Configuration,
+                    &root,
+                )],
+                "Catalogs/Валюты/Forms/ФормаЭлемента.xml",
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+            .unwrap()
+            .expect("the unrelated owner is outside the nested path");
+        assert_eq!(found.at(), "main:Catalog.Валюты.Form.ФормаЭлемента");
     }
 
     #[test]
@@ -1118,6 +2073,19 @@ mod tests {
                 &CancellationToken::new(),
             )
             .expect_err("a linked proven owner must not hide its nested names");
+        assert_eq!(refusal.code(), RefusalCode::InvalidSource);
+        let refusal = WorkspaceFindDirectoryBuilder::default()
+            .locate_path(
+                &[LayoutFindSource::new(
+                    "main",
+                    SourceSetKind::Configuration,
+                    &root,
+                )],
+                "Catalogs/Валюты/Forms/ФормаЭлемента.xml",
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+            .expect_err("a linked required owner cannot place the form");
         assert_eq!(refusal.code(), RefusalCode::InvalidSource);
     }
 
@@ -1531,6 +2499,39 @@ mod tests {
                 .all(|candidate| candidate.reason() != "exportPath"),
             "an external source set advertised a configuration export path: {fabricated:?}"
         );
+        let builder = WorkspaceFindDirectoryBuilder::default();
+        let source = [LayoutFindSource::new(
+            "processor",
+            SourceSetKind::ExternalProcessor,
+            &retained,
+        )];
+        for (path, expected) in [
+            ("Импорт.xml", "processor:ExternalDataProcessor.Импорт"),
+            (
+                "Импорт/Forms/Основная.xml",
+                "processor:ExternalDataProcessor.Импорт.Form.Основная",
+            ),
+        ] {
+            let entry = builder
+                .locate_path(
+                    &source,
+                    path,
+                    ProviderDeadline::from_budget(Duration::from_secs(7)),
+                    &CancellationToken::new(),
+                )
+                .unwrap()
+                .expect("the external owner or form is placed");
+            assert_eq!(entry.at(), expected);
+        }
+        assert!(builder
+            .locate_path(
+                &source,
+                "ConfigDumpInfo.xml",
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+            .unwrap()
+            .is_none());
     }
 
     #[test]

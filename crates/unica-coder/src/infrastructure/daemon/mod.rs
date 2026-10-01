@@ -290,6 +290,73 @@ mod tests {
     }
 
     #[test]
+    fn resolve_path_ignores_the_full_directory_entry_budget() {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("src");
+        std::fs::create_dir_all(source.join("Catalogs")).unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject><Configuration><Properties><Name>Store</Name></Properties><ChildObjects><Catalog>Requested</Catalog><Catalog>Unrelated</Catalog></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        for name in ["Requested", "Unrelated"] {
+            std::fs::write(
+                source.join(format!("Catalogs/{name}.xml")),
+                format!(r#"<MetaDataObject><Catalog><Properties><Name>{name}</Name></Properties><ChildObjects/></Catalog></MetaDataObject>"#),
+            )
+            .unwrap();
+        }
+        let workspace_hint = physical_root(workspace.path())
+            .to_string_lossy()
+            .into_owned();
+        for (budget, service) in [
+            (
+                "entry count",
+                CanonicalV13ReadService::with_directory_limit_for_test(1),
+            ),
+            (
+                "aggregate fact bytes",
+                CanonicalV13ReadService::with_directory_fact_limit_for_test(1),
+            ),
+        ] {
+            let daemon = LiveV5Daemon::start(Arc::new(service));
+            let owner = daemon.owner();
+            let submission = daemon.submit(
+                &owner,
+                &InvocationRequest::new(
+                    ToolIdentity::Resolve,
+                    serde_json::json!({"path": "src/Catalogs/Requested.xml"}),
+                    workspace_hint.as_str(),
+                    7_000,
+                )
+                .unwrap(),
+            );
+            let result = match submission {
+                V5Submission::Direct(result) => *result,
+                V5Submission::Task(task_id) => {
+                    let terminal = daemon.wait_terminal(&owner, task_id, INTEGRATION_TASK_WAIT);
+                    terminal
+                        .completed_result()
+                        .cloned()
+                        .expect("resolved path publishes its terminal result")
+                }
+            };
+            assert!(result.ok, "{budget}: {result:?}");
+            assert_eq!(
+                result.data.as_ref().unwrap()["at"],
+                "main:Catalog.Requested",
+                "{budget}"
+            );
+            daemon.finish(owner);
+        }
+    }
+
+    #[test]
     fn name_search_reports_an_injected_local_read_fault_through_the_live_daemon() {
         let workspace = tempfile::tempdir().unwrap();
         let source = workspace.path().join("src");
@@ -388,11 +455,24 @@ mod tests {
             serde_json::json!({"path": "src/Catalogs/Visible.xml"}),
         );
         assert!(
-            !exact.ok,
-            "resolve must not publish an incomplete directory: {exact:?}"
+            exact.ok,
+            "an unrelated unreadable descriptor must not block resolve: {exact:?}"
         );
-        assert_eq!(exact.diagnostics[0]["code"], "provider_unavailable");
-        assert_eq!(exact.diagnostics[0]["detailCode"], "source_unreadable");
+        assert_eq!(exact.data.as_ref().unwrap()["at"], "main:Catalog.Visible");
+
+        let unreadable_target = invoke(
+            ToolIdentity::Resolve,
+            serde_json::json!({"path": "src/Catalogs/Hidden.xml"}),
+        );
+        assert!(!unreadable_target.ok);
+        assert_eq!(
+            unreadable_target.diagnostics[0]["code"],
+            "provider_unavailable"
+        );
+        assert_eq!(
+            unreadable_target.diagnostics[0]["detailCode"],
+            "source_unreadable"
+        );
         daemon.finish(owner);
     }
 

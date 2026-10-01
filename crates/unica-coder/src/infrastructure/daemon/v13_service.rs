@@ -115,6 +115,24 @@ impl CanonicalInvocationService for CanonicalV13ReadService {
 
 impl CanonicalV13ReadService {
     #[cfg(test)]
+    pub(super) fn with_directory_limit_for_test(max_documents: usize) -> Self {
+        Self {
+            find_builder: WorkspaceFindDirectoryBuilder::with_document_limit(max_documents),
+            ..Self::default()
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_directory_fact_limit_for_test(max_fact_bytes: usize) -> Self {
+        Self {
+            find_builder: WorkspaceFindDirectoryBuilder::with_fact_byte_limit_for_test(
+                max_fact_bytes,
+            ),
+            ..Self::default()
+        }
+    }
+
+    #[cfg(test)]
     pub(super) fn with_name_read_fault_for_test(
         relative: &'static str,
         kind: std::io::ErrorKind,
@@ -2055,11 +2073,14 @@ impl CanonicalV13ReadService {
             .iter()
             .map(|source| LayoutFindSource::new(source.name(), source.kind(), source.root()))
             .collect::<Vec<_>>();
-        let directory = match self.find_builder.build(&layout, deadline, cancellation) {
-            Ok(directory) => directory,
+        let entry = match self
+            .find_builder
+            .locate_path(&layout, path, deadline, cancellation)
+        {
+            Ok(entry) => entry,
             Err(error) => return find_build_error_result(None, error),
         };
-        let Some(entry) = directory.locate_path(path) else {
+        let Some(entry) = entry else {
             return error_result(
                 None,
                 RefusalCode::NotFound,
