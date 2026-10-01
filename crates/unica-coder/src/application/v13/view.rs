@@ -1297,7 +1297,7 @@ mod tests {
             projected.as_object_mut().unwrap().remove("items");
             Ok(projected)
         });
-        assert!(result.ok, "{result:?}");
+        assert!(result.ok);
         assert!(result.data.as_ref().unwrap().get("items").is_none());
         assert!(result.cursor.is_none());
         assert!(result.page.is_none());
@@ -1311,7 +1311,7 @@ mod tests {
         authority.revision_change_on_snapshot = Some(3);
         let result = ViewService::new(authority, ViewCursorStore::default())
             .view(ViewRequest::new(at).unwrap());
-        assert!(!result.ok, "{result:?}");
+        assert!(!result.ok);
         assert_eq!(result.diagnostics[0]["code"], "concurrent_change");
         assert!(result.cursor.is_none());
     }
