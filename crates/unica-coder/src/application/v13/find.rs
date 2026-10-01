@@ -123,6 +123,7 @@ pub(crate) struct FindDocument {
     /// Where this object lives in the source layout, relative to the
     /// source-set root: a descriptor file, or the directory of a command.
     path: Option<String>,
+    path_alias: Option<FindPathAlias>,
     facts: Vec<FindFact>,
 }
 
@@ -152,6 +153,7 @@ impl FindDocument {
             kind,
             title: title.into(),
             path: None,
+            path_alias: None,
             facts,
         }
     }
@@ -167,6 +169,11 @@ impl FindDocument {
             .saturating_add(self.kind.len())
             .saturating_add(self.title.len())
             .saturating_add(
+                self.path_alias
+                    .as_ref()
+                    .map_or(0, FindPathAlias::estimated_bytes),
+            )
+            .saturating_add(
                 self.facts
                     .iter()
                     .fold(0usize, |total, fact| total.saturating_add(fact.value.len())),
@@ -176,6 +183,27 @@ impl FindDocument {
     pub(crate) fn at(&self) -> &str {
         &self.at
     }
+
+    pub(crate) fn set_path_alias(&mut self, path: Option<FindPathAlias>) {
+        self.path_alias = path;
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FindPathAlias {
+    pub(crate) relative: String,
+    pub(crate) absolute: String,
+}
+
+impl FindPathAlias {
+    pub(crate) fn estimated_bytes(&self) -> usize {
+        self.relative.len().saturating_add(self.absolute.len())
+    }
+}
+
+pub(crate) struct FindPathMatch<'a> {
+    pub(crate) owner: &'a FindDocument,
+    pub(crate) path: &'a str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -310,22 +338,61 @@ impl FindIndex {
     /// Точный поиск по пути. Путь мог прийти абсолютным или относительно
     /// корня рабочего пространства, поэтому хвост принимается тоже — но
     /// только целиком, посегментно, а не подстрокой.
-    pub(crate) fn locate_path(&self, path: &str) -> Option<&FindDocument> {
-        let query = normalize(&path.replace('\\', "/"));
-        self.documents
-            .iter()
-            .filter(|document| {
-                document.path.as_ref().is_some_and(|stored| {
-                    let stored = normalize(stored);
-                    query == stored
-                        || query
-                            .strip_suffix(&stored)
-                            .is_some_and(|head| head.ends_with('/'))
-                })
-            })
-            // Каталог команды и файл дескриптора могут оба претендовать на
-            // путь; побеждает самый длинный, то есть самый точный.
-            .max_by_key(|document| document.path.as_ref().map_or(0, String::len))
+    pub(crate) fn locate_path(&self, path: &str) -> Option<FindPathMatch<'_>> {
+        let absolute_query = std::path::Path::new(path).is_absolute();
+        let query = normalize_layout_path(path);
+        let mut best: Option<FindPathMatch<'_>> = None;
+        let mut best_is_alias = false;
+        let mut ambiguous = false;
+        for document in &self.documents {
+            for (path, absolute_alias) in document.path.iter().map(|path| (path, None)).chain(
+                document
+                    .path_alias
+                    .iter()
+                    .map(|alias| (&alias.relative, Some(&alias.absolute))),
+            ) {
+                let is_alias = absolute_alias.is_some();
+                let matches = {
+                    if let Some(absolute) = absolute_alias {
+                        let stored = normalize_layout_path(absolute);
+                        query == stored
+                            || (!absolute_query
+                                && query.len() >= normalize(path).len()
+                                && stored
+                                    .strip_suffix(&query)
+                                    .is_some_and(|head| head.ends_with('/')))
+                    } else {
+                        let stored = normalize(path);
+                        query == stored
+                            || query
+                                .strip_suffix(&stored)
+                                .is_some_and(|head| head.ends_with('/'))
+                    }
+                };
+                if !matches {
+                    continue;
+                }
+                match best.as_ref().map(|found| path.len().cmp(&found.path.len())) {
+                    None | Some(Ordering::Greater) => {
+                        best = Some(FindPathMatch {
+                            owner: document,
+                            path,
+                        });
+                        best_is_alias = is_alias;
+                        ambiguous = false;
+                    }
+                    Some(Ordering::Equal) if is_alias || best_is_alias => ambiguous = true,
+                    Some(Ordering::Equal) => {
+                        best = Some(FindPathMatch {
+                            owner: document,
+                            path,
+                        });
+                    }
+                    Some(Ordering::Less) => {}
+                }
+            }
+        }
+        best.filter(|_| !ambiguous)
     }
 
     pub(crate) fn find(&self, request: FindRequest) -> FindResult {
@@ -517,6 +584,18 @@ fn nearest_match<'a>(document: &'a FindDocument, query: &str) -> Option<ScoredCa
 
 fn normalize(value: &str) -> String {
     value.trim().to_lowercase()
+}
+
+pub(crate) fn normalize_layout_path(path: &str) -> String {
+    let normalized = normalize(&path.replace('\\', "/"));
+    if let Some(unc) = normalized.strip_prefix("//?/unc/") {
+        format!("//{unc}")
+    } else {
+        normalized
+            .strip_prefix("//?/")
+            .unwrap_or(&normalized)
+            .to_string()
+    }
 }
 
 fn bounded_levenshtein(left: &str, right: &str, bound: usize) -> Option<usize> {

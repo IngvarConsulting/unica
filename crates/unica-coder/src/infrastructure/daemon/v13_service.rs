@@ -49,6 +49,7 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use std::time::Instant;
 
 /// Canonical v0.13 service installed by the production v3 daemon composition.
 /// Each public name has a useful closed mode; unfinished variants fail with a
@@ -121,6 +122,24 @@ impl CanonicalV13ReadService {
             Arc::new(ViewCursorStore::default().with_capacity_observer(observer.clone()));
         service.find_builder = service.find_builder.with_capacity_observer(observer);
         service
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_directory_limit_for_test(max_documents: usize) -> Self {
+        Self {
+            find_builder: WorkspaceFindDirectoryBuilder::with_document_limit(max_documents),
+            ..Self::default()
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_directory_fact_limit_for_test(max_fact_bytes: usize) -> Self {
+        Self {
+            find_builder: WorkspaceFindDirectoryBuilder::with_fact_byte_limit_for_test(
+                max_fact_bytes,
+            ),
+            ..Self::default()
+        }
     }
 
     #[cfg(test)]
@@ -519,6 +538,7 @@ impl CanonicalV13ReadService {
                         let directory = directory.as_ref()?;
                         let (placed, role) = placed_for_module_file(path)?;
                         let entry = directory.locate_path(&placed)?;
+                        let entry = entry.owner;
                         if entry.at().split(':').next() != Some(source_set) {
                             return None;
                         }
@@ -1299,6 +1319,7 @@ impl CanonicalV13ReadService {
         };
 
         let context = invocation.workspace_context();
+        let unscoped_lexical = role == ProviderRole::Lexical && !arguments.contains_key("scope");
         // Канонический вход — логический адрес; порт разрешения контекста
         // говорит словарём v0.12. Перевод делается здесь и только здесь.
         let mut selector = Map::new();
@@ -1337,6 +1358,7 @@ impl CanonicalV13ReadService {
             Some(_) => {
                 return error_result(None, RefusalCode::BadValue, "search scope must be a string")
             }
+            None if unscoped_lexical => {}
             None => match invocation.admitted_source_set_names().first() {
                 Some(name) => {
                     selector.insert("sourceSet".to_string(), Value::String((*name).to_string()));
@@ -1351,11 +1373,14 @@ impl CanonicalV13ReadService {
             },
         }
 
-        let (search_context, _scope) =
+        let search_context = if unscoped_lexical {
+            None
+        } else {
             match self.ports.resolve_code_search_context(context, &selector) {
-                Ok(resolved) => resolved,
+                Ok((resolved, _)) => Some(resolved),
                 Err(error) => return error_result(None, RefusalCode::ProviderUnavailable, error),
-            };
+            }
+        };
         let registry = match self.ports.code_intelligence_registry() {
             Ok(registry) => registry,
             Err(error) => return error_result(None, RefusalCode::ProviderUnavailable, error),
@@ -1430,14 +1455,59 @@ impl CanonicalV13ReadService {
             query: query.to_string(),
             limit: PROVIDER_SEARCH_FETCH_LIMIT,
         };
-        let execution = match search_selected_role(
-            registry,
-            role,
-            &request,
-            &search_context,
-            cancellation,
-            operational.code_intelligence(),
-        ) {
+        let selected_sources = if unscoped_lexical {
+            invocation
+                .admitted_source_set_names()
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        } else {
+            vec![search_context
+                .as_ref()
+                .and_then(|context| context.source_root.source_set.clone())
+                .unwrap_or_default()]
+        };
+        let retained_roots = if unscoped_lexical {
+            match invocation.read_sources() {
+                Ok(sources) => sources
+                    .iter()
+                    .map(|source| {
+                        (
+                            source.source_set_name().to_owned(),
+                            source.retained_root().path().to_path_buf(),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+                Err(error) => return error_result(None, RefusalCode::InvalidState, error),
+            }
+        } else {
+            Vec::new()
+        };
+        let execution = match if unscoped_lexical {
+            search_unscoped_lexical(
+                self.ports.as_ref(),
+                context,
+                UnscopedLexicalSources {
+                    names: &selected_sources,
+                    retained_roots: &retained_roots,
+                },
+                registry,
+                &request,
+                cancellation,
+                operational.code_intelligence(),
+            )
+        } else {
+            search_selected_role(
+                registry,
+                role,
+                &request,
+                search_context
+                    .as_ref()
+                    .expect("explicit or default role context"),
+                cancellation,
+                operational.code_intelligence(),
+            )
+        } {
             Ok(execution) => execution,
             Err(error) => {
                 let code = if error.starts_with(crate::domain::cancellation::CANCELLED_PREFIX) {
@@ -1466,11 +1536,7 @@ impl CanonicalV13ReadService {
                 .map(str::to_owned),
             mode: role.as_str().to_owned(),
             kind: None,
-            source_sets: vec![search_context
-                .source_root
-                .source_set
-                .clone()
-                .unwrap_or_default()],
+            source_sets: selected_sources,
             revisions: Vec::new(),
             result_fingerprint: None,
             page_limit: limit,
@@ -2064,19 +2130,14 @@ impl CanonicalV13ReadService {
             .iter()
             .map(|source| LayoutFindSource::new(source.name(), source.kind(), source.root()))
             .collect::<Vec<_>>();
-        let directory = match self.find_builder.build(&layout, deadline, cancellation) {
-            Ok(directory) => directory,
+        let entry = match self
+            .find_builder
+            .locate_path(&layout, path, deadline, cancellation)
+        {
+            Ok(entry) => entry,
             Err(error) => return find_build_error_result(None, error),
         };
-        let Some(entry) = directory.locate_path(path) else {
-            return error_result(
-                None,
-                RefusalCode::NotFound,
-                format!("no admitted source set places `{path}`"),
-            );
-        };
-        // Путь называет файл, а не узел внутри него: строки не спрашивали.
-        let Some(placed) = entry.placed_path() else {
+        let Some(entry) = entry else {
             return error_result(
                 None,
                 RefusalCode::NotFound,
@@ -2086,7 +2147,7 @@ impl CanonicalV13ReadService {
         resolve_result(ResolvedSource::new(
             entry.at(),
             entry.kind(),
-            placed,
+            entry.placed_path().expect("located path has a place"),
             ResolvedLines::NotLineBased,
         ))
     }
@@ -2203,6 +2264,215 @@ fn search_selected_role(
         cancellation,
         &crate::domain::progress::NoopProgressSink,
     )
+}
+
+struct UnscopedLexicalSources<'a> {
+    names: &'a [String],
+    retained_roots: &'a [(String, std::path::PathBuf)],
+}
+
+fn search_unscoped_lexical(
+    ports: &crate::infrastructure::application_ports::InfrastructureApplicationPorts,
+    workspace: &crate::domain::workspace::WorkspaceContext,
+    sources: UnscopedLexicalSources<'_>,
+    registry: CodeIntelligenceRegistry,
+    request: &SearchRequest,
+    cancellation: &CancellationToken,
+    deadlines: crate::domain::operational_config::CodeIntelligenceDeadlines,
+) -> Result<crate::application::code_intelligence::CodeSearchExecution, String> {
+    use crate::application::code_intelligence::CodeSearchExecution;
+    use crate::application::ports::ApplicationPorts;
+    use crate::domain::code_intelligence::{
+        CodeSearchResult, ProviderSearchSection, ProviderSectionStatus, SearchCoverage,
+        SearchOrdering, SearchRanking,
+    };
+
+    let source_sets = sources.names;
+    if source_sets.is_empty() {
+        return Err("no admitted source set is available for a role search".to_string());
+    }
+    let started = Instant::now();
+    let budget = deadlines.search_total_timeout();
+    let mut contexts = source_sets
+        .iter()
+        .map(|name| {
+            let selector = Map::from_iter([("sourceSet".to_string(), Value::String(name.clone()))]);
+            ports
+                .resolve_code_search_context(workspace, &selector)
+                .map(|(context, _)| context)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let roots = contexts
+        .iter()
+        .map(|context| context.source_root.path.clone())
+        .collect::<Vec<_>>();
+    for (name, root) in source_sets.iter().zip(&roots) {
+        if !sources
+            .retained_roots
+            .iter()
+            .any(|(retained_name, retained_root)| retained_name == name && retained_root == root)
+        {
+            return Err(format!(
+                "source set `{name}` no longer matches its actor-admitted root"
+            ));
+        }
+    }
+    for (index, context) in contexts.iter_mut().enumerate() {
+        let scope = context
+            .search_scope
+            .as_mut()
+            .expect("resolved search scope");
+        for (other_index, root) in roots.iter().enumerate() {
+            if index != other_index {
+                if let Ok(relative) = root.strip_prefix(&roots[index]) {
+                    if !relative.as_os_str().is_empty() {
+                        scope.excluded_subtrees.push(relative.to_path_buf());
+                    }
+                }
+            }
+        }
+    }
+
+    let provider = registry
+        .search_providers()
+        .find(|candidate| candidate.identity().role == ProviderRole::Lexical)
+        .cloned()
+        .ok_or_else(|| "no search provider is registered for `lexical`".to_string())?;
+    let identity = provider.identity();
+    let mut hits = Vec::new();
+    let mut diagnostics = Vec::new();
+    let mut warnings = Vec::new();
+    let mut incomplete = None;
+    for (name, context) in source_sets.iter().zip(contexts.iter()) {
+        if cancellation.is_cancelled() {
+            return Err(crate::domain::cancellation::cancelled_error(
+                "unscoped lexical search stopped between source sets",
+            ));
+        }
+        let remaining = budget.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            diagnostics.push(format!(
+                "source set `{name}` was not searched before the deadline"
+            ));
+            incomplete = Some(ProviderSectionStatus::TimedOut);
+            break;
+        }
+        let selected = CodeIntelligenceRegistry::new(vec![Arc::clone(&provider)])?;
+        let source_request = SearchRequest {
+            query: request.query.clone(),
+            limit: request.limit.saturating_sub(hits.len()),
+        };
+        let execution = search_selected_role(
+            selected,
+            ProviderRole::Lexical,
+            &source_request,
+            context,
+            cancellation,
+            deadlines.within_search_budget(remaining),
+        )?;
+        let section = execution
+            .result
+            .sections
+            .into_iter()
+            .next()
+            .ok_or_else(|| format!("lexical provider omitted source set `{name}`"))?;
+        warnings.extend(
+            execution
+                .warnings
+                .into_iter()
+                .map(|warning| format!("{name}: {warning}")),
+        );
+        diagnostics.extend(
+            section
+                .diagnostics
+                .into_iter()
+                .map(|diagnostic| format!("{name}: {diagnostic}")),
+        );
+        hits.extend(section.hits);
+        match section.status {
+            ProviderSectionStatus::Ok | ProviderSectionStatus::Empty => {}
+            status => {
+                diagnostics.push(format!(
+                    "source set `{name}` search ended as {}",
+                    status.as_str()
+                ));
+                if incomplete.is_none()
+                    || status == ProviderSectionStatus::TimedOut
+                    || (status == ProviderSectionStatus::Partial
+                        && incomplete != Some(ProviderSectionStatus::TimedOut))
+                {
+                    incomplete = Some(status);
+                }
+            }
+        }
+        if hits.len() >= request.limit {
+            if incomplete.is_some() && incomplete != Some(ProviderSectionStatus::LimitReached) {
+                diagnostics.push("lexical result limit was also reached".to_string());
+            }
+            incomplete.get_or_insert(ProviderSectionStatus::LimitReached);
+            break;
+        }
+    }
+    let section = match incomplete {
+        None => ProviderSearchSection::complete(
+            identity,
+            SearchRanking::None,
+            SearchOrdering::ProviderTraversal,
+            hits,
+            diagnostics,
+        )?,
+        Some(ProviderSectionStatus::LimitReached) => ProviderSearchSection::limit_reached(
+            identity,
+            SearchRanking::None,
+            SearchOrdering::ProviderTraversal,
+            hits,
+            diagnostics,
+        )?,
+        Some(ProviderSectionStatus::TimedOut) => ProviderSearchSection::timed_out(
+            identity,
+            SearchRanking::None,
+            SearchOrdering::ProviderTraversal,
+            hits,
+            diagnostics,
+        )?,
+        Some(_) if hits.is_empty() => {
+            ProviderSearchSection::failed_with_diagnostics(identity, diagnostics)
+        }
+        Some(_) => ProviderSearchSection::partial(
+            identity,
+            SearchRanking::None,
+            SearchOrdering::ProviderTraversal,
+            hits,
+            diagnostics,
+        )?,
+    };
+    let complete = section.search_complete;
+    let reportable = complete
+        || matches!(
+            section.status,
+            ProviderSectionStatus::Partial
+                | ProviderSectionStatus::LimitReached
+                | ProviderSectionStatus::TimedOut
+        ) && (!section.hits.is_empty() || section.status == ProviderSectionStatus::TimedOut);
+    if reportable && section.status == ProviderSectionStatus::Partial {
+        warnings.push("lexical search contains partial source results".to_string());
+    }
+    Ok(CodeSearchExecution {
+        ok: reportable,
+        result: CodeSearchResult {
+            coverage: if complete {
+                SearchCoverage::Complete
+            } else if reportable {
+                SearchCoverage::Partial
+            } else {
+                SearchCoverage::None
+            },
+            elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            sections: vec![section],
+        },
+        warnings,
+        errors: Vec::new(),
+    })
 }
 
 fn provider_search_page(
@@ -3194,6 +3464,7 @@ fn view_error_result(
 
 #[cfg(test)]
 mod tests {
+    use super::UnscopedLexicalSources;
     use crate::application::code_intelligence::CodeSearchExecution;
     use crate::application::result_store::SearchCursorBinding;
     use crate::domain::cancellation::CancellationToken;
@@ -3566,6 +3837,331 @@ mod tests {
             PathBuf::from("/workspace"),
             false,
         ))
+    }
+
+    #[derive(Clone, Copy)]
+    enum SplitLexicalCase {
+        PartialThenLimit,
+        PartialThenFailed,
+        PartialThenTimedOut,
+        EmptyThenTimedOut,
+    }
+
+    struct SplitLexicalProvider(SplitLexicalCase);
+
+    impl CodeIntelligenceProvider for SplitLexicalProvider {
+        fn identity(&self) -> ProviderIdentity {
+            ProviderIdentity::new(ProviderRole::Lexical, "split-lexical")
+        }
+
+        fn capabilities(&self) -> &[ProviderCapability] {
+            &[ProviderCapability::Search]
+        }
+
+        fn search(
+            &self,
+            request: &SearchRequest,
+            context: &CodeIntelligenceContext,
+            _: ProviderDeadline,
+            _: &CancellationToken,
+        ) -> ProviderSearchSection {
+            use crate::domain::code_intelligence::ProviderSearchHit;
+            use crate::domain::source_location::SourceLocation;
+
+            let name = context.source_root.source_set.as_deref().unwrap();
+            let count = match (self.0, name) {
+                (SplitLexicalCase::EmptyThenTimedOut, "first") => 0,
+                (_, "first") => 1,
+                (SplitLexicalCase::PartialThenLimit, _) => request.limit,
+                _ => 0,
+            };
+            let hits = (0..count)
+                .map(|line| ProviderSearchHit {
+                    rank: None,
+                    provider_score: None,
+                    location: SourceLocation::Unaddressable {
+                        source_set: name.to_string(),
+                        owner_metadata_path: None,
+                        path: "Module.bsl".to_string(),
+                    },
+                    line: line + 1,
+                    end_line: None,
+                    symbol: None,
+                    kind: None,
+                    snippet: "Needle".to_string(),
+                    attributes: serde_json::Map::new(),
+                })
+                .collect();
+            match (self.0, name) {
+                (SplitLexicalCase::EmptyThenTimedOut, "first") => ProviderSearchSection::complete(
+                    self.identity(),
+                    SearchRanking::None,
+                    SearchOrdering::ProviderTraversal,
+                    hits,
+                    Vec::new(),
+                )
+                .unwrap(),
+                (_, "first") => ProviderSearchSection::partial(
+                    self.identity(),
+                    SearchRanking::None,
+                    SearchOrdering::ProviderTraversal,
+                    hits,
+                    vec!["one record could not be read".to_string()],
+                )
+                .unwrap(),
+                (SplitLexicalCase::PartialThenLimit, _) => ProviderSearchSection::limit_reached(
+                    self.identity(),
+                    SearchRanking::None,
+                    SearchOrdering::ProviderTraversal,
+                    hits,
+                    Vec::new(),
+                )
+                .unwrap(),
+                (SplitLexicalCase::PartialThenFailed, _) => ProviderSearchSection::failed(
+                    self.identity(),
+                    "second source failed".to_string(),
+                ),
+                _ => ProviderSearchSection::timed_out(
+                    self.identity(),
+                    SearchRanking::None,
+                    SearchOrdering::ProviderTraversal,
+                    hits,
+                    vec!["second source deadline exceeded".to_string()],
+                )
+                .unwrap(),
+            }
+        }
+    }
+
+    struct PerSourceDeadlineProvider;
+
+    impl CodeIntelligenceProvider for PerSourceDeadlineProvider {
+        fn identity(&self) -> ProviderIdentity {
+            ProviderIdentity::new(ProviderRole::Lexical, "per-source-deadline")
+        }
+
+        fn capabilities(&self) -> &[ProviderCapability] {
+            &[ProviderCapability::Search]
+        }
+
+        fn search(
+            &self,
+            _: &SearchRequest,
+            context: &CodeIntelligenceContext,
+            deadline: ProviderDeadline,
+            _: &CancellationToken,
+        ) -> ProviderSearchSection {
+            if context.source_root.source_set.as_deref() == Some("first") {
+                std::thread::sleep(Duration::from_secs(1));
+            } else if deadline.remaining() < Duration::from_millis(2500) {
+                return ProviderSearchSection::timed_out(
+                    self.identity(),
+                    SearchRanking::None,
+                    SearchOrdering::ProviderTraversal,
+                    Vec::new(),
+                    vec!["the second source lacked its configured provider budget".to_string()],
+                )
+                .unwrap();
+            }
+            ProviderSearchSection::complete(
+                self.identity(),
+                SearchRanking::None,
+                SearchOrdering::ProviderTraversal,
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap()
+        }
+    }
+
+    fn two_source_lexical_workspace(
+    ) -> (tempfile::TempDir, WorkspaceContext, Vec<(String, PathBuf)>) {
+        let root = tempfile::tempdir().unwrap();
+        for name in ["first", "second"] {
+            std::fs::create_dir(root.path().join(name)).unwrap();
+        }
+        std::fs::write(
+            root.path().join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: first\n    type: CONFIGURATION\n    path: first\n  - name: second\n    type: CONFIGURATION\n    path: second\n",
+        )
+        .unwrap();
+        let workspace = WorkspaceContext {
+            cwd: root.path().to_path_buf(),
+            workspace_root: root.path().to_path_buf(),
+            cache_root: root.path().join(".build"),
+            workspace_epoch: 1,
+        };
+        let roots = ["first", "second"]
+            .into_iter()
+            .map(|name| {
+                (
+                    name.to_string(),
+                    crate::infrastructure::source_roots::normalize_path_identity(
+                        &root.path().join(name),
+                    )
+                    .unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        (root, workspace, roots)
+    }
+
+    #[test]
+    fn unscoped_lexical_keeps_partial_evidence_at_the_global_limit() {
+        let (_root, workspace, roots) = two_source_lexical_workspace();
+        let execution = super::search_unscoped_lexical(
+            &crate::infrastructure::application_ports::InfrastructureApplicationPorts::new(),
+            &workspace,
+            UnscopedLexicalSources {
+                names: &["first".to_string(), "second".to_string()],
+                retained_roots: &roots,
+            },
+            CodeIntelligenceRegistry::new(vec![Arc::new(SplitLexicalProvider(
+                SplitLexicalCase::PartialThenLimit,
+            ))])
+            .unwrap(),
+            &SearchRequest {
+                query: "Needle".to_string(),
+                limit: 200,
+            },
+            &CancellationToken::new(),
+            CodeIntelligenceDeadlines::for_test(Duration::from_secs(5)),
+        )
+        .unwrap();
+        assert!(execution.ok);
+        let section = &execution.result.sections[0];
+        assert_eq!(
+            section.status,
+            crate::domain::code_intelligence::ProviderSectionStatus::Partial
+        );
+        assert!(!section.search_complete);
+        assert_eq!(section.hits.len(), 200);
+        assert!(section
+            .diagnostics
+            .iter()
+            .any(|item| item.contains("one record could not be read")));
+    }
+
+    #[test]
+    fn unscoped_lexical_names_a_later_failed_or_timed_out_source() {
+        use crate::domain::code_intelligence::ProviderSectionStatus;
+
+        for (case, expected) in [
+            (
+                SplitLexicalCase::PartialThenFailed,
+                ProviderSectionStatus::Partial,
+            ),
+            (
+                SplitLexicalCase::PartialThenTimedOut,
+                ProviderSectionStatus::TimedOut,
+            ),
+        ] {
+            let (_root, workspace, roots) = two_source_lexical_workspace();
+            let execution = super::search_unscoped_lexical(
+                &crate::infrastructure::application_ports::InfrastructureApplicationPorts::new(),
+                &workspace,
+                UnscopedLexicalSources {
+                    names: &["first".to_string(), "second".to_string()],
+                    retained_roots: &roots,
+                },
+                CodeIntelligenceRegistry::new(vec![Arc::new(SplitLexicalProvider(case))]).unwrap(),
+                &SearchRequest {
+                    query: "Needle".to_string(),
+                    limit: 200,
+                },
+                &CancellationToken::new(),
+                CodeIntelligenceDeadlines::for_test(Duration::from_secs(5)),
+            )
+            .unwrap();
+            assert!(execution.ok);
+            let section = &execution.result.sections[0];
+            assert_eq!(section.status, expected);
+            assert_eq!(section.hits.len(), 1);
+            assert!(
+                section
+                    .diagnostics
+                    .iter()
+                    .any(|item| item.contains("source set `second` search ended as")),
+                "{section:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unscoped_lexical_reports_zero_hit_timeout_without_a_generic_refusal() {
+        let (_root, workspace, roots) = two_source_lexical_workspace();
+        let execution = super::search_unscoped_lexical(
+            &crate::infrastructure::application_ports::InfrastructureApplicationPorts::new(),
+            &workspace,
+            UnscopedLexicalSources {
+                names: &["first".to_string(), "second".to_string()],
+                retained_roots: &roots,
+            },
+            CodeIntelligenceRegistry::new(vec![Arc::new(SplitLexicalProvider(
+                SplitLexicalCase::EmptyThenTimedOut,
+            ))])
+            .unwrap(),
+            &SearchRequest {
+                query: "Needle".to_string(),
+                limit: 200,
+            },
+            &CancellationToken::new(),
+            CodeIntelligenceDeadlines::for_test(Duration::from_secs(5)),
+        )
+        .unwrap();
+        assert!(execution.ok);
+        let result = super::provider_search_page(
+            &crate::application::result_store::SearchCursorStore::default(),
+            ProviderRole::Lexical,
+            execution,
+            provider_search_test_binding(ProviderRole::Lexical, 20),
+            None,
+            &CancellationToken::new(),
+        );
+        let result = serde_json::to_value(result).unwrap();
+        assert_eq!(result["ok"], true, "{result:#}");
+        assert_eq!(result["data"]["matches"][0]["status"], "timedOut");
+        assert_eq!(
+            result["data"]["matches"][0]["termination"]["code"],
+            "deadlineExceeded"
+        );
+        assert!(result["data"]["matches"][0]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item.as_str().unwrap().contains("source set `second`")));
+    }
+
+    #[test]
+    fn unscoped_lexical_keeps_each_provider_timeout_under_the_shared_total() {
+        let (_root, workspace, roots) = two_source_lexical_workspace();
+        let execution = super::search_unscoped_lexical(
+            &crate::infrastructure::application_ports::InfrastructureApplicationPorts::new(),
+            &workspace,
+            UnscopedLexicalSources {
+                names: &["first".to_string(), "second".to_string()],
+                retained_roots: &roots,
+            },
+            CodeIntelligenceRegistry::new(vec![Arc::new(PerSourceDeadlineProvider)]).unwrap(),
+            &SearchRequest {
+                query: "Needle".to_string(),
+                limit: 200,
+            },
+            &CancellationToken::new(),
+            CodeIntelligenceDeadlines::for_test_values(
+                Duration::from_secs(10),
+                Duration::from_secs(10),
+                Duration::from_secs(3),
+                Duration::from_secs(10),
+            ),
+        )
+        .unwrap();
+        let section = &execution.result.sections[0];
+        assert!(section.search_complete, "{section:#?}");
+        assert_eq!(
+            section.status,
+            crate::domain::code_intelligence::ProviderSectionStatus::Empty
+        );
     }
 
     #[test]

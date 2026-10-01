@@ -405,6 +405,9 @@ fn public_view_starts_body_over_sixty_four_mib_and_splits_one_long_line() {
     mcp.finish();
 }
 
+#[path = "platform/v13_resolve_target_isolation.rs"]
+mod target_isolation;
+
 // Интеграционная цель — `medium` по `kind(test)`: идёт в очереди и на main,
 // на pull request не идёт. Отдельной джобы и выключателя больше нет.
 #[test]
