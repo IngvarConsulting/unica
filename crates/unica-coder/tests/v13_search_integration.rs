@@ -67,6 +67,10 @@ impl McpProcess {
         stdin.flush().expect("flush MCP notification");
     }
 
+    fn completed_tool_call(&mut self, request: Value) -> Value {
+        completed_tool_result(request, |request| self.exchange(request))
+    }
+
     fn finish(&mut self) {
         drop(self.stdin.take());
         let deadline = Instant::now() + RESPONSE_DEADLINE;
@@ -91,10 +95,10 @@ impl Drop for McpProcess {
     }
 }
 
-fn call_tool(id: u64, name: &str, arguments: Value) -> Value {
+fn call_tool(id: impl Into<Value>, name: &str, arguments: Value) -> Value {
     json!({
         "jsonrpc": "2.0",
-        "id": id,
+        "id": id.into(),
         "method": "tools/call",
         "params": {"name": name, "arguments": arguments}
     })
@@ -108,6 +112,141 @@ fn domain_result(response: &Value) -> Value {
         .as_str()
         .unwrap_or_else(|| panic!("missing canonical tool result: {response:#}"));
     serde_json::from_str(text).expect("decode canonical DomainResult")
+}
+
+fn completed_tool_result(request: Value, mut exchange: impl FnMut(Value) -> Value) -> Value {
+    let first_id = request["id"].as_u64().expect("numeric request id");
+    let mut result = domain_result(&exchange(request));
+    let mut task_id: Option<String> = None;
+    // После окна прямого ответа читаем то же задание. Повтор subject tool
+    // создал бы новый вызов; отсутствие конечного ответа ограничено 10 ожиданиями.
+    for poll in 0..=10 {
+        let task = &result["data"]["task"];
+        if result["ok"] != true || task.is_null() {
+            return result;
+        }
+        assert!(
+            matches!(
+                task["status"].as_str(),
+                Some("queued" | "working" | "completed")
+            ),
+            "unexpected task state: {result:#}"
+        );
+        let current_id = task["taskId"].as_str().expect("task receipt has an id");
+        if let Some(expected) = &task_id {
+            assert_eq!(current_id, expected, "task identity changed: {result:#}");
+        } else {
+            task_id = Some(current_id.to_string());
+        }
+        assert!(poll < 10, "task did not finish: {result:#}");
+        result = domain_result(&exchange(call_tool(
+            format!("task-result:{first_id}:{poll}"),
+            "unica.task.result",
+            json!({"taskId":current_id,"waitMs":7000}),
+        )));
+    }
+    unreachable!("unfinished task fails at the polling bound")
+}
+
+#[test]
+fn completed_tool_result_observes_the_same_task_without_resubmitting_view() {
+    let task_id = "00000000-0000-4000-8000-000000000001";
+    let request = call_tool(
+        2,
+        "unica.view",
+        json!({"at":"main:CommonModule.Main.Body","limit":50}),
+    );
+    let terminal = json!({"ok":true,"data":{"items":[{"line":1,"text":"// body"}]}});
+    let mut replies = [
+        json!({"ok":true,"data":{"task":{"taskId":task_id,"status":"queued"}}}),
+        json!({"ok":true,"data":{"task":{"taskId":task_id,"status":"working"}}}),
+        terminal.clone(),
+        terminal.clone(),
+    ]
+    .into_iter();
+    let mut calls = Vec::new();
+    let mut exchange = |request| {
+        calls.push(request);
+        json!({"result":{"structuredContent":replies.next().expect("no extra calls")}})
+    };
+    let result = completed_tool_result(request.clone(), &mut exchange);
+    assert_eq!(result, terminal);
+    let next_page = call_tool(
+        3,
+        "unica.view",
+        json!({"at":"main:CommonModule.Main.Body","cursor":"page-2"}),
+    );
+    assert_eq!(
+        completed_tool_result(next_page.clone(), &mut exchange),
+        terminal
+    );
+    let ids: std::collections::BTreeSet<_> =
+        calls.iter().map(|call| call["id"].to_string()).collect();
+    assert_eq!(
+        ids.len(),
+        calls.len(),
+        "request IDs must remain unique between pages"
+    );
+    assert_eq!(
+        calls,
+        vec![
+            request,
+            call_tool(
+                "task-result:2:0",
+                "unica.task.result",
+                json!({"taskId":task_id,"waitMs":7000})
+            ),
+            call_tool(
+                "task-result:2:1",
+                "unica.task.result",
+                json!({"taskId":task_id,"waitMs":7000})
+            ),
+            next_page,
+        ]
+    );
+    assert!(replies.next().is_none());
+}
+
+#[test]
+fn completed_tool_result_returns_direct_and_failed_results_without_retry() {
+    for terminal in [
+        json!({"ok":true,"data":{"items":[]}}),
+        json!({"ok":false,"data":{"task":{"status":"failed"}},"diagnostics":[{"code":"task_failed"}]}),
+        json!({"ok":false,"data":{"task":{"status":"cancelled"}},"diagnostics":[{"code":"task_cancelled"}]}),
+    ] {
+        let mut calls = 0;
+        let result = completed_tool_result(call_tool(2, "unica.view", json!({})), |_| {
+            calls += 1;
+            json!({"result":{"structuredContent":terminal}})
+        });
+        assert_eq!(result, terminal);
+        assert_eq!(calls, 1, "terminal result must not be retried");
+    }
+}
+
+#[test]
+#[should_panic(expected = "task identity changed")]
+fn completed_tool_result_rejects_a_different_task() {
+    let mut id = 0;
+    completed_tool_result(call_tool(2, "unica.view", json!({})), |_| {
+        id += 1;
+        json!({"result":{"structuredContent":{"ok":true,"data":{"task":{
+            "taskId":format!("00000000-0000-4000-8000-{id:012}"),"status":"working"
+        }}}}})
+    });
+}
+
+#[test]
+#[should_panic(expected = "task did not finish")]
+fn completed_tool_result_bounds_observation_of_an_unfinished_task() {
+    let mut calls = 0;
+    completed_tool_result(call_tool(2, "unica.view", json!({})), |_| {
+        calls += 1;
+        assert!(calls <= 11, "polling exceeded its bound");
+        json!({"result":{"structuredContent":{"ok":true,"data":{"task":{
+            "taskId":"00000000-0000-4000-8000-000000000001","status":"working"
+        }}}}})
+    });
 }
 
 #[test]
@@ -314,8 +453,7 @@ fn public_view_pages_large_bsl_body_and_replays_disk_cursor() {
     let mut mcp = McpProcess::start(root.path());
     initialize_body_mcp(&mut mcp);
     let at = "main:CommonModule.Main.Body";
-    let first =
-        domain_result(&mcp.exchange(call_tool(2, "unica.view", json!({"at":at, "limit":2}))));
+    let first = mcp.completed_tool_call(call_tool(2, "unica.view", json!({"at":at, "limit":2})));
     assert_eq!(first["ok"], true, "{first:#}");
     assert_eq!(
         first["data"]["items"][0],
@@ -331,16 +469,16 @@ fn public_view_pages_large_bsl_body_and_replays_disk_cursor() {
         .as_str()
         .expect("disk continuation")
         .to_string();
-    let second = domain_result(&mcp.exchange(call_tool(
+    let second = mcp.completed_tool_call(call_tool(
         3,
         "unica.view",
         json!({"at":at,"limit":2,"cursor":cursor}),
-    )));
-    let replay = domain_result(&mcp.exchange(call_tool(
+    ));
+    let replay = mcp.completed_tool_call(call_tool(
         4,
         "unica.view",
         json!({"at":at,"limit":2,"cursor":cursor}),
-    )));
+    ));
     assert_eq!(second, replay, "cursor replay must be byte-stable");
     for item in second["data"]["items"].as_array().unwrap() {
         seen.push(assert_large_body_line(item));
@@ -348,11 +486,11 @@ fn public_view_pages_large_bsl_body_and_replays_disk_cursor() {
     cursor = second["cursor"].as_str().unwrap().to_string();
     let mut id = 5;
     loop {
-        let page = domain_result(&mcp.exchange(call_tool(
+        let page = mcp.completed_tool_call(call_tool(
             id,
             "unica.view",
             json!({"at":at,"limit":2,"cursor":cursor}),
-        )));
+        ));
         assert_eq!(page["ok"], true, "{page:#}");
         for item in page["data"]["items"].as_array().unwrap() {
             seen.push(assert_large_body_line(item));
@@ -369,11 +507,11 @@ fn public_view_pages_large_bsl_body_and_replays_disk_cursor() {
         "Procedure Changed()\nEndProcedure\n",
     )
     .unwrap();
-    let stale = domain_result(&mcp.exchange(call_tool(
+    let stale = mcp.completed_tool_call(call_tool(
         id + 1,
         "unica.view",
         json!({"at":at,"limit":2,"cursor":first["cursor"]}),
-    )));
+    ));
     assert_eq!(stale["ok"], false, "{stale:#}");
     assert_eq!(stale["diagnostics"][0]["code"], "stale_cursor");
     mcp.finish();
@@ -395,10 +533,9 @@ fn public_view_starts_body_over_sixty_four_mib_and_splits_one_long_line() {
     let mut mcp = McpProcess::start(root.path());
     initialize_body_mcp(&mut mcp);
     let at = "main:CommonModule.Main.Body";
-    let first =
-        domain_result(&mcp.exchange(call_tool(2, "unica.view", json!({"at":at,"limit":50}))));
+    let first = mcp.completed_tool_call(call_tool(2, "unica.view", json!({"at":at,"limit":50})));
     assert_eq!(first["ok"], true, "{first:#}");
-    assert_eq!(first["data"]["items"][0]["line"], 1);
+    assert_eq!(first["data"]["items"][0]["line"], 1, "{first:#}");
     assert_eq!(first["data"]["items"][0]["byteOffset"], 0);
     assert_eq!(first["data"]["items"][0]["endOfLine"], false);
     assert_eq!(first["data"]["items"].as_array().unwrap().len(), 1);
@@ -408,13 +545,13 @@ fn public_view_starts_body_over_sixty_four_mib_and_splits_one_long_line() {
         65536
     );
     let cursor = first["cursor"].as_str().expect("long-line continuation");
-    let next = domain_result(&mcp.exchange(call_tool(
+    let next = mcp.completed_tool_call(call_tool(
         3,
         "unica.view",
         json!({"at":at,"limit":50,"cursor":cursor}),
-    )));
+    ));
     assert_eq!(next["ok"], true, "{next:#}");
-    assert_eq!(next["data"]["items"][0]["line"], 1);
+    assert_eq!(next["data"]["items"][0]["line"], 1, "{next:#}");
     assert_eq!(next["data"]["items"][0]["byteOffset"], 65536);
     mcp.finish();
 }
