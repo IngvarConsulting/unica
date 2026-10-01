@@ -609,6 +609,26 @@ fn project_configuration(
     payload: &Value,
     suffix: &[AddressSegment],
 ) -> Result<NodeViewData, ViewError> {
+    let mut counts = std::collections::BTreeMap::<String, usize>::new();
+    for item in payload
+        .get("registeredObjects")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if let Some(kind) = item.get("kind").and_then(Value::as_str) {
+            *counts.entry(kind.to_string()).or_default() += 1;
+        }
+    }
+    project_configuration_with_counts(address, payload, suffix, counts)
+}
+
+pub(super) fn project_configuration_with_counts(
+    address: &QualifiedAddress,
+    payload: &Value,
+    suffix: &[AddressSegment],
+    counts: std::collections::BTreeMap<String, usize>,
+) -> Result<NodeViewData, ViewError> {
     if !suffix.is_empty() {
         return Err(ViewError::new(
             RefusalCode::NotFound,
@@ -658,17 +678,6 @@ fn project_configuration(
                 props.insert(key.to_string(), Value::Null);
             }
             _ => {}
-        }
-    }
-    let mut counts = std::collections::BTreeMap::<String, usize>::new();
-    for item in payload
-        .get("registeredObjects")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        if let Some(kind) = item.get("kind").and_then(Value::as_str) {
-            *counts.entry(kind.to_string()).or_default() += 1;
         }
     }
     let branches = counts

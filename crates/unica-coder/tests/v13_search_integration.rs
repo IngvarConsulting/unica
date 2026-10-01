@@ -110,6 +110,113 @@ fn domain_result(response: &Value) -> Value {
     serde_json::from_str(text).expect("decode canonical DomainResult")
 }
 
+#[test]
+fn canonical_view_reads_configuration_past_eight_mebibytes_with_many_registrations() {
+    let root = tempfile::tempdir().expect("large configuration workspace");
+    let workspace = root.path();
+    std::fs::write(
+        workspace.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\n",
+    )
+    .expect("workspace manifest");
+    std::fs::create_dir_all(workspace.join("CommonModules")).expect("metadata directory");
+    for index in 0..32 {
+        let name = format!("Module{index:02}");
+        std::fs::write(
+            workspace.join(format!("CommonModules/{name}.xml")),
+            format!(
+                "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><CommonModule><Properties><Name>{name}</Name><Global>false</Global><ClientManagedApplication>true</ClientManagedApplication><Server>true</Server><ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ServerCall>false</ServerCall><Privileged>false</Privileged><ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties></CommonModule></MetaDataObject>"
+            ),
+        )
+        .expect("metadata descriptor");
+    }
+    for name in ["Module00", "Module31", "ModuleNew"] {
+        std::fs::create_dir_all(workspace.join(format!("CommonModules/{name}/Ext")))
+            .expect("module source directory");
+        std::fs::write(
+            workspace.join(format!("CommonModules/{name}/Ext/Module.bsl")),
+            "Процедура Проверка() Экспорт\nКонецПроцедуры\n",
+        )
+        .expect("module source");
+    }
+    std::fs::write(
+        workspace.join("CommonModules/ModuleNew.xml"),
+        "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><CommonModule><Properties><Name>ModuleNew</Name><Global>false</Global><ClientManagedApplication>true</ClientManagedApplication><Server>true</Server><ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ServerCall>false</ServerCall><Privileged>false</Privileged><ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties></CommonModule></MetaDataObject>",
+    )
+    .expect("future metadata descriptor");
+    let path = workspace.join("Configuration.xml");
+    let mut xml = std::fs::File::create(&path).expect("configuration document");
+    xml.write_all(b"<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><Configuration><Properties><Name>First<!--")
+        .unwrap();
+    for _ in 0..129 {
+        xml.write_all(&[b'x'; 64 * 1024]).unwrap();
+    }
+    xml.write_all(b"-->Second</Name></Properties><ChildObjects>")
+        .unwrap();
+    for index in 0..512 {
+        write!(xml, "<CommonModule>Module{:02}</CommonModule>", index % 32).unwrap();
+    }
+    xml.write_all(b"</ChildObjects></Configuration></MetaDataObject>")
+        .unwrap();
+    xml.flush().unwrap();
+    assert!(std::fs::metadata(&path).unwrap().len() > 8 * 1024 * 1024);
+
+    let mut mcp = McpProcess::start(workspace);
+    let initialized = mcp.exchange(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                   "clientInfo": {"name": "v13-large-configuration", "version": "1"}}
+    }));
+    assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
+    mcp.notify(json!({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}));
+    let view = domain_result(&mcp.exchange(call_tool(
+        2,
+        "unica.view",
+        json!({"at": "main:Configuration"}),
+    )));
+    assert_eq!(view["ok"], true, "{view:#}");
+    assert_eq!(view["data"]["props"]["name"], "First");
+    assert_eq!(view["data"]["props"]["totalObjects"], 512);
+    let branch = view["data"]["branches"]
+        .as_array()
+        .and_then(|branches| {
+            branches
+                .iter()
+                .find(|branch| branch["at"] == "main:CommonModule")
+        })
+        .expect("registered CommonModule branch");
+    assert_eq!(branch["count"], 32);
+    let named = domain_result(&mcp.exchange(call_tool(
+        3,
+        "unica.view",
+        json!({"at": "main:CommonModule.Module00"}),
+    )));
+    assert_eq!(named["ok"], true, "{named:#}");
+    assert_eq!(named["data"]["at"], "main:CommonModule.Module00");
+    let other = domain_result(&mcp.exchange(call_tool(
+        4,
+        "unica.view",
+        json!({"at": "main:CommonModule.Module31"}),
+    )));
+    assert_eq!(other["ok"], true, "{other:#}");
+    let old_revision = other["rev"].clone();
+    let source = std::fs::read_to_string(&path).expect("read large root for revision change");
+    let source = source.replacen(
+        "<CommonModule>Module31</CommonModule>",
+        "<CommonModule>ModuleNew</CommonModule>",
+        1,
+    );
+    std::fs::write(&path, source).expect("publish changed root registration");
+    let changed = domain_result(&mcp.exchange(call_tool(
+        5,
+        "unica.view",
+        json!({"at": "main:CommonModule.ModuleNew"}),
+    )));
+    assert_eq!(changed["ok"], true, "{changed:#}");
+    assert_ne!(changed["rev"], old_revision, "source revision must change");
+    mcp.finish();
+}
+
 // Интеграционная цель — `medium` по `kind(test)`: идёт в очереди и на main,
 // на pull request не идёт. Отдельной джобы и выключателя больше нет.
 #[test]

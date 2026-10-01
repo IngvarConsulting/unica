@@ -45,6 +45,10 @@ use crate::infrastructure::platform_xml_owner::{
     PlatformXmlSourceSetOwnerEvidence,
 };
 use crate::infrastructure::source_revision::{RetainedRevisionLease, SourceRevisionService};
+use crate::infrastructure::v13_large_configuration::{
+    read_configuration_registration_index, read_configuration_root, RegistrationIndex,
+    StreamedConfigurationRoot,
+};
 use serde_json::{json, Value};
 #[cfg(test)]
 use std::cell::RefCell;
@@ -327,6 +331,79 @@ impl ProviderReadAuthority {
             ),
         );
         Ok(Value::Object(payload))
+    }
+
+    pub(crate) fn streamed_configuration_root(
+        &self,
+        checkpoint: &dyn Fn() -> Result<(), ViewError>,
+        verify_owner: impl FnMut(&str, &str) -> Result<(), ViewError>,
+    ) -> Result<StreamedConfigurationRoot, ViewError> {
+        checkpoint()?;
+        let file = match self
+            .root
+            .open_relative_regular_nofollow(Path::new("Configuration.xml"))
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let mut refusal = ViewError::new(
+                    RefusalCode::InvalidState,
+                    "source set is declared but its directory holds no configuration export; fill it with a scaffold before reading",
+                );
+                refusal.set_next(serde_json::json!({
+                    "tool": "unica.check",
+                    "args": {},
+                    "reason": "вердикт по набору и совет, чем его наполнить",
+                }));
+                return Err(refusal);
+            }
+            Err(error) => {
+                return Err(ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
+                    error.to_string(),
+                ));
+            }
+        };
+        let support = serde_json::to_value(self.configuration_support()?)
+            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))?;
+        let home_page = serde_json::to_value(self.home_page()?)
+            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))?;
+        let interface = serde_json::to_value(self.command_interface()?)
+            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))?;
+        read_configuration_root(
+            file,
+            support,
+            home_page,
+            interface,
+            checkpoint,
+            verify_owner,
+        )
+    }
+
+    /// Build root registration evidence from the complete retained XML once.
+    /// The returned anonymous disk index can serve named reads in this source
+    /// revision without retaining the inventory in process memory.
+    pub(crate) fn streamed_configuration_registration_index(
+        &self,
+        checkpoint: &dyn Fn() -> Result<(), ViewError>,
+    ) -> Result<RegistrationIndex, ViewError> {
+        checkpoint()?;
+        let file = self
+            .root
+            .open_relative_regular_nofollow(Path::new("Configuration.xml"))
+            .map_err(|error| {
+                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+            })?;
+        read_configuration_registration_index(file, checkpoint)
+    }
+
+    /// Preserve the established parser and its full compatibility behavior
+    /// for files that already fit the ordinary read. The streaming route is
+    /// selected only when that read would refuse the file by total size.
+    pub(crate) fn configuration_xml_requires_streaming(&self) -> bool {
+        self.root
+            .open_relative_regular_nofollow(Path::new("Configuration.xml"))
+            .and_then(|file| file.metadata())
+            .is_ok_and(|metadata| metadata.len() > MAX_CONFIGURATION_BYTES as u64)
     }
 
     fn external_inventory_payload(

@@ -1165,7 +1165,7 @@ impl RetainedDirectoryCapability {
         Ok(bytes)
     }
 
-    fn open_relative_regular_nofollow(&self, relative: &Path) -> io::Result<fs::File> {
+    pub(crate) fn open_relative_regular_nofollow(&self, relative: &Path) -> io::Result<fs::File> {
         use std::path::Component;
 
         let mut components = relative.components().peekable();

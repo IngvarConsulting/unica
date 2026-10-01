@@ -2928,10 +2928,15 @@ fn main() {
             };
             let authority_args = call_arguments(
                 authority,
-                "crate::infrastructure::v13_read::LogicalViewReadAuthority::with_read_authority",
+                "crate::infrastructure::v13_read::LogicalViewReadAuthority::with_read_authority_and_registration_cache",
             )?;
-            let expected_authority_args =
-                ["cancellation", "read", "platform_profile", "self.deadline"];
+            let expected_authority_args = [
+                "cancellation",
+                "read",
+                "platform_profile",
+                "self.deadline",
+                "Arc::clone(&self.registration_cache)",
+            ];
             if authority_args.len() != expected_authority_args.len()
                 || authority_args
                     .iter()
@@ -2939,7 +2944,7 @@ fn main() {
                     .any(|(actual, expected)| !expression_is(actual, expected))
             {
                 return Err(format!(
-                    "logical authority must preserve cancellation/read/profile/deadline exactly; found `{}`",
+                    "logical authority must preserve cancellation/read/profile/deadline/actor-cache exactly; found `{}`",
                     tokens(authority)
                 ));
             }
@@ -3597,6 +3602,10 @@ fn main() {
             ("deadline", "lease.deadline"),
             ("fence", "source.fence.clone()"),
             (
+                "registration_cache",
+                "self.invocation.actor.configuration_registration_cache(&source.binding)?",
+            ),
+            (
                 "identity",
                 "format!(\"{}:{}\", self.invocation.workspace_identity_hash.as_str(), source.binding.source_set_name())",
             ),
@@ -3609,7 +3618,7 @@ fn main() {
             })
         {
             return Err(format!(
-                "actor capability construction must use exact binding/identity/fence/deadline dataflow; found `{}`",
+                "actor capability construction must use exact binding/identity/fence/deadline/actor-cache dataflow; found `{}`",
                 tokens(expression)
             ));
         }
@@ -3627,7 +3636,7 @@ fn main() {
             return Err("actor read capability declaration must be exact daemon-visible with no derives or generics".to_string());
         }
         let syn::Fields::Named(named) = &declaration.fields else {
-            return Err("actor read capability must have four named private fields".to_string());
+            return Err("actor read capability must have five named private fields".to_string());
         };
         let mut actual_fields = std::collections::BTreeMap::new();
         for field in &named.named {
@@ -3646,6 +3655,10 @@ fn main() {
             ("deadline".to_string(), "ProviderDeadline".to_string()),
             ("fence".to_string(), "WorkspaceLogicalReadFence".to_string()),
             ("identity".to_string(), "String".to_string()),
+            (
+                "registration_cache".to_string(),
+                "Arc < RegistrationCache >".to_string(),
+            ),
         ]);
         if actual_fields != expected_fields {
             return Err(format!(

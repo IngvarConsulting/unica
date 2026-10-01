@@ -2554,7 +2554,6 @@ fn ordinary_bsl_read_over_eight_mib_reassembles_every_body_line() {
 }
 
 #[test]
-#[ignore = "blocked by #1119: Configuration.xml still has the shared 8 MiB file cap"]
 fn ordinary_xml_read_over_eight_mib_keeps_complete_configuration_facts() {
     let fixture = RealReaderFixture::new();
     let path = fixture.source.join("Configuration.xml");
@@ -2581,6 +2580,101 @@ fn ordinary_xml_read_over_eight_mib_keeps_complete_configuration_facts() {
         result.data.as_ref().unwrap()["branches"] == baseline.data.as_ref().unwrap()["branches"],
         "Configuration root branches changed"
     );
+}
+
+#[test]
+fn large_configuration_root_keeps_legacy_duplicate_and_namespace_semantics() {
+    let fixture = RealReaderFixture::new();
+    let path = fixture.source.join("Configuration.xml");
+    let xml = fs::read_to_string(&path).unwrap();
+    let xml = xml.replacen(
+        "</ChildObjects>",
+        "<CommonModule>РеактивныйСервер</CommonModule><alien:Catalog xmlns:alien=\"urn:other\">Ghost</alien:Catalog></ChildObjects>",
+        1,
+    );
+    fs::write(&path, &xml).unwrap();
+
+    let reader = fixture.read_authority();
+    let legacy_payload = reader
+        .read
+        .configuration_payload_with_checkpoint(&mut || Ok(()))
+        .unwrap();
+    let route = route_logical_address(
+        &QualifiedAddress::parse("main:Configuration").unwrap(),
+        PlatformProfile::v8_3_27(),
+    )
+    .unwrap();
+    let legacy = project_typed_payload(&route, legacy_payload).unwrap();
+    let module_branch = super::module_branch_for_parent(route.at(), PlatformProfile::v8_3_27())
+        .expect("Configuration has a profile module branch");
+    let expected = serde_json::to_value(legacy.with_branch(module_branch)).unwrap();
+
+    fs::write(
+        &path,
+        xml.replace(
+            "</MetaDataObject>",
+            &format!("<!--{}--></MetaDataObject>", "x".repeat(8 * 1024 * 1024)),
+        ),
+    )
+    .unwrap();
+    let actual = fixture
+        .view_service()
+        .view(ViewRequest::new("main:Configuration").unwrap());
+    assert!(actual.ok, "large Configuration view failed");
+    assert!(
+        actual.data.as_ref().unwrap() == &expected,
+        "streaming Configuration root differs from the bounded reader"
+    );
+}
+
+#[test]
+fn large_configuration_root_rejects_malformed_tail() {
+    let fixture = RealReaderFixture::new();
+    let path = fixture.source.join("Configuration.xml");
+    let xml = fs::read_to_string(&path).unwrap();
+    fs::write(
+        path,
+        xml.replace(
+            "</MetaDataObject>",
+            &format!(
+                "<!--{}--><Broken></MetaDataObject>",
+                "x".repeat(8 * 1024 * 1024)
+            ),
+        ),
+    )
+    .unwrap();
+    let result = fixture
+        .view_service()
+        .view(ViewRequest::new("main:Configuration").unwrap());
+    assert!(!result.ok, "malformed XML tail escaped");
+    assert_eq!(result.diagnostics[0]["code"], "provider_unavailable");
+    assert_eq!(result.diagnostics[0]["detailCode"], "source_unreadable");
+}
+
+#[test]
+fn large_configuration_root_rejects_revision_change_during_owner_proof() {
+    let fixture = RealReaderFixture::new();
+    let root_xml = fixture.source.join("Configuration.xml");
+    let xml = fs::read_to_string(&root_xml).unwrap();
+    fs::write(
+        root_xml,
+        xml.replace(
+            "</MetaDataObject>",
+            &format!("<!--{}--></MetaDataObject>", "x".repeat(8 * 1024 * 1024)),
+        ),
+    )
+    .unwrap();
+    let descriptor = fixture.source.join("Catalogs/Items.xml");
+    review_set_before_owner_proof(move || {
+        let mut text = fs::read_to_string(&descriptor).unwrap();
+        text.push('\n');
+        fs::write(&descriptor, text).unwrap();
+    });
+    let result = fixture
+        .view_service()
+        .view(ViewRequest::new("main:Configuration").unwrap());
+    assert!(!result.ok, "mixed-revision Configuration root escaped");
+    assert_eq!(result.diagnostics[0]["code"], "stale_cursor");
 }
 
 #[test]

@@ -38,6 +38,7 @@ use crate::infrastructure::platform_xml_source_targets::{
     resolve_platform_xml_target, TargetKindPolicy,
 };
 use crate::infrastructure::source_revision::SourceRevisionService;
+use crate::infrastructure::v13_large_configuration::RegistrationCache;
 use crate::infrastructure::v13_read_port::ProviderReadAuthority;
 use serde_json::{json, Map, Value};
 #[cfg(test)]
@@ -110,6 +111,7 @@ pub(crate) struct LogicalViewReadAuthority<'a> {
     deadline: ProviderDeadline,
     module_projections: Mutex<BTreeMap<ModuleProjectionCacheKey, Arc<ModuleProjectionSet>>>,
     configuration_payloads: Mutex<BTreeMap<RevisionCacheKey, Arc<Value>>>,
+    configuration_registrations: Arc<RegistrationCache>,
     verified_owners: Mutex<BTreeSet<OwnerProofCacheKey>>,
     owner_evidence: Mutex<BTreeMap<OwnerProofCacheKey, Arc<PlatformXmlSourceSetOwnerEvidence>>>,
     verified_owner_edges: Mutex<BTreeSet<OwnerEdgeCacheKey>>,
@@ -184,6 +186,22 @@ impl<'a> LogicalViewReadAuthority<'a> {
         profile: PlatformProfile,
         deadline: ProviderDeadline,
     ) -> Self {
+        Self::with_read_authority_and_registration_cache(
+            cancellation,
+            read,
+            profile,
+            deadline,
+            Arc::new(RegistrationCache::default()),
+        )
+    }
+
+    pub(crate) fn with_read_authority_and_registration_cache(
+        cancellation: &'a CancellationToken,
+        read: ProviderReadAuthority,
+        profile: PlatformProfile,
+        deadline: ProviderDeadline,
+        registration_cache: Arc<RegistrationCache>,
+    ) -> Self {
         Self {
             cancellation,
             read,
@@ -191,6 +209,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             deadline,
             module_projections: Mutex::new(BTreeMap::new()),
             configuration_payloads: Mutex::new(BTreeMap::new()),
+            configuration_registrations: registration_cache,
             verified_owners: Mutex::new(BTreeSet::new()),
             owner_evidence: Mutex::new(BTreeMap::new()),
             verified_owner_edges: Mutex::new(BTreeSet::new()),
@@ -699,12 +718,79 @@ impl<'a> LogicalViewReadAuthority<'a> {
         Ok(())
     }
 
+    /// The Configuration root already has registration evidence from the
+    /// streaming owner document. Verify each descriptor directly, without
+    /// rebuilding that full inventory or retaining one cache entry per owner.
+    fn verify_streamed_top_level_owner(&self, kind: &str, name: &str) -> Result<(), ViewError> {
+        if kind == NodeKind::WebSocketClient.as_str() {
+            return Ok(());
+        }
+        self.read_checkpoint()?;
+        #[cfg(test)]
+        review_run_before_owner_proof();
+        let target =
+            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &format!("{kind}.{name}"))
+                .map_err(|error| {
+                    ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+                })?;
+        let evidence = self
+            .read
+            .metadata_owner_evidence(&target)
+            .map_err(|error| {
+                if error.code() == RefusalCode::NotFound {
+                    ViewError::detailed(
+                        RefusalDetail::SourceUnreadable,
+                        format!(
+                            "registered metadata owner `{}` has no descriptor",
+                            target.as_str()
+                        ),
+                    )
+                } else {
+                    error
+                }
+            })?;
+        if evidence.artifact_kind() != kind || evidence.artifact_name() != Some(name) {
+            return Err(ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
+                format!(
+                    "metadata descriptor identity does not match `{}`",
+                    target.as_str()
+                ),
+            ));
+        }
+        Ok(())
+    }
+
     fn ensure_owner_registered_parts(
         &self,
         owner_kind: &str,
         owner_name: &str,
         admitted: &ViewSourceSnapshot,
     ) -> Result<(), ViewError> {
+        if matches!(
+            self.read.source_set_kind(),
+            SourceSetKind::Configuration | SourceSetKind::Extension
+        ) && self.read.configuration_xml_requires_streaming()
+        {
+            let index = self.configuration_registrations.get_or_build(
+                &admitted.source_set_identity,
+                &admitted.revision,
+                &|| self.read_checkpoint(),
+                || {
+                    self.read
+                        .streamed_configuration_registration_index(&|| self.read_checkpoint())
+                },
+            )?;
+            return index
+                .contains(owner_kind, owner_name, &|| self.read_checkpoint())?
+                .then_some(())
+                .ok_or_else(|| {
+                    ViewError::new(
+                        RefusalCode::NotFound,
+                        format!("metadata owner `{owner_kind}.{owner_name}` is not registered"),
+                    )
+                });
+        }
         let payload = self.configuration_payload(admitted)?;
         let registered = payload
             .get("registeredObjects")
@@ -1310,6 +1396,24 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         let module_filter = validate_view_filter(&route, filter)?;
         let projected = if route.reader() == LogicalReader::Module {
             self.module_view(&route, admitted, &module_filter)?
+        } else if route.reader() == LogicalReader::Configuration
+            && matches!(
+                self.read.source_set_kind(),
+                SourceSetKind::Configuration | SourceSetKind::Extension
+            )
+            && self.read.configuration_xml_requires_streaming()
+        {
+            let streamed = self
+                .read
+                .streamed_configuration_root(&|| self.read_checkpoint(), |kind, name| {
+                    self.verify_streamed_top_level_owner(kind, name)
+                })?;
+            crate::infrastructure::v13_read_projection::project_configuration_with_counts(
+                route.at(),
+                &streamed.payload,
+                &[],
+                streamed.counts,
+            )?
         } else if route.reader() == LogicalReader::Metadata
             && route.reader_metadata_path().is_none()
             && route
