@@ -4,6 +4,7 @@ pub(crate) mod bsl_outline;
 #[allow(dead_code)]
 pub(crate) mod bsl_module_projection;
 pub(crate) mod bundled_tools;
+pub(crate) mod capacity_observation;
 pub(crate) mod code_intelligence;
 pub(crate) mod configuration_help;
 pub(crate) mod daemon;

@@ -261,6 +261,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                 source_set: source_set.to_string(),
                 source_root: source_root.path.clone(),
                 filters,
+                excluded_subtrees: Vec::new(),
                 legacy_selector: false,
             };
             return Ok((

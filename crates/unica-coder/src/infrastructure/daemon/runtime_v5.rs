@@ -5469,6 +5469,26 @@ fn run_daemon_configured_until(
         let _ = state.remove_v5_endpoint_if_owned(&published);
         return Err(error);
     }
+    // A losing startup process never opens or rewrites the observation state.
+    // The writer begins only after the endpoint's second authority check.
+    let authority = Arc::downgrade(&runtime);
+    let observation_authority: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || {
+        authority.upgrade().is_some_and(|runtime| {
+            !runtime.restart_required() && runtime.ensure_named_authority().is_ok()
+        })
+    });
+    let mut capacity_writer =
+        match crate::infrastructure::capacity_observation::start_background_writer(
+            &state,
+            Arc::clone(&config.capacity_observer),
+            observation_authority,
+        ) {
+            Ok(writer) => Some(writer),
+            Err(_) => {
+                eprintln!("local capacity observation disabled: storage unavailable");
+                None
+            }
+        };
     let listener_lease = runtime.hooks.listener_lease();
     let active_leases = Arc::new(V5LeaseRegistry::default());
     let admitted_connections = Arc::new(AtomicUsize::new(0));
@@ -5572,6 +5592,7 @@ fn run_daemon_configured_until(
             // an off-thread continuation would otherwise keep alive.
             join_v5_handlers(sessions);
             runtime.join_task_executions();
+            drop(capacity_writer.take());
             drop(runtime);
         } else {
             drop(sessions);
@@ -5581,6 +5602,7 @@ fn run_daemon_configured_until(
     }
     join_v5_handlers(sessions);
     runtime.join_task_executions();
+    drop(capacity_writer.take());
     state.remove_v5_endpoint_if_owned(&published)?;
     Ok(())
 }
@@ -5701,7 +5723,7 @@ struct V5ConnectionSlot {
 impl V5ConnectionSlot {
     fn acquire(admitted: Arc<AtomicUsize>) -> Option<Self> {
         admitted
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 (current < MAX_HANDSHAKES).then_some(current + 1)
             })
             .ok()

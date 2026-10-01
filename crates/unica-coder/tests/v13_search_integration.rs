@@ -110,6 +110,9 @@ fn domain_result(response: &Value) -> Value {
     serde_json::from_str(text).expect("decode canonical DomainResult")
 }
 
+#[path = "platform/v13_resolve_target_isolation.rs"]
+mod target_isolation;
+
 // Интеграционная цель — `medium` по `kind(test)`: идёт в очереди и на main,
 // на pull request не идёт. Отдельной джобы и выключателя больше нет.
 #[test]
@@ -138,16 +141,17 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
     std::fs::write(
         workspace.join("CommonModules/Main/Ext/Module.bsl"),
         format!(
-            "Procedure MainNeedle() Export\nEndProcedure\n{}",
+            "Procedure MainNeedle() Export\nEndProcedure\n{}// CapNeedle main\n",
             (0..21)
                 .map(|index| format!("// MainNeedle {index}\n"))
                 .collect::<String>()
         ),
     )
     .expect("main module");
+    let long_synonym = "Я".repeat(1_025);
     std::fs::write(
         workspace.join("CommonModules/Main.xml"),
-        r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule uuid="cccccccc-cccc-4ccc-8ccc-cccccccccccc"><Properties><Name>Main</Name><Global>false</Global><ClientManagedApplication>true</ClientManagedApplication><Server>true</Server><ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ServerCall>false</ServerCall><Privileged>false</Privileged><ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties></CommonModule></MetaDataObject>"#,
+        format!(r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20"><CommonModule uuid="cccccccc-cccc-4ccc-8ccc-cccccccccccc"><Properties><Name>Main</Name><Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>{long_synonym}</v8:content></v8:item></Synonym><Global>false</Global><ClientManagedApplication>true</ClientManagedApplication><Server>true</Server><ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ServerCall>false</ServerCall><Privileged>false</Privileged><ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties></CommonModule></MetaDataObject>"#),
     )
     .expect("main module descriptor");
     std::fs::create_dir_all(workspace.join("CommonModules/Orphan/Ext"))
@@ -164,7 +168,12 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
     .expect("unregistered module source");
     std::fs::write(
         workspace.join("src/extension/CommonModules/Extension/Ext/Module.bsl"),
-        "Procedure ExtensionNeedle() Export\nEndProcedure\n",
+        format!(
+            "Procedure ExtensionNeedle() Export\nEndProcedure\n{}",
+            (0..201)
+                .map(|index| format!("// CapNeedle extension {index}\n"))
+                .collect::<String>()
+        ),
     )
     .expect("extension module");
     std::fs::write(
@@ -269,6 +278,80 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
         "extension:Configuration"
     );
 
+    let unscoped_lexical = domain_result(&mcp.exchange(call_tool(
+        46,
+        "unica.search",
+        json!({"query": "MainNeedle", "role": "lexical"}),
+    )));
+    assert_eq!(unscoped_lexical["ok"], true, "{unscoped_lexical:#}");
+    assert!(
+        unscoped_lexical["data"]["matches"][0]["hits"]
+            .as_array()
+            .is_some_and(|hits| !hits.is_empty()),
+        "unscoped lexical search skipped the main source set: {unscoped_lexical:#}"
+    );
+    assert_eq!(
+        unscoped_lexical["data"]["matches"][0]["matches"]["total"],
+        22
+    );
+    assert_eq!(
+        unscoped_lexical["data"]["matches"][0]["searchComplete"],
+        true
+    );
+    let unscoped_cursor = unscoped_lexical["cursor"]
+        .as_str()
+        .expect("combined window pages");
+    let tail = domain_result(&mcp.exchange(call_tool(
+        47,
+        "unica.search",
+        json!({"query": "MainNeedle", "role": "lexical", "cursor": unscoped_cursor}),
+    )));
+    assert_eq!(tail["ok"], true, "{tail:#}");
+    assert_eq!(
+        tail["data"]["matches"][0]["hits"].as_array().map(Vec::len),
+        Some(2)
+    );
+
+    let nested_root = domain_result(&mcp.exchange(call_tool(
+        48,
+        "unica.search",
+        json!({"query": "ExtensionNeedle", "role": "lexical"}),
+    )));
+    assert_eq!(nested_root["ok"], true, "{nested_root:#}");
+    let nested_section = &nested_root["data"]["matches"][0];
+    assert_eq!(
+        nested_section["matches"]["total"], 1,
+        "nested root must occur once"
+    );
+    assert_eq!(
+        nested_section["hits"][0]["location"]["sourceSet"],
+        "extension"
+    );
+    assert_eq!(nested_section["searchComplete"], true);
+
+    let capped = domain_result(&mcp.exchange(call_tool(
+        49,
+        "unica.search",
+        json!({"query": "CapNeedle", "role": "lexical", "limit": 50}),
+    )));
+    assert_eq!(capped["ok"], true, "{capped:#}");
+    let capped_section = &capped["data"]["matches"][0];
+    assert_eq!(capped_section["status"], "limitReached");
+    assert_eq!(capped_section["searchComplete"], false);
+    assert_eq!(capped_section["matches"]["total"], 200);
+    assert_eq!(capped_section["matches"]["relation"], "lowerBound");
+
+    let absent = domain_result(&mcp.exchange(call_tool(
+        50,
+        "unica.search",
+        json!({"query": "NoSuchNeedleInEitherSource", "role": "lexical"}),
+    )));
+    assert_eq!(absent["ok"], true, "{absent:#}");
+    let absent_section = &absent["data"]["matches"][0];
+    assert_eq!(absent_section["status"], "empty");
+    assert_eq!(absent_section["searchComplete"], true);
+    assert_eq!(absent_section["matches"]["total"], 0);
+
     let lexical = domain_result(&mcp.exchange(call_tool(
         24,
         "unica.search",
@@ -342,6 +425,17 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
         .as_str()
         .is_some_and(|at| at.starts_with("main:"))));
 
+    let long_name_result = domain_result(&mcp.exchange(call_tool(
+        36,
+        "unica.search",
+        json!({"query": long_synonym, "corpus": "names", "scope": "main:Configuration"}),
+    )));
+    assert_eq!(long_name_result["ok"], true, "{long_name_result:#}");
+    assert_eq!(
+        long_name_result["data"]["matches"][0]["at"],
+        "main:CommonModule.Main"
+    );
+
     let named_scope = domain_result(&mcp.exchange(call_tool(
         20,
         "unica.search",
@@ -356,6 +450,13 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
         named_scope["data"]["matches"][0]["at"],
         "main:CommonModule.Main"
     );
+
+    let module_path = "CommonModules/Main/Ext/Module.bsl";
+    let resolved =
+        domain_result(&mcp.exchange(call_tool(36, "unica.resolve", json!({"path": module_path}))));
+    assert_eq!(resolved["ok"], true, "{resolved:#}");
+    assert_eq!(resolved["data"]["at"], "main:CommonModule.Main");
+    assert_eq!(resolved["data"]["path"], module_path);
 
     let missing_scope = domain_result(&mcp.exchange(call_tool(
         21,
@@ -450,6 +551,52 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
 
     let ping = mcp.exchange(json!({"jsonrpc": "2.0", "id": 15, "method": "ping"}));
     assert!(ping.get("result").is_some(), "{ping:#}");
+    let extension_main = workspace.join("src/extension/CommonModules/Main/Ext/Module.bsl");
+    std::fs::create_dir_all(extension_main.parent().unwrap()).expect("duplicate module directory");
+    std::fs::copy(
+        workspace.join("CommonModules/Main.xml"),
+        workspace.join("src/extension/CommonModules/Main.xml"),
+    )
+    .expect("duplicate module descriptor");
+    std::fs::write(
+        &extension_main,
+        "Procedure Duplicate() Export\nEndProcedure\n",
+    )
+    .expect("duplicate module source");
+    let absolute_extension =
+        std::fs::canonicalize(&extension_main).expect("absolute extension module");
+    let resolved = domain_result(&mcp.exchange(call_tool(
+        37,
+        "unica.resolve",
+        json!({"path": absolute_extension}),
+    )));
+    assert_eq!(resolved["ok"], true, "{resolved:#}");
+    assert_eq!(resolved["data"]["at"], "extension:CommonModule.Main");
+    assert_eq!(
+        resolved["data"]["path"],
+        "CommonModules/Main/Ext/Module.bsl"
+    );
+    let ambiguous = domain_result(&mcp.exchange(call_tool(
+        38,
+        "unica.resolve",
+        json!({"path": "CommonModules/Main/Ext/Module.bsl"}),
+    )));
+    assert_eq!(ambiguous["ok"], false, "{ambiguous:#}");
+    assert_eq!(ambiguous["diagnostics"][0]["code"], "bad_value");
+    let relative_extension = domain_result(&mcp.exchange(call_tool(
+        39,
+        "unica.resolve",
+        json!({"path": "src/extension/CommonModules/Main/Ext/Module.bsl"}),
+    )));
+    assert_eq!(relative_extension["ok"], true, "{relative_extension:#}");
+    assert_eq!(
+        relative_extension["data"]["at"],
+        "extension:CommonModule.Main"
+    );
+    assert_eq!(
+        relative_extension["data"]["path"],
+        "CommonModules/Main/Ext/Module.bsl"
+    );
     mcp.finish();
 }
 

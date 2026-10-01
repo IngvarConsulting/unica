@@ -300,6 +300,8 @@ pub struct CodeSearchScope {
     pub source_set: String,
     pub source_root: PathBuf,
     pub filters: Vec<RelativeSearchFilter>,
+    /// Source sets nested below this root own their files independently.
+    pub excluded_subtrees: Vec<PathBuf>,
     pub legacy_selector: bool,
 }
 
@@ -309,6 +311,7 @@ impl CodeSearchScope {
             source_set,
             source_root,
             filters: Vec::new(),
+            excluded_subtrees: Vec::new(),
             legacy_selector,
         }
     }
@@ -323,6 +326,13 @@ impl CodeSearchScope {
                         | std::path::Component::Prefix(_)
                 )
             })
+        {
+            return false;
+        }
+        if self
+            .excluded_subtrees
+            .iter()
+            .any(|path| relative_path.starts_with(path))
         {
             return false;
         }

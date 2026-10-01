@@ -125,12 +125,23 @@ fn unreadable_name_descriptor_is_reported_without_losing_proven_matches() {
         "unica.resolve",
         json!({"path": "CommonModules/Visible.xml"}),
     )));
-    assert_eq!(resolve["ok"], false, "{resolve:#}");
+    assert_eq!(resolve["ok"], true, "{resolve:#}");
+    assert_eq!(resolve["data"]["at"], "main:CommonModule.Visible");
+
+    let hidden_resolve = domain_result(&mcp.exchange(call_tool(
+        9,
+        "unica.resolve",
+        json!({"path": "Catalogs/Hidden.xml"}),
+    )));
+    assert_eq!(hidden_resolve["ok"], false, "{hidden_resolve:#}");
     assert_eq!(
-        resolve["diagnostics"][0]["code"], "provider_unavailable",
-        "{resolve:#}"
+        hidden_resolve["diagnostics"][0]["code"], "provider_unavailable",
+        "{hidden_resolve:#}"
     );
-    assert_eq!(resolve["diagnostics"][0]["detailCode"], "source_unreadable");
+    assert_eq!(
+        hidden_resolve["diagnostics"][0]["detailCode"],
+        "source_unreadable"
+    );
     std::fs::set_permissions(&hidden, restore.1.clone()).expect("restore descriptor access");
     let complete = domain_result(&mcp.exchange(call_tool(
         7,
