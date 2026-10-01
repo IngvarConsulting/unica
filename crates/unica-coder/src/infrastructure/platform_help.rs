@@ -14,7 +14,7 @@ pub mod provider;
 mod event_catalog_oracle;
 #[cfg(test)]
 mod real_installation;
-// Ретривал-гейт ADR-0037: golden-запросы #415 против той же реальной
+// Ретривал-гейт: golden-запросы #415 против той же реальной
 // установки, тем же пропуском без `UNICA_PLATFORM_HELP_DIR`.
 #[cfg(test)]
 mod retrieval_gate;

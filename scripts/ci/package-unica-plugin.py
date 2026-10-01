@@ -107,14 +107,31 @@ def sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+PACKAGE_HASH_FORMAT = "sha256-u64be-path-mode-content-v2"
+
+
 def package_tree_sha256(root: Path) -> str:
-    """Digest package paths and bytes so the proof binds the assembled tree."""
+    """Digest package paths, modes and bytes so the proof binds the assembled tree.
+
+    The frame is ``PACKAGE_HASH_FORMAT`` and is mirrored by
+    ``scripts/ci/release-proof.py::tree_sha256``; the two change together. Per
+    file, sorted by path: u64be path length, path, u64be size, one mode byte
+    (``0x01`` executable, ``0x00`` plain), content. The mode byte binds the
+    executable bootstrap's ``+x`` (#700). Symlinks are refused: the packager
+    never copies them, so one here is a broken tree, not a member.
+    """
     digest = hashlib.sha256()
-    for path in sorted(item for item in root.rglob("*") if item.is_file()):
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink():
+            raise SystemExit(f"package tree must not contain symlinks: {path}")
+        if not path.is_file():
+            continue
         relative = path.relative_to(root).as_posix().encode("utf-8")
+        stat = path.stat()
         digest.update(len(relative).to_bytes(8, "big"))
         digest.update(relative)
-        digest.update(path.stat().st_size.to_bytes(8, "big"))
+        digest.update(stat.st_size.to_bytes(8, "big"))
+        digest.update(b"\x01" if stat.st_mode & 0o111 else b"\x00")
         with path.open("rb") as stream:
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                 digest.update(chunk)
@@ -296,7 +313,10 @@ def write_packaged_mcp_launcher(
     server["command"] = "git"
     server["args"] = ["-c", PACKAGED_MCP_ALIAS, "unica-bootstrap"]
     server["cwd"] = "."
-    server["env"] = {"UNICA_RUNTIME_CACHE_DIR": PACKAGED_MCP_CACHE_DIR}
+    server["env"] = {
+        "UNICA_RUNTIME_CACHE_DIR": PACKAGED_MCP_CACHE_DIR,
+        "UNICA_HOST_CONTEXT_REQUIRED": "1",
+    }
     server["startup_timeout_sec"] = PACKAGED_MCP_STARTUP_TIMEOUT_SEC
     server["note"] = (
         "Single public Unica stdio MCP orchestrator. The public Git package enters "
@@ -406,6 +426,7 @@ def write_local_debug_mcp_launcher(plugin_dir: Path, target: str, *, host: str =
         server["command"] = f"./bin/{target}/{executable}"
         server["args"] = []
         server["cwd"] = "."
+    server.setdefault("env", {})["UNICA_HOST_CONTEXT_REQUIRED"] = "1"
     server["note"] = "Development-only current-host Unica MCP binary."
     mcp_path.write_text(json.dumps(mcp, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
@@ -688,7 +709,13 @@ def assert_archive_clean(marketplace_dir: Path) -> None:
 def write_p0_package_evidence(
     marketplace_dir: Path, destination: Path, *, source_commit: str
 ) -> None:
-    """Write package identity without claiming a tag or a publication."""
+    """Write the observed package identity: version, source commit, digests.
+
+    Nothing here says "not bumped", "not published" or "no tag": those were
+    literals the proof then compared with the same literals, so they could
+    never turn false (#696). Read-only-ness is a property of the CI job that
+    runs the proof and is pinned by tests/ci/test_unica_workflow.py.
+    """
     plugin_dir = marketplace_dir / "plugins" / PLUGIN_ID
     version = read_release_version(plugin_dir)
     runtime_manifest = plugin_dir / "runtime-manifest.json"
@@ -696,14 +723,11 @@ def write_p0_package_evidence(
         raise SystemExit(f"packaged runtime manifest is missing: {runtime_manifest}")
     evidence = {
         "schemaVersion": 1,
-        "packageHashFormat": "sha256-u64be-path-content-v1",
+        "packageHashFormat": PACKAGE_HASH_FORMAT,
         "pluginVersion": version,
         "sourceCommit": source_commit,
         "packageSha256": package_tree_sha256(marketplace_dir),
         "runtimeManifestSha256": sha256(runtime_manifest),
-        "versionBumped": False,
-        "published": False,
-        "tag": None,
     }
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(

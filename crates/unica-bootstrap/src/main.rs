@@ -146,8 +146,8 @@ impl KilledStartups {
         Self { log, found }
     }
 
-    /// Рассказ для вызывающего. Отмечает попытки рассказанными: второй раз о
-    /// том же сообщать некому и незачем.
+    /// Готовит сообщение и сразу помечает попытки как переданные.
+    /// При сбое до инициализации MCP сообщение пока теряется (issue #925).
     fn notice(&self) -> Option<String> {
         let notice = unica_bootstrap::diagnose(&self.found);
         if notice.is_some() {

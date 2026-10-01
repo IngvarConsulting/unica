@@ -1,3 +1,7 @@
+#[path = "support/frontend_process.rs"]
+mod frontend_process;
+use frontend_process::*;
+
 use serde_json::Value;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -8,10 +12,57 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const PROCESS_FIXTURE_ENV: &str = "UNICA_DAEMON_PROCESS_FIXTURE";
-const PRODUCTION_V5_IDENTITY: &str =
-    "884b76181583ce34907a2a9758e2b493e5b40883e7cbb0d7f88dcec0e468cfa0";
 const PROCESS_FIXTURE_IDLE_GRACE_MS: u64 = 2_000;
 const STALE_ENDPOINT_INITIAL_IDLE_GRACE_MS: u64 = 500;
+
+// Keep one actual MCP stdio process alive across daemon replacement. Recreating
+// the frontend would discard the stale endpoint and conceal the regression.
+#[test]
+fn same_stdio_frontend_reconnects_to_external_successor() {
+    let root = tempfile::tempdir().unwrap();
+    let state = std::fs::canonicalize(root.path()).unwrap().join("state");
+    let workspace = make_stdio_workspace(root.path());
+    let mut initial = spawn_owned_daemon(&state);
+    let mut frontend = StdioFrontend::spawn(&state, &workspace);
+    frontend.check(2);
+    let frontend_pid = frontend.process.0.id();
+    initial.stop();
+    let successor = spawn_owned_daemon(&state);
+    frontend.check(3);
+    assert_eq!(frontend.process.0.id(), frontend_pid);
+    assert!(frontend.process.0.try_wait().unwrap().is_none());
+    assert_eq!(
+        read_endpoint(&state, PRODUCTION_V5_IDENTITY)["pid"],
+        successor.0.id()
+    );
+}
+
+#[test]
+fn same_stdio_frontend_spawns_and_retains_successor_anchor() {
+    let root = tempfile::tempdir().unwrap();
+    let state = std::fs::canonicalize(root.path()).unwrap().join("state");
+    let workspace = make_stdio_workspace(root.path());
+    let mut initial = spawn_owned_daemon(&state);
+    let mut frontend = StdioFrontend::spawn(&state, &workspace);
+    frontend.check(2);
+    let old = read_endpoint(&state, PRODUCTION_V5_IDENTITY);
+    initial.stop();
+    frontend.check(3);
+    let successor = read_endpoint(&state, PRODUCTION_V5_IDENTITY);
+    assert_ne!(successor["instanceId"], old["instanceId"]);
+    // This is an observation window, not a readiness delay: the request session
+    // has closed and only the frontend's retained anchor can prevent idle exit.
+    thread::sleep(Duration::from_millis(1_200));
+    assert_eq!(read_endpoint(&state, PRODUCTION_V5_IDENTITY), successor);
+    frontend.check(4);
+    assert_eq!(read_endpoint(&state, PRODUCTION_V5_IDENTITY), successor);
+    drop(frontend);
+    wait_until(
+        Duration::from_secs(5),
+        || !endpoint_path(&state, PRODUCTION_V5_IDENTITY).exists(),
+        "self-spawned successor shutdown after frontend exit",
+    );
+}
 
 #[test]
 fn daemon_frontend_process_fixture() {
@@ -320,14 +371,6 @@ fn read_pid(path: PathBuf) -> u64 {
     }
 }
 
-fn endpoint_path(state_root: &Path, identity: &str) -> PathBuf {
-    unica_coder::interfaces::daemon::endpoint_path_for_protocol_test(state_root, identity)
-}
-
-fn read_endpoint(state_root: &Path, identity: &str) -> Value {
-    serde_json::from_slice(&std::fs::read(endpoint_path(state_root, identity)).unwrap()).unwrap()
-}
-
 fn assert_child_success(child: &mut Child) {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -343,14 +386,6 @@ fn assert_child_success(child: &mut Child) {
             return;
         }
         assert!(Instant::now() < deadline, "frontend fixture did not exit");
-        thread::sleep(Duration::from_millis(20));
-    }
-}
-
-fn wait_until(timeout: Duration, predicate: impl Fn() -> bool, what: &str) {
-    let deadline = Instant::now() + timeout;
-    while !predicate() {
-        assert!(Instant::now() < deadline, "timed out waiting for {what}");
         thread::sleep(Duration::from_millis(20));
     }
 }

@@ -195,7 +195,7 @@ fn document_journal_template_registers_its_mandatory_document() {
 #[test]
 fn minimal_templates_never_invent_content() {
     // Выдуманный ресурс — молчаливое решение за вызывающего, которое почти
-    // всегда переделывают, а в выгрузке остаётся мусором (ADR-0030).
+    // всегда переделывают, а в выгрузке остаётся мусором.
     for kind in [
         MetadataKind::AccountingRegister,
         MetadataKind::CalculationRegister,

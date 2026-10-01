@@ -187,7 +187,14 @@ mod tests {
             vec![json!({"line": 1, "text": "Процедура ПередЗаписью()"})],
         ));
         let value = serde_json::to_value(data).unwrap();
-        assert_eq!(value["items"][0].get("at"), None);
-        assert_eq!(value["at"], "main:Document.Заказ.Module.Object.Body");
+        assert_eq!(
+            value,
+            json!({
+                "at": "main:Document.Заказ.Module.Object.Body",
+                "kind": "Body",
+                "title": "Тело модуля объекта Заказ",
+                "items": [{"line": 1, "text": "Процедура ПередЗаписью()"}]
+            })
+        );
     }
 }

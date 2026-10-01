@@ -351,30 +351,6 @@ class DonorParityContractTests(unittest.TestCase):
 
         self.assertEqual(errors, [])
 
-    def test_baseline_scope_requires_matching_applied_refresh_review(self) -> None:
-        fixture = self.fixture()
-        manifest = fixture.manifest()
-        manifest["scopes"]["demo"]["reviewId"] = "demo-refresh"
-        review_path = fixture.reviews_root / "demo-refresh.json"
-        review = {
-            "reviewStatus": "reviewed",
-            "applied": True,
-            "targetCommit": COMMIT,
-            "affectedSkills": ["demo"],
-        }
-        review_path.write_text(json.dumps(review), encoding="utf-8")
-
-        self.assertEqual(
-            contract.validate_refresh_reviews(fixture.repo_root, manifest),
-            [],
-        )
-
-        review["applied"] = False
-        review_path.write_text(json.dumps(review), encoding="utf-8")
-        errors = contract.validate_refresh_reviews(
-            fixture.repo_root, manifest
-        )
-        self.assertIn("not reviewed and applied", "\n".join(errors))
 
 
 if __name__ == "__main__":

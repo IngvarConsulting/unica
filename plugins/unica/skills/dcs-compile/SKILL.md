@@ -1,7 +1,6 @@
 ---
 name: dcs-compile
 description: Компиляция схемы компоновки данных 1С (СКД) из компактного JSON-определения. Используй когда нужно создать СКД с нуля
-argument-hint: "[-DefinitionFile <json> | -Value <json-string>] -OutputPath <Template.xml>"
 allowed-tools:
   - Bash
   - Read
@@ -13,57 +12,77 @@ allowed-tools:
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tool `unica.dcs.compile`; `unica` owns XML/JSON DSL work and refreshes related workspace caches after mutations.
-- Do not call internal MCP/CLI adapters directly. They are hidden behind `unica` and synchronized by the orchestrator.
-- Execution path: call MCP `unica` tool `unica.dcs.compile`; skill-local operation scripts are not part of the workflow.
-- For mutating operations, pass `dryRun: false` only when the user explicitly requested the change; otherwise keep the default dry run.
-- Vendor support guard runs inside `unica`; if it blocks a locked/read-only supported object, prefer CFE/release-support or an explicit support-state change plan instead of editing raw support metadata.
+- Preferred path: use MCP `unica` tool `unica.apply`; макет-схема заводится
+  операцией `template.add`, наполняется операциями СКД.
+- Не зови внутренние адаптеры напрямую: они спрятаны за MCP `unica`.
+- Всегда сначала `dryRun: true`; `dryRun: false` — только по явной просьбе
+  пользователя и только с `ifRev` из превью.
 
-Принимает JSON-определение схемы компоновки данных → генерирует Template.xml (DataCompositionSchema).
+Новая схема компоновки собирается **двумя шагами**, а не одним вызовом из
+JSON-файла: сначала у объекта заводится макет вида `DataCompositionSchema`,
+затем он наполняется операциями словаря (`query.set`, `field.add`,
+`parameter.add`, `structure.set`, …) — их список и семантику держит `dcs-edit`.
 
-## MCP параметры
-
-| Параметр | Описание |
-|----------|----------|
-| `DefinitionFile` | Путь к JSON-файлу с определением СКД (взаимоисключающий с Value) |
-| `Value` | JSON-строка с определением СКД (взаимоисключающий с DefinitionFile) |
-| `OutputPath` | Путь к выходному Template.xml |
-
-### Из файла
+## Шаг 1 — завести макет
 
 ```json
 {
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.dcs.compile",
+    "name": "unica.apply",
     "arguments": {
-      "cwd": "<workspace>",
-      "DefinitionFile": "<json>",
-      "OutputPath": "<Template.xml>",
-      "dryRun": false
+      "at": "main:Report.Продажи",
+      "ops": [
+        {"op": "template.add", "args": {"items": [{"name": "ОсновнаяСхема", "templateType": "DataCompositionSchema"}]}}
+      ],
+      "dryRun": true
     }
   }
 }
 ```
 
-### Из строки без промежуточного файла
+
+**Порядок важен.** Превью ничего не публикует, поэтому дочерний узел появится
+только после применения первого шага:
+
+1. превью `template.add` (`dryRun: true`) — план и `rev`;
+2. применение `template.add` (`dryRun: false` с `ifRev` из превью) — макет создан;
+3. превью операций наполнения по адресу макета;
+4. применение их плана со своим `ifRev`.
+
+Обратиться к адресу макета до шага 2 нельзя: план отказывает, потому что цели
+ещё нет.
+
+## Шаг 2 — наполнить
 
 ```json
 {
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.dcs.compile",
+    "name": "unica.apply",
     "arguments": {
-      "cwd": "<workspace>",
-      "Value": "<json-string>",
-      "OutputPath": "<Template.xml>",
-      "dryRun": false
+      "at": "main:Report.Продажи.Template.ОсновнаяСхема",
+      "ops": [
+        {"op": "query.set", "args": {"values": {"query": "ВЫБРАТЬ Номенклатура, Сумма ИЗ РегистрНакопления.Продажи"}}},
+        {"op": "field.add", "args": {"items": [{"dataPath": "Номенклатура", "title": "Товар"}]}},
+        {"op": "structure.set", "args": {"values": {"structure": "Номенклатура > details"}}}
+      ],
+      "dryRun": true
     }
   }
 }
 ```
+
+## Чего словарь не пишет
+
+Сборки готового JSON-определения одним вызовом на поверхности **нет**: DSL
+ниже остаётся справочником формата, а не входом инструмента. Наборы данных и
+их связи, параметры данных варианта, условное оформление и параметры вывода
+операций тоже не имеют — полный перечень пробелов держит `dcs-edit`. Схема,
+которую нельзя собрать перечисленными операциями, — пробел контракта Unica
+MCP, а не повод писать XML руками.
 
 ## JSON DSL — краткий справочник
 

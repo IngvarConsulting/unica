@@ -1,7 +1,6 @@
 ---
 name: form-edit
 description: Добавление и удаление элементов, реквизитов и команд в существующей управляемой форме 1С. Используй когда нужно точечно модифицировать готовую форму
-argument-hint: <FormPath> (<JsonPath> | <definition>)
 allowed-tools:
   - Bash
   - Read
@@ -13,25 +12,33 @@ allowed-tools:
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tool `unica.form.edit`; `unica` owns XML/JSON DSL work and refreshes related workspace caches after mutations.
-- Do not call internal MCP/CLI adapters directly. They are hidden behind `unica` and synchronized by the orchestrator.
-- Execution path: call MCP `unica` tool `unica.form.edit`; skill-local operation scripts are not part of the workflow.
-- For mutating operations, pass `dryRun: false` only when the user explicitly requested the change; otherwise keep the default dry run.
-- Vendor support guard runs inside `unica`; if it blocks a locked/read-only supported object, prefer CFE/release-support or an explicit support-state change plan instead of editing raw support metadata.
+- Preferred path: use MCP `unica` tool `unica.apply` с операциями формы; адрес
+  цели — логический, файлового селектора у поверхности нет.
+- Не зови внутренние адаптеры напрямую: они спрятаны за MCP `unica`.
+- Всегда сначала `dryRun: true`; `dryRun: false` — только по явной просьбе
+  пользователя и только с `ifRev` из превью.
+- Словарь операций узла даёт `unica.view {at}` в секции `can`: что не названо
+  там, того поверхность не пишет.
+- Поддержку объекта проверяет сама операция; заблокированный поставщиком
+  объект правится через расширение, а не правкой метаданных поддержки.
 
-Добавляет или удаляет элементы, реквизиты и/или команды в существующем Form.xml. Автоматически выделяет ID из правильного пула, генерирует companion-элементы (ContextMenu, ExtendedTooltip, и др.) и обработчики событий.
+Добавляет и удаляет элементы, реквизиты и команды существующей управляемой
+формы. Идентификаторы, companion-элементы (`ContextMenu`, `ExtendedTooltip` и
+прочие) и привязки событий собирает сама операция.
 
-## Использование
+## Адрес и операции
 
-Используй MCP `unica` tool `unica.form.edit` с `FormPath` и ровно одним источником изменений: `JsonPath` или inline-объектом `definition`.
+Цель — узел формы: `<набор>:<Вид>.<Имя>.Form.<Форма>`. Имя набора даёт
+`unica.view {}`, адрес по имени объекта — `unica.search {corpus: "names"}`.
 
-## Параметры
-
-| Параметр | Обязательный | Описание |
-|----------|:------------:|----------|
-| FormPath | да | Путь к существующему Form.xml |
-| JsonPath | один из двух | Путь к JSON с описанием изменений |
-| definition | один из двух | То же описание как inline JSON object |
+| Операция | Что делает |
+|---|---|
+| `element.add` | добавляет элементы; `items[]` несёт то же описание, что раздел «JSON формат» ниже |
+| `element.remove` | удаляет элемент, названный адресом (`…Form.Ф.Item.X`) или списком `items` |
+| `formAttribute.add` | добавляет реквизит формы |
+| `formCommand.add` | добавляет команду формы |
+| `event.bind` | привязывает обработчик к событию формы или элемента |
+| `form.add`, `form.set`, `form.remove` | состав форм объекта и их свойства |
 
 ## MCP вызов
 
@@ -40,30 +47,26 @@ allowed-tools:
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.form.edit",
+    "name": "unica.apply",
     "arguments": {
-      "cwd": "<workspace>",
-      "FormPath": "src/Catalogs/Номенклатура/Forms/ФормаЭлемента/Ext/Form.xml",
-      "JsonPath": "forms/patch-add-article.json",
-      "dryRun": false
+      "at": "main:Catalog.Номенклатура.Form.ФормаЭлемента",
+      "ops": [
+        {
+          "op": "element.add",
+          "args": {
+            "items": [
+              {"input": "Артикул", "path": "Объект.Артикул", "into": "ГруппаШапка"}
+            ]
+          }
+        }
+      ],
+      "dryRun": true
     }
   }
 }
 ```
 
-Для небольшого изменения можно передать DSL без временного файла:
-
-```json
-{
-  "FormPath": "src/Catalogs/Номенклатура/Forms/ФормаЭлемента/Ext/Form.xml",
-  "definition": {
-    "formEvents": [
-      { "name": "OnCreateAtServer", "handler": "ПриСозданииНаСервере" }
-    ]
-  },
-  "dryRun": false
-}
-```
+Применение — тот же вызов с `dryRun: false` и `ifRev` из превью.
 
 ## JSON формат
 
@@ -118,15 +121,19 @@ allowed-tools:
 
 ### Удаление элементов
 
-Строгий контракт удаления содержит только точное имя:
+`element.remove` называет цель адресом — `…Form.<Форма>.Item.<Имя>` — либо
+списком имён в `items`:
 
 ```json
 {
-  "removeElements": [
-    { "name": "Товары" }
-  ]
+  "op": "element.remove",
+  "args": {"items": [{"name": "Товары"}]}
 }
 ```
+
+Ключ `removeElements` — внутренняя форма описания, в которую операция
+разворачивает эти имена; аргументом `element.remove` он не является и в вызове
+отклоняется как неизвестное поле. Гарантии ниже описаны для обеих форм.
 
 - Элемент сопоставляется с атрибутом XML `name` точно, с учётом регистра и пробелов. Поиск по префиксу и нормализация имени не выполняются.
 - В записи разрешено только строковое непустое поле `name`. Параметров `includeCompanions` и `ifMissing` нет: они отклоняются как неизвестные поля.
@@ -155,7 +162,7 @@ Preview и apply возвращают одинаковую типизирова�
 
 ### Типы элементов
 
-Те же DSL-ключи, что в `unica.form.compile`:
+Словарь пишет десять видов:
 
 | Ключ | XML тег | Companions |
 |------|---------|------------|
@@ -168,8 +175,22 @@ Preview и apply возвращают одинаковую типизирова�
 | `pages` | Pages | ExtendedTooltip |
 | `page` | Page | ExtendedTooltip |
 | `button` | Button | ExtendedTooltip |
+| `commandBar` | CommandBar | — |
 
 Группы и таблицы поддерживают `children`/`columns` для вложенных элементов.
+
+### Чего словарь не пишет
+
+Остальные виды платформенных полей и декораций **поверхность не создаёт**:
+поля картинки, текстового, табличного, HTML и форматированного документа,
+диаграммы и сводной диаграммы, диаграммы Ганта, календаря, периода,
+индикатора, ползунка, географической схемы, дендрограммы, планировщика,
+радиокнопки, а также декоративную картинку и поле поиска.
+
+Существующий элемент такого вида **читается** `unica.view` на узле формы и
+переживает правку соседей; создать или переписать его этой операцией нельзя.
+Если задача требует именно такого элемента — сообщи об этом как о пробеле
+контракта Unica MCP и не подменяй его другим видом.
 
 ### Кнопки: command и stdCommand
 
@@ -212,8 +233,8 @@ Editor до записи проверяет событие по единой п�
 
 ## Workflow
 
-1. `unica.view` on the form node — посмотреть текущую структуру формы
-2. Создать JSON с описанием изменений
-3. `unica.form.edit` — применить изменение
-4. `unica.check` на узле формы — проверить корректность
-5. `unica.view` on the form node — убедиться, что структура изменилась правильно
+1. `unica.view` на узле формы — текущая структура и секция `can`
+2. Собрать `ops` по описанию ниже
+3. `unica.apply` с `dryRun: true` — план и `rev`
+4. `unica.apply` с `dryRun: false` и `ifRev` — применение
+5. `unica.check` на узле формы — проверка, затем `unica.view` — убедиться, что структура изменилась правильно

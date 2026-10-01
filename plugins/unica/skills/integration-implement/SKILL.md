@@ -7,27 +7,25 @@ description: "Реализация интеграций 1С. Используй 
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.meta.info`, `unica.meta.add`, `unica.meta.edit`, `unica.code.search`, `unica.docs`, and `unica.runtime.execute`.
-- По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
-показывает запланированную команду без побочных эффектов, а с `dryRun: false`
-исполняет классифицированную операцию и отвечает её терминальным результатом в
-том же вызове, приложив названную причину риска (`runtime_risk_*`)
-предупреждением; неклассифицированная операция по-прежнему отказывает
-`runtime_operation_unbounded` до обнаружения рабочего пространства. Preview
-исполнением не является. Работу, которую вызов ждать не должен, запускай через
-`unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
-`unica.build.*`.
-- Use `unica.form.*`, `unica.role.*`, or `unica.cfe.*` tools when the integration requires UI, rights, or extension changes.
+- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.view` on the object node, `unica.apply`, `unica.search`, `unica.docs`, and `unica.run`.
+- Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
+контракт каждой — `argsSchema`, `execution`, `previewRequired`,
+`ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
+при `implemented: true` используй опубликованную `argsSchema`; при
+`support.state: limited` разрешено только подмножество `support.supportedArgs`.
+При `support.state: unavailable` остановись; не выдумывай аргументов при
+`argsSchema: null`. Превью исполнением не является. Не обходи контракт прямым runner-ом.
+- Use `unica.apply` when the integration requires UI, rights, or extension changes: forms and roles are its operations, and what the dictionary does not write is a Unica MCP contract gap.
 - Do not call internal metadata, analyzer, standards, runtime, or package adapters directly. They are hidden behind MCP `unica`.
 
 ## Workflow
 
 1. Define the contract first: endpoint, method, auth, payload schema, idempotency key, retries, timeout, and error response shape.
-2. Inspect existing integration modules and HTTP/web service metadata with `unica.code.search` and `unica.meta.info`.
-3. Create or edit metadata through `unica.meta.add` / `unica.meta.edit`; keep source-set and format selected by `unica.view {}`.
+2. Inspect existing integration modules and HTTP/web service metadata with `unica.search` and `unica.view` on the object node.
+3. Create or edit metadata through `unica.apply`; keep source-set and format selected by `unica.view {}`.
 4. Put reusable logic in common modules; keep HTTP service handlers thin and explicit about request parsing, validation, and response codes.
 5. Handle secrets outside versioned modules and configs. Do not log tokens, passwords, full request bodies with personal data, or raw auth headers.
-6. Use `unica.runtime.execute` to preview typed syntax/test arguments and, with `dryRun: false`, to run them and report runtime verification as unavailable; for live HTTP behavior require a user-provided debug URL and external evidence, because `autonomous-server` cannot currently launch through this contract.
+6. Check syntax with `unica.check` (test runs are outside the v0.13 surface) and report runtime verification as unavailable; for live HTTP behavior require a user-provided debug URL and external evidence, because no `unica.run` operation publishes a web-client URL.
 
 ## Contract detail
 
@@ -54,10 +52,9 @@ description: "Реализация интеграций 1С. Используй 
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.meta.info",
+    "name": "unica.view",
     "arguments": {
-      "sourceSet": "main",
-      "metadataPath": "HTTPService.ExternalAPI"
+      "at": "main:HTTPService.ExternalAPI"
     }
   }
 }

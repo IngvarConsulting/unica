@@ -1,32 +1,30 @@
 ---
 name: test-authoring
-description: "Проектирование тестов 1С и preview команд YaXUnit/Vanessa Automation. Используй когда нужно написать тест, подобрать сценарии или подготовить all/module запуск; applied-запуск идёт через `unica.runtime.execute` с `dryRun: false` или долговременным заданием."
+description: "Проектирование тестов 1С: YaXUnit и Vanessa Automation. Используй когда нужно написать тест, подобрать сценарии или подготовить all/module запуск; сам запуск тестов на поверхности v0.13 не опубликован и остаётся отдельным шагом."
 ---
 
 # Test Authoring
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.code.search`, `unica.view {}`, `unica.runtime.execute`, and the relevant `unica.*.info` tools.
-- По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
-показывает запланированную команду без побочных эффектов, а с `dryRun: false`
-исполняет классифицированную операцию и отвечает её терминальным результатом в
-том же вызове, приложив названную причину риска (`runtime_risk_*`)
-предупреждением; неклассифицированная операция по-прежнему отказывает
-`runtime_operation_unbounded` до обнаружения рабочего пространства. Preview
-исполнением не является. Работу, которую вызов ждать не должен, запускай через
-`unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
-`unica.build.*`.
+- Preferred path: use MCP `unica` tools `unica.search`, `unica.view {}`, and `unica.check`.
+- Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
+контракт каждой — `argsSchema`, `execution`, `previewRequired`,
+`ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
+при `implemented: true` используй опубликованную `argsSchema`; при
+`support.state: limited` разрешено только подмножество `support.supportedArgs`.
+При `support.state: unavailable` остановись; не выдумывай аргументов при
+`argsSchema: null`. Превью исполнением не является. Не обходи контракт прямым runner-ом.
 - Use `unica.docs` with `source: "development-standard"` only when test design depends on a `development-standard`. Expected platform API or mechanics require `unica.docs` with `source: "platform-help"`.
 - Do not call internal runtime, analyzer, or package adapters directly. They are hidden behind MCP `unica`.
 
 ## Workflow
 
 1. Define the behavior under test before choosing the framework: pure BSL unit, object lifecycle, form behavior, integration contract, or regression around a diagnostic.
-2. Search existing tests and fixtures with `unica.code.search`; follow local naming, setup, teardown, and assertion style.
+2. Search existing tests and fixtures with `unica.search`; follow local naming, setup, teardown, and assertion style.
 3. Prefer YaXUnit for module/unit-level BSL behavior and Vanessa Automation for UI/business scenarios that require a client.
 4. Build the smallest stable fixture. Avoid dependence on production data unless the user explicitly requests an integration test.
-5. Preview `unica.runtime.execute` with `operation=syntax` after adding test code, then preview `operation=test` with `testRunner=yaxunit` or `testRunner=va`; neither call executes the test suite.
+5. Check the new test module with `unica.check {at}` after adding test code (`unica.check {}` alone judges workspace readiness); a YaXUnit or Vanessa Automation run is not on the v0.13 surface, so it is not launched from here.
 6. Report that runtime verification was not performed. If separate test evidence is supplied, report the exact failing test, expected/actual behavior, and whether the failure is test setup or product behavior.
 
 ## Verification gate
@@ -36,9 +34,9 @@ description: "Проектирование тестов 1С и preview кома�
 - For public API, integration, release, or metadata behavior, include impact
   analysis evidence from the relevant `unica.*` tools before treating the test
   plan as complete.
-- Do not call donor-specific check commands. Use `unica.code.diagnostics` and
-  focused `unica.*.info` tools for available static checks; use
-  `unica.runtime.execute` to preview the intended runtime request and, with `dryRun: false`, to run it.
+- Do not call donor-specific check commands. Use `unica.check {at}` on the module and
+  `unica.view` on the object for available static checks; a test run
+  needs separate execution evidence.
 
 ## Scenario design
 
@@ -46,39 +44,18 @@ description: "Проектирование тестов 1С и preview кома�
 - Read `../../references/platform/runtime-diagnostics.md` when a test is meant to reproduce a user-facing runtime failure.
 - Treat tests as executable debugging: one test should prove the intended user/API scenario, the failure mode, and the regression boundary.
 - For API scenarios, cover success, validation error, auth error, duplicate/idempotent retry, remote timeout, and stable error semantics.
-- For UI or web-client scenarios, preview `operation=test` for the 1C test suite. Hand a concrete autonomous URL to an external browser-testing tool only when that URL and its running environment were supplied independently.
+- For UI or web-client scenarios, name the 1C test suite run as a separate step. Hand a concrete autonomous URL to an external browser-testing tool only when that URL and its running environment were supplied independently.
 
-## MCP examples
-
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.runtime.execute",
-    "arguments": {
-      "cwd": "<workspace>",
-      "operation": "test",
-      "testRunner": "yaxunit",
-      "testScope": "module",
-      "module": "ТестДокументаЗаказКлиента",
-      "dryRun": true
-    }
-  }
-}
-```
+## MCP example
 
 ```json
 {
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.runtime.execute",
+    "name": "unica.check",
     "arguments": {
-      "cwd": "<workspace>",
-      "operation": "test",
-      "testRunner": "va",
-      "dryRun": true
+      "at": "main:CommonModule.ТестДокументаЗаказКлиента"
     }
   }
 }

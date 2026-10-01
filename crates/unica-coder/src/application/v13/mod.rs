@@ -1,4 +1,5 @@
 pub(crate) mod apply;
+pub(crate) mod body_snapshot;
 pub(crate) mod check;
 pub(crate) mod diff;
 pub(crate) mod find;

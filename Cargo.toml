@@ -3,14 +3,13 @@ members = ["crates/unica-bootstrap", "crates/unica-coder"]
 resolver = "2"
 
 [workspace.package]
-version = "0.12.0"
+version = "0.13.0-rc.3"
 edition = "2021"
 license = "LGPL-3.0-or-later"
 repository = "https://github.com/IngvarConsulting/unica"
 
 [workspace.dependencies]
-# In-process parser semantics must match the bundled analyzer; a contract test
-# compares these resolved revisions with third-party/tools.lock.json.
+# Keep these revisions aligned with the bundled analyzer in tools.lock.json.
 bsl-parser = { package = "parser", git = "https://github.com/itrous/bsl-analyzer", rev = "9a92766691bbd0191a5ff02c34fa9058e4570b85" }
 bsl-syntax = { package = "syntax", git = "https://github.com/itrous/bsl-analyzer", rev = "9a92766691bbd0191a5ff02c34fa9058e4570b85" }
 diffy = "0.5.0"
@@ -24,7 +23,7 @@ rmcp = { version = "3.1.2", default-features = false, features = ["server", "tra
 chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util"] }
 serde = { version = "1.0", features = ["derive", "rc"] }
-serde_json = { version = "1.0", features = ["preserve_order"] }
+serde_json = { version = "1.0", features = ["preserve_order", "float_roundtrip"] }
 serde_yaml = "0.9"
 unsafe-libyaml = "0.2.11"
 syn = { version = "2", features = ["full", "visit"] }
@@ -40,6 +39,7 @@ tar = "0.4"
 # обязан отказывать на неизвестных ключах, derive их молча отбрасывает.
 toml = "0.8"
 roxmltree = "0.20"
+xml = "1.4"
 # Стемминг Snowball ru/en для лексического ядра поиска документации
 # (ADR-0037). Полностью офлайн: таблицы стеммеров вкомпилированы, состояния
 # на диске и сетевых обращений нет. Лицензии MIT/BSD-3.
@@ -65,6 +65,7 @@ windows-sys = { version = "0.59", features = [
   "Win32_System_Console",
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_JobObjects",
+  "Win32_System_ProcessStatus",
   "Win32_System_Threading",
 ] }
 cap-primitives = "4.0.2"

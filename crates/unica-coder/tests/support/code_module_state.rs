@@ -54,3 +54,74 @@ fn canonical_stdio_code_insert_publishes_borrowed_module_and_state() {
     assert_eq!(fs::read_to_string(&descriptor).unwrap(), after);
     mcp.finish();
 }
+
+#[test]
+fn canonical_stdio_root_modules_publish_configuration_state_and_repeat() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    let source = workspace.join("ext");
+    let state = root.path().join("state");
+    fs::create_dir_all(source.join("Ext")).unwrap();
+    fs::create_dir(&state).unwrap();
+    fs::write(
+        workspace.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: ext\n    type: EXTENSION\n    path: ext\n",
+    )
+    .unwrap();
+    let descriptor = source.join("Configuration.xml");
+    fs::write(&descriptor, r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="66666666-6666-6666-6666-666666666666"><InternalInfo/><Properties><ObjectBelonging>Adopted</ObjectBelonging><Name>Extension</Name><ConfigurationExtensionPurpose>Customization</ConfigurationExtensionPurpose><NamePrefix>E_</NamePrefix></Properties><ChildObjects/></Configuration></MetaDataObject>"#).unwrap();
+    let mut mcp = McpProcess::start(&workspace, &state);
+    mcp.exchange(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"root-module-state-test","version":"1"}}}));
+    mcp.notify(json!({"jsonrpc":"2.0","method":"notifications/initialized"}));
+    for (index, role) in [
+        "ManagedApplication",
+        "OrdinaryApplication",
+        "Session",
+        "ExternalConnection",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let before = fs::read_to_string(&descriptor).unwrap();
+        let at = format!("ext:Module.{role}");
+        let mut args = json!({"at":at,"ops":[{"op":"code.insert","args":{"at":at,"text":"Procedure Added() Export\nEndProcedure"}}],"dryRun":true});
+        let id = 2 + index as u64 * 3;
+        let preview = call(&mut mcp, id, args.clone());
+        assert_eq!(fs::read_to_string(&descriptor).unwrap(), before);
+        let module = source.join(format!("Ext/{role}Module.bsl"));
+        assert!(!module.exists());
+        args["dryRun"] = json!(false);
+        args["ifRev"] = preview["rev"].clone();
+        let applied = call(&mut mcp, id + 1, args.clone());
+        assert_ne!(preview["rev"], applied["rev"]);
+        let after = fs::read_to_string(&descriptor).unwrap();
+        let document = roxmltree::Document::parse(&after).unwrap();
+        let property = format!("{role}Module");
+        let matching: Vec<_> = document
+            .descendants()
+            .filter(|node| {
+                node.has_tag_name(("http://v8.1c.ru/8.3/xcf/readable", "PropertyState"))
+                    && node.children().any(|child| {
+                        child.has_tag_name(("http://v8.1c.ru/8.3/xcf/readable", "Property"))
+                            && child.text() == Some(property.as_str())
+                    })
+            })
+            .collect();
+        assert_eq!(matching.len(), 1, "{after}");
+        assert!(matching[0]
+            .parent()
+            .unwrap()
+            .has_tag_name(("http://v8.1c.ru/8.3/MDClasses", "InternalInfo")));
+        assert!(matching[0].children().any(|child| child
+            .has_tag_name(("http://v8.1c.ru/8.3/xcf/readable", "State"))
+            && child.text() == Some("Extended")));
+        let bsl = fs::read(&module).unwrap();
+        assert!(String::from_utf8_lossy(&bsl).contains("Procedure Added()"));
+        args["ifRev"] = applied["rev"].clone();
+        let repeated = call(&mut mcp, id + 2, args);
+        assert_eq!(repeated["rev"], applied["rev"]);
+        assert_eq!(fs::read_to_string(&descriptor).unwrap(), after);
+        assert_eq!(fs::read(&module).unwrap(), bsl);
+    }
+    mcp.finish();
+}

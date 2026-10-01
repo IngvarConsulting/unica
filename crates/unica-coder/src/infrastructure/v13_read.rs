@@ -1,4 +1,5 @@
 use crate::application::ports::{MetadataChildProfile, MetadataTemplateType};
+use crate::application::v13::body_snapshot::BodySnapshot;
 use crate::application::v13::view::{ViewError, ViewFilter, ViewReadAuthority, ViewSourceSnapshot};
 use crate::application::v13::LOGICAL_READ_OPERATION_BUDGET;
 use crate::domain::address::{AddressSegment, NodeKind, QualifiedAddress};
@@ -38,6 +39,7 @@ use crate::infrastructure::platform_xml_source_targets::{
     resolve_platform_xml_target, TargetKindPolicy,
 };
 use crate::infrastructure::source_revision::SourceRevisionService;
+use crate::infrastructure::v13_large_configuration::{RegistrationCache, RegistrationIndex};
 use crate::infrastructure::v13_read_port::ProviderReadAuthority;
 use serde_json::{json, Map, Value};
 #[cfg(test)]
@@ -110,6 +112,7 @@ pub(crate) struct LogicalViewReadAuthority<'a> {
     deadline: ProviderDeadline,
     module_projections: Mutex<BTreeMap<ModuleProjectionCacheKey, Arc<ModuleProjectionSet>>>,
     configuration_payloads: Mutex<BTreeMap<RevisionCacheKey, Arc<Value>>>,
+    configuration_registrations: Arc<RegistrationCache>,
     verified_owners: Mutex<BTreeSet<OwnerProofCacheKey>>,
     owner_evidence: Mutex<BTreeMap<OwnerProofCacheKey, Arc<PlatformXmlSourceSetOwnerEvidence>>>,
     verified_owner_edges: Mutex<BTreeSet<OwnerEdgeCacheKey>>,
@@ -184,6 +187,22 @@ impl<'a> LogicalViewReadAuthority<'a> {
         profile: PlatformProfile,
         deadline: ProviderDeadline,
     ) -> Self {
+        Self::with_read_authority_and_registration_cache(
+            cancellation,
+            read,
+            profile,
+            deadline,
+            Arc::new(RegistrationCache::default()),
+        )
+    }
+
+    pub(crate) fn with_read_authority_and_registration_cache(
+        cancellation: &'a CancellationToken,
+        read: ProviderReadAuthority,
+        profile: PlatformProfile,
+        deadline: ProviderDeadline,
+        registration_cache: Arc<RegistrationCache>,
+    ) -> Self {
         Self {
             cancellation,
             read,
@@ -191,12 +210,113 @@ impl<'a> LogicalViewReadAuthority<'a> {
             deadline,
             module_projections: Mutex::new(BTreeMap::new()),
             configuration_payloads: Mutex::new(BTreeMap::new()),
+            configuration_registrations: registration_cache,
             verified_owners: Mutex::new(BTreeSet::new()),
             owner_evidence: Mutex::new(BTreeMap::new()),
             verified_owner_edges: Mutex::new(BTreeSet::new()),
             typed_payloads: Mutex::new(BTreeMap::new()),
             form_data: Mutex::new(BTreeMap::new()),
         }
+    }
+
+    pub(crate) fn object_borrowing(
+        &self,
+        at: &QualifiedAddress,
+    ) -> Result<Option<crate::infrastructure::native_operations::meta::MetaBorrowing>, ViewError>
+    {
+        if self.read.source_set_kind() != SourceSetKind::Extension
+            || at.segments().len() != 1
+            || at.segments()[0].name().is_none()
+            || !at.segments()[0].kind().is_metadata_kind()
+        {
+            return Ok(None);
+        }
+        let target = MetadataAddress::parse(
+            PLATFORM_XML_8_3_27_FORMAT_2_20,
+            at.to_string().split_once(':').expect("qualified address").1,
+        )
+        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))?;
+        let admitted = ViewSourceSnapshot {
+            source_set_identity: self.read.source_set_identity().to_string(),
+            revision: self.exact_revision()?,
+        };
+        self.verify_registered_owner(&target, &admitted)?;
+        crate::infrastructure::native_operations::meta::parse_meta_borrowing(
+            &self.read.metadata_descriptor(&target)?,
+        )
+        .map(Some)
+        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
+    }
+
+    /// Resolve only registered, readable objects under this retained source.
+    /// A matching filename or name alone is not parent identity evidence.
+    pub(crate) fn borrowed_parent_matches(
+        &self,
+        parent_uuid: &str,
+        kind: &str,
+    ) -> Result<Vec<String>, ViewError> {
+        let admitted = ViewSourceSnapshot {
+            source_set_identity: self.read.source_set_identity().to_string(),
+            revision: self.exact_revision()?,
+        };
+        let payload = self
+            .read
+            .configuration_payload_with_checkpoint(&mut || self.read_checkpoint())?;
+        let mut matches = Vec::new();
+        for item in payload
+            .get("registeredObjects")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if item.get("kind").and_then(Value::as_str) != Some(kind) {
+                continue;
+            }
+            self.read_checkpoint()?;
+            let name = item.get("name").and_then(Value::as_str).ok_or_else(|| {
+                ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
+                    "registered parent has no name",
+                )
+            })?;
+            let target =
+                MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &format!("{kind}.{name}"))
+                    .map_err(|error| {
+                        ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+                    })?;
+            self.verify_registered_owner(&target, &admitted)?;
+            let bytes = self.read.metadata_descriptor(&target)?;
+            let text = std::str::from_utf8(&bytes).map_err(|_| {
+                ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
+                    "parent descriptor is not UTF-8",
+                )
+            })?;
+            let doc = roxmltree::Document::parse(text.trim_start_matches('\u{feff}')).map_err(
+                |error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()),
+            )?;
+            let uuid = doc
+                .root_element()
+                .children()
+                .find(|node| node.is_element())
+                .and_then(|node| node.attribute("uuid"));
+            if uuid.is_some_and(|uuid| uuid.eq_ignore_ascii_case(parent_uuid)) {
+                let at = format!("{}:{}", self.read.source_set(), target.as_str());
+                let address = QualifiedAddress::parse(&at).map_err(|error| {
+                    ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+                })?;
+                // A valid registered descriptor must also be readable through the public reader.
+                self.read_exact(&address, &ViewFilter::default(), &admitted)?;
+                matches.push(at);
+            }
+        }
+        if self.exact_revision()? != admitted.revision {
+            return Err(ViewError::new(
+                RefusalCode::StaleRevision,
+                "parent source changed during identity resolution",
+            ));
+        }
+        Ok(matches)
     }
 
     fn exact_revision(&self) -> Result<String, ViewError> {
@@ -213,7 +333,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
         }
         if self.deadline.remaining().is_zero() {
             return Err(ViewError::new(
-                RefusalCode::ProviderDeadline,
+                RefusalCode::DeadlineExceeded,
                 "logical read operation deadline elapsed",
             ));
         }
@@ -458,7 +578,8 @@ impl<'a> LogicalViewReadAuthority<'a> {
         if MetadataKind::parse(kind).is_err() {
             return self.read.identity_metadata_payload(target);
         }
-        let local = self.read.metadata_local(target)?;
+        let read = self.read.metadata_local(target)?;
+        let local = read.info;
         for (kind, children) in [
             (NodeKind::Form, &local.collections.forms),
             (NodeKind::Template, &local.collections.templates),
@@ -470,7 +591,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
                     &format!("{}.{}.{}", target.as_str(), kind.as_str(), child.name),
                 )
                 .map_err(|error| {
-                    ViewError::new(RefusalCode::ProviderUnavailable, error.to_string())
+                    ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
                 })?;
                 self.verify_registered_owner(&child, admitted)?;
             }
@@ -484,9 +605,18 @@ impl<'a> LogicalViewReadAuthority<'a> {
         insert_serialized(&mut payload, "properties", &local.properties)?;
         insert_serialized(&mut payload, "declarations", &local.declarations)?;
         insert_serialized(&mut payload, "relations", &local.relations)?;
-        let collections = serde_json::to_value(&local.collections)
-            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))?;
+        let collections = serde_json::to_value(&local.collections).map_err(|error| {
+            ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+        })?;
         payload.insert("collections".to_string(), collections);
+        // Заимствование отвечает только в наборе расширения; там оно есть у
+        // всякого объекта, и «своё» — такой же ответ, как «заимствовано».
+        if let Some(borrowing) = read.borrowing {
+            payload.extend(crate::infrastructure::v13_read_projection::borrowing_props(
+                &borrowing,
+            ));
+        }
+
         // Предопределённые элементы — содержимое самого объекта, и писатель у
         // них есть. Без читателя агент, добавивший элемент, не может
         // подтвердить результат: ни счёта, ни списка, ни адреса.
@@ -520,8 +650,8 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 .flatten()
             {
                 let Some(name) = child.get("name").and_then(Value::as_str) else {
-                    return Err(ViewError::new(
-                        RefusalCode::ProviderUnavailable,
+                    return Err(ViewError::detailed(
+                        RefusalDetail::SourceUnreadable,
                         format!("registered {field} entry has no name"),
                     ));
                 };
@@ -530,7 +660,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
                     &format!("{}.{}.{name}", target.as_str(), kind.as_str()),
                 )
                 .map_err(|error| {
-                    ViewError::new(RefusalCode::ProviderUnavailable, error.to_string())
+                    ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
                 })?;
                 self.verify_registered_owner(&child, admitted)?;
             }
@@ -565,14 +695,14 @@ impl<'a> LogicalViewReadAuthority<'a> {
             .flatten()
         {
             let kind = item.get("kind").and_then(Value::as_str).ok_or_else(|| {
-                ViewError::new(
-                    RefusalCode::ProviderUnavailable,
+                ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
                     "registered owner has no kind",
                 )
             })?;
             let name = item.get("name").and_then(Value::as_str).ok_or_else(|| {
-                ViewError::new(
-                    RefusalCode::ProviderUnavailable,
+                ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
                     "registered owner has no name",
                 )
             })?;
@@ -582,9 +712,52 @@ impl<'a> LogicalViewReadAuthority<'a> {
             let owner =
                 MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &format!("{kind}.{name}"))
                     .map_err(|error| {
-                        ViewError::new(RefusalCode::ProviderUnavailable, error.to_string())
+                        ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
                     })?;
             self.verify_registered_owner(&owner, admitted)?;
+        }
+        Ok(())
+    }
+
+    /// The Configuration root already has registration evidence from the
+    /// streaming owner document. Verify each descriptor directly, without
+    /// rebuilding that full inventory or retaining one cache entry per owner.
+    fn verify_streamed_top_level_owner(&self, kind: &str, name: &str) -> Result<(), ViewError> {
+        if kind == NodeKind::WebSocketClient.as_str() {
+            return Ok(());
+        }
+        self.read_checkpoint()?;
+        #[cfg(test)]
+        review_run_before_owner_proof();
+        let target =
+            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &format!("{kind}.{name}"))
+                .map_err(|error| {
+                    ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+                })?;
+        let evidence = self
+            .read
+            .metadata_owner_evidence(&target)
+            .map_err(|error| {
+                if error.code() == RefusalCode::NotFound {
+                    ViewError::detailed(
+                        RefusalDetail::SourceUnreadable,
+                        format!(
+                            "registered metadata owner `{}` has no descriptor",
+                            target.as_str()
+                        ),
+                    )
+                } else {
+                    error
+                }
+            })?;
+        if evidence.artifact_kind() != kind || evidence.artifact_name() != Some(name) {
+            return Err(ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
+                format!(
+                    "metadata descriptor identity does not match `{}`",
+                    target.as_str()
+                ),
+            ));
         }
         Ok(())
     }
@@ -595,6 +768,22 @@ impl<'a> LogicalViewReadAuthority<'a> {
         owner_name: &str,
         admitted: &ViewSourceSnapshot,
     ) -> Result<(), ViewError> {
+        if matches!(
+            self.read.source_set_kind(),
+            SourceSetKind::Configuration | SourceSetKind::Extension
+        ) && self.read.configuration_xml_requires_streaming()
+        {
+            let index = self.streamed_configuration_registration_index(admitted)?;
+            return index
+                .contains(owner_kind, owner_name, &|| self.read_checkpoint())?
+                .then_some(())
+                .ok_or_else(|| {
+                    ViewError::new(
+                        RefusalCode::NotFound,
+                        format!("metadata owner `{owner_kind}.{owner_name}` is not registered"),
+                    )
+                });
+        }
         let payload = self.configuration_payload(admitted)?;
         let registered = payload
             .get("registeredObjects")
@@ -613,6 +802,21 @@ impl<'a> LogicalViewReadAuthority<'a> {
         })
     }
 
+    fn streamed_configuration_registration_index(
+        &self,
+        admitted: &ViewSourceSnapshot,
+    ) -> Result<Arc<RegistrationIndex>, ViewError> {
+        self.configuration_registrations.get_or_build(
+            &admitted.source_set_identity,
+            &admitted.revision,
+            &|| self.read_checkpoint(),
+            || {
+                self.read
+                    .streamed_configuration_registration_index(&|| self.read_checkpoint())
+            },
+        )
+    }
+
     fn module_view(
         &self,
         route: &LogicalTreeRoute,
@@ -625,8 +829,8 @@ impl<'a> LogicalViewReadAuthority<'a> {
         let (module_at, prefix_len) = module_prefix(route.at(), self.profile, capability)?;
         self.verify_module_owner(&module_at, capability, admitted)?;
         if capability.role() == ModuleRole::WebSocketClient {
-            return Err(ViewError::new(
-                RefusalCode::ProviderUnavailable,
+            return Err(ViewError::detailed(
+                RefusalDetail::ProviderAbsent,
                 "WebSocketClient source layout is not specified for platform profile 8.3.27",
             ));
         }
@@ -643,8 +847,8 @@ impl<'a> LogicalViewReadAuthority<'a> {
             )
             .map_err(|error| ViewError::new(error.code(), error.to_string()))?
             else {
-                return Err(ViewError::new(
-                    RefusalCode::ProviderUnavailable,
+                return Err(ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
                     "module event did not resolve to a Platform source",
                 ));
             };
@@ -682,16 +886,19 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 .rsplit_once('.')
                 .map(|(owner, _)| owner)
                 .ok_or_else(|| {
-                    ViewError::new(
-                        RefusalCode::ProviderUnavailable,
+                    ViewError::detailed(
+                        RefusalDetail::SourceUnreadable,
                         "common module owner is invalid",
                     )
                 })?;
             let owner = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, owner).map_err(
-                |error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()),
+                |error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()),
             )?;
             let descriptor = self.read.metadata_descriptor(&owner)?;
-            Some(common_module_properties(&descriptor)?)
+            Some(common_module_properties(
+                &descriptor,
+                self.read.source_set_kind(),
+            )?)
         } else {
             None
         };
@@ -847,7 +1054,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             let current_text = parts[..end].join(".");
             let current = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &current_text)
                 .map_err(|error| {
-                    ViewError::new(RefusalCode::ProviderUnavailable, error.to_string())
+                    ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
                 })?;
             if let Some((parent_address, parent_evidence)) = &parent {
                 let child_kind = parts[end - 2];
@@ -901,8 +1108,8 @@ impl<'a> LogicalViewReadAuthority<'a> {
             }
             let evidence = self.owner_evidence(&current, admitted).map_err(|error| {
                 if error.code() == RefusalCode::NotFound {
-                    ViewError::new(
-                        RefusalCode::ProviderUnavailable,
+                    ViewError::detailed(
+                        RefusalDetail::SourceUnreadable,
                         format!(
                             "registered metadata owner `{}` has no descriptor",
                             current.as_str()
@@ -915,8 +1122,8 @@ impl<'a> LogicalViewReadAuthority<'a> {
             if evidence.artifact_kind() != parts[end - 2]
                 || evidence.artifact_name() != Some(parts[end - 1])
             {
-                return Err(ViewError::new(
-                    RefusalCode::ProviderUnavailable,
+                return Err(ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
                     format!(
                         "metadata descriptor identity does not match `{}`",
                         current.as_str()
@@ -1000,11 +1207,12 @@ impl<'a> LogicalViewReadAuthority<'a> {
                     "form module address is invalid",
                 )
             })?;
-        let form = QualifiedAddress::parse(form_at)
-            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))?;
+        let form = QualifiedAddress::parse(form_at).map_err(|error| {
+            ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+        })?;
         let metadata_path =
             MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &form.logical_path()).map_err(
-                |error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()),
+                |error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()),
             )?;
         let data = self.form_data(&metadata_path, admitted)?;
         Ok(form_semantic_inputs(form_at, &FormEventEvidence::from_info(&data)).bindings)
@@ -1026,13 +1234,15 @@ impl<'a> LogicalViewReadAuthority<'a> {
         let form_at =
             QualifiedAddress::parse(&format!("{}:{}", route.at().source_set(), target.as_str()))
                 .map_err(|error| {
-                    ViewError::new(RefusalCode::ProviderUnavailable, error.to_string())
+                    ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
                 })?;
-        let module_at = QualifiedAddress::parse(&format!("{form_at}.Module.Form"))
-            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))?;
+        let module_at =
+            QualifiedAddress::parse(&format!("{form_at}.Module.Form")).map_err(|error| {
+                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+            })?;
         let capability = self.profile.module_capability(&module_at).ok_or_else(|| {
-            ViewError::new(
-                RefusalCode::ProviderUnavailable,
+            ViewError::detailed(
+                RefusalDetail::ProviderAbsent,
                 "form module capability is absent from the platform profile",
             )
         })?;
@@ -1056,6 +1266,55 @@ impl<'a> LogicalViewReadAuthority<'a> {
 }
 
 impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
+    fn read_checkpoint(&self) -> Result<(), ViewError> {
+        LogicalViewReadAuthority::read_checkpoint(self)
+    }
+
+    fn read_body_disk(
+        &self,
+        at: &QualifiedAddress,
+        filter: &ViewFilter,
+        admitted: &ViewSourceSnapshot,
+    ) -> Result<Option<BodySnapshot>, ViewError> {
+        if !filter.is_empty() {
+            return Ok(None);
+        }
+        let route = route_logical_address(at, self.profile)
+            .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
+        if route.reader() != LogicalReader::Module {
+            return Ok(None);
+        }
+        let Some(capability) = route.module() else {
+            return Ok(None);
+        };
+        let (module_at, prefix_len) = module_prefix(at, self.profile, capability)?;
+        let suffix = &at.segments()[prefix_len..];
+        if !matches!(suffix, [body] if body.kind() == NodeKind::Body && body.name().is_none()) {
+            return Ok(None);
+        }
+        self.read_checkpoint()?;
+        if admitted.source_set_identity != self.read.source_set_identity()
+            || admitted.revision != self.exact_revision()?
+        {
+            return Err(ViewError::new(
+                RefusalCode::StaleCursor,
+                "source revision changed before the Body read",
+            ));
+        }
+        self.verify_module_owner(&module_at, capability, admitted)?;
+        if capability.role() == ModuleRole::WebSocketClient {
+            return Err(ViewError::detailed(
+                RefusalDetail::ProviderAbsent,
+                "WebSocketClient source layout is not specified for platform profile 8.3.27",
+            ));
+        }
+        let target = module_source_address(&module_at, capability)?;
+        let body = self
+            .read
+            .module_body_snapshot(&target, || self.read_checkpoint())?;
+        Ok(Some(body))
+    }
+
     fn snapshot(&self, at: &QualifiedAddress) -> Result<ViewSourceSnapshot, ViewError> {
         if at.source_set() != self.read.source_set() {
             return Err(ViewError::new(
@@ -1099,8 +1358,9 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                 "source revision changed during canonical address resolution",
             ));
         }
-        QualifiedAddress::parse(projected.at())
-            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
+        QualifiedAddress::parse(projected.at()).map_err(|error| {
+            ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+        })
     }
 
     fn identity_export_path(&self, at: &QualifiedAddress) -> Result<Option<String>, ViewError> {
@@ -1193,6 +1453,24 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         let module_filter = validate_view_filter(&route, filter)?;
         let projected = if route.reader() == LogicalReader::Module {
             self.module_view(&route, admitted, &module_filter)?
+        } else if route.reader() == LogicalReader::Configuration
+            && matches!(
+                self.read.source_set_kind(),
+                SourceSetKind::Configuration | SourceSetKind::Extension
+            )
+            && self.read.configuration_xml_requires_streaming()
+        {
+            let streamed = self
+                .read
+                .streamed_configuration_root(&|| self.read_checkpoint(), |kind, name| {
+                    self.verify_streamed_top_level_owner(kind, name)
+                })?;
+            crate::infrastructure::v13_read_projection::project_configuration_with_counts(
+                route.at(),
+                &streamed.payload,
+                &[],
+                streamed.counts,
+            )?
         } else if route.reader() == LogicalReader::Metadata
             && route.reader_metadata_path().is_none()
             && route
@@ -1201,7 +1479,6 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                 .last()
                 .is_some_and(|segment| segment.name().is_none())
         {
-            let payload = self.configuration_payload(admitted)?;
             let branch_kind = route
                 .at()
                 .segments()
@@ -1210,36 +1487,63 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                 .ok_or_else(|| {
                     ViewError::new(RefusalCode::NotFound, "metadata branch kind is absent")
                 })?;
-            if branch_kind != NodeKind::WebSocketClient {
-                for item in payload
-                    .get("registeredObjects")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .filter(|item| {
-                        item.get("kind").and_then(Value::as_str) == Some(branch_kind.as_str())
-                    })
-                {
-                    let name = item.get("name").and_then(Value::as_str).ok_or_else(|| {
-                        ViewError::new(
-                            RefusalCode::ProviderUnavailable,
-                            "registered metadata owner has no name",
+            if matches!(
+                self.read.source_set_kind(),
+                SourceSetKind::Configuration | SourceSetKind::Extension
+            ) && self.read.configuration_xml_requires_streaming()
+            {
+                let index = self.streamed_configuration_registration_index(admitted)?;
+                let names =
+                    index.names_for_kind(branch_kind.as_str(), &|| self.read_checkpoint())?;
+                if branch_kind != NodeKind::WebSocketClient {
+                    for name in &names {
+                        let owner = MetadataAddress::parse(
+                            PLATFORM_XML_8_3_27_FORMAT_2_20,
+                            &format!("{}.{name}", branch_kind.as_str()),
                         )
-                    })?;
-                    let owner = MetadataAddress::parse(
-                        PLATFORM_XML_8_3_27_FORMAT_2_20,
-                        &format!("{}.{name}", branch_kind.as_str()),
-                    )
-                    .map_err(|error| {
-                        ViewError::new(RefusalCode::ProviderUnavailable, error.to_string())
-                    })?;
-                    self.verify_registered_owner(&owner, admitted)?;
+                        .map_err(|error| {
+                            ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+                        })?;
+                        self.verify_registered_owner(&owner, admitted)?;
+                    }
                 }
+                crate::infrastructure::v13_read_projection::project_registered_metadata_branch_names(
+                    route.at(),
+                    &names,
+                )?
+            } else {
+                let payload = self.configuration_payload(admitted)?;
+                if branch_kind != NodeKind::WebSocketClient {
+                    for item in payload
+                        .get("registeredObjects")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter(|item| {
+                            item.get("kind").and_then(Value::as_str) == Some(branch_kind.as_str())
+                        })
+                    {
+                        let name = item.get("name").and_then(Value::as_str).ok_or_else(|| {
+                            ViewError::detailed(
+                                RefusalDetail::SourceUnreadable,
+                                "registered metadata owner has no name",
+                            )
+                        })?;
+                        let owner = MetadataAddress::parse(
+                            PLATFORM_XML_8_3_27_FORMAT_2_20,
+                            &format!("{}.{name}", branch_kind.as_str()),
+                        )
+                        .map_err(|error| {
+                            ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+                        })?;
+                        self.verify_registered_owner(&owner, admitted)?;
+                    }
+                }
+                crate::infrastructure::v13_read_projection::project_registered_metadata_branch(
+                    route.at(),
+                    payload.as_ref(),
+                )?
             }
-            crate::infrastructure::v13_read_projection::project_registered_metadata_branch(
-                route.at(),
-                payload.as_ref(),
-            )?
         } else if route.reader() == LogicalReader::Form {
             self.form_view(&route, admitted)?
         } else {
@@ -1260,6 +1564,34 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
 }
 
 impl LogicalViewReadAuthority<'_> {
+    /// Search needs the named owner's registration and descriptor, but not a
+    /// projected collection of its children. An unnamed kind branch is a
+    /// valid logical scope even when it currently contains no objects.
+    pub(crate) fn validate_search_scope_owner(
+        &self,
+        scope: &QualifiedAddress,
+        admitted: &ViewSourceSnapshot,
+    ) -> Result<(), ViewError> {
+        let [owner] = scope.segments() else {
+            return Err(ViewError::new(
+                RefusalCode::UnsupportedScope,
+                "search scope must name the root or one metadata branch or owner",
+            ));
+        };
+        if owner.kind() == NodeKind::Configuration {
+            return Ok(());
+        }
+        let Some(name) = owner.name() else {
+            return Ok(());
+        };
+        let target = MetadataAddress::parse(
+            PLATFORM_XML_8_3_27_FORMAT_2_20,
+            &format!("{}.{name}", owner.kind().as_str()),
+        )
+        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))?;
+        self.verify_registered_owner(&target, admitted)
+    }
+
     /// A template's own body (data sets of a DCS, areas of a spreadsheet) is
     /// read only when the template node itself is addressed. Projecting the
     /// owner or the template collection never opens template payloads, so a
@@ -1290,7 +1622,7 @@ impl LogicalViewReadAuthority<'_> {
                 template.name().unwrap_or_default()
             ),
         )
-        .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))?;
+        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))?;
         let mut projected = projected;
         for (kind, count) in self.template_body_branches(&child)? {
             if count > 0 {
@@ -1332,8 +1664,8 @@ impl LogicalViewReadAuthority<'_> {
             // addressable interior: addressing stops at the template.
             Ok(MetadataChildProfile::Template(_)) => Vec::new(),
             Ok(MetadataChildProfile::Form | MetadataChildProfile::Command) => {
-                return Err(ViewError::new(
-                    RefusalCode::ProviderUnavailable,
+                return Err(ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
                     "template registry points to a non-template descriptor",
                 ));
             }
@@ -1399,7 +1731,7 @@ fn module_branch_owner(branch: &QualifiedAddress) -> Result<Option<MetadataAddre
     let logical = render_segments(&segments[..segments.len() - 1]);
     MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &logical)
         .map(Some)
-        .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
+        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))
 }
 
 fn identity_only_metadata_payload(kind: &str, name: &str) -> Value {
@@ -1435,7 +1767,7 @@ fn module_branch_owner_address(
     }
     MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &parent.logical_path())
         .map(Some)
-        .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
+        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))
 }
 
 fn module_owner_address(
@@ -1445,7 +1777,9 @@ fn module_owner_address(
     let segments = module_at.segments();
     if capability.role() == ModuleRole::Common {
         return MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &module_at.logical_path())
-            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()));
+            .map_err(|error| {
+                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+            });
     }
     let terminal = segments.last().ok_or_else(|| {
         ViewError::new(
@@ -1461,7 +1795,7 @@ fn module_owner_address(
     }
     let logical = render_segments(&segments[..segments.len() - 1]);
     MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &logical)
-        .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
+        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))
 }
 
 pub(crate) fn module_branch_for_parent(
@@ -1664,7 +1998,10 @@ fn module_source_address(
         .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error))
 }
 
-fn common_module_properties(bytes: &[u8]) -> Result<CommonModuleProperties, ViewError> {
+fn common_module_properties(
+    bytes: &[u8],
+    source_kind: SourceSetKind,
+) -> Result<CommonModuleProperties, ViewError> {
     let text = std::str::from_utf8(bytes).map_err(|_| {
         ViewError::detailed(
             RefusalDetail::SourceUnreadable,
@@ -1672,23 +2009,50 @@ fn common_module_properties(bytes: &[u8]) -> Result<CommonModuleProperties, View
         )
     })?;
     let document = roxmltree::Document::parse(text.trim_start_matches('\u{feff}'))
-        .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))?;
+        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))?;
     let root = document.root_element();
+    let borrowed = source_kind == SourceSetKind::Extension
+        && crate::infrastructure::native_operations::meta::parse_meta_borrowing(bytes)
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?
+            .extends
+            .is_some_and(|id| uuid::Uuid::parse_str(&id).is_ok());
     let boolean = |name| -> Result<bool, ViewError> {
         let raw = xml_descendant_text(root, name).ok_or_else(|| {
-            ViewError::new(
-                RefusalCode::ProviderUnavailable,
+            ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
                 format!("common module descriptor has no {name} property"),
             )
         })?;
         match raw {
             "true" => Ok(true),
             "false" => Ok(false),
-            _ => Err(ViewError::new(
-                RefusalCode::ProviderUnavailable,
+            _ => Err(ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
                 format!("common module {name} property is not boolean"),
             )),
         }
+    };
+    let privileged = match root
+        .descendants()
+        .find(|node| node.is_element() && node.tag_name().name() == "Privileged")
+    {
+        None if borrowed => None,
+        None => {
+            return Err(ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
+                "common module descriptor has no Privileged property",
+            ));
+        }
+        Some(node) => match node.text().map(str::trim) {
+            Some("true") => Some(true),
+            Some("false") => Some(false),
+            _ => {
+                return Err(ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
+                    "common module Privileged property is not boolean",
+                ));
+            }
+        },
     };
     Ok(CommonModuleProperties {
         global: boolean("Global")?,
@@ -1697,11 +2061,11 @@ fn common_module_properties(bytes: &[u8]) -> Result<CommonModuleProperties, View
         external_connection: boolean("ExternalConnection")?,
         client_ordinary_application: boolean("ClientOrdinaryApplication")?,
         server_call: boolean("ServerCall")?,
-        privileged: boolean("Privileged")?,
+        privileged,
         return_values_reuse: xml_descendant_text(root, "ReturnValuesReuse")
             .ok_or_else(|| {
-                ViewError::new(
-                    RefusalCode::ProviderUnavailable,
+                ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
                     "common module descriptor has no ReturnValuesReuse property",
                 )
             })?

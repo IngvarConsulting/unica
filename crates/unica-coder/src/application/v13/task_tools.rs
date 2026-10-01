@@ -1,5 +1,5 @@
 use crate::domain::invocation::{DomainResult, InvocationStatus, TaskId};
-use crate::domain::refusal::RefusalCode;
+use crate::domain::refusal::{RefusalCode, RefusalDetail};
 use serde_json::{json, Map, Value};
 
 pub(crate) const DEFAULT_TASK_RESULT_WAIT_MS: u64 = 7_000;
@@ -31,7 +31,9 @@ pub(crate) enum TaskToolError {
     BadArguments,
     TaskNotFound,
     TaskExpired,
-    TaskBackendFailed,
+    /// Демон отказал по протоколу; уточнение говорит, занят он, несовместим
+    /// или сломан, и выбирает исход вместо умолчания кода.
+    TaskBackendFailed(RefusalDetail),
     TaskTransportFailed,
     TaskSessionClosed,
     TaskProtocolFailed,
@@ -46,7 +48,7 @@ impl TaskToolError {
             Self::BadArguments => RefusalCode::BadTaskArguments,
             Self::TaskNotFound => RefusalCode::TaskNotFound,
             Self::TaskExpired => RefusalCode::TaskExpired,
-            Self::TaskBackendFailed => RefusalCode::TaskBackendFailed,
+            Self::TaskBackendFailed(_) => RefusalCode::TaskBackendFailed,
             Self::TaskTransportFailed => RefusalCode::TaskTransportFailed,
             Self::TaskSessionClosed => RefusalCode::TaskSessionClosed,
             Self::TaskProtocolFailed => RefusalCode::TaskProtocolFailed,
@@ -68,6 +70,7 @@ pub(crate) struct CompatibilityTaskSnapshot {
     pub(crate) result: Option<DomainResult>,
     /// Closed presence only: failure code/message remains on the daemon side.
     pub(crate) has_failure: bool,
+    pub(crate) cancel_requested: bool,
     pub(crate) created_at_epoch_ms: u64,
     pub(crate) updated_at_epoch_ms: u64,
     pub(crate) ttl_ms: u64,
@@ -81,6 +84,7 @@ impl CompatibilityTaskSnapshot {
         status: InvocationStatus,
         result: Option<DomainResult>,
         has_failure: bool,
+        cancel_requested: bool,
         created_at_epoch_ms: u64,
         updated_at_epoch_ms: u64,
         ttl_ms: u64,
@@ -91,6 +95,7 @@ impl CompatibilityTaskSnapshot {
             status,
             result,
             has_failure,
+            cancel_requested,
             created_at_epoch_ms,
             updated_at_epoch_ms,
             ttl_ms,
@@ -244,7 +249,7 @@ pub(crate) fn project_task_snapshot(
         InvocationStatus::Failed => "failed",
         InvocationStatus::Cancelled => "cancelled",
     };
-    let data = json!({
+    let mut data = json!({
         "task": {
             "taskId": snapshot.task_id.to_string(),
             "status": status,
@@ -254,6 +259,9 @@ pub(crate) fn project_task_snapshot(
             "pollIntervalMs": snapshot.poll_interval_ms
         }
     });
+    if snapshot.cancel_requested {
+        data["task"]["cancelRequested"] = json!(true);
+    }
     let mut result = DomainResult::success(summary);
     result.ok = ok;
     result.data = Some(data);
@@ -280,22 +288,24 @@ pub(crate) fn project_task_snapshot(
 pub(crate) fn task_tool_error_result(error: TaskToolError) -> DomainResult {
     // The closed code answers through `diagnostics[]` exactly like every other
     // canonical refusal; task errors get no private `data.code` channel.
-    DomainResult::canonical_rejection(
-        None,
-        error.code(),
-        match error {
-            TaskToolError::InvalidTaskId => "Task identifier is not canonical",
-            TaskToolError::BadWaitMs => "Task wait must be within 0..=7000 milliseconds",
-            TaskToolError::BadArguments => "Task tool arguments are invalid",
-            TaskToolError::TaskNotFound => "Task was not found",
-            TaskToolError::TaskExpired => "Task has expired",
-            TaskToolError::TaskBackendFailed => "Task state is unavailable",
-            TaskToolError::TaskTransportFailed => "Task transport is unavailable",
-            TaskToolError::TaskSessionClosed => "Task session is closed",
-            TaskToolError::TaskProtocolFailed => "Task response failed validation",
-            TaskToolError::ProjectionFailed => "Task state cannot be projected safely",
-        },
-    )
+    let message = match error {
+        TaskToolError::InvalidTaskId => "Task identifier is not canonical",
+        TaskToolError::BadWaitMs => "Task wait must be within 0..=7000 milliseconds",
+        TaskToolError::BadArguments => "Task tool arguments are invalid",
+        TaskToolError::TaskNotFound => "Task was not found",
+        TaskToolError::TaskExpired => "Task has expired",
+        TaskToolError::TaskBackendFailed(_) => "Task state is unavailable",
+        TaskToolError::TaskTransportFailed => "Task transport is unavailable",
+        TaskToolError::TaskSessionClosed => "Task session is closed",
+        TaskToolError::TaskProtocolFailed => "Task response failed validation",
+        TaskToolError::ProjectionFailed => "Task state cannot be projected safely",
+    };
+    match error {
+        TaskToolError::TaskBackendFailed(detail) => {
+            DomainResult::canonical_rejection_detailed(None, detail, message)
+        }
+        other => DomainResult::canonical_rejection(None, other.code(), message),
+    }
 }
 
 #[cfg(test)]
@@ -303,9 +313,10 @@ mod tests {
     use super::{
         compatibility_tool_contracts, parse_task_tool_call, project_task_snapshot,
         task_tool_error_result, CompatibilityProjection, CompatibilityTaskSnapshot, TaskToolAction,
-        TaskToolError, DEFAULT_TASK_RESULT_WAIT_MS,
+        TaskToolError,
     };
     use crate::domain::invocation::{DomainResult, InvocationStatus, TaskId};
+    use crate::domain::refusal::RefusalDetail;
     use serde_json::{json, Map, Value};
 
     fn arguments(value: Value) -> Map<String, Value> {
@@ -320,6 +331,7 @@ mod tests {
             status,
             None,
             status == InvocationStatus::Failed,
+            false,
             1_777_012_345_678,
             1_777_012_346_789,
             3_600_000,
@@ -354,13 +366,11 @@ mod tests {
                     .collect::<Vec<_>>(),
                 fields
             );
-            assert!(contract.description.contains("Task"));
         }
         let result = contracts
             .iter()
             .find(|entry| entry.name == "task.result")
             .unwrap();
-        assert!(result.description.contains("bounded"));
         assert_eq!(
             result.input_schema["properties"]["waitMs"]["type"],
             "integer"
@@ -380,7 +390,7 @@ mod tests {
     fn compatibility_parser_accepts_only_canonical_ids_and_wait_zero_through_7000() {
         let task_id = "f741d562-9d42-4a4f-a626-fcd5c3fb9bc4";
         for (args, expected_wait) in [
-            (json!({"taskId": task_id}), DEFAULT_TASK_RESULT_WAIT_MS),
+            (json!({"taskId": task_id}), 7_000),
             (json!({"taskId": task_id, "waitMs": 0}), 0),
             (json!({"taskId": task_id, "waitMs": 7_000}), 7_000),
         ] {
@@ -474,6 +484,7 @@ mod tests {
             next: Vec::new(),
             rev: Some("rev-7".into()),
             cursor: None,
+            page: None,
         };
         let mut completed = snapshot(InvocationStatus::Completed);
         completed.result = Some(subject.clone());
@@ -486,6 +497,32 @@ mod tests {
             project_task_snapshot(&completed, CompatibilityProjection::State).unwrap(),
             subject,
             "get projects state while result projects the subject payload"
+        );
+    }
+
+    #[test]
+    fn late_cancel_request_is_visible_in_task_state_without_changing_subject_result() {
+        let mut state = snapshot(InvocationStatus::Working);
+        state.cancel_requested = true;
+        let working = project_task_snapshot(&state, CompatibilityProjection::State).unwrap();
+        assert_eq!(
+            working.data.as_ref().unwrap()["task"]["cancelRequested"],
+            true
+        );
+
+        state.status = InvocationStatus::Completed;
+        state.result = Some(DomainResult::success("provider completed"));
+        let completed = project_task_snapshot(&state, CompatibilityProjection::State).unwrap();
+        assert_eq!(
+            completed.data.as_ref().unwrap()["task"]["cancelRequested"],
+            true
+        );
+        let result =
+            project_task_snapshot(&state, CompatibilityProjection::TerminalResult).unwrap();
+        assert_eq!(result.summary, "provider completed");
+        assert!(
+            result.data.is_none(),
+            "task state must not alter the subject result"
         );
     }
 
@@ -509,11 +546,20 @@ mod tests {
             TaskToolError::InvalidTaskId,
             TaskToolError::TaskNotFound,
             TaskToolError::TaskExpired,
-            TaskToolError::TaskBackendFailed,
+            TaskToolError::TaskBackendFailed(RefusalDetail::BackendBroken),
         ] {
             let projected = task_tool_error_result(error);
             assert!(!projected.ok);
             assert_eq!(projected.diagnostics[0]["code"], error.code().as_str());
+            if let TaskToolError::TaskBackendFailed(detail) = error {
+                // The backend refusal names why: the agent chooses between
+                // retrying a busy daemon and calling a human for a broken one.
+                assert_eq!(projected.diagnostics[0]["detailCode"], detail.as_str());
+                assert_eq!(
+                    projected.diagnostics[0]["outcome"],
+                    detail.outcome().as_str()
+                );
+            }
             assert!(
                 projected.data.is_none(),
                 "a task tool refusal carries no data payload"

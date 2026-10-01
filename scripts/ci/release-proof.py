@@ -1,5 +1,15 @@
 #!/usr/bin/env python3
-"""Validate the machine-readable proof boundary for the v0.13 RC package."""
+"""Validate the machine-readable proof boundary for the v0.13 RC package.
+
+The proof has exactly one mode, and it is dry by construction: the job runs
+before anything is published, on a locally built package, so it can only record
+lifecycle outcomes as ``deferred``. Fresh install, upgrade, offline prefetch,
+restart and rollback are proven on the published bytes instead — that is step
+R-3 of the release umbrella (IngvarConsulting/unica#871), which has no producer
+in this repository yet. A former ``--mode rc`` that demanded ``passed`` outcomes
+was unreachable for that reason and was removed (#697); bring a second mode back
+only together with a producer that runs after publication.
+"""
 
 from __future__ import annotations
 
@@ -13,7 +23,7 @@ from typing import Any
 
 
 SCHEMA_VERSION = 1
-PACKAGE_HASH_FORMAT = "sha256-u64be-path-content-v1"
+PACKAGE_HASH_FORMAT = "sha256-u64be-path-mode-content-v2"
 BASELINE_CANONICAL_SHA256 = (
     "c0c1658a3740a4bcda5098dfd31aa7c64476f709653ea3fc3b207ce41c00a9df"
 )
@@ -26,21 +36,15 @@ LIFECYCLE_SCENARIOS = (
     "restart",
     "rollback",
 )
-NATIVE_TOOLS = frozenset(
-    {
-        "unica.view",
-        "unica.apply",
-        "unica.resolve",
-        "unica.search",
-        "unica.check",
-        "unica.diff",
-        "unica.run",
-        "unica.docs",
-    }
-)
-COMPATIBILITY_TOOLS = NATIVE_TOOLS | frozenset(
-    {"unica.task.get", "unica.task.result", "unica.task.cancel"}
-)
+# The public surface is normed by arch/rules/mcp/mcp-tool-profiles.md and shown by the
+# ledger its producer renders from the built binary's `tools/list`. The proof
+# reads that ledger instead of keeping a copy of the names: a copy here would
+# be a second, unregistered enforcement point that a surface change could not
+# see coming (#699). The compatibility profile is the whole ledger; the native
+# Tasks profile is the ledger without the `unica.task.*` bridge — that split is
+# the contract's own prose, not a list of this script's.
+TASK_TOOL_PREFIX = "unica.task."
+LEDGER_TOOL_HEADING = re.compile(r"^### `(unica\.[a-z0-9.]+)`$", re.M)
 HEX_40 = re.compile(r"^[0-9a-f]{40}$")
 HEX_64 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -61,14 +65,31 @@ def file_sha256(path: Path) -> str:
 
 
 def tree_sha256(root: Path) -> str:
+    """Digest the package tree in the ``PACKAGE_HASH_FORMAT`` frame.
+
+    Per file, sorted by path: u64be path length, path, u64be size, one mode
+    byte (``0x01`` executable, ``0x00`` plain), content. The mode byte is the
+    ``v2`` addition: the package ships an executable bootstrap, and a lost
+    ``+x`` is exactly the breakage a package identity must see (#700). Symlinks
+    are refused rather than dereferenced — the packager never emits them, and a
+    link that hashes like its target would hide a changed tree. The producer
+    side lives in ``scripts/ci/package-unica-plugin.py::package_tree_sha256``
+    and must change in the same commit.
+    """
     if not root.is_dir():
         raise ProofError(f"downloaded package directory is missing: {root}")
     digest = hashlib.sha256()
-    for path in sorted(item for item in root.rglob("*") if item.is_file()):
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink():
+            raise ProofError(f"package tree must not contain symlinks: {path}")
+        if not path.is_file():
+            continue
         relative = path.relative_to(root).as_posix().encode("utf-8")
+        stat = path.stat()
         digest.update(len(relative).to_bytes(8, "big"))
         digest.update(relative)
-        digest.update(path.stat().st_size.to_bytes(8, "big"))
+        digest.update(stat.st_size.to_bytes(8, "big"))
+        digest.update(b"\x01" if stat.st_mode & 0o111 else b"\x00")
         with path.open("rb") as stream:
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                 digest.update(chunk)
@@ -85,6 +106,30 @@ def read_json(path: Path) -> dict[str, Any]:
     return value
 
 
+def read_surface_ledger(path: Path) -> list[str]:
+    """Tool names the generated ledger lists: one third-level heading per tool."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise ProofError(f"cannot read surface ledger {path}: {error}") from error
+    names = LEDGER_TOOL_HEADING.findall(text)
+    if not names:
+        raise ProofError(f"surface ledger {path} names no tools")
+    if len(names) != len(set(names)):
+        raise ProofError(f"surface ledger {path} repeats a tool heading")
+    return names
+
+
+def surface_profiles(names: list[str]) -> dict[str, frozenset[str]]:
+    task_tools = frozenset(name for name in names if name.startswith(TASK_TOOL_PREFIX))
+    if not task_tools:
+        raise ProofError("surface ledger describes no unica.task.* compatibility bridge")
+    return {
+        "native": frozenset(names) - task_tools,
+        "compatibility": frozenset(names),
+    }
+
+
 def _require_string(value: Any, name: str) -> str:
     if not isinstance(value, str) or not value:
         raise ProofError(f"{name} must be a non-empty string")
@@ -92,7 +137,11 @@ def _require_string(value: Any, name: str) -> str:
 
 
 def _validate_wire(
-    profile: str, target: str, evidence: dict[str, Any]
+    profile: str,
+    target: str,
+    evidence: dict[str, Any],
+    expected: frozenset[str],
+    ledger: Path,
 ) -> dict[str, Any]:
     if evidence.get("schemaVersion") != SCHEMA_VERSION:
         raise ProofError(f"{profile} wire evidence schemaVersion must be {SCHEMA_VERSION}")
@@ -106,7 +155,6 @@ def _validate_wire(
     if len(names) != len(set(names)):
         raise ProofError(f"{profile} wire evidence contains duplicate tool names")
     actual = set(names)
-    expected = NATIVE_TOOLS if profile == "native" else COMPATIBILITY_TOOLS
     if actual != expected:
         missing = sorted(expected - actual)
         unexpected = sorted(actual - expected)
@@ -115,7 +163,9 @@ def _validate_wire(
             detail.append("missing: " + ", ".join(missing))
         if unexpected:
             detail.append("unexpected: " + ", ".join(unexpected))
-        raise ProofError(f"{profile} wire surface differs: {'; '.join(detail)}")
+        raise ProofError(
+            f"{profile} wire surface of {target} differs from {ledger}: {'; '.join(detail)}"
+        )
     if evidence.get("toolCount") != len(names):
         raise ProofError(f"{profile} wire evidence toolCount disagrees with toolNames")
     server_info = evidence.get("serverInfo")
@@ -148,12 +198,16 @@ def _validate_wire(
 
 
 def _validate_wire_profiles(
-    profile: str, wires: Mapping[str, dict[str, Any]]
+    profile: str,
+    wires: Mapping[str, dict[str, Any]],
+    expected: frozenset[str],
+    ledger: Path,
 ) -> dict[str, Any]:
     if set(wires) != set(TARGETS):
         raise ProofError(f"{profile} wire evidence must cover all targets: {', '.join(TARGETS)}")
     validated = {
-        target: _validate_wire(profile, target, wires[target]) for target in TARGETS
+        target: _validate_wire(profile, target, wires[target], expected, ledger)
+        for target in TARGETS
     }
     first = validated[TARGETS[0]]
     if any(value != first for value in validated.values()):
@@ -204,12 +258,11 @@ def _validate_package(
         value = _require_string(package.get(key), f"package {key}")
         if not HEX_64.fullmatch(value):
             raise ProofError(f"package {key} must be 64 lowercase hexadecimal characters")
-    if package.get("versionBumped") is not False:
-        raise ProofError("P0 package proof must not bump the version")
-    if package.get("published") is not False:
-        raise ProofError("P0 package proof must not publish")
-    if package.get("tag") is not None:
-        raise ProofError("P0 package proof must not create a tag")
+    # The proof claims only what it observed. "No version bump, no tag, no
+    # publication" is not an observation of the package: it is how the
+    # p0-release-proof job is built — read-only token, no publish steps — and
+    # that is pinned by tests/ci/test_unica_workflow.py. Self-reported flags
+    # here would be checked against the literals that wrote them (#696).
     if source_commit != expected_source_commit:
         raise ProofError("package sourceCommit does not match checked-out source")
     plugin_dir = package_dir / "plugins" / "unica"
@@ -274,7 +327,6 @@ def _validate_asset_reports(asset_dir: Path, expected_plugin_version: str) -> di
 
 def _validate_lifecycle(
     assessment: dict[str, Any],
-    mode: str,
     *,
     expected_release_tag: str,
     expected_unica_version: str,
@@ -315,8 +367,13 @@ def _validate_lifecycle(
             isinstance(item, str) and item for item in evidence
         ):
             raise ProofError(f"{scenario} lifecycle outcome must name machine-readable evidence")
-        if status == "failed" or (mode == "rc" and status != "passed"):
-            raise ProofError(f"{scenario} lifecycle outcome is {status} in {mode} mode")
+        # Before publication nothing can have proven a scenario, so the only
+        # honest outcome is `deferred`; `passed` here is a forgery or a format
+        # drift and must not be certified, `failed` is a failure either way.
+        if status != "deferred":
+            raise ProofError(
+                f"{scenario} lifecycle outcome must be deferred in the P0 proof, got {status}"
+            )
         result[scenario] = {
             "status": status,
             "supported": supported,
@@ -336,13 +393,16 @@ def evaluate_proof(
     asset_verification_dir: Path,
     source_commit: str,
     release_tag: str,
-    mode: str = "dry",
+    surface_ledger: Path,
 ) -> dict[str, Any]:
-    if mode not in {"dry", "rc"}:
-        raise ProofError(f"unsupported proof mode: {mode}")
     release_tag = _require_string(release_tag, "releaseTag")
-    native = _validate_wire_profiles("native", native_wires)
-    compatibility = _validate_wire_profiles("compatibility", compatibility_wires)
+    profiles = surface_profiles(read_surface_ledger(surface_ledger))
+    native = _validate_wire_profiles(
+        "native", native_wires, profiles["native"], surface_ledger
+    )
+    compatibility = _validate_wire_profiles(
+        "compatibility", compatibility_wires, profiles["compatibility"], surface_ledger
+    )
     baseline_tag, legacy_names = _validate_baseline(baseline)
     package_summary = _validate_package(package, package_dir, source_commit)
     if release_tag != "v" + package_summary["pluginVersion"]:
@@ -361,14 +421,12 @@ def evaluate_proof(
         raise ProofError("legacy baseline overlap: " + ", ".join(overlap))
     lifecycle = _validate_lifecycle(
         assessment,
-        mode,
         expected_release_tag=release_tag,
         expected_unica_version=package_summary["pluginVersion"],
     )
 
     return {
         "schemaVersion": SCHEMA_VERSION,
-        "mode": mode,
         "status": "passed",
         "releaseTag": release_tag,
         "package": package_summary,
@@ -385,7 +443,6 @@ def evaluate_proof(
             "promote": False,
             "reason": "P0 proof is never a publication or promotion action",
         },
-        "guards": {"noVersionBump": True, "noTag": True, "noPublication": True},
     }
 
 
@@ -394,7 +451,6 @@ def render_summary(report: dict[str, Any]) -> str:
         "# Unica P0 RC/package proof",
         "",
         f"- Status: `{report['status']}`",
-        f"- Mode: `{report['mode']}`",
         f"- Release tag input: `{report['releaseTag']}`",
         f"- Native surface: `{report['surfaces']['native']['toolCount']}` tools",
         f"- Compatibility surface: `{report['surfaces']['compatibility']['toolCount']}` tools",
@@ -411,7 +467,7 @@ def render_summary(report: dict[str, Any]) -> str:
     lines.extend(
         [
             "",
-            "P0 guards: no version bump, tag, release publication, or marketplace promotion.",
+            "Read-only by construction of the p0-release-proof job, not by a claim in this report.",
             "",
         ]
     )
@@ -437,7 +493,7 @@ def main() -> None:
     parser.add_argument("--asset-verification-dir", type=Path, required=True)
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--release-tag", required=True)
-    parser.add_argument("--mode", choices=("dry", "rc"), default="dry")
+    parser.add_argument("--surface-ledger", type=Path, required=True)
     parser.add_argument("--out-dir", type=Path, required=True)
     args = parser.parse_args()
     try:
@@ -458,7 +514,7 @@ def main() -> None:
             asset_verification_dir=args.asset_verification_dir,
             source_commit=args.source_commit,
             release_tag=args.release_tag,
-            mode=args.mode,
+            surface_ledger=args.surface_ledger,
         )
     except ProofError as error:
         raise SystemExit(f"P0 release proof failed: {error}") from error

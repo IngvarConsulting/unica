@@ -327,7 +327,7 @@ class RefreshFixture:
     def review_path(self) -> Path:
         return (
             self.repo_root
-            / ".build"
+            / ".session-temp"
             / "donor-parity-refresh"
             / "test-refresh"
             / "review.json"
@@ -405,7 +405,6 @@ class RefreshCc1cParityTests(unittest.TestCase):
                 target_commit="2" * 40,
                 affected_skills=set(),
                 old_baseline=old_baseline,
-                review_id="new-review",
             )
 
         self.assertEqual(
@@ -593,10 +592,15 @@ class RefreshCc1cParityTests(unittest.TestCase):
         entry = provenance["upstreams"][0]["entries"][0]
         self.assertEqual(entry["baselineCommit"], fixture.initial_commit)
         self.assertEqual(entry["parityBaselineCommit"], target)
-        tracked_review = fixture.reviews_root / "test-refresh.json"
-        self.assertTrue(tracked_review.is_file())
+        applied_review = (
+            fixture.repo_root / ".session-temp" / "donor-parity-refresh"
+            / "test-refresh" / "applied-review.json"
+        )
+        self.assertEqual(Path(result.stdout.strip()), applied_review.resolve())
+        self.assertTrue(applied_review.is_file())
+        self.assertFalse((fixture.reviews_root / "test-refresh.json").exists())
         self.assertEqual(
-            json.loads(tracked_review.read_text(encoding="utf-8"))["targetCommit"],
+            json.loads(applied_review.read_text(encoding="utf-8"))["targetCommit"],
             target,
         )
 

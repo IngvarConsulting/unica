@@ -1,7 +1,6 @@
 ---
 name: mxl-compile
-description: Компиляция табличного документа (MXL) из JSON-определения. Используй когда нужно создать макет печатной формы
-argument-hint: <JsonPath> <OutputPath>
+description: Создание макета табличного документа (MXL) и его областей операциями unica.apply. Используй когда нужен макет печатной формы; сборки целого макета из JSON-определения на поверхности нет
 allowed-tools:
   - Bash
   - Read
@@ -13,53 +12,79 @@ allowed-tools:
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tool `unica.mxl.compile`; `unica` owns XML/JSON DSL work and refreshes related workspace caches after mutations.
-- Do not call internal MCP/CLI adapters directly. They are hidden behind `unica` and synchronized by the orchestrator.
-- Execution path: call MCP `unica` tool `unica.mxl.compile`; skill-local operation scripts are not part of the workflow.
-- For mutating operations, pass `dryRun: false` only when the user explicitly requested the change; otherwise keep the default dry run.
-- Vendor support guard runs inside `unica`; if it blocks a locked/read-only supported object, prefer CFE/release-support or an explicit support-state change plan instead of editing raw support metadata.
+- Preferred path: use MCP `unica` tool `unica.apply`; макет табличного
+  документа заводится операцией `template.add`, области правятся `mxl.set`.
+- Не зови внутренние адаптеры напрямую: они спрятаны за MCP `unica`.
+- Всегда сначала `dryRun: true`; `dryRun: false` — только по явной просьбе
+  пользователя и только с `ifRev` из превью.
 
-Принимает компактное JSON-определение макета и генерирует корректный Template.xml для табличного документа 1С. Ассистент описывает *что* нужно (области, параметры, стили), MCP-инструмент обеспечивает *корректность* XML (палитры, индексы, объединения, namespace).
-
-## Использование
-
-```
-/mxl-compile <JsonPath> <OutputPath>
-```
-
-## Параметры
-
-| Параметр   | Обязательный | Описание                           |
-|------------|:------------:|------------------------------------|
-| JsonPath   | да           | Путь к JSON-определению макета     |
-| OutputPath | да           | Путь для генерации Template.xml    |
-
-## MCP вызов
+## Шаг 1 — завести макет
 
 ```json
 {
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.mxl.compile",
+    "name": "unica.apply",
     "arguments": {
-      "cwd": "<workspace>",
-      "JsonPath": "mxl/print-form.json",
-      "OutputPath": "src/Reports/ОтчетПродажи/Templates/ПФ_MXL_Продажи/Ext/Template.xml",
-      "dryRun": false
+      "at": "main:Report.Продажи",
+      "ops": [
+        {"op": "template.add", "args": {"items": [{"name": "ПФ_MXL_Продажи", "templateType": "SpreadsheetDocument"}]}}
+      ],
+      "dryRun": true
     }
   }
 }
 ```
 
-## Рабочий процесс
 
-1. Ассистент пишет JSON-определение через Write tool в файл `.json`
-2. Ассистент вызывает MCP `unica.mxl.compile` для генерации Template.xml
-3. Ассистент вызывает MCP `unica.check` на узле макета для проверки корректности
-4. Ассистент вызывает MCP `unica.mxl.info` для верификации структуры
+**Порядок важен.** Превью ничего не публикует, поэтому дочерний узел появится
+только после применения первого шага:
 
-**Если макет создаётся по изображению** (скриншот, скан печатной формы) — определить структуру, границы колонок и пропорции внешним средством анализа изображения, затем использовать `"Nx"` ширины + `"page"` для автоматического расчёта размеров. Workflow Unica начинается с JSON-структуры и вызовов `unica.mxl.*`.
+1. превью `template.add` (`dryRun: true`) — план и `rev`;
+2. применение `template.add` (`dryRun: false` с `ifRev` из превью) — макет создан;
+3. превью операций наполнения по адресу макета;
+4. применение их плана со своим `ifRev`.
+
+Обратиться к адресу макета до шага 2 нельзя: план отказывает, потому что цели
+ещё нет.
+
+## Шаг 2 — задать область
+
+`mxl.set` адресует сам макет и задаёт одну именованную область: `area` — имя,
+`cells` — её ячейки, `columns` — число колонок.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "unica.apply",
+    "arguments": {
+      "at": "main:Report.Продажи.Template.ПФ_MXL_Продажи",
+      "ops": [
+        {"op": "mxl.set", "args": {"values": {"area": "Шапка", "columns": 4, "cells": [{"col": 1, "text": "Номенклатура"}, {"col": 2, "text": "Сумма"}]}}}
+      ],
+      "dryRun": true
+    }
+  }
+}
+```
+
+Области задаются по одной; несколько операций `mxl.set` идут одним `ops` и
+применяются атомарно.
+
+## Чего словарь не пишет
+
+Сборки целого макета из готового JSON-определения одним вызовом на поверхности
+**нет**: DSL ниже остаётся справочником формата, а не входом инструмента.
+Шрифты, стили, палитры, объединения ячеек и параметры страницы `mxl.set` не
+принимает — он берёт `area`, `cells` и `columns`. Макет, которого этими
+средствами не собрать, — пробел контракта Unica MCP; писать `Template.xml`
+руками в обход поверхности нельзя.
+
+Если макет создаётся по изображению, структуру и пропорции определи внешним
+средством анализа изображения, а затем выражай области операциями выше.
 
 ## JSON-схема DSL
 

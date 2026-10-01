@@ -62,9 +62,9 @@ fn adapter_dry_run(spec: ToolSpec, mode: InvocationMode) -> Result<bool, String>
 /// перечислены поимённо, без `_`, чтобы новый обработчик заставил ответить на
 /// вопрос, а не унаследовал молчание.
 ///
-/// Поиска по коду здесь нет намеренно. Он опрашивает несколько поставщиков и на
-/// отсутствие одного отвечает разделом «недоступен» и рабочим результатом
-/// (ADR-0017); заставить его ждать доставку значит сломать быстрый ответ ради
+/// Прежнего многопоставщицкого поиска по коду здесь нет намеренно. Он
+/// опрашивает несколько поставщиков и на отсутствие одного отвечает разделом «недоступен» и рабочим результатом;
+/// заставить его ждать доставку значит сломать быстрый ответ ради
 /// движка, без которого он умеет обойтись.
 pub(crate) fn engine_for(spec: ToolSpec) -> Option<&'static str> {
     match spec.handler {
@@ -261,6 +261,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                 source_set: source_set.to_string(),
                 source_root: source_root.path.clone(),
                 filters,
+                excluded_subtrees: Vec::new(),
                 legacy_selector: false,
             };
             return Ok((
@@ -441,52 +442,13 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         let Some(plugin_root) = find_plugin_root(&context.cwd) else {
             return crate::application::shared_work::EngineDeliveryState::NotRequired;
         };
-        if crate::infrastructure::bundled_tools::installed_engine_path(&plugin_root, engine)
-            .is_some()
-        {
-            return crate::application::shared_work::EngineDeliveryState::NotRequired;
-        }
-        // Источник неизвестен: исходный чекаут инструменты не описывает.
-        // Сказать об этом — дело отказа, а не доставки.
-        let Some(order) = crate::infrastructure::engine_delivery::order_for(&plugin_root, engine)
-        else {
-            return crate::application::shared_work::EngineDeliveryState::NotRequired;
-        };
-        let artifact = order.artifact().to_owned();
-        let prepared = match order.prepare() {
-            Ok(prepared) => prepared,
-            Err(failure) => {
-                return crate::application::shared_work::EngineDeliveryState::Failed {
-                    artifact,
-                    failure: Arc::new(failure),
-                }
-            }
-        };
-        let identity = prepared.identity().clone();
-        // Срок хоста — знание фасада, а не этого места.
-        let window = crate::domain::long_work::sync_window(unica_bootstrap::host_tool_deadline());
-        match self.deliveries.request(
-            identity.clone(),
-            move |delivery| prepared.acquire(delivery),
-            window,
+        crate::infrastructure::engine_delivery::deliver_if_missing(
+            &self.deliveries,
+            &plugin_root,
+            engine,
             cancellation,
             progress,
-        ) {
-            // Движок на месте — вызов идёт дальше и делает свою работу.
-            crate::application::shared_work::EngineDeliveryState::Ready(ready) => {
-                debug_assert_eq!(ready.identity(), &identity);
-                debug_assert!(ready.install_root().is_absolute());
-                crate::application::shared_work::EngineDeliveryState::Ready(ready)
-            }
-            // Отказ доставки называет причину сам: обработчик сказал бы про
-            // отсутствующий бинарь и посоветовал ждать поставку, которая только
-            // что не удалась.
-            state @ crate::application::shared_work::EngineDeliveryState::Failed { .. }
-            | state @ crate::application::shared_work::EngineDeliveryState::Working { .. } => state,
-            crate::application::shared_work::EngineDeliveryState::NotRequired => {
-                crate::application::shared_work::EngineDeliveryState::NotRequired
-            }
-        }
+        )
     }
 
     fn invoke_handler(
@@ -584,7 +546,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                     .and_then(Value::as_str)
                     .unwrap_or("ru")
                     .to_string();
-                let registry = documentation_registry(context, cancellation)?;
+                let registry = documentation_registry(context, cancellation, false)?;
                 let requested_version = args.get("platformVersion").and_then(Value::as_str);
                 let context = documentation_context(
                     &crate::infrastructure::platform::full_dump_publication::default_platform_roots(
@@ -861,13 +823,14 @@ const DOCUMENTATION_PROVIDER_IDS: &[&str] = &[
 ];
 
 /// Composition root: the registry of documentation providers. Declaration
-/// order here is the section order of the public result (ADR-0029 point 5):
+/// order here is the section order of the public result:
 /// локальная справка платформы раньше сетевых поставщиков, справка раньше
 /// стандартов. Собирается здесь, а не в домене, чтобы тесты внедряли
 /// подмены; политика читается на каждый вызов — она из файлов проекта.
 fn documentation_registry(
     context: &WorkspaceContext,
     cancellation: &crate::domain::cancellation::CancellationToken,
+    revalidate_search: bool,
 ) -> Result<crate::domain::documentation::DocumentationRegistry, String> {
     use std::sync::Arc;
 
@@ -918,6 +881,7 @@ fn documentation_registry(
             crate::infrastructure::standards_documentation::V8StdDocumentationProvider {
                 search_cache_ttl:
                     crate::infrastructure::standards_documentation::V8STD_SEARCH_CACHE_TTL,
+                revalidate_search,
                 endpoint,
                 network: policy.network("v8std"),
                 http: crate::infrastructure::internal_adapters::shared_http_client(),
@@ -938,7 +902,7 @@ fn documentation_registry(
 /// Поставщики выдают идентификатор со схемой — `configuration-help:<набор>:<путь>`
 /// — или ссылкой. Ни имя метода, ни фраза на языке такой формы не имеют,
 /// поэтому разделение детерминированно и не гадает.
-fn documentation_locator(query: &str) -> Option<&str> {
+pub(crate) fn documentation_locator(query: &str) -> Option<&str> {
     let trimmed = query.trim();
     if trimmed.contains(char::is_whitespace) {
         return None;
@@ -960,7 +924,7 @@ fn open_documentation_page(
     cancellation: &CancellationToken,
 ) -> crate::domain::invocation::DomainResult {
     let opened = (|| {
-        let registry = documentation_registry(workspace, cancellation)?;
+        let registry = documentation_registry(workspace, cancellation, false)?;
         let context = documentation_context(
             &crate::infrastructure::platform::full_dump_publication::default_platform_roots(),
             None,
@@ -991,10 +955,22 @@ fn open_documentation_page(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn canonical_v13_docs_search(
     workspace: &WorkspaceContext,
     query: &str,
     source: Option<&str>,
+    cancellation: &CancellationToken,
+) -> crate::domain::invocation::DomainResult {
+    canonical_v13_docs_search_with_limit(workspace, query, source, 20, false, cancellation)
+}
+
+pub(crate) fn canonical_v13_docs_search_with_limit(
+    workspace: &WorkspaceContext,
+    query: &str,
+    source: Option<&str>,
+    fetch_limit: usize,
+    revalidate_search: bool,
     cancellation: &CancellationToken,
 ) -> crate::domain::invocation::DomainResult {
     let source_kinds = match source {
@@ -1039,11 +1015,11 @@ pub(crate) fn canonical_v13_docs_search(
     let request = crate::domain::documentation::DocumentationSearchRequest {
         query: query.to_string(),
         source_kinds,
-        limit: 20,
+        limit: fetch_limit,
         language: "ru".to_string(),
     };
     let result = (|| {
-        let registry = documentation_registry(workspace, cancellation)?;
+        let registry = documentation_registry(workspace, cancellation, revalidate_search)?;
         let context = documentation_context(
             &crate::infrastructure::platform::full_dump_publication::default_platform_roots(),
             None,
@@ -1070,9 +1046,8 @@ pub(crate) fn canonical_v13_docs_search(
     }
 }
 
-/// Подмена реестра для тестов — та самая, которую допускает п.5 ADR-0029
-/// («реестр собирается в корне композиции и допускает внедрение подмен для
-/// тестов»). Без неё ветку диспетчера `unica.documentation.search` не
+/// Подмена реестра позволяет управлять поставщиками в тестах.
+/// Без неё ветку диспетчера `unica.documentation.search` не
 /// проверить: настоящий поставщик отвечает по установкам МАШИНЫ, и тест не
 /// выбирает ни их состав, ни их наличие, поэтому наблюдать через него, что
 /// аргументы вызова дошли до запроса и контекста, нельзя.
@@ -1174,7 +1149,7 @@ fn configured_platform_key(path: &Path, key: &str) -> Option<String> {
 /// Installation named directly by the project's `tools.platform.path`. The
 /// pin replaces the roots walk — same as the runner, where the hint replaces
 /// the default candidate list — so a mismatch is a refusal, not a silent
-/// fall-through to a neighbouring installation (ADR-0029 point 3).
+/// fall-through to a neighbouring installation.
 ///
 /// The reference config points the pin at `<version>/bin` (executables live
 /// there on Windows); the version directory is its parent, and the version is
@@ -1214,10 +1189,10 @@ fn pinned_installation_root(
 /// project-pin wiring can be tested without the hard-coded platform roots.
 /// Deleting the `project_platform_version` call is caught by the compiler and
 /// by clippy; passing `None` in its place is not, and that mutation is exactly
-/// the ADR-0029 point 3 harm — a project pinned to 8.3.27 silently answered
+/// the version mismatch — a project pinned to 8.3.27 silently answered
 /// from 8.5.4 while the reply still said 8.3.27.
 ///
-/// Precedence is ADR-0029 point 2: the explicit call argument, then the
+/// Resolution uses the explicit version argument, then the
 /// project's own pin, then the numerically newest installation found. A
 /// `tools.platform.path` pin names the installation directly and replaces the
 /// roots walk; the version constraints still apply to it.
@@ -1244,8 +1219,7 @@ fn documentation_context(
 
 /// Pure root pick, split out of `documentation_context`'s resolution so it can
 /// be tested without the hard-coded platform roots. Roots are tried in the
-/// declared order and the first one that answers closes the walk (ADR-0029
-/// point 2).
+/// declared order and the first one that answers closes the walk.
 ///
 /// The two constraints are not the same rule, because the two inputs do not
 /// mean the same thing. The call argument is a *requested version* and must
@@ -1328,7 +1302,7 @@ fn select_platform_line(versions: &[std::path::PathBuf], line: &str) -> Option<s
 /// `"8.3.10.50"` under `str`/`PathBuf` ordering because `'1' < '9'` — and a
 /// build-number digit rollover is a routine event over a machine's lifetime,
 /// not a corner case. Silently answering from the wrong version is exactly
-/// the "neighbouring version substituted" failure ADR-0029 point 3 forbids.
+/// a failure where a neighbouring version is substituted.
 /// A non-numeric or missing component parses as 0; that only matters for a
 /// directory name that is not a version at all, and `version_directories`
 /// keeps those out of the listing this feeds from.
@@ -2374,6 +2348,7 @@ mod tests {
         let registry = documentation_registry(
             &context,
             &crate::domain::cancellation::CancellationToken::default(),
+            false,
         )
         .expect("registry constructs");
         let ids: Vec<String> = registry
@@ -2443,6 +2418,7 @@ mod tests {
         let registry = documentation_registry(
             &context,
             &crate::domain::cancellation::CancellationToken::default(),
+            false,
         )
         .expect("registry constructs");
         let provider = registry.providers().next().expect("первый поставщик");
@@ -2483,7 +2459,7 @@ mod tests {
     fn select_platform_version_requires_an_exact_directory_name_match() {
         // A three-component prefix of a real directory must not resolve: a
         // substring/starts_with implementation would wrongly accept it, and a
-        // patch mismatch changes hundreds of API names (ADR-0029 point 3).
+        // patch mismatch changes hundreds of API names.
         let versions = vec![PathBuf::from("/opt/1cv8/8.3.27.2074")];
         assert_eq!(select_platform_version(&versions, Some("8.3.27")), None);
     }
@@ -2504,8 +2480,7 @@ mod tests {
         // corner case. Fed in the order a byte sort would actually produce
         // (ascending lexicographically: "8.3.10.50" sorts first), a
         // `.last()`-over-byte-order pick would silently return the OLDER
-        // version here — exactly the "neighbouring version substituted"
-        // failure ADR-0029 point 3 forbids.
+        // version here instead of the numerically newest one.
         let versions = vec![
             PathBuf::from("/opt/1cv8/8.3.10.50"),
             PathBuf::from("/opt/1cv8/8.3.9.100"),
@@ -2546,7 +2521,7 @@ mod tests {
         );
     }
 
-    /// ADR-0029 point 2 orders the three inputs: the explicit call argument,
+    /// The resolver orders three inputs: the explicit version argument,
     /// then the version the project pins itself to, then the numerically
     /// newest installation. The middle level did not exist, so a project
     /// pinned to 8.3.27 was answered from 8.5.4 without a diagnostic.
@@ -2577,7 +2552,7 @@ mod tests {
         assert_eq!(
             select_installation_root(&roots, None, Some("8.4")),
             None,
-            "закреплённой семьи нет — отказ, а не подстановка соседней (ADR-0029 point 3)"
+            "закреплённой семьи нет — отказ, а не подстановка соседней"
         );
     }
 
@@ -2631,8 +2606,8 @@ mod tests {
     /// Между ними была дыра: ничто не проверяло, что диспетчер
     /// `unica.documentation.search` СОЕДИНЯЕТ одно с другим. Удаление вызова
     /// ловит компилятор, а подстановка `None` на его место — нет: ревью
-    /// применило именно её, и все 2021 тест остались зелёными. Вред — п.3
-    /// ADR-0029: проект, закреплённый за 8.3.27, читает справку 8.5.4, а ответ
+    /// применило именно её, и все 2021 тест остались зелёными. Последствие:
+    /// проект, закреплённый за 8.3.27, читает справку 8.5.4, а ответ
     /// продолжает называть 8.3.27.
     #[test]
     fn the_dispatcher_constrains_the_installation_by_the_projects_own_platform_pin() {
@@ -2679,7 +2654,7 @@ mod tests {
             "ограничение, по которому искали установку, обязано попасть в ответ"
         );
 
-        // Явный аргумент вызова сильнее закрепления проекта (п.2 ADR-0029).
+        // Явный аргумент вызова сильнее закрепления проекта.
         let requested = documentation_context(&roots, Some("8.5.4.1306"), &context);
         assert_eq!(
             requested.installation_root,
@@ -2980,7 +2955,7 @@ mod tests {
     /// `tools.platform.version` — быть его префиксом. Несовпадение — отказ,
     /// а не тихий переход к стандартным корням: пин заменяет перебор, как и
     /// у раннера, и подстановка соседней установки здесь была бы тем же
-    /// вредом п.3 ADR-0029.
+    /// нарушением выбора версии.
     #[test]
     fn version_constraints_still_apply_to_a_path_pinned_installation() {
         let machine = tempfile::tempdir().expect("каталог установок");

@@ -2,7 +2,7 @@ use super::selected_scalar_props;
 use crate::application::v13::view::ViewError;
 use crate::domain::address::{AddressSegment, NodeKind, QualifiedAddress};
 use crate::domain::node_view::{BranchRef, CollectionView, NodeView, NodeViewData};
-use crate::domain::refusal::RefusalCode;
+use crate::domain::refusal::{RefusalCode, RefusalDetail};
 use crate::infrastructure::metadata_kinds::metadata_kind;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
@@ -138,8 +138,8 @@ fn role_objects(payload: &Value) -> Result<Vec<RoleObject>, ViewError> {
                 continue;
             };
             if !is_role_right_owner_kind(group_kind) {
-                return Err(ViewError::new(
-                    RefusalCode::ProviderUnavailable,
+                return Err(ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
                     format!("role rights contain invalid metadata kind `{group_kind}`"),
                 ));
             }
@@ -238,11 +238,11 @@ fn canonical_role_object_address(
         .first()
         .and_then(AddressSegment::name)
         .ok_or_else(|| {
-            ViewError::new(RefusalCode::ProviderUnavailable, "role name is unavailable")
+            ViewError::detailed(RefusalDetail::SourceUnreadable, "role name is unavailable")
         })?;
     let logical = role_object_logical_name(object).ok_or_else(|| {
-        ViewError::new(
-            RefusalCode::ProviderUnavailable,
+        ViewError::detailed(
+            RefusalDetail::SourceUnreadable,
             "role object identity is invalid",
         )
     })?;
@@ -250,7 +250,7 @@ fn canonical_role_object_address(
         "{}:Role.{role_name}.Right.{logical}",
         requested.source_set()
     ))
-    .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
+    .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))
 }
 
 fn role_object_node(address: &QualifiedAddress, object: &RoleObject) -> NodeView {

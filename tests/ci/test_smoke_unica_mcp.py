@@ -116,6 +116,38 @@ class FakeWindowsApi:
 
 
 class SmokeUnicaMcpTests(unittest.TestCase):
+    def test_v13_contract_allows_path_only_as_the_resolve_bridge_input(self) -> None:
+        # `unica.resolve` — аварийный мост между адресом и раскладкой, и путь на
+        # входе разрешён только ему (#801, решение зонтика #871). Остальные схемы
+        # ключ `path` по-прежнему не несут; дым обязан различать эти два случая.
+        module = load_module()
+
+        def schema(properties: dict) -> dict:
+            return {
+                "type": "object",
+                "properties": properties,
+                "required": [],
+                "additionalProperties": False,
+            }
+
+        def tools(extra: dict[str, dict]) -> list[dict]:
+            listed = []
+            for name in sorted(module.V13_COMPATIBILITY_TOOL_NAMES):
+                properties = {"at": {"type": "string"}}
+                properties.update(extra.get(name, {}))
+                listed.append({"name": name, "inputSchema": schema(properties)})
+            return listed
+
+        module._stable_v13_tool_contract(
+            tools({"unica.resolve": {"path": {"type": "string"}}}),
+            module.V13_COMPATIBILITY_TOOL_NAMES,
+        )
+        with self.assertRaisesRegex(SystemExit, "leaks path"):
+            module._stable_v13_tool_contract(
+                tools({"unica.view": {"path": {"type": "string"}}}),
+                module.V13_COMPATIBILITY_TOOL_NAMES,
+            )
+
     def expected_tools(self) -> set[str]:
         module = load_module()
         return module.expected_tool_names(REPO_ROOT / "plugins" / "unica")
@@ -1602,7 +1634,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             manifest = root / "plugins/unica/.codex-plugin/plugin.json"
             manifest.parent.mkdir(parents=True)
             manifest.write_text("{}\n", encoding="utf-8")
-            review_path = root / "arch/tool-surface-review.json"
+            review_path = root / "tests/fixtures/v013/tool-surface-review.json"
             review_path.parent.mkdir(parents=True)
             review_path.write_text(
                 json.dumps({"unica.xdto.info": {}, "unica.xdto.edit": {}}),
@@ -1624,7 +1656,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         module = load_module()
         with tempfile.TemporaryDirectory() as directory:
             outer = Path(directory)
-            unrelated = outer / "arch/tool-surface-review.json"
+            unrelated = outer / "tests/fixtures/v013/tool-surface-review.json"
             unrelated.parent.mkdir(parents=True)
             unrelated.write_text(
                 json.dumps({"unica.source.read": {}}),
@@ -1801,7 +1833,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                     name = message["params"]["name"]
                     args = message["params"]["arguments"]
                     if name == "unica.role.info":
-                        # ADR-0049 bridge: the stub answers the three
+                        # The stub answers the three
                         # outcomes the smoke asserts and nothing else.
                         if "sourceSet" in args and "RightsPath" in args:
                             payload = operation_result(
@@ -1916,7 +1948,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             root = Path(directory)
             server = root / "server.py"
             server.write_text(server_source, encoding="utf-8")
-            review_path = root / "arch/tool-surface-review.json"
+            review_path = root / "tests/fixtures/v013/tool-surface-review.json"
             review_path.parent.mkdir(parents=True)
             review_path.write_text(
                 json.dumps({name: {} for name in sorted(expected_tools)}),

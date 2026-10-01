@@ -491,3 +491,114 @@ fn borrowed_code_existing_state_is_byte_preserved_and_descriptor_races_refuse() 
         BEFORE
     );
 }
+
+#[test]
+fn borrowed_code_root_modules_publish_configuration_state_and_events() {
+    for role in [
+        "ManagedApplication",
+        "OrdinaryApplication",
+        "Session",
+        "ExternalConnection",
+    ] {
+        for replace in [false, true] {
+            for dry_run in [false, true] {
+                let mut fixture = Fixture::common();
+                fixture.descriptor = PathBuf::from("Configuration.xml");
+                fixture.module = PathBuf::from(format!("Ext/{role}Module.bsl"));
+                fixture.at = format!("ext:Module.{role}");
+                fs::write(fixture.source.join(&fixture.module), BEFORE).unwrap();
+                let before = fixture.descriptor_bytes();
+                let admission = fixture.admission(dry_run);
+                let (mut state, effects) = fixture
+                    .plan(&admission, &[fixture.operation(replace)])
+                    .unwrap_or_else(|error| {
+                        panic!("{role}, replace={replace}, dryRun={dry_run}: {error:?}")
+                    });
+                assert_eq!(state.planned_changes().len(), 2);
+                assert_state(
+                    &state.read(&fixture.descriptor).unwrap().unwrap(),
+                    &format!("{role}Module"),
+                );
+                assert_eq!(
+                    effects
+                        .events()
+                        .iter()
+                        .filter(|event| event.kind == DomainEventKind::ConfigXmlChanged
+                            && event.artifact == "ext:Configuration")
+                        .count(),
+                    1
+                );
+                assert!(effects
+                    .events()
+                    .iter()
+                    .all(|event| event.kind != DomainEventKind::MetadataChanged));
+                assert_eq!(fixture.descriptor_bytes(), before);
+                fixture
+                    .actor
+                    .publish_prepared_apply(admission.prepare_with_effects(state, effects).unwrap())
+                    .unwrap();
+                if dry_run {
+                    assert_eq!(fixture.descriptor_bytes(), before);
+                    assert_eq!(
+                        fs::read(fixture.source.join(&fixture.module)).unwrap(),
+                        BEFORE
+                    );
+                } else {
+                    assert_state(&fixture.descriptor_bytes(), &format!("{role}Module"));
+                    assert_ne!(
+                        fs::read(fixture.source.join(&fixture.module)).unwrap(),
+                        BEFORE
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn borrowed_code_preserves_existing_state_across_xml_layouts_and_repeat() {
+    for (existing, internal_info) in [
+        ("<xr:PropertyState><xr:Property>ManagerModule</xr:Property><xr:State>Extended</xr:State>\n</xr:PropertyState>", "<InternalInfo>{existing}</InternalInfo>"),
+        ("<xr:PropertyState><xr:Property>ManagerModule</xr:Property><xr:State>Extended</xr:State></xr:PropertyState>", "<InternalInfo>{existing}</InternalInfo>"),
+        ("<xr:PropertyState>\n\t<xr:Property>ManagerModule</xr:Property>\n\t<xr:State>Extended</xr:State>\n</xr:PropertyState>", "<InternalInfo>\n{existing}\n</InternalInfo>"),
+    ] {
+        for newline in ["\n", "\r\n"] {
+            for bom in ["", "\u{feff}"] {
+                let fixture = Fixture::new("Document", "Documents", "ObjectModule", SourceSetKind::Extension, "Adopted");
+                let existing = existing.replace('\n', newline);
+                let internal_info = internal_info.replace('\n', newline).replace("{existing}", &existing);
+                let before = format!("{bom}{}", String::from_utf8(fixture.descriptor_bytes()).unwrap().replace("<InternalInfo/>", &internal_info));
+                fs::write(fixture.source.join(&fixture.descriptor), &before).unwrap();
+                let operation = fixture.operation(false);
+                let preview = fixture.admission(true);
+                let (mut state, effects) = fixture.plan(&preview, std::slice::from_ref(&operation)).unwrap();
+                let expected = state.read(&fixture.descriptor).unwrap().unwrap();
+                fixture.actor.publish_prepared_apply(preview.prepare_with_effects(state, effects).unwrap()).unwrap();
+                assert_eq!(fixture.descriptor_bytes(), before.as_bytes());
+                for repeat in [false, true] {
+                    let admission = fixture.admission(false);
+                    let (state, effects) = fixture.plan(&admission, std::slice::from_ref(&operation)).unwrap();
+                    assert_eq!(state.planned_changes().is_empty(), repeat);
+                    assert_eq!(effects.events().is_empty(), repeat);
+                    fixture.actor.publish_prepared_apply(admission.prepare_with_effects(state, effects).unwrap()).unwrap();
+                    assert_eq!(fixture.descriptor_bytes(), expected);
+                }
+                let after = String::from_utf8(expected).unwrap();
+                assert_eq!(after.starts_with('\u{feff}'), !bom.is_empty());
+                assert!(after.contains(&existing), "existing state changed: {after}");
+                if newline == "\r\n" && before.contains('\n') {
+                    assert!(!after.replace("\r\n", "").contains('\n'));
+                }
+                let doc = roxmltree::Document::parse(after.trim_start_matches('\u{feff}')).unwrap();
+                let states: Vec<_> = doc.descendants().filter(|node| node.has_tag_name((XR, "PropertyState"))).collect();
+                assert_eq!(states.len(), 2);
+                for state in &states {
+                    assert!(state.parent().unwrap().has_tag_name((MD, "InternalInfo")), "state nested in another element: {after}");
+                }
+                let properties: Vec<_> = states.iter().map(|state| state.children().find(|node| node.has_tag_name((XR, "Property"))).unwrap().text().unwrap()).collect();
+                assert!(properties.contains(&"ManagerModule"));
+                assert!(properties.contains(&"ObjectModule"));
+            }
+        }
+    }
+}

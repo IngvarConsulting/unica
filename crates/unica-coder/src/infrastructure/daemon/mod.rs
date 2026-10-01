@@ -6,13 +6,22 @@ pub(crate) mod protocol_v5;
 pub(crate) mod runtime_v5;
 pub(crate) mod server;
 pub(crate) mod terminal_codec_v5;
+mod v13_artifact_build;
 mod v13_call_graph;
+mod v13_cf_import;
+mod v13_client_run;
+mod v13_configuration_transition;
 mod v13_documentation;
+mod v13_extensions;
+mod v13_infobase_create;
 mod v13_infobase_exports;
 mod v13_read_modes;
 mod v13_run_dictionary;
 #[allow(dead_code)]
 mod v13_service;
+mod v13_source_export;
+mod v13_source_import;
+mod v13_source_set_name;
 mod v13_workspace_bootstrap;
 
 use identity::CoreIdentity;
@@ -39,6 +48,9 @@ fn daemon_process_command(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    for key in unica_bootstrap::host_workspace_environment_keys() {
+        command.env_remove(key);
+    }
     command
 }
 
@@ -86,6 +98,11 @@ mod tests {
         );
 
         assert_eq!(command.get_current_dir(), Some(state_root.as_path()));
+        for key in unica_bootstrap::host_workspace_environment_keys() {
+            assert!(command
+                .get_envs()
+                .any(|(name, value)| name == key && value.is_none()));
+        }
     }
 
     #[test]
@@ -272,6 +289,193 @@ mod tests {
         daemon.finish(owner);
     }
 
+    #[test]
+    fn resolve_path_ignores_the_full_directory_entry_budget() {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("src");
+        std::fs::create_dir_all(source.join("Catalogs")).unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject><Configuration><Properties><Name>Store</Name></Properties><ChildObjects><Catalog>Requested</Catalog><Catalog>Unrelated</Catalog></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        for name in ["Requested", "Unrelated"] {
+            std::fs::write(
+                source.join(format!("Catalogs/{name}.xml")),
+                format!(r#"<MetaDataObject><Catalog><Properties><Name>{name}</Name></Properties><ChildObjects/></Catalog></MetaDataObject>"#),
+            )
+            .unwrap();
+        }
+        let workspace_hint = physical_root(workspace.path())
+            .to_string_lossy()
+            .into_owned();
+        for (budget, service) in [
+            (
+                "entry count",
+                CanonicalV13ReadService::with_directory_limit_for_test(1),
+            ),
+            (
+                "aggregate fact bytes",
+                CanonicalV13ReadService::with_directory_fact_limit_for_test(1),
+            ),
+        ] {
+            let daemon = LiveV5Daemon::start(Arc::new(service));
+            let owner = daemon.owner();
+            let submission = daemon.submit(
+                &owner,
+                &InvocationRequest::new(
+                    ToolIdentity::Resolve,
+                    serde_json::json!({"path": "src/Catalogs/Requested.xml"}),
+                    workspace_hint.as_str(),
+                    7_000,
+                )
+                .unwrap(),
+            );
+            let result = match submission {
+                V5Submission::Direct(result) => *result,
+                V5Submission::Task(task_id) => {
+                    let terminal = daemon.wait_terminal(&owner, task_id, INTEGRATION_TASK_WAIT);
+                    terminal
+                        .completed_result()
+                        .cloned()
+                        .expect("resolved path publishes its terminal result")
+                }
+            };
+            assert!(result.ok, "{budget}: {result:?}");
+            assert_eq!(
+                result.data.as_ref().unwrap()["at"],
+                "main:Catalog.Requested",
+                "{budget}"
+            );
+            daemon.finish(owner);
+        }
+    }
+
+    #[test]
+    fn name_search_reports_an_injected_local_read_fault_through_the_live_daemon() {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("src");
+        std::fs::create_dir_all(source.join("Catalogs")).unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects><Catalog>Visible</Catalog><Catalog>Hidden</Catalog></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        for name in ["Visible", "Hidden"] {
+            std::fs::write(
+                source.join(format!("Catalogs/{name}.xml")),
+                format!(r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>{name}</Name></Properties><ChildObjects/></Catalog></MetaDataObject>"#),
+            )
+            .unwrap();
+        }
+        let workspace_hint = physical_root(workspace.path())
+            .to_string_lossy()
+            .into_owned();
+        let service = CanonicalV13ReadService::with_name_read_fault_for_test(
+            "Catalogs/Hidden.xml",
+            std::io::ErrorKind::Other,
+        );
+        let daemon = LiveV5Daemon::start(Arc::new(service));
+        let owner = daemon.owner();
+        let invoke = |tool, arguments| {
+            let submission = daemon.submit(
+                &owner,
+                &InvocationRequest::new(tool, arguments, workspace_hint.as_str(), 7_000).unwrap(),
+            );
+            match submission {
+                V5Submission::Direct(result) => *result,
+                V5Submission::Task(task_id) => {
+                    let terminal = daemon.wait_terminal(&owner, task_id, INTEGRATION_TASK_WAIT);
+                    assert_eq!(terminal.status(), InvocationStatus::Completed);
+                    terminal
+                        .completed_result()
+                        .cloned()
+                        .expect("name search publishes its terminal result")
+                }
+            }
+        };
+
+        let found = invoke(
+            ToolIdentity::Search,
+            serde_json::json!({"query": "Visible", "corpus": "names"}),
+        );
+        assert!(found.ok, "{found:?}");
+        assert_eq!(
+            found.data.as_ref().unwrap()["matches"][0]["at"],
+            "main:Catalog.Visible"
+        );
+        assert_eq!(
+            found.data.as_ref().unwrap()["sourceCoverage"]["complete"],
+            false
+        );
+        assert_eq!(found.data.as_ref().unwrap()["sourceCoverage"]["omitted"], 1);
+
+        let nearest = invoke(
+            ToolIdentity::Search,
+            serde_json::json!({"query": "Visibke", "corpus": "names"}),
+        );
+        assert!(nearest.ok, "{nearest:?}");
+        assert_eq!(
+            nearest.data.as_ref().unwrap()["matches"][0]["at"],
+            "main:Catalog.Visible"
+        );
+        assert_eq!(nearest.data.as_ref().unwrap()["approximate"], true);
+        assert_eq!(
+            nearest.data.as_ref().unwrap()["sourceCoverage"]["complete"],
+            false
+        );
+
+        let empty = invoke(
+            ToolIdentity::Search,
+            serde_json::json!({"query": "Absent", "corpus": "names", "kind": "Role"}),
+        );
+        assert!(empty.ok, "{empty:?}");
+        assert_eq!(
+            empty.data.as_ref().unwrap()["matches"],
+            serde_json::json!([])
+        );
+        assert_eq!(empty.data.as_ref().unwrap()["approximate"], false);
+        assert_eq!(
+            empty.data.as_ref().unwrap()["sourceCoverage"]["complete"],
+            false
+        );
+
+        let exact = invoke(
+            ToolIdentity::Resolve,
+            serde_json::json!({"path": "src/Catalogs/Visible.xml"}),
+        );
+        assert!(
+            exact.ok,
+            "an unrelated unreadable descriptor must not block resolve: {exact:?}"
+        );
+        assert_eq!(exact.data.as_ref().unwrap()["at"], "main:Catalog.Visible");
+
+        let unreadable_target = invoke(
+            ToolIdentity::Resolve,
+            serde_json::json!({"path": "src/Catalogs/Hidden.xml"}),
+        );
+        assert!(!unreadable_target.ok);
+        assert_eq!(
+            unreadable_target.diagnostics[0]["code"],
+            "provider_unavailable"
+        );
+        assert_eq!(
+            unreadable_target.diagnostics[0]["detailCode"],
+            "source_unreadable"
+        );
+        daemon.finish(owner);
+    }
+
     struct BlockingCanonicalService {
         executions: Arc<AtomicUsize>,
         entered: mpsc::Sender<()>,
@@ -315,7 +519,7 @@ mod tests {
         let owner = daemon.owner();
         let request = build_request(
             workspace.path(),
-            serde_json::json!({"op": "infobase.build", "args": {}}),
+            serde_json::json!({"op": "test.long-work", "args": {}}),
         );
 
         let task_id = daemon.task_id(&owner, &request);
@@ -365,7 +569,7 @@ mod tests {
             assert_eq!(invocation.tool(), ToolIdentity::Run);
             assert_eq!(
                 invocation.arguments(),
-                &serde_json::json!({"op": "infobase.build", "args": {}})
+                &serde_json::json!({"op": "test.long-work", "args": {}})
                     .as_object()
                     .unwrap()
                     .clone()
@@ -439,7 +643,7 @@ mod tests {
         ] {
             let request = build_request(
                 workspace,
-                serde_json::json!({"op": "infobase.build", "args": {}}),
+                serde_json::json!({"op": "test.long-work", "args": {}}),
             );
             let task_id = daemon.task_id(&owner, &request);
             let (actor_hash, bytes) = observed_wait
@@ -474,10 +678,7 @@ mod tests {
         let owner = daemon.owner();
         let request = build_request(
             &workspace,
-            serde_json::json!({
-                "op": "infobase.build",
-                "args": {"ambientRoot": "/tmp/foreign"}
-            }),
+            serde_json::json!({"op": "test.long-work", "args": {}}),
         );
         let task_id = daemon.task_id(&owner, &request);
         entered_wait
@@ -751,3 +952,5 @@ mod tests {
         );
     }
 }
+
+mod runner_011;

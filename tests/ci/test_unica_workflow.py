@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import re
 import unittest
 from collections.abc import Iterator
@@ -218,7 +219,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertEqual(set(needs(proof)), {"build-tools", "package-thin", "release-assessment"})
         for argument in (
             "scripts/ci/release-proof.py",
-            "--mode dry",
+            "--surface-ledger docs/tool-surface.md",
             "--wire-dir",
             "--package-dir",
             "--asset-verification-dir",
@@ -227,13 +228,32 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             "--out-dir dist/p0-proof",
         ):
             self.assertIn(argument, script(proof))
-        self.assertEqual(proof["permissions"], {"contents": "read"})
+        # Единственный режим proof — dry: сценарии жизненного цикла доказываются
+        # на опубликованных байтах, а эта джоба идёт до публикации (#697).
+        self.assertNotIn("--mode", script(proof))
+        # Идентичность пакета включает бит исполнения (#700), а
+        # actions/download-artifact режимы не сохраняет: пакет для сверки
+        # приходит через `gh run download`, которому нужно `actions: read`.
+        self.assertEqual(proof["permissions"], {"contents": "read", "actions": "read"})
+        self.assertIn("gh run download", script(proof))
+        self.assertIn("unica-thin-marketplace", script(proof))
+        for step in steps_using(proof, "actions/download-artifact"):
+            self.assertNotEqual((step.get("with") or {}).get("name"), "unica-thin-marketplace")
         self.assertEqual(steps_using(proof, "softprops/action-gh-release"), [])
+        # Read-only-ность proof живёт здесь, в устройстве джобы, а не в
+        # самоотчётных полях JSON (#696): нет прав на запись, нет шагов
+        # публикации, нет ни тега, ни push, ни бампа версии.
         self.assertNotIn("git tag", script(proof))
+        self.assertNotIn("git push", script(proof))
+        self.assertNotIn("gh release", script(proof))
+        self.assertNotIn("bump-version", script(proof))
         self.assertIn("p0-release-proof", needs(job(self.release, "unica-ci")))
 
     def test_wire_probes_embed_the_matrix_target_in_their_evidence(self) -> None:
-        self.assertEqual(2, script(job(self.release, "build-tools")).count('--target "$TARGET"'))
+        build = job(self.release, "build-tools")
+        for name in ("Probe native package wire profile", "Probe compatibility package wire profile"):
+            with self.subTest(step=name):
+                self.assertIn('--target "$TARGET"', step_text(step_named(build, name)))
 
     def test_classifier_exposes_typed_contours_and_ci_full_override(self) -> None:
         classifier = job(self.release, "classify-changes")
@@ -385,7 +405,15 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         platforms = job(self.release, "test-rust-platforms")
         classify = job(self.release, "classify-changes")
 
-        self.assertEqual(normalized(python["if"]), "${{ !" + main_push + " }}")
+        empty_large = "(github.event_name == 'workflow_dispatch' && inputs.profile == 'large' && needs.classify-changes.outputs.python_matrix == '[]')"
+        self.assertEqual(
+            normalized(python["if"]),
+            "${{ !" + main_push + " && !" + empty_large + " }}",
+        )
+        build = job(self.release, "build-tools")
+        self.assertIn("needs.test-python.result == 'success'", condition(build))
+        self.assertIn("needs.test-python.result == 'skipped'", condition(build))
+        self.assertIn("needs.classify-changes.outputs.python_matrix == '[]'", condition(build))
         rust = normalized(condition(platforms))
         self.assertIn(main_push + " && ( needs.classify-changes.outputs.toolchain_changed == 'true' || needs.classify-changes.outputs.ci_changed == 'true' )", rust)
         self.assertIn("!" + main_push + " && ( needs.classify-changes.outputs.rust_changed == 'true'", rust)
@@ -512,13 +540,10 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             with self.subTest(job_id=job_id):
                 self.assertEqual(job(self.publish, job_id).get("timeout-minutes"), minutes)
 
-    def test_registry_guards_run_in_the_source_contour(self) -> None:
-        """Стражи реестра идут в `guards` первыми, наборы Python — в `test-python` за ними."""
-        guards = job(self.release, "guards")
+    def test_python_suites_run_after_guards_with_the_runner_matrix(self) -> None:
+        """Наборы Python следуют за guards и используют матрицу штатного runner."""
         python = job(self.release, "test-python")
 
-        self.assertIn("python -m py_compile scripts/arch/*.py tests/arch/*.py", script(guards))
-        self.assertIn("python scripts/arch/registry.py --check", script(guards))
         self.assertIn('python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --suite "$SUITE" --only-size "$LANE" --results', script(python))
         self.assertEqual(needs(python), ["classify-changes", "guards"])
         # Матрицу джоб Python считает шов по воротам; джоба знает набор и полосу.
@@ -647,6 +672,73 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
                 self.assertNotIn("github.event_name == 'push'", expression)
         self.assertIn("jobs?per_page=100", script(build))
 
+    def test_pages_build_main_once_the_queue_merged_its_tree(self) -> None:
+        """Сайт ждёт вливания проверенного очередью дерева и собирается из main, а не из коммита очереди.
+
+        Без ожидания сайт брал прежний main и отставал на одно вливание. Из
+        коммита очереди собирать нельзя: снятый с очереди pull request тоже даёт
+        успешный прогон, а прогоны пачки кончаются не по порядку. Любой источник
+        берёт main, какой он сейчас: прогон, отложенный группой, иначе выложил
+        бы main старше опубликованного.
+        """
+        build = job(self.pages, "build")
+        wait = step_named(build, "Дождаться вливания проверенного очередью дерева")
+        self.assertEqual(
+            condition(wait),
+            "github.event.workflow_run.event == 'merge_group' && github.event.workflow_run.conclusion == 'success'",
+        )
+        self.assertIs(wait["continue-on-error"], True)
+        self.assertIn("scripts/ci/await-queue-merge.py", wait["run"])
+        self.assertEqual(wait["env"]["QUEUE_SHA"], "${{ github.event.workflow_run.head_sha }}")
+        self.assertEqual(wait["env"]["QUEUE_BRANCH"], "${{ github.event.workflow_run.head_branch }}")
+
+        # Скрипт ожидания исполняется из дерева события, страницы — из main;
+        # коммит очереди не попадает в checkout никогда.
+        first, current = steps_using(build, "actions/checkout")
+        self.assertNotIn("ref", first["with"])
+        self.assertEqual(current["with"]["ref"], "main")
+        self.assertNotIn("if", current)
+        for checkout in (first, current):
+            self.assertIs(checkout["with"]["persist-credentials"], False)
+        # Второй checkout чистит рабочий каталог: до него — только то, что его
+        # переживает (Python в tool cache) или нужно для ожидания.
+        order = steps(build)
+        self.assertEqual(
+            order[: order.index(current)],
+            [first, steps_using(build, "actions/setup-python")[0], wait],
+        )
+
+        # Подвал называет дерево, из которого собраны страницы, и ведёт на него.
+        rebuild = step_named(build, "Пересобрать страницы с итоговым статусом")
+        self.assertIn('--sha "$(git rev-parse HEAD)"', rebuild["run"])
+        self.assertNotIn("--run-url", rebuild["run"])
+
+    def test_pages_runs_the_build_skips_stay_out_of_the_publishing_group(self) -> None:
+        """Прогон, который build отсечёт, не вытесняет ожидающий прогон с результатами."""
+        group = self.pages["concurrency"]["group"]
+        build = condition(job(self.pages, "build"))
+        expected = "${{ (" + build + ") && 'unica-pages' || format('unica-pages-idle-{0}', github.run_id) }}"
+        self.assertEqual(normalized(group), normalized(expected))
+        self.assertIs(self.pages["concurrency"]["cancel-in-progress"], False)
+
+    def test_publication_queue_keeps_every_admitted_release(self) -> None:
+        """Допущенные публикации ждут в одной очереди, пропущенные gate прогоны в неё не входят.
+
+        Публикацию запускает каждая сборка, а gate пропускает только push
+        тега и ручной запуск. Пустой прогон в общей группе снимал бы
+        ожидающий выпуск, а с одним местом ожидания третий допущенный прогон
+        снимал бы второй. Порядок внутри очереди GitHub не обещает: его держит
+        страж порядка версий в stage и promote.
+        """
+        gate = job(self.publish, "gate")
+        expected_group = (
+            "${{ (" + condition(gate) + ") && 'publish-unica-marketplace' || "
+            "format('publish-unica-marketplace-idle-{0}', github.run_id) }}"
+        )
+        self.assertEqual(normalized(self.publish["concurrency"]["group"]), normalized(expected_group))
+        self.assertEqual(self.publish["concurrency"]["queue"], "max")
+        self.assertIs(self.publish["concurrency"]["cancel-in-progress"], False)
+
     def test_guards_ship_findings_to_code_scanning_not_the_gate(self) -> None:
         """Находка линтера — не исход теста: SARIF в Code Scanning, гейт не краснеет."""
         guards = job(self.release, "guards")
@@ -699,7 +791,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         for tool in ("scripts/ci/build-unica-tools.py", "scripts/ci/package-unica-runtime.py", "scripts/ci/verify-release-assets.py"):
             self.assertIn(tool, script(build))
         self.assertIn('--target "${{ matrix.target }}"', script(build))
-        for name in ("unica-runtime-metadata-${{ matrix.target }}", "unica-bootstrap-${{ matrix.target }}", "unica-runtime-${{ matrix.target }}"):
+        for name in ("unica-metadata-${{ matrix.target }}", "unica-bootstrap-${{ matrix.target }}", "unica-runtime-${{ matrix.target }}"):
             with self.subTest(name=name):
                 self.assertIn(name, names)
         # Узость здесь — про цель, а не про артефакт: разрез поставки дал по
@@ -737,7 +829,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         marketplace = next(upload for upload in uploads(thin) if upload.get("name") == "unica-thin-marketplace")
 
         self.assertEqual(needs(thin), ["build-tools"])
-        self.assertIn("unica-runtime-metadata-*", patterns)
+        self.assertIn("unica-metadata-*", patterns)
         self.assertIn("unica-bootstrap-*", patterns)
         self.assertNotIn("unica-tools-*", patterns)
         self.assertNotIn("unica-runtime-*", patterns)
@@ -754,6 +846,9 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertEqual([(upload["name"], upload["retention-days"]) for upload in uploads(assessment)], [("unica-release-assessment", 1)])
 
     def test_packaged_bootstrap_is_smoked_on_every_supported_host(self) -> None:
+        windows_cleanup = step_named(job(self.release, "build-tools"), "Check bootstrap smoke process cleanup on Windows")
+        self.assertEqual(condition(windows_cleanup), "matrix.target == 'win-x64'")
+        self.assertIn("tests.ci.test_smoke_unica_bootstrap", windows_cleanup["run"])
         probe = job(self.release, "probe-thin-bootstrap")
         smoke = job(self.release, "smoke-thin-plugin")
         expected_targets = {
@@ -805,6 +900,26 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         assert_pinned(self, RELEASE_WORKFLOW, release, "v3")
         self.assertIn("unica-runtime-*.tar.gz", release["with"]["files"])
         self.assertIn("unica-runtime-*.json", release["with"]["files"])
+        # Паттерн скачивания `unica-runtime-*` обязан совпадать только с
+        # артефактами выпуска: побочные артефакты (метаданные, верификация)
+        # носят имена вне него, а не полагаются на фильтр `files:` (#701, п. 4).
+        upload_names = {
+            upload["name"]
+            for job_id in jobs(self.release)
+            for upload in uploads(job(self.release, job_id))
+            if upload.get("name")
+        }
+        matched = {name for name in upload_names if fnmatch.fnmatch(name, "unica-runtime-*")}
+        self.assertEqual(matched, {"unica-runtime-${{ matrix.target }}"})
+        downloaded = steps_using(publish, "actions/download-artifact")
+        self.assertEqual(
+            [(step["with"].get("pattern"), step["with"].get("path")) for step in downloaded],
+            [("unica-runtime-*", "dist/runtime"), ("unica-metadata-*", "dist/metadata")],
+        )
+        pair = step_named(publish, "Pair core archives with their metadata")["run"]
+        self.assertIn('test -f "dist/metadata/unica-runtime-${target}.json"', pair)
+        self.assertIn('cp "dist/metadata/unica-runtime-${target}.json" dist/runtime/', pair)
+        self.assertIn("verify-release-assets.py --asset-dir dist/runtime", pair)
         self.assertFalse(any("install-unica" in value for value in strings(publish)))
         self.assertIn("gh release download", script(verify))
         self.assertIn("verify-release-assets.py", script(verify))
@@ -840,7 +955,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertGreaterEqual(all_scripts(self.publish).count("gh auth setup-git"), 2)
 
     def test_publication_is_one_linear_pass_ordered_by_needs(self) -> None:
-        """ADR-0068: stage → tag → verify → promote, no pull requests, no warden.
+        """Publication order: stage → tag → verify → promote, no pull requests, no warden.
 
         The order is the contract: the anchor tag exists before the install
         checks run, and the catalog moves only behind their green result. A
@@ -859,32 +974,38 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             with self.subTest(job_id=job_id):
                 self.assertIn(job_id, jobs(self.publish))
         self.assertEqual(needs(job(self.publish, "tag")), ["stage"])
-        self.assertEqual(needs(job(self.publish, "verify-fresh-install")), ["stage", "tag"])
-        self.assertEqual(needs(job(self.publish, "verify-upgrade")), ["stage", "tag"])
-        self.assertEqual(needs(job(self.publish, "promote")), ["stage", "tag", "verify-fresh-install", "verify-upgrade"])
+        self.assertEqual(needs(job(self.publish, "verify-fresh-install")), ["gate", "stage", "tag"])
+        self.assertEqual(needs(job(self.publish, "verify-upgrade")), ["gate", "stage", "tag"])
+        self.assertEqual(
+            needs(job(self.publish, "promote")),
+            ["gate", "stage", "tag", "verify-fresh-install", "verify-upgrade"],
+        )
         # The PR ceremony is gone with the warden: nothing opens pull requests
         # and no metadata travels in branch names.
         self.assertNotIn("pr create", text)
         self.assertNotIn("codex/stage-", text)
         self.assertNotIn("codex/promote-", text)
         self.assertNotIn("mode", on["workflow_dispatch"]["inputs"])
+        stage_push = step_named(job(self.publish, "stage"), "Push the staged payload without changing any catalog")["run"]
+        promote_move = step_named(job(self.publish, "promote"), "Move the channel catalogs to the published tag")["run"]
         # Idempotent escapes: a completed stage and a completed promote are
-        # detected, and an existing tag is proven identical, never moved.
-        self.assertEqual(text.count("diff --cached --quiet"), 2)
+        # detected, and an existing tag is proven identical, never moved. The
+        # behaviour, reruns included, is exercised in test_publish_channels.
+        self.assertIn('echo "staging_sha=$(git -C marketplace rev-parse HEAD)" >> "$GITHUB_OUTPUT"\n  exit 0', stage_push)
+        self.assertIn('echo "${branch} already serves ${RELEASE_TAG}"', promote_move)
         self.assertIn('rev-parse --verify --quiet "refs/tags/${RELEASE_TAG}"', text)
         self.assertNotIn("git tag -f", text)
         self.assertNotIn("--force", text)
-        # Two releases must not interleave, and a stale straggler must fail
-        # forward-only instead of rolling the catalog back — in both writers,
-        # over both host catalogs, and again after a rebase retry in promote.
-        self.assertEqual(self.publish["concurrency"], {"group": "publish-unica-marketplace", "cancel-in-progress": False})
-        self.assertEqual(text.count("require_forward()"), 2)
-        self.assertEqual(text.count('test "$newest" = "$RELEASE_TAG"'), 2)
-        self.assertEqual(
-            text.count(".agents/plugins/marketplace.json .claude-plugin/marketplace.json"),
-            3,  # both guard loops and the promote `git add`
-        )
-        self.assertIn('require_forward "HEAD~1"', text)
+        # A stale straggler must fail forward-only instead of rolling a
+        # catalog back — in both writers, over both host catalogs, in SemVer
+        # order, and again after a rebase retry. That two releases never
+        # interleave is test_publication_queue_keeps_every_admitted_release.
+        self.assertNotIn("sort -V", text)
+        for writer in (stage_push, promote_move):
+            with self.subTest(writer=writer.splitlines()[1]):
+                self.assertIn('python3 "$rules" catalog-ref "marketplace/$codex" "marketplace/$claude"', writer)
+                self.assertIn('python3 "$rules" forward', writer)
+                self.assertIn('after_rebase="$(served_ref HEAD~1)"', writer)
         # The payload is trusted only from the successful push build of the
         # very tag its manifest declares — dispatch cannot smuggle another one.
         self.assertIn('test "$run_event" = "push"', text)
@@ -901,8 +1022,13 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         # the move is a reinstall against the rewritten catalog: `plugin
         # marketplace upgrade` fetches a Git remote and refuses one.
         self.assertNotIn("plugin marketplace upgrade unica", text)
-        self.assertIn("plugin remove unica@unica --json", text)
-        self.assertEqual(text.count("plugin add unica@unica --json"), 3)
+        self.assertIn("plugin remove $plugin --json", text)
+        self.assertEqual(text.count("plugin add $plugin --json"), 3)
+        # Each channel is installed under the name its consumers add.
+        self.assertEqual(
+            text.count("$plugin = if ($env:CHANNEL -eq 'next') { 'unica@unica-next' } else { 'unica@unica' }"),
+            3,
+        )
         self.assertIn("verify --plugin-root $pluginRoot", text)
 
 
@@ -1031,13 +1157,14 @@ class ArtifactSplitPublicationTests(unittest.TestCase):
         self.assertIn("prefetch --plugin-root .build/thin/plugins/unica", script(smoke))
 
 
-class PrereleaseNeverReachesConsumersTests(unittest.TestCase):
-    """Предвыпуск собирается и публикует ассеты, но каталога не касается.
+class CandidateChannelTests(unittest.TestCase):
+    """Кандидат выпуска раздаётся только каналу next, стабильный — обоим каналам.
 
     Замерить доставку можно только на настоящем релизе: адрес архива прибит к
-    релизам репозитория. Значит нужен выпуск, который существует для нас и не
-    существует для пользователей, — и решать это должен конвейер, а не память
-    того, кто его запускал.
+    релизам репозитория. Кандидату `-rc.N` нужны тестировщики, и после выхода
+    полной версии они должны получить её обычным обновлением. Какой канал
+    получит выпуск, решает конвейер по тегу, а не память того, кто его запускал.
+    Поведение каналов проверяет test_publish_channels, исполняя сами шаги.
     """
 
     def setUp(self) -> None:
@@ -1051,17 +1178,43 @@ class PrereleaseNeverReachesConsumersTests(unittest.TestCase):
 
         self.assertEqual(normalized(release["with"]["prerelease"]), "${{ contains(github.ref_name, '-') }}")
 
-    def test_publication_asks_first_whether_this_release_is_for_consumers(self) -> None:
-        self.assertIn("gate", jobs(self.publish))
-        self.assertIn("promote", jobs(self.publish))
+    def test_publication_asks_first_which_channel_the_release_reaches(self) -> None:
+        gate = job(self.publish, "gate")
+
+        self.assertEqual(gate["outputs"], {"channel": "${{ steps.decide.outputs.channel }}"})
+        self.assertIn(
+            'python3 rules/scripts/ci/release-channel.py channel "$tag"',
+            step_named(gate, "Decide which channel this release reaches")["run"],
+        )
 
     def test_every_publishing_stage_waits_for_that_answer(self) -> None:
         # Достаточно загейтить первую стадию: остальные ждут её через `needs`.
+        # Предвыпуск не `-rc.N` существует для замеров и не публикуется.
         stage = job(self.publish, "stage")
 
         self.assertEqual(needs(stage), ["gate"])
-        self.assertEqual(condition(stage), "needs.gate.outputs.promote == 'true'")
+        self.assertEqual(
+            condition(stage),
+            "needs.gate.outputs.channel == 'stable' || needs.gate.outputs.channel == 'next'",
+        )
 
+    def test_channel_rules_come_from_the_workflow_commit_without_credentials(self) -> None:
+        # Код тега не исполняется рядом с токеном маркетплейса: правила канала
+        # берутся из коммита самого workflow, и checkout не оставляет токена.
+        for job_id in ("gate", "stage", "verify-fresh-install", "verify-upgrade", "promote"):
+            with self.subTest(job_id=job_id):
+                checkout = step_named(job(self.publish, job_id), "Check out the release channel rules")
+                self.assertTrue(checkout["uses"].startswith("actions/checkout@"))
+                self.assertEqual(
+                    checkout["with"],
+                    {
+                        "ref": "${{ github.sha }}",
+                        "path": "rules",
+                        "persist-credentials": False,
+                        "sparse-checkout": "scripts/ci/release-channel.py",
+                        "sparse-checkout-cone-mode": False,
+                    },
+                )
 
 if __name__ == "__main__":
     unittest.main()

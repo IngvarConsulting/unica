@@ -25,8 +25,95 @@ use crate::infrastructure::v13_read_port::{
 use serde::Deserialize;
 use serde_json::json;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+#[test]
+fn borrowed_common_module_keeps_missing_privileged_unknown() {
+    let borrowed = fixture_text("platform_8_3_27/cfe_borrow/extension-common-module.xml");
+    let props = super::common_module_properties(borrowed.as_bytes(), SourceSetKind::Extension)
+        .expect("platform borrowed CommonModule omits Privileged");
+    let serialized = serde_json::to_value(props).unwrap();
+    assert_eq!(serialized["privileged"], serde_json::Value::Null);
+
+    let ordinary = fixture_text("platform_8_3_27/cfe_borrow/parent-common-module.xml");
+    let missing = ordinary.replace("<Privileged>false</Privileged>", "");
+    assert_eq!(
+        super::common_module_properties(missing.as_bytes(), SourceSetKind::Configuration)
+            .unwrap_err()
+            .code(),
+        RefusalCode::ProviderUnavailable,
+    );
+    assert_eq!(
+        super::common_module_properties(borrowed.as_bytes(), SourceSetKind::Configuration)
+            .unwrap_err()
+            .code(),
+        RefusalCode::ProviderUnavailable,
+    );
+    let own_extension = borrowed.replace(
+        "<ExtendedConfigurationObject>ac847dc9-e222-45cf-af4a-6fa863c919a8</ExtendedConfigurationObject>",
+        "",
+    );
+    assert!(
+        super::common_module_properties(own_extension.as_bytes(), SourceSetKind::Extension)
+            .is_err(),
+        "an extension's own CommonModule still requires Privileged",
+    );
+    for (raw, expected) in [("true", true), ("false", false)] {
+        let explicit = borrowed.replace(
+            "<ReturnValuesReuse>",
+            &format!("<Privileged>{raw}</Privileged><ReturnValuesReuse>"),
+        );
+        let props =
+            super::common_module_properties(explicit.as_bytes(), SourceSetKind::Extension).unwrap();
+        assert_eq!(props.privileged, Some(expected));
+    }
+    for raw in ["", "unknown"] {
+        let invalid = borrowed.replace(
+            "<ReturnValuesReuse>",
+            &format!("<Privileged>{raw}</Privileged><ReturnValuesReuse>"),
+        );
+        assert!(
+            super::common_module_properties(invalid.as_bytes(), SourceSetKind::Extension).is_err(),
+            "explicit invalid Privileged must not become null",
+        );
+    }
+}
+
+#[test]
+fn borrowed_common_module_view_serializes_unknown_privileged_without_losing_contexts() {
+    let fixture = RealReaderFixture::new();
+    let configuration = fs::read_to_string(fixture.source.join("Configuration.xml")).unwrap();
+    write(
+        &fixture.source.join("Configuration.xml"),
+        &configuration.replace(
+            "</ChildObjects>",
+            "<CommonModule>CorpusModule</CommonModule></ChildObjects>",
+        ),
+    );
+    write(
+        &fixture.source.join("CommonModules/CorpusModule.xml"),
+        &fixture_text("platform_8_3_27/cfe_borrow/extension-common-module.xml"),
+    );
+    write(
+        &fixture
+            .source
+            .join("CommonModules/CorpusModule/Ext/Module.bsl"),
+        "Процедура Проверка() Экспорт\nКонецПроцедуры\n",
+    );
+    let view = fixture
+        .extension_view_service()
+        .view(ViewRequest::new("main:CommonModule.CorpusModule").unwrap());
+    assert!(view.ok, "{:?}", view.diagnostics);
+    let data = view.data.unwrap();
+    assert_eq!(
+        data["props"]["commonModule"]["privileged"],
+        serde_json::Value::Null
+    );
+    assert!(data["props"]["commonModule"]["server"].is_boolean());
+    assert!(data["branches"].is_array());
+}
 
 fn configuration_payload(
     reader: &ProviderReadAuthority,
@@ -772,6 +859,95 @@ fn metadata_node_props_carry_the_observed_object_properties() {
     assert_eq!(props["Hierarchical"], json!(true));
     assert_eq!(props["CodeLength"], json!(11));
     assert_eq!(props["kind"], json!("Catalog"));
+}
+
+/// Три роли дампа `PrintWebDAV`: заимствован с перекрытием, заимствован без
+/// перекрытия, собственный объект расширения.
+///
+/// Признак заимствования — `ExtendedConfigurationObject`, а не `Adopted`:
+/// корень `Configuration` самого расширения тоже `Adopted`, и читать его как
+/// заимствованный объект — дефект. `xr:PropertyState` несёт **список**
+/// перекрытых свойств, а не флаг: заимствованный объект без перекрытий его не
+/// несёт вовсе.
+#[test]
+fn borrowing_props_name_the_three_roles_of_an_extension_source_set() {
+    let fixture = RealReaderFixture::new();
+    fixture.borrow_catalog("Catalogs/Владельцы.xml", Some("Synonym"));
+    fixture.borrow_catalog("Documents/Order.xml", None);
+    let service = fixture.extension_view_service();
+
+    let overridden = service.view(ViewRequest::new("main:Catalog.Владельцы").unwrap());
+    assert!(overridden.ok, "{:?}", refusal_codes(&overridden));
+    let props = &overridden.data.as_ref().unwrap()["props"];
+    assert_eq!(props["belonging"], json!("borrowed"));
+    assert_eq!(
+        props["parentId"],
+        json!("11111111-1111-4111-8111-111111111111")
+    );
+    assert_eq!(props["overrides"], json!("Synonym"));
+    assert!(
+        props.get("extends").is_none(),
+        "UUID is not a readable parent address"
+    );
+    assert_eq!(props["parentStatus"], json!("unavailable"));
+
+    let plain = service.view(ViewRequest::new("main:Document.Order").unwrap());
+    assert!(plain.ok, "{:?}", refusal_codes(&plain));
+    let props = &plain.data.as_ref().unwrap()["props"];
+    assert_eq!(props["belonging"], json!("borrowed"));
+    assert_eq!(
+        props["parentId"],
+        json!("11111111-1111-4111-8111-111111111111")
+    );
+    assert!(
+        props.get("overrides").is_none(),
+        "заимствование без перекрытий ключа `overrides` не несёт: пустой список — это его отсутствие"
+    );
+
+    let own = service.view(ViewRequest::new("main:Catalog.Items").unwrap());
+    assert!(own.ok, "{:?}", refusal_codes(&own));
+    let props = &own.data.as_ref().unwrap()["props"];
+    assert_eq!(props["belonging"], json!("own"));
+    assert!(props.get("extends").is_none());
+    assert!(props.get("overrides").is_none());
+}
+
+/// Заимствование не стоит второго чтения дескриптора.
+///
+/// Свойства объекта и его заимствование разбираются из одних и тех же байтов.
+/// Второе чтение того же файла стоило бы лишнего доступа и, что хуже, могло бы
+/// застать файл изменившимся между чтениями — тогда два ответа об одном
+/// объекте описывали бы разные состояния источника.
+#[test]
+fn borrowing_costs_no_second_descriptor_read() {
+    let fixture = RealReaderFixture::new();
+    fixture.borrow_catalog("Catalogs/Владельцы.xml", Some("Synonym"));
+    let authority = fixture.extension_read_authority();
+
+    assert_reader_reaches(&authority, &["main:Catalog.Владельцы"]);
+
+    assert_eq!(
+        authority.metadata_descriptor_read_count("Catalog.Владельцы"),
+        2,
+        "заимствование читается тем же дескриптором, что и свойства объекта: \
+         доказательство владельца плюс типизированная проекция, и ни чтением больше",
+    );
+}
+
+/// В наборе вида `configuration` заимствования не бывает, и `belonging: own`
+/// у каждого объекта было бы шумом.
+#[test]
+fn a_configuration_source_set_carries_no_borrowing_props() {
+    let fixture = RealReaderFixture::new();
+    let service = fixture.view_service();
+
+    let result = service.view(ViewRequest::new("main:Catalog.Items").unwrap());
+
+    assert!(result.ok, "{:?}", refusal_codes(&result));
+    let props = &result.data.as_ref().unwrap()["props"];
+    for key in ["belonging", "extends", "overrides"] {
+        assert!(props.get(key).is_none(), "{key} в конфигурации не отвечает");
+    }
 }
 
 #[test]
@@ -2173,16 +2349,20 @@ fn the_command_interface_shows_every_order_it_holds() {
         r#"<?xml version="1.0" encoding="utf-8"?>
 <CommandInterface xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20">
 	<CommandsOrder>
+		<Command name="Catalog.Items.StandardCommand.Zeta">
+			<CommandGroup>NavigationPanelImportant</CommandGroup>
+		</Command>
 		<Command name="Catalog.Items.StandardCommand.OpenList">
 			<CommandGroup>NavigationPanelImportant</CommandGroup>
 		</Command>
 	</CommandsOrder>
 	<SubsystemsOrder>
+		<Subsystem>Subsystem.Zeta</Subsystem>
 		<Subsystem>Subsystem.Sales</Subsystem>
 	</SubsystemsOrder>
 	<GroupsOrder>
-		<Group>NavigationPanelImportant</Group>
 		<Group>NavigationPanelSeeAlso</Group>
+		<Group>NavigationPanelImportant</Group>
 	</GroupsOrder>
 </CommandInterface>
 "#,
@@ -2203,36 +2383,40 @@ fn the_command_interface_shows_every_order_it_holds() {
             .cloned()
     };
     assert_eq!(branch("Group").unwrap()["count"], 2, "{branches:?}");
-    assert_eq!(branch("Subsystem").unwrap()["count"], 1, "{branches:?}");
+    assert_eq!(branch("Subsystem").unwrap()["count"], 2, "{branches:?}");
 
     // Группы идут в объявленном порядке, и пустая группа остаётся видимой:
     // порядок объявляется отдельно от наполнения.
     let groups = service.view(ViewRequest::new(&format!("{at}.Group")).unwrap());
     assert!(groups.ok, "{:?}", refusal_codes(&groups));
     let items = groups.data.as_ref().unwrap()["items"].as_array().unwrap();
-    assert_eq!(items[0]["title"], "NavigationPanelImportant");
-    assert_eq!(items[0]["commands"], 1);
-    assert_eq!(items[1]["title"], "NavigationPanelSeeAlso");
-    assert_eq!(items[1]["commands"], 0);
+    assert_eq!(items[0]["title"], "NavigationPanelSeeAlso");
+    assert_eq!(items[0]["commands"], 0);
+    assert_eq!(items[1]["title"], "NavigationPanelImportant");
+    assert_eq!(items[1]["commands"], 2);
 
     // Внутри группы — её команды в порядке `CommandsOrder`.
     let one =
         service.view(ViewRequest::new(&format!("{at}.Group.NavigationPanelImportant")).unwrap());
     assert!(one.ok, "{:?}", refusal_codes(&one));
     let ordered = one.data.as_ref().unwrap()["items"].as_array().unwrap();
-    assert_eq!(ordered.len(), 1);
-    assert_eq!(ordered[0]["order"], 1);
     assert_eq!(
-        ordered[0]["command"],
-        "Catalog.Items.StandardCommand.OpenList"
+        ordered,
+        &vec![
+            json!({"order": 1, "command": "Catalog.Items.StandardCommand.Zeta"}),
+            json!({"order": 2, "command": "Catalog.Items.StandardCommand.OpenList"}),
+        ]
     );
 
     // Ссылка платформы дополняется до адреса, по которому можно спуститься.
     let children = service.view(ViewRequest::new(&format!("{at}.Subsystem")).unwrap());
     assert!(children.ok, "{:?}", refusal_codes(&children));
     assert_eq!(
-        children.data.as_ref().unwrap()["items"][0]["at"],
-        "main:Subsystem.Sales"
+        children.data.as_ref().unwrap()["items"],
+        json!([
+            {"order": 1, "at": "main:Subsystem.Zeta"},
+            {"order": 2, "at": "main:Subsystem.Sales"},
+        ])
     );
 
     // Группы, которой в порядке нет, не существует и для чтения.
@@ -2323,6 +2507,174 @@ fn module_body_context_filter_excludes_at_client_source_from_server_slice() {
 
     assert!(result.ok, "{} {:?}", result.summary, result.diagnostics);
     assert_eq!(result.data.as_ref().unwrap()["items"], json!([]));
+}
+
+#[test]
+#[ignore = "blocked by #1119: BSL Body still reads the complete module under an 8 MiB file cap"]
+fn ordinary_bsl_read_over_eight_mib_reassembles_every_body_line() {
+    let fixture = RealReaderFixture::new();
+    let module = fixture
+        .source
+        .join("Reports/ParityReport/Forms/MainForm/Ext/Form/Module.bsl");
+    let mut file = std::io::BufWriter::new(fs::File::create(module).unwrap());
+    writeln!(file, "Процедура ПрочитатьБольшойМодуль()").unwrap();
+    for _ in 0..9 {
+        writeln!(file, "//{}", "я".repeat(512 * 1024)).unwrap();
+    }
+    writeln!(file, "КонецПроцедуры").unwrap();
+    file.flush().unwrap();
+    drop(file);
+
+    let service = fixture.view_service();
+    let at = "main:Report.ParityReport.Form.MainForm.Module.Form.Body";
+    let mut cursor = None;
+    let mut observed_lines = Vec::new();
+    loop {
+        let mut request = ViewRequest::new(at).unwrap().with_limit(2).unwrap();
+        if let Some(previous) = cursor.take() {
+            request = request.with_cursor(previous);
+        }
+        let page = service.view(request);
+        assert!(page.ok, "large Body page failed");
+        for item in page.data.as_ref().unwrap()["items"].as_array().unwrap() {
+            let line = item["line"].as_u64().unwrap();
+            let text = item["text"].as_str().expect("Body line must carry text");
+            observed_lines.push(line);
+            if (2..=10).contains(&line) {
+                assert!(text.starts_with("//"));
+                assert_eq!(text.chars().count(), 2 + 512 * 1024);
+            }
+        }
+        cursor = page.cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(observed_lines, (1..=11).collect::<Vec<_>>());
+}
+
+#[test]
+fn ordinary_xml_read_over_eight_mib_keeps_complete_configuration_facts() {
+    let fixture = RealReaderFixture::new();
+    let path = fixture.source.join("Configuration.xml");
+    let baseline = fixture
+        .view_service()
+        .view(ViewRequest::new("main:Configuration").unwrap());
+    assert!(baseline.ok, "baseline Configuration view failed");
+    let xml = fs::read_to_string(&path).unwrap();
+    let inflated = xml.replace(
+        "</MetaDataObject>",
+        &format!("<!--{}--></MetaDataObject>", "x".repeat(8 * 1024 * 1024)),
+    );
+    fs::write(path, inflated).unwrap();
+
+    let result = fixture
+        .view_service()
+        .view(ViewRequest::new("main:Configuration").unwrap());
+    assert!(result.ok, "large Configuration view failed");
+    assert!(
+        result.data.as_ref().unwrap()["props"] == baseline.data.as_ref().unwrap()["props"],
+        "Configuration root properties changed"
+    );
+    assert!(
+        result.data.as_ref().unwrap()["branches"] == baseline.data.as_ref().unwrap()["branches"],
+        "Configuration root branches changed"
+    );
+}
+
+#[test]
+fn large_configuration_root_keeps_legacy_duplicate_and_namespace_semantics() {
+    let fixture = RealReaderFixture::new();
+    let path = fixture.source.join("Configuration.xml");
+    let xml = fs::read_to_string(&path).unwrap();
+    let xml = xml.replacen(
+        "</ChildObjects>",
+        "<CommonModule>РеактивныйСервер</CommonModule><alien:Catalog xmlns:alien=\"urn:other\">Ghost</alien:Catalog></ChildObjects>",
+        1,
+    );
+    fs::write(&path, &xml).unwrap();
+
+    let reader = fixture.read_authority();
+    let legacy_payload = reader
+        .read
+        .configuration_payload_with_checkpoint(&mut || Ok(()))
+        .unwrap();
+    let route = route_logical_address(
+        &QualifiedAddress::parse("main:Configuration").unwrap(),
+        PlatformProfile::v8_3_27(),
+    )
+    .unwrap();
+    let legacy = project_typed_payload(&route, legacy_payload).unwrap();
+    let module_branch = super::module_branch_for_parent(route.at(), PlatformProfile::v8_3_27())
+        .expect("Configuration has a profile module branch");
+    let expected = serde_json::to_value(legacy.with_branch(module_branch)).unwrap();
+
+    fs::write(
+        &path,
+        xml.replace(
+            "</MetaDataObject>",
+            &format!("<!--{}--></MetaDataObject>", "x".repeat(8 * 1024 * 1024)),
+        ),
+    )
+    .unwrap();
+    let actual = fixture
+        .view_service()
+        .view(ViewRequest::new("main:Configuration").unwrap());
+    assert!(actual.ok, "large Configuration view failed");
+    assert!(
+        actual.data.as_ref().unwrap() == &expected,
+        "streaming Configuration root differs from the bounded reader"
+    );
+}
+
+#[test]
+fn large_configuration_root_rejects_malformed_tail() {
+    let fixture = RealReaderFixture::new();
+    let path = fixture.source.join("Configuration.xml");
+    let xml = fs::read_to_string(&path).unwrap();
+    fs::write(
+        path,
+        xml.replace(
+            "</MetaDataObject>",
+            &format!(
+                "<!--{}--><Broken></MetaDataObject>",
+                "x".repeat(8 * 1024 * 1024)
+            ),
+        ),
+    )
+    .unwrap();
+    let result = fixture
+        .view_service()
+        .view(ViewRequest::new("main:Configuration").unwrap());
+    assert!(!result.ok, "malformed XML tail escaped");
+    assert_eq!(result.diagnostics[0]["code"], "provider_unavailable");
+    assert_eq!(result.diagnostics[0]["detailCode"], "source_unreadable");
+}
+
+#[test]
+fn large_configuration_root_rejects_revision_change_during_owner_proof() {
+    let fixture = RealReaderFixture::new();
+    let root_xml = fixture.source.join("Configuration.xml");
+    let xml = fs::read_to_string(&root_xml).unwrap();
+    fs::write(
+        root_xml,
+        xml.replace(
+            "</MetaDataObject>",
+            &format!("<!--{}--></MetaDataObject>", "x".repeat(8 * 1024 * 1024)),
+        ),
+    )
+    .unwrap();
+    let descriptor = fixture.source.join("Catalogs/Items.xml");
+    review_set_before_owner_proof(move || {
+        let mut text = fs::read_to_string(&descriptor).unwrap();
+        text.push('\n');
+        fs::write(&descriptor, text).unwrap();
+    });
+    let result = fixture
+        .view_service()
+        .view(ViewRequest::new("main:Configuration").unwrap());
+    assert!(!result.ok, "mixed-revision Configuration root escaped");
+    assert_eq!(result.diagnostics[0]["code"], "stale_cursor");
 }
 
 #[test]
@@ -3848,6 +4200,57 @@ impl RealReaderFixture {
         ViewService::new(self.read_authority(), ViewCursorStore::default())
     }
 
+    /// Тот же набор, объявленный расширением: заимствование живёт только здесь.
+    fn extension_read_authority(&self) -> LogicalViewReadAuthority<'_> {
+        let source_root = Arc::new(RetainedDirectoryCapability::open(&self.source).unwrap());
+        let revisions = Arc::new(
+            SourceRevisionService::new_reconciling_for_test(&self.context, &self.source).unwrap(),
+        );
+        LogicalViewReadAuthority::new(
+            &self.cancellation,
+            "main",
+            "actor-fixture-extension-borrowing",
+            SourceSetKind::Extension,
+            revisions,
+            source_root,
+            PlatformProfile::v8_3_27(),
+        )
+    }
+
+    fn extension_view_service(&self) -> ViewService<LogicalViewReadAuthority<'_>> {
+        ViewService::new(self.extension_read_authority(), ViewCursorStore::default())
+    }
+
+    /// Платформенная форма заимствования: `Adopted` в свойствах,
+    /// `ExtendedConfigurationObject` с UUID родителя после имени и, когда
+    /// свойство перекрыто, запись `xr:PropertyState` в `InternalInfo`.
+    fn borrow_catalog(&self, relative: &str, overridden: Option<&str>) {
+        let path = self.source.join(relative);
+        let text = fs::read_to_string(&path).unwrap();
+        let properties = text.find("<Properties>").unwrap();
+        let after_open = properties + "<Properties>".len();
+        let mut patched = format!(
+            "{}<ObjectBelonging>Adopted</ObjectBelonging>{}",
+            &text[..after_open],
+            &text[after_open..]
+        );
+        let name_end = patched.find("</Name>").unwrap() + "</Name>".len();
+        patched = format!(
+            "{}<ExtendedConfigurationObject>11111111-1111-4111-8111-111111111111</ExtendedConfigurationObject>{}",
+            &patched[..name_end],
+            &patched[name_end..]
+        );
+        if let Some(property) = overridden {
+            let properties = patched.find("<Properties>").unwrap();
+            patched = format!(
+                "{}<InternalInfo><xr:PropertyState><xr:Property>{property}</xr:Property><xr:State>Extended</xr:State></xr:PropertyState></InternalInfo>{}",
+                &patched[..properties],
+                &patched[properties..]
+            );
+        }
+        write(&path, &patched);
+    }
+
     fn install_main_form_sources(&self, form_xml: &str, module_bsl: &str) {
         write(
             &self
@@ -4176,10 +4579,10 @@ pub(crate) fn configuration_level_rights_are_readable_role_objects() {
     let rights_path = fixture.source.join("Roles/SalesReader/Ext/Rights.xml");
     let rights = fs::read_to_string(&rights_path).unwrap().replacen(
         "</Rights>",
-        "<object><name>Configuration.CorpusConfiguration</name><right><name>Administration</name><value>true</value></right><right><name>ThinClient</name><value>true</value></right></object></Rights>",
+        "<object><name>Configuration.CorpusConfiguration</name><right><name>Administration</name><value>true</value></right><right><name>ThinClient</name><value>true</value></right><right><name>FutureConfigurationReadCapability</name><value>true</value></right><right><name>FutureConfigurationWriteCapability</name><value>false</value></right></object></Rights>",
         1,
     );
-    fs::write(&rights_path, rights).unwrap();
+    fs::write(&rights_path, &rights).unwrap();
     let service = fixture.view_service();
 
     let role = service.view(ViewRequest::new("main:Role.SalesReader").unwrap());
@@ -4191,7 +4594,9 @@ pub(crate) fn configuration_level_rights_are_readable_role_objects() {
     let data = right.data.as_ref().unwrap();
     assert_eq!(data["kind"], "Right");
     assert_eq!(data["props"]["objectKind"], "Configuration");
-    assert_eq!(data["props"]["allowedCount"], 2);
+    assert_eq!(data["props"]["allowedCount"], 3);
+    assert_eq!(data["props"]["deniedCount"], 1);
+    assert_eq!(fs::read_to_string(&rights_path).unwrap(), rights);
 
     let authority = fixture.read_authority();
     let index = ReaderReach::new(vec![("main", &authority)]);

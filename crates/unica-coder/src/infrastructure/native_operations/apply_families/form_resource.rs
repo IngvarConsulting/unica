@@ -2175,7 +2175,7 @@ pub(crate) fn plan_form_resource_batch(
                                 &mut counters,
                                 &mut log,
                             )
-                            .map_err(&fail)?;
+                            .map_err(fail)?;
                         }
                     }
                     InterfaceEdit::CommandOrder { group, commands } => {
@@ -2190,7 +2190,7 @@ pub(crate) fn plan_form_resource_batch(
                             &mut counters,
                             &mut log,
                         )
-                        .map_err(&fail)?;
+                        .map_err(fail)?;
                     }
                     InterfaceEdit::GroupOrder(groups) => {
                         interface_text_do_group_order(
@@ -2199,7 +2199,7 @@ pub(crate) fn plan_form_resource_batch(
                             &mut counters,
                             &mut log,
                         )
-                        .map_err(&fail)?;
+                        .map_err(fail)?;
                     }
                     InterfaceEdit::SubsystemOrder(subsystems) => {
                         interface_text_do_subsystem_order(
@@ -2208,7 +2208,7 @@ pub(crate) fn plan_form_resource_batch(
                             &mut counters,
                             &mut log,
                         )
-                        .map_err(&fail)?;
+                        .map_err(fail)?;
                     }
                 }
                 let postimage = text.into_bytes();

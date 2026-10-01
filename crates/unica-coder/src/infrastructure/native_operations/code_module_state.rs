@@ -76,12 +76,16 @@ pub(super) fn stage_borrowed_module_state(
     staged
         .replace(relative, &before, after)
         .map_err(|error| staged_code_error(error, at_path))?;
-    let owner = identity
-        .address
-        .as_str()
-        .rsplit_once('.')
-        .ok_or_else(invalid)?
-        .0;
+    let owner = if identity.owner == "Configuration" {
+        identity.owner.as_str()
+    } else {
+        identity
+            .address
+            .as_str()
+            .rsplit_once('.')
+            .ok_or_else(invalid)?
+            .0
+    };
     let event = if owner == "Configuration" {
         DomainEventKind::ConfigXmlChanged
     } else {

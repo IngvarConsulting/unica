@@ -21,6 +21,7 @@ commit generated tool binaries.
 
 - Included notices: `third-party/licenses/rlm-tools-bsl/`
 
-When updating tool versions, update `third-party/tools.lock.json`, bump the
-plugin version, and let the release workflow regenerate the manifest and
-archives.
+Record tool version changes in `third-party/tools.lock.json`. Before publishing
+a plugin with an updated lock, bump the plugin version in every package contract
+location as described in the release runbook. The release workflow then
+regenerates the manifest and archives.

@@ -1800,7 +1800,7 @@ mod tests {
                     external_connection: true,
                     client_ordinary_application: false,
                     server_call: false,
-                    privileged: false,
+                    privileged: Some(false),
                     return_values_reuse: "DuringRequest".to_string(),
                 }
             });

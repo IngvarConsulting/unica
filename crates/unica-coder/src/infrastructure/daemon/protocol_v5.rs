@@ -803,6 +803,26 @@ impl V5DaemonTaskSnapshot {
         }
     }
 
+    pub(crate) fn cancel_requested(&self) -> bool {
+        match self {
+            Self::Queued {
+                cancel_requested, ..
+            }
+            | Self::Working {
+                cancel_requested, ..
+            }
+            | Self::Completed {
+                cancel_requested, ..
+            }
+            | Self::Failed {
+                cancel_requested, ..
+            }
+            | Self::Cancelled {
+                cancel_requested, ..
+            } => *cancel_requested,
+        }
+    }
+
     pub(crate) fn completed_result(&self) -> Option<&DomainResult> {
         match self {
             Self::Completed { result, .. } => Some(result),

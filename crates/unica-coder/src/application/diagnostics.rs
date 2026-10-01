@@ -196,9 +196,9 @@ impl<'a, M: DiagnosticMapping + ?Sized> DiagnosticCoordinator<'a, M> {
                     .map_observations(outcome.observations, &context, cancellation);
             // Two different failures hide behind one `Err`. A handle outside
             // the permitted scope is an adapter contract breach and costs the
-            // whole section (ADR-0064 §12); a resource the mapper simply could
+            // whole section; a resource the mapper simply could
             // not prove belongs to itself and must not withdraw the findings
-            // proven around it (ADR-0064 §10).
+            // proven around it.
             let mut out_of_scope = None;
             let mut unproven = None;
             let mut provider_items = Vec::with_capacity(mapped.len());
@@ -653,6 +653,14 @@ fn sanitize_provider_outcome(outcome: &mut DiagnosticProviderOutcome, context: &
 }
 
 fn sanitize_public_diagnostic_error(error: &mut DiagnosticError) {
+    if error.code == "diagnostics_invalid" {
+        if let Some(message) =
+            crate::domain::diagnostics::stream_error::canonical_stream_error(&error.message)
+        {
+            error.message = message;
+            return;
+        }
+    }
     error.message = match error.code.as_str() {
         "source_analysis_failed" => "diagnostic provider could not analyze the selected resource",
         "source_decode_failed" => "source is not valid in the detected encoding",
@@ -2245,11 +2253,22 @@ mod tests {
         ]);
         let result = run(registry, &findings_request()).unwrap();
         assert_eq!(result.state, DiagnosticResultState::Partial);
-        assert_eq!(result.items.len(), 1);
+        assert!(matches!(
+            result.items.as_slice(),
+            [DiagnosticItem::Diagnostic { provider, code, message, .. }]
+                if *provider == LANGUAGE_SERVER.as_str()
+                    && code == "LS001"
+                    && message == "message LS001"
+        ));
         assert_eq!(result.providers[0].status, DiagnosticProviderStatus::Failed);
         assert_eq!(
             result.providers[0].error.as_ref().unwrap().code,
             "provider_panicked"
+        );
+        assert_eq!(result.providers[1].id, LANGUAGE_SERVER.as_str());
+        assert_eq!(
+            result.providers[1].status,
+            DiagnosticProviderStatus::Completed
         );
     }
 
@@ -2543,6 +2562,101 @@ mod tests {
     }
 
     #[test]
+    fn diagnostics_public_result_preserves_safe_jsonl_failure_location_and_reason() {
+        let mut outcome = failed("diagnostics_invalid");
+        outcome.error = Some(DiagnosticError {
+            code: "diagnostics_invalid".to_string(),
+            message: "line 2: unknown diagnostic severity. Check compatibility between Unica and its bundled analyzer; if the problem persists, report this reason and line number.".to_string(),
+            retryable: false,
+        });
+
+        let result = run_with_logical_mapping(
+            &ANALYZER_DESCRIPTOR,
+            outcome,
+            &findings_request(),
+            &workspace(),
+        );
+        assert!(result.items.is_empty());
+        let serialized = serde_json::to_value(result).unwrap();
+        assert_eq!(serialized["ok"], false);
+        assert_eq!(serialized["state"], "failed");
+        assert_eq!(serialized["complete"], false);
+        assert_eq!(serialized["providers"][0]["status"], "failed");
+        assert_eq!(serialized["providers"][0]["complete"], false);
+        assert_eq!(
+            serialized["providers"][0]["error"]["code"],
+            "diagnostics_invalid"
+        );
+        assert_eq!(serialized["providers"][0]["error"]["retryable"], false);
+        assert_no_physical_transport(&serialized, "workspace");
+        assert_eq!(
+            serialized["providers"][0]["error"]["message"],
+            "line 2: unknown diagnostic severity. Check compatibility between Unica and its bundled analyzer; if the problem persists, report this reason and line number."
+        );
+    }
+
+    #[test]
+    fn diagnostics_public_result_reports_empty_stream_without_a_line_number() {
+        let mut outcome = failed("diagnostics_invalid");
+        outcome.error = Some(DiagnosticError {
+            code: "diagnostics_invalid".to_string(),
+            message: "stream is missing start event. Check compatibility between Unica and its bundled analyzer; if the problem persists, report this reason.".to_string(),
+            retryable: false,
+        });
+        let result = run_with_logical_mapping(
+            &ANALYZER_DESCRIPTOR,
+            outcome,
+            &findings_request(),
+            &workspace(),
+        );
+        assert!(result.items.is_empty());
+        let serialized = serde_json::to_value(result).unwrap();
+        assert_eq!(serialized["state"], "failed");
+        assert_eq!(
+            serialized["providers"][0]["error"]["code"],
+            "diagnostics_invalid"
+        );
+        assert_eq!(
+            serialized["providers"][0]["error"]["message"],
+            "stream is missing start event. Check compatibility between Unica and its bundled analyzer; if the problem persists, report this reason."
+        );
+    }
+
+    #[test]
+    fn diagnostics_public_result_rejects_noncanonical_stream_error_messages() {
+        let canonical = "line 2: unknown diagnostic severity. Check compatibility between Unica and its bundled analyzer; if the problem persists, report this reason and line number.";
+        for message in [
+            format!("{canonical} secret=/private/Secret.bsl"),
+            format!("secret {canonical}"),
+            canonical.replace("line 2:", "line 02:"),
+            canonical.replace("line 2:", "line +2:"),
+            canonical.replace("line 2:", "line 0:"),
+            canonical.replace("line 2:", "line 184467440737095516160:"),
+            canonical.replace(
+                "unknown diagnostic severity",
+                "unknown diagnostic severity `secret`",
+            ),
+            format!("{canonical}\n"),
+            "line 2: unknown diagnostic severity".to_string(),
+            "stream is missing start event. Check compatibility between Unica and its bundled analyzer; if the problem persists, report this reason. private-token".to_string(),
+        ] {
+            let mut outcome = failed("diagnostics_invalid");
+            outcome.error.as_mut().unwrap().message = message;
+            let result = run_with_logical_mapping(
+                &ANALYZER_DESCRIPTOR,
+                outcome,
+                &findings_request(),
+                &workspace(),
+            );
+            let serialized = serde_json::to_value(result).unwrap();
+            assert_eq!(
+                serialized["providers"][0]["error"]["message"],
+                "diagnostic provider returned an invalid diagnostics stream"
+            );
+        }
+    }
+
+    #[test]
     fn diagnostics_metadata_object_scope_excludes_separately_addressable_children() {
         let outcome = successful(vec![
             diagnostic(
@@ -2767,7 +2881,7 @@ mod tests {
 
     #[test]
     fn diagnostics_out_of_scope_handle_still_costs_the_whole_provider_section() {
-        // ADR-0064 §12: a handle outside the permitted scope is an adapter
+        // A handle outside the permitted scope is an adapter
         // contract breach, not one unprovable resource, so its siblings are
         // not trustworthy either.
         let breaching = successful(vec![

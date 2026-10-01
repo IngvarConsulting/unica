@@ -2121,7 +2121,7 @@ fn add_command_interface_register(workspace: &Path, name: &str) {
                     ),
                     ("name".to_string(), Value::String(name.to_string())),
                     (
-                        // Object integrity (ADR-0030) requires a register to
+                        // Object integrity requires a register to
                         // carry at least one dimension, resource or attribute.
                         "operations".to_string(),
                         serde_json::json!([{

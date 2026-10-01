@@ -19,6 +19,13 @@ pub(super) struct HostHomeRoot {
     pub(super) runtime_subdir: &'static [&'static str],
 }
 
+/// Request metadata that carries the host's workspace directory.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct WorkspaceMetadata {
+    pub(super) capability: &'static str,
+    pub(super) directory_field: &'static str,
+}
+
 /// A coding host that can install the Unica plugin.
 ///
 /// Everything the bootstrap knows about a particular host lives in one of these
@@ -26,6 +33,10 @@ pub(super) struct HostHomeRoot {
 /// rather than editing branches at the call sites.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct PluginHost {
+    /// Project directory variables, including compatible host aliases.
+    pub(super) workspace_environment: &'static [&'static str],
+    /// Capability and request field for per-call workspace context.
+    pub(super) workspace_metadata: Option<WorkspaceMetadata>,
     /// Package directory that carries this host's `plugin.json`.
     pub(super) manifest_dir: &'static str,
     /// Whether the manifest must point at `skills/` explicitly. A host that
@@ -47,6 +58,11 @@ pub(super) const KNOWN: &[PluginHost] = &[CODEX, CLAUDE];
 /// publishes no per-plugin data directory, so the runtime cache is derived from
 /// the Codex home directory instead.
 const CODEX: PluginHost = PluginHost {
+    workspace_environment: &[],
+    workspace_metadata: Some(WorkspaceMetadata {
+        capability: "codex/sandbox-state-meta",
+        directory_field: "sandboxCwd",
+    }),
     manifest_dir: ".codex-plugin",
     expects_skills_pointer: true,
     expects_manifest_servers: true,
@@ -62,6 +78,8 @@ const CODEX: PluginHost = PluginHost {
 /// naming either in the manifest would load it twice (ADR-0012). It hands every
 /// plugin its own data directory, which is where the runtime cache belongs.
 const CLAUDE: PluginHost = PluginHost {
+    workspace_environment: &["ZCODE_PROJECT_DIR", "CLAUDE_PROJECT_DIR"],
+    workspace_metadata: None,
     manifest_dir: ".claude-plugin",
     expects_skills_pointer: false,
     expects_manifest_servers: false,

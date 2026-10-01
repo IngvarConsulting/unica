@@ -41,9 +41,34 @@ class PackageUnicaPluginTests(unittest.TestCase):
         first_digest = module.package_tree_sha256(first)
         self.assertEqual(
             first_digest,
-            "5188569041dcc3e6e365f6a5b95d375ba69964b3cd93a8f28c198a521c30bda2",
+            "b849d8517c4382efe5ab53dbed90a249ae953f7695a806b260aa3c9d07782a34",
         )
         self.assertNotEqual(first_digest, module.package_tree_sha256(second))
+
+    def test_package_tree_hash_frames_the_executable_bit(self) -> None:
+        # Тот же кадр, что у proof: бит исполнения входит в идентичность
+        # пакета, иначе потерянный `+x` у bootstrap пройдёт сверку (#700).
+        module = load_package_module()
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        plain = root / "plain"
+        executable = root / "executable"
+        for tree in (plain, executable):
+            tree.mkdir()
+            (tree / "bin").write_bytes(b"#!/bin/sh\n")
+        (executable / "bin").chmod(0o755)
+        (plain / "bin").chmod(0o644)
+
+        self.assertNotEqual(module.package_tree_sha256(plain), module.package_tree_sha256(executable))
+
+    def test_package_tree_hash_rejects_symlinks(self) -> None:
+        module = load_package_module()
+        root = Path(self.enterContext(tempfile.TemporaryDirectory())) / "linked"
+        root.mkdir()
+        (root / "real").write_bytes(b"payload")
+        (root / "alias").symlink_to("real")
+
+        with self.assertRaisesRegex(SystemExit, "symlink"):
+            module.package_tree_sha256(root)
 
     def test_runtime_metadata_asset_must_be_an_object(self) -> None:
         module = load_package_module()
@@ -345,6 +370,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
 
         self.assertEqual(server["command"], "git")
         self.assertEqual(server["cwd"], ".")
+        self.assertEqual(server["env"]["UNICA_HOST_CONTEXT_REQUIRED"], "1")
         self.assertEqual(server["args"][0], "-c")
         self.assertTrue(server["args"][1].startswith("alias.unica-bootstrap=!"))
         self.assertIn("bootstrap/launch.sh", server["args"][1])
@@ -474,7 +500,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
 
         self.assertEqual(len(set(versions.values())), 1, versions)
 
-    def test_source_package_declares_the_012_meta_delivery_version(self) -> None:
+    def test_source_package_declares_the_013_meta_delivery_version(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         plugin_root = repo_root / "plugins/unica"
         host_versions = {
@@ -491,7 +517,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
         delivered = set(host_versions.values())
         self.assertEqual(len(delivered), 1, host_versions)
         version = next(iter(delivered))
-        self.assertRegex(version, r"^0\.12\.\d+(?:-[0-9A-Za-z.]+)?$")
+        self.assertRegex(version, r"^0\.13\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$")
         self.assertEqual(unica_versions, [version])
 
     def test_claude_contracts_avoid_keys_older_clients_reject(self) -> None:
@@ -624,12 +650,6 @@ class PackageUnicaPluginTests(unittest.TestCase):
             repo_root / "README.md",
             repo_root / "plugins" / "unica" / "README.md",
             repo_root / "docs" / "internal-package.md",
-            repo_root / "docs" / "arch-v1" / "acceptance" / "unica-mcp-validation.md",
-            repo_root / "docs" / "arch-v1" / "architecture" / "runtime.md",
-            repo_root / "docs" / "arch-v1" / "architecture" / "deployment.md",
-            repo_root / "docs" / "arch-v1" / "architecture" / "change-checklist.md",
-            repo_root / "docs" / "arch-v1" / "decisions" / "0001-edinyy-publichnyy-mcp-unica.md",
-            repo_root / "docs" / "arch-v1" / "decisions" / "0004-legacy-skill-scripts-are-migration-debt.md",
         ]
         forbidden = ("run-unica.sh", "run-tool.sh", "run-tool.ps1", "run-bsl-analyzer.sh", "run-v8-runner.sh")
 
@@ -929,21 +949,22 @@ class PackageUnicaPluginTests(unittest.TestCase):
     def test_plugin_source_copy_rejects_tracked_nested_ignored_dir(self) -> None:
         module = load_package_module()
 
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            repo_root = root / "repo"
-            plugin_src = repo_root / "plugins" / "unica"
-            generated = plugin_src / "skills" / "web-test" / "__pycache__" / "script.pyc"
-            generated.parent.mkdir(parents=True)
-            generated.write_bytes(b"pyc")
+        for relative in (
+            "skills/web-test/__pycache__/script.pyc",
+            "skills/web-test/.pytest_cache/lastfailed",
+            "skills/web-test/.DS_Store",
+        ):
+            with self.subTest(path=relative), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                repo_root = root / "repo"
+                plugin_src = repo_root / "plugins" / "unica"
+                generated = plugin_src / relative
+                generated.parent.mkdir(parents=True)
+                generated.write_bytes(b"generated")
 
-            with patch.object(
-                module,
-                "git_tracked_plugin_files",
-                return_value=["skills/web-test/__pycache__/script.pyc"],
-            ):
-                with self.assertRaisesRegex(SystemExit, "source package path is generated"):
-                    module.copy_tracked_plugin_source(repo_root, plugin_src, root / "dest")
+                with patch.object(module, "git_tracked_plugin_files", return_value=[relative]):
+                    with self.assertRaisesRegex(SystemExit, "source package path is generated"):
+                        module.copy_tracked_plugin_source(repo_root, plugin_src, root / "dest")
 
     @unittest.skipIf(os.name == "nt" or not hasattr(os, "symlink"), "symlink validation is POSIX-only")
     def test_plugin_source_copy_rejects_tracked_symlink(self) -> None:
@@ -966,6 +987,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(SystemExit, "symlink"):
                     module.copy_tracked_plugin_source(repo_root, plugin_src, root / "dest")
+            self.assertFalse((root / "dest/skills/web-test/leak.txt").exists())
 
     def write_bundle(self, root: Path, target: str, module) -> Path:
         bundle = root / f"unica-tools-{target}"
@@ -1215,6 +1237,8 @@ class PackageUnicaPluginTests(unittest.TestCase):
                 or path.startswith("skills/img-grid/")
                 or path == "skills/web-test"
                 or path.startswith("skills/web-test/")
+                or path == "skills/v8-runner"
+                or path.startswith("skills/v8-runner/")
             }
             self.assertEqual(forbidden_script_skills, set())
             self.assertFalse(
@@ -1281,16 +1305,23 @@ class PackageUnicaPluginTests(unittest.TestCase):
                     target_data["asset"]["mediaType"], "application/octet-stream"
                 )
 
-            catalog = json.loads(
-                (out_dir / "marketplace" / ".agents" / "plugins" / "marketplace.json").read_text(
-                    encoding="utf-8"
-                )
-            )
-            source = catalog["plugins"][0]["source"]
-            self.assertEqual(source["source"], "git-subdir")
-            self.assertEqual(source["ref"], release_tag)
-            self.assertEqual(source["path"], "plugins/unica")
-            self.assertNotIn("source\": \"local", json.dumps(catalog))
+            for host, catalog_path in (
+                ("codex", ".agents/plugins/marketplace.json"),
+                ("claude", ".claude-plugin/marketplace.json"),
+            ):
+                with self.subTest(host=host):
+                    catalog = json.loads(
+                        (out_dir / "marketplace" / catalog_path).read_text(encoding="utf-8")
+                    )
+                    self.assertEqual(
+                        catalog["plugins"][0]["source"],
+                        {
+                            "source": "git-subdir",
+                            "url": "https://github.com/IngvarConsulting/unica-marketplace.git",
+                            "path": "plugins/unica",
+                            "ref": release_tag,
+                        },
+                    )
             self.assertEqual(list(out_dir.glob("*.tar.gz")), [])
             self.assertEqual(list(out_dir.glob("*.zip")), [])
             package_evidence = json.loads(
@@ -1299,13 +1330,15 @@ class PackageUnicaPluginTests(unittest.TestCase):
             self.assertEqual(package_evidence["schemaVersion"], 1)
             self.assertEqual(
                 package_evidence["packageHashFormat"],
-                "sha256-u64be-path-content-v1",
+                "sha256-u64be-path-mode-content-v2",
             )
             self.assertEqual(package_evidence["pluginVersion"], version)
             self.assertEqual(package_evidence["sourceCommit"], "a" * 40)
-            self.assertFalse(package_evidence["versionBumped"])
-            self.assertFalse(package_evidence["published"])
-            self.assertIsNone(package_evidence["tag"])
+            # Свидетельство пакета несёт только наблюдённое: версию, коммит и
+            # дайджесты. Флаги «не бампали, не публиковали, тега нет» были
+            # литералами продюсера и сняты (#696).
+            for key in ("versionBumped", "published", "tag"):
+                self.assertNotIn(key, package_evidence)
 
             # Maintainer material stays in the source tree. The donor index and
             # the dated review records answer questions a consumer never asks,
@@ -1378,6 +1411,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
             )
             self.assertEqual(marketplace["name"], "unica-dev")
             self.assertEqual(mcp["mcpServers"]["unica"]["command"], "./bin/linux-x64/unica")
+            self.assertEqual(mcp["mcpServers"]["unica"]["env"]["UNICA_HOST_CONTEXT_REQUIRED"], "1")
             self.assertFalse((out / "marketplace/plugins/unica/bootstrap/bin").exists())
 
 

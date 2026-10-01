@@ -1,4 +1,4 @@
-use crate::infrastructure::daemon::client_v5::V5DaemonProcessOwner;
+use crate::infrastructure::daemon::client_v5::{V5DaemonClient, V5DaemonProcessOwner};
 use crate::infrastructure::daemon::identity::CoreIdentity;
 use crate::infrastructure::daemon::server::DaemonServerConfig;
 use std::ffi::OsString;
@@ -26,6 +26,28 @@ pub fn run_from_args(args: &[String]) -> Result<(), String> {
     let idle_grace = parsed.idle_grace;
     let config = DaemonServerConfig::new(state_root, core_identity, idle_grace);
     crate::infrastructure::daemon::runtime_v5::run_daemon(config)
+}
+
+/// Print the existing local aggregate without starting the daemon or creating state.
+pub fn print_capacity_report_from_args(args: &[String]) -> Result<(), String> {
+    if args.len() != 2 || args[1] != "--capacity-report" {
+        return Err("usage: unica --capacity-report".to_string());
+    }
+    let root = default_user_daemon_state_root()?;
+    match capacity_report_at_root(&root)? {
+        Some(report) => print!("{report}"),
+        None => println!("{{\"status\":\"not-recorded\"}}"),
+    }
+    Ok(())
+}
+
+fn capacity_report_at_root(root: &Path) -> Result<Option<String>, String> {
+    let identity = crate::infrastructure::daemon::identity::DaemonStateDirectory::path_for(
+        root,
+        &CoreIdentity::production(),
+    );
+    crate::infrastructure::capacity_observation::read_existing_snapshot_json(&identity)
+        .map_err(|_| "cannot read local capacity observations securely".to_string())
 }
 
 /// Resolve the persistent state root of the user daemon without mutating the
@@ -80,14 +102,12 @@ fn configured_idle_grace(read_env: &dyn Fn(&str) -> Option<OsString>) -> Result<
 }
 
 /// Connect to the production protocol-v5 user daemon, starting it if it is absent.
-pub(crate) fn connect_default_user_daemon(
-    state_root: &Path,
-) -> Result<V5DaemonProcessOwner, String> {
+pub(crate) fn connect_default_user_daemon(state_root: &Path) -> Result<V5DaemonClient, String> {
     let executable = std::env::current_exe()
         .map_err(|error| format!("failed to locate current unica executable: {error}"))?;
     let idle_grace = configured_idle_grace(&|name| std::env::var_os(name))?;
-    V5DaemonProcessOwner::connect_or_spawn(
-        state_root,
+    V5DaemonClient::connect(
+        state_root.to_path_buf(),
         CoreIdentity::production(),
         executable,
         idle_grace,
@@ -227,6 +247,14 @@ mod tests {
     };
     use crate::infrastructure::daemon::identity::CoreIdentity;
     use std::time::Duration;
+
+    #[test]
+    fn capacity_report_does_not_create_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap().join("unused");
+        assert!(super::capacity_report_at_root(&root).unwrap().is_none());
+        assert!(!root.exists());
+    }
 
     fn base_args() -> Vec<String> {
         vec![

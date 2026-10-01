@@ -1,3 +1,4 @@
+mod borrow;
 pub(crate) mod dcs_mxl;
 pub(crate) mod form_resource;
 pub(crate) mod metadata;
@@ -232,6 +233,7 @@ fn writable_profile_owner_chain(
 }
 
 enum ParsedApplyOperation {
+    Borrow(borrow::BorrowOperation),
     Metadata(IndexedPlanOperation<metadata::MetadataPlanOperation>),
     FormResource(IndexedPlanOperation<form_resource::FormResourcePlanOperation>),
     DcsMxl(IndexedPlanOperation<dcs_mxl::DcsMxlPlanOperation>),
@@ -450,6 +452,9 @@ pub(crate) fn plan_hidden_v13_apply(
                 return Err(hidden_apply_family_unimplemented(op_index));
             };
             let args = serde_json::Value::Object(operation.args().clone());
+            if operation.name() == "object.borrow" {
+                return borrow::parse(&args, op_index, binding).map(ParsedApplyOperation::Borrow);
+            }
             let parsed = match family {
                 OperationFamily::Metadata | OperationFamily::Properties => {
                     let parsed = metadata::parse_metadata_plan_operation(
@@ -526,6 +531,7 @@ pub(crate) fn plan_hidden_v13_apply(
     refuse_targets_outside_writable_profile(request, binding, &mut staged)?;
     refuse_targets_on_locked_vendor_objects(request, binding, admission, &mut staged)?;
     let mut provisional = Vec::new();
+    let mut borrowing = Vec::new();
     let mut cursor = 0;
     while cursor < parsed.len() {
         if let ParsedApplyOperation::Unsupported(index) = &parsed[cursor] {
@@ -537,6 +543,17 @@ pub(crate) fn plan_hidden_v13_apply(
             .count()
             + cursor;
         match &parsed[cursor] {
+            ParsedApplyOperation::Borrow(_) => {
+                for operation in &parsed[cursor..end] {
+                    let ParsedApplyOperation::Borrow(operation) = operation else {
+                        unreachable!()
+                    };
+                    let (effects, detail) =
+                        borrow::plan(&mut staged, admission, binding, operation)?;
+                    provisional.extend(effects);
+                    borrowing.push(detail);
+                }
+            }
             ParsedApplyOperation::Code(_) => {
                 let operations = parsed[cursor..end]
                     .iter()
@@ -658,7 +675,8 @@ pub(crate) fn plan_hidden_v13_apply(
         cursor = end;
     }
 
-    let effects = reconcile_effects(&staged, provisional);
+    let mut effects = reconcile_effects(&staged, provisional);
+    effects.set_borrowing(borrowing);
     Ok((staged, effects))
 }
 
@@ -771,36 +789,135 @@ mod tests {
     /// on support at all.
     #[test]
     fn locked_vendor_objects_refuse_every_family_before_staging() {
+        use crate::domain::apply::{OperationFamily, OperationRegistry};
+
         let fixture = ApplySeamFixture::new();
         let ext = fixture.source_dir().join("Ext");
         std::fs::create_dir_all(&ext).unwrap();
+        for (directory, kind, name) in [
+            ("Roles", "Role", "Reader"),
+            ("Subsystems", "Subsystem", "Main"),
+            ("XDTOPackages", "XDTOPackage", "Types"),
+        ] {
+            let directory = fixture.source_dir().join(directory);
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(
+                directory.join(format!("{name}.xml")),
+                format!(
+                    r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{kind} uuid="11111111-1111-4111-8111-111111111111"><Properties><Name>{name}</Name></Properties><ChildObjects/></{kind}></MetaDataObject>"#
+                ),
+            )
+            .unwrap();
+        }
         // Both fixture documents carry uuid 1111…; the marker locks it.
         std::fs::write(
             ext.join("ParentConfigurations.bin"),
             "\u{feff}{6,0,1,dddddddd-dddd-4ddd-8ddd-dddddddddddd,0,11111111-1111-4111-8111-111111111111,\"1.0\",\"Vendor\",\"VendorConf\",3,1,0,44444444-4444-4444-8444-444444444444,44444444-4444-4444-8444-444444444444,0,0,11111111-1111-4111-8111-111111111111,11111111-1111-4111-8111-111111111111}",
         )
         .unwrap();
-        let admission = fixture.admission();
-        for (op, args) in [
+        let snapshot = || {
+            let root = fixture.source_dir();
+            let mut pending = vec![root.clone()];
+            let mut entries = std::collections::BTreeMap::new();
+            while let Some(directory) = pending.pop() {
+                for entry in std::fs::read_dir(directory).unwrap() {
+                    let path = entry.unwrap().path();
+                    let bytes = if path.is_dir() {
+                        pending.push(path.clone());
+                        None
+                    } else {
+                        Some(std::fs::read(&path).unwrap())
+                    };
+                    entries.insert(path.strip_prefix(&root).unwrap().to_path_buf(), bytes);
+                }
+            }
+            entries
+        };
+        let cases = [
             (
+                "main:Document.First",
                 "props.set",
                 serde_json::json!({"values": {"Comment": "edited"}}),
             ),
             (
+                "main:Document.First",
                 "attribute.add",
                 serde_json::json!({"items": [{"name": "Extra", "type": {"variants": [{"kind": "string", "length": 10, "allowedLength": "variable"}]}}]}),
             ),
             (
+                "main:Document.First",
                 "form.add",
                 serde_json::json!({"items": [{"name": "Card", "type": "ObjectForm"}]}),
             ),
             (
+                "main:Document.First",
                 "template.add",
                 serde_json::json!({"items": [{"name": "Print", "templateType": "SpreadsheetDocument"}]}),
             ),
-            ("object.remove", serde_json::json!({})),
-        ] {
-            let request = seam_request("main:Document.First", op, args);
+            (
+                "main:Document.First",
+                "object.remove",
+                serde_json::json!({}),
+            ),
+            (
+                "main:Role.Reader",
+                "right.set",
+                serde_json::json!({"values": {"object": "Document.First", "right": "Read", "value": true}}),
+            ),
+            (
+                "main:Document.First.Template.Schema.DataSet.Main",
+                "field.add",
+                serde_json::json!({"items": [{"dataPath": "Total"}]}),
+            ),
+            (
+                "main:Document.First.Template.Print",
+                "mxl.set",
+                serde_json::json!({"values": {"area": "Header", "cells": {"R1C1": "Total"}}}),
+            ),
+            (
+                "main:XDTOPackage.Types",
+                "objectType.add",
+                serde_json::json!({"values": {"name": "Entry"}}),
+            ),
+            (
+                "main:Subsystem.Main",
+                "content.add",
+                serde_json::json!({"items": [{"object": "Document.First"}]}),
+            ),
+            (
+                "main:Subsystem.Main.Interface",
+                "groupOrder.set",
+                serde_json::json!({"values": {"groups": ["NavigationPanelImportant"]}}),
+            ),
+            (
+                "main:Document.First.Module.Object",
+                "code.insert",
+                serde_json::json!({"text": "Procedure Added()\nEndProcedure\n"}),
+            ),
+            (
+                "main:Document.First.Module.Object.Event.BeforeWrite",
+                "event.implement",
+                serde_json::json!({}),
+            ),
+        ];
+        let covered = cases
+            .iter()
+            .map(|(_, operation, _)| {
+                crate::application::v13::apply::dispatch_family(operation).unwrap()
+            })
+            .collect::<Vec<_>>();
+        for descriptor in OperationRegistry::closed().descriptors() {
+            assert!(
+                descriptor.family() == OperationFamily::Support
+                    || covered.contains(&descriptor.family()),
+                "support refusal needs a real case for {:?}",
+                descriptor.family()
+            );
+        }
+        let admission = fixture.admission();
+        let before = snapshot();
+        for (at, op, args) in cases {
+            let request = seam_request(at, op, args);
             let error = plan_hidden_v13_apply(&request, &fixture.binding, &admission)
                 .err()
                 .unwrap_or_else(|| panic!("{op} on a locked vendor object must refuse"));
@@ -809,15 +926,45 @@ mod tests {
                 error.to_string().contains("support rule `locked`"),
                 "{op}: {error}"
             );
+            assert_eq!(snapshot(), before, "{op} must leave the source tree intact");
         }
         // The support operations are the way out of the lock.
-        let unlock = seam_request(
-            "main:Document.First",
-            "supportRule.set",
-            serde_json::json!({"values": {"rule": "editable"}}),
+        for (operation, values) in [
+            ("supportRule.set", serde_json::json!({"rule": "editable"})),
+            (
+                "supportCapability.set",
+                serde_json::json!({"enabled": true}),
+            ),
+        ] {
+            let unlock = seam_request(
+                "main:Document.First",
+                operation,
+                serde_json::json!({"values": values}),
+            );
+            plan_hidden_v13_apply(&unlock, &fixture.binding, &admission)
+                .unwrap_or_else(|error| panic!("{operation} must plan on a locked owner: {error}"));
+        }
+        let mixed = ApplyRequest::parse(
+            serde_json::json!({
+                "at": "main:Document.First",
+                "ops": [
+                    {"op": "supportRule.set", "args": {"values": {"rule": "editable"}}},
+                    {"op": "props.set", "args": {"values": {"Comment": "edited"}}}
+                ],
+                "dryRun": true,
+            })
+            .as_object()
+            .unwrap(),
+            &["main"],
+        )
+        .unwrap();
+        let error = plan_hidden_v13_apply(&mixed, &fixture.binding, &admission).unwrap_err();
+        assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState);
+        assert!(
+            error.to_string().contains("support rule `locked`"),
+            "{error}"
         );
-        plan_hidden_v13_apply(&unlock, &fixture.binding, &admission)
-            .expect("supportRule.set plans on a locked vendor object");
+        assert_eq!(snapshot(), before);
 
         // A configuration on support with changes disabled refuses even an
         // unlisted object.
@@ -973,7 +1120,16 @@ mod tests {
         let fixture = ApplySeamFixture::new();
         let admission = fixture.admission();
         let mut staged = admission.staged_state().unwrap();
+        let first_path = std::path::Path::new("Documents/First.xml");
         let second_path = std::path::Path::new("Documents/Second.xml");
+        let first_preimage = staged.read(first_path).unwrap().unwrap();
+        let first_postimage = String::from_utf8(first_preimage.clone())
+            .unwrap()
+            .replace("<Comment></Comment>", "<Comment>cancelled</Comment>")
+            .into_bytes();
+        staged
+            .replace(first_path, &first_preimage, first_postimage.clone())
+            .unwrap();
         let second_preimage = staged.read(second_path).unwrap().unwrap();
         let second_postimage = String::from_utf8(second_preimage.clone())
             .unwrap()
@@ -981,6 +1137,9 @@ mod tests {
             .into_bytes();
         staged
             .replace(second_path, &second_preimage, second_postimage)
+            .unwrap();
+        staged
+            .replace(first_path, &first_postimage, first_preimage)
             .unwrap();
 
         assert_eq!(
@@ -994,19 +1153,44 @@ mod tests {
         let effects = reconcile_effects(
             &staged,
             vec![
+                // The surviving duplicate arrives before its earlier sibling.
                 ProvisionalApplyEffect::single(
-                    "Documents/First.xml",
+                    second_path,
+                    crate::domain::events::DomainEvent::new(
+                        crate::domain::events::DomainEventKind::MetadataChanged,
+                        "shared",
+                    ),
+                    3,
+                ),
+                ProvisionalApplyEffect::single(
+                    first_path,
                     crate::domain::events::DomainEvent::new(
                         crate::domain::events::DomainEventKind::MetadataChanged,
                         "shared",
                     ),
                     0,
                 ),
+                ProvisionalApplyEffect::spanning(
+                    vec![first_path.to_path_buf(), second_path.to_path_buf()],
+                    crate::domain::events::DomainEvent::new(
+                        crate::domain::events::DomainEventKind::MetadataChanged,
+                        "partly-restored",
+                    ),
+                    4,
+                ),
+                ProvisionalApplyEffect::single(
+                    second_path,
+                    crate::domain::events::DomainEvent::new(
+                        crate::domain::events::DomainEventKind::MetadataChanged,
+                        "shared",
+                    ),
+                    2,
+                ),
                 ProvisionalApplyEffect::single(
                     second_path,
                     crate::domain::events::DomainEvent::new(
                         crate::domain::events::DomainEventKind::SourceSetChanged,
-                        "shared",
+                        "earlier",
                     ),
                     1,
                 ),
@@ -1018,10 +1202,16 @@ mod tests {
                 .iter()
                 .map(|event| (event.kind, event.artifact.as_str()))
                 .collect::<Vec<_>>(),
-            [(
-                crate::domain::events::DomainEventKind::SourceSetChanged,
-                "shared"
-            )]
+            [
+                (
+                    crate::domain::events::DomainEventKind::SourceSetChanged,
+                    "earlier"
+                ),
+                (
+                    crate::domain::events::DomainEventKind::MetadataChanged,
+                    "shared"
+                )
+            ]
         );
     }
 }

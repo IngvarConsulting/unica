@@ -1821,7 +1821,7 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
 name = "unica-bootstrap"
-version = "0.12.0"
+version = "0.13.0-rc.3"
 dependencies = [
  "flate2",
  "fs2",
@@ -1830,13 +1830,14 @@ dependencies = [
  "sha2",
  "tar",
  "ureq",
+ "url",
  "uuid",
  "windows-sys 0.59.0",
 ]
 
 [[package]]
 name = "unica-coder"
-version = "0.12.0"
+version = "0.13.0-rc.3"
 dependencies = [
  "cap-fs-ext",
  "cap-primitives",
@@ -1862,6 +1863,7 @@ dependencies = [
  "sha2",
  "syn 2.0.118",
  "syntax",
+ "tar",
  "tempfile",
  "tokio",
  "toml",
@@ -1871,6 +1873,7 @@ dependencies = [
  "url",
  "uuid",
  "windows-sys 0.59.0",
+ "xml",
  "zip",
 ]
 
@@ -2271,6 +2274,12 @@ dependencies = [
  "libc",
  "rustix",
 ]
+
+[[package]]
+name = "xml"
+version = "1.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f45bb2c13fec6a6cb4c0f76a7e94839e110a14ec803ec2940777a94c347bc52"
 
 [[package]]
 name = "yoke"

@@ -141,9 +141,6 @@ pub fn path_for_report(path: &Path) -> String {
 mod tests {
     use super::*;
 
-    /// Every event kind, listed once. `index_of` below is what keeps the list
-    /// honest: it has no wildcard arm, so adding a variant stops compilation
-    /// until the new event is given an invalidation rule and a place here.
     const ALL_KINDS: [DomainEventKind; 13] = [
         DomainEventKind::ConfigXmlChanged,
         DomainEventKind::CfeChanged,
@@ -160,24 +157,6 @@ mod tests {
         DomainEventKind::SourceResourcesReplaced,
     ];
 
-    fn index_of(kind: DomainEventKind) -> usize {
-        match kind {
-            DomainEventKind::ConfigXmlChanged => 0,
-            DomainEventKind::CfeChanged => 1,
-            DomainEventKind::MetadataChanged => 2,
-            DomainEventKind::FormChanged => 3,
-            DomainEventKind::ModuleChanged => 4,
-            DomainEventKind::RoleChanged => 5,
-            DomainEventKind::DcsChanged => 6,
-            DomainEventKind::MxlChanged => 7,
-            DomainEventKind::SubsystemChanged => 8,
-            DomainEventKind::TemplateChanged => 9,
-            DomainEventKind::SourceSetChanged => 10,
-            DomainEventKind::BuildCompleted => 11,
-            DomainEventKind::SourceResourcesReplaced => 12,
-        }
-    }
-
     fn event(kind: DomainEventKind) -> DomainEvent {
         DomainEvent {
             kind,
@@ -190,19 +169,25 @@ mod tests {
         set.iter().map(String::as_str).collect()
     }
 
-    /// How many variants the enum has. Deriving this from `ALL_KINDS.len()`
-    /// would make the check below a tautology — both sides would shrink
-    /// together and a forgotten kind would pass. Adding a variant forces a new
-    /// arm in `index_of`, and this constant is what then fails until the kind
-    /// reaches `ALL_KINDS` too.
-    const EXPECTED_KIND_COUNT: usize = 13;
-
     #[test]
     fn the_kind_list_covers_the_whole_enum() {
-        assert_eq!(ALL_KINDS.len(), EXPECTED_KIND_COUNT);
-        let mut seen = ALL_KINDS.map(index_of).to_vec();
-        seen.sort_unstable();
-        assert_eq!(seen, (0..EXPECTED_KIND_COUNT).collect::<Vec<_>>());
+        let syntax = syn::parse_file(include_str!("events.rs")).expect("domain events must parse");
+        let event_kind = syntax
+            .items
+            .iter()
+            .find_map(|item| match item {
+                syn::Item::Enum(item) if item.ident == "DomainEventKind" => Some(item),
+                _ => None,
+            })
+            .expect("DomainEventKind must be declared");
+
+        assert_eq!(ALL_KINDS.len(), event_kind.variants.len());
+        for (index, kind) in ALL_KINDS.iter().enumerate() {
+            assert!(
+                !ALL_KINDS[..index].contains(kind),
+                "duplicate event kind: {kind:?}"
+            );
+        }
     }
 
     /// ADR-0022: the bounded resource writer replaces one proven BSL module, so
@@ -288,6 +273,33 @@ mod tests {
             names(&combined.eager_refresh),
             ["metadata_graph", "rights_graph"]
         );
+
+        for first in ALL_KINDS {
+            let first_impact = CacheImpact::from_events(&[event(first)]);
+            for second in ALL_KINDS {
+                let second_impact = CacheImpact::from_events(&[event(second)]);
+                let combined = CacheImpact::from_events(&[event(first), event(second)]);
+                let expected_invalidated = first_impact
+                    .invalidated
+                    .union(&second_impact.invalidated)
+                    .cloned()
+                    .collect::<BTreeSet<_>>();
+                let expected_refresh = first_impact
+                    .eager_refresh
+                    .union(&second_impact.eager_refresh)
+                    .cloned()
+                    .collect::<BTreeSet<_>>();
+
+                assert_eq!(
+                    combined.invalidated, expected_invalidated,
+                    "invalidation for {first:?} followed by {second:?}"
+                );
+                assert_eq!(
+                    combined.eager_refresh, expected_refresh,
+                    "refresh for {first:?} followed by {second:?}"
+                );
+            }
+        }
     }
 
     #[test]

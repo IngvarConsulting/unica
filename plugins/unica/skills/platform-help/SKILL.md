@@ -23,22 +23,24 @@ description: "Справка платформы 1С и объектной мод
 - `unica.docs` может ответить задачей (`status: "working"`). Тогда возьмите
   `taskId` из ответа и дождитесь результата через `unica.task.result`. Ответ
   «задача принята» не является ответом на вопрос.
-- Полного текста страницы канонический провод не отдаёт: инструмента,
-  открывающего страницу по `documentId`, он не публикует. Доказательство —
-  это `documentId`, `applicableVersion` и фрагмент попадания вместе; называйте
-  их в ответе, чтобы читатель мог открыть ту же страницу сам, и не выдавайте
-  фрагмент за прочитанную страницу.
+- Чтобы открыть страницу, передайте полученный `documentId` целиком в `query`
+  того же `unica.docs`. Ответ `data.document` содержит текст и происхождение
+  документа. Если ответ содержит `cursor`, продолжайте тот же запрос с этим
+  курсором и соедините `data.document.text` всех страниц в их порядке.
+  `page.startByte` и `page.endByte` позволяют проверить, что фрагменты не
+  пропущены. Фрагмент поиска не выдавайте за прочитанную страницу.
+- Не обходите отказ справки конфигурации её локатором: этот путь ещё может
+  попасть к старому незащищённому читателю. Исправление и включение источника —
+  [#939](https://github.com/IngvarConsulting/unica/issues/939).
 - For project context, use `unica.search`, `unica.view {}`, and
-  `unica.runtime.execute`.
-- По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
-показывает запланированную команду без побочных эффектов, а с `dryRun: false`
-исполняет классифицированную операцию и отвечает её терминальным результатом в
-том же вызове, приложив названную причину риска (`runtime_risk_*`)
-предупреждением; неклассифицированная операция по-прежнему отказывает
-`runtime_operation_unbounded` до обнаружения рабочего пространства. Preview
-исполнением не является. Работу, которую вызов ждать не должен, запускай через
-`unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
-`unica.build.*`.
+  `unica.check`.
+- Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
+контракт каждой — `argsSchema`, `execution`, `previewRequired`,
+`ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
+при `implemented: true` используй опубликованную `argsSchema`; при
+`support.state: limited` разрешено только подмножество `support.supportedArgs`.
+При `support.state: unavailable` остановись; не выдумывай аргументов при
+`argsSchema: null`. Превью исполнением не является. Не обходи контракт прямым runner-ом.
 - Когда вопрос об API зависит от структуры метаданных, читай её `unica.view` по
   логическому адресу объекта.
 - Do not call internal standards, runtime, or package adapters directly.
@@ -71,19 +73,18 @@ description: "Справка платформы 1С и объектной мод
 1. State the exact platform/API question: object, method/property, platform
    version, infobase mode, client/server context.
 2. Вызовите `unica.docs` с именем объекта или члена — или с естественной
-   формулировкой вопроса: поиск пословный, морфологический и нечёткий
-   (ADR-0037), точная подстрока и порядок слов не требуются, опечатка в имени
+   формулировкой вопроса. Поиск пословный, морфологический и нечёткий:
+   точная подстрока и порядок слов не требуются, опечатка в имени
    не прячет страницу.
 3. Если ответ пришёл задачей, дождитесь его через `unica.task.result`.
 4. Read `applicableVersion` in the hit. Если она расходится с версией проекта,
    назовите расхождение в ответе.
-5. Назовите `documentId` попадания дословно вместе с ответом. Если фрагмента
-   не хватает, чтобы утверждение стояло, скажите это прямо и не достраивайте
-   страницу по памяти.
+5. Если фрагмента недостаточно, откройте страницу через `unica.docs`, передав
+   её `documentId` в `query`. Назовите локатор и версию источника в ответе.
+   При отказе не достраивайте страницу по памяти.
 6. Validate against local project context with `unica.view {}` and targeted
    `unica.search` if the answer depends on project conventions.
-7. For code examples, use `unica.runtime.execute` to preview `operation=syntax`
-   and, with `dryRun: false`, to run it; report actual syntax and runtime
+7. For code examples, check syntax with `unica.check`; report runtime
    behavior as unverified.
 
 ## Platform context
@@ -145,4 +146,3 @@ description: "Справка платформы 1С и объектной мод
   }
 }
 ```
-
