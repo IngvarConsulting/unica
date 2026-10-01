@@ -1443,10 +1443,11 @@ fn ready_status_after_revision_verification(
         .as_ref()
         .ok_or_else(|| "captured source revision service is unavailable".to_string())
         .and_then(|service| {
-            service.snapshot(
-                ProviderDeadline::from_budget(REVISION_VERIFY_TIMEOUT),
-                &job.primary.cancellation,
-            )
+            let deadline = ProviderDeadline::from_budget(REVISION_VERIFY_TIMEOUT);
+            match job.root_capability.as_deref() {
+                Some(root) => service.snapshot_retained(root, deadline, &job.primary.cancellation),
+                None => service.snapshot(deadline, &job.primary.cancellation),
+            }
         });
     match current {
         Ok(current) if &current == captured => BslIndexStatus::ready(&job.source_root, db_path)
@@ -2204,8 +2205,11 @@ mod tests {
     use super::*;
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::ProviderDeadline;
+    use crate::infrastructure::platform::source_revision_fence::{
+        FenceCapability, FenceError, FenceOutcome, SourceRevisionFence,
+    };
     use crate::infrastructure::platform::{filesystem::path_starts_with_host_root, testing};
-    use crate::infrastructure::source_revision::SourceRevisionService;
+    use crate::infrastructure::source_revision::{SourceRevisionService, WorkspaceStateScope};
     use std::cell::RefCell;
     use std::collections::BTreeMap;
     use std::ffi::OsString;
@@ -2537,6 +2541,11 @@ mod tests {
 
     #[test]
     fn rlm_coordination_paths_separate_source_roots_under_the_pair_root() {
+        use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind};
+        use crate::infrastructure::workspace_actor::{
+            WorkspaceActor, WorkspaceIdentity, WorkspaceSourceSetInput,
+        };
+
         let context = test_context("separate-coordination-roots");
         let first_source = context.workspace_root.join("src/configuration");
         let second_source = context.workspace_root.join("src/extension");
@@ -2568,6 +2577,67 @@ mod tests {
         );
         assert_ne!(first_status, second_status);
         assert_ne!(first_lock, second_lock);
+
+        let runner = RecordingIndexRunner::default();
+        let mut args = Map::new();
+        args.insert(
+            "sourceDir".to_string(),
+            Value::String(first_source.to_str().unwrap().to_string()),
+        );
+        for (index, (name, profile)) in [
+            ("main", "program"),
+            ("renamed", "program"),
+            ("main", "program-and-service"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let identity = WorkspaceIdentity::new(
+                &context,
+                [WorkspaceSourceSetInput::new(
+                    name,
+                    &first_source,
+                    SourceSetKind::Configuration,
+                    SourceFormat::PlatformXml,
+                    SourceProfile::platform_xml_8_3_27_format_2_20(),
+                )],
+                profile,
+            )
+            .unwrap();
+            let actor = WorkspaceActor::new(identity, context.clone()).unwrap();
+            let binding = actor.bind_provider_root(name, &first_source).unwrap();
+            let service = actor.index_service(&binding, &runner).unwrap();
+            let report = service.start_for_workspace_cancellable(
+                &context,
+                &args,
+                false,
+                &CancellationToken::new(),
+            );
+
+            assert_eq!(
+                runner.backgrounds.borrow().len(),
+                index + 1,
+                "another actor scope blocked index start for {name}/{profile}: {report:?}"
+            );
+        }
+
+        let backgrounds = runner.backgrounds.borrow();
+        for (index, job) in backgrounds.iter().enumerate() {
+            assert!(job.lock_path.is_file());
+            let status: Value =
+                serde_json::from_slice(&fs::read(&job.status_path).unwrap()).unwrap();
+            assert_eq!(status["status"], "building");
+            for previous in &backgrounds[..index] {
+                assert_ne!(job.lock_path, previous.lock_path);
+                assert_ne!(job.status_path, previous.status_path);
+                assert_ne!(
+                    index_command_env(&job.primary, "RLM_INDEX_DIR"),
+                    index_command_env(&previous.primary, "RLM_INDEX_DIR")
+                );
+            }
+        }
+        drop(backgrounds);
+        drop(runner);
         cleanup(&context);
     }
 
@@ -4813,6 +4883,75 @@ source-set:
         assert_eq!(report.warnings, vec!["rlm index building".to_string()]);
         assert_eq!(runner.backgrounds.borrow().len(), 1);
         assert_eq!(runner.backgrounds.borrow()[0].action, "update");
+        cleanup(&context);
+    }
+
+    #[test]
+    fn bound_background_job_verifies_unsupported_fence_before_ready_publication() {
+        struct UnsupportedFence;
+
+        impl SourceRevisionFence for UnsupportedFence {
+            fn capability(&self) -> FenceCapability {
+                FenceCapability::Unsupported
+            }
+
+            fn flush(
+                &self,
+                _deadline: ProviderDeadline,
+                _cancellation: &CancellationToken,
+            ) -> Result<FenceOutcome, FenceError> {
+                panic!("the unsupported fence must not be flushed")
+            }
+        }
+
+        let context = test_context("bound-unsupported-index-verification");
+        let source_root = context.workspace_root.join("src");
+        let module = source_root.join("CommonModules/SmokeModule.bsl");
+        fs::create_dir_all(module.parent().unwrap()).unwrap();
+        fs::write(&module, "Процедура Smoke()\nКонецПроцедуры\n").unwrap();
+        let retained_root = Arc::new(
+            RetainedDirectoryCapability::open(&normalize_path_identity(&source_root).unwrap())
+                .unwrap(),
+        );
+        let revision_service = Arc::new(
+            SourceRevisionService::new_with_fence_for_test(
+                &context,
+                &source_root,
+                WorkspaceStateScope::LegacyPhysical,
+                Arc::new(UnsupportedFence),
+            )
+            .unwrap(),
+        );
+        let captured = revision_service
+            .snapshot_retained(
+                &retained_root,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let db_path = generation_db_path(&context, "a/bsl_index.db");
+        fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+        fs::write(&db_path, "ready index").unwrap();
+        let mut job = test_background_job(&context, "build");
+        job.root_capability = Some(retained_root);
+        job.source_generation = captured.generation;
+        job.source_revision = Some(captured.clone());
+        job.source_revision_service = Some(revision_service);
+
+        run_background_job_with(job, |command, _lease| {
+            if command.args.get(1).is_some_and(|arg| arg == "info") {
+                Ok(IndexOutput::success(format!(
+                    "Index: {}\n  Status:   fresh\n",
+                    db_path.display()
+                )))
+            } else {
+                Ok(IndexOutput::success("Index built"))
+            }
+        });
+
+        let status = read_bsl_index_status(&context).unwrap();
+        assert_eq!(status.status, "ready", "{status:?}");
+        assert_eq!(status.indexed_revision, Some(captured));
         cleanup(&context);
     }
 

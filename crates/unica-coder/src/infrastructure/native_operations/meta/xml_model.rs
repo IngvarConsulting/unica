@@ -24,6 +24,66 @@ pub(crate) fn parse_metadata_image(
     Ok((source, document))
 }
 
+/// Заимствование объекта расширением, как его пишет платформа.
+///
+/// `extends` — `ExtendedConfigurationObject`, UUID объекта родителя как есть.
+/// `overrides` — список свойств из `xr:PropertyState`, а не флаг: платформа
+/// перечисляет перекрытые свойства поимённо, и заимствованный объект без
+/// перекрытий `PropertyState` не несёт вовсе.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct MetaBorrowing {
+    pub(crate) extends: Option<String>,
+    pub(crate) overrides: Vec<String>,
+}
+
+const XCF_READABLE_NS: &str = "http://v8.1c.ru/8.3/xcf/readable";
+
+/// Заимствование по дескриптору объекта.
+///
+/// Признак — `ExtendedConfigurationObject`, а не `ObjectBelonging>Adopted`:
+/// корень `Configuration` самого расширения тоже `Adopted`, и читать его как
+/// заимствованный объект — дефект (замер дампа `PrintWebDAV` 11.09.2026).
+pub(crate) fn parse_meta_borrowing(bytes: &[u8]) -> Result<MetaBorrowing, String> {
+    let (_, document) = parse_metadata_image(bytes)?;
+    let Some(object) = document
+        .root_element()
+        .children()
+        .find(|node| node.is_element())
+    else {
+        return Ok(MetaBorrowing::default());
+    };
+    let extends = meta_info_child(object, "Properties")
+        .and_then(|properties| meta_info_child_text(properties, "ExtendedConfigurationObject"))
+        .filter(|value| !value.trim().is_empty());
+    let overrides = meta_info_child(object, "InternalInfo")
+        .map(|internal| {
+            internal
+                .children()
+                .filter(|node| node.has_tag_name((XCF_READABLE_NS, "PropertyState")))
+                .filter_map(|state| {
+                    let property = state
+                        .children()
+                        .find(|node| node.has_tag_name((XCF_READABLE_NS, "Property")))
+                        .map(meta_info_inner_text)?;
+                    let extended = state
+                        .children()
+                        .find(|node| node.has_tag_name((XCF_READABLE_NS, "State")))
+                        .map(meta_info_inner_text)
+                        .is_some_and(|state| {
+                            matches!(state.trim(), "Extended" | "Notify" | "MultiState")
+                        });
+                    // Все три состояния отражают вклад расширения:
+                    // его значение нельзя затереть обновлением родителя.
+                    extended
+                        .then(|| property.trim().to_string())
+                        .filter(|property| !property.is_empty())
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(MetaBorrowing { extends, overrides })
+}
+
 pub(crate) fn meta_info_child<'a, 'input>(
     node: roxmltree::Node<'a, 'input>,
     local_name: &str,

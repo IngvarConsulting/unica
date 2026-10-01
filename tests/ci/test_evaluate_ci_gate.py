@@ -60,6 +60,60 @@ def source_results() -> dict[str, str]:
 
 
 class EvaluateCiGateTests(unittest.TestCase):
+    def test_only_manual_large_with_empty_python_matrix_may_skip_python(self) -> None:
+        module = load_gate_module()
+        outputs = classification(**{name: True for name in OUTPUT_NAMES})
+        results = {
+            **source_results(),
+            "test-python": "skipped",
+            "test-rust-platforms": "success",
+            **PACKAGE_SUCCESS,
+            **ASSESSMENT_SUCCESS,
+            **P0_SUCCESS,
+            "probe-thin-bootstrap": "success",
+        }
+
+        large = module.evaluate_gate(
+            "workflow_dispatch", "refs/heads/main", outputs, results,
+            gate_profile="large", python_matrix="[]",
+        )
+        self.assertTrue(large.ok, large.unexpected)
+        self.assertEqual("skipped", large.expected["test-python"])
+
+        for event, ref, profile, matrix in (
+            ("workflow_dispatch", "refs/heads/main", "main", "[]"),
+            ("workflow_dispatch", "refs/heads/main", "large", '[{"suite":"ci"}]'),
+            ("workflow_dispatch", "refs/heads/main", "large", None),
+            ("push", "refs/heads/release-v0.13", "large", "[]"),
+            ("pull_request", "refs/pull/1007/merge", "pr", "[]"),
+            ("merge_group", "refs/heads/gh-readonly-queue/main/pr-1007", "queue", "[]"),
+        ):
+            with self.subTest(event=event, profile=profile, matrix=matrix):
+                candidate = module.evaluate_gate(
+                    event, ref, outputs, results,
+                    gate_profile=profile, python_matrix=matrix,
+                )
+                self.assertFalse(candidate.ok)
+                self.assertIn("test-python", candidate.unexpected)
+                if matrix == "[]" and profile != "large":
+                    self.assertIn("python_matrix", candidate.unexpected)
+
+        failed_python = module.evaluate_gate(
+            "workflow_dispatch", "refs/heads/main", outputs,
+            {**results, "test-python": "failure"},
+            gate_profile="large", python_matrix="[]",
+        )
+        self.assertFalse(failed_python.ok)
+        self.assertEqual(("failure", "skipped"), failed_python.unexpected["test-python"])
+
+        skipped_build = module.evaluate_gate(
+            "workflow_dispatch", "refs/heads/main", outputs,
+            {**results, "build-tools": "skipped"},
+            gate_profile="large", python_matrix="[]",
+        )
+        self.assertFalse(skipped_build.ok)
+        self.assertEqual(("skipped", "success"), skipped_build.unexpected["build-tools"])
+
     def test_pull_request_skips_package_pipeline_even_when_classified(self) -> None:
         """Тяжёлые контуры сняты с pull request, а не выключены везде.
 

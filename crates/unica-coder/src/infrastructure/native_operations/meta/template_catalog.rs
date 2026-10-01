@@ -768,7 +768,7 @@ pub(super) fn minimal_metadata_xml(
     }
     lines.push("\t\t</Properties>".to_string());
     // Содержимое объекта задаёт вызывающий через `operations`: инструмент не
-    // придумывает ресурсы, измерения и значения свойств за него (ADR-0030).
+    // придумывает ресурсы, измерения и значения свойств за него.
     if meta_8_3_27_kind_declares_child_objects(kind) {
         lines.push("\t\t<ChildObjects/>".to_string());
     }

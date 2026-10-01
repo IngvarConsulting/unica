@@ -233,8 +233,19 @@ class RustPlatformBoundaryTests(unittest.TestCase):
             "let store = crate :: infrastructure :: Store::new();\n"
             "let cli = super :: interfaces :: Cli::new();\n",
         )
+        infrastructure_diagnostics = checker.check_source(
+            "crates/unica-coder/src/infrastructure/store.rs",
+            "use crate::interfaces::Cli;\n",
+        )
 
         self.assertEqual(len(domain_diagnostics), 3)
+        self.assertEqual(
+            infrastructure_diagnostics,
+            [
+                "crates/unica-coder/src/infrastructure/store.rs:1: "
+                "infrastructure must not reference crate::interfaces",
+            ],
+        )
         self.assertEqual(
             application_diagnostics,
             [
@@ -615,7 +626,7 @@ class HostNameBoundaryTests(unittest.TestCase):
                 self.assertIsNone(self.guard.HOST_MARKER.search(identifier))
 
     def test_a_name_opening_a_segment_is_host_knowledge(self) -> None:
-        for identifier in ("CodexHost", "codex_home_root", "CODEX_HOME", ".claude-plugin"):
+        for identifier in ("CodexHost", "codex_home_root", "CODEX_HOME", ".claude-plugin", "ZcodeHost", "ZCODE_PROJECT_DIR", ".zcode-plugin"):
             with self.subTest(identifier=identifier):
                 self.assertIsNotNone(self.guard.HOST_MARKER.search(identifier))
 

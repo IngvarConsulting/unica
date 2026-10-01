@@ -84,6 +84,23 @@ mod tests {
             Self { root }
         }
 
+        fn complete(name: &str) -> Self {
+            let fixture = Self::new(name);
+            fixture.write(".codex-plugin", codex_manifest());
+            fixture.write(".claude-plugin", claude_manifest());
+            fixture.write(".zcode-plugin", zcode_manifest());
+            verify_installed_plugin_metadata(&fixture.root, VERSION).unwrap();
+            fixture
+        }
+
+        fn assert_rejected(&self, dir: &str, reason: &str) {
+            let error = verify_installed_plugin_metadata(&self.root, VERSION).unwrap_err();
+            let message = error.to_string();
+            let path = self.root.join(dir).join("plugin.json");
+            assert!(message.contains(path.to_str().unwrap()), "{error}");
+            assert!(message.contains(reason), "{error}");
+        }
+
         fn write(&self, dir: &str, body: serde_json::Value) {
             let manifest_dir = self.root.join(dir);
             std::fs::create_dir_all(&manifest_dir).unwrap();
@@ -116,89 +133,134 @@ mod tests {
         })
     }
 
-    #[test]
-    fn malformed_host_metadata_is_an_installation_configuration_failure() {
-        let fixture = ManifestFixture::new("malformed-json");
-        fixture.write(".codex-plugin", codex_manifest());
-        fixture.write(".claude-plugin", claude_manifest());
-        fixture.write_raw(".codex-plugin", b"{");
-
-        let error = verify_installed_plugin_metadata(&fixture.root, VERSION)
-            .expect_err("malformed plugin metadata");
-
-        assert_eq!(error.failure(), crate::error::Failure::Configuration);
-        assert!(error.to_string().contains("plugin.json"), "{error}");
-    }
-
     fn claude_manifest() -> serde_json::Value {
         serde_json::json!({"name": "unica", "version": VERSION})
     }
 
+    fn zcode_manifest() -> serde_json::Value {
+        serde_json::json!({
+            "name": "unica",
+            "version": VERSION,
+            "skills": "./skills/",
+            "mcpServers": "./.mcp.json",
+        })
+    }
+
     #[test]
-    fn a_package_carrying_both_host_manifests_is_accepted() {
-        let fixture = ManifestFixture::new("both-hosts");
-        fixture.write(".codex-plugin", codex_manifest());
-        fixture.write(".claude-plugin", claude_manifest());
+    fn malformed_host_metadata_is_an_installation_configuration_failure() {
+        for dir in [".codex-plugin", ".claude-plugin", ".zcode-plugin"] {
+            let fixture = ManifestFixture::complete("malformed-json");
+            fixture.write_raw(dir, b"{");
+
+            let error = verify_installed_plugin_metadata(&fixture.root, VERSION)
+                .expect_err("malformed plugin metadata");
+
+            assert_eq!(error.failure(), crate::error::Failure::Configuration);
+            fixture.assert_rejected(dir, "failed to parse installed host manifest");
+        }
+    }
+
+    #[test]
+    fn a_package_carrying_all_three_host_manifests_is_accepted() {
+        let fixture = ManifestFixture::complete("all-hosts");
         verify_installed_plugin_metadata(&fixture.root, VERSION).unwrap();
     }
 
     #[test]
-    fn a_package_carrying_only_one_host_manifest_is_rejected() {
-        // One directory serves both hosts (ADR-0012). A package missing a
-        // manifest is unloadable for that host, so the release gate has to
-        // refuse it rather than verify the half it happens to carry.
-        let codex = ManifestFixture::new("codex-only");
-        codex.write(".codex-plugin", codex_manifest());
-        verify_installed_plugin_metadata(&codex.root, VERSION).unwrap_err();
+    fn a_package_missing_any_one_host_manifest_is_rejected() {
+        for dir in [".codex-plugin", ".claude-plugin", ".zcode-plugin"] {
+            let fixture = ManifestFixture::complete("missing-host");
+            std::fs::remove_file(fixture.root.join(dir).join("plugin.json")).unwrap();
+            fixture.assert_rejected(dir, "missing a host manifest");
+        }
+    }
 
-        let claude = ManifestFixture::new("claude-only");
-        claude.write(".claude-plugin", claude_manifest());
-        verify_installed_plugin_metadata(&claude.root, VERSION).unwrap_err();
+    #[test]
+    fn a_package_carrying_only_one_host_manifest_is_rejected() {
+        for (dir, body, missing) in [
+            (".codex-plugin", codex_manifest(), ".claude-plugin"),
+            (".claude-plugin", claude_manifest(), ".codex-plugin"),
+            (".zcode-plugin", zcode_manifest(), ".codex-plugin"),
+        ] {
+            let fixture = ManifestFixture::new("one-host");
+            fixture.write(dir, body);
+            fixture.assert_rejected(missing, "missing a host manifest");
+        }
     }
 
     #[test]
     fn a_package_without_any_host_manifest_is_rejected() {
         let fixture = ManifestFixture::new("no-host");
-        verify_installed_plugin_metadata(&fixture.root, VERSION).unwrap_err();
+        fixture.assert_rejected(".codex-plugin", "missing a host manifest");
     }
 
     #[test]
     fn a_manifest_from_another_release_is_rejected() {
-        let fixture = ManifestFixture::new("stale-version");
-        fixture.write(".codex-plugin", codex_manifest());
-        fixture.write(
-            ".claude-plugin",
-            serde_json::json!({"name": "unica", "version": "0.0.0"}),
-        );
-        verify_installed_plugin_metadata(&fixture.root, VERSION).unwrap_err();
+        for (dir, mut body) in [
+            (".codex-plugin", codex_manifest()),
+            (".claude-plugin", claude_manifest()),
+            (".zcode-plugin", zcode_manifest()),
+        ] {
+            let fixture = ManifestFixture::complete("stale-version");
+            body["version"] = serde_json::json!("0.0.0");
+            fixture.write(dir, body);
+            fixture.assert_rejected(dir, "does not meet the version");
+        }
+    }
+
+    #[test]
+    fn a_manifest_with_another_plugin_identity_is_rejected() {
+        for (dir, mut body) in [
+            (".codex-plugin", codex_manifest()),
+            (".claude-plugin", claude_manifest()),
+            (".zcode-plugin", zcode_manifest()),
+        ] {
+            let fixture = ManifestFixture::complete("wrong-name");
+            body["name"] = serde_json::json!("another-plugin");
+            fixture.write(dir, body);
+            fixture.assert_rejected(dir, "host contract");
+        }
     }
 
     #[test]
     fn a_codex_manifest_without_the_server_pointer_is_rejected() {
-        // Codex does not read the root `.mcp.json` on its own, so a manifest
-        // that omits the pointer installs a plugin exposing no MCP server at
-        // all. The skills pointer is checked in both directions; this one has
-        // to be, for the same reason.
-        let fixture = ManifestFixture::new("codex-no-servers");
-        fixture.write(
-            ".codex-plugin",
-            serde_json::json!({"name": "unica", "version": VERSION, "skills": "./skills/"}),
-        );
-        fixture.write(".claude-plugin", claude_manifest());
-        verify_installed_plugin_metadata(&fixture.root, VERSION).unwrap_err();
+        let fixture = ManifestFixture::complete("codex-no-servers");
+        let mut body = codex_manifest();
+        body.as_object_mut().unwrap().remove("mcpServers");
+        fixture.write(".codex-plugin", body);
+        fixture.assert_rejected(".codex-plugin", "host contract");
     }
 
     #[test]
     fn a_codex_manifest_without_the_skills_pointer_is_rejected() {
-        // The package is otherwise complete, so the only reason left to fail is
-        // the missing pointer.
-        let fixture = ManifestFixture::new("codex-no-pointer");
-        fixture.write(
-            ".codex-plugin",
-            serde_json::json!({"name": "unica", "version": VERSION, "mcpServers": "./.mcp.json"}),
-        );
-        fixture.write(".claude-plugin", claude_manifest());
-        verify_installed_plugin_metadata(&fixture.root, VERSION).unwrap_err();
+        let fixture = ManifestFixture::complete("codex-no-pointer");
+        let mut body = codex_manifest();
+        body.as_object_mut().unwrap().remove("skills");
+        fixture.write(".codex-plugin", body);
+        fixture.assert_rejected(".codex-plugin", "host contract");
+    }
+
+    #[test]
+    fn a_zcode_manifest_requires_exact_skills_and_server_pointers() {
+        for key in ["skills", "mcpServers"] {
+            for value in [
+                None,
+                Some(serde_json::json!("./wrong/")),
+                Some(serde_json::json!(["./skills/"])),
+                Some(serde_json::json!({"path": "./.mcp.json"})),
+                Some(serde_json::Value::Null),
+            ] {
+                let fixture = ManifestFixture::complete("zcode-discovery");
+                let mut body = zcode_manifest();
+                if let Some(value) = value {
+                    body[key] = value;
+                } else {
+                    body.as_object_mut().unwrap().remove(key);
+                }
+                fixture.write(".zcode-plugin", body);
+                fixture.assert_rejected(".zcode-plugin", "host contract");
+            }
+        }
     }
 
     #[test]
@@ -212,13 +274,12 @@ mod tests {
                 serde_json::json!({"path": "./skills/"}),
                 serde_json::Value::Null,
             ] {
-                let fixture = ManifestFixture::new("claude-discovery");
-                fixture.write(".codex-plugin", codex_manifest());
+                let fixture = ManifestFixture::complete("claude-discovery");
                 fixture.write(
                     ".claude-plugin",
                     serde_json::json!({"name": "unica", "version": VERSION, key: value}),
                 );
-                verify_installed_plugin_metadata(&fixture.root, VERSION).unwrap_err();
+                fixture.assert_rejected(".claude-plugin", "host contract");
             }
         }
     }

@@ -1,0 +1,26 @@
+{
+  "platformVersion": "8.3.27.2074",
+  "platformBinarySha256": "e00f3c945fb6f60bb2802151df1b4e7ee4f3caaf7c9e24a981020af575fda6e5",
+  "formatVersion": "2.20",
+  "source": "Raw XML exported by 1C 8.3.27.2074 from isolated infobases after parent and extension import, check and apply. Both extension descriptors were imported and exported through a second independently created infobase and retained byte-exact.",
+  "files": {
+    "parent-catalog.xml": {
+      "sha256": "a8020d30f47afabf8468e1030917b9b9e178fd97b181f1226b4de3f39f77819c",
+      "size": 14930
+    },
+    "extension-catalog.xml": {
+      "sha256": "0ce535de5f0b4295212b7c20de8514944b33f6566143ad1632f11024c819313b",
+      "size": 2846
+    },
+    "extension-common-module.xml": {
+      "sha256": "5539cbafbe3c4545d2192bf8ed4d42ad97a7816ef041d61839764f92de5c662e",
+      "size": 1854,
+      "source": "Raw platform export after importing CommonModule.Server=false with PropertyState Server/Notify; byte-exact after a second independent infobase import/export."
+    },
+    "parent-common-module.xml": {
+      "sha256": "cd5c3afcfdd43363db4db6489b66cc85f0e812cd4af9cdddc94e092cce8f3597",
+      "size": 1585,
+      "source": "Raw platform export of the isolated parent configuration used for the CommonModule.Server/Notify probe."
+    }
+  }
+}

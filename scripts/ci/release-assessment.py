@@ -51,13 +51,6 @@ P0_LIFECYCLE_SCENARIOS = (
     "restart",
     "rollback",
 )
-SAFE_V13_AT_LEAST_ONCE_REPLAY_TOOLS = frozenset(
-    {"unica.check", "unica.view", "unica.resolve", "unica.search", "unica.diff"}
-)
-LOST_DAEMON_SUBMIT_RESPONSE_CODE = -32000
-LOST_DAEMON_SUBMIT_RESPONSE_MESSAGE = (
-    "daemon deadline expired during invocation submit response"
-)
 
 
 def utc_now() -> str:
@@ -65,7 +58,15 @@ def utc_now() -> str:
 
 
 def dry_lifecycle_outcomes() -> dict[str, dict[str, Any]]:
-    """Name lifecycle evidence that is intentionally deferred outside RC joins."""
+    """Name lifecycle evidence that is intentionally deferred outside RC joins.
+
+    This is the only producer of ``lifecycle`` in the repository, and it is
+    unconditional on purpose: the assessment runs before publication, and fresh
+    install, upgrade, offline prefetch, restart and rollback can only be proven
+    on published bytes. That proof is step R-3 of IngvarConsulting/unica#871 and
+    needs its own post-publication producer; until it exists every scenario is
+    ``deferred`` (#697).
+    """
     return {
         name: {
             "status": "deferred",
@@ -252,7 +253,10 @@ def unica_version(run_unica: Path) -> str:
             if isinstance(tool, dict) and tool.get("name") == "unica"
         ]
         if len(candidates) != 1:
-            raise SystemExit("candidate runtime manifest must contain exactly one unica tool")
+            raise SystemExit(
+                f"{tool_manifest_path} must contain exactly one tool named unica, "
+                f"got {len(candidates)}; a packaged candidate lists its core there"
+            )
         version = candidates[0].get("version")
         if not isinstance(version, str) or not version:
             raise SystemExit("candidate runtime manifest unica version is missing")
@@ -524,7 +528,10 @@ def search_progress_snapshots(stdout: str, progress_token: str) -> list[dict[str
 def parse_tool_payload(response: dict[str, Any]) -> tuple[dict[str, Any] | None, list[str]]:
     if "error" in response:
         error = response["error"]
-        return None, [str(error.get("message", error))]
+        if isinstance(error, dict) and "code" in error:
+            # Код рядом с текстом: закрытый отказ провода читается по коду.
+            return None, [f"{error['code']}: {error.get('message', '')}"]
+        return None, [str(error.get("message", error) if isinstance(error, dict) else error)]
     result = response.get("result")
     if isinstance(result, dict) and "structuredContent" in result:
         payload = result.get("structuredContent")
@@ -554,7 +561,7 @@ def response_output_size(stdout: str, stderr: str, payload: dict[str, Any] | Non
 def project_source_sets(payload: dict[str, Any] | None) -> list[dict[str, Any]]:
     """Read the source sets from the typed result.
 
-    ADR-0023 moved the map out of `stdout`, where it used to be a JSON string
+    The typed result contract moved the map out of `stdout`, where it used to be a JSON string
     inside the JSON envelope; `data` is the only place it lives now.
     """
 
@@ -749,7 +756,9 @@ def run_tool_scenario(
 def pending_v13_task(payload: dict[str, Any] | None) -> tuple[str, int] | None:
     data = payload.get("data") if isinstance(payload, dict) else None
     task = data.get("task") if isinstance(data, dict) else None
-    if not isinstance(task, dict) or task.get("status") not in {"submitted", "working"}:
+    # Незавершённые статусы снимка задачи — словарь `project_task_snapshot`
+    # в crates/unica-coder/src/application/v13/task_tools.rs.
+    if not isinstance(task, dict) or task.get("status") not in {"queued", "working"}:
         return None
     task_id = task.get("taskId")
     poll_interval_ms = task.get("pollIntervalMs", 250)
@@ -778,7 +787,6 @@ def run_v13_tool_scenario(
     total_duration_ms = 0
     total_output_bytes = 0
     task_polls = 0
-    submit_retries = 0
     next_tool = tool
     next_arguments = dict(arguments)
 
@@ -795,25 +803,11 @@ def run_v13_tool_scenario(
             timeout_seconds=remaining,
         )
         total_duration_ms += duration_ms
-        if (
-            submit_retries == 0
-            and next_tool == tool
-            and tool in SAFE_V13_AT_LEAST_ONCE_REPLAY_TOOLS
-            and returncode == 0
-            and len(responses) == 1
-            and responses[0].get("error")
-            == {
-                "code": LOST_DAEMON_SUBMIT_RESPONSE_CODE,
-                "message": LOST_DAEMON_SUBMIT_RESPONSE_MESSAGE,
-            }
-        ):
-            # The daemon may have accepted this read before its bounded submit
-            # response was lost. V3 has no stable recovery identity, so replay
-            # is explicitly at-least-once and may execute the read twice. Keep
-            # it to read-only tools, one replay and the original scenario budget.
-            total_output_bytes += response_output_size(stdout, stderr, None)
-            submit_retries += 1
-            continue
+        # Потерянный submit-response демон v5 восстанавливает сам, по точному
+        # ключу квитанции и в своём окне после cutoff; до провода `-32000`
+        # доходит только когда не уложились и в него. Здесь это отказ сценария,
+        # как любой другой: повтора нет, чтобы сигнал не исчезал в метрике,
+        # которую никто не читает (#698).
         if returncode != 0:
             errors.append(f"unica exited with {returncode}: {stderr.strip()}")
         if len(responses) != 1:
@@ -841,8 +835,6 @@ def run_v13_tool_scenario(
     metrics: dict[str, Any] = {
         "outputBytes": total_output_bytes,
         "taskPolls": task_polls,
-        "submitRetries": submit_retries,
-        "submitReplaySemantics": "at-least-once" if submit_retries else "none",
         "warningsCount": len(payload.get("warnings", [])) if payload else 0,
         "errorsCount": len(errors),
     }

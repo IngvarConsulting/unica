@@ -11142,10 +11142,7 @@ pub(crate) mod tests {
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
-    /// ADR-0048 removed the eleven `Mode` values on the claim that the typed
-    /// answer is the union of the projections they used to print. That claim is
-    /// only true if every fact those reports carried survives, so this fixture
-    /// puts one of each into a schema and reads them all back out of `data`.
+    /// Support has its own structured field and is not duplicated in overview prose.
     #[test]
     fn dcs_info_overview_does_not_duplicate_structured_support() {
         let xml = complete_dcs_xml();

@@ -7,16 +7,14 @@ description: "Размещение кода 1С по модулям. Испол�
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.meta.info`, `unica.meta.add`, `unica.meta.edit`, `unica.view` on the subsystem node, `unica.code.search`, `unica.code.definition`, `unica.code.graph`, `unica.code.patch`, `unica.code.diagnostics`, and `unica.runtime.execute`.
-- По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
-показывает запланированную команду без побочных эффектов, а с `dryRun: false`
-исполняет классифицированную операцию и отвечает её терминальным результатом в
-том же вызове, приложив названную причину риска (`runtime_risk_*`)
-предупреждением; неклассифицированная операция по-прежнему отказывает
-`runtime_operation_unbounded` до обнаружения рабочего пространства. Preview
-исполнением не является. Работу, которую вызов ждать не должен, запускай через
-`unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
-`unica.build.*`.
+- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.view` on the object node, `unica.apply`, `unica.view` on the subsystem node, `unica.search`, `unica.check`, and `unica.run`.
+- Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
+контракт каждой — `argsSchema`, `execution`, `previewRequired`,
+`ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
+при `implemented: true` используй опубликованную `argsSchema`; при
+`support.state: limited` разрешено только подмножество `support.supportedArgs`.
+При `support.state: unavailable` остановись; не выдумывай аргументов при
+`argsSchema: null`. Превью исполнением не является. Не обходи контракт прямым runner-ом.
 - Use `unica.docs` with `source: "development-standard"` for the standards about module hosting: 455, 469, 474, 486, 556, 679, 697, 724, 746, and diagnostics АПК:73, АПК:80, АПК:85, АПК:90, АПК:125, АПК:363, АПК:435-439, АПК:444, АПК:1245. These are standards, not evidence of runtime behavior; confirm the wording before citing one.
 - Use `unica.view` on the role node when the module enters privileged mode or carries the privileged flag.
 - Do not call internal analyzer, runtime, standards, or package adapters directly. They are hidden behind MCP `unica`.
@@ -52,11 +50,11 @@ Then pick exactly one of the four common module contexts (std469) and name it by
 
 1. Answer the three std486 questions before opening any module. The answer, not convenience, picks the host.
 2. Map the neighbourhood with `unica.view {}` and `unica.view` on the subsystem node: an existing module for the same subsystem or purpose is a reason to extend rather than add.
-3. Check the callers with `unica.code.graph` before moving anything — a move that changes the module context changes what the callers may pass.
-4. When adding a common module, choose the context row first, then `unica.meta.add` with the matching flags and postfix.
+3. Find the callers with `unica.search` by the method name before moving anything (a call graph is not on the v0.13 surface) — a move that changes the module context changes what the callers may pass.
+4. When adding a common module, choose the context row first, then `unica.apply` with the matching flags and postfix.
 5. Set `Вызов сервера` only for API genuinely called from the client, and state what it exposes.
-6. Apply code with `unica.code.patch`, one verifiable step at a time.
-7. Verify statically with `unica.code.diagnostics`; use `unica.runtime.execute` to preview typed syntax/test arguments and, with `dryRun: false`, to run them and report runtime behavior as unverified.
+6. Apply code with `unica.apply`, one verifiable step at a time.
+7. Verify statically with `unica.check` on the module node (test runs are outside the v0.13 surface) and report runtime behavior as unverified.
 
 ## Design rules
 

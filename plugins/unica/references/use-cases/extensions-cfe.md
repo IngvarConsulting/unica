@@ -19,20 +19,20 @@ Use native CFE tools through MCP `unica`:
 - `unica.cfe.borrow`
 - `unica.cfe.patch_method`
 
-Runtime export or loading of `.cfe` artifacts is handled by `v8-runner` through
-`unica.runtime.execute` with `operation=make` or `operation=load`: preview it
-with `dryRun: true`, run it with `dryRun: false` and read the named risk the
-result carries.
+Runtime export or loading of `.cfe` artifacts goes through `unica.run`:
+`download` with `extension` writes the `.cfe` from the infobase, `upload`
+with `extension` loads the working configuration without applying it to the database;
+`apply` with that extension applies it, and `reset` with `force:true` discards
+pending changes. `make` builds an artifact from sources; each operation is
+previewed first and applied with the `ifRev` the preview returned.
 
-По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
-показывает запланированную команду без побочных эффектов, а с `dryRun: false`
-исполняет классифицированную операцию и отвечает её терминальным результатом в
-том же вызове, приложив названную причину риска (`runtime_risk_*`)
-предупреждением; неклассифицированная операция по-прежнему отказывает
-`runtime_operation_unbounded` до обнаружения рабочего пространства. Preview
-исполнением не является. Работу, которую вызов ждать не должен, запускай через
-`unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
-`unica.build.*`.
+Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
+контракт каждой — `argsSchema`, `execution`, `previewRequired`,
+`ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
+при `implemented: true` используй опубликованную `argsSchema`; при
+`support.state: limited` разрешено только подмножество `support.supportedArgs`.
+При `support.state: unavailable` остановись; не выдумывай аргументов при
+`argsSchema: null`. Превью исполнением не является. Не обходи контракт прямым runner-ом.
 
 ## Related references
 

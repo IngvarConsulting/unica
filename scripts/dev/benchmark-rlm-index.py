@@ -34,13 +34,15 @@ TOOLS_LOCK = (
     / "third-party"
     / "tools.lock.json"
 )
-STANDALONE_REVIEW = (
-    Path(__file__).resolve().parents[2]
-    / "docs"
-    / "provenance"
-    / "reviews"
-    / "2026-08-14-rlm-v1-33-nuitka-standalone.json"
-)
+# This benchmark compares one pinned build; the archive and executable hashes
+# identify different bytes and must remain paired when the lock changes.
+PACKAGED_DARWIN_ARCHIVE = {
+    "assetName": "rlm-tools-bsl-darwin-arm64.tar.gz",
+    "sha256": "55caf6a245b3bb47344e2191408841f45aefb614b23480d9941f2cb3e2d8af2c",
+    "size": 72708783,
+    "archiveBinary": "rlm-bsl-index",
+}
+PACKAGED_INDEX_SHA256 = "bdf429e3a8dee1fb9b1f1af66adcc4280732cc4287c92c4fbe4effddc0f8492e"
 TAIL_LIMIT = 4_000
 HEX_40 = re.compile(r"[0-9a-f]{40}\Z")
 HEX_64 = re.compile(r"[0-9a-f]{64}\Z")
@@ -708,25 +710,12 @@ def _locked_packaged_index_sha256() -> str:
     if tool.get("assetStrategy") != "archive-release-asset":
         raise RuntimeError("benchmark requires the reviewed standalone archive")
     locked_asset = tool["assets"]["darwin-arm64"]
-    review = json.loads(STANDALONE_REVIEW.read_text(encoding="utf-8"))
-    reviewed_target = review["targets"]["darwin-arm64"]
-    reviewed_archive = reviewed_target["archive"]
-    locked_archive = {
-        key: locked_asset[key] for key in ("assetName", "sha256", "size")
-    }
-    if (
-        review["toolchain"]["releaseTag"] != RELEASE_TAG
-        or reviewed_archive != locked_archive
-        or reviewed_target["entrypoints"]["rlm-bsl-index"]
-        != locked_asset.get("archiveBinary")
+    if any(
+        locked_asset.get(key) != value
+        for key, value in PACKAGED_DARWIN_ARCHIVE.items()
     ):
-        raise RuntimeError("benchmark standalone review does not match tools.lock.json")
-    executable_sha256 = reviewed_target["payload"]["entrypointSha256"]
-    if not isinstance(executable_sha256, str) or not HEX_64.fullmatch(
-        executable_sha256
-    ):
-        raise RuntimeError("benchmark standalone review has an invalid entrypoint SHA-256")
-    return executable_sha256
+        raise RuntimeError("benchmark archive identity does not match tools.lock.json")
+    return PACKAGED_INDEX_SHA256
 
 
 def _validate_summary_pair(

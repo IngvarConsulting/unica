@@ -1100,7 +1100,7 @@ fn is_xml_payload_path(path: &Path) -> bool {
     {
         return true;
     }
-    // ADR-0024 grants `Package.bin` its XML reading through the XDTO package
+    // The XDTO package grammar grants `Package.bin` its XML reading through the XDTO package
     // layout, not through the file name. Mirrored by `_is_xml_payload_path` in
     // scripts/dev/verify-8-3-27-platform.py.
     let components = path
@@ -1632,7 +1632,7 @@ fn write_json_input(workspace: &Path, name: &str, value: &Value) -> Result<Strin
     Ok(relative)
 }
 
-/// Минимальные `operations`, делающие объект целостным по ADR-0030.
+/// Минимальные `operations`, делающие объект целостным.
 ///
 /// Виды без записи в таблице условий ничего не требуют, и инструмент за них
 /// ничего не придумывает, поэтому здесь для них пусто.
@@ -4001,8 +4001,12 @@ fn validate_output_directory(
     if target == home {
         return Err("refusing home root as corpus output".to_string());
     }
-    if target == repo {
-        return Err("refusing repository root as corpus output".to_string());
+    if target.starts_with(&repo) {
+        return Err(format!(
+            "refusing repository tree as corpus output: {} is the repository root {} or inside it",
+            target.display(),
+            repo.display()
+        ));
     }
     if target.exists() {
         if !target.is_dir() {
@@ -5460,6 +5464,29 @@ fn output_directory_refusal_rules_are_fail_closed() {
         root.canonicalize().unwrap().join("explicit-absent-target")
     );
     assert!(!absent.exists());
+    let inside_empty = repo.join("corpus-output");
+    fs::create_dir_all(&inside_empty).unwrap();
+    let inside_absent = repo.join("new-corpus-output");
+    for inside in [&inside_empty, &inside_absent] {
+        let refusal = validate_output_directory(inside.to_str().unwrap(), &repo, &home)
+            .expect_err("a directory inside the repository tree must be refused");
+        assert!(refusal.contains("repository tree"), "{refusal}");
+    }
+    assert!(!inside_absent.exists());
+    let repo_link = root.join("repo-link");
+    if platform_support::symlink_directory(&repo, &repo_link) {
+        let through_link = repo_link.join("new-corpus-output");
+        let refusal = validate_output_directory(through_link.to_str().unwrap(), &repo, &home)
+            .expect_err(
+                "a path reaching the repository through a symlinked parent must be refused",
+            );
+        assert!(refusal.contains("repository tree"), "{refusal}");
+    }
+    let prefixed_sibling = root.join("repo-sibling");
+    assert_eq!(
+        validate_output_directory(prefixed_sibling.to_str().unwrap(), &repo, &home).unwrap(),
+        root.canonicalize().unwrap().join("repo-sibling")
+    );
     remove_temp_tree(&root);
 }
 
@@ -5727,7 +5754,7 @@ fn cfe_patch_method_corpus_covers_every_supported_module_layout_family() {
 
 #[test]
 fn xml_payload_rule_grants_the_bin_exception_only_to_the_xdto_layout() {
-    // ADR-0024 names `XDTOPackages/<Name>/Ext/Package.bin` as text XML. The
+    // The XDTO package grammar names `XDTOPackages/<Name>/Ext/Package.bin` as text XML. The
     // exception belongs to that layout, not to the file name, and this rule
     // mirrors `_is_xml_payload_path` in scripts/dev/verify-8-3-27-platform.py.
     for granted in [

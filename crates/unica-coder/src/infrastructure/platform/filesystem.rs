@@ -1097,7 +1097,75 @@ impl RetainedDirectoryCapability {
         relative: &Path,
         max_bytes: usize,
     ) -> io::Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        self.visit_relative_regular_chunks(
+            relative,
+            || Ok(()),
+            |chunk| {
+                if chunk.len() > max_bytes.saturating_sub(bytes.len()) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("relative file exceeds the {max_bytes}-byte read limit"),
+                    ));
+                }
+                bytes.extend_from_slice(chunk);
+                Ok(())
+            },
+        )?;
+        Ok(bytes)
+    }
+
+    /// Visits the opened, no-follow regular file without retaining its total
+    /// contents. Each callback sees at most one 64 KiB chunk, and a checkpoint
+    /// runs before every read. The caller confirms its source revision before
+    /// publishing a logical answer; a same-content replacement may be valid
+    /// after that confirmation.
+    pub(crate) fn visit_relative_regular_chunks(
+        &self,
+        relative: &Path,
+        mut checkpoint: impl FnMut() -> io::Result<()>,
+        mut visit: impl FnMut(&[u8]) -> io::Result<()>,
+    ) -> io::Result<u64> {
         use std::io::Read;
+
+        let mut file = self.open_relative_regular_nofollow(relative)?;
+        let mut buffer = [0_u8; 64 * 1024];
+        let mut total = 0_u64;
+        loop {
+            checkpoint()?;
+            let count = match file.read(&mut buffer) {
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                result => result?,
+            };
+            if count == 0 {
+                break;
+            }
+            total = total.checked_add(count as u64).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "file length overflow")
+            })?;
+            visit(&buffer[..count])?;
+        }
+        checkpoint()?;
+        Ok(total)
+    }
+
+    /// Read only the descriptor head, even when the file itself is larger.
+    /// Keep the same retained, no-follow traversal as a complete bounded read.
+    pub(crate) fn read_relative_regular_prefix(
+        &self,
+        relative: &Path,
+        max_bytes: usize,
+    ) -> io::Result<Vec<u8>> {
+        use std::io::Read;
+
+        let file = self.open_relative_regular_nofollow(relative)?;
+        let mut bytes = Vec::new();
+        file.take(u64::try_from(max_bytes).unwrap_or(u64::MAX))
+            .read_to_end(&mut bytes)?;
+        Ok(bytes)
+    }
+
+    pub(crate) fn open_relative_regular_nofollow(&self, relative: &Path) -> io::Result<fs::File> {
         use std::path::Component;
 
         let mut components = relative.components().peekable();
@@ -1122,19 +1190,7 @@ impl RetainedDirectoryCapability {
                 file = Some(open_regular_child_nofollow(&directory, name)?);
             }
         }
-        let mut file = file.expect("non-empty relative path has a final component");
-        let limit = u64::try_from(max_bytes)
-            .unwrap_or(u64::MAX)
-            .saturating_add(1);
-        let mut bytes = Vec::new();
-        file.by_ref().take(limit).read_to_end(&mut bytes)?;
-        if bytes.len() > max_bytes {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("relative file exceeds the {max_bytes}-byte read limit"),
-            ));
-        }
-        Ok(bytes)
+        Ok(file.expect("non-empty relative path has a final component"))
     }
 
     /// Enumerates the immediate members of this exact retained directory.
@@ -1146,6 +1202,15 @@ impl RetainedDirectoryCapability {
         checkpoint: impl FnMut() -> io::Result<()>,
     ) -> io::Result<Vec<std::ffi::OsString>> {
         read_directory_names_bounded(&self.retained.directory, maximum_entries, checkpoint)
+    }
+
+    /// Visits names through the retained handle without accumulating the
+    /// directory. The visitor supplies its own cancellation checkpoint.
+    pub(crate) fn visit_immediate_names<E: From<io::Error>>(
+        &self,
+        visitor: impl FnMut(std::ffi::OsString) -> Result<(), E>,
+    ) -> Result<(), E> {
+        visit_directory_names(&self.retained.directory, visitor)
     }
 
     /// Classifies and retains one immediate child through this directory
@@ -1322,6 +1387,22 @@ impl RetainedRegularFileCapability {
         self.validate_named_identity_relative()
     }
 
+    /// Reopen the retained name with an independent file offset, while proving
+    /// that it still names the admitted regular file. A cloned descriptor
+    /// shares its offset on supported hosts and is unsafe for concurrent
+    /// streaming readers.
+    pub(crate) fn open_named_identity_for_read(&self) -> io::Result<fs::File> {
+        self.parent.validate_named_identity()?;
+        let reopened = open_regular_child_nofollow(&self.parent.retained.directory, &self.name)?;
+        if file_identity(&reopened)? != self.identity {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "named regular-file identity changed after capability admission",
+            ));
+        }
+        Ok(reopened)
+    }
+
     pub(crate) fn validate_named_identity_relative(&self) -> io::Result<()> {
         let rebound = open_regular_child_nofollow(&self.parent.retained.directory, &self.name)?;
         if file_identity(&rebound)? != self.identity {
@@ -1477,6 +1558,49 @@ pub(crate) fn file_identity(file: &fs::File) -> io::Result<FileIdentity> {
     })
 }
 
+#[cfg(unix)]
+pub(crate) fn file_change_time(
+    _file: &fs::File,
+    metadata: &fs::Metadata,
+) -> io::Result<(i64, i64)> {
+    use std::os::unix::fs::MetadataExt;
+
+    Ok((metadata.ctime(), metadata.ctime_nsec()))
+}
+
+#[cfg(windows)]
+pub(crate) fn file_change_time(
+    file: &fs::File,
+    _metadata: &fs::Metadata,
+) -> io::Result<(i64, i64)> {
+    use std::mem::size_of;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileBasicInfo, GetFileInformationByHandleEx, FILE_BASIC_INFO,
+    };
+
+    let mut information = FILE_BASIC_INFO {
+        CreationTime: 0,
+        LastAccessTime: 0,
+        LastWriteTime: 0,
+        ChangeTime: 0,
+        FileAttributes: 0,
+    };
+    // SAFETY: the file handle remains open and `information` has the Win32 layout and size.
+    if unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileBasicInfo,
+            (&mut information as *mut FILE_BASIC_INFO).cast(),
+            size_of::<FILE_BASIC_INFO>() as u32,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok((information.ChangeTime, 0))
+}
+
 #[cfg(windows)]
 pub(crate) fn hard_link_count(file: &fs::File) -> io::Result<u64> {
     Ok(u64::from(windows_file_information(file)?.nNumberOfLinks))
@@ -1528,6 +1652,17 @@ pub(crate) fn file_identity(_file: &fs::File) -> io::Result<FileIdentity> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "file identity is not available on this host",
+    ))
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn file_change_time(
+    _file: &fs::File,
+    _metadata: &fs::Metadata,
+) -> io::Result<(i64, i64)> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "file change time is not available on this host",
     ))
 }
 
@@ -1855,6 +1990,18 @@ pub(crate) fn read_directory_names_bounded(
     }
     names.sort();
     Ok(names)
+}
+
+#[cfg(unix)]
+fn visit_directory_names<E: From<io::Error>>(
+    directory: &fs::File,
+    mut visitor: impl FnMut(std::ffi::OsString) -> Result<(), E>,
+) -> Result<(), E> {
+    let entries = cap_primitives::fs::read_base_dir(directory)?;
+    for entry in entries {
+        visitor(entry?.file_name())?;
+    }
+    Ok(())
 }
 
 #[cfg(any(test, windows))]
@@ -3399,13 +3546,31 @@ fn parse_directory_information_buffer(
     parse_directory_information_buffer_bounded(buffer, names, usize::MAX, &mut || Ok(()))
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, test))]
 fn parse_directory_information_buffer_bounded(
     buffer: &[u8],
     names: &mut Vec<std::ffi::OsString>,
     maximum_entries: usize,
     checkpoint: &mut impl FnMut() -> io::Result<()>,
 ) -> io::Result<()> {
+    visit_directory_information_buffer(buffer, |name| {
+        checkpoint()?;
+        if names.len() >= maximum_entries {
+            return Err(io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                "directory exceeds the retained enumeration entry limit",
+            ));
+        }
+        names.push(name);
+        Ok(())
+    })
+}
+
+#[cfg(windows)]
+fn visit_directory_information_buffer<E: From<io::Error>>(
+    buffer: &[u8],
+    mut visitor: impl FnMut(std::ffi::OsString) -> Result<(), E>,
+) -> Result<(), E> {
     use std::mem::{offset_of, size_of};
     use std::os::windows::ffi::OsStringExt;
     use windows_sys::Win32::Storage::FileSystem::FILE_ID_BOTH_DIR_INFO;
@@ -3424,7 +3589,8 @@ fn parse_directory_information_buffer_bounded(
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "directory entry complete header exceeds the enumeration buffer",
-            ));
+            )
+            .into());
         }
         // SAFETY: the complete Rust structure was bounds-checked above; read_unaligned accepts
         // every record offset supplied by the filesystem.
@@ -3436,7 +3602,8 @@ fn parse_directory_information_buffer_bounded(
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "directory entry has an invalid UTF-16 name length",
-            ));
+            )
+            .into());
         }
         let name_start = offset.checked_add(file_name_offset).ok_or_else(|| {
             io::Error::new(
@@ -3454,7 +3621,8 @@ fn parse_directory_information_buffer_bounded(
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "directory entry name exceeds the enumeration buffer",
-            ));
+            )
+            .into());
         }
         let mut name = Vec::with_capacity(name_bytes / size_of::<u16>());
         for unit_offset in (name_start..name_end).step_by(size_of::<u16>()) {
@@ -3465,15 +3633,8 @@ fn parse_directory_information_buffer_bounded(
             });
         }
         let name = std::ffi::OsString::from_wide(&name);
-        checkpoint()?;
         if name != "." && name != ".." {
-            if names.len() >= maximum_entries {
-                return Err(io::Error::new(
-                    io::ErrorKind::FileTooLarge,
-                    "directory exceeds the retained enumeration entry limit",
-                ));
-            }
-            names.push(name);
+            visitor(name)?;
         }
 
         let next = entry.NextEntryOffset as usize;
@@ -3490,7 +3651,8 @@ fn parse_directory_information_buffer_bounded(
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "directory entry next-record offset is not 8-byte-aligned or overlaps the name",
-            ));
+            )
+            .into());
         }
         offset = offset.checked_add(next).ok_or_else(|| {
             io::Error::new(
@@ -3502,7 +3664,8 @@ fn parse_directory_information_buffer_bounded(
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "directory entry offset exceeds the enumeration buffer",
-            ));
+            )
+            .into());
         }
     }
     Ok(())
@@ -3523,6 +3686,27 @@ pub(crate) fn read_directory_names_bounded(
     maximum_entries: usize,
     mut checkpoint: impl FnMut() -> io::Result<()>,
 ) -> io::Result<Vec<std::ffi::OsString>> {
+    let mut names = Vec::new();
+    visit_directory_names(directory, |name| {
+        checkpoint()?;
+        if names.len() >= maximum_entries {
+            return Err(io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                "directory exceeds the retained enumeration entry limit",
+            ));
+        }
+        names.push(name);
+        Ok(())
+    })?;
+    names.sort();
+    Ok(names)
+}
+
+#[cfg(windows)]
+fn visit_directory_names<E: From<io::Error>>(
+    directory: &fs::File,
+    mut visitor: impl FnMut(std::ffi::OsString) -> Result<(), E>,
+) -> Result<(), E> {
     use std::mem::size_of;
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{
@@ -3535,7 +3719,6 @@ pub(crate) fn read_directory_names_bounded(
     let word_count = BUFFER_BYTES.div_ceil(size_of::<usize>());
     let mut storage = vec![0usize; word_count];
     let buffer_bytes = storage.len() * size_of::<usize>();
-    let mut names = Vec::new();
     let mut restart = true;
     loop {
         storage.fill(0);
@@ -3559,7 +3742,7 @@ pub(crate) fn read_directory_names_bounded(
             if directory_query_is_end(restart, &error) {
                 break;
             }
-            return Err(error);
+            return Err(error.into());
         }
         restart = false;
 
@@ -3567,15 +3750,9 @@ pub(crate) fn read_directory_names_bounded(
         // complete structure, name, and next-record bounds checks before reading each field.
         let buffer =
             unsafe { std::slice::from_raw_parts(storage.as_ptr().cast::<u8>(), buffer_bytes) };
-        parse_directory_information_buffer_bounded(
-            buffer,
-            &mut names,
-            maximum_entries,
-            &mut checkpoint,
-        )?;
+        visit_directory_information_buffer(buffer, &mut visitor)?;
     }
-    names.sort();
-    Ok(names)
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -5805,6 +5982,146 @@ mod tests {
 
     #[cfg(windows)]
     use super::strip_windows_extended_length_prefix;
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn retained_large_reader_limits_each_chunk_and_honors_cancellation() {
+        use super::RetainedDirectoryCapability;
+
+        let root = unique_temp_root("chunked-retained-read");
+        fs::create_dir_all(root.join("nested")).unwrap();
+        let file = fs::File::create(root.join("nested/source.bsl")).unwrap();
+        let file_bytes = 8 * 1024 * 1024 + 1;
+        file.set_len(file_bytes).unwrap();
+        drop(file);
+        let physical_root = fs::canonicalize(&root).unwrap();
+        let directory = RetainedDirectoryCapability::open(&physical_root).unwrap();
+        let mut observed = 0_usize;
+        let mut max_chunk = 0_usize;
+        let total = directory
+            .visit_relative_regular_chunks(
+                Path::new("nested/source.bsl"),
+                || Ok(()),
+                |chunk| {
+                    assert!(chunk.len() <= 64 * 1024);
+                    observed += chunk.len();
+                    max_chunk = max_chunk.max(chunk.len());
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(total, file_bytes);
+        assert_eq!(observed, total as usize);
+        assert_eq!(max_chunk, 64 * 1024);
+
+        let mut checkpoints = 0;
+        let interrupted = directory
+            .visit_relative_regular_chunks(
+                Path::new("nested/source.bsl"),
+                || {
+                    checkpoints += 1;
+                    if checkpoints == 2 {
+                        return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
+                    }
+                    Ok(())
+                },
+                |_| Ok(()),
+            )
+            .unwrap_err();
+        assert_eq!(interrupted.kind(), io::ErrorKind::Interrupted);
+        drop(directory);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn retained_bounded_reader_still_accepts_the_exact_byte_boundary() {
+        use super::RetainedDirectoryCapability;
+
+        let root = unique_temp_root("bounded-retained-boundary");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("source.xml"), b"abc").unwrap();
+        let physical_root = fs::canonicalize(&root).unwrap();
+        let directory = RetainedDirectoryCapability::open(&physical_root).unwrap();
+        assert_eq!(
+            directory
+                .read_relative_regular_bounded(Path::new("source.xml"), 3)
+                .unwrap(),
+            b"abc"
+        );
+        let error = directory
+            .read_relative_regular_bounded(Path::new("source.xml"), 2)
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        drop(directory);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn retained_large_reader_stays_on_open_file_and_rejects_symlink() {
+        use super::RetainedDirectoryCapability;
+
+        let root = unique_temp_root("streamed-retained-identity");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("source.xml"), vec![b'a'; 128 * 1024]).unwrap();
+        fs::write(root.join("replacement.xml"), vec![b'b'; 128 * 1024]).unwrap();
+        let physical_root = fs::canonicalize(&root).unwrap();
+        let directory = RetainedDirectoryCapability::open(&physical_root).unwrap();
+        let mut replaced = false;
+        let mut observed_b = false;
+        let total = directory
+            .visit_relative_regular_chunks(
+                Path::new("source.xml"),
+                || Ok(()),
+                |chunk| {
+                    if !replaced {
+                        fs::rename(root.join("replacement.xml"), root.join("source.xml"))?;
+                        replaced = true;
+                    }
+                    observed_b |= chunk.contains(&b'b');
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(total, 128 * 1024);
+        assert!(
+            !observed_b,
+            "replacement contents entered the opened stream"
+        );
+        std::os::unix::fs::symlink(root.join("source.xml"), root.join("link.xml")).unwrap();
+        assert!(directory
+            .visit_relative_regular_chunks(Path::new("link.xml"), || Ok(()), |_| Ok(()))
+            .is_err());
+        drop(directory);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn retained_file_reopen_gives_streaming_readers_independent_offsets() {
+        use super::RetainedDirectoryCapability;
+        use std::io::Read;
+
+        let root = unique_temp_root("independent-retained-readers");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("source.bsl"), b"first\nsecond\n").unwrap();
+        let physical_root = fs::canonicalize(&root).unwrap();
+        let directory = RetainedDirectoryCapability::open(&physical_root).unwrap();
+        let retained = directory
+            .retain_regular_child(std::ffi::OsStr::new("source.bsl"))
+            .unwrap();
+        let mut first = retained.open_named_identity_for_read().unwrap();
+        let mut second = retained.open_named_identity_for_read().unwrap();
+        let mut first_byte = [0_u8; 1];
+        let mut second_byte = [0_u8; 1];
+        first.read_exact(&mut first_byte).unwrap();
+        second.read_exact(&mut second_byte).unwrap();
+        assert_eq!(first_byte, *b"f");
+        assert_eq!(second_byte, *b"f");
+        drop((first, second, retained, directory));
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[cfg(any(unix, windows))]
     #[test]

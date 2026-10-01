@@ -13,7 +13,7 @@ use crate::infrastructure::diagnostics_jsonl::{
 use crate::infrastructure::platform::filesystem::path_lock_identity;
 use crate::infrastructure::platform::{
     ensure_truncation_diagnostics, ManagedChild, ManagedCommand, ManagedLineOutput, ManagedOutput,
-    StreamControl,
+    StreamControl, STREAM_LINE_TOO_LONG_ERROR,
 };
 use crate::infrastructure::plugin_runtime::{find_plugin_root, value_to_cli_string};
 use crate::infrastructure::redaction::{is_secret_key, redactor};
@@ -105,9 +105,8 @@ pub trait ProcessRunner {
                 continue;
             }
             if bytes.len() > max_line_bytes {
-                line_error.get_or_insert_with(|| {
-                    (index + 1, "line exceeds configured byte limit".to_string())
-                });
+                line_error
+                    .get_or_insert_with(|| (index + 1, STREAM_LINE_TOO_LONG_ERROR.to_string()));
             } else {
                 if on_line(index + 1, bytes) == StreamControl::Stop {
                     return Ok(ProcessStreamOutput {
@@ -581,10 +580,8 @@ impl<'a> RuntimeAdapter<'a> {
                 }));
             }
         };
-        // The one full retry belongs to the durable entry point alone. An
-        // applied `unica.runtime.execute` is refused by INV-MCP-RUNTIME-RECEIPT
-        // before it reaches this adapter, so there is no first attempt here to
-        // classify and nothing to retry (ADR-0066, ADR-0067).
+        // This synchronous adapter runs one attempt. A full retry belongs
+        // to the durable worker, which owns both attempts.
         let mut runner_error = if args.get("operation").and_then(Value::as_str) == Some("build")
             && !output.status_success
         {
@@ -1570,7 +1567,7 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         let (remote_tool, tool_args) = bsl_mcp_tool_request(tool_name, args)?;
         // A workspace that has not downloaded the tools has no analyzer in its
         // manifest. `code.search` already answers that state with an
-        // unavailable section and a working result (ADR-0017); answering it
+        // unavailable section and a working result; answering it
         // here with a failed call made the same workstation look broken (#275).
         // A provider that ran and failed is a different case and still fails.
         let bundled_tool = match resolve_bundled_tool(&plugin_root, "bsl-analyzer", !dry_run) {
@@ -1714,7 +1711,13 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
             &mut consume,
         )?;
         if let Some((line_number, reason)) = &output.line_error {
-            parser.reject_line(*line_number, reason);
+            use crate::domain::diagnostics::stream_error::StreamErrorKind;
+            let kind = if reason == STREAM_LINE_TOO_LONG_ERROR {
+                StreamErrorKind::LineTooLong
+            } else {
+                StreamErrorKind::ReadFailure
+            };
+            parser.reject_line(*line_number, kind);
         }
         let stderr = redactor(&output.stderr);
         if output.cancelled {
@@ -2376,8 +2379,6 @@ const RUNTIME_MAPPER_LAUNCH_ARGS: &[&str] = &[
 ];
 const RUNTIME_MAPPER_EXTENSIONS_ARGS: &[&str] =
     &["operation", "config", "workdir", "sourceSet", "sourceSets"];
-const RUNTIME_MAPPER_TOOLS_DOWNLOAD_ARGS: &[&str] =
-    &["operation", "config", "workdir", "tool", "sources", "force"];
 const RUNTIME_MAPPER_ARRAY_ARGS: &[&str] = &[
     "features",
     "filterTags",
@@ -2392,7 +2393,6 @@ const RUNTIME_MAPPER_LOAD_MODES: &[&str] = &["load", "merge"];
 const RUNTIME_MAPPER_DUMP_MODES: &[&str] = &["full", "incremental", "partial"];
 const RUNTIME_MAPPER_TEST_RUNNERS: &[&str] = &["yaxunit", "va"];
 const RUNTIME_MAPPER_TEST_SCOPES: &[&str] = &["all", "module"];
-const RUNTIME_MAPPER_TOOLS: &[&str] = &["yaxunit", "vanessa", "client-mcp"];
 
 fn runtime_args(args: &Map<String, Value>, redact: bool) -> Result<Vec<String>, String> {
     if args.contains_key("args") {
@@ -2508,14 +2508,6 @@ fn runtime_args(args: &Map<String, Value>, redact: bool) -> Result<Vec<String>, 
             append_arg(&mut result, "--name", args, "sourceSet", redact);
             append_array_args(&mut result, "--name", args, "sourceSets", redact);
         }
-        "tools-download" => {
-            result.extend(["tools".to_string(), "download".to_string()]);
-            if let Some(tool) = string_arg(args, "tool", redact) {
-                result.push(tool);
-            }
-            append_bool_flag(&mut result, "--sources", args, "sources");
-            append_bool_flag(&mut result, "--force", args, "force");
-        }
         other => return Err(format!("unknown runtime operation: {other}")),
     }
 
@@ -2580,7 +2572,7 @@ fn reject_missing_client_mcp_extension(
         return Ok(());
     }
     Err(format!(
-        "project declares `tools.client_mcp.extension.artifact.path` = `{declared}` but the artifact is missing; download it with operation `tools-download` before `build`"
+        "project declares `tools.client_mcp.extension.artifact.path` = `{declared}` but the artifact is missing; put the built `.cfe` at that path before `build` — the product does not fetch it, delivery of client-mcp is the toolchain of 0.14 (#870)"
     ))
 }
 
@@ -2671,23 +2663,6 @@ fn validate_runtime_mapper_payload(
             validate_mapper_enum(args, "testScope", RUNTIME_MAPPER_TEST_SCOPES)?;
         }
         "launch" => validate_bounded_external_epf_launch(args)?,
-        "tools-download" => {
-            validate_mapper_enum(args, "tool", RUNTIME_MAPPER_TOOLS)?;
-            if args
-                .get("sources")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-                && args
-                    .get("tool")
-                    .and_then(Value::as_str)
-                    .is_some_and(|tool| tool == "vanessa")
-            {
-                return Err(
-                    "operation `tools-download` accepts `sources` only for `yaxunit` or `client-mcp`"
-                        .to_string(),
-                );
-            }
-        }
         _ => {}
     }
 
@@ -2785,7 +2760,6 @@ fn runtime_mapper_operation_args(operation: &str) -> Option<&'static [&'static s
         "test" => Some(RUNTIME_MAPPER_TEST_ARGS),
         "launch" => Some(RUNTIME_MAPPER_LAUNCH_ARGS),
         "extensions" => Some(RUNTIME_MAPPER_EXTENSIONS_ARGS),
-        "tools-download" => Some(RUNTIME_MAPPER_TOOLS_DOWNLOAD_ARGS),
         _ => None,
     }
 }
@@ -3123,11 +3097,8 @@ mod tests {
         cleanup_context(&context);
     }
 
-    /// #404 and ADR-0067. The one full retry belongs to the durable entry
-    /// point. An applied `unica.runtime.execute` never reaches this adapter
-    /// (INV-MCP-RUNTIME-RECEIPT), so a partial-failure receipt here must not
-    /// start a second process: the retry would escape the one call that owns
-    /// the lifecycle.
+    /// This synchronous adapter must not start a second process after a
+    /// partial-failure receipt. The durable worker owns the retry (#404).
     #[test]
     fn runtime_adapter_never_retries_a_failed_partial_build() {
         let mut context = temp_context("runtime-partial-no-sync-retry");
@@ -3776,7 +3747,8 @@ mod tests {
         let error = reject_missing_client_mcp_extension(&args, &context)
             .expect_err("a declared artifact that is absent is refused before the run");
 
-        assert!(error.contains("tools-download"), "{error}");
+        assert!(!error.contains("tools-download"), "{error}");
+        assert!(error.contains("#870"), "{error}");
         assert!(error.contains("client_mcp.cfe"), "{error}");
 
         // Present artifact, and a project that declares none, both pass.
@@ -4608,21 +4580,18 @@ mod tests {
                 }),
                 vec!["extensions", "--name", "Sales", "--name", "Warehouse"],
             ),
-            (
-                json!({
-                    "operation": "tools-download",
-                    "tool": "client-mcp",
-                    "sources": true,
-                    "force": true,
-                }),
-                vec!["tools", "download", "client-mcp", "--sources", "--force"],
-            ),
         ];
 
         for (input, expected) in cases {
             let args = input.as_object().unwrap().clone();
             assert_eq!(runtime_args(&args, false).unwrap(), expected);
         }
+
+        // Маршрут загрузки зависимостей через раннер снят: продукт его не
+        // маппит ни в какую команду (#871, B-2).
+        let removed = json!({"operation": "tools-download", "tool": "client-mcp"});
+        let error = runtime_args(removed.as_object().unwrap(), false).unwrap_err();
+        assert!(error.contains("unknown runtime operation"), "{error}");
     }
 
     #[test]
@@ -5570,6 +5539,126 @@ analyze_timeout_seconds = 900
             result.diagnostics.unwrap().outcome.error.unwrap().code,
             "diagnostics_invalid"
         );
+    }
+
+    #[test]
+    fn diagnostics_analyze_reports_earliest_oversize_or_parse_failure() {
+        let oversized = "private-token".repeat(MAX_DIAGNOSTICS_JSONL_LINE_BYTES / 13 + 1);
+        for (index, (stream, expected)) in [
+            (
+                format!("{oversized}\ninvalid-event"),
+                "line 1: line exceeds 8388608 bytes.",
+            ),
+            (
+                format!("invalid-event\n{oversized}"),
+                "line 1: invalid JSON or event schema.",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let result =
+                analyze_outcome(None, &stream, &format!("diagnostics-error-order-{index}"));
+            assert!(!result.outcome.ok);
+            assert!(result.outcome.stdout.is_none());
+            assert!(!result.outcome.errors.join(" ").contains("private-token"));
+            let batch = result.diagnostics.unwrap();
+            assert!(batch.outcome.observations.is_empty());
+            assert!(batch.outcome.error.unwrap().message.starts_with(expected));
+        }
+    }
+
+    #[test]
+    fn diagnostics_analyze_read_failure_is_safe_and_distinct_from_oversize() {
+        struct ReadFailureRunner;
+        impl ProcessRunner for ReadFailureRunner {
+            fn run(&self, _: &ProcessCommand) -> Result<ProcessOutput, String> {
+                panic!("streaming runner expected")
+            }
+
+            fn run_streaming(
+                &self,
+                _: &ProcessCommand,
+                _: usize,
+                on_line: &mut dyn FnMut(usize, &[u8]) -> StreamControl,
+            ) -> Result<ProcessStreamOutput, String> {
+                on_line(1, br#"{"type":"start","total_files":0,"version":"test"}"#);
+                Ok(ProcessStreamOutput {
+                    status_success: true,
+                    status: "exit status: 0".to_string(),
+                    stderr: String::new(),
+                    timed_out: false,
+                    cancelled: false,
+                    stopped_by_consumer: false,
+                    line_error: Some((
+                        2,
+                        "failed to read process stdout: private-token C:/private/Secret.bsl"
+                            .to_string(),
+                    )),
+                })
+            }
+        }
+        let context = temp_context("diagnostics-read-failure");
+        let result = invoke_analyze(
+            &BslAnalyzerMcpAdapter::with_process_runner(&ReadFailureRunner),
+            &Map::new(),
+            &context,
+            false,
+        );
+        cleanup_context(&context);
+        assert!(!result.outcome.ok);
+        assert!(result.outcome.stdout.is_none());
+        let error = result.diagnostics.unwrap().outcome.error.unwrap();
+        assert_eq!(error.code, "diagnostics_invalid");
+        assert_eq!(error.message, "line 2: failed to read diagnostics stream. Check compatibility between Unica and its bundled analyzer; if the problem persists, report this reason and line number.");
+        assert_eq!(
+            result.outcome.errors,
+            vec![format!("diagnostics_invalid {}", error.message)]
+        );
+    }
+
+    #[test]
+    fn diagnostics_analyze_process_failure_takes_priority_over_invalid_stream() {
+        for (index, (cancelled, timed_out, expected)) in [
+            (true, false, "cancelled:"),
+            (false, true, "timed out"),
+            (false, false, "exit status: 2"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let context = temp_context(&format!("diagnostics-process-priority-{index}"));
+            let mut output = analyze_process_output("invalid-event");
+            output.status_success = false;
+            output.cancelled = cancelled;
+            output.timed_out = timed_out;
+            output.status = "exit status: 2".to_string();
+            let runner = FakeProcessRunner { output };
+            let result = invoke_analyze(
+                &BslAnalyzerMcpAdapter::with_process_runner(&runner),
+                &Map::new(),
+                &context,
+                false,
+            );
+            cleanup_context(&context);
+            assert!(!result.outcome.ok);
+            assert!(result.diagnostics.is_none());
+            assert!(result.outcome.stdout.is_none());
+            assert!(
+                result
+                    .outcome
+                    .errors
+                    .iter()
+                    .any(|error| error.contains(expected)),
+                "{:?}",
+                result.outcome.errors
+            );
+            assert!(!result
+                .outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("diagnostics_invalid")));
+        }
     }
 
     #[test]

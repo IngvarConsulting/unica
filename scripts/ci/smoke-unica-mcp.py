@@ -34,7 +34,7 @@ ProcessCleanupResult = _WIRE_PROBE.ProcessCleanupResult
 ProcessOwnership = _WIRE_PROBE.ProcessOwnership
 
 
-TOOL_SURFACE_REVIEW_RELATIVE = Path("arch/tool-surface-review.json")
+TOOL_SURFACE_REVIEW_RELATIVE = Path("tests/fixtures/v013/tool-surface-review.json")
 CHECKOUT_MARKERS = (
     Path("Cargo.toml"),
     Path("plugins/unica/.codex-plugin/plugin.json"),
@@ -212,7 +212,7 @@ def _input_schema_shape_error(value: object) -> str | None:
 def _code_search_output_schema_shape_error(value: object) -> str | None:
     if not isinstance(value, dict) or value.get("type") != "object":
         return "must declare an object envelope"
-    # ADR-0023: typed provider-neutral payload is carried by OperationResult.data.
+    # Typed provider-neutral payload is carried by OperationResult.data.
     required = value.get("required")
     if not isinstance(required, list) or "data" not in required:
         return "must require data"
@@ -1063,7 +1063,7 @@ def _source_workspace(root: Path) -> None:
         (root / source_set / "CommonModules/Shared/Ext/Module.bsl").write_bytes(
             ("\ufeffProcedure " + module + "()\r\nEndProcedure\r\n").encode("utf-8")
         )
-    # ADR-0049: a subject reader must be reachable by address end to end, so
+    # A subject reader must be reachable by address end to end, so
     # the smoke workspace carries one registered object with an attached body.
     (root / "src/Roles/SmokeRole/Ext").mkdir(parents=True)
     (root / "src/Roles/SmokeRole.xml").write_text(
@@ -1893,6 +1893,25 @@ def _stable_tool_contract(tools: list[object], expected_names: set[str]) -> None
             raise SystemExit(f"non-Meta tool unexpectedly publishes outputSchema: {name}")
 
 
+# `unica.resolve` — аварийный мост между логическим адресом и раскладкой
+# файлов в обе стороны, и путь на входе разрешён только ему (#801): это
+# единственное место поверхности, куда путь приходит снаружи. Остальные схемы
+# ключ `path` не несут, и для них запрет остаётся.
+RESOLVE_BRIDGE_TOOL_NAME = "unica.resolve"
+
+
+def _without_bridge_path_input(name: str, schema: dict) -> dict:
+    if name != RESOLVE_BRIDGE_TOOL_NAME:
+        return schema
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return schema
+    return {
+        **schema,
+        "properties": {key: value for key, value in properties.items() if key != "path"},
+    }
+
+
 def _stable_v13_tool_contract(
     tools: list[object], expected_names: set[str]
 ) -> None:
@@ -1912,7 +1931,7 @@ def _stable_v13_tool_contract(
                 f"Unica MCP tools/list has malformed input schema for {name}: "
                 f"{schema_error}"
             )
-        _assert_path_free(tool["inputSchema"])
+        _assert_path_free(_without_bridge_path_input(name, tool["inputSchema"]))
         by_name[name] = tool
 
     actual_names = set(by_name)
@@ -1937,6 +1956,10 @@ def _stable_v13_tool_contract(
 def _exercise_v13_packaged_surface(
     session: McpSession, request_id: int
 ) -> int:
+    # #800: `check {}` отвечает вердиктом, `view {}` — фактами. Перечень
+    # наборов из вердикта убран, он живёт в `sourceSets` фактов; та же
+    # раскладка проверяется в release-assessment (`workspace-check`,
+    # `workspace-facts`).
     checked = _call(
         session,
         request_id,
@@ -1945,12 +1968,31 @@ def _exercise_v13_packaged_surface(
         structured_content=True,
     )
     request_id += 1
+    verdict = checked.get("data", {})
     if (
         checked.get("ok") is not True
-        or checked.get("data", {}).get("status") != "admitted"
-        or set(checked["data"].get("sources", [])) != {"main", "extension"}
+        or verdict.get("status") != "passed"
+        or verdict.get("ready") is not True
+        or "sources" in verdict
     ):
-        raise SystemExit(f"canonical check did not admit both source sets: {checked}")
+        raise SystemExit(f"canonical check did not pass the workspace verdict: {checked}")
+
+    facts = _call(
+        session,
+        request_id,
+        "unica.view",
+        {},
+        structured_content=True,
+    )
+    request_id += 1
+    declared = facts.get("data", {}).get("sourceSets")
+    names = (
+        {item.get("name") for item in declared if isinstance(item, dict)}
+        if isinstance(declared, list)
+        else set()
+    )
+    if facts.get("ok") is not True or names != {"main", "extension"}:
+        raise SystemExit(f"canonical view did not name both source sets: {facts}")
 
     viewed = _call(
         session,
@@ -2068,7 +2110,7 @@ def _exercise_reader_bridge(
 ) -> int:
     """An address found by `unica.source.resolve` reaches a subject reader.
 
-    This is the whole point of ADR-0049: the caller never has to know that a
+    The caller never has to know that a
     role's rights live two directories below its descriptor.
     """
     resolved = _call(session, request_id, "unica.source.resolve", {

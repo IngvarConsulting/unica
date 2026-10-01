@@ -1,4 +1,7 @@
 use serde_json::{json, Value};
+
+#[path = "support/code_module_state.rs"]
+mod code_module_state;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -127,6 +130,247 @@ fn read_stdout_lines(stdout: ChildStdout, sender: mpsc::Sender<String>) {
 }
 
 #[test]
+fn canonical_check_null_options_preserve_root_node_and_cursor_contracts() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    let state = root.path().join("state");
+    std::fs::create_dir_all(workspace.join("src")).unwrap();
+    std::fs::create_dir(&state).unwrap();
+    std::fs::write(
+        workspace.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+    )
+    .unwrap();
+    // Readable configuration with two independent validation findings.
+    let source = workspace.join("src/Configuration.xml");
+    let xml = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+<Configuration uuid="22222222-2222-4222-8222-222222222222">
+<Properties><Name>Incomplete</Name><CompatibilityMode>Version8_3_27</CompatibilityMode></Properties>
+<ChildObjects/></Configuration></MetaDataObject>"#;
+    std::fs::write(&source, xml).unwrap();
+    let mut mcp = McpProcess::start(&workspace, &state);
+    mcp.exchange(json!({"jsonrpc":"2.0", "id":1, "method":"initialize",
+        "params":{"protocolVersion":"2025-11-25", "capabilities":{},
+        "clientInfo":{"name":"check-options-test", "version":"1"}}}));
+    mcp.notify(json!({"jsonrpc":"2.0", "method":"notifications/initialized"}));
+    let mut call = |arguments: Value| {
+        let mut response = mcp.exchange(json!({"jsonrpc":"2.0", "id":2,
+            "method":"tools/call", "params":{"name":"unica.check", "arguments":arguments}}));
+        for id in 3..=12 {
+            let result = &response["result"]["structuredContent"];
+            let Some(task_id) = result["data"]["task"]["taskId"].as_str() else {
+                assert!(result.is_object(), "{response:#}");
+                return result.clone();
+            };
+            response = mcp.exchange(json!({"jsonrpc":"2.0", "id":id,
+                "method":"tools/call", "params":{"name":"unica.task.result",
+                "arguments":{"taskId":task_id,"waitMs":7000}}}));
+        }
+        panic!("check did not finish: {response:#}");
+    };
+    let root_omitted = call(json!({}));
+    let root_null = call(json!({"at":null,"limit":null,"cursor":null}));
+    assert_eq!(root_null["ok"], true, "{root_null:#}");
+    assert_eq!(root_null["data"], root_omitted["data"]);
+    let omitted = call(json!({"at":"main:Configuration"}));
+    let nulls = call(json!({"at":"main:Configuration","limit":null,"cursor":null}));
+    assert_eq!(nulls["ok"], true, "{nulls:#}");
+    assert_eq!(nulls["data"], omitted["data"]);
+    assert_eq!(nulls["data"]["status"], "failed");
+    let diagnostics = nulls["data"]["diagnostics"].as_array().unwrap();
+    assert!(diagnostics.len() > 1, "fixture must exercise pagination");
+    let first = call(json!({"at":"main:Configuration","limit":1,"cursor":null}));
+    assert_eq!(first["ok"], true, "{first:#}");
+    let cursor = first["cursor"].as_str().expect("next page cursor");
+    let next_args = json!({"at":"main:Configuration","limit":1,"cursor":cursor});
+    let second = call(next_args.clone());
+    assert_eq!(second["ok"], true, "{second:#}");
+    assert_eq!(call(next_args), second, "cursor replay must be stable");
+    let mut findings = first["data"]["diagnostics"].as_array().unwrap().clone();
+    findings.extend(second["data"]["diagnostics"].as_array().unwrap().clone());
+    assert_eq!(&findings, diagnostics);
+    for page in [&first, &second] {
+        assert_eq!(page["data"]["status"], "failed");
+    }
+    for arguments in [
+        json!({"at":"main:Configuration","cursor":""}),
+        json!({"at":"main:Configuration","cursor":"damaged"}),
+        json!({"at":"main:Configuration","limit":2,"cursor":cursor}),
+    ] {
+        let rejected = call(arguments);
+        assert_eq!(rejected["ok"], false, "{rejected:#}");
+        assert_eq!(
+            rejected["diagnostics"][0]["code"], "invalid_cursor",
+            "{rejected:#}"
+        );
+    }
+    for arguments in [
+        json!({"at":false}),
+        json!({"at":""}),
+        json!({"at":"main:Configuration","limit":"20"}),
+        json!({"at":"main:Configuration","limit":0}),
+        json!({"at":"main:Configuration","limit":51}),
+        json!({"at":"main:Configuration","cursor":false}),
+        json!({"at":null,"unknown":null}),
+    ] {
+        let rejected = call(arguments);
+        assert_eq!(rejected["ok"], false, "{rejected:#}");
+        assert_eq!(
+            rejected["diagnostics"][0]["code"], "bad_value",
+            "{rejected:#}"
+        );
+    }
+    assert_eq!(std::fs::read_to_string(source).unwrap(), xml);
+    mcp.finish();
+}
+
+// The aggregate size is deliberately above the retired 256 MiB policy limit,
+// while every staged and working resource stays below the per-file bound.
+#[test]
+fn canonical_check_has_no_aggregate_size_refusal_above_256_mib() {
+    let root = tempfile::tempdir().expect("large repository integration root");
+    let workspace = root.path().join("workspace");
+    let state = root.path().join("state");
+    std::fs::create_dir_all(workspace.join("src/Corpus")).unwrap();
+    std::fs::create_dir(&state).unwrap();
+    std::fs::write(
+        workspace.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+    )
+    .unwrap();
+    std::fs::write(
+        workspace.join("src/Configuration.xml"),
+        "<MetaDataObject/>\n",
+    )
+    .unwrap();
+    std::fs::write(
+        workspace.join(".gitignore"),
+        "**/.build/\nConfigDumpInfo.xml\nDumpFilesIndex.txt\n",
+    )
+    .unwrap();
+    std::fs::write(
+        workspace.join(".gitattributes"),
+        "*.xml text eol=lf\n*.bsl text eol=lf\n",
+    )
+    .unwrap();
+
+    let first = workspace.join("src/Corpus/Module0.bsl");
+    let mut file = std::fs::File::create(&first).unwrap();
+    let chunk = [b'x'; 64 * 1024];
+    for _ in 0..(31 * 1024 * 1024 / chunk.len()) {
+        file.write_all(&chunk).unwrap();
+    }
+    drop(file);
+    for index in 1..9 {
+        let path = workspace.join(format!("src/Corpus/Module{index}.bsl"));
+        if std::fs::hard_link(&first, &path).is_err() {
+            std::fs::copy(&first, &path).unwrap();
+        }
+    }
+    assert!(9 * std::fs::metadata(&first).unwrap().len() > 256 * 1024 * 1024);
+
+    for arguments in [vec!["init"], vec!["add", "."]] {
+        let output = Command::new("git")
+            .args(&arguments)
+            .current_dir(&workspace)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {arguments:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let mut mcp = McpProcess::start(&workspace, &state);
+    mcp.exchange(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-11-25",
+            "capabilities": {},
+            "clientInfo": {"name": "large-repository-check-ci", "version": "1"}
+        }
+    }));
+    mcp.notify(json!({
+        "jsonrpc": "2.0", "method": "notifications/initialized", "params": {}
+    }));
+    let check_started = Instant::now();
+    let mut response = mcp.exchange(json!({
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {"name": "unica.check", "arguments": {}}
+    }));
+    for id in 3..=7 {
+        let Some(task_id) =
+            response["result"]["structuredContent"]["data"]["task"]["taskId"].as_str()
+        else {
+            break;
+        };
+        response = mcp.exchange(json!({
+            "jsonrpc": "2.0", "id": id, "method": "tools/call",
+            "params": {
+                "name": "unica.task.result",
+                "arguments": {"taskId": task_id, "waitMs": 7000}
+            }
+        }));
+    }
+    let result = &response["result"]["structuredContent"];
+    assert_eq!(result["ok"], true, "{response:#}");
+    let data = &result["data"];
+    if data["readinessState"] == "incomplete" {
+        // A slow host may spend the request's seven-second inspection budget.
+        // That is an honest incomplete result, unlike a hard aggregate cap.
+        assert!(
+            check_started.elapsed() >= Duration::from_secs(7),
+            "inspection stopped before the request deadline: {response:#}"
+        );
+        assert_eq!(data["repositoryReady"], false, "{response:#}");
+        assert!(
+            data["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|diagnostic| {
+                    diagnostic["code"] == "git.inspection_timeout"
+                        || (diagnostic["code"] == "git.inspection_incomplete"
+                            && diagnostic["evidence"].as_array().is_some_and(|items| {
+                                items.iter().any(|item| {
+                                    item.as_str().is_some_and(|text| {
+                                        text.contains("deadline") || text.contains("timed out")
+                                    })
+                                })
+                            }))
+                }),
+            "incomplete inspection must identify its deadline: {response:#}"
+        );
+    } else {
+        assert_eq!(data["readinessState"], "complete", "{response:#}");
+        assert_eq!(data["repositoryReady"], true, "{response:#}");
+    }
+    assert!(
+        !serde_json::to_string(data)
+            .unwrap()
+            .contains("bytes in total"),
+        "aggregate resource size must not be an admission criterion: {response:#}"
+    );
+    for check in [
+        "repository.index_eol",
+        "repository.working_eol",
+        "repository.lfs",
+    ] {
+        assert!(
+            data["checks"].as_array().unwrap().iter().any(|row| {
+                row["id"] == check
+                    && row["sourceSet"] == "main"
+                    && (row["status"] == "passed"
+                        || (data["readinessState"] == "incomplete" && row["status"] == "notRun"))
+            }),
+            "{check}: {response:#}"
+        );
+    }
+    mcp.finish();
+}
+
+#[test]
 #[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn canonical_stdio_bootstraps_an_empty_workspace_before_address_discovery() {
     let root = tempfile::tempdir().expect("bootstrap integration root");
@@ -249,13 +493,9 @@ fn canonical_stdio_bootstraps_an_empty_workspace_before_address_discovery() {
             .filter(|operation| operation["implemented"] == true)
             .map(|operation| operation["op"].as_str().unwrap())
             .collect::<std::collections::BTreeSet<_>>(),
-        std::collections::BTreeSet::from([
-            "workspace.initialize",
-            "infobase.configuration.export",
-            "infobase.dump",
-        ])
+        std::collections::BTreeSet::from(["workspace.initialize", "cf.export", "infobase.export",])
     );
-    for operation in ["infobase.configuration.export", "infobase.dump"] {
+    for operation in ["cf.export", "infobase.export"] {
         assert!(operations
             .iter()
             .find(|candidate| candidate["op"] == operation)
@@ -384,17 +624,6 @@ fn canonical_stdio_hands_the_project_file_recipe_without_an_initialize_operation
     assert!(!workspace.join("v8project.yaml").exists());
 
     mcp.finish();
-}
-
-// Снятый контракт `source.attach` назван в реестре этим именем, и
-// `DEC.2026-09-02.RUN-INITIALIZATION-CONTRACT` ссылается на него как на свою
-// улику. Продуктовое решение не правят, а заменяют, поэтому имя остаётся, а
-// уликой под ним служит доказательство того, что предмета контракта больше
-// нет.
-#[test]
-#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
-fn canonical_stdio_previews_and_applies_autodetected_source_attachment_before_admission() {
-    canonical_stdio_hands_the_project_file_recipe_without_an_initialize_operation();
 }
 
 // Исключение из отключённого яруса: живой процесс — единственное место, где

@@ -1,0 +1,24 @@
+{
+  "ok": true,
+  "command": "extensions",
+  "duration_ms": 8,
+  "data": {
+    "provider": {
+      "selected": "ibcmd",
+      "origin": {
+        "kind": "override",
+        "file": "v8project.yaml"
+      }
+    },
+    "ok": true,
+    "provider_dispatched": false,
+    "requested": {
+      "kind": "all"
+    },
+    "plan": "would read every installed extension of file infobase '/workspace/base' with no configured infobase user via /platform/ibcmd",
+    "extensions": [],
+    "duration_ms": 8
+  },
+  "warnings": [],
+  "steps": []
+}

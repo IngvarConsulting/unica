@@ -67,6 +67,26 @@ fn valid_manifest_selects_the_requested_target() {
 }
 
 #[test]
+fn loading_a_manifest_rejects_an_unknown_artifact_role() {
+    for role in ["core", "engine", "future-resource"] {
+        let mut value = fixture();
+        value["artifacts"]["unica"]["role"] = serde_json::json!(role);
+        let path = std::env::temp_dir().join(format!("unica-role-{}.json", uuid::Uuid::new_v4()));
+        std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        let result = RuntimeManifest::load(&path);
+        std::fs::remove_file(&path).unwrap();
+
+        if role == "future-resource" {
+            let error = result.expect_err("an unknown role must not get a default meaning");
+            assert_eq!(error.failure(), Failure::Configuration);
+        } else {
+            result
+                .expect("known role must deserialize; artifact placement is validated separately");
+        }
+    }
+}
+
+#[test]
 fn manifest_rejects_plugin_version_mismatch_before_target_selection() {
     let manifest = parse(fixture());
 
@@ -240,15 +260,30 @@ fn a_maintained_engine_source_is_approved_without_opening_other_origins() {
         .validate("0.7.0")
         .expect("maintained source release is approved");
 
-    let mut other = fixture_with_maintained_runner();
-    other["artifacts"]["v8-runner"]["targets"]["linux-x64"]["asset"]["url"] =
-        serde_json::json!(
-            "https://github.com/IngvarConsulting/another-project/releases/download/v0.6.0/v8-runner-linux-x64"
-        );
-    let error = parse(other)
-        .validate("0.7.0")
-        .expect_err("an unrelated Ingvar Consulting release must stay refused");
-    assert!(error.to_string().contains("release origin"), "{error}");
+    for (mut value, artifact, url) in [
+        (
+            fixture_with_maintained_runner(),
+            "v8-runner",
+            "https://github.com/IngvarConsulting/another-project/releases/download/v0.6.0/v8-runner-linux-x64",
+        ),
+        (
+            fixture_with_maintained_runner(),
+            "v8-runner",
+            "https://github.com/IngvarConsulting/unica-toolchain/releases/download/v0.7.1/v8-runner-linux-x64",
+        ),
+        (
+            fixture_with_engine(),
+            "rlm-tools-bsl",
+            "https://github.com/IngvarConsulting/v8-runner-rust/releases/download/v1.33.0/rlm-tools-bsl-linux-x64.tar.gz",
+        ),
+    ] {
+        value["artifacts"][artifact]["targets"]["linux-x64"]["asset"]["url"] =
+            serde_json::json!(url);
+        let error = parse(value)
+            .validate("0.7.0")
+            .expect_err("a release origin is approved only for its own artifact");
+        assert!(error.to_string().contains("release origin"), "{artifact} {url}: {error}");
+    }
 }
 
 #[test]

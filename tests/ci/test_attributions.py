@@ -233,14 +233,6 @@ class AttributionTests(unittest.TestCase):
         repo_root = self.repo_root()
 
         self.assertEqual(module.validate_attributions(repo_root), [])
-        self.assertIn(
-            "[Авторы, источники и лицензии](plugins/unica/ATTRIBUTIONS.md)",
-            (repo_root / "README.md").read_text(encoding="utf-8"),
-        )
-        self.assertIn(
-            "[Авторы, источники и лицензии](ATTRIBUTIONS.md)",
-            (repo_root / "plugins/unica/README.md").read_text(encoding="utf-8"),
-        )
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 //! Canonical v0.13 router over the protocol-v5 user daemon.
 //!
-//! The stdio frontend keeps one anchor session for its lifetime and gives every
+//! The stdio frontend renews its daemon lease after replacement and gives every
 //! invocation and every Task operation a peer session of its own. A Direct
 //! terminal is acknowledged only after its host-facing value exists; a lost
 //! submit response is recovered by the exact receipt key the frontend derives
@@ -17,7 +17,7 @@ use crate::application::receipt_ledger::{
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::invocation::{InvocationId, TaskId};
 use crate::infrastructure::daemon::client_v5::{
-    V5DaemonProcessOwner, V5TaskExchangeError, V5TransportError,
+    V5DaemonClient, V5DaemonProcessOwner, V5TaskExchangeError, V5TransportError,
 };
 use crate::infrastructure::daemon::protocol_v5::{
     V5DaemonErrorCode, V5DaemonTaskSnapshot, V5InvocationRequest, V5InvocationResponse,
@@ -112,6 +112,7 @@ pub(super) enum CanonicalCallOutcome {
 pub(super) type CanonicalCallHandler = dyn Fn(
         V5ToolIdentity,
         &Map<String, Value>,
+        &Map<String, Value>,
         FrontendInvocationDeadline,
         CancellationToken,
     ) -> Result<CanonicalCallOutcome, ErrorData>
@@ -136,12 +137,12 @@ pub(super) struct CanonicalDaemonRouter {
 
 type ReceiptObserver = Arc<dyn Fn(&ReceiptKey) + Send + Sync>;
 
-/// Build the router over one persistent protocol-v5 owner lease.
+/// Build the router over a renewable protocol-v5 owner lease.
 pub(super) fn canonical_daemon_router(
-    owner: V5DaemonProcessOwner,
-    workspace_hint: String,
+    client: impl Into<V5DaemonClient>,
+    workspace: impl Into<unica_bootstrap::HostWorkspaceContext>,
 ) -> CanonicalDaemonRouter {
-    build_router(owner, workspace_hint, None)
+    build_router(client.into(), workspace.into(), None)
 }
 
 #[cfg(test)]
@@ -150,23 +151,38 @@ fn canonical_daemon_router_observed(
     workspace_hint: String,
     observer: ReceiptObserver,
 ) -> CanonicalDaemonRouter {
-    build_router(owner, workspace_hint, Some(observer))
+    build_router(owner.into(), workspace_hint.into(), Some(observer))
 }
 
 fn build_router(
-    owner: V5DaemonProcessOwner,
-    workspace_hint: String,
+    client: V5DaemonClient,
+    workspace: unica_bootstrap::HostWorkspaceContext,
     observer: Option<ReceiptObserver>,
 ) -> CanonicalDaemonRouter {
-    // The anchor holds the owner lease for the frontend lifetime; every
+    // The client retains the current owner lease for the frontend lifetime; every
     // invocation runs on its own peer session so a slow direct response cannot
     // serialize another call behind it.
-    let anchor = Arc::new(owner);
-    let call_anchor = Arc::clone(&anchor);
+    let client = Arc::new(client);
+    let call_client = Arc::clone(&client);
     let call: Arc<CanonicalCallHandler> =
-        Arc::new(move |tool, arguments, deadline, _cancellation| {
+        Arc::new(move |tool, arguments, metadata, deadline, _cancellation| {
+            // Resolve once per invocation. Never publish this choice back into
+            // shared frontend state: another call may belong to another tree.
+            let workspace_hint = match workspace.resolve(metadata) {
+                Ok(directory) => directory,
+                Err(message) => {
+                    let refusal = crate::domain::invocation::DomainResult::canonical_rejection(
+                        None,
+                        crate::domain::refusal::RefusalCode::InvalidState,
+                        message,
+                    );
+                    return task_projection::call_tool_result(&refusal)
+                        .map(CanonicalCallOutcome::Direct)
+                        .map_err(task_projection::projection_error);
+                }
+            };
             submit_and_settle(
-                &call_anchor,
+                &call_client,
                 &workspace_hint,
                 tool,
                 arguments,
@@ -174,16 +190,16 @@ fn build_router(
                 observer.as_ref(),
             )
         });
-    let get_anchor = Arc::clone(&anchor);
+    let get_client = Arc::clone(&client);
     let get: Arc<CanonicalTaskHandler> = Arc::new(move |task_id, deadline| {
         let cutoff = deadline.transport_cutoff();
-        let mut peer = task_peer(&get_anchor, cutoff)?;
+        let mut peer = task_peer(&get_client, cutoff)?;
         peer.get_task_before(task_id, cutoff)
     });
-    let wait_anchor = Arc::clone(&anchor);
+    let wait_client = Arc::clone(&client);
     let wait: Arc<CanonicalTaskWaitHandler> = Arc::new(move |task_id, wait_ms, deadline| {
         let cutoff = wait_transport_cutoff(wait_ms, deadline);
-        let mut peer = task_peer(&wait_anchor, cutoff)?;
+        let mut peer = task_peer(&wait_client, cutoff)?;
         // The daemon wait shrinks by what connect and handshake already spent
         // and by the response margin; the cutoff itself never moves.
         let bounded_wait_ms = bounded_wait_ms(wait_ms, cutoff, Instant::now());
@@ -191,7 +207,7 @@ fn build_router(
     });
     let cancel: Arc<CanonicalTaskHandler> = Arc::new(move |task_id, deadline| {
         let cutoff = deadline.transport_cutoff();
-        let mut peer = task_peer(&anchor, cutoff)?;
+        let mut peer = task_peer(&client, cutoff)?;
         peer.cancel_task_before(task_id, cutoff)
     });
     CanonicalDaemonRouter {
@@ -203,13 +219,13 @@ fn build_router(
 }
 
 fn task_peer(
-    anchor: &V5DaemonProcessOwner,
+    client: &V5DaemonClient,
     cutoff: Instant,
 ) -> Result<V5DaemonProcessOwner, V5TaskExchangeError> {
     if Instant::now() >= cutoff {
         return Err(V5TaskExchangeError::Transport);
     }
-    anchor
+    client
         .connect_peer_before(cutoff)
         .map_err(V5TaskExchangeError::from)
 }
@@ -239,7 +255,7 @@ fn bounded_wait_ms(requested_wait_ms: u64, cutoff: Instant, now: Instant) -> u64
 }
 
 fn submit_and_settle(
-    anchor: &V5DaemonProcessOwner,
+    client: &V5DaemonClient,
     workspace_hint: &str,
     tool: V5ToolIdentity,
     arguments: &Map<String, Value>,
@@ -247,7 +263,7 @@ fn submit_and_settle(
     observer: Option<&ReceiptObserver>,
 ) -> Result<CanonicalCallOutcome, ErrorData> {
     let cutoff = deadline.transport_cutoff();
-    let mut peer = anchor
+    let mut peer = client
         .connect_peer_before(cutoff)
         .map_err(transport_refusal)?;
     // The daemon anchors its handoff at the receipt of the frame, so its budget
@@ -269,7 +285,7 @@ fn submit_and_settle(
         response_budget_ms,
     )
     .map_err(|message| ErrorData::invalid_params(message, None))?;
-    let receipt_key = receipt_key_for(&invocation, anchor)?;
+    let receipt_key = receipt_key_for(&invocation, client)?;
     if let Some(observer) = observer {
         observer(&receipt_key);
     }
@@ -279,7 +295,7 @@ fn submit_and_settle(
         // daemon may already hold a reserved or terminal receipt for it.
         Err(V5TransportError::ResponseLost(_)) => {
             let recovery_cutoff = cutoff.max(Instant::now()) + RECOVERY_BUDGET;
-            recover_receipt(anchor, &receipt_key, recovery_cutoff)?
+            recover_receipt(client, &receipt_key, recovery_cutoff)?
         }
         Err(error) => return Err(transport_refusal(error)),
     };
@@ -290,7 +306,7 @@ fn submit_and_settle(
 /// (`receipt_key_is_canonicalized_identically_by_client_and_server`).
 fn receipt_key_for(
     invocation: &V5InvocationRequest,
-    anchor: &V5DaemonProcessOwner,
+    client: &V5DaemonClient,
 ) -> Result<ReceiptKey, ErrorData> {
     let scope = request_scope_hash(invocation.workspace_hint()).map_err(|_| {
         ErrorData::invalid_params("workspace hint is not a valid request scope", None)
@@ -299,7 +315,7 @@ fn receipt_key_for(
         invocation.invocation_id(),
         invocation.reserved_task_id(),
         RequestIdentity::new(
-            anchor.core_identity().digest().clone(),
+            client.core_identity().digest().clone(),
             invocation.tool(),
             normalized_arguments_hash(invocation.arguments()),
             scope,
@@ -313,12 +329,12 @@ fn receipt_key_for(
 /// recovery window closes, the host gets the same closed refusal the v3
 /// frontend answered with: the daemon may hold the work, nobody replays it.
 fn recover_receipt(
-    anchor: &V5DaemonProcessOwner,
+    client: &V5DaemonClient,
     receipt_key: &ReceiptKey,
     cutoff: Instant,
 ) -> Result<(V5DaemonProcessOwner, V5ServerResponse), ErrorData> {
     loop {
-        let mut peer = anchor
+        let mut peer = client
             .connect_peer_before(cutoff)
             .map_err(|_| lost_submit_refusal())?;
         let response = peer
@@ -841,6 +857,7 @@ mod tests {
         (router.call)(
             V5ToolIdentity::View,
             &arguments(),
+            &Map::new(),
             deadline(host_remaining),
             CancellationToken::new(),
         )
@@ -1015,6 +1032,59 @@ mod tests {
                 .digest()
                 .clone()],
             "only the strict receipt is acknowledged"
+        );
+    }
+
+    #[test]
+    fn lost_submit_response_follows_replaced_endpoint_without_resubmitting() {
+        use crate::infrastructure::daemon::identity::{CoreIdentity, DaemonStateDirectory};
+        let root = tempfile::tempdir().unwrap();
+        let state_root = std::fs::canonicalize(root.path()).unwrap();
+        let identity = CoreIdentity::production_v5();
+        let successor = FakeDaemon::start(Box::new(|_, request| match request {
+            V5ClientRequest::RecoverInvocationReceipt { receipt_key } => Step::Reply(
+                direct_receipt(receipt_key.clone(), completed("successor recovery")),
+            ),
+            V5ClientRequest::AcknowledgeInvocationReceipt { .. } => Step::Close,
+            other => panic!("successor received an unexpected request: {other:?}"),
+        }));
+        let successor_record = successor.record.clone();
+        let publish_root = state_root.clone();
+        let first = FakeDaemon::start(Box::new(move |_, request| {
+            assert!(matches!(request, V5ClientRequest::SubmitInvocation { .. }));
+            let state =
+                DaemonStateDirectory::open(&publish_root, &CoreIdentity::production_v5()).unwrap();
+            state.publish_v5_endpoint_record(&successor_record).unwrap();
+            Step::Close
+        }));
+        let state = DaemonStateDirectory::open(&state_root, &identity).unwrap();
+        state.publish_v5_endpoint_record(&first.record).unwrap();
+        let client = V5DaemonClient::connect(
+            state_root,
+            identity,
+            root.path().join("must-not-spawn"),
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        let router = canonical_daemon_router(client, "/workspace".to_string());
+        let result = direct_result(call(&router, None));
+        assert_eq!(
+            result.structured_content.as_ref().unwrap()["summary"],
+            "successor recovery"
+        );
+        assert_eq!(first.submissions(), 1);
+        assert_eq!(successor.submissions(), 0);
+        let submissions = first.seen();
+        let V5ClientRequest::SubmitInvocation { invocation } = &submissions[0] else {
+            panic!("missing submit")
+        };
+        let recovery = successor.seen();
+        let V5ClientRequest::RecoverInvocationReceipt { receipt_key } = &recovery[0] else {
+            panic!("missing recovery")
+        };
+        assert_eq!(
+            receipt_key,
+            &receipt_key_for(invocation, &V5DaemonClient::from(first.owner())).unwrap()
         );
     }
 
@@ -1302,6 +1372,7 @@ mod tests {
         let foreign = (router.call)(
             V5ToolIdentity::Docs,
             &Map::new(),
+            &Map::new(),
             deadline(None),
             CancellationToken::new(),
         )
@@ -1513,42 +1584,48 @@ mod tests {
             executions: AtomicUsize::new(0),
         });
         let daemon = LiveDaemon::start(service.clone());
-        let observed = Arc::new(Mutex::new(None));
+        let observed = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&observed);
         let owner = daemon.owner();
         let router = canonical_daemon_router_observed(
             owner,
             daemon.workspace_hint.clone(),
-            Arc::new(move |key: &ReceiptKey| *sink.lock().unwrap() = Some(key.clone())),
+            Arc::new(move |key: &ReceiptKey| sink.lock().unwrap().push(key.clone())),
         );
 
-        let result = direct_result(call(&router, None));
-        let key = observed
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("receipt key observed");
+        for _ in 0..2 {
+            let result = direct_result(call(&router, None));
+            assert_eq!(
+                result
+                    .structured_content
+                    .as_ref()
+                    .and_then(|value| value["summary"].as_str()),
+                Some("executed")
+            );
+        }
+        let keys = observed.lock().unwrap().clone();
+        assert_eq!(keys.len(), 2);
+        assert_ne!(keys[0].invocation_id(), keys[1].invocation_id());
+        assert_ne!(keys[0].reserved_task_id(), keys[1].reserved_task_id());
         let mut peer = daemon.owner();
-        let recovered = peer
-            .recover_invocation_receipt_before(key, Instant::now() + Duration::from_secs(5))
-            .expect("recover after acknowledgement");
-
+        for key in keys {
+            let recovered = peer
+                .recover_invocation_receipt_before(key, Instant::now() + Duration::from_secs(5))
+                .expect("recover after acknowledgement");
+            assert!(
+                matches!(
+                    recovered,
+                    V5ServerResponse::Invocation {
+                        outcome: V5InvocationResponse::Acknowledged { .. }
+                    }
+                ),
+                "acknowledged receipt must compact to a tombstone: {recovered:?}"
+            );
+        }
         assert_eq!(
-            result
-                .structured_content
-                .as_ref()
-                .and_then(|value| value["summary"].as_str()),
-            Some("executed")
-        );
-        assert_eq!(service.executions.load(Ordering::SeqCst), 1);
-        assert!(
-            matches!(
-                recovered,
-                V5ServerResponse::Invocation {
-                    outcome: V5InvocationResponse::Acknowledged { .. }
-                }
-            ),
-            "acknowledged receipt must compact to a tombstone: {recovered:?}"
+            service.executions.load(Ordering::SeqCst),
+            2,
+            "each new call executes once; recovery does not execute it again"
         );
         drop(peer);
         drop(router);

@@ -7,16 +7,14 @@ description: "Модуль управляемой формы 1С. Использ
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.view` on the form node, `unica.form.edit`, `unica.meta.info`, `unica.code.search`, `unica.code.definition`, `unica.code.patch`, `unica.code.diagnostics`, and `unica.runtime.execute`.
-- По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
-показывает запланированную команду без побочных эффектов, а с `dryRun: false`
-исполняет классифицированную операцию и отвечает её терминальным результатом в
-том же вызове, приложив названную причину риска (`runtime_risk_*`)
-предупреждением; неклассифицированная операция по-прежнему отказывает
-`runtime_operation_unbounded` до обнаружения рабочего пространства. Preview
-исполнением не является. Работу, которую вызов ждать не должен, запускай через
-`unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
-`unica.build.*`.
+- Preferred path: use MCP `unica` tools `unica.view {}`, `unica.view` on the form node, `unica.view` on the object node, `unica.search`, `unica.apply`, `unica.check`, and `unica.run`.
+- Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
+контракт каждой — `argsSchema`, `execution`, `previewRequired`,
+`ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
+при `implemented: true` используй опубликованную `argsSchema`; при
+`support.state: limited` разрешено только подмножество `support.supportedArgs`.
+При `support.state: unavailable` остановись; не выдумывай аргументов при
+`argsSchema: null`. Превью исполнением не является. Не обходи контракт прямым runner-ом.
 - Use `unica.docs` with `source: "development-standard"` for the standards about form modules: 439, 455, 487, 492, 642, 724, 741, and diagnostics АПК:100, АПК:526, АПК:547, АПК:1410, АПК:1412, BSLLS:SeveralCompilerDirectives, BSLLS:ServerSideExportFormMethod. These are standards, not evidence of runtime behavior; confirm the wording before citing one.
 - Do not call internal analyzer, runtime, standards, or package adapters directly. They are hidden behind MCP `unica`.
 
@@ -38,12 +36,12 @@ A form module holds client and server code in one file, and the directive on eac
 ## Workflow
 
 1. Decide which side the logic belongs to before writing it: needs the database or the object → server; needs the user or the form's visual state → client.
-2. Inspect the form with `unica.view` on the form node for the declared events, parameters, and items, and `unica.meta.info` for the object behind it.
-3. Read the existing module with `unica.view` on the module node (its `Method` branch lists the methods) and `unica.code.definition` before adding to it.
+2. Inspect the form with `unica.view` on the form node for the declared events, parameters, and items, and `unica.view` on the object node for the object behind it.
+3. Read the existing module with `unica.view` on the module node (its `Method` branch lists the methods) before adding to it.
 4. Count the server calls the change adds on the path of a single user action. If it adds one, name the reason.
-5. Declare any new form parameter through `unica.form.edit` before reading it in the module.
-6. Apply module changes with `unica.code.patch`, one verifiable step at a time, giving every new procedure exactly one directive.
-7. Verify statically with `unica.code.diagnostics`; use `unica.runtime.execute` to preview typed syntax/test arguments and, with `dryRun: false`, to run them, and require separate evidence for runtime behavior and opening the affected form.
+5. Declare any new form parameter through `unica.apply` (`formAttribute.add`) before reading it in the module.
+6. Apply module changes with `unica.apply`, one verifiable step at a time, giving every new procedure exactly one directive.
+7. Verify statically with `unica.check` on the module node (test runs are outside the v0.13 surface), and require separate evidence for runtime behavior and opening the affected form.
 
 ## Command Availability
 
@@ -72,14 +70,50 @@ To establish a link, the item's `CommandName` must match
 `Form.Command.<ИмяКоманды>` or the relevant standard-command reference.
 However, the current view does not expose `CommandName` or `binding`: the item
 tree alone cannot prove command links or that every linked item has been found.
-Do not guess links from names or titles. If the complete set of links is unconfirmed, report a
-**Unica MCP contract gap**: item reads lack command bindings; list the candidates
-and do not generate BSL with unconfirmed item names.
+Do not guess links from names or titles. For the missing data, use the emergency
+source bridge, which permits opening a file outside Unica:
+
+```json
+{"name": "unica.resolve", "arguments": {"at": "main:Catalog.Номенклатура.Form.ФормаЭлемента"}}
+```
+
+The returned `path` is relative to the selected source-set root, which need not
+be the workspace root. Confirm the root and format in the project configuration.
+In a Designer dump it may identify the descriptor
+`Catalogs/Номенклатура/Forms/ФормаЭлемента.xml`; the item tree lives beside it
+in `ФормаЭлемента/Ext/Form.xml`. Check that this file exists and has a `Form`
+root in the `http://v8.1c.ru/8.3/xcf/logform` namespace. A `MetaDataObject`
+descriptor does not contain the complete form tree. Do not assume this layout
+for EDT or other formats without evidence.
+
+Read the form content with `Read` and collect every element whose `CommandName`
+exactly matches the command, accounting for the XML namespace. Traverse the whole XML, including `AutoCommandBar`,
+`ContextMenu`, table command bars, and nested groups, rather than only the root
+`ChildItems`: the `Item` projection does not expose all these containers.
+Record the element names and bindings. This is read-only inspection; source
+changes still go through `unica.apply` with preview and `ifRev`.
+
+Also inspect command-bar autofill and element creation in the form module:
+static XML does not prove the contents of a dynamic UI. If the file cannot be
+read, its format is unconfirmed, or the complete set of links remains unknown,
+name the specific limitation and candidates; do not generate BSL with unconfirmed
+item names. Report missing MCP read support as an **Unica MCP contract gap**;
+dynamic form contents require evidence from the code or the opened form.
+A missing `binding` in `view` alone does not end the investigation.
 
 Once links are confirmed, set availability on every related item:
 
 ```bsl
 Элементы[ИмяЭлемента].Доступность = Ложь;
+```
+
+For example, after verifying that both `ЗаполнитьВПанели` and `ЗаполнитьВМеню`
+are bound to `Form.Command.Заполнить` in this form, disable both:
+
+```bsl
+Для Каждого ИмяЭлемента Из СтрРазделить("ЗаполнитьВПанели,ЗаполнитьВМеню", ",") Цикл
+    Элементы[ИмяЭлемента].Доступность = Ложь;
+КонецЦикла;
 ```
 
 If the same command is rendered by a main command bar button, table command bar

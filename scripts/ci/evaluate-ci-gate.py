@@ -89,6 +89,9 @@ def expected_results(
     event_name: str,
     ref: str,
     classification: Mapping[str, str],
+    *,
+    gate_profile: str | None = None,
+    python_matrix: str | None = None,
 ) -> tuple[str, dict[str, str], dict[str, tuple[str, str]]]:
     expected = {job: "success" for job in ALWAYS_JOBS}
     invalid: dict[str, tuple[str, str]] = {}
@@ -121,6 +124,22 @@ def expected_results(
             "all contours enabled for tag, release-line push, merge_group or workflow_dispatch",
         )
 
+    # Empty GitHub Actions matrices fail before running a step. The large tier
+    # currently has no Python suites, so only that explicit manual contour may
+    # skip the job. A missing or empty matrix elsewhere must never pass as a
+    # successful test run.
+    if python_matrix is not None:
+        try:
+            matrix = json.loads(python_matrix)
+        except json.JSONDecodeError:
+            matrix = None
+        if not isinstance(matrix, list):
+            invalid["python_matrix"] = (python_matrix, "a JSON list of Python suites")
+        elif not matrix and not (is_manual and gate_profile == "large") and not is_main_push:
+            invalid["python_matrix"] = (python_matrix, "a nonempty matrix outside manual large")
+    elif gate_profile == "large":
+        invalid["python_matrix"] = ("missing", "the classified Python matrix")
+
     # Любая правка Rust — Rust-джоба обязательна; состав раннеров решает workflow:
     # pull request — ubuntu, очередь и push — обе платформы. На push в `main`
     # Rust-джоба — запись кэша, и её поднимает только смена ключа кэша или
@@ -132,6 +151,8 @@ def expected_results(
         full_matrix = (
             values["rust_changed"] or values["platform_changed"] or values["toolchain_changed"] or values["ci_changed"]
         )
+        if is_manual and gate_profile == "large" and python_matrix == "[]":
+            expected["test-python"] = "skipped"
     # Сборка пакета и холодные старты сняты с pull request до пересборки системы
     # тестирования: прослеживаемости они не давали, а гейт красили. Тег и ручной
     # запуск их сохраняют — выпуск обязан собираться. Push в ветку упаковку тоже
@@ -182,8 +203,14 @@ def evaluate_gate(
     ref: str,
     classification: Mapping[str, str],
     results: Mapping[str, str],
+    *,
+    gate_profile: str | None = None,
+    python_matrix: str | None = None,
 ) -> GateEvaluation:
-    contour, expected, unexpected = expected_results(event_name, ref, classification)
+    contour, expected, unexpected = expected_results(
+        event_name, ref, classification,
+        gate_profile=gate_profile, python_matrix=python_matrix,
+    )
     unexpected = dict(unexpected)
 
     for job, expected_result in expected.items():
@@ -269,6 +296,8 @@ def main() -> int:
         os.environ.get("GITHUB_REF", ""),
         classification,
         results,
+        gate_profile=os.environ.get("GATE_PROFILE"),
+        python_matrix=os.environ.get("PYTHON_MATRIX"),
     )
     summary = render_summary(evaluation)
     print(summary, end="")

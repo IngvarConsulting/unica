@@ -1,10 +1,10 @@
 //! Public documentation search: renders `DocumentationRegistry` output into
-//! the typed `data` of `unica.documentation.search` (ADR-0023, ADR-0029).
+//! the typed document and section data used by `unica.docs`.
 //!
 //! This module owns only the section/hit-to-JSON projection and the
 //! partial-success rule. The registry is assembled in the composition root
 //! (`infrastructure::application_ports`), not here, so tests can inject
-//! stand-in providers (ADR-0029 point 5).
+//! stand-in providers.
 
 use serde_json::{json, Value};
 
@@ -30,9 +30,9 @@ fn status_fields(status: &DocumentationSectionStatus) -> (&'static str, Value) {
 
 /// Poll every applicable provider and project their sections into the
 /// public `data` shape unchanged: no cross-section sorting, merging or
-/// deletion (ADR-0029 point 8). A provider's own failure stays inside its
+/// deletion. A provider's own failure stays inside its
 /// own section and never removes another provider's sections from the
-/// response (ADR-0029 point 10).
+/// response.
 ///
 /// Опрос идёт параллельно: секции поставщиков независимы по контракту, и
 /// федеративный вызов стоит как самый медленный поставщик, а не как их
@@ -42,7 +42,7 @@ fn status_fields(status: &DocumentationSectionStatus) -> (&'static str, Value) {
 ///
 /// Search is successful if at least one applicable provider answered `ok` or
 /// `empty`; if every section is `unavailable`/`failed`, the call reports an
-/// error instead of an empty-looking success (ADR-0029 point 10).
+/// error instead of an empty-looking success.
 ///
 /// A blank query is refused here, before any provider is polled: substring
 /// matching makes the empty needle match every page, so a blank query would
@@ -70,11 +70,15 @@ pub fn search(
                     .any(|corpus| request.source_kinds.contains(&corpus.source_kind))
         })
         .collect();
-    let mut polled: Vec<Vec<DocumentationSection>> = Vec::with_capacity(applicable.len());
+    let mut polled: Vec<(usize, Vec<DocumentationSection>)> = Vec::with_capacity(applicable.len());
     std::thread::scope(|scope| {
         let handles: Vec<_> = applicable
             .iter()
-            .map(|provider| scope.spawn(move || provider.search(request, context)))
+            .map(|provider| {
+                let mut bounded = request.clone();
+                bounded.limit = bounded.limit.min(provider.search_window_limit());
+                scope.spawn(move || (bounded.limit, provider.search(&bounded, context)))
+            })
             .collect();
         for handle in handles {
             polled.push(
@@ -86,7 +90,7 @@ pub fn search(
     });
     let mut sections = Vec::new();
     let mut any_usable = false;
-    for provider_sections in polled {
+    for (window_limit, provider_sections) in polled {
         for section in provider_sections {
             // Поставщик с корпусами разных смыслов отвечает всеми секциями;
             // публикуются из них только подходящие фильтру.
@@ -117,6 +121,13 @@ pub fn search(
                     })
                 })
                 .collect();
+            // Exactness is conservative: a full window may have more matches
+            // behind it, and unreadable siblings may hide additional hits.
+            let search_complete = matches!(
+                section.status,
+                DocumentationSectionStatus::Ok | DocumentationSectionStatus::Empty
+            ) && section.warnings.is_empty()
+                && hits.len() < window_limit;
             sections.push(json!({
                 "provider": section.provider.to_string(),
                 "corpus": section.corpus,
@@ -131,6 +142,12 @@ pub fn search(
                 // Неполнота, не отменяющая успеха: непрочитавшийся контейнер
                 // при непустой выдаче. Пустой массив в норме.
                 "warnings": section.warnings,
+                "searchComplete": search_complete,
+                "matches": {
+                    "returned": hits.len(),
+                    "total": hits.len(),
+                    "relation": if search_complete { "exact" } else { "lowerBound" },
+                },
                 "hits": hits,
             }));
         }
@@ -328,7 +345,7 @@ mod tests {
         }
     }
 
-    /// Поставщики независимы (ADR-0029: без слияния и пересортировки секций),
+    /// Поставщики независимы: их секции не сливаются и не пересортировываются,
     /// поэтому опрашиваются параллельно: федеративный вызов стоит как самый
     /// медленный поставщик, а не как их сумма.
     #[test]
@@ -396,6 +413,58 @@ mod tests {
         // публиковать именно её.
         assert_eq!(sections[0]["language"], "root");
         assert_eq!(sections[0]["hits"][0]["applicableVersion"], "8.3.27.2074");
+    }
+
+    #[test]
+    fn full_provider_window_is_a_lower_bound_and_receives_its_own_limit() {
+        struct Bounded {
+            seen_limit: std::sync::atomic::AtomicUsize,
+        }
+        impl DocumentationProvider for Bounded {
+            fn id(&self) -> DocumentationProviderId {
+                DocumentationProviderId::new("bounded")
+            }
+            fn corpora(&self) -> Vec<DocumentationCorpus> {
+                Vec::new()
+            }
+            fn needs_network(&self) -> bool {
+                false
+            }
+            fn search_window_limit(&self) -> usize {
+                2
+            }
+            fn search(
+                &self,
+                request: &DocumentationSearchRequest,
+                _: &DocumentationContext,
+            ) -> Vec<DocumentationSection> {
+                self.seen_limit
+                    .store(request.limit, std::sync::atomic::Ordering::SeqCst);
+                let mut section = ok_section("bounded");
+                section.hits.push(DocumentationHit {
+                    rank: 2,
+                    ..section.hits[0].clone()
+                });
+                vec![section]
+            }
+        }
+        let provider = Arc::new(Bounded {
+            seen_limit: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let registry = DocumentationRegistry::new(vec![
+            Arc::clone(&provider) as Arc<dyn DocumentationProvider>
+        ])
+        .unwrap();
+        let result = search(&registry, &request(), &context()).unwrap();
+        assert_eq!(
+            provider
+                .seen_limit
+                .load(std::sync::atomic::Ordering::SeqCst),
+            2
+        );
+        assert_eq!(result["sections"][0]["searchComplete"], false);
+        assert_eq!(result["sections"][0]["matches"]["returned"], 2);
+        assert_eq!(result["sections"][0]["matches"]["relation"], "lowerBound");
     }
 
     #[test]
@@ -566,8 +635,7 @@ mod tests {
         // `failed_section`), so a mutation dropping the `Empty` arm from
         // that check would still pass all three. This is not a corner case:
         // `PlatformSyntaxHelpProvider::search` returns exactly this status
-        // whenever the installation is found but the query has no hits
-        // (ADR-0029 point 10).
+        // whenever the installation is found but the query has no hits.
         let registry = DocumentationRegistry::new(vec![Arc::new(Stub {
             id: "quiet",
             section: empty_section("quiet"),

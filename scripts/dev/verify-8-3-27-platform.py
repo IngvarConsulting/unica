@@ -422,7 +422,7 @@ def _read_regular_payload(path: Path, metadata, label: str) -> bytes:
 def _is_xml_payload_path(path: PurePath) -> bool:
     """Mirror the generator's XML rule exactly.
 
-    ADR-0024 records that `XDTOPackages/<Name>/Ext/Package.bin` is text XML
+    The packaged 1c-xdto-spec.md records that `XDTOPackages/<Name>/Ext/Package.bin` is text XML
     rooted at `{http://v8.1c.ru/8.1/xdto}package` despite its extension, so the
     suffix alone does not decide. The exception belongs to that layout and not
     to the file name, so a `Package.bin` reached any other way stays binary.

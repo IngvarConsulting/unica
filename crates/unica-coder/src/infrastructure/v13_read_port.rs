@@ -1,4 +1,5 @@
 use crate::application::ports::{MetaLocalInfo, MetadataChildProfile};
+use crate::application::v13::body_snapshot::BodySnapshot;
 use crate::application::v13::view::ViewError;
 use crate::domain::address::NodeKind;
 use crate::domain::cancellation::CancellationToken;
@@ -30,7 +31,8 @@ use crate::infrastructure::native_operations::dcs::parse_dcs_info_xml;
 use crate::infrastructure::native_operations::form::parse_form_info_xml;
 use crate::infrastructure::native_operations::form::FormInfoData;
 use crate::infrastructure::native_operations::meta::{
-    parse_child_profile_from_bytes, parse_typed_meta_local_info,
+    parse_child_profile_from_bytes, parse_meta_borrowing, parse_typed_meta_local_info,
+    MetaBorrowing,
 };
 use crate::infrastructure::native_operations::mxl::parse_mxl_info_xml;
 use crate::infrastructure::native_operations::role::parse_role_info_xml;
@@ -44,9 +46,14 @@ use crate::infrastructure::platform_xml_owner::{
     PlatformXmlSourceSetOwnerEvidence,
 };
 use crate::infrastructure::source_revision::{RetainedRevisionLease, SourceRevisionService};
+use crate::infrastructure::v13_large_configuration::{
+    read_configuration_registration_index, read_configuration_root, RegistrationIndex,
+    StreamedConfigurationRoot,
+};
 use serde_json::{json, Value};
 #[cfg(test)]
 use std::cell::RefCell;
+use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -79,6 +86,13 @@ const MAX_EXTERNAL_INVENTORY_BYTES: usize = 32 * 1024 * 1024;
 /// One actor-issued read authority for one admitted source set. Hidden v0.13
 /// reads are descriptor-relative to this retained directory and revisions come
 /// from the paired actor-owned service.
+/// Один разбор дескриптора объекта: свойства и заимствование из тех же байтов.
+pub(crate) struct MetadataLocalRead {
+    pub(crate) info: MetaLocalInfo,
+    /// `None` — набор не вида `extension`: заимствования там не бывает.
+    pub(crate) borrowing: Option<MetaBorrowing>,
+}
+
 pub(crate) struct ProviderReadAuthority {
     source_set: String,
     source_set_identity: String,
@@ -182,9 +196,9 @@ impl ProviderReadAuthority {
                 hook();
             }
         });
-        self.root
-            .validate_named_identity()
-            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))?;
+        self.root.validate_named_identity().map_err(|error| {
+            ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+        })?;
         #[cfg(test)]
         REVIEW_AFTER_REVISION_IDENTITY.with(|slot| {
             if let Some(hook) = slot.borrow_mut().as_mut() {
@@ -209,7 +223,7 @@ impl ProviderReadAuthority {
                     ))
                 } else if deadline.remaining().is_zero() {
                     Err(ViewError::new(
-                        RefusalCode::ProviderDeadline,
+                        RefusalCode::DeadlineExceeded,
                         "logical read operation deadline elapsed",
                     ))
                 } else {
@@ -226,7 +240,9 @@ impl ProviderReadAuthority {
     ) -> Result<Vec<u8>, ViewError> {
         self.root
             .read_relative_regular_bounded(relative, max_bytes)
-            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
+            .map_err(|error| {
+                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+            })
     }
 
     pub(crate) fn read_optional_relative(
@@ -237,8 +253,8 @@ impl ProviderReadAuthority {
         match self.root.read_relative_regular_bounded(relative, max_bytes) {
             Ok(bytes) => Ok(Some(bytes)),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(ViewError::new(
-                RefusalCode::ProviderUnavailable,
+            Err(error) => Err(ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
                 error.to_string(),
             )),
         }
@@ -289,13 +305,13 @@ impl ProviderReadAuthority {
             self.home_page()?,
             self.command_interface()?,
         )
-        .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error))?;
+        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
         let owner = prove_already_read_source_set_owner(
             Path::new("Configuration.xml"),
             &bytes,
             self.source_set_kind,
         )
-        .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.message))?;
+        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.message))?;
         let mut payload = serde_json::to_value(parsed.data)
             .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))?
             .as_object()
@@ -317,6 +333,82 @@ impl ProviderReadAuthority {
             ),
         );
         Ok(Value::Object(payload))
+    }
+
+    pub(crate) fn streamed_configuration_root(
+        &self,
+        checkpoint: &dyn Fn() -> Result<(), ViewError>,
+        verify_owner: impl FnMut(&str, &str) -> Result<(), ViewError>,
+    ) -> Result<StreamedConfigurationRoot, ViewError> {
+        checkpoint()?;
+        let file = match self
+            .root
+            .open_relative_regular_nofollow(Path::new("Configuration.xml"))
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let mut refusal = ViewError::new(
+                    RefusalCode::InvalidState,
+                    "source set is declared but its directory holds no configuration export; fill it with a scaffold before reading",
+                );
+                refusal.set_next(serde_json::json!({
+                    "tool": "unica.check",
+                    "args": {},
+                    "reason": "вердикт по набору и совет, чем его наполнить",
+                }));
+                return Err(refusal);
+            }
+            Err(error) => {
+                return Err(ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
+                    error.to_string(),
+                ));
+            }
+        };
+        let support = serde_json::to_value(self.configuration_support()?).map_err(|error| {
+            ViewError::detailed(RefusalDetail::BackendBroken, error.to_string())
+        })?;
+        let home_page = serde_json::to_value(self.home_page()?).map_err(|error| {
+            ViewError::detailed(RefusalDetail::BackendBroken, error.to_string())
+        })?;
+        let interface = serde_json::to_value(self.command_interface()?).map_err(|error| {
+            ViewError::detailed(RefusalDetail::BackendBroken, error.to_string())
+        })?;
+        read_configuration_root(
+            file,
+            support,
+            home_page,
+            interface,
+            checkpoint,
+            verify_owner,
+        )
+    }
+
+    /// Build root registration evidence from the complete retained XML once.
+    /// The returned anonymous disk index can serve named reads in this source
+    /// revision without retaining the inventory in process memory.
+    pub(crate) fn streamed_configuration_registration_index(
+        &self,
+        checkpoint: &dyn Fn() -> Result<(), ViewError>,
+    ) -> Result<RegistrationIndex, ViewError> {
+        checkpoint()?;
+        let file = self
+            .root
+            .open_relative_regular_nofollow(Path::new("Configuration.xml"))
+            .map_err(|error| {
+                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+            })?;
+        read_configuration_registration_index(file, checkpoint)
+    }
+
+    /// Preserve the established parser and its full compatibility behavior
+    /// for files that already fit the ordinary read. The streaming route is
+    /// selected only when that read would refuse the file by total size.
+    pub(crate) fn configuration_xml_requires_streaming(&self) -> bool {
+        self.root
+            .open_relative_regular_nofollow(Path::new("Configuration.xml"))
+            .and_then(|file| file.metadata())
+            .is_ok_and(|metadata| metadata.len() > MAX_CONFIGURATION_BYTES as u64)
     }
 
     fn external_inventory_payload(
@@ -342,7 +434,7 @@ impl ProviderReadAuthority {
             })
             .map_err(|error| match checkpoint() {
                 Err(checkpoint_error) => checkpoint_error,
-                Ok(()) => ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()),
+                Ok(()) => ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()),
             })?;
         let mut registered = std::collections::BTreeSet::new();
         let mut owner_path_mismatches = Vec::new();
@@ -382,11 +474,11 @@ impl ProviderReadAuthority {
             let evidence =
                 prove_already_read_source_set_owner(&relative, &bytes, self.source_set_kind)
                     .map_err(|error| {
-                        ViewError::new(RefusalCode::ProviderUnavailable, error.message)
+                        ViewError::detailed(RefusalDetail::SourceUnreadable, error.message)
                     })?;
             if evidence.artifact_kind() != expected_kind {
-                return Err(ViewError::new(
-                    RefusalCode::ProviderUnavailable,
+                return Err(ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
                     format!(
                         "external descriptor `{}` has kind `{}`, expected `{expected_kind}`",
                         relative.display(),
@@ -395,8 +487,8 @@ impl ProviderReadAuthority {
                 ));
             }
             let artifact_name = evidence.artifact_name().ok_or_else(|| {
-                ViewError::new(
-                    RefusalCode::ProviderUnavailable,
+                ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
                     format!(
                         "external descriptor `{}` has no non-empty Properties/Name",
                         relative.display()
@@ -404,8 +496,8 @@ impl ProviderReadAuthority {
                 )
             })?;
             if !registered.insert((expected_kind.to_string(), artifact_name.to_string())) {
-                return Err(ViewError::new(
-                    RefusalCode::ProviderUnavailable,
+                return Err(ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
                     format!("external owner `{expected_kind}.{artifact_name}` is ambiguous"),
                 ));
             }
@@ -423,7 +515,10 @@ impl ProviderReadAuthority {
             ));
         }
         if let Some(message) = owner_path_mismatches.into_iter().next() {
-            return Err(ViewError::new(RefusalCode::ProviderUnavailable, message));
+            return Err(ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
+                message,
+            ));
         }
         checkpoint()?;
         Ok(json!({
@@ -461,7 +556,7 @@ impl ProviderReadAuthority {
             object_context,
             self.object_support(target)?,
         )
-        .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error))
+        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
     }
 
     pub(crate) fn dcs_payload(&self, target: &MetadataAddress) -> Result<Value, ViewError> {
@@ -475,7 +570,7 @@ impl ProviderReadAuthority {
             )
         })?;
         let data = parse_dcs_info_xml(text, self.object_support(target)?)
-            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error))?;
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
         serde_json::to_value(data)
             .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
     }
@@ -502,24 +597,44 @@ impl ProviderReadAuthority {
             fallback_name,
             self.object_support(target)?,
         )
-        .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error))?;
+        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
         serde_json::to_value(data)
             .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
     }
 
+    /// Локальное чтение объекта: разбор дескриптора и заимствование берутся из
+    /// одних и тех же байтов.
+    ///
+    /// Дескриптор открывается один раз. Второе чтение того же файла стоило бы
+    /// лишнего доступа и, что хуже, могло бы застать файл изменившимся между
+    /// чтениями — тогда свойства объекта и его заимствование описывали бы
+    /// разные состояния источника.
     pub(crate) fn metadata_local(
         &self,
         target: &MetadataAddress,
-    ) -> Result<MetaLocalInfo, ViewError> {
+    ) -> Result<MetadataLocalRead, ViewError> {
         let descriptor = self.metadata_descriptor(target)?;
         let support = metadata_support_status(
             self.object_support_with_descriptor(target, Some(&descriptor))?,
         );
-        parse_typed_meta_local_info(&descriptor, target, support).map_err(|failure| {
-            let message = serde_json::to_string(&failure.diagnostics)
-                .unwrap_or_else(|_| "metadata reader failed".to_string());
-            ViewError::new(RefusalCode::ProviderUnavailable, message)
-        })
+        // Заимствование отвечает только в наборе вида `extension`: в
+        // конфигурации его не бывает, и разбирать дескриптор ради `own` у
+        // каждого объекта незачем.
+        let borrowing = if self.source_set_kind == SourceSetKind::Extension {
+            Some(
+                parse_meta_borrowing(&descriptor)
+                    .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?,
+            )
+        } else {
+            None
+        };
+        let info =
+            parse_typed_meta_local_info(&descriptor, target, support).map_err(|failure| {
+                let message = serde_json::to_string(&failure.diagnostics)
+                    .unwrap_or_else(|_| "metadata reader failed".to_string());
+                ViewError::detailed(RefusalDetail::SourceUnreadable, message)
+            })?;
+        Ok(MetadataLocalRead { info, borrowing })
     }
 
     /// Предопределённые элементы объекта.
@@ -560,8 +675,8 @@ impl ProviderReadAuthority {
             "String" => crate::infrastructure::native_operations::meta::PredefinedCodeType::String,
             "Number" => crate::infrastructure::native_operations::meta::PredefinedCodeType::Number,
             other => {
-                return Err(ViewError::new(
-                    RefusalCode::ProviderUnavailable,
+                return Err(ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
                     format!("predefined owner CodeType `{other}` is unsupported"),
                 ))
             }
@@ -570,7 +685,7 @@ impl ProviderReadAuthority {
             &bytes, kind, code_type, limit,
         )
         .map(Some)
-        .map_err(|message| ViewError::new(RefusalCode::ProviderUnavailable, message))
+        .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))
     }
 
     pub(crate) fn external_metadata_payload(
@@ -591,12 +706,14 @@ impl ProviderReadAuthority {
         let relative = self.metadata_descriptor_relative(target)?;
         let evidence =
             prove_already_read_source_set_owner(&relative, &descriptor, self.source_set_kind)
-                .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.message))?;
+                .map_err(|error| {
+                    ViewError::detailed(RefusalDetail::SourceUnreadable, error.message)
+                })?;
         if evidence.artifact_kind() != *expected_kind
             || evidence.artifact_name() != Some(*expected_name)
         {
-            return Err(ViewError::new(
-                RefusalCode::ProviderUnavailable,
+            return Err(ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
                 format!(
                     "external descriptor identity does not match `{}`",
                     target.as_str()
@@ -613,7 +730,7 @@ impl ProviderReadAuthority {
         let descriptor = self.metadata_descriptor(target)?;
         let relative = self.metadata_descriptor_relative(target)?;
         let evidence = prove_already_read_metadata_owner(&relative, &descriptor)
-            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.message))?;
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.message))?;
         identity_metadata_payload_from_evidence(target, &evidence)
     }
 
@@ -625,10 +742,13 @@ impl ProviderReadAuthority {
         let relative = self.metadata_descriptor_relative(target)?;
         if self.is_external_source_set() && target.as_str().split('.').count() == 2 {
             prove_already_read_source_set_owner(&relative, &descriptor, self.source_set_kind)
-                .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.message))
+                .map_err(|error| {
+                    ViewError::detailed(RefusalDetail::SourceUnreadable, error.message)
+                })
         } else {
-            prove_already_read_metadata_owner(&relative, &descriptor)
-                .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.message))
+            prove_already_read_metadata_owner(&relative, &descriptor).map_err(|error| {
+                ViewError::detailed(RefusalDetail::SourceUnreadable, error.message)
+            })
         }
     }
 
@@ -646,7 +766,7 @@ impl ProviderReadAuthority {
         )?;
         let name = target.as_str().rsplit('.').next().unwrap_or("Template");
         let data = parse_mxl_info_xml(&bytes, name, self.object_support(target)?, with_content)
-            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error))?;
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
         serde_json::to_value(data)
             .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
     }
@@ -663,7 +783,7 @@ impl ProviderReadAuthority {
         )?;
         let data =
             parse_xdto_info_bytes(&package, &descriptor, self.source_set(), target, type_name)
-                .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error))?;
+                .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
         serde_json::to_value(data)
             .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
     }
@@ -687,7 +807,7 @@ impl ProviderReadAuthority {
                     )
                 })?;
                 parse_subsystem_command_interface_data(&ci_relative, text)
-                    .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error))
+                    .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
             })
             .transpose()?;
         let (data, _) = parse_subsystem_info_xml(
@@ -695,7 +815,7 @@ impl ProviderReadAuthority {
             descriptor,
             command_interface.is_some(),
         )
-        .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error))?;
+        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
         let result = build_subsystem_info_result(
             data,
             None,
@@ -759,19 +879,20 @@ impl ProviderReadAuthority {
             .take(2)
             .collect::<Vec<_>>()
             .join(".");
-        let owner = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &owner_text)
-            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))?;
+        let owner = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &owner_text).map_err(
+            |error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()),
+        )?;
         let Some((parsed_target, profile)) = parse_child_profile_from_bytes(&descriptor, &owner)
-            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error))?
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?
         else {
-            return Err(ViewError::new(
-                RefusalCode::ProviderUnavailable,
+            return Err(ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
                 "registered physical child descriptor has the wrong artifact kind",
             ));
         };
         if parsed_target.as_str() != target.as_str() {
-            return Err(ViewError::new(
-                RefusalCode::ProviderUnavailable,
+            return Err(ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
                 "registered physical child descriptor belongs to another logical address",
             ));
         }
@@ -804,6 +925,87 @@ impl ProviderReadAuthority {
                     })
             })
             .transpose()
+    }
+
+    pub(crate) fn module_body_snapshot(
+        &self,
+        target: &MetadataAddress,
+        mut checkpoint: impl FnMut() -> Result<(), ViewError>,
+    ) -> Result<BodySnapshot, ViewError> {
+        let relative = self.module_relative(target)?;
+        let mut file = tempfile::tempfile().map_err(|error| {
+            ViewError::detailed(
+                RefusalDetail::BackendBroken,
+                format!("cannot create Body snapshot: {error}"),
+            )
+        })?;
+        let mut carry = Vec::<u8>::new();
+        let mut interrupted = None;
+        let mut scratch_failure = false;
+        let result = self.root.visit_relative_regular_chunks(
+            &relative,
+            || {
+                checkpoint().map_err(|error| {
+                    interrupted = Some(error);
+                    std::io::Error::other("Body capture interrupted")
+                })
+            },
+            |chunk| {
+                let mut candidate = Vec::with_capacity(carry.len() + chunk.len());
+                candidate.extend_from_slice(&carry);
+                candidate.extend_from_slice(chunk);
+                match std::str::from_utf8(&candidate) {
+                    Ok(_) => carry.clear(),
+                    Err(error) if error.error_len().is_none() => {
+                        carry = candidate[error.valid_up_to()..].to_vec();
+                    }
+                    Err(_) => {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "BSL module is not UTF-8",
+                        ))
+                    }
+                }
+                file.write_all(chunk).inspect_err(|_| {
+                    scratch_failure = true;
+                })
+            },
+        );
+        let len = match result {
+            Ok(len) => len,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(error) => {
+                return Err(interrupted.unwrap_or_else(|| {
+                    ViewError::detailed(
+                        if scratch_failure {
+                            RefusalDetail::BackendBroken
+                        } else {
+                            RefusalDetail::SourceUnreadable
+                        },
+                        error.to_string(),
+                    )
+                }))
+            }
+        };
+        if !carry.is_empty() {
+            return Err(ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
+                "BSL module is not UTF-8",
+            ));
+        }
+        file.flush().map_err(|error| {
+            ViewError::detailed(
+                RefusalDetail::BackendBroken,
+                format!("Body snapshot write failed: {error}"),
+            )
+        })?;
+        file.seek(SeekFrom::Start(0)).map_err(|error| {
+            ViewError::detailed(
+                RefusalDetail::BackendBroken,
+                format!("Body snapshot seek failed: {error}"),
+            )
+        })?;
+        Ok(BodySnapshot::new(file, len))
     }
 
     #[cfg(test)]
@@ -874,8 +1076,8 @@ impl ProviderReadAuthority {
             }
         };
         let uuid = support_root_uuid_from_bytes(descriptor).ok_or_else(|| {
-            ViewError::new(
-                RefusalCode::ProviderUnavailable,
+            ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
                 "metadata descriptor has no support-state UUID evidence",
             )
         })?;
@@ -936,7 +1138,9 @@ impl ProviderReadAuthority {
             MAX_CONFIGURATION_BYTES,
         )?;
         let state = parse_support_state_strict_bytes(bytes.as_deref())
-            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))?
+            .map_err(|error| {
+                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+            })?
             .map(Arc::new);
         *memo = Some(state.clone());
         Ok(state)
@@ -961,7 +1165,7 @@ impl ProviderReadAuthority {
         })?;
         parse_cf_command_interface_xml(text)
             .map(Some)
-            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error))
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
     }
 
     fn home_page(&self) -> Result<Option<CfHomePageData>, ViewError> {
@@ -979,7 +1183,7 @@ impl ProviderReadAuthority {
             )
         })?;
         let layout = parse_cf_home_page_xml_strict(text)
-            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error))?;
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
         Ok(Some(CfHomePageData {
             template: layout.template,
             left: cf_home_page_item_data(&layout.left),
@@ -989,7 +1193,7 @@ impl ProviderReadAuthority {
 
     fn metadata_descriptor_relative(&self, target: &MetadataAddress) -> Result<PathBuf, ViewError> {
         shared_metadata_descriptor_relative(target, self.source_set_kind)
-            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error))
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
     }
 
     fn attached_resource_relative(
@@ -1028,8 +1232,8 @@ fn identity_metadata_payload_from_evidence(
     if evidence.artifact_kind() != *expected_kind
         || evidence.artifact_name() != Some(*expected_name)
     {
-        return Err(ViewError::new(
-            RefusalCode::ProviderUnavailable,
+        return Err(ViewError::detailed(
+            RefusalDetail::SourceUnreadable,
             format!(
                 "metadata descriptor identity does not match `{}`",
                 target.as_str()
@@ -1075,16 +1279,16 @@ fn path_text(path: PathBuf) -> Result<String, ViewError> {
         match component {
             std::path::Component::Normal(value) => components.push(value),
             _ => {
-                return Err(ViewError::new(
-                    RefusalCode::ProviderUnavailable,
+                return Err(ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
                     "Platform XML export path is not a relative component path",
                 ));
             }
         }
     }
     if components.is_empty() {
-        return Err(ViewError::new(
-            RefusalCode::ProviderUnavailable,
+        return Err(ViewError::detailed(
+            RefusalDetail::SourceUnreadable,
             "Platform XML export path is empty",
         ));
     }
@@ -1097,8 +1301,8 @@ fn encode_export_path_components<'a>(
     let mut encoded = String::new();
     for component in components {
         let component = component.to_str().ok_or_else(|| {
-            ViewError::new(
-                RefusalCode::ProviderUnavailable,
+            ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
                 "Platform XML export path is not valid UTF-8",
             )
         })?;

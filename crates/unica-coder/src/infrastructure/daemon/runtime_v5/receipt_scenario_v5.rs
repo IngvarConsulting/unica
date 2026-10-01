@@ -6162,15 +6162,13 @@ fn apply_task_projection(
             .get_mut(index_name)
             .and_then(Value::as_array_mut)
             .ok_or_else(|| format!("protocol-v5 checkpoint {index_name} is not an array"))?;
-        for key in projection
-            .task_links
-            .iter()
-            .filter_map(|link| link.get("key"))
-        {
-            if !index.iter().any(|existing| existing == key) {
-                index.push(key.clone());
-            }
-        }
+        extend_receipt_key_index(
+            index,
+            projection
+                .task_links
+                .iter()
+                .filter_map(|link| link.get("key")),
+        );
     }
     let receipt_generation = object
         .get("storeGeneration")
@@ -6206,6 +6204,39 @@ fn apply_task_projection(
         },
     );
     Ok(())
+}
+
+fn extend_receipt_key_index<'a>(index: &mut Vec<Value>, keys: impl Iterator<Item = &'a Value>) {
+    // Bulk fixtures can add 4,096 links. Compare exact values only within
+    // the matching digest bucket instead of scanning the growing index.
+    let mut by_digest: HashMap<String, Vec<usize>> = HashMap::new();
+    for (position, existing) in index.iter().enumerate() {
+        if let Some(digest) = existing.get("keyDigest").and_then(Value::as_str) {
+            by_digest
+                .entry(digest.to_owned())
+                .or_default()
+                .push(position);
+        }
+    }
+    for key in keys {
+        let digest = key.get("keyDigest").and_then(Value::as_str);
+        let already_indexed = match digest {
+            Some(digest) => by_digest
+                .get(digest)
+                .is_some_and(|positions| positions.iter().any(|&position| index[position] == *key)),
+            None => index.iter().any(|existing| existing == key),
+        };
+        if !already_indexed {
+            let position = index.len();
+            index.push(key.clone());
+            if let Some(digest) = digest {
+                by_digest
+                    .entry(digest.to_owned())
+                    .or_default()
+                    .push(position);
+            }
+        }
+    }
 }
 
 fn enrich_task_projection_snapshot(
@@ -7297,7 +7328,7 @@ impl ScenarioEpochClock {
 
     fn advance(&self, millis: u64) -> Result<(), String> {
         self.epoch_ms
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |epoch_ms| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |epoch_ms| {
                 epoch_ms.checked_add(millis)
             })
             .map(|_| ())
@@ -7306,7 +7337,7 @@ impl ScenarioEpochClock {
 
     fn advance_monotonic(&self, millis: u64) -> Result<(), String> {
         self.monotonic_ms
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |monotonic_ms| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |monotonic_ms| {
                 monotonic_ms.checked_add(millis)
             })
             .map(|_| ())

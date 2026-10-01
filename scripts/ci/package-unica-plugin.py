@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Assemble Codex and Claude marketplace packages from built Unica tool artifacts."""
+"""Assemble Codex, Claude and ZCode packages from built Unica tool artifacts."""
 
 from __future__ import annotations
 
@@ -24,11 +24,14 @@ V8_RUNNER_REPOSITORY = "https://github.com/IngvarConsulting/v8-runner-rust"
 # именем. Форму объявляет издатель типом содержимого.
 DELIVERY_MEDIA_TYPES = ("application/gzip", "application/octet-stream")
 DISPLAY_NAME = "Unica"
-# One plugin directory serves both hosts. Each host reads its own manifest
-# directory and ignores the other, and the single `.mcp.json` launcher resolves
-# the plugin root from whichever host variable is present, so the package ships
-# one copy of the bootstrap matrix instead of one per host.
-HOST_MANIFEST_DIRS = {"codex": ".codex-plugin", "claude": ".claude-plugin"}
+# One plugin directory serves all hosts. Each reads its own manifest and the
+# shared `.mcp.json`, so the bootstrap matrix ships only once. ZCode expands
+# the Claude root/data aliases used by the shared launcher.
+HOST_MANIFEST_DIRS = {
+    "codex": ".codex-plugin",
+    "claude": ".claude-plugin",
+    "zcode": ".zcode-plugin",
+}
 CLAUDE_MARKETPLACE_PATH = Path(".claude-plugin") / "marketplace.json"
 SOURCE_PACKAGE_IGNORES = {"bin", ".DS_Store", "__pycache__", ".pytest_cache"}
 DISALLOWED_ARCHIVE_PARTS = {".build", "dist", "__pycache__", ".pytest_cache"}
@@ -107,14 +110,31 @@ def sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+PACKAGE_HASH_FORMAT = "sha256-u64be-path-mode-content-v2"
+
+
 def package_tree_sha256(root: Path) -> str:
-    """Digest package paths and bytes so the proof binds the assembled tree."""
+    """Digest package paths, modes and bytes so the proof binds the assembled tree.
+
+    The frame is ``PACKAGE_HASH_FORMAT`` and is mirrored by
+    ``scripts/ci/release-proof.py::tree_sha256``; the two change together. Per
+    file, sorted by path: u64be path length, path, u64be size, one mode byte
+    (``0x01`` executable, ``0x00`` plain), content. The mode byte binds the
+    executable bootstrap's ``+x`` (#700). Symlinks are refused: the packager
+    never copies them, so one here is a broken tree, not a member.
+    """
     digest = hashlib.sha256()
-    for path in sorted(item for item in root.rglob("*") if item.is_file()):
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink():
+            raise SystemExit(f"package tree must not contain symlinks: {path}")
+        if not path.is_file():
+            continue
         relative = path.relative_to(root).as_posix().encode("utf-8")
+        stat = path.stat()
         digest.update(len(relative).to_bytes(8, "big"))
         digest.update(relative)
-        digest.update(path.stat().st_size.to_bytes(8, "big"))
+        digest.update(stat.st_size.to_bytes(8, "big"))
+        digest.update(b"\x01" if stat.st_mode & 0o111 else b"\x00")
         with path.open("rb") as stream:
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                 digest.update(chunk)
@@ -229,7 +249,7 @@ def load_tool_bundles(
 
 
 def read_release_version(plugin_src: Path) -> str:
-    """Return the release version both host manifests agree on."""
+    """Return the release version all host manifests agree on."""
     versions = {}
     for host, manifest_dir in HOST_MANIFEST_DIRS.items():
         manifest_path = plugin_src / manifest_dir / "plugin.json"
@@ -264,7 +284,7 @@ def write_manifest(plugin_dir: Path, grouped_tools: dict[str, dict], lock_file: 
     path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-# One launcher, both hosts. Claude Code rewrites `${CLAUDE_PLUGIN_ROOT}` in the
+# Claude Code and ZCode rewrite `${CLAUDE_PLUGIN_ROOT}` in the shared
 # alias before the shell sees it, so `root` is already absolute there; Codex
 # leaves the token alone, the shell expands it to the empty string, and the
 # original `$PWD/${GIT_PREFIX:-}` resolution takes over unchanged.
@@ -296,7 +316,10 @@ def write_packaged_mcp_launcher(
     server["command"] = "git"
     server["args"] = ["-c", PACKAGED_MCP_ALIAS, "unica-bootstrap"]
     server["cwd"] = "."
-    server["env"] = {"UNICA_RUNTIME_CACHE_DIR": PACKAGED_MCP_CACHE_DIR}
+    server["env"] = {
+        "UNICA_RUNTIME_CACHE_DIR": PACKAGED_MCP_CACHE_DIR,
+        "UNICA_HOST_CONTEXT_REQUIRED": "1",
+    }
     server["startup_timeout_sec"] = PACKAGED_MCP_STARTUP_TIMEOUT_SEC
     server["note"] = (
         "Single public Unica stdio MCP orchestrator. The public Git package enters "
@@ -308,7 +331,7 @@ def write_packaged_mcp_launcher(
 
 
 def assert_host_manifests_present(plugin_dir: Path) -> None:
-    """Both hosts must find their manifest in the shared plugin directory."""
+    """Every host must find its manifest in the shared plugin directory."""
     for host, manifest_dir in sorted(HOST_MANIFEST_DIRS.items()):
         manifest = plugin_dir / manifest_dir / "plugin.json"
         if not manifest.is_file():
@@ -387,6 +410,32 @@ def write_claude_marketplace(plugin_dir: Path, dest_path: Path, *, source: dict 
     dest_path.write_text(json.dumps(catalog, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def write_zcode_local_marketplace(
+    plugin_dir: Path, dest_path: Path, *, marketplace_name: str
+) -> None:
+    """Write a local catalog using plugin_dir for manifest metadata.
+
+    The caller must place the plugin at ./plugins/unica beneath the catalog's
+    parent directory; plugin_dir itself does not determine the source path.
+    """
+    manifest = json.loads(
+        (plugin_dir / HOST_MANIFEST_DIRS["zcode"] / "plugin.json").read_text(encoding="utf-8")
+    )
+    catalog = {
+        "name": marketplace_name,
+        "plugins": [
+            {
+                "name": manifest["name"],
+                "source": f"./plugins/{PLUGIN_ID}",
+                "version": manifest["version"],
+                "description": manifest["description"],
+            }
+        ],
+    }
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    dest_path.write_text(json.dumps(catalog, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
 def write_local_debug_mcp_launcher(plugin_dir: Path, target: str, *, host: str = "codex") -> None:
     if target not in SUPPORTED_TARGETS:
         raise SystemExit(f"unsupported local debug target: {target}")
@@ -396,9 +445,9 @@ def write_local_debug_mcp_launcher(plugin_dir: Path, target: str, *, host: str =
     mcp_path = plugin_dir / ".mcp.json"
     mcp = json.loads(mcp_path.read_text(encoding="utf-8"))
     server = mcp["mcpServers"]["unica"]
-    if host == "claude":
-        # Claude Code does not run plugin servers from the plugin root, so the
-        # binary is addressed absolutely instead of through cwd.
+    if host in {"claude", "zcode"}:
+        # These hosts may launch outside the plugin root. Both expand this token,
+        # so the binary is addressed absolutely instead of through cwd.
         server["command"] = "${CLAUDE_PLUGIN_ROOT}/bin/" + f"{target}/{executable}"
         server["args"] = []
         server.pop("cwd", None)
@@ -406,6 +455,7 @@ def write_local_debug_mcp_launcher(plugin_dir: Path, target: str, *, host: str =
         server["command"] = f"./bin/{target}/{executable}"
         server["args"] = []
         server["cwd"] = "."
+    server.setdefault("env", {})["UNICA_HOST_CONTEXT_REQUIRED"] = "1"
     server["note"] = "Development-only current-host Unica MCP binary."
     mcp_path.write_text(json.dumps(mcp, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
@@ -688,7 +738,13 @@ def assert_archive_clean(marketplace_dir: Path) -> None:
 def write_p0_package_evidence(
     marketplace_dir: Path, destination: Path, *, source_commit: str
 ) -> None:
-    """Write package identity without claiming a tag or a publication."""
+    """Write the observed package identity: version, source commit, digests.
+
+    Nothing here says "not bumped", "not published" or "no tag": those were
+    literals the proof then compared with the same literals, so they could
+    never turn false (#696). Read-only-ness is a property of the CI job that
+    runs the proof and is pinned by tests/ci/test_unica_workflow.py.
+    """
     plugin_dir = marketplace_dir / "plugins" / PLUGIN_ID
     version = read_release_version(plugin_dir)
     runtime_manifest = plugin_dir / "runtime-manifest.json"
@@ -696,14 +752,11 @@ def write_p0_package_evidence(
         raise SystemExit(f"packaged runtime manifest is missing: {runtime_manifest}")
     evidence = {
         "schemaVersion": 1,
-        "packageHashFormat": "sha256-u64be-path-content-v1",
+        "packageHashFormat": PACKAGE_HASH_FORMAT,
         "pluginVersion": version,
         "sourceCommit": source_commit,
         "packageSha256": package_tree_sha256(marketplace_dir),
         "runtimeManifestSha256": sha256(runtime_manifest),
-        "versionBumped": False,
-        "published": False,
-        "tag": None,
     }
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(
@@ -722,6 +775,11 @@ def package_local_debug(
     target: str,
     host: str = "codex",
 ) -> None:
+    """Recreate out_dir/marketplace as a single-target development package.
+
+    Existing marketplace contents are replaced. This prepares files only;
+    installation and registration with the selected host remain separate steps.
+    """
     plugin_src = repo_root / "plugins" / "unica"
     marketplace_src = repo_root / ".agents" / "plugins" / "marketplace.json"
     marketplace_dir = out_dir / "marketplace"
@@ -757,6 +815,12 @@ def package_local_debug(
             plugin_dst,
             marketplace_dir / CLAUDE_MARKETPLACE_PATH,
             source=f"./plugins/{PLUGIN_ID}",
+        )
+    elif host == "zcode":
+        write_zcode_local_marketplace(
+            plugin_dst,
+            marketplace_dir / "marketplace.json",
+            marketplace_name=marketplace_name,
         )
     assert_archive_clean(marketplace_dir)
 
@@ -845,8 +909,8 @@ def main() -> None:
         source=claude_plugin_source(release_tag=args.release_tag),
     )
 
-    json.loads((plugin_dst / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
-    json.loads((plugin_dst / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+    for manifest_dir in HOST_MANIFEST_DIRS.values():
+        json.loads((plugin_dst / manifest_dir / "plugin.json").read_text(encoding="utf-8"))
     json.loads((plugin_dst / ".mcp.json").read_text(encoding="utf-8"))
     json.loads((plugin_dst / "runtime-manifest.json").read_text(encoding="utf-8"))
     json.loads((marketplace_dst / "marketplace.json").read_text(encoding="utf-8"))

@@ -64,7 +64,7 @@ class SocialCardTests(unittest.TestCase):
         self.site = og(PAGES / "index.html")["og:url"]
 
     def test_every_page_names_a_card_that_exists(self) -> None:
-        """У каждой страницы своя карточка: общая говорила бы за все три сразу."""
+        """У каждой страницы своя карточка: общая говорила бы за все страницы сразу."""
         seen = set()
         for page in self.pages:
             with self.subTest(page=page.name):

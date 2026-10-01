@@ -263,9 +263,6 @@ def load_bundle(bundle_root: Path) -> tuple[dict, list[tuple[PurePosixPath, Path
             }
         ],
     }
-    manifest_bytes = (
-        json.dumps(generated_manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-    ).encode("utf-8")
     # Версия артефакта берётся у инструментов, которые он несёт: они делят
     # архив, значит делят и версию. Расхождение — ошибка сборки, а не выбор.
     artifact_versions: dict[str, str] = {}
@@ -297,6 +294,16 @@ def load_bundle(bundle_root: Path) -> tuple[dict, list[tuple[PurePosixPath, Path
             raise SystemExit(f"artifact {artifact} asset is missing {sorted(missing)}")
         if not SHA256.fullmatch(asset["sha256"]):
             raise SystemExit(f"invalid toolchain asset checksum for {artifact}")
+
+    # Runtime resolves delivered engines from the same immutable identity that
+    # bootstrap used for installation. This map travels inside the core archive;
+    # keeping it only in the outer release manifest makes the paths diverge.
+    generated_manifest["artifactAssets"] = {
+        artifact: assets[artifact] for artifact in sorted(set(delivered) - {core})
+    }
+    manifest_bytes = (
+        json.dumps(generated_manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
 
     return {
         "target": target,

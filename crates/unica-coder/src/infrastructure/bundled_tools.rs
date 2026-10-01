@@ -807,6 +807,233 @@ mod delivery_tests {
     use std::fs;
 
     #[test]
+    fn installer_and_runtime_resolve_both_tools_from_one_immutable_rlm_delivery() {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use unica_bootstrap::{
+            BootstrapError, DownloadObserver, Downloader, HostTarget, RuntimeInstaller,
+            RuntimeManifest, SilentDownload,
+        };
+
+        struct PublishedAssets {
+            archives: BTreeMap<String, Vec<u8>>,
+            calls: AtomicUsize,
+        }
+
+        impl Downloader for PublishedAssets {
+            fn download(
+                &self,
+                url: &str,
+                destination: &Path,
+                observer: &dyn DownloadObserver,
+            ) -> Result<(), BootstrapError> {
+                let name = url.rsplit('/').next().unwrap();
+                let bytes = &self.archives[name];
+                fs::write(destination, bytes)?;
+                observer.transferred(bytes.len() as u64, Some(bytes.len() as u64));
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        fn archive(entries: &[(&str, &[u8])]) -> Vec<u8> {
+            let encoder = GzEncoder::new(Vec::new(), Compression::default());
+            let mut builder = tar::Builder::new(encoder);
+            for (name, bytes) in entries {
+                let mut header = tar::Header::new_gnu();
+                header.set_size(bytes.len() as u64);
+                header.set_mode(0o755);
+                header.set_cksum();
+                builder.append_data(&mut header, name, *bytes).unwrap();
+            }
+            builder.into_inner().unwrap().finish().unwrap()
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let plugin = root.path().join("plugin");
+        fs::create_dir_all(plugin.join("third-party")).unwrap();
+        let cache = root.path().join("cache");
+        let script = b"#!/bin/sh\nprintf 'provider-started\\n'\n";
+        let file_sha = format!("{:x}", Sha256::digest(script));
+        let mut archives = BTreeMap::new();
+        let mut engine_targets = serde_json::Map::new();
+        let mut analyzer_targets = serde_json::Map::new();
+        let mut core_targets = serde_json::Map::new();
+        let mut mcp_binaries = serde_json::Map::new();
+        let mut index_binaries = serde_json::Map::new();
+        let mut analyzer_binaries = serde_json::Map::new();
+        for host in HostTarget::ALL {
+            let target = host.as_str();
+            let suffix = if target == "win-x64" { ".exe" } else { "" };
+            let mcp = format!("rlm-bsl-mcp{suffix}");
+            let index = format!("rlm-bsl-index{suffix}");
+            let bytes = archive(&[(mcp.as_str(), script), (index.as_str(), script)]);
+            let asset_name = format!("rlm-tools-bsl-{target}.tar.gz");
+            let asset_sha = format!("{:x}", Sha256::digest(&bytes));
+            archives.insert(asset_name.clone(), bytes);
+            let analyzer_name = format!("bsl-analyzer-{target}{suffix}");
+            archives.insert(analyzer_name.clone(), script.to_vec());
+            analyzer_targets.insert(target.to_owned(), serde_json::json!({
+                "asset": {
+                    "name": analyzer_name,
+                    "url": format!("https://github.com/IngvarConsulting/unica-toolchain/releases/download/bsl-analyzer-v0.2.67-build.1/{analyzer_name}"),
+                    "mediaType": "application/octet-stream",
+                    "sha256": file_sha,
+                },
+                "files": [{"path": format!("bin/{target}/bsl-analyzer{suffix}"), "sha256": file_sha, "executable": true}],
+            }));
+            analyzer_binaries.insert(
+                target.to_owned(),
+                serde_json::json!({
+                    "binaryPath": format!("bin/{target}/bsl-analyzer{suffix}"),
+                    "deliveredPath": format!("bin/{target}/bsl-analyzer{suffix}"),
+                    "sha256": file_sha,
+                }),
+            );
+            engine_targets.insert(target.to_owned(), serde_json::json!({
+                "asset": {
+                    "name": asset_name,
+                    "url": format!("https://github.com/IngvarConsulting/unica-toolchain/releases/download/rlm-tools-bsl-v1.33.0-build.3/{asset_name}"),
+                    "mediaType": "application/gzip",
+                    "sha256": asset_sha,
+                },
+                "files": [
+                    {"path": mcp, "sha256": file_sha, "executable": true},
+                    {"path": index, "sha256": file_sha, "executable": true},
+                ],
+            }));
+            let core_exe = if target == "win-x64" {
+                "unica.exe"
+            } else {
+                "unica"
+            };
+            let core_path = format!("bin/{target}/{core_exe}");
+            let core_asset = format!("unica-runtime-{target}.tar.gz");
+            core_targets.insert(target.to_owned(), serde_json::json!({
+                "asset": {
+                    "name": core_asset,
+                    "url": format!("https://github.com/IngvarConsulting/unica/releases/download/v{}/{core_asset}", env!("CARGO_PKG_VERSION")),
+                    "mediaType": "application/gzip",
+                    "sha256": "0".repeat(64),
+                },
+                "files": [{"path": core_path, "sha256": "0".repeat(64), "executable": true}],
+                "entrypoint": core_path,
+            }));
+            for (binaries, name) in [(&mut mcp_binaries, mcp), (&mut index_binaries, index)] {
+                binaries.insert(
+                    target.to_owned(),
+                    serde_json::json!({
+                        "binaryPath": format!("bin/{target}/{name}"),
+                        "deliveredPath": name,
+                        "sha256": file_sha,
+                    }),
+                );
+            }
+        }
+
+        let runtime: RuntimeManifest = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 2,
+            "pluginVersion": env!("CARGO_PKG_VERSION"),
+            "source": {
+                "repository": "https://github.com/IngvarConsulting/unica",
+                "commit": "0".repeat(40),
+            },
+            "release": {
+                "repository": "https://github.com/IngvarConsulting/unica",
+                "tag": format!("v{}", env!("CARGO_PKG_VERSION")),
+            },
+            "artifacts": {
+                "unica": {"version": env!("CARGO_PKG_VERSION"), "role": "core", "targets": core_targets},
+                "rlm-tools-bsl": {"version": "1.33.0", "role": "engine", "targets": engine_targets},
+                "bsl-analyzer": {"version": "0.2.67", "role": "engine", "targets": analyzer_targets},
+            },
+        }))
+        .unwrap();
+        runtime.validate(env!("CARGO_PKG_VERSION")).unwrap();
+        let downloader = Arc::new(PublishedAssets {
+            archives,
+            calls: AtomicUsize::new(0),
+        });
+        let installer =
+            RuntimeInstaller::new(cache.clone(), env!("CARGO_PKG_VERSION"), downloader.clone());
+
+        for host in HostTarget::ALL {
+            let target = host.as_str();
+            let asset = &runtime
+                .artifact_target("rlm-tools-bsl", host)
+                .unwrap()
+                .asset;
+            let analyzer_asset = &runtime.artifact_target("bsl-analyzer", host).unwrap().asset;
+            let plugin_manifest = serde_json::json!({
+                "schemaVersion": 2,
+                "artifactAssets": {"rlm-tools-bsl": asset, "bsl-analyzer": analyzer_asset},
+                "tools": [
+                    {"name": "rlm-bsl-index", "artifact": "rlm-tools-bsl", "version": "1.33.0", "binaries": index_binaries},
+                    {"name": "rlm-bsl-mcp", "artifact": "rlm-tools-bsl", "version": "1.33.0", "binaries": mcp_binaries},
+                    {"name": "bsl-analyzer", "version": "0.2.67", "binaries": analyzer_binaries},
+                ],
+            });
+            fs::write(
+                plugin.join("third-party/manifest.json"),
+                plugin_manifest.to_string(),
+            )
+            .unwrap();
+            let installed = installer
+                .ensure_artifact(&runtime, "rlm-tools-bsl", host, &SilentDownload)
+                .unwrap();
+            assert_eq!(
+                installed,
+                cache
+                    .join("rlm-tools-bsl")
+                    .join(format!("1.33.0--{}", asset.sha256))
+                    .join(target)
+            );
+            for tool in ["rlm-bsl-index", "rlm-bsl-mcp"] {
+                let resolved = resolve_from_artifact_cache(&plugin, &cache, tool, target, true)
+                    .unwrap()
+                    .expect("installed tool is resolved");
+                assert!(resolved.program.starts_with(&installed));
+                assert_eq!(fs::read(&resolved.program).unwrap(), script);
+                if target != "win-x64"
+                    && target == crate::infrastructure::platform::current_target_id().unwrap()
+                    && tool == "rlm-bsl-mcp"
+                {
+                    let output = std::process::Command::new(&resolved.program)
+                        .output()
+                        .unwrap();
+                    assert!(output.status.success());
+                    assert_eq!(output.stdout, b"provider-started\n");
+                }
+            }
+            installer
+                .ensure_artifact(&runtime, "rlm-tools-bsl", host, &SilentDownload)
+                .unwrap();
+            let analyzer_root = installer
+                .ensure_artifact(&runtime, "bsl-analyzer", host, &SilentDownload)
+                .unwrap();
+            assert_eq!(
+                analyzer_root,
+                cache
+                    .join("bsl-analyzer")
+                    .join(format!("0.2.67--{}", analyzer_asset.sha256))
+                    .join(target)
+            );
+            let analyzer =
+                resolve_from_artifact_cache(&plugin, &cache, "bsl-analyzer", target, true)
+                    .unwrap()
+                    .expect("installed bsl-analyzer is resolved");
+            assert!(analyzer.program.starts_with(&analyzer_root));
+            assert_eq!(fs::read(&analyzer.program).unwrap(), script);
+            installer
+                .ensure_artifact(&runtime, "bsl-analyzer", host, &SilentDownload)
+                .unwrap();
+        }
+        assert_eq!(downloader.calls.load(Ordering::SeqCst), 6);
+    }
+
+    #[test]
     fn artifact_cache_resolution_uses_the_delivery_digest_not_only_the_version() {
         let plugin_root = tests::temp_plugin_root("immutable-cache-identity");
         fs::write(
@@ -1035,6 +1262,7 @@ mod delivery_tests {
   "schemaVersion": 2,
   "tools": [
     {"name": "rlm-bsl-index", "version": "1.33.0", "artifact": "rlm-tools-bsl"},
+    {"name": "rlm-bsl-mcp", "version": "1.33.0", "artifact": "rlm-tools-bsl"},
     {"name": "v8-runner", "version": "0.4.0"}
   ]
 }"#,
@@ -1043,6 +1271,10 @@ mod delivery_tests {
 
         assert_eq!(
             artifact_for(&plugin_root, "rlm-bsl-index").as_deref(),
+            Some("rlm-tools-bsl")
+        );
+        assert_eq!(
+            artifact_for(&plugin_root, "rlm-bsl-mcp").as_deref(),
             Some("rlm-tools-bsl")
         );
         assert_eq!(

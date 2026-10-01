@@ -151,10 +151,23 @@ def validate_v8_runner_failed_partial_receipt(
     if root["warnings"] != [] or root["steps"] != []:
         errors.append("failure envelope warnings and top-level steps must be empty")
 
-    data = closed_mapping(root["data"], {"ok", "steps", "duration_ms"}, "build data")
+    # v8-runner 0.9.0 (ADR-0028 форка): `build` всегда несёт
+    # `provider_dispatched`. Квитанция с `platform_failure` — след вызванного
+    # провайдера, поэтому здесь признак обязан быть `true`: `false` означал бы,
+    # что раннер отказал до платформы, а ошибку подписал платформенной.
+    data = closed_mapping(
+        root["data"],
+        {"ok", "provider_dispatched", "provider", "steps", "duration_ms"},
+        "build data",
+    )
     error = closed_mapping(root["error"], {"code", "kind", "message"}, "runner error")
     if data is None or error is None:
         return errors
+    receipt = data["provider"]
+    if not isinstance(receipt, dict) or receipt.get("selected") != "designer":
+        errors.append("partial-load receipt must name the selected designer provider")
+    elif not isinstance(receipt.get("origin"), dict) or receipt["origin"].get("kind") not in {"default", "override"}:
+        errors.append("partial-load receipt must name its provider origin")
     for label, duration in [
         ("failure envelope", root["duration_ms"]),
         ("build data", data["duration_ms"]),
@@ -167,6 +180,10 @@ def validate_v8_runner_failed_partial_receipt(
             errors.append(f"{label} duration_ms must be a non-negative integer")
     if data["ok"] is not False:
         errors.append("build data must report ok=false")
+    if data["provider_dispatched"] is not True:
+        errors.append(
+            "build data provider_dispatched must be true: platform_failure certifies a dispatched provider"
+        )
     if root["duration_ms"] != data["duration_ms"]:
         errors.append("failure envelope and build data duration_ms must match")
     if error["code"] != "platform_failure" or error["kind"] != "platform":
@@ -305,7 +322,7 @@ fn main() {
                 [
                     f"workPath: '{yaml_path(work_path)}'",
                     "format: DESIGNER",
-                    "builder: DESIGNER",
+                    "providers: {build: designer, make: designer}",
                     "infobase:",
                     f"  connection: 'File={yaml_path(infobase_path)}'",
                     "build:",
@@ -689,7 +706,7 @@ fn main() {{
                 [
                     f"workPath: '{yaml_path(work_path)}'",
                     "format: DESIGNER",
-                    "builder: DESIGNER",
+                    "providers: {build: designer, make: designer}",
                     "infobase:",
                     f"  connection: 'File={yaml_path(infobase_path)}'",
                     "source-set:",
@@ -836,7 +853,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     f"workPath: '{yaml_path(work_path)}'",
                     "execution_timeout: 30000",
                     "format: DESIGNER",
-                    "builder: DESIGNER",
+                    "providers: {build: designer, make: designer}",
                     "infobase:",
                     f"  connection: 'File={yaml_path(infobase_path)}'",
                     "source-set:",

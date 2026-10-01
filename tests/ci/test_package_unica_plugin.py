@@ -14,6 +14,12 @@ from pathlib import Path
 
 
 TOOLCHAIN_REPOSITORY = "https://github.com/IngvarConsulting/unica-toolchain"
+# Independent of the packager's map: omitting a supported host must fail the test.
+EXPECTED_HOST_MANIFEST_DIRS = {
+    "codex": ".codex-plugin",
+    "claude": ".claude-plugin",
+    "zcode": ".zcode-plugin",
+}
 
 
 def load_package_module():
@@ -41,9 +47,34 @@ class PackageUnicaPluginTests(unittest.TestCase):
         first_digest = module.package_tree_sha256(first)
         self.assertEqual(
             first_digest,
-            "5188569041dcc3e6e365f6a5b95d375ba69964b3cd93a8f28c198a521c30bda2",
+            "b849d8517c4382efe5ab53dbed90a249ae953f7695a806b260aa3c9d07782a34",
         )
         self.assertNotEqual(first_digest, module.package_tree_sha256(second))
+
+    def test_package_tree_hash_frames_the_executable_bit(self) -> None:
+        # Тот же кадр, что у proof: бит исполнения входит в идентичность
+        # пакета, иначе потерянный `+x` у bootstrap пройдёт сверку (#700).
+        module = load_package_module()
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        plain = root / "plain"
+        executable = root / "executable"
+        for tree in (plain, executable):
+            tree.mkdir()
+            (tree / "bin").write_bytes(b"#!/bin/sh\n")
+        (executable / "bin").chmod(0o755)
+        (plain / "bin").chmod(0o644)
+
+        self.assertNotEqual(module.package_tree_sha256(plain), module.package_tree_sha256(executable))
+
+    def test_package_tree_hash_rejects_symlinks(self) -> None:
+        module = load_package_module()
+        root = Path(self.enterContext(tempfile.TemporaryDirectory())) / "linked"
+        root.mkdir()
+        (root / "real").write_bytes(b"payload")
+        (root / "alias").symlink_to("real")
+
+        with self.assertRaisesRegex(SystemExit, "symlink"):
+            module.package_tree_sha256(root)
 
     def test_runtime_metadata_asset_must_be_an_object(self) -> None:
         module = load_package_module()
@@ -345,6 +376,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
 
         self.assertEqual(server["command"], "git")
         self.assertEqual(server["cwd"], ".")
+        self.assertEqual(server["env"]["UNICA_HOST_CONTEXT_REQUIRED"], "1")
         self.assertEqual(server["args"][0], "-c")
         self.assertTrue(server["args"][1].startswith("alias.unica-bootstrap=!"))
         self.assertIn("bootstrap/launch.sh", server["args"][1])
@@ -411,6 +443,64 @@ class PackageUnicaPluginTests(unittest.TestCase):
         self.assertEqual(claude_resolved, f"resolved={plugin_root}")
 
     @unittest.skipIf(os.name == "nt", "alias fixture uses POSIX test scripts")
+    def test_packaged_alias_launches_with_zcode_expansion_from_another_cwd(self) -> None:
+        """Exercise the shared launcher after ZCode's documented token expansion.
+
+        This models the loader boundary; it does not run an installed ZCode client.
+        """
+        module = load_package_module()
+        source = Path(__file__).resolve().parents[2] / "plugins/unica"
+        manifest = json.loads((source / ".zcode-plugin/plugin.json").read_text(encoding="utf-8"))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            plugin_root = root / "Каталог плагинов" / "unica"
+            launcher = plugin_root / "bootstrap/launch.sh"
+            launcher.parent.mkdir(parents=True)
+            launcher.write_bytes((source / "bootstrap/launch.sh").read_bytes())
+            (plugin_root / manifest["mcpServers"]).write_bytes((source / ".mcp.json").read_bytes())
+            module.write_packaged_mcp_launcher(plugin_root)
+            server = json.loads((plugin_root / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]["unica"]
+            self.assertNotIn("timeoutMs", server)
+            bootstrap = plugin_root / "bootstrap/bin/linux-x64/unica-bootstrap"
+            bootstrap.parent.mkdir(parents=True)
+            bootstrap.write_text(
+                '#!/bin/sh\nprintf "%s\\n" "$@" "$CLAUDE_PLUGIN_ROOT" "$ZCODE_PLUGIN_ROOT" '
+                '"$CLAUDE_PLUGIN_DATA" "$ZCODE_PLUGIN_DATA" "$UNICA_RUNTIME_CACHE_DIR" '
+                '"$PROJECT_DIR" "$UNICA_HOST_CONTEXT_REQUIRED"\n',
+                encoding="utf-8",
+            )
+            bootstrap.chmod(0o755)
+            project = root / "Другой рабочий проект"
+            project.mkdir()
+            data = root / "Данные плагина"
+            aliases = {
+                "CLAUDE_PLUGIN_ROOT": str(plugin_root),
+                "ZCODE_PLUGIN_ROOT": str(plugin_root),
+                "CLAUDE_PLUGIN_DATA": str(data),
+                "ZCODE_PLUGIN_DATA": str(data),
+                "PROJECT_DIR": str(project),
+            }
+
+            def expand(value: str) -> str:
+                for name, replacement in aliases.items():
+                    value = value.replace("${" + name + "}", replacement)
+                return value
+
+            env = {key: value for key, value in os.environ.items() if not key.startswith(("UNICA_", "CLAUDE_", "ZCODE_", "GIT_"))}
+            env.update(aliases)
+            env.update({name: expand(value) for name, value in server["env"].items()})
+            env.update(UNICA_BOOTSTRAP_UNAME_S="Linux", UNICA_BOOTSTRAP_UNAME_M="x86_64")
+            result = subprocess.run(
+                [expand(server["command"]), *(expand(arg) for arg in server["args"])],
+                cwd=project, env=env, text=True, capture_output=True, check=False, timeout=10,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.splitlines(), [
+                "run", "--plugin-root", str(plugin_root), str(plugin_root), str(plugin_root),
+                str(data), str(data), str(data / "runtimes"), str(project), "1",
+            ])
+
+    @unittest.skipIf(os.name == "nt", "alias fixture uses POSIX test scripts")
     def test_packaged_alias_keeps_the_codex_root_resolution_unchanged(self) -> None:
         legacy_alias = (
             'alias.unica-bootstrap=!f() { root="$PWD/${GIT_PREFIX:-}"; '
@@ -461,6 +551,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
         module = load_package_module()
         repo_root = Path(__file__).resolve().parents[2]
 
+        self.assertEqual(module.HOST_MANIFEST_DIRS, EXPECTED_HOST_MANIFEST_DIRS)
         module.assert_host_manifests_present(repo_root / "plugins" / "unica")
 
         versions = {
@@ -469,19 +560,67 @@ class PackageUnicaPluginTests(unittest.TestCase):
                     encoding="utf-8"
                 )
             )["version"]
-            for host, manifest_dir in module.HOST_MANIFEST_DIRS.items()
+            for host, manifest_dir in EXPECTED_HOST_MANIFEST_DIRS.items()
         }
 
         self.assertEqual(len(set(versions.values())), 1, versions)
 
-    def test_source_package_declares_the_012_meta_delivery_version(self) -> None:
+    def test_zcode_manifest_declares_portable_shared_components(self) -> None:
+        plugin_root = Path(__file__).resolve().parents[2] / "plugins/unica"
+        manifest = json.loads(
+            (plugin_root / ".zcode-plugin/plugin.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(manifest["name"], "unica")
+        self.assertEqual(
+            set(manifest),
+            {
+                "name", "version", "description", "author", "homepage",
+                "repository", "license", "keywords", "skills", "mcpServers",
+            },
+        )
+        self.assertEqual(manifest["skills"], "./skills/")
+        self.assertEqual(manifest["mcpServers"], "./.mcp.json")
+        self.assertTrue((plugin_root / manifest["skills"]).is_dir())
+        self.assertTrue((plugin_root / manifest["mcpServers"]).is_file())
+        self.assertNotIn("interface", manifest)
+        self.assertEqual(
+            manifest["version"],
+            json.loads((plugin_root / ".claude-plugin/plugin.json").read_text(encoding="utf-8"))["version"],
+        )
+
+    def test_packager_rejects_a_missing_zcode_manifest(self) -> None:
+        module = load_package_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            plugin_root = Path(tmp) / "unica"
+            for directory in (".codex-plugin", ".claude-plugin"):
+                manifest = plugin_root / directory / "plugin.json"
+                manifest.parent.mkdir(parents=True)
+                manifest.write_text(json.dumps({"version": "0.13.0-rc.3"}), encoding="utf-8")
+            for check in (module.read_release_version, module.assert_host_manifests_present):
+                with self.subTest(check=check.__name__):
+                    with self.assertRaisesRegex(SystemExit, "missing.*zcode manifest"):
+                        check(plugin_root)
+
+    def test_packager_rejects_a_different_zcode_version(self) -> None:
+        module = load_package_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            plugin_root = Path(tmp) / "unica"
+            for directory in (".codex-plugin", ".claude-plugin", ".zcode-plugin"):
+                manifest = plugin_root / directory / "plugin.json"
+                manifest.parent.mkdir(parents=True)
+                version = "0.13.0-rc.2" if directory == ".zcode-plugin" else "0.13.0-rc.3"
+                manifest.write_text(json.dumps({"version": version}), encoding="utf-8")
+            with self.assertRaisesRegex(SystemExit, "host manifests disagree.*zcode=0.13.0-rc.2"):
+                module.read_release_version(plugin_root)
+
+    def test_source_package_declares_the_013_meta_delivery_version(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         plugin_root = repo_root / "plugins/unica"
         host_versions = {
             host: json.loads(
                 (plugin_root / manifest / "plugin.json").read_text(encoding="utf-8")
             )["version"]
-            for host, manifest in load_package_module().HOST_MANIFEST_DIRS.items()
+            for host, manifest in EXPECTED_HOST_MANIFEST_DIRS.items()
         }
         tools = json.loads(
             (plugin_root / "third-party/tools.lock.json").read_text(encoding="utf-8")
@@ -491,7 +630,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
         delivered = set(host_versions.values())
         self.assertEqual(len(delivered), 1, host_versions)
         version = next(iter(delivered))
-        self.assertRegex(version, r"^0\.12\.\d+(?:-[0-9A-Za-z.]+)?$")
+        self.assertRegex(version, r"^0\.13\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$")
         self.assertEqual(unica_versions, [version])
 
     def test_claude_contracts_avoid_keys_older_clients_reject(self) -> None:
@@ -624,12 +763,6 @@ class PackageUnicaPluginTests(unittest.TestCase):
             repo_root / "README.md",
             repo_root / "plugins" / "unica" / "README.md",
             repo_root / "docs" / "internal-package.md",
-            repo_root / "docs" / "arch-v1" / "acceptance" / "unica-mcp-validation.md",
-            repo_root / "docs" / "arch-v1" / "architecture" / "runtime.md",
-            repo_root / "docs" / "arch-v1" / "architecture" / "deployment.md",
-            repo_root / "docs" / "arch-v1" / "architecture" / "change-checklist.md",
-            repo_root / "docs" / "arch-v1" / "decisions" / "0001-edinyy-publichnyy-mcp-unica.md",
-            repo_root / "docs" / "arch-v1" / "decisions" / "0004-legacy-skill-scripts-are-migration-debt.md",
         ]
         forbidden = ("run-unica.sh", "run-tool.sh", "run-tool.ps1", "run-bsl-analyzer.sh", "run-v8-runner.sh")
 
@@ -929,21 +1062,22 @@ class PackageUnicaPluginTests(unittest.TestCase):
     def test_plugin_source_copy_rejects_tracked_nested_ignored_dir(self) -> None:
         module = load_package_module()
 
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            repo_root = root / "repo"
-            plugin_src = repo_root / "plugins" / "unica"
-            generated = plugin_src / "skills" / "web-test" / "__pycache__" / "script.pyc"
-            generated.parent.mkdir(parents=True)
-            generated.write_bytes(b"pyc")
+        for relative in (
+            "skills/web-test/__pycache__/script.pyc",
+            "skills/web-test/.pytest_cache/lastfailed",
+            "skills/web-test/.DS_Store",
+        ):
+            with self.subTest(path=relative), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                repo_root = root / "repo"
+                plugin_src = repo_root / "plugins" / "unica"
+                generated = plugin_src / relative
+                generated.parent.mkdir(parents=True)
+                generated.write_bytes(b"generated")
 
-            with patch.object(
-                module,
-                "git_tracked_plugin_files",
-                return_value=["skills/web-test/__pycache__/script.pyc"],
-            ):
-                with self.assertRaisesRegex(SystemExit, "source package path is generated"):
-                    module.copy_tracked_plugin_source(repo_root, plugin_src, root / "dest")
+                with patch.object(module, "git_tracked_plugin_files", return_value=[relative]):
+                    with self.assertRaisesRegex(SystemExit, "source package path is generated"):
+                        module.copy_tracked_plugin_source(repo_root, plugin_src, root / "dest")
 
     @unittest.skipIf(os.name == "nt" or not hasattr(os, "symlink"), "symlink validation is POSIX-only")
     def test_plugin_source_copy_rejects_tracked_symlink(self) -> None:
@@ -966,6 +1100,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(SystemExit, "symlink"):
                     module.copy_tracked_plugin_source(repo_root, plugin_src, root / "dest")
+            self.assertFalse((root / "dest/skills/web-test/leak.txt").exists())
 
     def write_bundle(self, root: Path, target: str, module) -> Path:
         bundle = root / f"unica-tools-{target}"
@@ -1195,6 +1330,12 @@ class PackageUnicaPluginTests(unittest.TestCase):
                 module.main()
 
             plugin = out_dir / "marketplace" / "plugins" / "unica"
+            for directory in (".codex-plugin", ".claude-plugin", ".zcode-plugin"):
+                with self.subTest(manifest=directory):
+                    self.assertEqual(
+                        (plugin / directory / "plugin.json").read_bytes(),
+                        (repo_root / "plugins/unica" / directory / "plugin.json").read_bytes(),
+                    )
             packaged_paths = {
                 path.relative_to(plugin).as_posix()
                 for path in plugin.rglob("*")
@@ -1215,6 +1356,8 @@ class PackageUnicaPluginTests(unittest.TestCase):
                 or path.startswith("skills/img-grid/")
                 or path == "skills/web-test"
                 or path.startswith("skills/web-test/")
+                or path == "skills/v8-runner"
+                or path.startswith("skills/v8-runner/")
             }
             self.assertEqual(forbidden_script_skills, set())
             self.assertFalse(
@@ -1281,16 +1424,23 @@ class PackageUnicaPluginTests(unittest.TestCase):
                     target_data["asset"]["mediaType"], "application/octet-stream"
                 )
 
-            catalog = json.loads(
-                (out_dir / "marketplace" / ".agents" / "plugins" / "marketplace.json").read_text(
-                    encoding="utf-8"
-                )
-            )
-            source = catalog["plugins"][0]["source"]
-            self.assertEqual(source["source"], "git-subdir")
-            self.assertEqual(source["ref"], release_tag)
-            self.assertEqual(source["path"], "plugins/unica")
-            self.assertNotIn("source\": \"local", json.dumps(catalog))
+            for host, catalog_path in (
+                ("codex", ".agents/plugins/marketplace.json"),
+                ("claude", ".claude-plugin/marketplace.json"),
+            ):
+                with self.subTest(host=host):
+                    catalog = json.loads(
+                        (out_dir / "marketplace" / catalog_path).read_text(encoding="utf-8")
+                    )
+                    self.assertEqual(
+                        catalog["plugins"][0]["source"],
+                        {
+                            "source": "git-subdir",
+                            "url": "https://github.com/IngvarConsulting/unica-marketplace.git",
+                            "path": "plugins/unica",
+                            "ref": release_tag,
+                        },
+                    )
             self.assertEqual(list(out_dir.glob("*.tar.gz")), [])
             self.assertEqual(list(out_dir.glob("*.zip")), [])
             package_evidence = json.loads(
@@ -1299,13 +1449,15 @@ class PackageUnicaPluginTests(unittest.TestCase):
             self.assertEqual(package_evidence["schemaVersion"], 1)
             self.assertEqual(
                 package_evidence["packageHashFormat"],
-                "sha256-u64be-path-content-v1",
+                "sha256-u64be-path-mode-content-v2",
             )
             self.assertEqual(package_evidence["pluginVersion"], version)
             self.assertEqual(package_evidence["sourceCommit"], "a" * 40)
-            self.assertFalse(package_evidence["versionBumped"])
-            self.assertFalse(package_evidence["published"])
-            self.assertIsNone(package_evidence["tag"])
+            # Свидетельство пакета несёт только наблюдённое: версию, коммит и
+            # дайджесты. Флаги «не бампали, не публиковали, тега нет» были
+            # литералами продюсера и сняты (#696).
+            for key in ("versionBumped", "published", "tag"):
+                self.assertNotIn(key, package_evidence)
 
             # Maintainer material stays in the source tree. The donor index and
             # the dated review records answer questions a consumer never asks,
@@ -1318,6 +1470,24 @@ class PackageUnicaPluginTests(unittest.TestCase):
             self.assertIn(
                 "cc-1c-skills", (plugin / "ATTRIBUTIONS.md").read_text(encoding="utf-8")
             )
+
+    def test_zcode_local_debug_launcher_uses_an_absolute_plugin_token(self) -> None:
+        module = load_package_module()
+        source = Path(__file__).resolve().parents[2] / "plugins/unica/.mcp.json"
+        with tempfile.TemporaryDirectory() as tmp:
+            plugin_root = Path(tmp)
+            for target, executable in (("linux-x64", "unica"), ("darwin-arm64", "unica"), ("win-x64", "unica.exe")):
+                with self.subTest(target=target):
+                    (plugin_root / ".mcp.json").write_bytes(source.read_bytes())
+                    module.write_local_debug_mcp_launcher(plugin_root, target, host="zcode")
+                    mcp = json.loads((plugin_root / ".mcp.json").read_text(encoding="utf-8"))
+                    self.assertEqual(set(mcp["mcpServers"]), {"unica"})
+                    server = mcp["mcpServers"]["unica"]
+                    self.assertEqual(server["command"], f"${{CLAUDE_PLUGIN_ROOT}}/bin/{target}/{executable}")
+                    self.assertEqual(server["args"], [])
+                    self.assertNotIn("cwd", server)
+                    self.assertNotIn("timeoutMs", server)
+                    self.assertEqual(server["env"]["UNICA_HOST_CONTEXT_REQUIRED"], "1")
 
     def test_local_debug_mode_remains_current_host_only_and_uses_unica_dev(self) -> None:
         module = load_package_module()
@@ -1367,18 +1537,46 @@ class PackageUnicaPluginTests(unittest.TestCase):
                 "--local-debug-target",
                 target,
             ]
-            with patch("sys.argv", argv):
-                module.main()
-
-            marketplace = json.loads(
-                (out / "marketplace/.agents/plugins/marketplace.json").read_text(encoding="utf-8")
-            )
-            mcp = json.loads(
-                (out / "marketplace/plugins/unica/.mcp.json").read_text(encoding="utf-8")
-            )
-            self.assertEqual(marketplace["name"], "unica-dev")
-            self.assertEqual(mcp["mcpServers"]["unica"]["command"], "./bin/linux-x64/unica")
-            self.assertFalse((out / "marketplace/plugins/unica/bootstrap/bin").exists())
+            for host, catalog_path in (
+                ("codex", ".agents/plugins/marketplace.json"),
+                ("claude", ".claude-plugin/marketplace.json"),
+                ("zcode", "marketplace.json"),
+            ):
+                with self.subTest(host=host):
+                    host_args = [] if host == "codex" else ["--local-debug-host", host]
+                    with patch("sys.argv", argv + host_args):
+                        module.main()
+                    marketplace_root = out / "marketplace"
+                    marketplace = json.loads((marketplace_root / catalog_path).read_text(encoding="utf-8"))
+                    plugin_root = marketplace_root / "plugins/unica"
+                    server = json.loads((plugin_root / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]["unica"]
+                    self.assertEqual(marketplace["name"], "unica" if host == "claude" else "unica-dev")
+                    command = "./bin/linux-x64/unica" if host == "codex" else "${CLAUDE_PLUGIN_ROOT}/bin/linux-x64/unica"
+                    self.assertEqual(server["command"], command)
+                    self.assertEqual(server["env"]["UNICA_HOST_CONTEXT_REQUIRED"], "1")
+                    self.assertFalse((plugin_root / "bootstrap/bin").exists())
+                    self.assertEqual([path.name for path in (plugin_root / "bin").iterdir()], [target])
+                    for directory in (".codex-plugin", ".claude-plugin", ".zcode-plugin"):
+                        self.assertTrue((plugin_root / directory / "plugin.json").is_file())
+                    if host == "zcode":
+                        # ZCode's native local catalog resolves a string source
+                        # against the catalog root, not Codex's source object.
+                        self.assertEqual(set(marketplace), {"name", "plugins"})
+                        entry = marketplace["plugins"][0]
+                        self.assertEqual(len(marketplace["plugins"]), 1)
+                        self.assertEqual(set(entry), {"name", "source", "version", "description"})
+                        self.assertEqual(entry["name"], "unica")
+                        self.assertEqual(entry["source"], "./plugins/unica")
+                        self.assertEqual((marketplace_root / entry["source"]).resolve(), plugin_root.resolve())
+                        manifest = json.loads((plugin_root / ".zcode-plugin/plugin.json").read_text(encoding="utf-8"))
+                        self.assertEqual(entry["version"], manifest["version"])
+                        self.assertEqual(entry["description"], manifest["description"])
+                        self.assertFalse((marketplace_root / ".agents/plugins/marketplace.json").exists())
+                        self.assertFalse((marketplace_root / ".claude-plugin/marketplace.json").exists())
+                        with patch("sys.argv", argv + ["--local-debug-host", host, "--marketplace-name", "unica-local"]):
+                            module.main()
+                        custom = json.loads((marketplace_root / catalog_path).read_text(encoding="utf-8"))
+                        self.assertEqual(custom["name"], "unica-local")
 
 
 if __name__ == "__main__":

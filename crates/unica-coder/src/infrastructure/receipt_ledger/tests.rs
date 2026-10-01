@@ -3329,8 +3329,10 @@ fn direct_terminal_reopens_byte_equivalent_with_exact_state() {
         .expect("reserve exact receipt")
         .into_reservation()
         .expect("receipt remains reserved");
+    let mut result = DomainResult::success("restart-stable direct result");
+    result.data = Some(serde_json::json!({"score": 493.85565185546875}));
     let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
-        result: Box::new(DomainResult::success("restart-stable direct result")),
+        result: Box::new(result),
     })
     .expect("canonical direct terminal");
     let committed = store
@@ -3346,6 +3348,12 @@ fn direct_terminal_reopens_byte_equivalent_with_exact_state() {
         .join(ACTIVE_DIRECTORY_NAME)
         .join(format!("{}.json", key_digest.as_str()));
     let committed_bytes = fs::read(&row_path).expect("read committed direct terminal row");
+    assert!(
+        committed_bytes
+            .windows(b"493.85565185546875".len())
+            .any(|bytes| bytes == b"493.85565185546875"),
+        "the receipt must include the exact score seen in persisted documentation results"
+    );
 
     assert_eq!(
         ReceiptLedgerPort::recover(&mut store, &key, reserve_deadline())
@@ -3737,6 +3745,15 @@ fn direct_terminal_persists_the_original_cutoff_for_exact_response_identity() {
 
 #[test]
 fn direct_terminal_writes_the_preflighted_record_and_returns_the_same_wire_frame() {
+    assert_direct_terminal_preflight_matches_wire(ReceiptTerminalOutcome::Cancelled);
+    let mut result = DomainResult::success("direct result with a floating-point score");
+    result.data = Some(serde_json::json!({"score": 493.85565185546875}));
+    assert_direct_terminal_preflight_matches_wire(ReceiptTerminalOutcome::Completed {
+        result: Box::new(result),
+    });
+}
+
+fn assert_direct_terminal_preflight_matches_wire(outcome: ReceiptTerminalOutcome) {
     let root = tempfile::tempdir().expect("temporary root");
     let receipts = fs::canonicalize(root.path())
         .expect("physical temporary root")
@@ -3751,8 +3768,7 @@ fn direct_terminal_writes_the_preflighted_record_and_returns_the_same_wire_frame
         .expect("reserve exact receipt")
         .into_reservation()
         .expect("receipt remains reserved");
-    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
-        .expect("canonical direct terminal");
+    let terminal = canonical_v5_terminal(&outcome).expect("canonical direct terminal");
     let expected = crate::infrastructure::daemon::terminal_codec_v5::prepare_direct_terminal(
         crate::infrastructure::daemon::terminal_codec_v5::DirectReceiptWriteSlot::new(
             &key,
@@ -3795,6 +3811,10 @@ fn direct_terminal_writes_the_preflighted_record_and_returns_the_same_wire_frame
         committed.wire_frame().jsonl(),
         expected.wire_frame().jsonl()
     );
+    crate::infrastructure::daemon::protocol_v5::decode_v5_server_response(
+        committed.wire_frame().jsonl(),
+    )
+    .expect("frontend must accept the exact direct receipt wire frame");
     assert_eq!(committed.receipt().terminal(), expected.record().terminal());
 }
 
