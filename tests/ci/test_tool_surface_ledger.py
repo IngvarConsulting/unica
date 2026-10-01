@@ -109,6 +109,12 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
         self.assertIn(" по ветви |", row("SubsystemPath"))
         self.assertIn(" нет |", row("cwd"))
 
+    def test_check_ledger_preserves_nullable_argument_types(self) -> None:
+        check = next(tool for tool in self.tools if tool["name"] == "unica.check")
+        rendered = "\n".join(self.module.render_arguments(check))
+        for name, kind in [("at", "string"), ("limit", "integer"), ("cursor", "string")]:
+            self.assertIn(f"| `{name}` | {kind} or null | нет |", rendered)
+
     def test_discriminated_object_branches_render_their_argument_union(self) -> None:
         schema = {
             "type": "object",

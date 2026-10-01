@@ -251,14 +251,20 @@ fn validate_canonical_value(
     value: &serde_json::Value,
     schema: &serde_json::Value,
 ) -> Result<(), String> {
-    let expected = schema.get("type").and_then(serde_json::Value::as_str);
-    let type_matches = match expected {
+    let matches_type = |expected: Option<&str>| match expected {
         Some("string") => value.is_string(),
         Some("boolean") => value.is_boolean(),
         Some("integer") => value.as_i64().is_some() || value.as_u64().is_some(),
         Some("object") => value.is_object(),
         Some("array") => value.is_array(),
+        Some("null") => value.is_null(),
         Some(_) | None => true,
+    };
+    let type_matches = match schema.get("type") {
+        Some(serde_json::Value::Array(types)) => {
+            types.iter().any(|expected| matches_type(expected.as_str()))
+        }
+        expected => matches_type(expected.and_then(serde_json::Value::as_str)),
     };
     if !type_matches {
         return Err(format!(
@@ -625,7 +631,7 @@ impl V5CanonicalInvocationRuntime {
     /// the same handoff moment every later stage measures against.
     pub(super) fn bind_with_deadline(
         &self,
-        request: InvocationRequest,
+        mut request: InvocationRequest,
         response_deadline: InvocationResponseDeadline,
     ) -> Result<V5ActorBoundCanonicalInvocation, V5CanonicalPrepareError> {
         if let Err(summary) = validate_hidden_v13_request(&request) {
@@ -633,6 +639,7 @@ impl V5CanonicalInvocationRuntime {
                 DomainResult::canonical_rejection(None, RefusalCode::BadValue, summary),
             )));
         }
+        request.normalize_check_options();
         match super::v13_workspace_bootstrap::prepare(
             &request,
             response_deadline.clone(),
