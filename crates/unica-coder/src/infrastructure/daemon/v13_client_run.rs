@@ -470,10 +470,17 @@ fn invoke_runner(
                 let parent = crate::infrastructure::platform::filesystem::open_directory_nofollow(
                     directory.path(),
                 )?;
-                crate::infrastructure::platform::filesystem::create_owner_only_directory_child(
-                    &parent,
-                    std::ffi::OsStr::new("logs"),
-                )?;
+                let logs =
+                    crate::infrastructure::platform::filesystem::create_owner_only_directory_child(
+                        &parent,
+                        std::ffi::OsStr::new("logs"),
+                    )?;
+                for name in ["output.log", "stderr.log"] {
+                    crate::infrastructure::platform::filesystem::create_owner_only_file_child(
+                        &logs,
+                        std::ffi::OsStr::new(name),
+                    )?;
+                }
                 Ok(directory)
             })
             .map_err(|_| {
@@ -812,7 +819,7 @@ fn main() {
     fs::write("observed-paths", format!("{}\n{}", output.display(), stderr.display())).unwrap();
     eprintln!("PRIVATE-RUNNER-STDERR {} {}", output.display(), stderr.display());
     let scenario = fs::read_to_string("scenario").unwrap();
-    if scenario == "runner-timeout" {
+    if scenario == "runner-timeout" || scenario == "runner-cancel" {
         loop { thread::park(); }
     }
     let escape = |path: &Path| path.to_str().unwrap().replace('\\', "\\\\").replace('"', "\\\"");
@@ -823,6 +830,7 @@ fn main() {
     fs::write(stderr, "PRIVATE-CLIENT-STDERR-terminal").unwrap();
     println!("{reply}");
     if scenario == "refusal" { std::process::exit(2); }
+    if scenario == "timeout" { std::process::exit(3); }
 }
 "#,
         )
@@ -854,6 +862,7 @@ fn main() {
     struct ObservedSystemRunner {
         paths: Mutex<Vec<(PathBuf, PathBuf)>>,
         timeout: bool,
+        cancel_after_output: bool,
     }
 
     impl ProcessRunner for ObservedSystemRunner {
@@ -873,6 +882,12 @@ fn main() {
             assert_eq!(Some(directory), stderr.parent());
             assert!(directory.is_dir());
             assert!(!directory.starts_with(&command.cwd));
+            for path in [&output, &stderr] {
+                let file =
+                    fs::File::open(path).expect("private log must exist before runner starts");
+                assert_eq!(file.metadata().unwrap().len(), 0);
+                crate::infrastructure::platform::filesystem::verify_owner_only_acl(&file).unwrap();
+            }
             if let Some(mode) =
                 crate::infrastructure::platform::testing::unix_mode_for_test(directory).unwrap()
             {
@@ -886,10 +901,30 @@ fn main() {
             if self.timeout {
                 command.timeout = Some(std::time::Duration::from_secs(1));
             }
-            let result =
-                crate::infrastructure::internal_adapters::SystemProcessRunner.run(&command);
+            let result = std::thread::scope(|scope| {
+                if self.cancel_after_output {
+                    scope.spawn(|| {
+                        let ready = command.cwd.join("observed-paths");
+                        let deadline =
+                            std::time::Instant::now() + std::time::Duration::from_secs(5);
+                        while !ready.exists() {
+                            if std::time::Instant::now() >= deadline {
+                                command.cancellation.cancel();
+                                panic!("fixture did not open its logs before cancellation");
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(5));
+                        }
+                        command.cancellation.cancel();
+                    });
+                }
+                crate::infrastructure::internal_adapters::SystemProcessRunner.run(&command)
+            });
             if let Ok(result) = &result {
-                let suffix = if result.timed_out { "" } else { "-terminal" };
+                let suffix = if result.timed_out || result.cancelled {
+                    ""
+                } else {
+                    "-terminal"
+                };
                 assert_eq!(
                     fs::read_to_string(&output).unwrap(),
                     format!("PRIVATE-CLIENT-OUTPUT{suffix}")
@@ -898,6 +933,11 @@ fn main() {
                     fs::read_to_string(&stderr).unwrap(),
                     format!("PRIVATE-CLIENT-STDERR{suffix}")
                 );
+                for path in [&output, &stderr] {
+                    let file = fs::File::open(path).unwrap();
+                    crate::infrastructure::platform::filesystem::verify_owner_only_acl(&file)
+                        .unwrap();
+                }
             }
             result
         }
@@ -972,6 +1012,17 @@ fn main() {
                     "message": "OUTPUT_PATH STDERR_PATH PRIVATE-CLIENT-OUTPUT PRIVATE-CLIENT-STDERR",
                 });
             }
+            // v8-runner 0.11.2 reports an EPF wait timeout as runtime_failure,
+            // with a nonzero process status, rather than a successful receipt.
+            if scenario == "timeout" {
+                envelope["ok"] = json!(false);
+                envelope["data"]["ok"] = json!(false);
+                envelope["error"] = json!({
+                    "code": "runtime_failure",
+                    "kind": "runtime",
+                    "message": "OUTPUT_PATH STDERR_PATH PRIVATE-CLIENT-OUTPUT wait timed out",
+                });
+            }
             if scenario == "invalid-result" {
                 envelope["data"]["mode"] = json!("designer");
             }
@@ -998,6 +1049,11 @@ fn main() {
             );
             assert_private_launch_cleanup(&result, &paths);
             match scenario {
+                "timeout" => {
+                    assert!(!result.ok, "{result:?}");
+                    assert_eq!(result.diagnostics[0]["code"], "provider_failed");
+                    assert!(result.changed.is_empty());
+                }
                 "refusal" => {
                     assert!(!result.ok, "{result:?}");
                     assert_eq!(result.diagnostics[0]["code"], "provider_unavailable");
@@ -1011,7 +1067,7 @@ fn main() {
                     assert!(result.ok, "{result:?}");
                     let data = result.data.as_ref().unwrap();
                     assert_eq!(data["pid"], 77);
-                    assert_eq!(data["wait"]["timedOut"], scenario == "timeout");
+                    assert_eq!(data["wait"]["timedOut"], false);
                     assert_eq!(
                         data["wait"]["exitCode"],
                         envelope["data"]["external_epf_wait"]["exit_code"]
@@ -1040,18 +1096,19 @@ fn main() {
     }
 
     #[test]
-    fn waited_launch_real_process_timeout_and_spawn_failure_clean_up_private_logs() {
+    fn waited_launch_real_process_timeout_cancel_and_spawn_failure_clean_up_private_logs() {
         let (_executable_directory, executable) = fake_launch_executable();
-        for spawn_failure in [false, true] {
+        for scenario in ["runner-timeout", "runner-cancel", "spawn-failure"] {
             let root = workspace();
-            fs::write(root.path().join("scenario"), "runner-timeout").unwrap();
+            fs::write(root.path().join("scenario"), scenario).unwrap();
             let prepared = prepared(
                 root.path(),
                 json!({"clientMode": "thin", "execute": "tools/Report.epf", "waitForExit": true, "waitTimeoutMs": 1500}),
                 false,
             );
             let runner = ObservedSystemRunner {
-                timeout: true,
+                timeout: scenario == "runner-timeout",
+                cancel_after_output: scenario == "runner-cancel",
                 ..Default::default()
             };
             let missing = tool(root.path());
@@ -1059,15 +1116,19 @@ fn main() {
                 &prepared,
                 &runner,
                 CancellationToken::new(),
-                if spawn_failure { &missing } else { &executable },
+                if scenario == "spawn-failure" {
+                    &missing
+                } else {
+                    &executable
+                },
             );
             assert!(!result.ok, "{result:?}");
             assert_eq!(
                 result.diagnostics[0]["code"],
-                if spawn_failure {
-                    "provider_unavailable"
-                } else {
-                    "deadline_exceeded"
+                match scenario {
+                    "spawn-failure" => "provider_unavailable",
+                    "runner-cancel" => "cancelled",
+                    _ => "deadline_exceeded",
                 }
             );
             assert_private_launch_cleanup(&result, &runner.paths.lock().unwrap()[0]);
