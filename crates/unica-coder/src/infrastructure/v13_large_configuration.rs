@@ -3,7 +3,7 @@
 
 use crate::application::v13::view::ViewError;
 use crate::domain::address::NodeKind;
-use crate::domain::refusal::{RefusalCode, RefusalDetail};
+use crate::domain::refusal::RefusalDetail;
 use serde_json::{json, Value};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -21,8 +21,15 @@ type Registration = (String, String);
 
 fn scratch_error(error: io::Error) -> ViewError {
     ViewError::detailed(
-        RefusalDetail::SourceUnreadable,
+        RefusalDetail::BackendBroken,
         format!("temporary Configuration registration sort failed: {error}"),
+    )
+}
+
+fn scratch_incomplete() -> ViewError {
+    ViewError::detailed(
+        RefusalDetail::BackendBroken,
+        "temporary Configuration registration index is incomplete",
     )
 }
 
@@ -63,8 +70,8 @@ impl RegistrationSorter {
             .checked_add(name.len())
             .and_then(|length| length.checked_add(8))
             .ok_or_else(|| {
-                ViewError::new(
-                    RefusalCode::ProviderUnavailable,
+                ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
                     "registration size overflow",
                 )
             })?;
@@ -74,8 +81,8 @@ impl RegistrationSorter {
             self.flush(checkpoint)?;
         }
         self.batch_bytes = self.batch_bytes.checked_add(charge).ok_or_else(|| {
-            ViewError::new(
-                RefusalCode::ProviderUnavailable,
+            ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
                 "registration batch size overflow",
             )
         })?;
@@ -282,8 +289,8 @@ impl RegistrationIndex {
                 .write_all(&position.to_le_bytes())
                 .map_err(scratch_error)?;
             count = count.checked_add(1).ok_or_else(|| {
-                ViewError::new(
-                    RefusalCode::ProviderUnavailable,
+                ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
                     "registration count overflow",
                 )
             })?;
@@ -319,7 +326,7 @@ impl RegistrationIndex {
             files
                 .offsets
                 .seek(SeekFrom::Start(middle.checked_mul(8).ok_or_else(|| {
-                    ViewError::new(RefusalCode::ProviderUnavailable, "index offset overflow")
+                    ViewError::detailed(RefusalDetail::BackendBroken, "index offset overflow")
                 })?))
                 .map_err(scratch_error)?;
             let mut offset = [0_u8; 8];
@@ -333,12 +340,7 @@ impl RegistrationIndex {
                 .map_err(scratch_error)?;
             let candidate = read_registration(&mut files.data)
                 .map_err(scratch_error)?
-                .ok_or_else(|| {
-                    ViewError::detailed(
-                        RefusalDetail::SourceUnreadable,
-                        "registration index is incomplete",
-                    )
-                })?;
+                .ok_or_else(scratch_incomplete)?;
             match (candidate.0.as_str(), candidate.1.as_str()).cmp(&(kind, name)) {
                 std::cmp::Ordering::Less => low = middle + 1,
                 std::cmp::Ordering::Equal => return Ok(true),
@@ -346,6 +348,79 @@ impl RegistrationIndex {
             }
         }
         Ok(false)
+    }
+
+    /// Return the complete sorted, duplicate-free branch. The collection
+    /// response itself holds these names, so only output-sized memory is used.
+    pub(crate) fn names_for_kind(
+        &self,
+        kind: &str,
+        checkpoint: &dyn Fn() -> Result<(), ViewError>,
+    ) -> Result<Vec<String>, ViewError> {
+        let mut files = self.inner.lock().map_err(|_| {
+            ViewError::detailed(
+                RefusalDetail::CachePoisoned,
+                "registration index is poisoned",
+            )
+        })?;
+        let mut low = 0_u64;
+        let mut high = self.count;
+        while low < high {
+            checkpoint()?;
+            let middle = low + (high - low) / 2;
+            files
+                .offsets
+                .seek(SeekFrom::Start(middle.checked_mul(8).ok_or_else(|| {
+                    ViewError::detailed(RefusalDetail::BackendBroken, "index offset overflow")
+                })?))
+                .map_err(scratch_error)?;
+            let mut offset = [0_u8; 8];
+            files
+                .offsets
+                .read_exact(&mut offset)
+                .map_err(scratch_error)?;
+            files
+                .data
+                .seek(SeekFrom::Start(u64::from_le_bytes(offset)))
+                .map_err(scratch_error)?;
+            let candidate = read_registration(&mut files.data)
+                .map_err(scratch_error)?
+                .ok_or_else(scratch_incomplete)?;
+            if candidate.0.as_str() < kind {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
+        }
+        if low == self.count {
+            return Ok(Vec::new());
+        }
+        files
+            .offsets
+            .seek(SeekFrom::Start(low.checked_mul(8).ok_or_else(|| {
+                ViewError::detailed(RefusalDetail::BackendBroken, "index offset overflow")
+            })?))
+            .map_err(scratch_error)?;
+        let mut offset = [0_u8; 8];
+        files
+            .offsets
+            .read_exact(&mut offset)
+            .map_err(scratch_error)?;
+        files
+            .data
+            .seek(SeekFrom::Start(u64::from_le_bytes(offset)))
+            .map_err(scratch_error)?;
+        let mut names = Vec::new();
+        while let Some((candidate_kind, name)) =
+            read_registration(&mut files.data).map_err(scratch_error)?
+        {
+            checkpoint()?;
+            if candidate_kind != kind {
+                break;
+            }
+            names.push(name);
+        }
+        Ok(names)
     }
 }
 
@@ -464,8 +539,8 @@ pub(super) fn read_configuration_root(
         verify_owner(kind, name)?;
         let count = counts.entry(kind.to_string()).or_default();
         *count = count.checked_add(1).ok_or_else(|| {
-            ViewError::new(
-                RefusalCode::ProviderUnavailable,
+            ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
                 "Configuration branch count overflow",
             )
         })?;
@@ -669,7 +744,7 @@ impl RootState {
         checkpoint()?;
         if self.ignored_depth != 0 {
             self.ignored_depth = self.ignored_depth.checked_add(1).ok_or_else(|| {
-                ViewError::new(RefusalCode::ProviderUnavailable, "XML depth overflow")
+                ViewError::detailed(RefusalDetail::SourceUnreadable, "XML depth overflow")
             })?;
             return Ok(());
         }
@@ -695,8 +770,8 @@ impl RootState {
             }
             Some(FrameRole::Root) => {
                 self.root_children = self.root_children.checked_add(1).ok_or_else(|| {
-                    ViewError::new(
-                        RefusalCode::ProviderUnavailable,
+                    ViewError::detailed(
+                        RefusalDetail::SourceUnreadable,
                         "root artifact count overflow",
                     )
                 })?;
@@ -731,8 +806,8 @@ impl RootState {
             Some(FrameRole::ChildObjects { primary }) => {
                 if *primary {
                     self.total_objects = self.total_objects.checked_add(1).ok_or_else(|| {
-                        ViewError::new(
-                            RefusalCode::ProviderUnavailable,
+                        ViewError::detailed(
+                            RefusalDetail::SourceUnreadable,
                             "Configuration object count overflow",
                         )
                     })?;
@@ -789,7 +864,16 @@ impl RootState {
             return;
         }
         if let Some(frame) = self.stack.last_mut() {
-            if !frame.first_text_closed {
+            if !frame.first_text_closed
+                && matches!(
+                    &frame.role,
+                    FrameRole::Property(_)
+                        | FrameRole::Registration { .. }
+                        | FrameRole::RegistrationName
+                        | FrameRole::SynonymLang
+                        | FrameRole::SynonymContent
+                )
+            {
                 frame
                     .first_text
                     .get_or_insert_with(String::new)
@@ -973,8 +1057,24 @@ fn is_root_property(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::refusal::RefusalCode;
     use std::cell::Cell;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn temporary_index_failures_are_distinct_from_unreadable_source_xml() {
+        let scratch = scratch_error(io::Error::other("temporary storage unavailable"));
+        assert_eq!(scratch.detail(), Some(RefusalDetail::BackendBroken));
+        assert_eq!(scratch.code(), RefusalCode::TaskBackendFailed);
+        assert_eq!(
+            scratch_incomplete().detail(),
+            Some(RefusalDetail::BackendBroken)
+        );
+
+        let source = source_io_error(io::Error::other("Configuration.xml unreadable"));
+        assert_eq!(source.detail(), Some(RefusalDetail::SourceUnreadable));
+        assert_eq!(source.code(), RefusalCode::ProviderUnavailable);
+    }
 
     fn parsed(
         bytes: &[u8],
@@ -1086,6 +1186,34 @@ mod tests {
     }
 
     #[test]
+    fn irrelevant_xml_frames_do_not_retain_long_text() {
+        let long_text = " ".repeat(1024 * 1024);
+        for role in [
+            FrameRole::Root,
+            FrameRole::Configuration,
+            FrameRole::ChildObjects { primary: true },
+            FrameRole::RegistrationProperties { name_seen: false },
+        ] {
+            let mut state = RootState::new();
+            state.stack.push(Frame {
+                role,
+                first_text: None,
+                first_text_closed: false,
+            });
+            state.text(long_text.clone());
+            assert!(state.stack[0].first_text.is_none());
+        }
+        let mut state = RootState::new();
+        state.stack.push(Frame {
+            role: FrameRole::Property("Name".to_string()),
+            first_text: None,
+            first_text_closed: false,
+        });
+        state.text("Real name".to_string());
+        assert_eq!(state.stack[0].first_text.as_deref(), Some("Real name"));
+    }
+
+    #[test]
     fn external_registration_sort_deduplicates_across_multiple_runs() {
         let mut sorter = RegistrationSorter::new();
         for index in (0..80_000).rev() {
@@ -1118,6 +1246,35 @@ mod tests {
             })
             .unwrap();
         assert_eq!(count, 80_000);
+    }
+
+    #[test]
+    fn registration_index_lists_only_sorted_unique_names_for_kind() {
+        let mut sorter = RegistrationSorter::new();
+        for (kind, name) in [
+            ("Catalog", "Zulu"),
+            ("CommonModule", "Beta"),
+            ("Catalog", "Alpha"),
+            ("Catalog", "Alpha"),
+            ("Document", "Order"),
+        ] {
+            sorter
+                .push(kind.to_string(), name.to_string(), &|| Ok(()))
+                .unwrap();
+        }
+        let index = RegistrationIndex::from_sorter(sorter, &|| Ok(())).unwrap();
+        assert_eq!(
+            index.names_for_kind("Catalog", &|| Ok(())).unwrap(),
+            ["Alpha", "Zulu"]
+        );
+        assert_eq!(
+            index.names_for_kind("CommonModule", &|| Ok(())).unwrap(),
+            ["Beta"]
+        );
+        assert!(index
+            .names_for_kind("Empty", &|| Ok(()))
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

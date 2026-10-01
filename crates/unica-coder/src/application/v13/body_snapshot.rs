@@ -3,10 +3,10 @@
 
 use crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES;
 use crate::application::v13::view::ViewError;
-use crate::domain::refusal::{RefusalCode, RefusalDetail};
+use crate::domain::refusal::RefusalDetail;
 use serde_json::{json, Value};
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::sync::Mutex;
 
 // A complete line is kept when it can safely fit in one canonical response.
@@ -18,6 +18,7 @@ const FRAGMENT_BYTES: usize = 64 * 1024;
 pub(crate) struct BodySnapshot {
     file: Mutex<File>,
     len: u64,
+    bom_prefix_len: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,19 +44,22 @@ impl Default for BodyPosition {
 
 impl BodySnapshot {
     pub(crate) fn new(mut file: File, len: u64) -> Self {
-        let len = if len == 3 {
-            let mut head = [0_u8; 3];
-            if file.read_exact(&mut head).is_ok() && head == [0xef, 0xbb, 0xbf] {
-                0
-            } else {
-                len
+        let mut bom_prefix_len = 0_u64;
+        if file.seek(SeekFrom::Start(0)).is_ok() {
+            let mut reader = BufReader::new(&mut file);
+            while len.saturating_sub(bom_prefix_len) >= 3 {
+                let mut head = [0_u8; 3];
+                if reader.read_exact(&mut head).is_err() || head != [0xef, 0xbb, 0xbf] {
+                    break;
+                }
+                bom_prefix_len += 3;
             }
-        } else {
-            len
-        };
+        }
+        let len = if bom_prefix_len == len { 0 } else { len };
         Self {
             file: Mutex::new(file),
             len,
+            bom_prefix_len,
         }
     }
 
@@ -73,8 +77,8 @@ impl BodySnapshot {
             return Ok(None);
         }
         let mut file = self.file.lock().map_err(|_| {
-            ViewError::new(
-                RefusalCode::ProviderUnavailable,
+            ViewError::detailed(
+                RefusalDetail::CachePoisoned,
                 "Body snapshot lock is poisoned",
             )
         })?;
@@ -105,15 +109,11 @@ impl BodySnapshot {
                     end -= 1;
                 }
             }
-            // BSL source may have a UTF-8 BOM; it is not part of Body text.
-            if start == 0 && end >= 3 {
-                file.seek(SeekFrom::Start(0)).map_err(read_error)?;
-                let mut head = [0_u8; 3];
-                file.read_exact(&mut head).map_err(read_error)?;
-                if head == [0xef, 0xbb, 0xbf] {
-                    position.byte = 3;
-                    position.line_start = 3;
-                }
+            // Match module_source(): every leading U+FEFF is omitted, not
+            // only the first UTF-8 BOM triplet.
+            if start == 0 {
+                position.byte = self.bom_prefix_len;
+                position.line_start = self.bom_prefix_len;
             }
             position.text_end = Some(end);
             position.next_line = Some(next_line);
@@ -176,8 +176,8 @@ impl BodySnapshot {
 }
 
 fn read_error(error: std::io::Error) -> ViewError {
-    ViewError::new(
-        RefusalCode::ProviderUnavailable,
+    ViewError::detailed(
+        RefusalDetail::BackendBroken,
         format!("Body snapshot read failed: {error}"),
     )
 }
@@ -219,6 +219,32 @@ mod tests {
         assert!(offsets.len() > 1);
         assert!(offsets.windows(2).all(|pair| pair[0] < pair[1]));
         assert_eq!(line_two.unwrap()["text"], "end");
+    }
+
+    #[test]
+    fn repeated_leading_bom_matches_module_source_and_bom_only_is_empty() {
+        let mut file = tempfile::tempfile().unwrap();
+        let source = b"\xef\xbb\xbf\xef\xbb\xbf\xef\xbb\xbfProcedure A()\nEndProcedure";
+        file.write_all(source).unwrap();
+        let snapshot = BodySnapshot::new(file, source.len() as u64);
+        let (first, next) = snapshot
+            .next_item(BodyPosition::default(), || Ok(()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(first["text"], "Procedure A()");
+        assert_eq!(first["line"], 1);
+        let (second, end) = snapshot.next_item(next, || Ok(())).unwrap().unwrap();
+        assert_eq!(second["text"], "EndProcedure");
+        assert!(!snapshot.has_more(end));
+
+        let mut only_bom = tempfile::tempfile().unwrap();
+        only_bom.write_all(b"\xef\xbb\xbf\xef\xbb\xbf").unwrap();
+        let empty = BodySnapshot::new(only_bom, 6);
+        assert!(!empty.has_more(BodyPosition::default()));
+        assert!(empty
+            .next_item(BodyPosition::default(), || Ok(()))
+            .unwrap()
+            .is_none());
     }
 
     #[test]

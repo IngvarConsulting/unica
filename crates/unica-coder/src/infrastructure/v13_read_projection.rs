@@ -709,13 +709,34 @@ pub(super) fn project_registered_metadata_branch(
         .last()
         .map(AddressSegment::kind)
         .ok_or_else(|| ViewError::new(RefusalCode::NotFound, "metadata branch kind is missing"))?;
-    let items = payload
+    let names = payload
         .get("registeredObjects")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .filter(|item| item.get("kind").and_then(Value::as_str) == Some(kind.as_str()))
-        .filter_map(|item| item.get("name").and_then(Value::as_str))
+        .filter_map(|item| item.get("name").and_then(Value::as_str));
+    project_registered_metadata_branch_names_inner(address, kind, names)
+}
+
+pub(super) fn project_registered_metadata_branch_names(
+    address: &QualifiedAddress,
+    names: &[String],
+) -> Result<NodeViewData, ViewError> {
+    let kind = address
+        .segments()
+        .last()
+        .map(AddressSegment::kind)
+        .ok_or_else(|| ViewError::new(RefusalCode::NotFound, "metadata branch kind is missing"))?;
+    project_registered_metadata_branch_names_inner(address, kind, names.iter().map(String::as_str))
+}
+
+fn project_registered_metadata_branch_names_inner<'a>(
+    address: &QualifiedAddress,
+    kind: NodeKind,
+    names: impl Iterator<Item = &'a str>,
+) -> Result<NodeViewData, ViewError> {
+    let items = names
         .map(|name| {
             serde_json::to_value(NodeView::new(
                 format!("{}.{name}", address),

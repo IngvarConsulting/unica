@@ -6,6 +6,7 @@ check:
   - crates/unica-coder/src/application/v13/view.rs::cursor_replay_is_bound_and_revision_change_is_stale
   - crates/unica-coder/src/application/v13/view.rs::retrying_the_same_cursor_returns_the_same_page_and_successor
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::cursor_retry_rejects_revision_change_during_role_canonicalization
+  - crates/unica-coder/src/application/v13/view.rs::disk_body_page_rechecks_revision_after_scanning_a_long_line
 ---
 
 # Курсор продолжает тот же вопрос на той же ревизии

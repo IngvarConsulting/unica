@@ -4,6 +4,7 @@ check:
   - crates/unica-coder/src/application/v13/view.rs::view_keeps_content_behind_explicit_body_and_paginates_whole_lines
   - crates/unica-coder/src/application/v13/view.rs::a_collection_longer_than_the_cursor_entry_limit_still_has_a_first_page
   - crates/unica-coder/tests/v13_search_integration.rs::public_view_starts_body_over_sixty_four_mib_and_splits_one_long_line
+  - crates/unica-coder/src/application/v13/view.rs::disk_body_projection_without_items_returns_only_the_requested_node_sections
 gap: https://github.com/IngvarConsulting/unica/issues/1119
 ---
 

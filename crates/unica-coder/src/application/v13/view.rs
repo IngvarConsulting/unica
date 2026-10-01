@@ -319,6 +319,12 @@ impl<A: ViewReadAuthority> ViewService<A> {
                     &stored.snapshot.binding,
                     &mut || self.authority.read_checkpoint(),
                 )?;
+                if self.authority.snapshot(source_at)? != snapshot {
+                    return Err(ViewError::new(
+                        RefusalCode::StaleCursor,
+                        "source revision changed while the Body page was prepared",
+                    ));
+                }
                 let next_cursor = if stored.snapshot.body.has_more(next) {
                     Some(
                         self.cursors
@@ -393,21 +399,35 @@ impl<A: ViewReadAuthority> ViewService<A> {
                     Map::new(),
                 ))
                 .map_err(|error| {
-                    ViewError::new(RefusalCode::ProviderUnavailable, error.to_string())
+                    ViewError::detailed(RefusalDetail::BackendBroken, error.to_string())
                 })?;
                 if let Some(project) = project {
                     node.as_object_mut()
                         .expect("serialized node is object")
                         .insert("items".to_string(), Value::Array(Vec::new()));
                     node = project(&node)?;
-                    node.as_object_mut()
-                        .ok_or_else(|| {
-                            ViewError::new(
-                                RefusalCode::ProviderUnavailable,
-                                "Body projection is not an object",
-                            )
-                        })?
-                        .remove("items");
+                    let projected = node.as_object_mut().ok_or_else(|| {
+                        ViewError::detailed(
+                            RefusalDetail::BackendBroken,
+                            "Body projection is not an object",
+                        )
+                    })?;
+                    match projected.remove("items") {
+                        None => {
+                            return node_result(
+                                &canonical_at,
+                                projected.clone(),
+                                snapshot.revision,
+                            );
+                        }
+                        Some(Value::Array(items)) if items.is_empty() => {}
+                        Some(_) => {
+                            return Err(ViewError::detailed(
+                                RefusalDetail::BackendBroken,
+                                "Body projection must retain an empty items array",
+                            ));
+                        }
+                    }
                 }
                 let (items, next, stopped_by) = prepare_disk_page(
                     &node,
@@ -417,6 +437,12 @@ impl<A: ViewReadAuthority> ViewService<A> {
                     &binding,
                     &mut || self.authority.read_checkpoint(),
                 )?;
+                if self.authority.snapshot(source_at)? != snapshot {
+                    return Err(ViewError::new(
+                        RefusalCode::ConcurrentChange,
+                        "source changed while the Body page was prepared; retry the question",
+                    ));
+                }
                 let cursor = if body.has_more(next) {
                     Some(
                         self.cursors
@@ -467,21 +493,7 @@ impl<A: ViewReadAuthority> ViewService<A> {
             )
         })?;
         let Some(items) = object.remove("items") else {
-            let mut result = DomainResult::success("logical node resolved");
-            result.at = Some(canonical_at.to_string());
-            result.data = Some(Value::Object(object));
-            result.rev = Some(snapshot.revision);
-            if serde_json::to_vec(&result)
-                .expect("a domain result containing JSON values serializes")
-                .len()
-                > MAX_CANONICAL_RESULT_BYTES
-            {
-                return Err(ViewError::new(
-                    RefusalCode::ResultTooLarge,
-                    "logical node exceeds the transport result limit",
-                ));
-            }
-            return Ok(result);
+            return node_result(&canonical_at, object, snapshot.revision);
         };
         let items = items.as_array().cloned().ok_or_else(|| {
             ViewError::new(
@@ -566,12 +578,7 @@ fn prepare_disk_page(
             stopped_by = "bytes";
             break;
         }
-        if size > PREFERRED_PAGE_BYTES
-            && !items.is_empty()
-            && candidate
-                .last()
-                .is_none_or(|item| item.get("byteOffset").is_none())
-        {
+        if size > PREFERRED_PAGE_BYTES && !items.is_empty() {
             stopped_by = "bytes";
             break;
         }
@@ -604,6 +611,24 @@ fn collection_result(
     result.rev = Some(binding.source_revision.clone());
     result.cursor = cursor;
     result.page = Some(serde_json::json!({"stoppedBy": stopped_by}));
+    Ok(result)
+}
+
+fn node_result(
+    at: &QualifiedAddress,
+    node: Map<String, Value>,
+    revision: String,
+) -> Result<DomainResult, ViewError> {
+    let mut result = DomainResult::success("logical node resolved");
+    result.at = Some(at.to_string());
+    result.data = Some(Value::Object(node));
+    result.rev = Some(revision);
+    if serialized_result_size(&result) > MAX_CANONICAL_RESULT_BYTES {
+        return Err(ViewError::new(
+            RefusalCode::ResultTooLarge,
+            "logical node exceeds the transport result limit",
+        ));
+    }
     Ok(result)
 }
 
@@ -805,15 +830,21 @@ mod tests {
         ViewError, ViewFilter, ViewReadAuthority, ViewRequest, ViewService, ViewSourceSnapshot,
     };
     use crate::application::result_store::ViewCursorStore;
+    use crate::application::v13::body_snapshot::BodySnapshot;
     use crate::domain::address::QualifiedAddress;
     use crate::domain::node_view::{CollectionView, NodeView, NodeViewData};
     use serde_json::{json, Map};
     use std::collections::HashMap;
+    use std::io::{Seek, SeekFrom, Write};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
 
     struct FixtureAuthority {
         revisions: Mutex<HashMap<String, ViewSourceSnapshot>>,
         views: HashMap<String, NodeViewData>,
+        disk_body: Option<Vec<u8>>,
+        revision_change_on_snapshot: Option<usize>,
+        snapshot_calls: AtomicUsize,
     }
 
     impl FixtureAuthority {
@@ -859,6 +890,9 @@ mod tests {
                         )),
                     ),
                 ]),
+                disk_body: None,
+                revision_change_on_snapshot: None,
+                snapshot_calls: AtomicUsize::new(0),
             }
         }
 
@@ -869,7 +903,9 @@ mod tests {
 
     impl ViewReadAuthority for FixtureAuthority {
         fn snapshot(&self, at: &QualifiedAddress) -> Result<ViewSourceSnapshot, ViewError> {
-            self.revisions
+            let call = self.snapshot_calls.fetch_add(1, Ordering::SeqCst) + 1;
+            let mut snapshot = self
+                .revisions
                 .lock()
                 .unwrap()
                 .get(&at.to_string())
@@ -879,7 +915,14 @@ mod tests {
                         crate::domain::refusal::RefusalCode::NotFound,
                         "fixture address was not found",
                     )
-                })
+                })?;
+            if self
+                .revision_change_on_snapshot
+                .is_some_and(|at| call >= at)
+            {
+                snapshot.revision = "rev-2".to_string();
+            }
+            Ok(snapshot)
         }
 
         fn read_exact(
@@ -894,6 +937,21 @@ mod tests {
                     "fixture address was not found",
                 )
             })
+        }
+
+        fn read_body_disk(
+            &self,
+            _at: &QualifiedAddress,
+            _filter: &ViewFilter,
+            _admitted: &ViewSourceSnapshot,
+        ) -> Result<Option<BodySnapshot>, ViewError> {
+            let Some(bytes) = self.disk_body.as_ref() else {
+                return Ok(None);
+            };
+            let mut file = tempfile::tempfile().unwrap();
+            file.write_all(bytes).unwrap();
+            file.seek(SeekFrom::Start(0)).unwrap();
+            Ok(Some(BodySnapshot::new(file, bytes.len() as u64)))
         }
     }
 
@@ -1226,6 +1284,36 @@ mod tests {
         assert!(result.data.as_ref().unwrap().get("items").is_none());
         assert!(result.cursor.is_none());
         assert!(result.page.is_none());
+    }
+
+    #[test]
+    fn disk_body_projection_without_items_returns_only_the_requested_node_sections() {
+        let at = "main:Document.Заказ.Module.Object.Body";
+        let mut authority = FixtureAuthority::new();
+        authority.disk_body = Some(b"Procedure A()\nEndProcedure\n".to_vec());
+        let service = ViewService::new(authority, ViewCursorStore::default());
+        let result = service.view_projected(ViewRequest::new(at).unwrap(), &|data| {
+            let mut projected = data.clone();
+            projected.as_object_mut().unwrap().remove("items");
+            Ok(projected)
+        });
+        assert!(result.ok, "{result:?}");
+        assert!(result.data.as_ref().unwrap().get("items").is_none());
+        assert!(result.cursor.is_none());
+        assert!(result.page.is_none());
+    }
+
+    #[test]
+    fn disk_body_page_rechecks_revision_after_scanning_a_long_line() {
+        let at = "main:Document.Заказ.Module.Object.Body";
+        let mut authority = FixtureAuthority::new();
+        authority.disk_body = Some(b"Procedure A()\n".to_vec());
+        authority.revision_change_on_snapshot = Some(3);
+        let result = ViewService::new(authority, ViewCursorStore::default())
+            .view(ViewRequest::new(at).unwrap());
+        assert!(!result.ok, "{result:?}");
+        assert_eq!(result.diagnostics[0]["code"], "concurrent_change");
+        assert!(result.cursor.is_none());
     }
 
     #[test]

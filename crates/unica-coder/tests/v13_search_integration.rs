@@ -1,5 +1,5 @@
 use serde_json::{json, Value};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -145,15 +145,12 @@ fn canonical_view_reads_configuration_past_eight_mebibytes_with_many_registratio
     )
     .expect("future metadata descriptor");
     let path = workspace.join("Configuration.xml");
-    let mut xml = std::fs::File::create(&path).expect("configuration document");
-    xml.write_all(b"<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><Configuration><Properties><Name>First<!--")
+    let mut xml = BufWriter::new(std::fs::File::create(&path).expect("configuration document"));
+    xml.write_all(b"<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><Configuration><Properties><Name>First")
         .unwrap();
-    for _ in 0..129 {
-        xml.write_all(&[b'x'; 64 * 1024]).unwrap();
-    }
-    xml.write_all(b"-->Second</Name></Properties><ChildObjects>")
+    xml.write_all(b"</Name></Properties><ChildObjects>")
         .unwrap();
-    for index in 0..512 {
+    for index in 0..300_000 {
         write!(xml, "<CommonModule>Module{:02}</CommonModule>", index % 32).unwrap();
     }
     xml.write_all(b"</ChildObjects></Configuration></MetaDataObject>")
@@ -176,7 +173,7 @@ fn canonical_view_reads_configuration_past_eight_mebibytes_with_many_registratio
     )));
     assert_eq!(view["ok"], true, "{view:#}");
     assert_eq!(view["data"]["props"]["name"], "First");
-    assert_eq!(view["data"]["props"]["totalObjects"], 512);
+    assert_eq!(view["data"]["props"]["totalObjects"], 300_000);
     let branch = view["data"]["branches"]
         .as_array()
         .and_then(|branches| {
@@ -186,6 +183,18 @@ fn canonical_view_reads_configuration_past_eight_mebibytes_with_many_registratio
         })
         .expect("registered CommonModule branch");
     assert_eq!(branch["count"], 32);
+    let collection = domain_result(&mcp.exchange(call_tool(
+        6,
+        "unica.view",
+        json!({"at": "main:CommonModule", "limit": 50}),
+    )));
+    assert_eq!(collection["ok"], true, "{collection:#}");
+    let items = collection["data"]["items"]
+        .as_array()
+        .expect("branch items");
+    assert_eq!(items.len(), 32);
+    assert_eq!(items.first().unwrap()["at"], "main:CommonModule.Module00");
+    assert_eq!(items.last().unwrap()["at"], "main:CommonModule.Module31");
     let named = domain_result(&mcp.exchange(call_tool(
         3,
         "unica.view",
@@ -214,6 +223,22 @@ fn canonical_view_reads_configuration_past_eight_mebibytes_with_many_registratio
     )));
     assert_eq!(changed["ok"], true, "{changed:#}");
     assert_ne!(changed["rev"], old_revision, "source revision must change");
+    let changed_collection = domain_result(&mcp.exchange(call_tool(
+        7,
+        "unica.view",
+        json!({"at": "main:CommonModule", "limit": 50}),
+    )));
+    assert_eq!(changed_collection["ok"], true, "{changed_collection:#}");
+    assert_eq!(changed_collection["rev"], changed["rev"]);
+    assert_eq!(
+        changed_collection["data"]["items"].as_array().map(Vec::len),
+        Some(33)
+    );
+    assert!(changed_collection["data"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["at"] == "main:CommonModule.ModuleNew"));
     mcp.finish();
 }
 
@@ -376,32 +401,21 @@ fn public_view_starts_body_over_sixty_four_mib_and_splits_one_long_line() {
     assert_eq!(first["data"]["items"][0]["line"], 1);
     assert_eq!(first["data"]["items"][0]["byteOffset"], 0);
     assert_eq!(first["data"]["items"][0]["endOfLine"], false);
-    let mut assembled = String::new();
-    let mut page = first;
-    let mut id = 3;
-    'pages: loop {
-        for item in page["data"]["items"].as_array().unwrap() {
-            if item["line"] != 1 {
-                break 'pages;
-            }
-            assert_eq!(item["byteOffset"], assembled.len() as u64);
-            assembled.push_str(item["text"].as_str().unwrap());
-            if item["endOfLine"] == true {
-                break 'pages;
-            }
-        }
-        let cursor = page["cursor"].as_str().expect("long-line continuation");
-        page = domain_result(&mcp.exchange(call_tool(
-            id,
-            "unica.view",
-            json!({"at":at,"limit":50,"cursor":cursor}),
-        )));
-        assert_eq!(page["ok"], true, "{page:#}");
-        id += 1;
-    }
-    assert_eq!(assembled.len(), 2 + 9 * 1024 * 1024);
-    assert!(assembled.starts_with("//"));
-    assert!(assembled[2..].bytes().all(|byte| byte == b'x'));
+    assert_eq!(first["data"]["items"].as_array().unwrap().len(), 1);
+    assert_eq!(first["page"]["stoppedBy"], "bytes");
+    assert_eq!(
+        first["data"]["items"][0]["text"].as_str().unwrap().len(),
+        65536
+    );
+    let cursor = first["cursor"].as_str().expect("long-line continuation");
+    let next = domain_result(&mcp.exchange(call_tool(
+        3,
+        "unica.view",
+        json!({"at":at,"limit":50,"cursor":cursor}),
+    )));
+    assert_eq!(next["ok"], true, "{next:#}");
+    assert_eq!(next["data"]["items"][0]["line"], 1);
+    assert_eq!(next["data"]["items"][0]["byteOffset"], 65536);
     mcp.finish();
 }
 

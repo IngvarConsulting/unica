@@ -365,12 +365,15 @@ impl ProviderReadAuthority {
                 ));
             }
         };
-        let support = serde_json::to_value(self.configuration_support()?)
-            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))?;
-        let home_page = serde_json::to_value(self.home_page()?)
-            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))?;
-        let interface = serde_json::to_value(self.command_interface()?)
-            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))?;
+        let support = serde_json::to_value(self.configuration_support()?).map_err(|error| {
+            ViewError::detailed(RefusalDetail::BackendBroken, error.to_string())
+        })?;
+        let home_page = serde_json::to_value(self.home_page()?).map_err(|error| {
+            ViewError::detailed(RefusalDetail::BackendBroken, error.to_string())
+        })?;
+        let interface = serde_json::to_value(self.command_interface()?).map_err(|error| {
+            ViewError::detailed(RefusalDetail::BackendBroken, error.to_string())
+        })?;
         read_configuration_root(
             file,
             support,
@@ -931,13 +934,14 @@ impl ProviderReadAuthority {
     ) -> Result<BodySnapshot, ViewError> {
         let relative = self.module_relative(target)?;
         let mut file = tempfile::tempfile().map_err(|error| {
-            ViewError::new(
-                RefusalCode::ProviderUnavailable,
+            ViewError::detailed(
+                RefusalDetail::BackendBroken,
                 format!("cannot create Body snapshot: {error}"),
             )
         })?;
         let mut carry = Vec::<u8>::new();
         let mut interrupted = None;
+        let mut scratch_failure = false;
         let result = self.root.visit_relative_regular_chunks(
             &relative,
             || {
@@ -962,7 +966,9 @@ impl ProviderReadAuthority {
                         ))
                     }
                 }
-                file.write_all(chunk)
+                file.write_all(chunk).inspect_err(|_| {
+                    scratch_failure = true;
+                })
             },
         );
         let len = match result {
@@ -970,7 +976,14 @@ impl ProviderReadAuthority {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
             Err(error) => {
                 return Err(interrupted.unwrap_or_else(|| {
-                    ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+                    ViewError::detailed(
+                        if scratch_failure {
+                            RefusalDetail::BackendBroken
+                        } else {
+                            RefusalDetail::SourceUnreadable
+                        },
+                        error.to_string(),
+                    )
                 }))
             }
         };
@@ -981,14 +994,14 @@ impl ProviderReadAuthority {
             ));
         }
         file.flush().map_err(|error| {
-            ViewError::new(
-                RefusalCode::ProviderUnavailable,
+            ViewError::detailed(
+                RefusalDetail::BackendBroken,
                 format!("Body snapshot write failed: {error}"),
             )
         })?;
         file.seek(SeekFrom::Start(0)).map_err(|error| {
-            ViewError::new(
-                RefusalCode::ProviderUnavailable,
+            ViewError::detailed(
+                RefusalDetail::BackendBroken,
                 format!("Body snapshot seek failed: {error}"),
             )
         })?;
