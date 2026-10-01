@@ -39,13 +39,41 @@ pub(crate) enum FenceOutcome {
     TrustLost(SourceRevisionTrustLoss),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FenceError {
+    Cancelled,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    Deadline,
+    Provider(String),
+}
+
+impl std::fmt::Display for FenceError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Cancelled => {
+                formatter.write_str(&cancelled_error("source revision fence stopped"))
+            }
+            Self::Deadline => formatter.write_str("source revision fence deadline exceeded"),
+            Self::Provider(message) => formatter.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for FenceError {}
+
+impl From<String> for FenceError {
+    fn from(message: String) -> Self {
+        Self::Provider(message)
+    }
+}
+
 pub(crate) trait SourceRevisionFence: Send + Sync {
     fn capability(&self) -> FenceCapability;
     fn flush(
         &self,
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
-    ) -> Result<FenceOutcome, String>;
+    ) -> Result<FenceOutcome, FenceError>;
 }
 
 /// Defers the macOS watcher/cache initialization until a caller actually uses
@@ -100,7 +128,7 @@ impl SourceRevisionFence for DeferredPlatformFence {
         &self,
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
-    ) -> Result<FenceOutcome, String> {
+    ) -> Result<FenceOutcome, FenceError> {
         self.initialized()?.flush(deadline, cancellation)
     }
 }
@@ -165,9 +193,9 @@ impl SourceRevisionFence for UnsupportedSourceRevisionFence {
         &self,
         _deadline: ProviderDeadline,
         cancellation: &CancellationToken,
-    ) -> Result<FenceOutcome, String> {
+    ) -> Result<FenceOutcome, FenceError> {
         if cancellation.is_cancelled() {
-            return Err(cancelled_error("source revision fence stopped"));
+            return Err(FenceError::Cancelled);
         }
         Ok(FenceOutcome::TrustLost(
             SourceRevisionTrustLoss::UnsupportedFence,
@@ -340,12 +368,12 @@ mod macos {
             &self,
             deadline: ProviderDeadline,
             cancellation: &CancellationToken,
-        ) -> Result<FenceOutcome, String> {
+        ) -> Result<FenceOutcome, FenceError> {
             if cancellation.is_cancelled() {
-                return Err(cancelled_error("source revision fence stopped"));
+                return Err(FenceError::Cancelled);
             }
             if deadline.remaining().is_zero() {
-                return Err("source revision fence deadline exceeded".to_string());
+                return Err(FenceError::Deadline);
             }
             if self.capability != FenceCapability::ProvenFast {
                 return Ok(FenceOutcome::TrustLost(
@@ -385,10 +413,10 @@ mod macos {
                         format!("source revision fence marker cannot be flushed: {error}")
                     })?;
                 if unsafe { libc::fcntl(marker.as_raw_fd(), libc::F_FULLFSYNC) } == -1 {
-                    return Err(format!(
+                    return Err(FenceError::Provider(format!(
                         "source revision fence marker cannot reach the filesystem journal: {}",
                         std::io::Error::last_os_error()
-                    ));
+                    )));
                 }
                 unsafe { FSEventStreamFlushSync(self.stream) };
                 self.queue.exec_sync(|| {});
@@ -399,11 +427,11 @@ mod macos {
                     .unwrap_or_else(|error| error.into_inner());
                 while marker_state.event_id == 0 {
                     if cancellation.is_cancelled() {
-                        return Err(cancelled_error("source revision fence stopped"));
+                        return Err(FenceError::Cancelled);
                     }
                     let remaining = deadline.remaining();
                     if remaining.is_zero() {
-                        return Err("source revision fence deadline exceeded".to_string());
+                        return Err(FenceError::Deadline);
                     }
                     let (guard, wait) = self
                         .state
@@ -412,7 +440,7 @@ mod macos {
                         .unwrap_or_else(|error| error.into_inner());
                     marker_state = guard;
                     if wait.timed_out() && marker_state.event_id == 0 {
-                        return Err("source revision fence deadline exceeded".to_string());
+                        return Err(FenceError::Deadline);
                     }
                 }
                 Ok(())
@@ -425,10 +453,10 @@ mod macos {
             let _ = fs::remove_file(&marker_path);
             marker_result?;
             if cancellation.is_cancelled() {
-                return Err(cancelled_error("source revision fence stopped"));
+                return Err(FenceError::Cancelled);
             }
             if deadline.remaining().is_zero() {
-                return Err("source revision fence deadline exceeded".to_string());
+                return Err(FenceError::Deadline);
             }
             let trust_loss = self.state.trust_loss.swap(TRUSTED, Ordering::AcqRel);
             let changed_paths = std::mem::take(

@@ -92,10 +92,11 @@ impl CanonicalInvocationService for CanonicalV13ReadService {
         invocation: &ActorBoundExecution,
         cancellation: CancellationToken,
     ) -> Result<DomainResult, InvocationFailure> {
+        if let Some(rejection) = invocation.rejected_logical_read_result() {
+            return Ok(rejection);
+        }
         match invocation.tool() {
-            ToolIdentity::View => Ok(invocation
-                .rejected_logical_read_result()
-                .unwrap_or_else(|| self.execute_view(invocation, &cancellation))),
+            ToolIdentity::View => Ok(self.execute_view(invocation, &cancellation)),
             ToolIdentity::Apply => Ok(self.execute_apply(invocation, &cancellation)),
             ToolIdentity::Resolve => Ok(self.execute_resolve(invocation, &cancellation)),
             ToolIdentity::Search => Ok(self.execute_search(invocation, &cancellation)),

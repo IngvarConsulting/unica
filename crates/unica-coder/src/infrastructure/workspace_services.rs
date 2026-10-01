@@ -4695,7 +4695,7 @@ mod tests {
     use crate::domain::workspace::WorkspaceContext;
     use crate::infrastructure::platform::filesystem::supports_retained_root_replacement_test;
     use crate::infrastructure::platform::source_revision_fence::{
-        expected_platform_fence_capability_for_test, FenceCapability, FenceOutcome,
+        expected_platform_fence_capability_for_test, FenceCapability, FenceError, FenceOutcome,
         SourceRevisionFence,
     };
     use crate::infrastructure::platform::testing;
@@ -9047,7 +9047,7 @@ fn main() {
                 &self,
                 _deadline: ProviderDeadline,
                 _cancellation: &CancellationToken,
-            ) -> Result<FenceOutcome, String> {
+            ) -> Result<FenceOutcome, FenceError> {
                 panic!("unsupported fence must not be flushed")
             }
         }

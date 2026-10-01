@@ -17,7 +17,9 @@ use crate::domain::project_sources::{
 use crate::domain::refusal::RefusalCode;
 use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
 use crate::infrastructure::runtime_jobs::{RuntimeJobService, RuntimeResourceOwner};
+use crate::infrastructure::source_revision::RetainedRevisionErrorKind;
 use crate::infrastructure::source_selection_evidence::discover_project_source_admission;
+use crate::infrastructure::source_selection_evidence::SourceSelectionEvidenceErrorKind;
 use crate::infrastructure::v13_large_configuration::RegistrationCache;
 use crate::infrastructure::workspace::discover_workspace;
 use crate::infrastructure::workspace_actor::{
@@ -624,7 +626,7 @@ impl ActorBoundInvocation {
             | crate::application::invocation_store::ToolIdentity::Search
             | crate::application::invocation_store::ToolIdentity::Check
             | crate::application::invocation_store::ToolIdentity::Diff => {
-                let (selected, route) = match self.tool {
+                let (selected, mut route) = match self.tool {
                     crate::application::invocation_store::ToolIdentity::View
                     | crate::application::invocation_store::ToolIdentity::Resolve => {
                         match self.arguments.get("at").and_then(serde_json::Value::as_str) {
@@ -679,11 +681,21 @@ impl ActorBoundInvocation {
                 }
                 let mut sources = Vec::with_capacity(selected.len());
                 for source in selected {
-                    let fence = self.actor.capture_logical_read_revision(
+                    let fence = match self.actor.capture_logical_read_revision(
                         &source.binding,
                         logical_deadline,
                         cancellation,
-                    )?;
+                    ) {
+                        Ok(fence) => fence,
+                        Err(error) if error.kind() == RetainedRevisionErrorKind::Deadline => {
+                            sources.clear();
+                            route = ActorLogicalReadRoute::Rejected(Box::new(
+                                logical_read_deadline_result(),
+                            ));
+                            break;
+                        }
+                        Err(error) => return Err(error.to_string()),
+                    };
                     sources.push(ActorLogicalReadSourceLease {
                         binding: source.binding.clone(),
                         fence,
@@ -707,6 +719,14 @@ impl ActorBoundInvocation {
             revision,
         })
     }
+}
+
+fn logical_read_deadline_result() -> DomainResult {
+    DomainResult::canonical_rejection(
+        None,
+        RefusalCode::DeadlineExceeded,
+        "Logical source read exceeded its operation deadline; retry the call.",
+    )
 }
 
 fn invalid_view_address_result(at: &str, detail: impl std::fmt::Display) -> DomainResult {
@@ -924,11 +944,11 @@ impl ActorBoundExecution {
                 .find(|source| source.binding.source_set_name() == name)
                 .ok_or_else(|| "a declared parent source is unavailable".to_string())?;
             self.invocation.actor.validate_binding(&source.binding)?;
-            let fence = self.invocation.actor.capture_logical_read_revision(
-                &source.binding,
-                lease.deadline,
-                cancellation,
-            )?;
+            let fence = self
+                .invocation
+                .actor
+                .capture_logical_read_revision(&source.binding, lease.deadline, cancellation)
+                .map_err(|error| error.to_string())?;
 
             if !lease
                 .sources
@@ -1096,15 +1116,25 @@ impl ActorBoundExecution {
                             .to_string()
                     });
                 }
+                if staged.is_err() {
+                    return Ok(staged);
+                }
                 let parent_sources = lease
                     .parent_sources
                     .into_inner()
                     .map_err(|_| "parent read leases are poisoned")?;
                 if !parent_sources.is_empty() {
-                    self.invocation
+                    if let Err(error) = self
+                        .invocation
                         .parent_source_selection
                         .validate(lease.deadline, cancellation)
-                        .map_err(|error| error.to_string())?;
+                    {
+                        return if error.kind() == SourceSelectionEvidenceErrorKind::Deadline {
+                            Ok(Ok(logical_read_deadline_result()))
+                        } else {
+                            Err(error.to_string())
+                        };
+                    }
                 }
                 let mut sources = lease.sources;
                 sources.extend(parent_sources);
@@ -1112,12 +1142,18 @@ impl ActorBoundExecution {
                     .into_iter()
                     .map(|source| source.fence)
                     .collect::<Vec<_>>();
-                self.invocation.actor.publish_logical_read(
+                match self.invocation.actor.publish_logical_read(
                     &fences,
                     staged,
                     lease.deadline,
                     cancellation,
-                )
+                ) {
+                    Ok(result) => Ok(result),
+                    Err(error) if error.kind() == RetainedRevisionErrorKind::Deadline => {
+                        Ok(Ok(logical_read_deadline_result()))
+                    }
+                    Err(error) => Err(error.to_string()),
+                }
             }
             ActorExecutionRevision::UnpublishedApply(confirmed) => {
                 if confirmed.load(std::sync::atomic::Ordering::Acquire) {

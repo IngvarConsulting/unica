@@ -18,7 +18,8 @@ use crate::infrastructure::platform::filesystem::{
     RetainedChildCapability, RetainedDirectoryCapability,
 };
 use crate::infrastructure::platform::source_revision_fence::{
-    deferred_platform_fence, platform_fence, FenceCapability, FenceOutcome, SourceRevisionFence,
+    deferred_platform_fence, platform_fence, FenceCapability, FenceError, FenceOutcome,
+    SourceRevisionFence,
 };
 use crate::infrastructure::revision_artifact_policy::{
     RevisionArtifactDisposition, RevisionArtifactPolicy,
@@ -207,7 +208,7 @@ impl SourceRevisionFence for ReconcileEverySnapshotFence {
         &self,
         _deadline: ProviderDeadline,
         _cancellation: &CancellationToken,
-    ) -> Result<FenceOutcome, String> {
+    ) -> Result<FenceOutcome, FenceError> {
         if self.at_reconcile_boundary.fetch_xor(true, Ordering::AcqRel) {
             Ok(FenceOutcome::Proven {
                 changed_paths: Vec::new(),
@@ -347,7 +348,7 @@ pub(crate) struct RetainedRevisionError {
 }
 
 impl RetainedRevisionError {
-    fn new(kind: RetainedRevisionErrorKind, message: impl Into<String>) -> Self {
+    pub(crate) fn new(kind: RetainedRevisionErrorKind, message: impl Into<String>) -> Self {
         Self {
             kind,
             message: message.into(),
@@ -358,11 +359,20 @@ impl RetainedRevisionError {
         self.kind
     }
 
-    fn from_deadline_lock(error: DeadlineLockError) -> Self {
+    pub(super) fn from_deadline_lock(error: DeadlineLockError) -> Self {
         let kind = match error.kind() {
             DeadlineLockErrorKind::Cancelled => RetainedRevisionErrorKind::Cancelled,
             DeadlineLockErrorKind::Deadline => RetainedRevisionErrorKind::Deadline,
             DeadlineLockErrorKind::Poisoned => RetainedRevisionErrorKind::Invariant,
+        };
+        Self::new(kind, error.to_string())
+    }
+
+    fn from_fence(error: FenceError) -> Self {
+        let kind = match &error {
+            FenceError::Cancelled => RetainedRevisionErrorKind::Cancelled,
+            FenceError::Deadline => RetainedRevisionErrorKind::Deadline,
+            FenceError::Provider(_) => RetainedRevisionErrorKind::Provider,
         };
         Self::new(kind, error.to_string())
     }
@@ -789,12 +799,16 @@ impl SourceRevisionService {
                 "source revision fence is unsupported; freshness cannot be proven".to_string(),
             );
         }
-        let fence_outcome = self.fence.flush(deadline, cancellation).inspect_err(|_| {
-            self.machine
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .lose_trust(SourceRevisionTrustLoss::ReconcileFailed);
-        })?;
+        let fence_outcome = self
+            .fence
+            .flush(deadline, cancellation)
+            .inspect_err(|_| {
+                self.machine
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .lose_trust(SourceRevisionTrustLoss::ReconcileFailed);
+            })
+            .map_err(|error| error.to_string())?;
         let needs_reconcile = match fence_outcome {
             FenceOutcome::Proven { changed_paths } => {
                 let (trusted, trust_loss_epoch) = {
@@ -867,6 +881,16 @@ impl SourceRevisionService {
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> Result<SourceRevision, String> {
+        self.snapshot_retained_typed(root, deadline, cancellation)
+            .map_err(|error| error.to_string())
+    }
+
+    fn snapshot_retained_typed(
+        &self,
+        root: &RetainedDirectoryCapability,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<SourceRevision, RetainedRevisionError> {
         let _operation = self
             .operation
             .acquire_before(
@@ -874,24 +898,33 @@ impl SourceRevisionService {
                 cancellation,
                 "retained source revision operation wait",
             )
-            .map_err(|error| error.to_string())?;
+            .map_err(RetainedRevisionError::from_deadline_lock)?;
         if root.identity() != self.source_root_identity {
-            return Err(
-                "retained source revision capability has a different actor identity".to_string(),
-            );
+            return Err(RetainedRevisionError::new(
+                RetainedRevisionErrorKind::ContainmentIdentity,
+                "retained source revision capability has a different actor identity",
+            ));
         }
         root.validate_named_identity().map_err(|error| {
-            format!("retained source revision identity changed after admission: {error}")
+            RetainedRevisionError::new(
+                RetainedRevisionErrorKind::ContainmentIdentity,
+                format!("retained source revision identity changed after admission: {error}"),
+            )
         })?;
         let needs_reconcile = if self.fence.capability() == FenceCapability::Unsupported {
             true
         } else {
-            match self.fence.flush(deadline, cancellation).inspect_err(|_| {
-                self.machine
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .lose_trust(SourceRevisionTrustLoss::ReconcileFailed);
-            })? {
+            match self
+                .fence
+                .flush(deadline, cancellation)
+                .inspect_err(|_| {
+                    self.machine
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .lose_trust(SourceRevisionTrustLoss::ReconcileFailed);
+                })
+                .map_err(RetainedRevisionError::from_fence)?
+            {
                 FenceOutcome::Proven { changed_paths } if changed_paths.is_empty() => {
                     let trusted = matches!(
                         self.machine
@@ -926,10 +959,14 @@ impl SourceRevisionService {
             }
         };
         if !needs_reconcile {
-            return self.trusted_snapshot();
+            return self.trusted_snapshot().map_err(|error| {
+                RetainedRevisionError::new(RetainedRevisionErrorKind::Invariant, error)
+            });
         }
         self.reconcile_retained(root, deadline, cancellation)?;
-        self.trusted_snapshot()
+        self.trusted_snapshot().map_err(|error| {
+            RetainedRevisionError::new(RetainedRevisionErrorKind::Invariant, error)
+        })
     }
 
     pub(crate) fn begin_retained_operation(
@@ -937,8 +974,8 @@ impl SourceRevisionService {
         root: &RetainedDirectoryCapability,
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
-    ) -> Result<RetainedRevisionLease, String> {
-        let revision = self.snapshot_retained(root, deadline, cancellation)?;
+    ) -> Result<RetainedRevisionLease, RetainedRevisionError> {
+        let revision = self.snapshot_retained_typed(root, deadline, cancellation)?;
         Ok(RetainedRevisionLease {
             revision,
             root_identity: root.identity(),
@@ -1254,13 +1291,19 @@ impl SourceRevisionService {
         lease: &RetainedRevisionLease,
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
-    ) -> Result<(), String> {
+    ) -> Result<(), RetainedRevisionError> {
         if root.identity() != lease.root_identity {
-            return Err("retained revision lease belongs to another source identity".to_string());
+            return Err(RetainedRevisionError::new(
+                RetainedRevisionErrorKind::ContainmentIdentity,
+                "retained revision lease belongs to another source identity",
+            ));
         }
-        let current = self.snapshot_retained(root, deadline, cancellation)?;
+        let current = self.snapshot_retained_typed(root, deadline, cancellation)?;
         if current != lease.revision {
-            return Err("retained source revision changed during logical operation".to_string());
+            return Err(RetainedRevisionError::new(
+                RetainedRevisionErrorKind::ConcurrentRevision,
+                "retained source revision changed during logical operation",
+            ));
         }
         Ok(())
     }
@@ -1270,7 +1313,7 @@ impl SourceRevisionService {
         root: &RetainedDirectoryCapability,
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
-    ) -> Result<(), String> {
+    ) -> Result<(), RetainedRevisionError> {
         for _ in 0..3 {
             let trust_loss_epoch = {
                 let mut machine = self
@@ -1282,14 +1325,14 @@ impl SourceRevisionService {
                 trust_loss_epoch
             };
             let first = self
-                .capture_retained_manifest(root, deadline, cancellation)
+                .capture_retained_manifest_typed(root, deadline, cancellation)
                 .inspect_err(|_| self.lose_incremental_trust())?;
             if !first.namespace_stable {
                 continue;
             }
             let capture = if self.fence.capability() == FenceCapability::Unsupported {
                 let second = self
-                    .capture_retained_manifest(root, deadline, cancellation)
+                    .capture_retained_manifest_typed(root, deadline, cancellation)
                     .inspect_err(|_| self.lose_incremental_trust())?;
                 if !second.namespace_stable
                     || first.manifest != second.manifest
@@ -1302,12 +1345,17 @@ impl SourceRevisionService {
                 first
             };
             if self.fence.capability() != FenceCapability::Unsupported {
-                match self.fence.flush(deadline, cancellation).inspect_err(|_| {
-                    self.machine
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner())
-                        .lose_trust(SourceRevisionTrustLoss::ReconcileFailed);
-                })? {
+                match self
+                    .fence
+                    .flush(deadline, cancellation)
+                    .inspect_err(|_| {
+                        self.machine
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .lose_trust(SourceRevisionTrustLoss::ReconcileFailed);
+                    })
+                    .map_err(RetainedRevisionError::from_fence)?
+                {
                     FenceOutcome::Proven { changed_paths } if changed_paths.is_empty() => {}
                     FenceOutcome::Proven { .. } => continue,
                     FenceOutcome::TrustLost(reason) => {
@@ -1319,27 +1367,27 @@ impl SourceRevisionService {
                     }
                 }
             }
-            let digest = digest_source_manifest(&capture.manifest)?;
-            if self.publish_revision_with_authority(
-                &capture.manifest,
-                digest,
-                trust_loss_epoch,
-                ManifestProvenance::Retained(root.identity()),
-            )? {
+            let digest = digest_source_manifest(&capture.manifest).map_err(|error| {
+                RetainedRevisionError::new(RetainedRevisionErrorKind::Invariant, error)
+            })?;
+            if self
+                .publish_revision_with_authority(
+                    &capture.manifest,
+                    digest,
+                    trust_loss_epoch,
+                    ManifestProvenance::Retained(root.identity()),
+                )
+                .map_err(|error| {
+                    RetainedRevisionError::new(RetainedRevisionErrorKind::Provider, error)
+                })?
+            {
                 return Ok(());
             }
         }
-        Err("retained source revision did not stabilize during reconcile".to_string())
-    }
-
-    fn capture_retained_manifest(
-        &self,
-        root: &RetainedDirectoryCapability,
-        deadline: ProviderDeadline,
-        cancellation: &CancellationToken,
-    ) -> Result<RetainedManifestCapture, String> {
-        self.capture_retained_manifest_typed(root, deadline, cancellation)
-            .map_err(|error| error.to_string())
+        Err(RetainedRevisionError::new(
+            RetainedRevisionErrorKind::ConcurrentRevision,
+            "retained source revision did not stabilize during reconcile",
+        ))
     }
 
     fn capture_retained_manifest_typed(
@@ -1462,12 +1510,17 @@ impl SourceRevisionService {
                     return Ok(false);
                 }
             }
-            match self.fence.flush(deadline, cancellation).inspect_err(|_| {
-                self.machine
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .lose_trust(SourceRevisionTrustLoss::ReconcileFailed);
-            })? {
+            match self
+                .fence
+                .flush(deadline, cancellation)
+                .inspect_err(|_| {
+                    self.machine
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .lose_trust(SourceRevisionTrustLoss::ReconcileFailed);
+                })
+                .map_err(|error| error.to_string())?
+            {
                 FenceOutcome::Proven {
                     changed_paths: additional,
                 } if !additional.is_empty() => {
@@ -1658,12 +1711,16 @@ impl SourceRevisionService {
                 self.lose_incremental_trust();
                 return Err("ambient source revision identity changed during reconcile".to_string());
             }
-            let fence_outcome = self.fence.flush(deadline, cancellation).inspect_err(|_| {
-                self.machine
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .lose_trust(SourceRevisionTrustLoss::ReconcileFailed);
-            })?;
+            let fence_outcome = self
+                .fence
+                .flush(deadline, cancellation)
+                .inspect_err(|_| {
+                    self.machine
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .lose_trust(SourceRevisionTrustLoss::ReconcileFailed);
+                })
+                .map_err(|error| error.to_string())?;
             match fence_outcome {
                 FenceOutcome::Proven { changed_paths } if !changed_paths.is_empty() => continue,
                 FenceOutcome::TrustLost(reason) => {
@@ -3721,7 +3778,7 @@ pub(crate) mod tests {
             &self,
             _deadline: ProviderDeadline,
             _cancellation: &CancellationToken,
-        ) -> Result<FenceOutcome, String> {
+        ) -> Result<FenceOutcome, FenceError> {
             Ok(FenceOutcome::TrustLost(
                 SourceRevisionTrustLoss::UnsupportedFence,
             ))
@@ -3739,7 +3796,7 @@ pub(crate) mod tests {
             &self,
             _deadline: ProviderDeadline,
             _cancellation: &CancellationToken,
-        ) -> Result<FenceOutcome, String> {
+        ) -> Result<FenceOutcome, FenceError> {
             Ok(FenceOutcome::Proven {
                 changed_paths: Vec::new(),
             })
@@ -3759,7 +3816,7 @@ pub(crate) mod tests {
             &self,
             _deadline: ProviderDeadline,
             _cancellation: &CancellationToken,
-        ) -> Result<FenceOutcome, String> {
+        ) -> Result<FenceOutcome, FenceError> {
             self.calls.fetch_add(1, Ordering::AcqRel);
             Ok(FenceOutcome::Proven {
                 changed_paths: Vec::new(),
@@ -3961,6 +4018,110 @@ pub(crate) mod tests {
         assert_eq!(service.record_path, legacy_record_path);
     }
 
+    thread_local! {
+        static FENCE_ERROR_NOW: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
+    }
+
+    fn fence_error_now() -> std::time::Instant {
+        FENCE_ERROR_NOW.with(|now| now.get().unwrap())
+    }
+
+    struct ErrorAtFlushFence {
+        calls: AtomicUsize,
+        fail_at: usize,
+        error: FenceError,
+        expires: std::time::Instant,
+    }
+
+    impl SourceRevisionFence for ErrorAtFlushFence {
+        fn capability(&self) -> FenceCapability {
+            FenceCapability::ProvenFast
+        }
+
+        fn flush(
+            &self,
+            _deadline: ProviderDeadline,
+            _cancellation: &CancellationToken,
+        ) -> Result<FenceOutcome, FenceError> {
+            let call = self.calls.fetch_add(1, Ordering::AcqRel);
+            if call == self.fail_at {
+                FENCE_ERROR_NOW.with(|now| now.set(Some(self.expires)));
+                return Err(self.error.clone());
+            }
+            if call.is_multiple_of(2) {
+                Ok(FenceOutcome::TrustLost(SourceRevisionTrustLoss::WatcherGap))
+            } else {
+                Ok(FenceOutcome::Proven {
+                    changed_paths: Vec::new(),
+                })
+            }
+        }
+    }
+
+    #[test]
+    fn retained_fence_deadline_survives_admission_and_confirmation_flushes() {
+        assert_retained_fence_failure(FenceError::Deadline, RetainedRevisionErrorKind::Deadline);
+    }
+
+    #[test]
+    fn retained_fence_cancellation_is_not_reclassified_at_expired_deadline() {
+        assert_retained_fence_failure(FenceError::Cancelled, RetainedRevisionErrorKind::Cancelled);
+    }
+
+    #[test]
+    fn retained_fence_provider_failure_is_not_reclassified_by_clock_or_message() {
+        assert_retained_fence_failure(
+            FenceError::Provider("source revision fence deadline exceeded".to_string()),
+            RetainedRevisionErrorKind::Provider,
+        );
+    }
+
+    fn assert_retained_fence_failure(error: FenceError, expected: RetainedRevisionErrorKind) {
+        for fail_at in 0..4 {
+            let workspace = tempdir().unwrap();
+            let workspace_root = workspace.path().canonicalize().unwrap();
+            let source = workspace_root.join("src");
+            fs::create_dir_all(&source).unwrap();
+            fs::write(source.join("Configuration.xml"), "<Configuration/>").unwrap();
+            let context = WorkspaceContext {
+                cwd: workspace_root.clone(),
+                workspace_root: workspace_root.clone(),
+                cache_root: workspace_root.join("cache"),
+                workspace_epoch: 0,
+            };
+            let start = std::time::Instant::now();
+            let expires = start + std::time::Duration::from_secs(5);
+            FENCE_ERROR_NOW.with(|now| now.set(Some(start)));
+            let fence = Arc::new(ErrorAtFlushFence {
+                calls: AtomicUsize::new(0),
+                fail_at,
+                error: error.clone(),
+                expires,
+            });
+            let service = SourceRevisionService::new_with_fence_for_test(
+                &context,
+                &source,
+                WorkspaceStateScope::LegacyPhysical,
+                fence.clone(),
+            )
+            .unwrap();
+            let root = RetainedDirectoryCapability::open(&source).unwrap();
+            let deadline = ProviderDeadline::with_clock(expires, fence_error_now);
+            let cancellation = CancellationToken::new();
+            let admitted = service.begin_retained_operation(&root, deadline, &cancellation);
+            let failure = if fail_at < 2 {
+                admitted.unwrap_err()
+            } else {
+                service
+                    .confirm_retained_operation(&root, &admitted.unwrap(), deadline, &cancellation)
+                    .unwrap_err()
+            };
+            assert_eq!(fence.calls.load(Ordering::Acquire), fail_at + 1);
+            assert!(deadline.remaining().is_zero());
+            assert_eq!(failure.kind(), expected, "flush {fail_at}: {failure}");
+        }
+    }
+
     struct FailOnceFence {
         calls: AtomicUsize,
     }
@@ -3974,9 +4135,9 @@ pub(crate) mod tests {
             &self,
             _deadline: ProviderDeadline,
             _cancellation: &CancellationToken,
-        ) -> Result<FenceOutcome, String> {
+        ) -> Result<FenceOutcome, FenceError> {
             if self.calls.fetch_add(1, Ordering::AcqRel) == 0 {
-                Err("synthetic fence failure".to_string())
+                Err(FenceError::Provider("synthetic fence failure".to_string()))
             } else {
                 Ok(FenceOutcome::Proven {
                     changed_paths: Vec::new(),
@@ -3998,7 +4159,7 @@ pub(crate) mod tests {
             &self,
             _deadline: ProviderDeadline,
             _cancellation: &CancellationToken,
-        ) -> Result<FenceOutcome, String> {
+        ) -> Result<FenceOutcome, FenceError> {
             Ok(self
                 .outcomes
                 .lock()
@@ -5134,12 +5295,14 @@ pub(crate) mod tests {
         }
 
         fn confirm(&self) -> Result<(), String> {
-            self.service.confirm_retained_operation(
-                &self.retained,
-                &self.lease,
-                self.deadline,
-                &self.cancellation,
-            )
+            self.service
+                .confirm_retained_operation(
+                    &self.retained,
+                    &self.lease,
+                    self.deadline,
+                    &self.cancellation,
+                )
+                .map_err(|error| error.to_string())
         }
     }
 

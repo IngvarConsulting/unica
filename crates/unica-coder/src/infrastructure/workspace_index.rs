@@ -2206,7 +2206,7 @@ mod tests {
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::ProviderDeadline;
     use crate::infrastructure::platform::source_revision_fence::{
-        FenceCapability, FenceOutcome, SourceRevisionFence,
+        FenceCapability, FenceError, FenceOutcome, SourceRevisionFence,
     };
     use crate::infrastructure::platform::{filesystem::path_starts_with_host_root, testing};
     use crate::infrastructure::source_revision::{SourceRevisionService, WorkspaceStateScope};
@@ -4899,7 +4899,7 @@ source-set:
                 &self,
                 _deadline: ProviderDeadline,
                 _cancellation: &CancellationToken,
-            ) -> Result<FenceOutcome, String> {
+            ) -> Result<FenceOutcome, FenceError> {
                 panic!("the unsupported fence must not be flushed")
             }
         }

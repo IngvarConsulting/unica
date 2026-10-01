@@ -332,9 +332,9 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                     description: "Confirm workspace source-set admission, or validate one logical node: readability plus every validator its kind owns. If an incomplete workspace EOL inspection offers another check, call unica.check with an empty object again to resume its bounded checkpoint; each call uses a fresh deadline. Capacity and other fixed failures require their reported cause to be resolved. Node diagnostics are returned in stable pages.",
                     input_schema: schema(
                         json!({
-                            "at": logical_address(),
-                            "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20, "description": "Maximum diagnostics in one node-check page (default 20, maximum 50)."},
-                            "cursor": cursor("Continuation cursor from an earlier check of the same node."),
+                            "at": {"type": ["string", "null"], "description": "Qualified logical address: <sourceSet>:<Kind>[.<Name>...]. Omit or use null to check workspace source-set admission."},
+                            "limit": {"type": ["integer", "null"], "minimum": 1, "maximum": 50, "default": 20, "description": "Maximum diagnostics in one node-check page (maximum 50). Omit or use null for the default of 20."},
+                            "cursor": {"type": ["string", "null"], "description": "Continuation cursor from an earlier check of the same node. Omit or use null for the first page; an empty string is invalid."},
                         }),
                         json!([]),
                     ),
@@ -755,6 +755,12 @@ mod tests {
             .find(|tool| tool.name == "check")
             .unwrap();
         assert_eq!(check.input_schema["properties"]["limit"]["maximum"], 50);
+        for (field, kind) in [("at", "string"), ("limit", "integer"), ("cursor", "string")] {
+            assert_eq!(
+                check.input_schema["properties"][field]["type"],
+                json!([kind, "null"])
+            );
+        }
         assert_schema(
             &catalog.tools,
             "diff",
@@ -782,7 +788,6 @@ mod tests {
             ("resolve", "path"),
             ("search", "query"),
             ("search", "scope"),
-            ("check", "at"),
             ("diff", "left"),
             ("diff", "right"),
             ("diff", "cursor"),

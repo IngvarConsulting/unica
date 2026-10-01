@@ -251,14 +251,20 @@ fn validate_canonical_value(
     value: &serde_json::Value,
     schema: &serde_json::Value,
 ) -> Result<(), String> {
-    let expected = schema.get("type").and_then(serde_json::Value::as_str);
-    let type_matches = match expected {
+    let matches_type = |expected: Option<&str>| match expected {
         Some("string") => value.is_string(),
         Some("boolean") => value.is_boolean(),
         Some("integer") => value.as_i64().is_some() || value.as_u64().is_some(),
         Some("object") => value.is_object(),
         Some("array") => value.is_array(),
+        Some("null") => value.is_null(),
         Some(_) | None => true,
+    };
+    let type_matches = match schema.get("type") {
+        Some(serde_json::Value::Array(types)) => {
+            types.iter().any(|expected| matches_type(expected.as_str()))
+        }
+        expected => matches_type(expected.and_then(serde_json::Value::as_str)),
     };
     if !type_matches {
         return Err(format!(
@@ -625,7 +631,7 @@ impl V5CanonicalInvocationRuntime {
     /// the same handoff moment every later stage measures against.
     pub(super) fn bind_with_deadline(
         &self,
-        request: InvocationRequest,
+        mut request: InvocationRequest,
         response_deadline: InvocationResponseDeadline,
     ) -> Result<V5ActorBoundCanonicalInvocation, V5CanonicalPrepareError> {
         if let Err(summary) = validate_hidden_v13_request(&request) {
@@ -633,6 +639,7 @@ impl V5CanonicalInvocationRuntime {
                 DomainResult::canonical_rejection(None, RefusalCode::BadValue, summary),
             )));
         }
+        request.normalize_check_options();
         match super::v13_workspace_bootstrap::prepare(
             &request,
             response_deadline.clone(),
@@ -6984,6 +6991,197 @@ struct ActorLogicalReadLease {"#,
             admitted.is_empty(),
             "unproved source maps entered canonical Platform XML admission: {admitted:?}"
         );
+    }
+
+    #[test]
+    fn logical_read_admission_deadline_returns_canonical_rejection() {
+        assert_logical_read_deadline_returns_canonical_rejection(
+            LogicalReadDeadlineCase::Admission,
+        );
+    }
+
+    #[test]
+    fn logical_read_publication_deadline_discards_staged_source_data() {
+        assert_logical_read_deadline_returns_canonical_rejection(
+            LogicalReadDeadlineCase::Publication,
+        );
+    }
+
+    #[test]
+    fn logical_read_admission_scan_deadline_returns_canonical_rejection() {
+        assert_logical_read_deadline_returns_canonical_rejection(
+            LogicalReadDeadlineCase::AdmissionScan,
+        );
+    }
+
+    #[test]
+    fn logical_read_publication_scan_deadline_discards_staged_source_data() {
+        assert_logical_read_deadline_returns_canonical_rejection(
+            LogicalReadDeadlineCase::PublicationScan,
+        );
+    }
+
+    #[test]
+    fn logical_read_expired_clock_does_not_reclassify_execution_failure() {
+        assert_logical_read_deadline_returns_canonical_rejection(
+            LogicalReadDeadlineCase::ExecutionFailure,
+        );
+    }
+
+    #[test]
+    fn logical_read_parent_admission_deadline_discards_staged_extension_data() {
+        assert_logical_read_deadline_returns_canonical_rejection(
+            LogicalReadDeadlineCase::ParentAdmissionScan,
+        );
+    }
+
+    #[test]
+    fn logical_read_admission_deadline_is_preserved_by_every_read_tool() {
+        for tool in [
+            ToolIdentity::Resolve,
+            ToolIdentity::Search,
+            ToolIdentity::Check,
+            ToolIdentity::Diff,
+        ] {
+            assert_logical_read_deadline_for_tool(LogicalReadDeadlineCase::Admission, tool);
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum LogicalReadDeadlineCase {
+        Admission,
+        AdmissionScan,
+        Publication,
+        PublicationScan,
+        ExecutionFailure,
+        ParentAdmissionScan,
+    }
+
+    fn assert_logical_read_deadline_returns_canonical_rejection(case: LogicalReadDeadlineCase) {
+        assert_logical_read_deadline_for_tool(case, ToolIdentity::View);
+    }
+
+    fn assert_logical_read_deadline_for_tool(case: LogicalReadDeadlineCase, tool: ToolIdentity) {
+        let parent_admission = matches!(case, LogicalReadDeadlineCase::ParentAdmissionScan);
+        let workspace = if parent_admission {
+            borrowing_view_fixture("normal")
+        } else {
+            source_selection_read_fixture().0
+        };
+        let runtime = bootstrap_runtime();
+        let arguments = match tool {
+            ToolIdentity::Search => {
+                serde_json::json!({"query": "Items", "scope": "main:Configuration"})
+            }
+            ToolIdentity::Diff => {
+                serde_json::json!({"left": "main:Catalog.Items", "right": "main:Catalog.Items"})
+            }
+            _ => {
+                serde_json::json!({"at": if parent_admission { "ext:Catalog.Items" } else { "main:Catalog.Items" }})
+            }
+        };
+        let request = InvocationRequest::new(
+            tool,
+            arguments,
+            std::fs::canonicalize(workspace.path())
+                .unwrap()
+                .to_string_lossy(),
+            7_000,
+        )
+        .unwrap();
+        let invocation = bind_workspace_invocation(
+            &request,
+            &runtime.workspace_actors,
+            Arc::clone(&runtime.deliveries),
+            Arc::clone(&runtime.provider_hosts),
+            Arc::clone(&runtime.runtime_resources),
+            None,
+            runtime.capture_response_deadline_for_test(),
+        )
+        .unwrap();
+        let started = Instant::now();
+        let expires = started + LOGICAL_READ_OPERATION_BUDGET;
+        set_logical_read_now(if matches!(case, LogicalReadDeadlineCase::Admission) {
+            expires
+        } else {
+            started
+        });
+        let deadline = ProviderDeadline::with_clock(expires, logical_read_now);
+        let cancellation = CancellationToken::new();
+        let _admission_scan = matches!(case, LogicalReadDeadlineCase::AdmissionScan).then(|| {
+            crate::infrastructure::source_revision::set_retained_scan_test_mutation(
+                crate::infrastructure::source_revision::RetainedScanTestMutationPoint::ScanStart,
+                move || set_logical_read_now(expires),
+            )
+        });
+        let execution = invocation
+            .begin_execution_with_logical_deadline_for_test(&cancellation, deadline)
+            .unwrap_or_else(|error| {
+                panic!("deadline must remain a domain rejection at admission: {error}")
+            });
+        let service =
+            crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default();
+        let _parent_scan = parent_admission.then(|| {
+            crate::infrastructure::source_revision::set_retained_scan_test_mutation(
+                crate::infrastructure::source_revision::RetainedScanTestMutationPoint::ScanStart,
+                move || set_logical_read_now(expires),
+            )
+        });
+        let staged = service.execute(&execution, cancellation.clone()).unwrap();
+        if parent_admission {
+            assert_eq!(
+                logical_read_now(),
+                expires,
+                "parent scan must exhaust the deadline"
+            );
+            assert_eq!(
+                staged.data.as_ref().unwrap()["props"]["parentStatus"],
+                "unavailable"
+            );
+        }
+        if !matches!(
+            case,
+            LogicalReadDeadlineCase::Admission | LogicalReadDeadlineCase::AdmissionScan
+        ) {
+            assert!(staged.ok, "{staged:?}");
+            assert!(
+                staged.data.is_some(),
+                "the reader must stage actual source data"
+            );
+            if !matches!(case, LogicalReadDeadlineCase::PublicationScan) {
+                set_logical_read_now(expires);
+            }
+        }
+        if matches!(case, LogicalReadDeadlineCase::ExecutionFailure) {
+            let failure = InvocationFailure::new("reader_failed", "unrelated provider failure");
+            let published = execution
+                .publish(Err(failure.clone()), &cancellation)
+                .unwrap();
+            assert_eq!(published, Err(failure));
+            return;
+        }
+        let _publication_scan =
+            matches!(case, LogicalReadDeadlineCase::PublicationScan).then(|| {
+                execution.mark_source_revision_dirty_for_test();
+                crate::infrastructure::source_revision::set_retained_scan_test_mutation(
+                crate::infrastructure::source_revision::RetainedScanTestMutationPoint::ScanStart,
+                move || set_logical_read_now(expires),
+            )
+            });
+        let result = execution
+            .publish(Ok(staged), &cancellation)
+            .unwrap_or_else(|error| {
+                panic!("deadline must remain a domain rejection at publication: {error}")
+            })
+            .expect("deadline must not become an invocation failure");
+        assert!(!result.ok);
+        assert_eq!(result.diagnostics[0]["code"], "deadline_exceeded");
+        assert_eq!(result.diagnostics[0]["outcome"], "retry");
+        assert!(
+            result.data.is_none(),
+            "expired source data escaped: {result:?}"
+        );
+        assert!(result.rev.is_none(), "expired revision escaped: {result:?}");
     }
 
     struct ManualInvocationClock(Mutex<Instant>);

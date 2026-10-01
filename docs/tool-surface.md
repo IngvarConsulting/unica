@@ -48,9 +48,9 @@ Confirm workspace source-set admission, or validate one logical node: readabilit
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `at` | string | нет | Qualified logical address: <sourceSet>:<Kind>[.<Name>...]. Omit only for workspace bootstrap where allowed. |
-| `cursor` | string | нет | Continuation cursor from an earlier check of the same node. |
-| `limit` | integer | нет | Maximum diagnostics in one node-check page (default 20, maximum 50). |
+| `at` | string or null | нет | Qualified logical address: <sourceSet>:<Kind>[.<Name>...]. Omit or use null to check workspace source-set admission. |
+| `cursor` | string or null | нет | Continuation cursor from an earlier check of the same node. Omit or use null for the first page; an empty string is invalid. |
+| `limit` | integer or null | нет | Maximum diagnostics in one node-check page (maximum 50). Omit or use null for the default of 20. |
 
 **Результат сейчас:** Без `at` доказывает admission source set; если EOL-обход прерван сроком запроса и ёмкость checkpoint доступна, корневой ответ предлагает повторить `unica.check {}` с новым сроком. При исчерпании ёмкости и другой статической неполноте нужно устранить указанную причину. С `at` читает узел и запускает все валидаторы его вида (`cf`/`cfe` для корня по виду набора, `form`, `dcs`/`mxl` по `TemplateType`, `role`, `subsystem`, `interface`, `meta`, `bsl`), отдавая `status`, `validators` и диагностики страницами; узел без валидаторов отвечает читаемостью (отвечают типизированным `data`)
 
