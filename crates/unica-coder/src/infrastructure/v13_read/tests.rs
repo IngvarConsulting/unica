@@ -25,6 +25,7 @@ use crate::infrastructure::v13_read_port::{
 use serde::Deserialize;
 use serde_json::json;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -2506,6 +2507,80 @@ fn module_body_context_filter_excludes_at_client_source_from_server_slice() {
 
     assert!(result.ok, "{} {:?}", result.summary, result.diagnostics);
     assert_eq!(result.data.as_ref().unwrap()["items"], json!([]));
+}
+
+#[test]
+#[ignore = "blocked by #1119: BSL Body still reads the complete module under an 8 MiB file cap"]
+fn ordinary_bsl_read_over_eight_mib_reassembles_every_body_line() {
+    let fixture = RealReaderFixture::new();
+    let module = fixture
+        .source
+        .join("Reports/ParityReport/Forms/MainForm/Ext/Form/Module.bsl");
+    let mut file = std::io::BufWriter::new(fs::File::create(module).unwrap());
+    writeln!(file, "Процедура ПрочитатьБольшойМодуль()").unwrap();
+    for _ in 0..9 {
+        writeln!(file, "//{}", "я".repeat(512 * 1024)).unwrap();
+    }
+    writeln!(file, "КонецПроцедуры").unwrap();
+    file.flush().unwrap();
+    drop(file);
+
+    let service = fixture.view_service();
+    let at = "main:Report.ParityReport.Form.MainForm.Module.Form.Body";
+    let mut cursor = None;
+    let mut observed_lines = Vec::new();
+    loop {
+        let mut request = ViewRequest::new(at).unwrap().with_limit(2).unwrap();
+        if let Some(previous) = cursor.take() {
+            request = request.with_cursor(previous);
+        }
+        let page = service.view(request);
+        assert!(page.ok, "{} {:?}", page.summary, page.diagnostics);
+        for item in page.data.as_ref().unwrap()["items"].as_array().unwrap() {
+            let line = item["line"].as_u64().unwrap();
+            let text = item["text"].as_str().expect("Body line must carry text");
+            observed_lines.push(line);
+            if (2..=10).contains(&line) {
+                assert!(text.starts_with("//"));
+                assert_eq!(text.chars().count(), 2 + 512 * 1024);
+            }
+        }
+        cursor = page.cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(observed_lines, (1..=11).collect::<Vec<_>>());
+}
+
+#[test]
+#[ignore = "blocked by #1119: Configuration.xml still has the shared 8 MiB file cap"]
+fn ordinary_xml_read_over_eight_mib_keeps_complete_configuration_facts() {
+    let fixture = RealReaderFixture::new();
+    let path = fixture.source.join("Configuration.xml");
+    let baseline = fixture
+        .view_service()
+        .view(ViewRequest::new("main:Configuration").unwrap());
+    assert!(baseline.ok, "{:?}", baseline.diagnostics);
+    let xml = fs::read_to_string(&path).unwrap();
+    let inflated = xml.replace(
+        "</MetaDataObject>",
+        &format!("<!--{}--></MetaDataObject>", "x".repeat(8 * 1024 * 1024)),
+    );
+    fs::write(path, inflated).unwrap();
+
+    let result = fixture
+        .view_service()
+        .view(ViewRequest::new("main:Configuration").unwrap());
+    assert!(result.ok, "{} {:?}", result.summary, result.diagnostics);
+    assert_eq!(
+        result.data.as_ref().unwrap()["props"],
+        baseline.data.as_ref().unwrap()["props"]
+    );
+    assert_eq!(
+        result.data.as_ref().unwrap()["branches"],
+        baseline.data.as_ref().unwrap()["branches"]
+    );
 }
 
 #[test]
