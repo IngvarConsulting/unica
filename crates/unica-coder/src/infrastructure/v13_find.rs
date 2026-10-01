@@ -4,6 +4,7 @@ use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::project_sources::SourceSetKind;
 use crate::domain::refusal::{RefusalCode, RefusalDetail};
+use crate::infrastructure::capacity_observation::CapacityObserver;
 use crate::infrastructure::metadata_kinds::metadata_kind_by_directory;
 use crate::infrastructure::platform::filesystem::{
     RetainedChildCapability, RetainedDirectoryCapability, RetainedRegularFileCapability,
@@ -97,6 +98,7 @@ pub(crate) struct WorkspaceFindDirectoryBuilder {
     max_documents: usize,
     max_total_fact_bytes: usize,
     read_head: Arc<HeadReader>,
+    capacity_observer: Option<Arc<CapacityObserver>>,
 }
 
 type HeadReader = dyn Fn(&RetainedRegularFileCapability, &Path) -> Result<Vec<u8>, DescriptorHeadReadError>
@@ -139,6 +141,8 @@ impl Default for WorkspaceFindDirectoryBuilder {
 struct DirectoryBuild {
     documents: Vec<FindDocument>,
     fact_bytes: usize,
+    attempted_entries: usize,
+    attempted_fact_bytes: usize,
     omissions: FindOmissions,
 }
 
@@ -160,7 +164,13 @@ impl WorkspaceFindDirectoryBuilder {
             max_documents,
             max_total_fact_bytes,
             read_head: Arc::new(read_descriptor_head_prefix),
+            capacity_observer: None,
         }
+    }
+
+    pub(crate) fn with_capacity_observer(mut self, observer: Arc<CapacityObserver>) -> Self {
+        self.capacity_observer = Some(observer);
+        self
     }
 
     #[cfg(test)]
@@ -223,12 +233,31 @@ impl WorkspaceFindDirectoryBuilder {
         let mut build = DirectoryBuild {
             documents: Vec::new(),
             fact_bytes: 0,
+            attempted_entries: 0,
+            attempted_fact_bytes: 0,
             omissions: FindOmissions::default(),
         };
-        for source in sources {
-            find_checkpoint(deadline, cancellation)?;
-            self.add_source(source, &mut build, deadline, cancellation)?;
+        let result = (|| {
+            for source in sources {
+                find_checkpoint(deadline, cancellation)?;
+                self.add_source(source, &mut build, deadline, cancellation)?;
+            }
+            Ok::<(), FindBuildError>(())
+        })();
+        if let Some(observer) = &self.capacity_observer {
+            let capacity_refusal = result
+                .as_ref()
+                .err()
+                .is_some_and(|error| error.code() == RefusalCode::ProviderLimitExceeded);
+            if result.is_ok() || capacity_refusal {
+                observer.record_find(
+                    build.attempted_fact_bytes as u64,
+                    build.attempted_entries as u64,
+                    result.is_ok() && build.omissions.total == 0,
+                );
+            }
         }
+        result?;
         Ok(FindBuildOutcome {
             index: FindIndex::new(build.documents),
             omissions: build.omissions,
@@ -290,7 +319,12 @@ impl WorkspaceFindDirectoryBuilder {
                 configuration,
             )?;
         }
-        for entry in immediate_names(source.root, deadline, cancellation)? {
+        for entry in immediate_names(
+            source.root,
+            deadline,
+            cancellation,
+            self.capacity_observer.as_deref(),
+        )? {
             find_checkpoint(deadline, cancellation)?;
             let Some(directory) = entry.to_str() else {
                 continue;
@@ -306,7 +340,12 @@ impl WorkspaceFindDirectoryBuilder {
             let mut proved_owners = HashSet::new();
             let mut owner_directories = Vec::new();
             let mut unsafe_owner_directories = HashSet::new();
-            for owner in immediate_names(&collection, deadline, cancellation)? {
+            for owner in immediate_names(
+                &collection,
+                deadline,
+                cancellation,
+                self.capacity_observer.as_deref(),
+            )? {
                 find_checkpoint(deadline, cancellation)?;
                 let Some(owner_name) = owner.to_str() else {
                     continue;
@@ -425,7 +464,12 @@ impl WorkspaceFindDirectoryBuilder {
         } else {
             NodeKind::ExternalReport
         };
-        for entry in immediate_names(source.root, deadline, cancellation)? {
+        for entry in immediate_names(
+            source.root,
+            deadline,
+            cancellation,
+            self.capacity_observer.as_deref(),
+        )? {
             find_checkpoint(deadline, cancellation)?;
             let Some(entry_name) = entry.to_str() else {
                 continue;
@@ -510,7 +554,12 @@ impl WorkspaceFindDirectoryBuilder {
                 Some(_) => return Err(unsafe_layout_entry()),
                 None => continue,
             };
-            for entry in immediate_names(&family, deadline, cancellation)? {
+            for entry in immediate_names(
+                &family,
+                deadline,
+                cancellation,
+                self.capacity_observer.as_deref(),
+            )? {
                 find_checkpoint(deadline, cancellation)?;
                 let Some(entry_name) = entry.to_str() else {
                     continue;
@@ -614,15 +663,17 @@ impl WorkspaceFindDirectoryBuilder {
         }
         let title = synonym.filter(|value| !value.is_empty()).unwrap_or(name);
         let document = FindDocument::new(at, kind, title, facts).with_path(path);
+        let next_total = build
+            .fact_bytes
+            .saturating_add(document.estimated_identity_bytes());
+        build.attempted_entries = build.documents.len().saturating_add(1);
+        build.attempted_fact_bytes = next_total;
         if build.documents.len() == self.max_documents {
             return Err(FindBuildError::new(
                 RefusalCode::ProviderLimitExceeded,
                 "find directory exceeds the bounded workspace entry limit",
             ));
         }
-        let next_total = build
-            .fact_bytes
-            .saturating_add(document.estimated_identity_bytes());
         if next_total > self.max_total_fact_bytes {
             return Err(FindBuildError::new(
                 RefusalCode::ProviderLimitExceeded,
@@ -750,11 +801,17 @@ fn immediate_names(
     directory: &RetainedDirectoryCapability,
     deadline: ProviderDeadline,
     cancellation: &CancellationToken,
+    observer: Option<&CapacityObserver>,
 ) -> Result<Vec<std::ffi::OsString>, FindBuildError> {
     directory
         .read_immediate_names_bounded(MAX_COLLECTION_ENTRIES, || {
             find_checkpoint(deadline, cancellation)
                 .map_err(|error| std::io::Error::other(error.to_string()))
+        })
+        .inspect(|names| {
+            if let Some(observer) = observer {
+                observer.record_find_collection(names.len() as u64, true);
+            }
         })
         .map_err(|error| {
             if cancellation.is_cancelled() {
@@ -770,6 +827,9 @@ fn immediate_names(
                     "find could not read the source layout",
                 )
             } else if error.kind() == io::ErrorKind::FileTooLarge {
+                if let Some(observer) = observer {
+                    observer.record_find_collection(MAX_COLLECTION_ENTRIES as u64 + 1, false);
+                }
                 FindBuildError::new(
                     RefusalCode::ProviderLimitExceeded,
                     "find source collection exceeds the bounded entry limit",
@@ -852,6 +912,7 @@ mod tests {
     use crate::domain::code_intelligence::ProviderDeadline;
     use crate::domain::project_sources::SourceSetKind;
     use crate::domain::refusal::RefusalCode;
+    use crate::infrastructure::capacity_observation::CapacityObserver;
     use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
     use std::fs;
     use std::io;
@@ -1315,6 +1376,8 @@ mod tests {
         let mut build = super::DirectoryBuild {
             documents: Vec::new(),
             fact_bytes: 0,
+            attempted_entries: 0,
+            attempted_fact_bytes: 0,
             omissions: super::FindOmissions::default(),
         };
         for _ in 0..=super::MAX_OMISSION_DETAILS {
@@ -1322,6 +1385,43 @@ mod tests {
         }
         assert_eq!(build.omissions.total, super::MAX_OMISSION_DETAILS + 1);
         assert_eq!(build.omissions.details.len(), super::MAX_OMISSION_DETAILS);
+    }
+
+    #[test]
+    fn find_observation_reports_attempted_entry_as_censored_on_capacity_refusal() {
+        let fixture = Fixture::new();
+        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let sources = [LayoutFindSource::new(
+            "main",
+            SourceSetKind::Configuration,
+            &root,
+        )];
+        let observer = Arc::new(CapacityObserver::default());
+        let capped = WorkspaceFindDirectoryBuilder::with_document_limit(0)
+            .with_capacity_observer(Arc::clone(&observer));
+        let refusal = capped
+            .build_for_search(
+                &sources,
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+            .unwrap_err();
+        assert_eq!(refusal.code(), RefusalCode::ProviderLimitExceeded);
+        let complete =
+            WorkspaceFindDirectoryBuilder::default().with_capacity_observer(Arc::clone(&observer));
+        complete
+            .build_for_search(
+                &sources,
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let snapshot = observer.snapshot();
+        assert_eq!(snapshot.find_entries.max_lower_bound, 1);
+        assert_eq!(snapshot.find_entries.lower_bound_count, 1);
+        assert_eq!(snapshot.find_entries.exact_count, 1);
+        assert!(snapshot.find_identity_estimate_bytes.max_lower_bound > 0);
+        assert!(snapshot.find_collection_entries.exact_count > 0);
     }
 
     #[test]

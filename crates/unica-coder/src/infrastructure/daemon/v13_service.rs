@@ -33,6 +33,7 @@ use crate::domain::code_intelligence::{
 use crate::domain::invocation::{DomainResult, InvocationFailure};
 use crate::domain::project_sources::SourceSetKind;
 use crate::domain::refusal::{RefusalCode, RefusalDetail};
+use crate::infrastructure::capacity_observation::CapacityObserver;
 use crate::infrastructure::metadata_kinds::metadata_kind;
 use crate::infrastructure::native_operations::apply::{
     ApplyPlanErrorKind, ApplyStagedState, PlannedApplyEffects, StagedChangeKind, StagedFileState,
@@ -114,6 +115,14 @@ impl CanonicalInvocationService for CanonicalV13ReadService {
 }
 
 impl CanonicalV13ReadService {
+    pub(crate) fn with_capacity_observer(observer: Arc<CapacityObserver>) -> Self {
+        let mut service = Self::default();
+        service.cursors =
+            Arc::new(ViewCursorStore::default().with_capacity_observer(observer.clone()));
+        service.find_builder = service.find_builder.with_capacity_observer(observer);
+        service
+    }
+
     #[cfg(test)]
     pub(super) fn with_name_read_fault_for_test(
         relative: &'static str,
