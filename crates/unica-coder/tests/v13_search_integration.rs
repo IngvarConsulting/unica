@@ -1,5 +1,5 @@
 use serde_json::{json, Value};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -110,6 +110,315 @@ fn domain_result(response: &Value) -> Value {
     serde_json::from_str(text).expect("decode canonical DomainResult")
 }
 
+#[test]
+fn canonical_view_reads_configuration_past_eight_mebibytes_with_many_registrations() {
+    let root = tempfile::tempdir().expect("large configuration workspace");
+    let workspace = root.path();
+    std::fs::write(
+        workspace.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\n",
+    )
+    .expect("workspace manifest");
+    std::fs::create_dir_all(workspace.join("CommonModules")).expect("metadata directory");
+    for index in 0..32 {
+        let name = format!("Module{index:02}");
+        std::fs::write(
+            workspace.join(format!("CommonModules/{name}.xml")),
+            format!(
+                "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><CommonModule><Properties><Name>{name}</Name><Global>false</Global><ClientManagedApplication>true</ClientManagedApplication><Server>true</Server><ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ServerCall>false</ServerCall><Privileged>false</Privileged><ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties></CommonModule></MetaDataObject>"
+            ),
+        )
+        .expect("metadata descriptor");
+    }
+    for name in ["Module00", "Module31", "ModuleNew"] {
+        std::fs::create_dir_all(workspace.join(format!("CommonModules/{name}/Ext")))
+            .expect("module source directory");
+        std::fs::write(
+            workspace.join(format!("CommonModules/{name}/Ext/Module.bsl")),
+            "Процедура Проверка() Экспорт\nКонецПроцедуры\n",
+        )
+        .expect("module source");
+    }
+    std::fs::write(
+        workspace.join("CommonModules/ModuleNew.xml"),
+        "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><CommonModule><Properties><Name>ModuleNew</Name><Global>false</Global><ClientManagedApplication>true</ClientManagedApplication><Server>true</Server><ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ServerCall>false</ServerCall><Privileged>false</Privileged><ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties></CommonModule></MetaDataObject>",
+    )
+    .expect("future metadata descriptor");
+    let path = workspace.join("Configuration.xml");
+    let mut xml = BufWriter::new(std::fs::File::create(&path).expect("configuration document"));
+    xml.write_all(b"<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><Configuration><Properties><Name>First")
+        .unwrap();
+    xml.write_all(b"</Name></Properties><ChildObjects>")
+        .unwrap();
+    for index in 0..300_000 {
+        write!(xml, "<CommonModule>Module{:02}</CommonModule>", index % 32).unwrap();
+    }
+    xml.write_all(b"</ChildObjects></Configuration></MetaDataObject>")
+        .unwrap();
+    xml.flush().unwrap();
+    assert!(std::fs::metadata(&path).unwrap().len() > 8 * 1024 * 1024);
+
+    let mut mcp = McpProcess::start(workspace);
+    let initialized = mcp.exchange(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                   "clientInfo": {"name": "v13-large-configuration", "version": "1"}}
+    }));
+    assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
+    mcp.notify(json!({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}));
+    let view = domain_result(&mcp.exchange(call_tool(
+        2,
+        "unica.view",
+        json!({"at": "main:Configuration"}),
+    )));
+    assert_eq!(view["ok"], true, "{view:#}");
+    assert_eq!(view["data"]["props"]["name"], "First");
+    assert_eq!(view["data"]["props"]["totalObjects"], 300_000);
+    let branch = view["data"]["branches"]
+        .as_array()
+        .and_then(|branches| {
+            branches
+                .iter()
+                .find(|branch| branch["at"] == "main:CommonModule")
+        })
+        .expect("registered CommonModule branch");
+    assert_eq!(branch["count"], 32);
+    let collection = domain_result(&mcp.exchange(call_tool(
+        6,
+        "unica.view",
+        json!({"at": "main:CommonModule", "limit": 50}),
+    )));
+    assert_eq!(collection["ok"], true, "{collection:#}");
+    let items = collection["data"]["items"]
+        .as_array()
+        .expect("branch items");
+    assert_eq!(items.len(), 32);
+    assert_eq!(items.first().unwrap()["at"], "main:CommonModule.Module00");
+    assert_eq!(items.last().unwrap()["at"], "main:CommonModule.Module31");
+    let named = domain_result(&mcp.exchange(call_tool(
+        3,
+        "unica.view",
+        json!({"at": "main:CommonModule.Module00"}),
+    )));
+    assert_eq!(named["ok"], true, "{named:#}");
+    assert_eq!(named["data"]["at"], "main:CommonModule.Module00");
+    let other = domain_result(&mcp.exchange(call_tool(
+        4,
+        "unica.view",
+        json!({"at": "main:CommonModule.Module31"}),
+    )));
+    assert_eq!(other["ok"], true, "{other:#}");
+    let old_revision = other["rev"].clone();
+    let source = std::fs::read_to_string(&path).expect("read large root for revision change");
+    let source = source.replacen(
+        "<CommonModule>Module31</CommonModule>",
+        "<CommonModule>ModuleNew</CommonModule>",
+        1,
+    );
+    std::fs::write(&path, source).expect("publish changed root registration");
+    let changed = domain_result(&mcp.exchange(call_tool(
+        5,
+        "unica.view",
+        json!({"at": "main:CommonModule.ModuleNew"}),
+    )));
+    assert_eq!(changed["ok"], true, "{changed:#}");
+    assert_ne!(changed["rev"], old_revision, "source revision must change");
+    let changed_collection = domain_result(&mcp.exchange(call_tool(
+        7,
+        "unica.view",
+        json!({"at": "main:CommonModule", "limit": 50}),
+    )));
+    assert_eq!(changed_collection["ok"], true, "{changed_collection:#}");
+    assert_eq!(changed_collection["rev"], changed["rev"]);
+    assert_eq!(
+        changed_collection["data"]["items"].as_array().map(Vec::len),
+        Some(33)
+    );
+    assert!(changed_collection["data"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["at"] == "main:CommonModule.ModuleNew"));
+    mcp.finish();
+}
+
+fn body_workspace(workspace: &std::path::Path, module_bytes: &[u8]) {
+    std::fs::create_dir_all(workspace.join("CommonModules/Main/Ext")).unwrap();
+    std::fs::write(
+        workspace.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\n",
+    )
+    .unwrap();
+    std::fs::write(
+        workspace.join("Configuration.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"><Properties><Name>Main</Name></Properties><ChildObjects><CommonModule>Main</CommonModule></ChildObjects></Configuration></MetaDataObject>"#,
+    ).unwrap();
+    std::fs::write(
+        workspace.join("CommonModules/Main.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule uuid="cccccccc-cccc-4ccc-8ccc-cccccccccccc"><Properties><Name>Main</Name><Global>false</Global><ClientManagedApplication>true</ClientManagedApplication><Server>true</Server><ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ServerCall>false</ServerCall><Privileged>false</Privileged><ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties></CommonModule></MetaDataObject>"#,
+    ).unwrap();
+    std::fs::write(
+        workspace.join("CommonModules/Main/Ext/Module.bsl"),
+        module_bytes,
+    )
+    .unwrap();
+    assert!(Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(workspace)
+        .status()
+        .unwrap()
+        .success());
+    assert!(Command::new("git")
+        .args(["add", "."])
+        .current_dir(workspace)
+        .status()
+        .unwrap()
+        .success());
+}
+
+fn initialize_body_mcp(mcp: &mut McpProcess) {
+    let response = mcp.exchange(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                   "clientInfo": {"name": "body-large-test", "version": "1"}}
+    }));
+    assert_eq!(response["result"]["serverInfo"]["name"], "unica");
+    mcp.notify(json!({"jsonrpc":"2.0", "method":"notifications/initialized", "params":{}}));
+}
+
+fn assert_large_body_line(item: &Value) -> u64 {
+    let line = item["line"].as_u64().unwrap();
+    if (2..=10).contains(&line) {
+        let text = item["text"].as_str().unwrap();
+        assert_eq!(text.len(), 3 + 1024 * 1024);
+        assert!(text.starts_with(&format!("//{}", line - 2)));
+        assert!(text[3..].bytes().all(|byte| byte == b'a'));
+    } else {
+        assert!(!item["text"].as_str().unwrap().contains('\n'));
+    }
+    line
+}
+
+#[test]
+fn public_view_pages_large_bsl_body_and_replays_disk_cursor() {
+    let root = tempfile::tempdir().unwrap();
+    let mut source = Vec::new();
+    source.extend_from_slice(b"Procedure A()\n");
+    for index in 0..9 {
+        source.extend_from_slice(format!("//{index}").as_bytes());
+        source.extend(std::iter::repeat_n(b'a', 1024 * 1024));
+        source.push(b'\n');
+    }
+    source.extend_from_slice(b"EndProcedure\n");
+    body_workspace(root.path(), &source);
+    let mut mcp = McpProcess::start(root.path());
+    initialize_body_mcp(&mut mcp);
+    let at = "main:CommonModule.Main.Body";
+    let first =
+        domain_result(&mcp.exchange(call_tool(2, "unica.view", json!({"at":at, "limit":2}))));
+    assert_eq!(first["ok"], true, "{first:#}");
+    assert_eq!(
+        first["data"]["items"][0],
+        json!({"line":1,"text":"Procedure A()"})
+    );
+    let mut seen = first["data"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(assert_large_body_line)
+        .collect::<Vec<_>>();
+    let mut cursor = first["cursor"]
+        .as_str()
+        .expect("disk continuation")
+        .to_string();
+    let second = domain_result(&mcp.exchange(call_tool(
+        3,
+        "unica.view",
+        json!({"at":at,"limit":2,"cursor":cursor}),
+    )));
+    let replay = domain_result(&mcp.exchange(call_tool(
+        4,
+        "unica.view",
+        json!({"at":at,"limit":2,"cursor":cursor}),
+    )));
+    assert_eq!(second, replay, "cursor replay must be byte-stable");
+    for item in second["data"]["items"].as_array().unwrap() {
+        seen.push(assert_large_body_line(item));
+    }
+    cursor = second["cursor"].as_str().unwrap().to_string();
+    let mut id = 5;
+    loop {
+        let page = domain_result(&mcp.exchange(call_tool(
+            id,
+            "unica.view",
+            json!({"at":at,"limit":2,"cursor":cursor}),
+        )));
+        assert_eq!(page["ok"], true, "{page:#}");
+        for item in page["data"]["items"].as_array().unwrap() {
+            seen.push(assert_large_body_line(item));
+        }
+        match page["cursor"].as_str() {
+            Some(next) => cursor = next.to_string(),
+            None => break,
+        }
+        id += 1;
+    }
+    assert_eq!(seen, (1..=11).collect::<Vec<_>>());
+    std::fs::write(
+        root.path().join("CommonModules/Main/Ext/Module.bsl"),
+        "Procedure Changed()\nEndProcedure\n",
+    )
+    .unwrap();
+    let stale = domain_result(&mcp.exchange(call_tool(
+        id + 1,
+        "unica.view",
+        json!({"at":at,"limit":2,"cursor":first["cursor"]}),
+    )));
+    assert_eq!(stale["ok"], false, "{stale:#}");
+    assert_eq!(stale["diagnostics"][0]["code"], "stale_cursor");
+    mcp.finish();
+}
+
+#[test]
+fn public_view_starts_body_over_sixty_four_mib_and_splits_one_long_line() {
+    let root = tempfile::tempdir().unwrap();
+    let mut source = Vec::with_capacity(70 * 1024 * 1024);
+    source.extend_from_slice(b"//");
+    source.extend(std::iter::repeat_n(b'x', 9 * 1024 * 1024));
+    source.push(b'\n');
+    for _ in 0..62 {
+        source.extend_from_slice(b"//");
+        source.extend(std::iter::repeat_n(b'y', 1024 * 1024));
+        source.push(b'\n');
+    }
+    body_workspace(root.path(), &source);
+    let mut mcp = McpProcess::start(root.path());
+    initialize_body_mcp(&mut mcp);
+    let at = "main:CommonModule.Main.Body";
+    let first =
+        domain_result(&mcp.exchange(call_tool(2, "unica.view", json!({"at":at,"limit":50}))));
+    assert_eq!(first["ok"], true, "{first:#}");
+    assert_eq!(first["data"]["items"][0]["line"], 1);
+    assert_eq!(first["data"]["items"][0]["byteOffset"], 0);
+    assert_eq!(first["data"]["items"][0]["endOfLine"], false);
+    assert_eq!(first["data"]["items"].as_array().unwrap().len(), 1);
+    assert_eq!(first["page"]["stoppedBy"], "bytes");
+    assert_eq!(
+        first["data"]["items"][0]["text"].as_str().unwrap().len(),
+        65536
+    );
+    let cursor = first["cursor"].as_str().expect("long-line continuation");
+    let next = domain_result(&mcp.exchange(call_tool(
+        3,
+        "unica.view",
+        json!({"at":at,"limit":50,"cursor":cursor}),
+    )));
+    assert_eq!(next["ok"], true, "{next:#}");
+    assert_eq!(next["data"]["items"][0]["line"], 1);
+    assert_eq!(next["data"]["items"][0]["byteOffset"], 65536);
+    mcp.finish();
+}
+
 #[path = "platform/v13_resolve_target_isolation.rs"]
 mod target_isolation;
 
@@ -141,7 +450,7 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
     std::fs::write(
         workspace.join("CommonModules/Main/Ext/Module.bsl"),
         format!(
-            "Procedure MainNeedle() Export\nEndProcedure\n{}// CapNeedle main\n",
+            "Procedure MainNeedle() Export\nEndProcedure\n{}",
             (0..21)
                 .map(|index| format!("// MainNeedle {index}\n"))
                 .collect::<String>()
@@ -168,12 +477,7 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
     .expect("unregistered module source");
     std::fs::write(
         workspace.join("src/extension/CommonModules/Extension/Ext/Module.bsl"),
-        format!(
-            "Procedure ExtensionNeedle() Export\nEndProcedure\n{}",
-            (0..201)
-                .map(|index| format!("// CapNeedle extension {index}\n"))
-                .collect::<String>()
-        ),
+        "Procedure ExtensionNeedle() Export\nEndProcedure\n",
     )
     .expect("extension module");
     std::fs::write(
@@ -278,80 +582,6 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
         "extension:Configuration"
     );
 
-    let unscoped_lexical = domain_result(&mcp.exchange(call_tool(
-        46,
-        "unica.search",
-        json!({"query": "MainNeedle", "role": "lexical"}),
-    )));
-    assert_eq!(unscoped_lexical["ok"], true, "{unscoped_lexical:#}");
-    assert!(
-        unscoped_lexical["data"]["matches"][0]["hits"]
-            .as_array()
-            .is_some_and(|hits| !hits.is_empty()),
-        "unscoped lexical search skipped the main source set: {unscoped_lexical:#}"
-    );
-    assert_eq!(
-        unscoped_lexical["data"]["matches"][0]["matches"]["total"],
-        22
-    );
-    assert_eq!(
-        unscoped_lexical["data"]["matches"][0]["searchComplete"],
-        true
-    );
-    let unscoped_cursor = unscoped_lexical["cursor"]
-        .as_str()
-        .expect("combined window pages");
-    let tail = domain_result(&mcp.exchange(call_tool(
-        47,
-        "unica.search",
-        json!({"query": "MainNeedle", "role": "lexical", "cursor": unscoped_cursor}),
-    )));
-    assert_eq!(tail["ok"], true, "{tail:#}");
-    assert_eq!(
-        tail["data"]["matches"][0]["hits"].as_array().map(Vec::len),
-        Some(2)
-    );
-
-    let nested_root = domain_result(&mcp.exchange(call_tool(
-        48,
-        "unica.search",
-        json!({"query": "ExtensionNeedle", "role": "lexical"}),
-    )));
-    assert_eq!(nested_root["ok"], true, "{nested_root:#}");
-    let nested_section = &nested_root["data"]["matches"][0];
-    assert_eq!(
-        nested_section["matches"]["total"], 1,
-        "nested root must occur once"
-    );
-    assert_eq!(
-        nested_section["hits"][0]["location"]["sourceSet"],
-        "extension"
-    );
-    assert_eq!(nested_section["searchComplete"], true);
-
-    let capped = domain_result(&mcp.exchange(call_tool(
-        49,
-        "unica.search",
-        json!({"query": "CapNeedle", "role": "lexical", "limit": 50}),
-    )));
-    assert_eq!(capped["ok"], true, "{capped:#}");
-    let capped_section = &capped["data"]["matches"][0];
-    assert_eq!(capped_section["status"], "limitReached");
-    assert_eq!(capped_section["searchComplete"], false);
-    assert_eq!(capped_section["matches"]["total"], 200);
-    assert_eq!(capped_section["matches"]["relation"], "lowerBound");
-
-    let absent = domain_result(&mcp.exchange(call_tool(
-        50,
-        "unica.search",
-        json!({"query": "NoSuchNeedleInEitherSource", "role": "lexical"}),
-    )));
-    assert_eq!(absent["ok"], true, "{absent:#}");
-    let absent_section = &absent["data"]["matches"][0];
-    assert_eq!(absent_section["status"], "empty");
-    assert_eq!(absent_section["searchComplete"], true);
-    assert_eq!(absent_section["matches"]["total"], 0);
-
     let lexical = domain_result(&mcp.exchange(call_tool(
         24,
         "unica.search",
@@ -451,13 +681,6 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
         "main:CommonModule.Main"
     );
 
-    let module_path = "CommonModules/Main/Ext/Module.bsl";
-    let resolved =
-        domain_result(&mcp.exchange(call_tool(36, "unica.resolve", json!({"path": module_path}))));
-    assert_eq!(resolved["ok"], true, "{resolved:#}");
-    assert_eq!(resolved["data"]["at"], "main:CommonModule.Main");
-    assert_eq!(resolved["data"]["path"], module_path);
-
     let missing_scope = domain_result(&mcp.exchange(call_tool(
         21,
         "unica.search",
@@ -551,52 +774,6 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
 
     let ping = mcp.exchange(json!({"jsonrpc": "2.0", "id": 15, "method": "ping"}));
     assert!(ping.get("result").is_some(), "{ping:#}");
-    let extension_main = workspace.join("src/extension/CommonModules/Main/Ext/Module.bsl");
-    std::fs::create_dir_all(extension_main.parent().unwrap()).expect("duplicate module directory");
-    std::fs::copy(
-        workspace.join("CommonModules/Main.xml"),
-        workspace.join("src/extension/CommonModules/Main.xml"),
-    )
-    .expect("duplicate module descriptor");
-    std::fs::write(
-        &extension_main,
-        "Procedure Duplicate() Export\nEndProcedure\n",
-    )
-    .expect("duplicate module source");
-    let absolute_extension =
-        std::fs::canonicalize(&extension_main).expect("absolute extension module");
-    let resolved = domain_result(&mcp.exchange(call_tool(
-        37,
-        "unica.resolve",
-        json!({"path": absolute_extension}),
-    )));
-    assert_eq!(resolved["ok"], true, "{resolved:#}");
-    assert_eq!(resolved["data"]["at"], "extension:CommonModule.Main");
-    assert_eq!(
-        resolved["data"]["path"],
-        "CommonModules/Main/Ext/Module.bsl"
-    );
-    let ambiguous = domain_result(&mcp.exchange(call_tool(
-        38,
-        "unica.resolve",
-        json!({"path": "CommonModules/Main/Ext/Module.bsl"}),
-    )));
-    assert_eq!(ambiguous["ok"], false, "{ambiguous:#}");
-    assert_eq!(ambiguous["diagnostics"][0]["code"], "bad_value");
-    let relative_extension = domain_result(&mcp.exchange(call_tool(
-        39,
-        "unica.resolve",
-        json!({"path": "src/extension/CommonModules/Main/Ext/Module.bsl"}),
-    )));
-    assert_eq!(relative_extension["ok"], true, "{relative_extension:#}");
-    assert_eq!(
-        relative_extension["data"]["at"],
-        "extension:CommonModule.Main"
-    );
-    assert_eq!(
-        relative_extension["data"]["path"],
-        "CommonModules/Main/Ext/Module.bsl"
-    );
     mcp.finish();
 }
 

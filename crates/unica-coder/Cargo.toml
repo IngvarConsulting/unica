@@ -54,6 +54,7 @@ chrono.workspace = true
 tokio.workspace = true
 toml.workspace = true
 roxmltree.workspace = true
+xml.workspace = true
 rust-stemmers.workspace = true
 regex.workspace = true
 tempfile.workspace = true

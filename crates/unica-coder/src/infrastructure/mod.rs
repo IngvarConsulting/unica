@@ -65,6 +65,7 @@ pub(crate) mod task_store_v5;
 #[allow(dead_code)]
 pub(crate) mod task_lifecycle_link_store_v5;
 // Hidden v0.13 typed read adapter remains unreachable from the v0.12 tool ledger.
+mod v13_large_configuration;
 #[allow(dead_code)]
 pub(crate) mod v13_read;
 #[allow(dead_code)]

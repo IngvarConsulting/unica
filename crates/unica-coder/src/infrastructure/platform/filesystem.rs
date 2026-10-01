@@ -1097,21 +1097,56 @@ impl RetainedDirectoryCapability {
         relative: &Path,
         max_bytes: usize,
     ) -> io::Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        self.visit_relative_regular_chunks(
+            relative,
+            || Ok(()),
+            |chunk| {
+                if chunk.len() > max_bytes.saturating_sub(bytes.len()) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("relative file exceeds the {max_bytes}-byte read limit"),
+                    ));
+                }
+                bytes.extend_from_slice(chunk);
+                Ok(())
+            },
+        )?;
+        Ok(bytes)
+    }
+
+    /// Visits the opened, no-follow regular file without retaining its total
+    /// contents. Each callback sees at most one 64 KiB chunk, and a checkpoint
+    /// runs before every read. The caller confirms its source revision before
+    /// publishing a logical answer; a same-content replacement may be valid
+    /// after that confirmation.
+    pub(crate) fn visit_relative_regular_chunks(
+        &self,
+        relative: &Path,
+        mut checkpoint: impl FnMut() -> io::Result<()>,
+        mut visit: impl FnMut(&[u8]) -> io::Result<()>,
+    ) -> io::Result<u64> {
         use std::io::Read;
 
         let mut file = self.open_relative_regular_nofollow(relative)?;
-        let limit = u64::try_from(max_bytes)
-            .unwrap_or(u64::MAX)
-            .saturating_add(1);
-        let mut bytes = Vec::new();
-        file.by_ref().take(limit).read_to_end(&mut bytes)?;
-        if bytes.len() > max_bytes {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("relative file exceeds the {max_bytes}-byte read limit"),
-            ));
+        let mut buffer = [0_u8; 64 * 1024];
+        let mut total = 0_u64;
+        loop {
+            checkpoint()?;
+            let count = match file.read(&mut buffer) {
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                result => result?,
+            };
+            if count == 0 {
+                break;
+            }
+            total = total.checked_add(count as u64).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "file length overflow")
+            })?;
+            visit(&buffer[..count])?;
         }
-        Ok(bytes)
+        checkpoint()?;
+        Ok(total)
     }
 
     /// Read only the descriptor head, even when the file itself is larger.
@@ -1130,7 +1165,7 @@ impl RetainedDirectoryCapability {
         Ok(bytes)
     }
 
-    fn open_relative_regular_nofollow(&self, relative: &Path) -> io::Result<fs::File> {
+    pub(crate) fn open_relative_regular_nofollow(&self, relative: &Path) -> io::Result<fs::File> {
         use std::path::Component;
 
         let mut components = relative.components().peekable();
@@ -5947,6 +5982,120 @@ mod tests {
 
     #[cfg(windows)]
     use super::strip_windows_extended_length_prefix;
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn retained_large_reader_limits_each_chunk_and_honors_cancellation() {
+        use super::RetainedDirectoryCapability;
+
+        let root = unique_temp_root("chunked-retained-read");
+        fs::create_dir_all(root.join("nested")).unwrap();
+        let file = fs::File::create(root.join("nested/source.bsl")).unwrap();
+        let file_bytes = 8 * 1024 * 1024 + 1;
+        file.set_len(file_bytes).unwrap();
+        drop(file);
+        let physical_root = fs::canonicalize(&root).unwrap();
+        let directory = RetainedDirectoryCapability::open(&physical_root).unwrap();
+        let mut observed = 0_usize;
+        let mut max_chunk = 0_usize;
+        let total = directory
+            .visit_relative_regular_chunks(
+                Path::new("nested/source.bsl"),
+                || Ok(()),
+                |chunk| {
+                    assert!(chunk.len() <= 64 * 1024);
+                    observed += chunk.len();
+                    max_chunk = max_chunk.max(chunk.len());
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(total, file_bytes);
+        assert_eq!(observed, total as usize);
+        assert_eq!(max_chunk, 64 * 1024);
+
+        let mut checkpoints = 0;
+        let interrupted = directory
+            .visit_relative_regular_chunks(
+                Path::new("nested/source.bsl"),
+                || {
+                    checkpoints += 1;
+                    if checkpoints == 2 {
+                        return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
+                    }
+                    Ok(())
+                },
+                |_| Ok(()),
+            )
+            .unwrap_err();
+        assert_eq!(interrupted.kind(), io::ErrorKind::Interrupted);
+        drop(directory);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn retained_bounded_reader_still_accepts_the_exact_byte_boundary() {
+        use super::RetainedDirectoryCapability;
+
+        let root = unique_temp_root("bounded-retained-boundary");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("source.xml"), b"abc").unwrap();
+        let physical_root = fs::canonicalize(&root).unwrap();
+        let directory = RetainedDirectoryCapability::open(&physical_root).unwrap();
+        assert_eq!(
+            directory
+                .read_relative_regular_bounded(Path::new("source.xml"), 3)
+                .unwrap(),
+            b"abc"
+        );
+        let error = directory
+            .read_relative_regular_bounded(Path::new("source.xml"), 2)
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        drop(directory);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn retained_large_reader_stays_on_open_file_and_rejects_symlink() {
+        use super::RetainedDirectoryCapability;
+
+        let root = unique_temp_root("streamed-retained-identity");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("source.xml"), vec![b'a'; 128 * 1024]).unwrap();
+        fs::write(root.join("replacement.xml"), vec![b'b'; 128 * 1024]).unwrap();
+        let physical_root = fs::canonicalize(&root).unwrap();
+        let directory = RetainedDirectoryCapability::open(&physical_root).unwrap();
+        let mut replaced = false;
+        let mut observed_b = false;
+        let total = directory
+            .visit_relative_regular_chunks(
+                Path::new("source.xml"),
+                || Ok(()),
+                |chunk| {
+                    if !replaced {
+                        fs::rename(root.join("replacement.xml"), root.join("source.xml"))?;
+                        replaced = true;
+                    }
+                    observed_b |= chunk.contains(&b'b');
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(total, 128 * 1024);
+        assert!(
+            !observed_b,
+            "replacement contents entered the opened stream"
+        );
+        std::os::unix::fs::symlink(root.join("source.xml"), root.join("link.xml")).unwrap();
+        assert!(directory
+            .visit_relative_regular_chunks(Path::new("link.xml"), || Ok(()), |_| Ok(()))
+            .is_err());
+        drop(directory);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[cfg(any(unix, windows))]
     #[test]

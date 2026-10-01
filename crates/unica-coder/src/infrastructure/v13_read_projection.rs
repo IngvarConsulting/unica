@@ -609,6 +609,26 @@ fn project_configuration(
     payload: &Value,
     suffix: &[AddressSegment],
 ) -> Result<NodeViewData, ViewError> {
+    let mut counts = std::collections::BTreeMap::<String, usize>::new();
+    for item in payload
+        .get("registeredObjects")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if let Some(kind) = item.get("kind").and_then(Value::as_str) {
+            *counts.entry(kind.to_string()).or_default() += 1;
+        }
+    }
+    project_configuration_with_counts(address, payload, suffix, counts)
+}
+
+pub(super) fn project_configuration_with_counts(
+    address: &QualifiedAddress,
+    payload: &Value,
+    suffix: &[AddressSegment],
+    counts: std::collections::BTreeMap<String, usize>,
+) -> Result<NodeViewData, ViewError> {
     if !suffix.is_empty() {
         return Err(ViewError::new(
             RefusalCode::NotFound,
@@ -660,17 +680,6 @@ fn project_configuration(
             _ => {}
         }
     }
-    let mut counts = std::collections::BTreeMap::<String, usize>::new();
-    for item in payload
-        .get("registeredObjects")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        if let Some(kind) = item.get("kind").and_then(Value::as_str) {
-            *counts.entry(kind.to_string()).or_default() += 1;
-        }
-    }
     let branches = counts
         .into_iter()
         .map(|(kind, count)| BranchRef::new(format!("{}:{kind}", address.source_set()), count))
@@ -700,13 +709,34 @@ pub(super) fn project_registered_metadata_branch(
         .last()
         .map(AddressSegment::kind)
         .ok_or_else(|| ViewError::new(RefusalCode::NotFound, "metadata branch kind is missing"))?;
-    let items = payload
+    let names = payload
         .get("registeredObjects")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .filter(|item| item.get("kind").and_then(Value::as_str) == Some(kind.as_str()))
-        .filter_map(|item| item.get("name").and_then(Value::as_str))
+        .filter_map(|item| item.get("name").and_then(Value::as_str));
+    project_registered_metadata_branch_names_inner(address, kind, names)
+}
+
+pub(super) fn project_registered_metadata_branch_names(
+    address: &QualifiedAddress,
+    names: &[String],
+) -> Result<NodeViewData, ViewError> {
+    let kind = address
+        .segments()
+        .last()
+        .map(AddressSegment::kind)
+        .ok_or_else(|| ViewError::new(RefusalCode::NotFound, "metadata branch kind is missing"))?;
+    project_registered_metadata_branch_names_inner(address, kind, names.iter().map(String::as_str))
+}
+
+fn project_registered_metadata_branch_names_inner<'a>(
+    address: &QualifiedAddress,
+    kind: NodeKind,
+    names: impl Iterator<Item = &'a str>,
+) -> Result<NodeViewData, ViewError> {
+    let items = names
         .map(|name| {
             serde_json::to_value(NodeView::new(
                 format!("{}.{name}", address),

@@ -38,6 +38,7 @@ use crate::infrastructure::support_policy_evidence::{
     RetainedSupportPolicyEvidence, SupportPolicyEvidenceError, SupportPolicyEvidenceErrorKind,
     SupportPolicyMode,
 };
+use crate::infrastructure::v13_large_configuration::RegistrationCache;
 use crate::infrastructure::workspace_index::{IndexRunner, WorkspaceIndexService};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -1485,6 +1486,7 @@ pub(crate) struct WorkspaceActor<R = ()> {
     state_scope: WorkspaceStateScope,
     mutation_lane: DeadlineLock<FailClosed>,
     source_revisions: Mutex<HashMap<WorkspaceSourceSetIdentity, Arc<SourceRevisionService>>>,
+    configuration_registrations: Arc<RegistrationCache>,
     index_work: SharedWork<(), LongWorkFailure>,
     runtime: R,
 }
@@ -1591,6 +1593,7 @@ impl<R> WorkspaceActor<R> {
             state_scope,
             mutation_lane: DeadlineLock::fail_closed("workspace actor mutation lane is poisoned"),
             source_revisions: Mutex::new(HashMap::new()),
+            configuration_registrations: Arc::new(RegistrationCache::default()),
             index_work: SharedWork::new(SharedWorkLifetime::ProducerBound),
             runtime,
         })
@@ -2361,6 +2364,14 @@ impl<R> WorkspaceActor<R> {
         });
         revisions.insert(binding.source_set.clone(), Arc::clone(&service));
         Ok(service)
+    }
+
+    pub(crate) fn configuration_registration_cache(
+        &self,
+        binding: &ProviderRootBinding,
+    ) -> Result<Arc<RegistrationCache>, String> {
+        self.validate_binding(binding)?;
+        Ok(Arc::clone(&self.configuration_registrations))
     }
 
     fn issue_revision_service_authority(

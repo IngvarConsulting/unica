@@ -20,6 +20,7 @@ use crate::infrastructure::runtime_jobs::{RuntimeJobService, RuntimeResourceOwne
 use crate::infrastructure::source_revision::RetainedRevisionErrorKind;
 use crate::infrastructure::source_selection_evidence::discover_project_source_admission;
 use crate::infrastructure::source_selection_evidence::SourceSelectionEvidenceErrorKind;
+use crate::infrastructure::v13_large_configuration::RegistrationCache;
 use crate::infrastructure::workspace::discover_workspace;
 use crate::infrastructure::workspace_actor::{
     ApplyAdmission, ApplyAdmissionError, IndexWorkIdentity, ProviderRootBinding, WorkspaceActor,
@@ -130,6 +131,7 @@ pub(in crate::infrastructure::daemon) struct ActorReadSourceCapability {
     identity: String,
     fence: WorkspaceLogicalReadFence,
     deadline: ProviderDeadline,
+    registration_cache: Arc<RegistrationCache>,
 }
 
 #[allow(dead_code)]
@@ -171,11 +173,12 @@ impl ActorReadSourceCapability {
                 self.fence.revision(),
             );
         Ok(
-            crate::infrastructure::v13_read::LogicalViewReadAuthority::with_read_authority(
+            crate::infrastructure::v13_read::LogicalViewReadAuthority::with_read_authority_and_registration_cache(
                 cancellation,
                 read,
                 platform_profile,
                 self.deadline,
+                Arc::clone(&self.registration_cache),
             ),
         )
     }
@@ -449,6 +452,7 @@ pub(super) fn actor_read_source_capability_for_test(
         identity,
         fence,
         deadline,
+        registration_cache: Arc::new(RegistrationCache::default()),
     }
 }
 
@@ -909,6 +913,10 @@ impl ActorBoundExecution {
                     ),
                     fence: source.fence.clone(),
                     deadline: lease.deadline,
+                    registration_cache: self
+                        .invocation
+                        .actor
+                        .configuration_registration_cache(&source.binding)?,
                 })
             })
             .collect()
