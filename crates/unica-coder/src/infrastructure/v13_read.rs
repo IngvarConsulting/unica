@@ -1,4 +1,5 @@
 use crate::application::ports::{MetadataChildProfile, MetadataTemplateType};
+use crate::application::v13::body_snapshot::BodySnapshot;
 use crate::application::v13::view::{ViewError, ViewFilter, ViewReadAuthority, ViewSourceSnapshot};
 use crate::application::v13::LOGICAL_READ_OPERATION_BUDGET;
 use crate::domain::address::{AddressSegment, NodeKind, QualifiedAddress};
@@ -38,6 +39,7 @@ use crate::infrastructure::platform_xml_source_targets::{
     resolve_platform_xml_target, TargetKindPolicy,
 };
 use crate::infrastructure::source_revision::SourceRevisionService;
+use crate::infrastructure::v13_large_configuration::{RegistrationCache, RegistrationIndex};
 use crate::infrastructure::v13_read_port::ProviderReadAuthority;
 use serde_json::{json, Map, Value};
 #[cfg(test)]
@@ -110,6 +112,7 @@ pub(crate) struct LogicalViewReadAuthority<'a> {
     deadline: ProviderDeadline,
     module_projections: Mutex<BTreeMap<ModuleProjectionCacheKey, Arc<ModuleProjectionSet>>>,
     configuration_payloads: Mutex<BTreeMap<RevisionCacheKey, Arc<Value>>>,
+    configuration_registrations: Arc<RegistrationCache>,
     verified_owners: Mutex<BTreeSet<OwnerProofCacheKey>>,
     owner_evidence: Mutex<BTreeMap<OwnerProofCacheKey, Arc<PlatformXmlSourceSetOwnerEvidence>>>,
     verified_owner_edges: Mutex<BTreeSet<OwnerEdgeCacheKey>>,
@@ -184,6 +187,22 @@ impl<'a> LogicalViewReadAuthority<'a> {
         profile: PlatformProfile,
         deadline: ProviderDeadline,
     ) -> Self {
+        Self::with_read_authority_and_registration_cache(
+            cancellation,
+            read,
+            profile,
+            deadline,
+            Arc::new(RegistrationCache::default()),
+        )
+    }
+
+    pub(crate) fn with_read_authority_and_registration_cache(
+        cancellation: &'a CancellationToken,
+        read: ProviderReadAuthority,
+        profile: PlatformProfile,
+        deadline: ProviderDeadline,
+        registration_cache: Arc<RegistrationCache>,
+    ) -> Self {
         Self {
             cancellation,
             read,
@@ -191,6 +210,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             deadline,
             module_projections: Mutex::new(BTreeMap::new()),
             configuration_payloads: Mutex::new(BTreeMap::new()),
+            configuration_registrations: registration_cache,
             verified_owners: Mutex::new(BTreeSet::new()),
             owner_evidence: Mutex::new(BTreeMap::new()),
             verified_owner_edges: Mutex::new(BTreeSet::new()),
@@ -699,12 +719,71 @@ impl<'a> LogicalViewReadAuthority<'a> {
         Ok(())
     }
 
+    /// The Configuration root already has registration evidence from the
+    /// streaming owner document. Verify each descriptor directly, without
+    /// rebuilding that full inventory or retaining one cache entry per owner.
+    fn verify_streamed_top_level_owner(&self, kind: &str, name: &str) -> Result<(), ViewError> {
+        if kind == NodeKind::WebSocketClient.as_str() {
+            return Ok(());
+        }
+        self.read_checkpoint()?;
+        #[cfg(test)]
+        review_run_before_owner_proof();
+        let target =
+            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &format!("{kind}.{name}"))
+                .map_err(|error| {
+                    ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+                })?;
+        let evidence = self
+            .read
+            .metadata_owner_evidence(&target)
+            .map_err(|error| {
+                if error.code() == RefusalCode::NotFound {
+                    ViewError::detailed(
+                        RefusalDetail::SourceUnreadable,
+                        format!(
+                            "registered metadata owner `{}` has no descriptor",
+                            target.as_str()
+                        ),
+                    )
+                } else {
+                    error
+                }
+            })?;
+        if evidence.artifact_kind() != kind || evidence.artifact_name() != Some(name) {
+            return Err(ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
+                format!(
+                    "metadata descriptor identity does not match `{}`",
+                    target.as_str()
+                ),
+            ));
+        }
+        Ok(())
+    }
+
     fn ensure_owner_registered_parts(
         &self,
         owner_kind: &str,
         owner_name: &str,
         admitted: &ViewSourceSnapshot,
     ) -> Result<(), ViewError> {
+        if matches!(
+            self.read.source_set_kind(),
+            SourceSetKind::Configuration | SourceSetKind::Extension
+        ) && self.read.configuration_xml_requires_streaming()
+        {
+            let index = self.streamed_configuration_registration_index(admitted)?;
+            return index
+                .contains(owner_kind, owner_name, &|| self.read_checkpoint())?
+                .then_some(())
+                .ok_or_else(|| {
+                    ViewError::new(
+                        RefusalCode::NotFound,
+                        format!("metadata owner `{owner_kind}.{owner_name}` is not registered"),
+                    )
+                });
+        }
         let payload = self.configuration_payload(admitted)?;
         let registered = payload
             .get("registeredObjects")
@@ -721,6 +800,21 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 format!("metadata owner `{owner_kind}.{owner_name}` is not registered"),
             )
         })
+    }
+
+    fn streamed_configuration_registration_index(
+        &self,
+        admitted: &ViewSourceSnapshot,
+    ) -> Result<Arc<RegistrationIndex>, ViewError> {
+        self.configuration_registrations.get_or_build(
+            &admitted.source_set_identity,
+            &admitted.revision,
+            &|| self.read_checkpoint(),
+            || {
+                self.read
+                    .streamed_configuration_registration_index(&|| self.read_checkpoint())
+            },
+        )
     }
 
     fn module_view(
@@ -1172,6 +1266,55 @@ impl<'a> LogicalViewReadAuthority<'a> {
 }
 
 impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
+    fn read_checkpoint(&self) -> Result<(), ViewError> {
+        LogicalViewReadAuthority::read_checkpoint(self)
+    }
+
+    fn read_body_disk(
+        &self,
+        at: &QualifiedAddress,
+        filter: &ViewFilter,
+        admitted: &ViewSourceSnapshot,
+    ) -> Result<Option<BodySnapshot>, ViewError> {
+        if !filter.is_empty() {
+            return Ok(None);
+        }
+        let route = route_logical_address(at, self.profile)
+            .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
+        if route.reader() != LogicalReader::Module {
+            return Ok(None);
+        }
+        let Some(capability) = route.module() else {
+            return Ok(None);
+        };
+        let (module_at, prefix_len) = module_prefix(at, self.profile, capability)?;
+        let suffix = &at.segments()[prefix_len..];
+        if !matches!(suffix, [body] if body.kind() == NodeKind::Body && body.name().is_none()) {
+            return Ok(None);
+        }
+        self.read_checkpoint()?;
+        if admitted.source_set_identity != self.read.source_set_identity()
+            || admitted.revision != self.exact_revision()?
+        {
+            return Err(ViewError::new(
+                RefusalCode::StaleCursor,
+                "source revision changed before the Body read",
+            ));
+        }
+        self.verify_module_owner(&module_at, capability, admitted)?;
+        if capability.role() == ModuleRole::WebSocketClient {
+            return Err(ViewError::detailed(
+                RefusalDetail::ProviderAbsent,
+                "WebSocketClient source layout is not specified for platform profile 8.3.27",
+            ));
+        }
+        let target = module_source_address(&module_at, capability)?;
+        let body = self
+            .read
+            .module_body_snapshot(&target, || self.read_checkpoint())?;
+        Ok(Some(body))
+    }
+
     fn snapshot(&self, at: &QualifiedAddress) -> Result<ViewSourceSnapshot, ViewError> {
         if at.source_set() != self.read.source_set() {
             return Err(ViewError::new(
@@ -1310,6 +1453,24 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         let module_filter = validate_view_filter(&route, filter)?;
         let projected = if route.reader() == LogicalReader::Module {
             self.module_view(&route, admitted, &module_filter)?
+        } else if route.reader() == LogicalReader::Configuration
+            && matches!(
+                self.read.source_set_kind(),
+                SourceSetKind::Configuration | SourceSetKind::Extension
+            )
+            && self.read.configuration_xml_requires_streaming()
+        {
+            let streamed = self
+                .read
+                .streamed_configuration_root(&|| self.read_checkpoint(), |kind, name| {
+                    self.verify_streamed_top_level_owner(kind, name)
+                })?;
+            crate::infrastructure::v13_read_projection::project_configuration_with_counts(
+                route.at(),
+                &streamed.payload,
+                &[],
+                streamed.counts,
+            )?
         } else if route.reader() == LogicalReader::Metadata
             && route.reader_metadata_path().is_none()
             && route
@@ -1318,7 +1479,6 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                 .last()
                 .is_some_and(|segment| segment.name().is_none())
         {
-            let payload = self.configuration_payload(admitted)?;
             let branch_kind = route
                 .at()
                 .segments()
@@ -1327,36 +1487,63 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                 .ok_or_else(|| {
                     ViewError::new(RefusalCode::NotFound, "metadata branch kind is absent")
                 })?;
-            if branch_kind != NodeKind::WebSocketClient {
-                for item in payload
-                    .get("registeredObjects")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .filter(|item| {
-                        item.get("kind").and_then(Value::as_str) == Some(branch_kind.as_str())
-                    })
-                {
-                    let name = item.get("name").and_then(Value::as_str).ok_or_else(|| {
-                        ViewError::detailed(
-                            RefusalDetail::SourceUnreadable,
-                            "registered metadata owner has no name",
+            if matches!(
+                self.read.source_set_kind(),
+                SourceSetKind::Configuration | SourceSetKind::Extension
+            ) && self.read.configuration_xml_requires_streaming()
+            {
+                let index = self.streamed_configuration_registration_index(admitted)?;
+                let names =
+                    index.names_for_kind(branch_kind.as_str(), &|| self.read_checkpoint())?;
+                if branch_kind != NodeKind::WebSocketClient {
+                    for name in &names {
+                        let owner = MetadataAddress::parse(
+                            PLATFORM_XML_8_3_27_FORMAT_2_20,
+                            &format!("{}.{name}", branch_kind.as_str()),
                         )
-                    })?;
-                    let owner = MetadataAddress::parse(
-                        PLATFORM_XML_8_3_27_FORMAT_2_20,
-                        &format!("{}.{name}", branch_kind.as_str()),
-                    )
-                    .map_err(|error| {
-                        ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
-                    })?;
-                    self.verify_registered_owner(&owner, admitted)?;
+                        .map_err(|error| {
+                            ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+                        })?;
+                        self.verify_registered_owner(&owner, admitted)?;
+                    }
                 }
+                crate::infrastructure::v13_read_projection::project_registered_metadata_branch_names(
+                    route.at(),
+                    &names,
+                )?
+            } else {
+                let payload = self.configuration_payload(admitted)?;
+                if branch_kind != NodeKind::WebSocketClient {
+                    for item in payload
+                        .get("registeredObjects")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter(|item| {
+                            item.get("kind").and_then(Value::as_str) == Some(branch_kind.as_str())
+                        })
+                    {
+                        let name = item.get("name").and_then(Value::as_str).ok_or_else(|| {
+                            ViewError::detailed(
+                                RefusalDetail::SourceUnreadable,
+                                "registered metadata owner has no name",
+                            )
+                        })?;
+                        let owner = MetadataAddress::parse(
+                            PLATFORM_XML_8_3_27_FORMAT_2_20,
+                            &format!("{}.{name}", branch_kind.as_str()),
+                        )
+                        .map_err(|error| {
+                            ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+                        })?;
+                        self.verify_registered_owner(&owner, admitted)?;
+                    }
+                }
+                crate::infrastructure::v13_read_projection::project_registered_metadata_branch(
+                    route.at(),
+                    payload.as_ref(),
+                )?
             }
-            crate::infrastructure::v13_read_projection::project_registered_metadata_branch(
-                route.at(),
-                payload.as_ref(),
-            )?
         } else if route.reader() == LogicalReader::Form {
             self.form_view(&route, admitted)?
         } else {

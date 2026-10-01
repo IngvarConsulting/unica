@@ -198,7 +198,7 @@
   .note { font-size: 14px; color: var(--muted); }
 
   /* Переключатель агентов держится на радиокнопках: без скрипта он работает
-     так же, как со скриптом. Скрипт нужен только кнопке «Скопировать». */
+     так же, как со скриптом. Скрипт запоминает выбор между страницами. */
   .tabs { margin-top: 24px; }
   .tabs > input { position: absolute; opacity: 0; pointer-events: none; }
   .tabbar { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 16px; }
@@ -208,10 +208,14 @@
   }
   .tabbar label:hover { color: var(--ink); }
   #host-codex:checked ~ .tabbar label[for="host-codex"],
-  #host-claude:checked ~ .tabbar label[for="host-claude"] { color: var(--ink); border-bottom-color: var(--blue); }
-  .tabs > input:focus-visible ~ .tabbar label { outline: 2px solid var(--blue); outline-offset: 2px; }
+  #host-claude:checked ~ .tabbar label[for="host-claude"],
+  #host-zcode:checked ~ .tabbar label[for="host-zcode"] { color: var(--ink); border-bottom-color: var(--blue); }
+  #host-codex:focus-visible ~ .tabbar label[for="host-codex"],
+  #host-claude:focus-visible ~ .tabbar label[for="host-claude"],
+  #host-zcode:focus-visible ~ .tabbar label[for="host-zcode"] { outline: 2px solid var(--blue); outline-offset: 2px; }
   .panel { display: none; position: relative; }
-  #host-codex:checked ~ .panel-codex, #host-claude:checked ~ .panel-claude { display: block; }
+  #host-codex:checked ~ .panel-codex, #host-claude:checked ~ .panel-claude,
+  #host-zcode:checked ~ .panel-zcode { display: block; }
   .panel pre { padding-right: 56px; margin: 0; }
   .copy {
     position: absolute; top: 9px; right: 9px;
@@ -808,11 +812,17 @@ td.catalog-count { padding: 9px 12px; font-size: 13.5px; color: var(--muted); fo
    подписи внизу страницы иначе прокрутил бы её к кнопке наверх. */
 .host-pick { position: fixed; top: 0; left: 0; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 #pick-codex:checked ~ * .for-claude,
-#pick-claude:checked ~ * .for-codex { display: none; }
+#pick-codex:checked ~ * .for-zcode,
+#pick-claude:checked ~ * .for-codex,
+#pick-claude:checked ~ * .for-zcode,
+#pick-zcode:checked ~ * .for-codex,
+#pick-zcode:checked ~ * .for-claude { display: none; }
 #pick-codex:checked ~ * .hostbar label[for="pick-codex"],
-#pick-claude:checked ~ * .hostbar label[for="pick-claude"] { color: var(--ink); border-bottom-color: var(--blue); }
+#pick-claude:checked ~ * .hostbar label[for="pick-claude"],
+#pick-zcode:checked ~ * .hostbar label[for="pick-zcode"] { color: var(--ink); border-bottom-color: var(--blue); }
 #pick-codex:focus-visible ~ * .hostbar label[for="pick-codex"],
-#pick-claude:focus-visible ~ * .hostbar label[for="pick-claude"] { outline: 2px solid var(--blue); outline-offset: 2px; }
+#pick-claude:focus-visible ~ * .hostbar label[for="pick-claude"],
+#pick-zcode:focus-visible ~ * .hostbar label[for="pick-zcode"] { outline: 2px solid var(--blue); outline-offset: 2px; }
 .hostbar { margin-top: 20px; }
 .channel-cards { margin-top: 26px; }
 .card-version .sub code { font-size: 12px; }

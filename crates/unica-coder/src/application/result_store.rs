@@ -5,6 +5,7 @@
 //! source. Entries never outlive the server process; TTL, LRU eviction and a
 //! total-bytes quota keep it bounded.
 
+use crate::application::v13::body_snapshot::{BodyPosition, BodySnapshot};
 use crate::domain::refusal::RefusalCode;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -102,6 +103,25 @@ struct ViewCursorEntry {
     last_read: Instant,
 }
 
+struct DiskBodyCursorEntry {
+    snapshot: Arc<DiskBodyCursorSnapshot>,
+    position: BodyPosition,
+    stored_at: Instant,
+    last_read: Instant,
+}
+
+pub(crate) struct DiskBodyCursorSnapshot {
+    pub(crate) binding: ViewCursorBinding,
+    pub(crate) node: Value,
+    pub(crate) body: BodySnapshot,
+    secret: [u8; 32],
+}
+
+pub(crate) struct StoredDiskBodyCursor {
+    pub(crate) snapshot: Arc<DiskBodyCursorSnapshot>,
+    pub(crate) position: BodyPosition,
+}
+
 #[derive(Debug)]
 pub(crate) struct ViewCollectionSnapshot {
     pub(crate) binding: ViewCursorBinding,
@@ -132,6 +152,12 @@ impl ViewCursorError {
     }
 }
 
+/// Optional observation port implemented outside the application layer.
+pub(crate) trait ViewCapacityObserver: Send + Sync {
+    fn record_view(&self, bytes: u64, exact: bool, admitted: bool);
+    fn record_view_admission_refusal(&self);
+}
+
 /// Bounded process-local storage for opaque v0.13 page continuations. Tokens
 /// are opaque replayable capabilities; no numeric parser offset crosses the
 /// public boundary. Entries share one bounded immutable collection snapshot.
@@ -142,6 +168,9 @@ pub(crate) struct ViewCursorStore {
     max_entries: usize,
     max_total_bytes: usize,
     entries: Mutex<HashMap<String, ViewCursorEntry>>,
+    disk_entries: Arc<Mutex<HashMap<String, DiskBodyCursorEntry>>>,
+    disk_cleanup_started: std::sync::atomic::AtomicBool,
+    capacity_observer: Option<Arc<dyn ViewCapacityObserver>>,
 }
 
 /// A search continuation stores only the question and the next offset. The
@@ -409,7 +438,172 @@ impl ViewCursorStore {
             max_entries,
             max_total_bytes,
             entries: Mutex::new(HashMap::new()),
+            disk_entries: Arc::new(Mutex::new(HashMap::new())),
+            disk_cleanup_started: std::sync::atomic::AtomicBool::new(false),
+            capacity_observer: None,
         }
+    }
+
+    pub(crate) fn with_capacity_observer(
+        mut self,
+        observer: Arc<dyn ViewCapacityObserver>,
+    ) -> Self {
+        self.capacity_observer = Some(observer);
+        self
+    }
+
+    pub(crate) fn insert_disk_body(
+        &self,
+        binding: ViewCursorBinding,
+        node: Value,
+        body: BodySnapshot,
+        position: BodyPosition,
+    ) -> Option<String> {
+        if self.max_entries < 2 || !body.has_more(position) {
+            return None;
+        }
+        self.ensure_disk_cleanup();
+        let mut secret = [0_u8; 32];
+        secret[..16].copy_from_slice(Uuid::new_v4().as_bytes());
+        secret[16..].copy_from_slice(Uuid::new_v4().as_bytes());
+        let snapshot = Arc::new(DiskBodyCursorSnapshot {
+            binding,
+            node,
+            body,
+            secret,
+        });
+        self.insert_disk_entry(snapshot, position, None)
+    }
+
+    pub(crate) fn read_disk_body(
+        &self,
+        token: &str,
+        expected: &ViewCursorBinding,
+        current_revision: &str,
+    ) -> Result<StoredDiskBodyCursor, ViewCursorError> {
+        if !token.starts_with("vd1.") {
+            return Err(ViewCursorError::Invalid);
+        }
+        let mut entries = self
+            .disk_entries
+            .lock()
+            .expect("disk Body cursor store poisoned");
+        let now = Instant::now();
+        let Some(entry) = entries.get(token) else {
+            return Err(ViewCursorError::Invalid);
+        };
+        if now.duration_since(entry.stored_at) >= self.ttl {
+            entries.remove(token);
+            return Err(ViewCursorError::Invalid);
+        }
+        let entry = entries.get_mut(token).expect("checked cursor exists");
+        let binding = &entry.snapshot.binding;
+        if binding.canonical_at != expected.canonical_at
+            || binding.projection != expected.projection
+            || binding.normalized_filter != expected.normalized_filter
+            || binding.source_set_identity != expected.source_set_identity
+            || binding.page_limit != expected.page_limit
+        {
+            return Err(ViewCursorError::Invalid);
+        }
+        if binding.source_revision != current_revision {
+            return Err(ViewCursorError::Stale);
+        }
+        entry.last_read = now;
+        Ok(StoredDiskBodyCursor {
+            snapshot: Arc::clone(&entry.snapshot),
+            position: entry.position,
+        })
+    }
+
+    pub(crate) fn insert_disk_body_next(
+        &self,
+        current: &StoredDiskBodyCursor,
+        position: BodyPosition,
+        current_token: &str,
+    ) -> Option<String> {
+        self.insert_disk_entry(Arc::clone(&current.snapshot), position, Some(current_token))
+    }
+
+    fn insert_disk_entry(
+        &self,
+        snapshot: Arc<DiskBodyCursorSnapshot>,
+        position: BodyPosition,
+        current_token: Option<&str>,
+    ) -> Option<String> {
+        if self.max_entries < 2 || !snapshot.body.has_more(position) {
+            return None;
+        }
+        let mut digest = Sha256::new();
+        digest.update(snapshot.secret);
+        digest.update(position.byte.to_le_bytes());
+        digest.update(position.line.to_le_bytes());
+        let hash = digest.finalize();
+        let token = format!(
+            "vd1.{}",
+            hash[..16]
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        );
+        let now = Instant::now();
+        let mut entries = self
+            .disk_entries
+            .lock()
+            .expect("disk Body cursor store poisoned");
+        entries.retain(|_, entry| now.duration_since(entry.stored_at) < self.ttl);
+        if let Some(current) = current_token {
+            // A retried page must recover precisely the previously published
+            // successor. Preserve it while its predecessor still exists.
+            if let Some((token, _)) = entries.iter().find(|(_, entry)| {
+                Arc::ptr_eq(&entry.snapshot, &snapshot) && entry.position == position
+            }) {
+                return Some(token.clone());
+            }
+            if !entries.contains_key(current) {
+                return None;
+            }
+        }
+        while entries.len() >= self.max_entries {
+            let oldest = entries
+                .iter()
+                .filter(|(token, _)| current_token != Some(token.as_str()))
+                .min_by_key(|(_, entry)| entry.last_read)
+                .map(|(token, _)| token.clone())?;
+            entries.remove(&oldest);
+        }
+        entries.insert(
+            token.clone(),
+            DiskBodyCursorEntry {
+                snapshot,
+                position,
+                stored_at: now,
+                last_read: now,
+            },
+        );
+        Some(token)
+    }
+
+    fn ensure_disk_cleanup(&self) {
+        if self.disk_cleanup_started.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let entries = Arc::downgrade(&self.disk_entries);
+        let ttl = self.ttl;
+        std::thread::spawn(move || {
+            let interval = ttl.min(Duration::from_secs(30)).max(Duration::from_secs(1));
+            loop {
+                std::thread::sleep(interval);
+                let Some(entries) = entries.upgrade() else {
+                    break;
+                };
+                let now = Instant::now();
+                entries
+                    .lock()
+                    .expect("disk Body cursor store poisoned")
+                    .retain(|_, entry| now.duration_since(entry.stored_at) < ttl);
+            }
+        });
     }
 
     pub(crate) fn insert_snapshot(
@@ -419,10 +613,25 @@ impl ViewCursorStore {
         items: Vec<Value>,
         offset: usize,
     ) -> Option<String> {
-        if offset >= items.len() || self.max_entries == 0 {
+        if offset >= items.len() {
             return None;
         }
-        let json_bytes = bounded_json_size(&(&binding, &node, &items), self.max_total_bytes)?;
+        if self.max_entries == 0 {
+            if let Some(observer) = &self.capacity_observer {
+                observer.record_view_admission_refusal();
+            }
+            return None;
+        }
+        let json_bytes =
+            match bounded_json_size_attempt(&(&binding, &node, &items), self.max_total_bytes) {
+                Ok(bytes) => bytes,
+                Err(lower_bound) => {
+                    if let Some(observer) = &self.capacity_observer {
+                        observer.record_view(lower_bound as u64, false, false);
+                    }
+                    return None;
+                }
+            };
         let bytes = snapshot_charge(&binding, &node, &items, json_bytes);
         // The current cursor must remain available while its successor is
         // published. Admit enough quota for both before returning page one,
@@ -433,6 +642,9 @@ impl ViewCursorStore {
             1
         };
         if bytes.saturating_add(reserved_entries * VIEW_ENTRY_CHARGE) > self.max_total_bytes {
+            if let Some(observer) = &self.capacity_observer {
+                observer.record_view(bytes as u64, true, false);
+            }
             return None;
         }
         let mut secret = [0u8; 32];
@@ -445,7 +657,11 @@ impl ViewCursorStore {
             bytes,
             secret,
         });
-        self.insert_entry(snapshot, offset, None)
+        let result = self.insert_entry(snapshot, offset, None);
+        if let Some(observer) = &self.capacity_observer {
+            observer.record_view(bytes as u64, true, result.is_some());
+        }
+        result
     }
 
     /// Reissue the same successor on retries, including when an older LRU
@@ -593,9 +809,13 @@ impl Write for BoundedSizeWriter {
 }
 
 fn bounded_json_size(value: &impl serde::Serialize, limit: usize) -> Option<usize> {
+    bounded_json_size_attempt(value, limit).ok()
+}
+
+fn bounded_json_size_attempt(value: &impl serde::Serialize, limit: usize) -> Result<usize, usize> {
     let mut writer = BoundedSizeWriter { bytes: 0, limit };
-    serde_json::to_writer(&mut writer, value).ok()?;
-    Some(writer.bytes)
+    serde_json::to_writer(&mut writer, value).map_err(|_| writer.bytes)?;
+    Ok(writer.bytes)
 }
 
 fn snapshot_charge(
@@ -807,6 +1027,22 @@ fn unix_ms_in(ttl: Duration) -> u64 {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[derive(Default)]
+    struct ViewObservationProbe {
+        samples: Mutex<Vec<(u64, bool, bool)>>,
+        admission_only_refusals: AtomicU64,
+    }
+
+    impl ViewCapacityObserver for ViewObservationProbe {
+        fn record_view(&self, bytes: u64, exact: bool, admitted: bool) {
+            self.samples.lock().unwrap().push((bytes, exact, admitted));
+        }
+
+        fn record_view_admission_refusal(&self) {
+            self.admission_only_refusals.fetch_add(1, Ordering::Relaxed);
+        }
+    }
 
     fn snapshot() -> SnapshotIdentity {
         SnapshotIdentity {
@@ -1207,6 +1443,29 @@ mod tests {
         let page = enough.read(&first, &binding, "rev-1").unwrap();
         let second = enough.insert_next(&page, 2, &first).unwrap();
         assert_eq!(enough.read(&second, &binding, "rev-1").unwrap().offset, 2);
+    }
+
+    #[test]
+    fn view_observation_distinguishes_complete_size_from_quota_lower_bound() {
+        let observer = Arc::new(ViewObservationProbe::default());
+        let port: Arc<dyn ViewCapacityObserver> = observer.clone();
+        let binding = view_binding("main:Document.Заказ.Module.Object.Body", "rev-1");
+        let item = json!("x".repeat(2_048));
+        let capped =
+            ViewCursorStore::new(DEFAULT_TTL, 8, 512).with_capacity_observer(Arc::clone(&port));
+        assert!(capped
+            .insert_snapshot(binding.clone(), json!({}), vec![item], 0)
+            .is_none());
+        let successful =
+            ViewCursorStore::new(DEFAULT_TTL, 8, 4_096).with_capacity_observer(Arc::clone(&port));
+        assert!(successful
+            .insert_snapshot(binding, json!({}), vec![json!(1)], 0)
+            .is_some());
+        let samples = observer.samples.lock().unwrap();
+        assert_eq!(samples.len(), 2);
+        assert!(samples[0].0 > 512);
+        assert_eq!((samples[0].1, samples[0].2), (false, false));
+        assert_eq!((samples[1].1, samples[1].2), (true, true));
     }
 
     #[test]

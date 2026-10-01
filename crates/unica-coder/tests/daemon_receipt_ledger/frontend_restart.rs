@@ -100,6 +100,80 @@ fn same_stdio_frontend_recovers_durable_task_without_reexecution() {
 }
 
 #[test]
+fn compatibility_completed_task_survives_daemon_process_restart() {
+    let root = tempfile::tempdir().unwrap();
+    let physical = std::fs::canonicalize(root.path()).unwrap();
+    let state = physical.join("state");
+    let workspace = make_stdio_workspace(&physical);
+    std::fs::write(workspace.join("src/Configuration.xml"), r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#).unwrap();
+    let mut initial = spawn_task_daemon(&state, &physical);
+    let mut frontend = StdioFrontend::spawn(&state, &workspace);
+    let response = frontend.request(2, "tools/call", serde_json::json!({
+        "name": "unica.view", "arguments": {"at": "main:Configuration"},
+        "_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": {}}
+    }));
+    let task_id = response["result"]["structuredContent"]["data"]["task"]["taskId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("durable Task receipt: {response}"))
+        .to_owned();
+    wait_until(
+        Duration::from_secs(5),
+        || std::fs::read_to_string(physical.join("executions")).unwrap_or_default() == "execute\n",
+        "provider execution begun",
+    );
+    std::fs::write(physical.join("release"), "release").unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let before_get = loop {
+        let observed = frontend.request(3, "tools/call", serde_json::json!({
+            "name": "unica.task.get", "arguments": {"taskId": task_id},
+            "_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": {}}
+        }));
+        if observed["result"]["structuredContent"]["data"]["task"]["status"] == "completed" {
+            break observed;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "Task did not complete: {observed}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let before_result = frontend.request(4, "tools/call", serde_json::json!({
+        "name": "unica.task.result", "arguments": {"taskId": task_id},
+        "_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": {}}
+    }));
+    assert_eq!(
+        before_result["result"]["structuredContent"]["summary"],
+        "provider completed"
+    );
+
+    frontend.process.stop();
+    initial.stop();
+    let _successor = spawn_task_daemon(&state, &physical);
+    let mut frontend = StdioFrontend::spawn(&state, &workspace);
+    let after_get = frontend.request(5, "tools/call", serde_json::json!({
+        "name": "unica.task.get", "arguments": {"taskId": task_id},
+        "_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": {}}
+    }));
+    let after_result = frontend.request(6, "tools/call", serde_json::json!({
+        "name": "unica.task.result", "arguments": {"taskId": task_id},
+        "_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": {}}
+    }));
+    assert_eq!(
+        after_get["result"], before_get["result"],
+        "Task state changed after restart: {after_get}"
+    );
+    assert_eq!(
+        serde_json::to_vec(&after_result["result"]).unwrap(),
+        serde_json::to_vec(&before_result["result"]).unwrap(),
+        "Task result changed after restart: {after_result}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(physical.join("executions")).unwrap(),
+        "execute\n"
+    );
+}
+
+#[test]
 fn same_native_stdio_frontend_observes_uncertain_task_without_reexecution() {
     native_restart_case(false);
 }

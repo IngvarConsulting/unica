@@ -8,6 +8,43 @@ use super::*;
 use crate::infrastructure::daemon::protocol_v5::V5DaemonTaskSnapshot;
 use crate::infrastructure::daemon::v13_workspace_bootstrap::test_control::HealthInspectionPause;
 
+#[test]
+fn losing_daemon_does_not_rewrite_capacity_snapshot_before_receipt_authority() {
+    use crate::infrastructure::capacity_observation::{start_background_writer, CapacityObserver};
+
+    let root = tempfile::tempdir().expect("temporary competing daemon state root");
+    let state_root = std::fs::canonicalize(root.path()).expect("physical daemon state root");
+    let identity = CoreIdentity::production_v5();
+    let state = DaemonStateDirectory::open(&state_root, &identity).expect("open daemon state");
+    let observer = Arc::new(CapacityObserver::default());
+    observer.record_find(123, 1, true);
+    let writer = start_background_writer(&state, observer, Arc::new(|| true))
+        .expect("seed the capacity snapshot");
+    drop(writer);
+    let snapshot = state
+        .path()
+        .join("capacity-observation")
+        .join("snapshot-v1.json");
+    let before = std::fs::read(&snapshot).expect("read seeded snapshot");
+    let authority = state
+        .acquire_receipt_authority(Duration::from_millis(30))
+        .expect("hold the receipt authority against the contender");
+
+    let failure = run_daemon(DaemonServerConfig::new(
+        state_root,
+        identity,
+        Duration::from_millis(50),
+    ))
+    .expect_err("contender cannot own the same receipt authority");
+    assert!(failure.contains("stable receipt authority"), "{failure}");
+    assert_eq!(
+        std::fs::read(&snapshot).expect("read snapshot after losing startup"),
+        before,
+        "a losing daemon must not refresh or overwrite the owner's observation"
+    );
+    drop(authority);
+}
+
 struct InspectionClock {
     start: Instant,
     elapsed_ms: AtomicU64,

@@ -141,13 +141,15 @@
         </li>
         <li>
           <h3>Поставить плагин</h3>
-          <p>Codex и Claude Code ставятся из одного маркетплейса.</p>
+          <p>Codex и Claude Code ставятся из одного маркетплейса. Нативная поддержка ZCode готовится; её статус — на вкладке ZCode.</p>
       <div class="tabs">
-        <input type="radio" id="host-codex" name="host" checked>
-        <input type="radio" id="host-claude" name="host">
+        <input type="radio" id="host-codex" name="host" data-host="codex" checked>
+        <input type="radio" id="host-claude" name="host" data-host="claude">
+        <input type="radio" id="host-zcode" name="host" data-host="zcode">
         <div class="tabbar">
           <label for="host-codex">Codex</label>
           <label for="host-claude">Claude Code</label>
+          <label for="host-zcode">ZCode</label>
         </div>
         <div class="panel panel-codex">
           <pre><code id="cmd-codex">codex plugin marketplace add IngvarConsulting/unica-marketplace --ref main
@@ -159,8 +161,14 @@ codex plugin add unica@unica</code></pre>
 claude plugin install unica@unica</code></pre>
           <button class="copy" type="button" data-target="cmd-claude" aria-label="Скопировать" title="Скопировать"><svg class="i-copy" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2.5"/><path d="M15 5.5V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h.5"/></svg><svg class="i-done" viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 12.5 9.5 17.5 19.5 6.5"/></svg></button>
         </div>
+        <div class="panel panel-zcode">
+          <p><strong>Нативная поддержка готовится в <a href="https://github.com/IngvarConsulting/unica/pull/1097">PR #1097</a>.</strong> Выпуски 0.12.3 и 0.13.0-rc.3 её ещё не содержат. Перед установкой дождитесь выпуска, в примечаниях к которому указана поддержка ZCode.</p>
+          <p>Для ZCode будет использоваться тот же <a href="https://github.com/IngvarConsulting/unica-marketplace">каталог Unica</a>. Отдельный маркетплейс добавлять не понадобится.</p>
+          <p>После выхода такого выпуска откройте <b>Plugin Marketplace → Add → Add Plugin Marketplace</b> и добавьте <code>https://github.com/IngvarConsulting/unica-marketplace.git</code>. В разделе <b>Personal</b> найдите Unica и установите плагин. Оставьте включённой одну установку Unica и начните новую задачу.</p>
+          <p>Кандидаты выходят в <a href="next.html#zcode">канале next</a>. Его версия может отличаться от стабильной.</p>
+        </div>
       </div>
-          <p style="margin-top:14px">После установки начните новую сессию агента или выполните в нём <code>/reload-plugins</code>.</p>
+          <p style="margin-top:14px">После установки в Codex откройте новую задачу. В Claude Code начните новую сессию или выполните <code>/reload-plugins</code>.</p>
           <p>Следующую версию можно поставить до выхода: кандидатов раздаёт отдельный <a href="next.html">канал next</a>.</p>
         </li>
         <li>

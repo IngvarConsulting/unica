@@ -102,7 +102,7 @@
     <div class="wrap">
       <h2>Что понадобится</h2>
       <ul class="needs">
-        <li><b>Агент и Git.</b> <span>Codex или Claude Code 2.1.69 и новее. Через Git ставится плагин, на Windows подойдёт Git for Windows. Node.js и Python не нужны.</span></li>
+        <li><b>Агент и Git.</b> <span>Codex или Claude Code 2.1.69 и новее. Нативная поддержка ZCode готовится — см. вкладку ZCode ниже. Через Git ставится плагин, на Windows подойдёт Git for Windows. Node.js и Python не нужны.</span></li>
         <li><b>Система.</b> <span>Windows x64, macOS на Apple Silicon или Linux x64.</span></li>
         <li><b>Прямой доступ к GitHub.</b> <span>Первый запуск скачивает ядро, движки докачиваются при первом вызове, которому они нужны. Загрузчик не ходит через прокси и доверяет только вшитым корневым сертификатам. Если GitHub доступен только через прокси, ядро и движки можно скачать заранее, как описано в разделе <a href="architecture.html#network">«Сеть и данные»</a>.</span></li>
         <li><b>Один плагин из двух.</b> <span><code>unica@unica</code> и <code>unica@unica-next</code> запускают MCP-сервер с одним именем <code>unica</code>, поэтому установленным держите один из них.</span></li>
@@ -112,8 +112,9 @@
 
   <!-- Один выбор агента на всю страницу: кнопки стоят перед разделами с
        командами, подписи к ним — в каждом разделе. -->
-  <input class="host-pick" type="radio" name="host" id="pick-codex" aria-label="Команды для Codex" checked>
-  <input class="host-pick" type="radio" name="host" id="pick-claude" aria-label="Команды для Claude Code">
+  <input class="host-pick" type="radio" name="host" data-host="codex" id="pick-codex" aria-label="Команды для Codex" checked>
+  <input class="host-pick" type="radio" name="host" data-host="claude" id="pick-claude" aria-label="Команды для Claude Code">
+  <input class="host-pick" type="radio" name="host" data-host="zcode" id="pick-zcode" aria-label="Инструкции для ZCode">
 
   <section id="install">
     <div class="wrap">
@@ -121,6 +122,7 @@
       <div class="tabbar hostbar">
         <label for="pick-codex">Codex</label>
         <label for="pick-claude">Claude Code</label>
+        <label for="pick-zcode">ZCode</label>
       </div>
       <ol class="setup for-codex">
         <li>
@@ -170,6 +172,25 @@
           <p>Или выполните в текущей <code>/reload-plugins</code>. Навыки вызываются как <code>/unica:&lt;навык&gt;</code>, например <code>/unica:meta-info</code>, а команда <code>/mcp</code> показывает сервер плагина <code>plugin:unica:unica</code>. Первый старт подождёт, пока скачается ядро.</p>
         </li>
       </ol>
+      <div class="for-zcode">
+        <p><strong>Нативная поддержка готовится в <a href="https://github.com/IngvarConsulting/unica/pull/1097">PR #1097</a>.</strong> Выпуск 0.13.0-rc.3 её ещё не содержит. Следующие шаги предназначены для кандидата, в примечаниях к которому указана поддержка ZCode.</p>
+        <ol class="setup">
+          <li>
+            <h3>Добавьте общий каталог из ветки next</h3>
+            <p>В ZCode откройте <b>Plugin Marketplace → Add → Add Plugin Marketplace</b> и вставьте адрес:</p>
+            <div class="cmd"><pre><code>https://github.com/IngvarConsulting/unica-marketplace.git#next</code></pre></div>
+            <p>Появится каталог <code>unica-next</code>. Это тот же репозиторий, что у Codex и Claude Code; отдельного маркетплейса для ZCode нет.</p>
+          </li>
+          <li>
+            <h3>Оставьте одну установку Unica</h3>
+            <p>Если Unica уже установлена из стабильного каталога, удалите её в <b>Settings → Plugins</b>. Затем в <b>Personal</b> установите Unica из <code>unica-next</code>.</p>
+          </li>
+          <li>
+            <h3>Проверьте версию и начните новую задачу</h3>
+            <p>Сравните версию в карточке плагина с карточкой «Сейчас в канале». В новой задаче попросите Unica показать доступные операции без запуска 1С. Уже открытая задача может хранить прежнюю схему инструментов.</p>
+          </li>
+        </ol>
+      </div>
     </div>
   </section>
 
@@ -177,9 +198,10 @@
     <div class="wrap">
       <h2>Обновление</h2>
       <p>На канале можно оставаться постоянно. Он раздаёт самую свежую опубликованную версию: следующего кандидата, а после выхода версии и её саму, поэтому переключаться обратно не нужно. Стабильный выпуск, который старше уже раздаваемого кандидата, в канал не приходит: канал остаётся на кандидате. Так бывает с патчем прошлой версии, например 0.13.1, когда в канале уже 0.14.0-rc.1.</p>
-      <div class="tabbar hostbar" aria-hidden="true">
+      <div class="tabbar hostbar">
         <label for="pick-codex">Codex</label>
         <label for="pick-claude">Claude Code</label>
+        <label for="pick-zcode">ZCode</label>
       </div>
       <div class="for-codex">
         <div class="cmd"><pre><code>codex plugin marketplace upgrade unica-next</code></pre></div>
@@ -192,16 +214,21 @@
         <div class="cmd"><pre><code>claude plugin update unica@unica-next</code></pre></div>
         <p class="note">Затем начните новую сессию или выполните <code>/reload-plugins</code>. Вместо ручного обновления можно включить автообновление: <code>/plugin</code> → Marketplaces → <code>unica-next</code> → Enable auto-update. Для сторонних маркетплейсов оно по умолчанию выключено.</p>
       </div>
+      <div class="for-zcode">
+        <p>Когда в канале появится выпуск с нативной поддержкой ZCode, обновите источник <code>unica-next</code> в Plugin Marketplace, затем нажмите <b>Update</b> у плагина в <b>Personal</b>. Проверьте версию в карточке плагина и начните новую задачу.</p>
+        <p class="note">Выпуск 0.13.0-rc.3 не содержит нативной интеграции ZCode. Подготовка поддержки — в <a href="https://github.com/IngvarConsulting/unica/pull/1097">PR #1097</a>.</p>
+      </div>
     </div>
   </section>
 
   <section id="stable">
     <div class="wrap">
       <h2>Вернуться на стабильную версию</h2>
-      <p>Если канал больше не нужен, верните стабильный плагин. Вы получите версию из карточки «Стабильная версия»: <span data-served="stable" data-text="tag">{{stable_tag}}</span>. Первая команда нужна, только если стабильный маркетплейс <code>unica</code> ещё не добавлен.</p>
-      <div class="tabbar hostbar" aria-hidden="true">
+      <p>Если канал больше не нужен, верните стабильный плагин. Вы получите версию из карточки «Стабильная версия»: <span data-served="stable" data-text="tag">{{stable_tag}}</span>. В инструкциях Codex и Claude Code первая команда нужна, только если стабильный маркетплейс <code>unica</code> ещё не добавлен.</p>
+      <div class="tabbar hostbar">
         <label for="pick-codex">Codex</label>
         <label for="pick-claude">Claude Code</label>
+        <label for="pick-zcode">ZCode</label>
       </div>
       <div class="for-codex">
         <div class="cmd"><pre><code>codex plugin marketplace add IngvarConsulting/unica-marketplace --ref main</code></pre></div>
@@ -216,6 +243,10 @@
         <div class="cmd"><pre><code>claude plugin install unica@unica</code></pre></div>
         <p class="note">Затем начните новую сессию или выполните <code>/reload-plugins</code>. Если канал больше не нужен, уберите его маркетплейс: <code>claude plugin marketplace remove unica-next</code>.</p>
       </div>
+      <div class="for-zcode">
+        <p><strong>Сначала проверьте поддержку ZCode в стабильном выпуске.</strong> Версия 0.12.3 её ещё не содержит: переход на неё не сохраняет нативную интеграцию.</p>
+        <p>После выхода стабильной версии с поддержкой ZCode добавьте в Plugin Marketplace источник <code>https://github.com/IngvarConsulting/unica-marketplace.git</code>. В <b>Settings → Plugins</b> удалите установку из <code>unica-next</code>, затем в <b>Personal</b> установите Unica из каталога <code>unica</code>. Проверьте версию и начните новую задачу.</p>
+      </div>
     </div>
   </section>
 
@@ -226,7 +257,7 @@
         <li><b>Версия не та, что в карточке «Сейчас в канале».</b> <span>Обновите маркетплейс канала и плагин, как в разделе <a href="#update">«Обновление»</a>. Если версия не сменилась, <a href="https://github.com/IngvarConsulting/unica/issues/new" target="_blank" rel="noopener noreferrer">заведите issue</a>.</span></li>
         <li><b>Первый старт падает на загрузке ядра.</b> <span>Например, с ошибкой <code>UnknownIssuer</code>. Скорее всего, GitHub доступен только через прокси или HTTPS перехватывает антивирус: загрузчик так не работает. Обход описан в разделе <a href="architecture.html#network">«Сеть и данные»</a>.</span></li>
         <li><b>Остался установленным стабильный плагин.</b> <span>Оба плагина запускают сервер <code>unica</code>. Удалите <code>unica@unica</code>, как во втором шаге установки.</span></li>
-        <li><b>Нашли ошибку в кандидате.</b> <span><a href="https://github.com/IngvarConsulting/unica/issues/new" target="_blank" rel="noopener noreferrer">Заведите issue</a> и укажите версию из <code>plugin list</code>: так мы поймём, какой кандидат проверять.</span></li>
+        <li><b>Нашли ошибку в кандидате.</b> <span><a href="https://github.com/IngvarConsulting/unica/issues/new" target="_blank" rel="noopener noreferrer">Заведите issue</a> и укажите агента и версию плагина: из <code>plugin list</code> в Codex и Claude Code или карточки плагина в ZCode. Так мы поймём, какой кандидат проверять.</span></li>
       </ul>
     </div>
   </section>
@@ -234,32 +265,10 @@
 </main>
 
 <script>
-  // Выбор агента, кнопки копирования и свежая версия канала. Без скрипта
+  // Кнопки копирования и свежая версия канала. Без скрипта
   // страница цела: выбор держится на радиокнопках, команда выделяется мышью,
   // версия напечатана при сборке.
   (function () {
-    var codex = document.getElementById('pick-codex');
-    var claude = document.getElementById('pick-claude');
-    var KEY = 'unica-host';
-
-    // Ссылка с #codex или #claude открывает команды нужного агента; иначе
-    // берётся прошлый выбор. Хранилище может быть недоступно, тогда выбор
-    // доживёт до конца страницы.
-    var asked = window.location.hash.slice(1);
-    try {
-      var saved = window.localStorage.getItem(KEY);
-      if (asked !== 'codex' && asked !== 'claude') asked = saved;
-    } catch (error) { /* хранилище недоступно */ }
-    if (asked === 'claude') claude.checked = true;
-    if (asked === 'codex') codex.checked = true;
-    [codex, claude].forEach(function (radio) {
-      radio.addEventListener('change', function () {
-        try {
-          window.localStorage.setItem(KEY, claude.checked ? 'claude' : 'codex');
-        } catch (error) { /* хранилище недоступно */ }
-      });
-    });
-
     var icons =
       '<svg class="i-copy" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2.5"/><path d="M15 5.5V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h.5"/></svg>' +
       '<svg class="i-done" viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 12.5 9.5 17.5 19.5 6.5"/></svg>';

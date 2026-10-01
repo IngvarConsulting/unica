@@ -114,6 +114,8 @@ def argument_type(schema: dict) -> str:
     declared = schema.get("type")
     if isinstance(declared, str):
         return declared
+    if isinstance(declared, list) and all(isinstance(kind, str) for kind in declared):
+        return " or ".join(declared)
     if "enum" in schema:
         return "enum"
     return "any"

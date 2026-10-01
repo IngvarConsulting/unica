@@ -1,5 +1,5 @@
 use serde_json::{json, Value};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -67,6 +67,10 @@ impl McpProcess {
         stdin.flush().expect("flush MCP notification");
     }
 
+    fn completed_tool_call(&mut self, request: Value) -> Value {
+        completed_tool_result(request, |request| self.exchange(request))
+    }
+
     fn finish(&mut self) {
         drop(self.stdin.take());
         let deadline = Instant::now() + RESPONSE_DEADLINE;
@@ -91,10 +95,10 @@ impl Drop for McpProcess {
     }
 }
 
-fn call_tool(id: u64, name: &str, arguments: Value) -> Value {
+fn call_tool(id: impl Into<Value>, name: &str, arguments: Value) -> Value {
     json!({
         "jsonrpc": "2.0",
-        "id": id,
+        "id": id.into(),
         "method": "tools/call",
         "params": {"name": name, "arguments": arguments}
     })
@@ -109,6 +113,451 @@ fn domain_result(response: &Value) -> Value {
         .unwrap_or_else(|| panic!("missing canonical tool result: {response:#}"));
     serde_json::from_str(text).expect("decode canonical DomainResult")
 }
+
+fn completed_tool_result(request: Value, mut exchange: impl FnMut(Value) -> Value) -> Value {
+    let first_id = request["id"].as_u64().expect("numeric request id");
+    let mut result = domain_result(&exchange(request));
+    let mut task_id: Option<String> = None;
+    // После окна прямого ответа читаем то же задание. Повтор subject tool
+    // создал бы новый вызов; отсутствие конечного ответа ограничено 10 ожиданиями.
+    for poll in 0..=10 {
+        let task = &result["data"]["task"];
+        if result["ok"] != true || task.is_null() {
+            return result;
+        }
+        assert!(
+            matches!(
+                task["status"].as_str(),
+                Some("queued" | "working" | "completed")
+            ),
+            "unexpected task state: {result:#}"
+        );
+        let current_id = task["taskId"].as_str().expect("task receipt has an id");
+        if let Some(expected) = &task_id {
+            assert_eq!(current_id, expected, "task identity changed: {result:#}");
+        } else {
+            task_id = Some(current_id.to_string());
+        }
+        assert!(poll < 10, "task did not finish: {result:#}");
+        result = domain_result(&exchange(call_tool(
+            format!("task-result:{first_id}:{poll}"),
+            "unica.task.result",
+            json!({"taskId":current_id,"waitMs":7000}),
+        )));
+    }
+    unreachable!("unfinished task fails at the polling bound")
+}
+
+#[test]
+fn completed_tool_result_observes_the_same_task_without_resubmitting_view() {
+    let task_id = "00000000-0000-4000-8000-000000000001";
+    let request = call_tool(
+        2,
+        "unica.view",
+        json!({"at":"main:CommonModule.Main.Body","limit":50}),
+    );
+    let terminal = json!({"ok":true,"data":{"items":[{"line":1,"text":"// body"}]}});
+    let mut replies = [
+        json!({"ok":true,"data":{"task":{"taskId":task_id,"status":"queued"}}}),
+        json!({"ok":true,"data":{"task":{"taskId":task_id,"status":"working"}}}),
+        terminal.clone(),
+        terminal.clone(),
+    ]
+    .into_iter();
+    let mut calls = Vec::new();
+    let mut exchange = |request| {
+        calls.push(request);
+        json!({"result":{"structuredContent":replies.next().expect("no extra calls")}})
+    };
+    let result = completed_tool_result(request.clone(), &mut exchange);
+    assert_eq!(result, terminal);
+    let next_page = call_tool(
+        3,
+        "unica.view",
+        json!({"at":"main:CommonModule.Main.Body","cursor":"page-2"}),
+    );
+    assert_eq!(
+        completed_tool_result(next_page.clone(), &mut exchange),
+        terminal
+    );
+    let ids: std::collections::BTreeSet<_> =
+        calls.iter().map(|call| call["id"].to_string()).collect();
+    assert_eq!(
+        ids.len(),
+        calls.len(),
+        "request IDs must remain unique between pages"
+    );
+    assert_eq!(
+        calls,
+        vec![
+            request,
+            call_tool(
+                "task-result:2:0",
+                "unica.task.result",
+                json!({"taskId":task_id,"waitMs":7000})
+            ),
+            call_tool(
+                "task-result:2:1",
+                "unica.task.result",
+                json!({"taskId":task_id,"waitMs":7000})
+            ),
+            next_page,
+        ]
+    );
+    assert!(replies.next().is_none());
+}
+
+#[test]
+fn completed_tool_result_returns_direct_and_failed_results_without_retry() {
+    for terminal in [
+        json!({"ok":true,"data":{"items":[]}}),
+        json!({"ok":false,"data":{"task":{"status":"failed"}},"diagnostics":[{"code":"task_failed"}]}),
+        json!({"ok":false,"data":{"task":{"status":"cancelled"}},"diagnostics":[{"code":"task_cancelled"}]}),
+    ] {
+        let mut calls = 0;
+        let result = completed_tool_result(call_tool(2, "unica.view", json!({})), |_| {
+            calls += 1;
+            json!({"result":{"structuredContent":terminal}})
+        });
+        assert_eq!(result, terminal);
+        assert_eq!(calls, 1, "terminal result must not be retried");
+    }
+}
+
+#[test]
+#[should_panic(expected = "task identity changed")]
+fn completed_tool_result_rejects_a_different_task() {
+    let mut id = 0;
+    completed_tool_result(call_tool(2, "unica.view", json!({})), |_| {
+        id += 1;
+        json!({"result":{"structuredContent":{"ok":true,"data":{"task":{
+            "taskId":format!("00000000-0000-4000-8000-{id:012}"),"status":"working"
+        }}}}})
+    });
+}
+
+#[test]
+#[should_panic(expected = "task did not finish")]
+fn completed_tool_result_bounds_observation_of_an_unfinished_task() {
+    let mut calls = 0;
+    completed_tool_result(call_tool(2, "unica.view", json!({})), |_| {
+        calls += 1;
+        assert!(calls <= 11, "polling exceeded its bound");
+        json!({"result":{"structuredContent":{"ok":true,"data":{"task":{
+            "taskId":"00000000-0000-4000-8000-000000000001","status":"working"
+        }}}}})
+    });
+}
+
+#[test]
+fn canonical_view_reads_configuration_past_eight_mebibytes_with_many_registrations() {
+    let root = tempfile::tempdir().expect("large configuration workspace");
+    let workspace = root.path();
+    std::fs::write(
+        workspace.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\n",
+    )
+    .expect("workspace manifest");
+    std::fs::create_dir_all(workspace.join("CommonModules")).expect("metadata directory");
+    for index in 0..32 {
+        let name = format!("Module{index:02}");
+        std::fs::write(
+            workspace.join(format!("CommonModules/{name}.xml")),
+            format!(
+                "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><CommonModule><Properties><Name>{name}</Name><Global>false</Global><ClientManagedApplication>true</ClientManagedApplication><Server>true</Server><ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ServerCall>false</ServerCall><Privileged>false</Privileged><ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties></CommonModule></MetaDataObject>"
+            ),
+        )
+        .expect("metadata descriptor");
+    }
+    for name in ["Module00", "Module31", "ModuleNew"] {
+        std::fs::create_dir_all(workspace.join(format!("CommonModules/{name}/Ext")))
+            .expect("module source directory");
+        std::fs::write(
+            workspace.join(format!("CommonModules/{name}/Ext/Module.bsl")),
+            "Процедура Проверка() Экспорт\nКонецПроцедуры\n",
+        )
+        .expect("module source");
+    }
+    std::fs::write(
+        workspace.join("CommonModules/ModuleNew.xml"),
+        "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><CommonModule><Properties><Name>ModuleNew</Name><Global>false</Global><ClientManagedApplication>true</ClientManagedApplication><Server>true</Server><ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ServerCall>false</ServerCall><Privileged>false</Privileged><ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties></CommonModule></MetaDataObject>",
+    )
+    .expect("future metadata descriptor");
+    let path = workspace.join("Configuration.xml");
+    let mut xml = BufWriter::new(std::fs::File::create(&path).expect("configuration document"));
+    xml.write_all(b"<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><Configuration><Properties><Name>First")
+        .unwrap();
+    xml.write_all(b"</Name></Properties><ChildObjects>")
+        .unwrap();
+    for index in 0..300_000 {
+        write!(xml, "<CommonModule>Module{:02}</CommonModule>", index % 32).unwrap();
+    }
+    xml.write_all(b"</ChildObjects></Configuration></MetaDataObject>")
+        .unwrap();
+    xml.flush().unwrap();
+    assert!(std::fs::metadata(&path).unwrap().len() > 8 * 1024 * 1024);
+
+    let mut mcp = McpProcess::start(workspace);
+    let initialized = mcp.exchange(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                   "clientInfo": {"name": "v13-large-configuration", "version": "1"}}
+    }));
+    assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
+    mcp.notify(json!({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}));
+    let view = mcp.completed_tool_call(call_tool(
+        2,
+        "unica.view",
+        json!({"at": "main:Configuration"}),
+    ));
+    assert_eq!(view["ok"], true, "{view:#}");
+    assert_eq!(view["data"]["props"]["name"], "First");
+    assert_eq!(view["data"]["props"]["totalObjects"], 300_000);
+    let branch = view["data"]["branches"]
+        .as_array()
+        .and_then(|branches| {
+            branches
+                .iter()
+                .find(|branch| branch["at"] == "main:CommonModule")
+        })
+        .expect("registered CommonModule branch");
+    assert_eq!(branch["count"], 32);
+    let collection = mcp.completed_tool_call(call_tool(
+        6,
+        "unica.view",
+        json!({"at": "main:CommonModule", "limit": 50}),
+    ));
+    assert_eq!(collection["ok"], true, "{collection:#}");
+    let items = collection["data"]["items"]
+        .as_array()
+        .expect("branch items");
+    assert_eq!(items.len(), 32);
+    assert_eq!(items.first().unwrap()["at"], "main:CommonModule.Module00");
+    assert_eq!(items.last().unwrap()["at"], "main:CommonModule.Module31");
+    let named = mcp.completed_tool_call(call_tool(
+        3,
+        "unica.view",
+        json!({"at": "main:CommonModule.Module00"}),
+    ));
+    assert_eq!(named["ok"], true, "{named:#}");
+    assert_eq!(named["data"]["at"], "main:CommonModule.Module00");
+    let other = mcp.completed_tool_call(call_tool(
+        4,
+        "unica.view",
+        json!({"at": "main:CommonModule.Module31"}),
+    ));
+    assert_eq!(other["ok"], true, "{other:#}");
+    let old_revision = other["rev"].clone();
+    let source = std::fs::read_to_string(&path).expect("read large root for revision change");
+    let source = source.replacen(
+        "<CommonModule>Module31</CommonModule>",
+        "<CommonModule>ModuleNew</CommonModule>",
+        1,
+    );
+    std::fs::write(&path, source).expect("publish changed root registration");
+    let changed = mcp.completed_tool_call(call_tool(
+        5,
+        "unica.view",
+        json!({"at": "main:CommonModule.ModuleNew"}),
+    ));
+    assert_eq!(changed["ok"], true, "{changed:#}");
+    assert_ne!(changed["rev"], old_revision, "source revision must change");
+    let changed_collection = mcp.completed_tool_call(call_tool(
+        7,
+        "unica.view",
+        json!({"at": "main:CommonModule", "limit": 50}),
+    ));
+    assert_eq!(changed_collection["ok"], true, "{changed_collection:#}");
+    assert_eq!(changed_collection["rev"], changed["rev"]);
+    assert_eq!(
+        changed_collection["data"]["items"].as_array().map(Vec::len),
+        Some(33)
+    );
+    assert!(changed_collection["data"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["at"] == "main:CommonModule.ModuleNew"));
+    mcp.finish();
+}
+
+fn body_workspace(workspace: &std::path::Path, module_bytes: &[u8]) {
+    std::fs::create_dir_all(workspace.join("CommonModules/Main/Ext")).unwrap();
+    std::fs::write(
+        workspace.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\n",
+    )
+    .unwrap();
+    std::fs::write(
+        workspace.join("Configuration.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"><Properties><Name>Main</Name></Properties><ChildObjects><CommonModule>Main</CommonModule></ChildObjects></Configuration></MetaDataObject>"#,
+    ).unwrap();
+    std::fs::write(
+        workspace.join("CommonModules/Main.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule uuid="cccccccc-cccc-4ccc-8ccc-cccccccccccc"><Properties><Name>Main</Name><Global>false</Global><ClientManagedApplication>true</ClientManagedApplication><Server>true</Server><ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ServerCall>false</ServerCall><Privileged>false</Privileged><ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties></CommonModule></MetaDataObject>"#,
+    ).unwrap();
+    std::fs::write(
+        workspace.join("CommonModules/Main/Ext/Module.bsl"),
+        module_bytes,
+    )
+    .unwrap();
+    assert!(Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(workspace)
+        .status()
+        .unwrap()
+        .success());
+    assert!(Command::new("git")
+        .args(["add", "."])
+        .current_dir(workspace)
+        .status()
+        .unwrap()
+        .success());
+}
+
+fn initialize_body_mcp(mcp: &mut McpProcess) {
+    let response = mcp.exchange(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                   "clientInfo": {"name": "body-large-test", "version": "1"}}
+    }));
+    assert_eq!(response["result"]["serverInfo"]["name"], "unica");
+    mcp.notify(json!({"jsonrpc":"2.0", "method":"notifications/initialized", "params":{}}));
+}
+
+fn assert_large_body_line(item: &Value) -> u64 {
+    let line = item["line"].as_u64().unwrap();
+    if (2..=10).contains(&line) {
+        let text = item["text"].as_str().unwrap();
+        assert_eq!(text.len(), 3 + 1024 * 1024);
+        assert!(text.starts_with(&format!("//{}", line - 2)));
+        assert!(text[3..].bytes().all(|byte| byte == b'a'));
+    } else {
+        assert!(!item["text"].as_str().unwrap().contains('\n'));
+    }
+    line
+}
+
+#[test]
+fn public_view_pages_large_bsl_body_and_replays_disk_cursor() {
+    let root = tempfile::tempdir().unwrap();
+    let mut source = Vec::new();
+    source.extend_from_slice(b"Procedure A()\n");
+    for index in 0..9 {
+        source.extend_from_slice(format!("//{index}").as_bytes());
+        source.extend(std::iter::repeat_n(b'a', 1024 * 1024));
+        source.push(b'\n');
+    }
+    source.extend_from_slice(b"EndProcedure\n");
+    body_workspace(root.path(), &source);
+    let mut mcp = McpProcess::start(root.path());
+    initialize_body_mcp(&mut mcp);
+    let at = "main:CommonModule.Main.Body";
+    let first = mcp.completed_tool_call(call_tool(2, "unica.view", json!({"at":at, "limit":2})));
+    assert_eq!(first["ok"], true, "{first:#}");
+    assert_eq!(
+        first["data"]["items"][0],
+        json!({"line":1,"text":"Procedure A()"})
+    );
+    let mut seen = first["data"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(assert_large_body_line)
+        .collect::<Vec<_>>();
+    let mut cursor = first["cursor"]
+        .as_str()
+        .expect("disk continuation")
+        .to_string();
+    let second = mcp.completed_tool_call(call_tool(
+        3,
+        "unica.view",
+        json!({"at":at,"limit":2,"cursor":cursor}),
+    ));
+    let replay = mcp.completed_tool_call(call_tool(
+        4,
+        "unica.view",
+        json!({"at":at,"limit":2,"cursor":cursor}),
+    ));
+    assert_eq!(second, replay, "cursor replay must be byte-stable");
+    for item in second["data"]["items"].as_array().unwrap() {
+        seen.push(assert_large_body_line(item));
+    }
+    cursor = second["cursor"].as_str().unwrap().to_string();
+    let mut id = 5;
+    loop {
+        let page = mcp.completed_tool_call(call_tool(
+            id,
+            "unica.view",
+            json!({"at":at,"limit":2,"cursor":cursor}),
+        ));
+        assert_eq!(page["ok"], true, "{page:#}");
+        for item in page["data"]["items"].as_array().unwrap() {
+            seen.push(assert_large_body_line(item));
+        }
+        match page["cursor"].as_str() {
+            Some(next) => cursor = next.to_string(),
+            None => break,
+        }
+        id += 1;
+    }
+    assert_eq!(seen, (1..=11).collect::<Vec<_>>());
+    std::fs::write(
+        root.path().join("CommonModules/Main/Ext/Module.bsl"),
+        "Procedure Changed()\nEndProcedure\n",
+    )
+    .unwrap();
+    let stale = mcp.completed_tool_call(call_tool(
+        id + 1,
+        "unica.view",
+        json!({"at":at,"limit":2,"cursor":first["cursor"]}),
+    ));
+    assert_eq!(stale["ok"], false, "{stale:#}");
+    assert_eq!(stale["diagnostics"][0]["code"], "stale_cursor");
+    mcp.finish();
+}
+
+#[test]
+fn public_view_starts_body_over_sixty_four_mib_and_splits_one_long_line() {
+    let root = tempfile::tempdir().unwrap();
+    let mut source = Vec::with_capacity(70 * 1024 * 1024);
+    source.extend_from_slice(b"//");
+    source.extend(std::iter::repeat_n(b'x', 9 * 1024 * 1024));
+    source.push(b'\n');
+    for _ in 0..62 {
+        source.extend_from_slice(b"//");
+        source.extend(std::iter::repeat_n(b'y', 1024 * 1024));
+        source.push(b'\n');
+    }
+    body_workspace(root.path(), &source);
+    let mut mcp = McpProcess::start(root.path());
+    initialize_body_mcp(&mut mcp);
+    let at = "main:CommonModule.Main.Body";
+    let first = mcp.completed_tool_call(call_tool(2, "unica.view", json!({"at":at,"limit":50})));
+    assert_eq!(first["ok"], true, "{first:#}");
+    assert_eq!(first["data"]["items"][0]["line"], 1, "{first:#}");
+    assert_eq!(first["data"]["items"][0]["byteOffset"], 0);
+    assert_eq!(first["data"]["items"][0]["endOfLine"], false);
+    assert_eq!(first["data"]["items"].as_array().unwrap().len(), 1);
+    assert_eq!(first["page"]["stoppedBy"], "bytes");
+    assert_eq!(
+        first["data"]["items"][0]["text"].as_str().unwrap().len(),
+        65536
+    );
+    let cursor = first["cursor"].as_str().expect("long-line continuation");
+    let next = mcp.completed_tool_call(call_tool(
+        3,
+        "unica.view",
+        json!({"at":at,"limit":50,"cursor":cursor}),
+    ));
+    assert_eq!(next["ok"], true, "{next:#}");
+    assert_eq!(next["data"]["items"][0]["line"], 1, "{next:#}");
+    assert_eq!(next["data"]["items"][0]["byteOffset"], 65536);
+    mcp.finish();
+}
+
+#[path = "platform/v13_resolve_target_isolation.rs"]
+mod target_isolation;
 
 // Интеграционная цель — `medium` по `kind(test)`: идёт в очереди и на main,
 // на pull request не идёт. Отдельной джобы и выключателя больше нет.
@@ -145,9 +594,10 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
         ),
     )
     .expect("main module");
+    let long_synonym = "Я".repeat(1_025);
     std::fs::write(
         workspace.join("CommonModules/Main.xml"),
-        r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule uuid="cccccccc-cccc-4ccc-8ccc-cccccccccccc"><Properties><Name>Main</Name><Global>false</Global><ClientManagedApplication>true</ClientManagedApplication><Server>true</Server><ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ServerCall>false</ServerCall><Privileged>false</Privileged><ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties></CommonModule></MetaDataObject>"#,
+        format!(r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20"><CommonModule uuid="cccccccc-cccc-4ccc-8ccc-cccccccccccc"><Properties><Name>Main</Name><Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>{long_synonym}</v8:content></v8:item></Synonym><Global>false</Global><ClientManagedApplication>true</ClientManagedApplication><Server>true</Server><ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ServerCall>false</ServerCall><Privileged>false</Privileged><ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties></CommonModule></MetaDataObject>"#),
     )
     .expect("main module descriptor");
     std::fs::create_dir_all(workspace.join("CommonModules/Orphan/Ext"))
@@ -215,22 +665,22 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
         "{rejected:#}"
     );
 
-    let main = domain_result(&mcp.exchange(call_tool(
+    let main = mcp.completed_tool_call(call_tool(
         3,
         "unica.search",
         json!({"query": "MainNeedle", "scope": "main:Configuration"}),
-    )));
+    ));
     assert_eq!(main["ok"], true, "{main:#}");
     assert_eq!(main["data"]["matches"].as_array().map(Vec::len), Some(20));
     assert_eq!(main["data"]["matches"][0]["scope"], "main:Configuration");
     assert!(main["data"]["matches"][0].get("file").is_none());
     assert_eq!(main["page"]["stoppedBy"], "limit");
     let cursor = main["cursor"].as_str().expect("search continuation");
-    let remaining = domain_result(&mcp.exchange(call_tool(
+    let remaining = mcp.completed_tool_call(call_tool(
         5,
         "unica.search",
         json!({"query": "MainNeedle", "scope": "main:Configuration", "cursor": cursor}),
-    )));
+    ));
     assert_eq!(remaining["ok"], true, "{remaining:#}");
     assert_eq!(
         remaining["data"]["matches"].as_array().map(Vec::len),
@@ -238,27 +688,27 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
     );
     assert_eq!(remaining["page"]["stoppedBy"], "complete");
     assert!(remaining.get("cursor").is_none());
-    let replay = domain_result(&mcp.exchange(call_tool(
+    let replay = mcp.completed_tool_call(call_tool(
         6,
         "unica.search",
         json!({"query": "MainNeedle", "scope": "main:Configuration", "cursor": cursor}),
-    )));
+    ));
     assert_eq!(
         replay, remaining,
         "retry of one cursor must replay its page"
     );
-    let wrong_question = domain_result(&mcp.exchange(call_tool(
+    let wrong_question = mcp.completed_tool_call(call_tool(
         7,
         "unica.search",
         json!({"query": "Needle", "scope": "main:Configuration", "cursor": cursor}),
-    )));
+    ));
     assert_eq!(wrong_question["diagnostics"][0]["code"], "invalid_cursor");
 
-    let extension = domain_result(&mcp.exchange(call_tool(
+    let extension = mcp.completed_tool_call(call_tool(
         4,
         "unica.search",
         json!({"query": "ExtensionNeedle", "scope": "extension:Configuration"}),
-    )));
+    ));
     assert_eq!(extension["ok"], true, "{extension:#}");
     assert_eq!(
         extension["data"]["matches"].as_array().map(Vec::len),
@@ -269,11 +719,11 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
         "extension:Configuration"
     );
 
-    let lexical = domain_result(&mcp.exchange(call_tool(
+    let lexical = mcp.completed_tool_call(call_tool(
         24,
         "unica.search",
         json!({"query": "MainNeedle", "role": "lexical", "scope": "main:CommonModule.Main", "limit": 7}),
-    )));
+    ));
     assert_eq!(lexical["ok"], true, "{lexical:#}");
     assert_eq!(lexical["data"]["mode"], "lexical");
     let sections = lexical["data"]["matches"]
@@ -295,11 +745,11 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
         .to_string();
     let mut lexical_pages = 1;
     loop {
-        let page = domain_result(&mcp.exchange(call_tool(
+        let page = mcp.completed_tool_call(call_tool(
             30 + lexical_pages,
             "unica.search",
             json!({"query": "MainNeedle", "role": "lexical", "scope": "main:CommonModule.Main", "limit": 7, "cursor": lexical_cursor}),
-        )));
+        ));
         assert_eq!(page["ok"], true, "{page:#}");
         let hits = page["data"]["matches"][0]["hits"].as_array().unwrap();
         assert_eq!(
@@ -321,18 +771,18 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
         lexical_lines,
         std::iter::once(1).chain(3..=23).collect::<Vec<_>>()
     );
-    let cross_mode = domain_result(&mcp.exchange(call_tool(
+    let cross_mode = mcp.completed_tool_call(call_tool(
         35,
         "unica.search",
         json!({"query": "MainNeedle", "role": "lexical", "scope": "main:Configuration", "cursor": cursor}),
-    )));
+    ));
     assert_eq!(cross_mode["diagnostics"][0]["code"], "invalid_cursor");
 
-    let main_names = domain_result(&mcp.exchange(call_tool(
+    let main_names = mcp.completed_tool_call(call_tool(
         19,
         "unica.search",
         json!({"query": "CommonModule", "corpus": "names", "scope": "main:Configuration"}),
-    )));
+    ));
     assert_eq!(main_names["ok"], true, "{main_names:#}");
     let main_matches = main_names["data"]["matches"]
         .as_array()
@@ -342,11 +792,22 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
         .as_str()
         .is_some_and(|at| at.starts_with("main:"))));
 
-    let named_scope = domain_result(&mcp.exchange(call_tool(
+    let long_name_result = mcp.completed_tool_call(call_tool(
+        36,
+        "unica.search",
+        json!({"query": long_synonym, "corpus": "names", "scope": "main:Configuration"}),
+    ));
+    assert_eq!(long_name_result["ok"], true, "{long_name_result:#}");
+    assert_eq!(
+        long_name_result["data"]["matches"][0]["at"],
+        "main:CommonModule.Main"
+    );
+
+    let named_scope = mcp.completed_tool_call(call_tool(
         20,
         "unica.search",
         json!({"query": "Main", "corpus": "names", "scope": "main:CommonModule.Main"}),
-    )));
+    ));
     assert_eq!(named_scope["ok"], true, "{named_scope:#}");
     assert_eq!(
         named_scope["data"]["matches"].as_array().map(Vec::len),
@@ -357,54 +818,53 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
         "main:CommonModule.Main"
     );
 
-    let missing_scope = domain_result(&mcp.exchange(call_tool(
+    let missing_scope = mcp.completed_tool_call(call_tool(
         21,
         "unica.search",
         json!({"query": "Main", "corpus": "names", "scope": "main:CommonModule.Missing"}),
-    )));
+    ));
     assert_eq!(missing_scope["diagnostics"][0]["code"], "not_found");
-    let unsupported_scope = domain_result(&mcp.exchange(call_tool(
+    let unsupported_scope = mcp.completed_tool_call(call_tool(
         22,
         "unica.search",
         json!({"query": "Main", "corpus": "names", "scope": "main:CommonModule.Main.Attribute.Missing"}),
-    )));
+    ));
     assert_eq!(
         unsupported_scope["diagnostics"][0]["code"],
         "unsupported_scope"
     );
-    let unsupported_root = domain_result(&mcp.exchange(call_tool(
+    let unsupported_root = mcp.completed_tool_call(call_tool(
         23,
         "unica.search",
         json!({"query": "Main", "corpus": "names", "scope": "main:Form"}),
-    )));
+    ));
     assert_eq!(
         unsupported_root["diagnostics"][0]["code"],
         "unsupported_scope"
     );
 
-    let absent_scope = domain_result(&mcp.exchange(call_tool(
+    let absent_scope = mcp.completed_tool_call(call_tool(
         16,
         "unica.search",
         json!({"query": "MainNeedle", "scope": "main:CommonModule.Missing"}),
-    )));
+    ));
     assert_eq!(absent_scope["diagnostics"][0]["code"], "not_found");
-    let orphan_scope = domain_result(&mcp.exchange(call_tool(
+    let orphan_scope = mcp.completed_tool_call(call_tool(
         17,
         "unica.search",
         json!({"query": "OrphanNeedle", "scope": "main:CommonModule.Orphan"}),
-    )));
+    ));
     assert_eq!(orphan_scope["diagnostics"][0]["code"], "not_found");
-    let branch = domain_result(&mcp.exchange(call_tool(
+    let branch = mcp.completed_tool_call(call_tool(
         18,
         "unica.search",
         json!({"query": "MainNeedle", "scope": "main:CommonModule"}),
-    )));
+    ));
     assert_eq!(branch["ok"], true, "{branch:#}");
     assert_eq!(branch["data"]["matches"].as_array().map(Vec::len), Some(20));
     assert!(branch["cursor"].as_str().is_some());
 
-    let broad =
-        domain_result(&mcp.exchange(call_tool(8, "unica.search", json!({"query": "Needle"}))));
+    let broad = mcp.completed_tool_call(call_tool(8, "unica.search", json!({"query": "Needle"})));
     assert_eq!(broad["page"]["stoppedBy"], "limit");
     let broad_cursor = broad["cursor"].as_str().expect("multi-source cursor");
     std::fs::write(
@@ -412,18 +872,18 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
         "Procedure ExtensionNeedle() Export\nEndProcedure\n// changed source\n",
     )
     .expect("change a source not reached by the first page");
-    let stale = domain_result(&mcp.exchange(call_tool(
+    let stale = mcp.completed_tool_call(call_tool(
         9,
         "unica.search",
         json!({"query": "Needle", "cursor": broad_cursor}),
-    )));
+    ));
     assert_eq!(stale["diagnostics"][0]["code"], "stale_cursor");
 
-    let cross_corpus = domain_result(&mcp.exchange(call_tool(
+    let cross_corpus = mcp.completed_tool_call(call_tool(
         10,
         "unica.search",
         json!({"query": "MainNeedle", "scope": "main:Configuration", "corpus": "names", "cursor": cursor}),
-    )));
+    ));
     assert_eq!(cross_corpus["diagnostics"][0]["code"], "invalid_cursor");
 
     for (id, arguments) in [
@@ -441,7 +901,7 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
             json!({"query": "Needle", "role": "lexical", "limit": 0}),
         ),
     ] {
-        let refused = domain_result(&mcp.exchange(call_tool(id, "unica.search", arguments)));
+        let refused = mcp.completed_tool_call(call_tool(id, "unica.search", arguments));
         assert_eq!(
             refused["diagnostics"][0]["code"], "bad_value",
             "{refused:#}"
@@ -492,7 +952,7 @@ fn a_long_single_line_can_be_read_across_more_than_one_hundred_search_pages() {
         if let Some(token) = cursor.as_ref() {
             arguments["cursor"] = Value::String(token.clone());
         }
-        let result = domain_result(&mcp.exchange(call_tool(2 + pages, "unica.search", arguments)));
+        let result = mcp.completed_tool_call(call_tool(2 + pages, "unica.search", arguments));
         assert_eq!(result["ok"], true, "{result:#}");
         let matches = result["data"]["matches"].as_array().expect("matches");
         assert!(!matches.is_empty());
@@ -509,6 +969,382 @@ fn a_long_single_line_can_be_read_across_more_than_one_hundred_search_pages() {
     assert_eq!(total, 2_041);
     assert_eq!(pages, 103);
     eprintln!("103 search pages over one line: {:?}", started.elapsed());
+    mcp.finish();
+}
+
+#[test]
+fn text_search_pages_matches_after_two_mebibytes_of_source() {
+    let root = tempfile::tempdir().expect("large search root");
+    let workspace = root.path();
+    std::fs::create_dir_all(workspace.join("CommonModules/Main/Ext")).expect("module directory");
+    std::fs::write(
+        workspace.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\n",
+    )
+    .expect("workspace manifest");
+    std::fs::write(
+        workspace.join("Configuration.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"><Properties><Name>Main</Name></Properties><ChildObjects><CommonModule>Main</CommonModule></ChildObjects></Configuration></MetaDataObject>"#,
+    )
+    .expect("configuration");
+    let mut source = format!("// {}\r\n", "x".repeat(96)).repeat(24_000);
+    source.push_str(&"// яNeedle\r\n".repeat(51));
+    assert!(source.len() > 2 * 1024 * 1024);
+    std::fs::write(workspace.join("CommonModules/Main/Ext/Module.bsl"), source)
+        .expect("large module");
+
+    let mut mcp = McpProcess::start(workspace);
+    let initialized = mcp.exchange(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                   "clientInfo": {"name": "v13-search-large", "version": "1"}}
+    }));
+    assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
+    mcp.notify(json!({"jsonrpc":"2.0", "method":"notifications/initialized", "params":{}}));
+
+    let first = mcp.completed_tool_call(call_tool(
+        2,
+        "unica.search",
+        json!({"query": "Needle", "scope": "main:Configuration", "limit": 50}),
+    ));
+    assert_eq!(first["ok"], true, "{first:#}");
+    let matches = first["data"]["matches"].as_array().expect("first page");
+    assert_eq!(matches.len(), 50);
+    assert_eq!(matches[0]["line"], 24_001);
+    assert_eq!(matches[0]["column"], 5);
+    assert_eq!(matches[0]["snippet"], "// яNeedle");
+    assert!(matches.iter().all(|hit| hit.get("file").is_none()));
+    let cursor = first["cursor"].as_str().expect("remaining match");
+    let second = mcp.completed_tool_call(call_tool(
+        3,
+        "unica.search",
+        json!({"query": "Needle", "scope": "main:Configuration", "limit": 50, "cursor": cursor}),
+    ));
+    assert_eq!(second["ok"], true, "{second:#}");
+    assert_eq!(second["data"]["matches"].as_array().map(Vec::len), Some(1));
+    assert_eq!(second["data"]["matches"][0]["line"], 24_051);
+    assert_eq!(second["page"]["stoppedBy"], "complete");
+
+    let anchored = mcp.completed_tool_call(call_tool(
+        4,
+        "unica.search",
+        json!({"query": "^// яNeedle$", "regex": true, "scope": "main:Configuration"}),
+    ));
+    assert_eq!(anchored["ok"], true, "{anchored:#}");
+    assert_eq!(
+        anchored["data"]["matches"].as_array().map(Vec::len),
+        Some(20)
+    );
+    assert_eq!(anchored["data"]["matches"][0]["column"], 1);
+    mcp.finish();
+}
+
+#[test]
+fn text_search_reads_more_than_thirty_two_mebibytes_across_sources() {
+    let root = tempfile::tempdir().expect("large corpus root");
+    let workspace = root.path();
+    std::fs::write(
+        workspace.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\n",
+    )
+    .expect("workspace manifest");
+    std::fs::write(
+        workspace.join("Configuration.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"><Properties><Name>Main</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+    )
+    .expect("configuration");
+    let source_line = format!("// {}\n", "x".repeat(65_532));
+    assert_eq!(source_line.len(), 64 * 1024);
+    let source_body = source_line.repeat(16);
+    for index in 0..33 {
+        let mut source = source_body.clone();
+        if index == 32 {
+            source.push_str("// LastNeedle\n");
+        }
+        std::fs::write(workspace.join(format!("Module{index:02}.bsl")), source)
+            .expect("corpus module");
+    }
+
+    let mut mcp = McpProcess::start(workspace);
+    let initialized = mcp.exchange(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                   "clientInfo": {"name": "v13-search-large-corpus", "version": "1"}}
+    }));
+    assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
+    mcp.notify(json!({"jsonrpc":"2.0", "method":"notifications/initialized", "params":{}}));
+
+    let result = mcp.completed_tool_call(call_tool(
+        2,
+        "unica.search",
+        json!({"query": "LastNeedle", "scope": "main:Configuration"}),
+    ));
+    assert_eq!(result["ok"], true, "{result:#}");
+    assert_eq!(result["data"]["matches"].as_array().map(Vec::len), Some(1));
+    assert_eq!(result["data"]["matches"][0]["line"], 17);
+    assert_eq!(result["page"]["stoppedBy"], "complete");
+    mcp.finish();
+}
+
+#[test]
+fn text_search_preserves_whole_line_regex_beyond_two_mebibytes() {
+    let root = tempfile::tempdir().expect("long regex line root");
+    let workspace = root.path();
+    std::fs::write(
+        workspace.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\n",
+    )
+    .expect("workspace manifest");
+    std::fs::write(
+        workspace.join("Configuration.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"><Properties><Name>Main</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+    )
+    .expect("configuration");
+    std::fs::write(
+        workspace.join("SessionModule.bsl"),
+        format!("// {}Needle\r\n", "x".repeat(2 * 1024 * 1024 + 1)),
+    )
+    .expect("single long source line");
+
+    let mut mcp = McpProcess::start(workspace);
+    let initialized = mcp.exchange(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                   "clientInfo": {"name": "v13-search-long-regex", "version": "1"}}
+    }));
+    assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
+    mcp.notify(json!({"jsonrpc":"2.0", "method":"notifications/initialized", "params":{}}));
+
+    let result = mcp.completed_tool_call(call_tool(
+        2,
+        "unica.search",
+        json!({"query": "^// x+Needle$", "regex": true, "scope": "main:Configuration"}),
+    ));
+    assert_eq!(result["ok"], true, "{result:#}");
+    assert_eq!(result["data"]["matches"].as_array().map(Vec::len), Some(1));
+    assert_eq!(result["data"]["matches"][0]["line"], 1);
+    assert_eq!(result["data"]["matches"][0]["column"], 1);
+    assert_eq!(result["page"]["stoppedBy"], "complete");
+    mcp.finish();
+}
+
+#[test]
+fn unreadable_source_lines_keep_other_hits_and_truthful_coverage_across_pages() {
+    let root = tempfile::tempdir().expect("overlong search root");
+    let workspace = root.path();
+    std::fs::write(
+        workspace.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\n",
+    )
+    .expect("workspace manifest");
+    std::fs::write(
+        workspace.join("Configuration.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"><Properties><Name>Main</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+    )
+    .expect("configuration");
+    std::fs::write(workspace.join("A.bsl"), "// Needle\n".repeat(21))
+        .expect("first source with a continuation");
+    std::fs::write(
+        workspace.join("B.bsl"),
+        format!("// {}Needle\n", "x".repeat(8 * 1024 * 1024)),
+    )
+    .expect("overlong source line");
+    std::fs::write(workspace.join("C.bsl"), b"// Needle\n\xff").expect("source with invalid UTF-8");
+    std::fs::write(workspace.join("D.bsl"), "// Needle\n".repeat(21))
+        .expect("source after the uncovered files");
+    std::fs::write(workspace.join("E.bsl"), "// Needle\n")
+        .expect("last source after the intermediate page");
+
+    let mut mcp = McpProcess::start(workspace);
+    let initialized = mcp.exchange(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                   "clientInfo": {"name": "v13-search-overlong", "version": "1"}}
+    }));
+    assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
+    mcp.notify(json!({"jsonrpc":"2.0", "method":"notifications/initialized", "params":{}}));
+
+    let first = mcp.completed_tool_call(call_tool(
+        2,
+        "unica.search",
+        json!({"query": "Needle", "scope": "main:Configuration"}),
+    ));
+    assert_eq!(first["ok"], true, "{first:#}");
+    assert_eq!(first["page"]["stoppedBy"], "limit");
+    assert_eq!(first["data"]["fileCoverage"]["complete"], false);
+    assert_eq!(first["data"]["fileCoverage"]["scanComplete"], false);
+    let cursor = first["cursor"].as_str().expect("unread part of corpus");
+    let partial = mcp.completed_tool_call(call_tool(
+        3,
+        "unica.search",
+        json!({"query": "Needle", "scope": "main:Configuration", "cursor": cursor}),
+    ));
+    assert_eq!(partial["ok"], true, "{partial:#}");
+    assert!(partial["summary"].as_str().unwrap().contains("partial"));
+    assert_eq!(
+        partial["data"]["matches"].as_array().map(Vec::len),
+        Some(20)
+    );
+    assert_eq!(partial["data"]["fileCoverage"]["complete"], false);
+    assert_eq!(partial["data"]["fileCoverage"]["scanComplete"], false);
+    assert_eq!(partial["data"]["fileCoverage"]["uncovered"], 2);
+    assert_eq!(
+        partial["data"]["fileCoverage"]["uncoveredIsLowerBound"],
+        true
+    );
+    assert_eq!(partial["data"]["fileCoverage"]["detailsTruncated"], false);
+    let details = partial["data"]["fileCoverage"]["details"]
+        .as_array()
+        .expect("uncovered files");
+    assert_eq!(details.len(), 2);
+    assert_eq!(details[0]["sourceSet"], "main");
+    assert_eq!(details[0]["reason"], "line_too_long");
+    assert_eq!(details[1]["reason"], "invalid_utf8");
+    assert_eq!(details[0]["fileId"], "bsl-2");
+    assert_eq!(details[1]["fileId"], "bsl-3");
+    assert_eq!(partial["page"]["stoppedBy"], "limit");
+    let partial_cursor = partial["cursor"].as_str().expect("remaining hits");
+    assert!(!partial.to_string().contains("B.bsl"));
+    assert!(!partial.to_string().contains("C.bsl"));
+    assert!(!partial
+        .to_string()
+        .contains(&workspace.display().to_string()));
+    let replay = mcp.completed_tool_call(call_tool(
+        4,
+        "unica.search",
+        json!({"query": "Needle", "scope": "main:Configuration", "cursor": cursor}),
+    ));
+    assert_eq!(
+        replay, partial,
+        "cursor replay preserves omissions and hits"
+    );
+    let terminal = mcp.completed_tool_call(call_tool(
+        5,
+        "unica.search",
+        json!({"query": "Needle", "scope": "main:Configuration", "cursor": partial_cursor}),
+    ));
+    assert_eq!(terminal["ok"], true, "{terminal:#}");
+    assert!(terminal["summary"].as_str().unwrap().contains("partial"));
+    assert_eq!(
+        terminal["data"]["matches"].as_array().map(Vec::len),
+        Some(4)
+    );
+    assert_eq!(terminal["data"]["fileCoverage"]["scanComplete"], true);
+    assert_eq!(terminal["data"]["fileCoverage"]["complete"], false);
+    assert_eq!(terminal["data"]["fileCoverage"]["uncovered"], 2);
+    assert_eq!(
+        terminal["data"]["fileCoverage"]["uncoveredIsLowerBound"],
+        false
+    );
+    assert_eq!(
+        terminal["data"]["fileCoverage"]["details"],
+        Value::Array(details.clone())
+    );
+    assert_eq!(terminal["page"]["stoppedBy"], "complete");
+    assert!(terminal.get("cursor").is_none());
+    mcp.finish();
+}
+
+#[test]
+fn text_file_coverage_counts_all_uncovered_files_when_details_are_capped() {
+    let root = tempfile::tempdir().expect("uncovered search root");
+    let workspace = root.path();
+    std::fs::write(
+        workspace.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\n",
+    )
+    .expect("workspace manifest");
+    std::fs::write(
+        workspace.join("Configuration.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"><Properties><Name>Main</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+    )
+    .expect("configuration");
+    for index in 0..33 {
+        std::fs::write(workspace.join(format!("Bad{index:02}.bsl")), b"\xff")
+            .expect("undecodable BSL source");
+    }
+    std::fs::write(workspace.join("Good.bsl"), "// Needle\n").expect("readable BSL source");
+
+    let mut mcp = McpProcess::start(workspace);
+    let initialized = mcp.exchange(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                   "clientInfo": {"name": "v13-search-uncovered", "version": "1"}}
+    }));
+    assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
+    mcp.notify(json!({"jsonrpc":"2.0", "method":"notifications/initialized", "params":{}}));
+
+    let result = mcp.completed_tool_call(call_tool(
+        2,
+        "unica.search",
+        json!({"query": "Needle", "scope": "main:Configuration"}),
+    ));
+    assert_eq!(result["ok"], true, "{result:#}");
+    assert_eq!(result["data"]["matches"].as_array().map(Vec::len), Some(1));
+    assert_eq!(result["data"]["fileCoverage"]["scanComplete"], true);
+    assert_eq!(result["data"]["fileCoverage"]["complete"], false);
+    assert_eq!(result["data"]["fileCoverage"]["uncovered"], 33);
+    assert_eq!(
+        result["data"]["fileCoverage"]["uncoveredIsLowerBound"],
+        false
+    );
+    assert_eq!(result["data"]["fileCoverage"]["detailsTruncated"], true);
+    let details = result["data"]["fileCoverage"]["details"]
+        .as_array()
+        .expect("bounded uncovered details");
+    assert_eq!(details.len(), 32);
+    assert_eq!(details[0]["fileId"], "bsl-1");
+    assert_eq!(details[31]["fileId"], "bsl-32");
+    assert!(details
+        .iter()
+        .all(|detail| detail["reason"] == "invalid_utf8"));
+    assert!(!result.to_string().contains("Bad00.bsl"));
+    assert_eq!(result["page"]["stoppedBy"], "complete");
+    mcp.finish();
+}
+
+#[test]
+fn text_search_refuses_unvisited_depth_instead_of_claiming_complete_coverage() {
+    let root = tempfile::tempdir().expect("deep search root");
+    let workspace = root.path();
+    std::fs::write(
+        workspace.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\n",
+    )
+    .expect("workspace manifest");
+    std::fs::write(
+        workspace.join("Configuration.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"><Properties><Name>Main</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+    )
+    .expect("configuration");
+    let mut directory = workspace.to_path_buf();
+    for index in 0..33 {
+        directory.push(format!("Nested{index:02}"));
+        std::fs::create_dir(&directory).expect("nested source directory");
+    }
+    std::fs::write(directory.join("Module.bsl"), "// Needle\n")
+        .expect("source beyond the retained depth budget");
+
+    let mut mcp = McpProcess::start(workspace);
+    let initialized = mcp.exchange(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                   "clientInfo": {"name": "v13-search-depth", "version": "1"}}
+    }));
+    assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
+    mcp.notify(json!({"jsonrpc":"2.0", "method":"notifications/initialized", "params":{}}));
+
+    let result = mcp.completed_tool_call(call_tool(
+        2,
+        "unica.search",
+        json!({"query": "Needle", "scope": "main:Configuration"}),
+    ));
+    assert_eq!(result["ok"], false, "{result:#}");
+    assert_eq!(result["diagnostics"][0]["code"], "provider_unavailable");
+    assert!(result["summary"].as_str().unwrap().contains("depth limit"));
+    assert!(result.get("data").is_none());
+    assert!(result.get("cursor").is_none());
+    assert!(!result.to_string().contains("Nested32"));
     mcp.finish();
 }
 
@@ -541,27 +1377,27 @@ fn scoped_text_search_does_not_need_a_projected_view_of_the_root() {
     assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
     mcp.notify(json!({"jsonrpc":"2.0", "method":"notifications/initialized", "params":{}}));
 
-    let view = domain_result(&mcp.exchange(call_tool(
+    let view = mcp.completed_tool_call(call_tool(
         2,
         "unica.view",
         json!({"at": "main:Configuration"}),
-    )));
+    ));
     assert_eq!(view["ok"], false, "typed root must be unreadable: {view:#}");
-    let search = domain_result(&mcp.exchange(call_tool(
+    let search = mcp.completed_tool_call(call_tool(
         3,
         "unica.search",
         json!({"query": "Needle", "scope": "main:Configuration"}),
-    )));
+    ));
     assert_eq!(search["ok"], true, "{search:#}");
     assert_eq!(search["data"]["matches"].as_array().map(Vec::len), Some(1));
     assert_eq!(search["page"]["stoppedBy"], "complete");
     std::fs::remove_file(workspace.join("Configuration.xml"))
         .expect("remove the branch owner descriptor");
-    let missing_root = domain_result(&mcp.exchange(call_tool(
+    let missing_root = mcp.completed_tool_call(call_tool(
         4,
         "unica.search",
         json!({"query": "Needle", "scope": "main:CommonModule"}),
-    )));
+    ));
     assert_eq!(missing_root["diagnostics"][0]["code"], "invalid_state");
     mcp.finish();
 }
@@ -615,8 +1451,7 @@ fn names_search_pages_all_ranked_matches_and_rejects_changed_answers() {
         if let Some(token) = &cursor {
             arguments["cursor"] = json!(token);
         }
-        let page =
-            domain_result(&mcp.exchange(call_tool(10 + page_index, "unica.search", arguments)));
+        let page = mcp.completed_tool_call(call_tool(10 + page_index, "unica.search", arguments));
         assert_eq!(page["ok"], true, "{page:#}");
         assert_eq!(page["data"]["approximate"], false);
         assert_eq!(page["data"]["sourceCoverage"]["complete"], true);
@@ -659,8 +1494,7 @@ fn names_search_pages_all_ranked_matches_and_rejects_changed_answers() {
         if let Some(token) = &nearest_cursor {
             arguments["cursor"] = json!(token);
         }
-        let page =
-            domain_result(&mcp.exchange(call_tool(100 + page_index, "unica.search", arguments)));
+        let page = mcp.completed_tool_call(call_tool(100 + page_index, "unica.search", arguments));
         assert_eq!(page["ok"], true, "{page:#}");
         assert_eq!(page["data"]["approximate"], true);
         nearest_seen.extend(
@@ -679,51 +1513,51 @@ fn names_search_pages_all_ranked_matches_and_rejects_changed_answers() {
     }
     assert_eq!(nearest_seen, seen);
 
-    let default_page = domain_result(&mcp.exchange(call_tool(
+    let default_page = mcp.completed_tool_call(call_tool(
         200,
         "unica.search",
         json!({"query": "Item", "corpus": "names", "kind": "Catalog"}),
-    )));
+    ));
     assert_eq!(
         default_page["data"]["matches"].as_array().map(Vec::len),
         Some(20)
     );
     assert_eq!(default_page["page"]["stoppedBy"], "limit");
-    let max_page = domain_result(&mcp.exchange(call_tool(
+    let max_page = mcp.completed_tool_call(call_tool(
         201,
         "unica.search",
         json!({"query": "Item", "corpus": "names", "kind": "Catalog", "limit": 50}),
-    )));
+    ));
     assert_eq!(
         max_page["data"]["matches"].as_array().map(Vec::len),
         Some(50)
     );
     assert_eq!(max_page["page"]["stoppedBy"], "limit");
-    let over_limit = domain_result(&mcp.exchange(call_tool(
+    let over_limit = mcp.completed_tool_call(call_tool(
         202,
         "unica.search",
         json!({"query": "Item", "corpus": "names", "kind": "Catalog", "limit": 51}),
-    )));
+    ));
     assert_eq!(over_limit["diagnostics"][0]["code"], "bad_value");
 
-    let replay = domain_result(&mcp.exchange(call_tool(
+    let replay = mcp.completed_tool_call(call_tool(
         30,
         "unica.search",
         json!({"query": "Item", "corpus": "names", "kind": "Catalog", "limit": 17, "cursor": first_cursor}),
-    )));
+    ));
     assert_eq!(replay["ok"], true, "{replay:#}");
     assert_eq!(replay["data"]["matches"][0]["at"], "main:Catalog.Item017");
-    let wrong_kind = domain_result(&mcp.exchange(call_tool(
+    let wrong_kind = mcp.completed_tool_call(call_tool(
         31,
         "unica.search",
         json!({"query": "Item", "corpus": "names", "kind": "Document", "limit": 17, "cursor": first_cursor}),
-    )));
+    ));
     assert_eq!(wrong_kind["diagnostics"][0]["code"], "invalid_cursor");
-    let wrong_limit = domain_result(&mcp.exchange(call_tool(
+    let wrong_limit = mcp.completed_tool_call(call_tool(
         32,
         "unica.search",
         json!({"query": "Item", "corpus": "names", "kind": "Catalog", "limit": 18, "cursor": first_cursor}),
-    )));
+    ));
     assert_eq!(wrong_limit["diagnostics"][0]["code"], "invalid_cursor");
 
     std::fs::write(
@@ -731,11 +1565,11 @@ fn names_search_pages_all_ranked_matches_and_rejects_changed_answers() {
         r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>Item060Changed</Name></Properties></Catalog></MetaDataObject>"#,
     )
     .expect("change one ranked name");
-    let stale = domain_result(&mcp.exchange(call_tool(
+    let stale = mcp.completed_tool_call(call_tool(
         33,
         "unica.search",
         json!({"query": "Item", "corpus": "names", "kind": "Catalog", "limit": 17, "cursor": first_cursor}),
-    )));
+    ));
     assert_eq!(stale["diagnostics"][0]["code"], "stale_cursor", "{stale:#}");
     mcp.finish();
 }

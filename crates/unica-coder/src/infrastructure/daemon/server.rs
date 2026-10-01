@@ -251,14 +251,20 @@ fn validate_canonical_value(
     value: &serde_json::Value,
     schema: &serde_json::Value,
 ) -> Result<(), String> {
-    let expected = schema.get("type").and_then(serde_json::Value::as_str);
-    let type_matches = match expected {
+    let matches_type = |expected: Option<&str>| match expected {
         Some("string") => value.is_string(),
         Some("boolean") => value.is_boolean(),
         Some("integer") => value.as_i64().is_some() || value.as_u64().is_some(),
         Some("object") => value.is_object(),
         Some("array") => value.is_array(),
+        Some("null") => value.is_null(),
         Some(_) | None => true,
+    };
+    let type_matches = match schema.get("type") {
+        Some(serde_json::Value::Array(types)) => {
+            types.iter().any(|expected| matches_type(expected.as_str()))
+        }
+        expected => matches_type(expected.and_then(serde_json::Value::as_str)),
     };
     if !type_matches {
         return Err(format!(
@@ -341,6 +347,8 @@ pub(super) struct V5CanonicalInvocationRuntime {
     service: Arc<dyn CanonicalInvocationService>,
     clock: Arc<dyn Clock>,
     documentation_cursors: Arc<crate::application::result_store::SearchCursorStore>,
+    root_check_continuations:
+        Arc<crate::infrastructure::project_health::resources::RootCheckContinuationStore>,
     workspace_actors: WorkspaceActorRegistry,
     deliveries: Arc<crate::infrastructure::engine_delivery::DeliveryDesk>,
     provider_hosts: Arc<ProviderHostOwner>,
@@ -357,6 +365,53 @@ pub(super) enum V5CanonicalPrepareError {
     WorkspaceRegistryFailed,
 }
 
+#[derive(Clone)]
+pub(super) struct RunEngineDelivery {
+    workspace_hint: std::path::PathBuf,
+    desk: Arc<crate::infrastructure::engine_delivery::DeliveryDesk>,
+}
+
+impl RunEngineDelivery {
+    fn execute(
+        &self,
+        cancellation: CancellationToken,
+        run: impl FnOnce(CancellationToken) -> DomainResult,
+    ) -> DomainResult {
+        use crate::application::shared_work::EngineDeliveryState;
+
+        if cancellation.is_cancelled() {
+            return DomainResult::canonical_rejection(
+                None,
+                RefusalCode::Cancelled,
+                "run cancelled before engine delivery",
+            );
+        }
+        let progress = crate::infrastructure::engine_delivery::CanonicalDeliveryProgress::default();
+        let state = crate::infrastructure::plugin_runtime::find_plugin_root(&self.workspace_hint)
+            .map(|plugin_root| {
+                crate::infrastructure::engine_delivery::deliver_if_missing(
+                    &self.desk,
+                    &plugin_root,
+                    "v8-runner",
+                    &cancellation,
+                    &progress,
+                )
+            })
+            .unwrap_or(EngineDeliveryState::NotRequired);
+        if cancellation.is_cancelled() {
+            return DomainResult::canonical_rejection(
+                None,
+                RefusalCode::Cancelled,
+                "run cancelled while waiting for engine delivery",
+            );
+        }
+        match crate::infrastructure::engine_delivery::canonical_delivery_result(state, &progress) {
+            Some(result) => result,
+            None => run(cancellation),
+        }
+    }
+}
+
 pub(super) enum V5ActorBoundCanonicalInvocation {
     WorkspaceInspection {
         inspection: Arc<super::v13_workspace_bootstrap::PreparedWorkspaceInspection>,
@@ -368,20 +423,24 @@ pub(super) enum V5ActorBoundCanonicalInvocation {
     ConfigurationTransition {
         transition: Arc<super::v13_configuration_transition::PreparedConfigurationTransition>,
         workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
+        delivery: RunEngineDelivery,
     },
     Extensions {
         extensions: Arc<super::v13_extensions::PreparedExtensions>,
         workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
+        delivery: RunEngineDelivery,
     },
     InfobaseExport {
         export: Arc<super::v13_infobase_exports::PreparedInfobaseExport>,
         workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
+        delivery: RunEngineDelivery,
     },
     /// Терминальный запуск клиента: как выгрузка, готовится до admission
     /// PlatformXml и известен длинным по внешнему процессу.
     ClientRun {
         launch: Arc<super::v13_client_run::PreparedClientRun>,
         workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
+        delivery: RunEngineDelivery,
     },
     /// Загрузка CF/CFE в базу: previewApply с забором, как выгрузки,
     /// готовится до admission PlatformXml и известна длинной по внешнему
@@ -389,30 +448,35 @@ pub(super) enum V5ActorBoundCanonicalInvocation {
     CfImport {
         import: Arc<super::v13_cf_import::PreparedCfImport>,
         workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
+        delivery: RunEngineDelivery,
     },
     /// Создание базы: previewApply с забором, без аргументов, известно
     /// длинным по внешнему процессу.
     InfobaseCreate {
         create: Arc<super::v13_infobase_create::PreparedInfobaseCreate>,
         workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
+        delivery: RunEngineDelivery,
     },
     /// Импорт исходников в базу: previewApply с забором, известен длинным по
     /// внешнему процессу.
     SourceImport {
         import: Arc<super::v13_source_import::PreparedSourceImport>,
         workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
+        delivery: RunEngineDelivery,
     },
     /// Выгрузка базы в исходники: previewApply с забором, известна длинной
     /// по внешнему процессу.
     SourceExport {
         export: Arc<super::v13_source_export::PreparedSourceExport>,
         workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
+        delivery: RunEngineDelivery,
     },
     /// Сборка CF/CFE из исходников: previewApply с забором, известна длинной
     /// по внешнему процессу.
     ArtifactBuild {
         build: Arc<super::v13_artifact_build::PreparedArtifactBuild>,
         workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
+        delivery: RunEngineDelivery,
     },
     Documentation {
         search: Arc<super::v13_documentation::PreparedDocumentationSearch>,
@@ -432,30 +496,39 @@ pub(super) enum V5PreparedCanonicalInvocation {
     },
     ConfigurationTransition {
         transition: Arc<super::v13_configuration_transition::PreparedConfigurationTransition>,
+        delivery: RunEngineDelivery,
     },
     Extensions {
         extensions: Arc<super::v13_extensions::PreparedExtensions>,
+        delivery: RunEngineDelivery,
     },
     InfobaseExport {
         export: Arc<super::v13_infobase_exports::PreparedInfobaseExport>,
+        delivery: RunEngineDelivery,
     },
     ClientRun {
         launch: Arc<super::v13_client_run::PreparedClientRun>,
+        delivery: RunEngineDelivery,
     },
     CfImport {
         import: Arc<super::v13_cf_import::PreparedCfImport>,
+        delivery: RunEngineDelivery,
     },
     InfobaseCreate {
         create: Arc<super::v13_infobase_create::PreparedInfobaseCreate>,
+        delivery: RunEngineDelivery,
     },
     SourceImport {
         import: Arc<super::v13_source_import::PreparedSourceImport>,
+        delivery: RunEngineDelivery,
     },
     SourceExport {
         export: Arc<super::v13_source_export::PreparedSourceExport>,
+        delivery: RunEngineDelivery,
     },
     ArtifactBuild {
         build: Arc<super::v13_artifact_build::PreparedArtifactBuild>,
+        delivery: RunEngineDelivery,
     },
     Documentation {
         search: Arc<super::v13_documentation::PreparedDocumentationSearch>,
@@ -477,6 +550,9 @@ impl V5CanonicalInvocationRuntime {
             clock,
             documentation_cursors: Arc::new(
                 crate::application::result_store::SearchCursorStore::default(),
+            ),
+            root_check_continuations: Arc::new(
+                crate::infrastructure::project_health::resources::RootCheckContinuationStore::default(),
             ),
             workspace_actors,
             deliveries: Arc::new(crate::infrastructure::engine_delivery::DeliveryDesk::default()),
@@ -501,6 +577,19 @@ impl V5CanonicalInvocationRuntime {
     #[cfg(test)]
     pub(super) fn with_runtime_service_for_test(mut self, service: Arc<RuntimeJobService>) -> Self {
         self.runtime_service = Some(service);
+        self
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_delivery_downloader_for_test(
+        mut self,
+        downloader: Arc<dyn unica_bootstrap::Downloader>,
+    ) -> Self {
+        self.deliveries = Arc::new(
+            crate::infrastructure::engine_delivery::DeliveryDesk::with_downloader_for_test(
+                downloader,
+            ),
+        );
         self
     }
 
@@ -542,7 +631,7 @@ impl V5CanonicalInvocationRuntime {
     /// the same handoff moment every later stage measures against.
     pub(super) fn bind_with_deadline(
         &self,
-        request: InvocationRequest,
+        mut request: InvocationRequest,
         response_deadline: InvocationResponseDeadline,
     ) -> Result<V5ActorBoundCanonicalInvocation, V5CanonicalPrepareError> {
         if let Err(summary) = validate_hidden_v13_request(&request) {
@@ -550,7 +639,12 @@ impl V5CanonicalInvocationRuntime {
                 DomainResult::canonical_rejection(None, RefusalCode::BadValue, summary),
             )));
         }
-        match super::v13_workspace_bootstrap::prepare(&request, response_deadline.clone()) {
+        request.normalize_check_options();
+        match super::v13_workspace_bootstrap::prepare(
+            &request,
+            response_deadline.clone(),
+            &self.root_check_continuations,
+        ) {
             super::v13_workspace_bootstrap::Preparation::NotApplicable => {}
             super::v13_workspace_bootstrap::Preparation::Rejected(result) => {
                 return Err(V5CanonicalPrepareError::Rejected(result))
@@ -562,6 +656,10 @@ impl V5CanonicalInvocationRuntime {
         if let Some(result) = super::v13_run_dictionary::execute_run_dictionary(&request) {
             return Err(V5CanonicalPrepareError::Direct(Box::new(result)));
         }
+        let run_delivery = RunEngineDelivery {
+            workspace_hint: std::path::PathBuf::from(request.workspace_hint()),
+            desk: Arc::clone(&self.deliveries),
+        };
         match super::v13_configuration_transition::prepare(&request) {
             super::v13_configuration_transition::Preparation::NotApplicable => {}
             super::v13_configuration_transition::Preparation::Rejected(result) => {
@@ -572,6 +670,7 @@ impl V5CanonicalInvocationRuntime {
                 return Ok(V5ActorBoundCanonicalInvocation::ConfigurationTransition {
                     transition,
                     workspace_identity_hash,
+                    delivery: run_delivery.clone(),
                 });
             }
         }
@@ -585,6 +684,7 @@ impl V5CanonicalInvocationRuntime {
                 return Ok(V5ActorBoundCanonicalInvocation::Extensions {
                     extensions,
                     workspace_identity_hash,
+                    delivery: run_delivery.clone(),
                 });
             }
         }
@@ -598,6 +698,7 @@ impl V5CanonicalInvocationRuntime {
                 return Ok(V5ActorBoundCanonicalInvocation::InfobaseExport {
                     export,
                     workspace_identity_hash,
+                    delivery: run_delivery.clone(),
                 });
             }
         }
@@ -611,6 +712,7 @@ impl V5CanonicalInvocationRuntime {
                 return Ok(V5ActorBoundCanonicalInvocation::ClientRun {
                     launch,
                     workspace_identity_hash,
+                    delivery: run_delivery.clone(),
                 });
             }
         }
@@ -624,6 +726,7 @@ impl V5CanonicalInvocationRuntime {
                 return Ok(V5ActorBoundCanonicalInvocation::CfImport {
                     import,
                     workspace_identity_hash,
+                    delivery: run_delivery.clone(),
                 });
             }
         }
@@ -637,6 +740,7 @@ impl V5CanonicalInvocationRuntime {
                 return Ok(V5ActorBoundCanonicalInvocation::InfobaseCreate {
                     create,
                     workspace_identity_hash,
+                    delivery: run_delivery.clone(),
                 });
             }
         }
@@ -650,6 +754,7 @@ impl V5CanonicalInvocationRuntime {
                 return Ok(V5ActorBoundCanonicalInvocation::SourceImport {
                     import,
                     workspace_identity_hash,
+                    delivery: run_delivery.clone(),
                 });
             }
         }
@@ -663,6 +768,7 @@ impl V5CanonicalInvocationRuntime {
                 return Ok(V5ActorBoundCanonicalInvocation::SourceExport {
                     export,
                     workspace_identity_hash,
+                    delivery: run_delivery.clone(),
                 });
             }
         }
@@ -676,6 +782,7 @@ impl V5CanonicalInvocationRuntime {
                 return Ok(V5ActorBoundCanonicalInvocation::ArtifactBuild {
                     build,
                     workspace_identity_hash,
+                    delivery: run_delivery.clone(),
                 });
             }
         }
@@ -805,31 +912,43 @@ impl V5ActorBoundCanonicalInvocation {
                     service,
                 })
             }
-            Self::ConfigurationTransition { transition, .. } => {
-                Ok(V5PreparedCanonicalInvocation::ConfigurationTransition { transition })
-            }
-            Self::Extensions { extensions, .. } => {
-                Ok(V5PreparedCanonicalInvocation::Extensions { extensions })
-            }
-            Self::InfobaseExport { export, .. } => {
-                Ok(V5PreparedCanonicalInvocation::InfobaseExport { export })
-            }
-            Self::ClientRun { launch, .. } => {
-                Ok(V5PreparedCanonicalInvocation::ClientRun { launch })
-            }
-            Self::CfImport { import, .. } => Ok(V5PreparedCanonicalInvocation::CfImport { import }),
-            Self::InfobaseCreate { create, .. } => {
-                Ok(V5PreparedCanonicalInvocation::InfobaseCreate { create })
-            }
-            Self::SourceImport { import, .. } => {
-                Ok(V5PreparedCanonicalInvocation::SourceImport { import })
-            }
-            Self::SourceExport { export, .. } => {
-                Ok(V5PreparedCanonicalInvocation::SourceExport { export })
-            }
-            Self::ArtifactBuild { build, .. } => {
-                Ok(V5PreparedCanonicalInvocation::ArtifactBuild { build })
-            }
+            Self::ConfigurationTransition {
+                transition,
+                delivery,
+                ..
+            } => Ok(V5PreparedCanonicalInvocation::ConfigurationTransition {
+                transition,
+                delivery,
+            }),
+            Self::Extensions {
+                extensions,
+                delivery,
+                ..
+            } => Ok(V5PreparedCanonicalInvocation::Extensions {
+                extensions,
+                delivery,
+            }),
+            Self::InfobaseExport {
+                export, delivery, ..
+            } => Ok(V5PreparedCanonicalInvocation::InfobaseExport { export, delivery }),
+            Self::ClientRun {
+                launch, delivery, ..
+            } => Ok(V5PreparedCanonicalInvocation::ClientRun { launch, delivery }),
+            Self::CfImport {
+                import, delivery, ..
+            } => Ok(V5PreparedCanonicalInvocation::CfImport { import, delivery }),
+            Self::InfobaseCreate {
+                create, delivery, ..
+            } => Ok(V5PreparedCanonicalInvocation::InfobaseCreate { create, delivery }),
+            Self::SourceImport {
+                import, delivery, ..
+            } => Ok(V5PreparedCanonicalInvocation::SourceImport { import, delivery }),
+            Self::SourceExport {
+                export, delivery, ..
+            } => Ok(V5PreparedCanonicalInvocation::SourceExport { export, delivery }),
+            Self::ArtifactBuild {
+                build, delivery, ..
+            } => Ok(V5PreparedCanonicalInvocation::ArtifactBuild { build, delivery }),
             Self::Documentation { search, .. } => {
                 Ok(V5PreparedCanonicalInvocation::Documentation { search })
             }
@@ -883,15 +1002,39 @@ impl V5PreparedCanonicalInvocation {
                     )
                 })?
             }
-            Self::ConfigurationTransition { transition } => Ok(transition.execute(cancellation)),
-            Self::Extensions { extensions } => Ok(extensions.execute(cancellation)),
-            Self::InfobaseExport { export } => Ok(export.execute(cancellation)),
-            Self::ClientRun { launch } => Ok(launch.execute(cancellation)),
-            Self::CfImport { import } => Ok(import.execute(cancellation)),
-            Self::InfobaseCreate { create } => Ok(create.execute(cancellation)),
-            Self::SourceImport { import } => Ok(import.execute(cancellation)),
-            Self::SourceExport { export } => Ok(export.execute(cancellation)),
-            Self::ArtifactBuild { build } => Ok(build.execute(cancellation)),
+            Self::ConfigurationTransition {
+                transition,
+                delivery,
+            } => Ok(delivery.execute(cancellation, |cancellation| {
+                transition.execute(cancellation)
+            })),
+            Self::Extensions {
+                extensions,
+                delivery,
+            } => Ok(delivery.execute(cancellation, |cancellation| {
+                extensions.execute(cancellation)
+            })),
+            Self::InfobaseExport { export, delivery } => {
+                Ok(delivery.execute(cancellation, |cancellation| export.execute(cancellation)))
+            }
+            Self::ClientRun { launch, delivery } => {
+                Ok(delivery.execute(cancellation, |cancellation| launch.execute(cancellation)))
+            }
+            Self::CfImport { import, delivery } => {
+                Ok(delivery.execute(cancellation, |cancellation| import.execute(cancellation)))
+            }
+            Self::InfobaseCreate { create, delivery } => {
+                Ok(delivery.execute(cancellation, |cancellation| create.execute(cancellation)))
+            }
+            Self::SourceImport { import, delivery } => {
+                Ok(delivery.execute(cancellation, |cancellation| import.execute(cancellation)))
+            }
+            Self::SourceExport { export, delivery } => {
+                Ok(delivery.execute(cancellation, |cancellation| export.execute(cancellation)))
+            }
+            Self::ArtifactBuild { build, delivery } => {
+                Ok(delivery.execute(cancellation, |cancellation| build.execute(cancellation)))
+            }
             Self::Documentation { search } => Ok(search.execute(cancellation)),
         }
     }
@@ -902,6 +1045,8 @@ pub(crate) struct DaemonServerConfig {
     pub(crate) state_root: std::path::PathBuf,
     pub(crate) core_identity: CoreIdentity,
     pub(crate) idle_grace: Duration,
+    pub(crate) capacity_observer:
+        Arc<crate::infrastructure::capacity_observation::CapacityObserver>,
     invocation_service: Arc<dyn CanonicalInvocationService>,
     /// Overrides installed by tests and the contract harness. Production
     /// leaves every one of them empty; the fields exist unconditionally so
@@ -920,13 +1065,18 @@ impl DaemonServerConfig {
         core_identity: CoreIdentity,
         idle_grace: Duration,
     ) -> Self {
+        let capacity_observer =
+            Arc::new(crate::infrastructure::capacity_observation::CapacityObserver::default());
         let invocation_service: Arc<dyn CanonicalInvocationService> = Arc::new(
-            crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
+            crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::with_capacity_observer(
+                Arc::clone(&capacity_observer),
+            ),
         );
         Self {
             state_root,
             core_identity,
             idle_grace,
+            capacity_observer,
             invocation_service,
             invocation_clock: None,
             v5_epoch_clock: None,
@@ -1389,6 +1539,597 @@ pub(crate) mod actor_capacity_tests {
             prepared.execution_class(),
             ExecutionClass::KnownLong(KnownLongReason::ExternalProcess)
         ));
+    }
+
+    #[test]
+    fn canonical_selected_engine_routes_request_delivery_before_provider_start() {
+        const CHILD: &str = "UNICA_RUN_DELIVERY_TEST_CHILD";
+        const ROOT: &str = "UNICA_RUN_DELIVERY_TEST_ROOT";
+        if std::env::var_os(CHILD).is_some() {
+            let root = std::path::PathBuf::from(std::env::var_os(ROOT).unwrap());
+            let workspace = root.join("workspace");
+            let runtime = bootstrap_runtime();
+            let request = InvocationRequest::new(
+                ToolIdentity::Run,
+                serde_json::json!({"op":"extensions.list","args":{},"dryRun":true}),
+                workspace.display().to_string(),
+                7_000,
+            )
+            .unwrap();
+            let result = runtime
+                .bind(request)
+                .unwrap()
+                .prepare()
+                .unwrap()
+                .execute(CancellationToken::new())
+                .unwrap();
+            assert!(!result.ok, "{result:?}");
+            assert_eq!(
+                result.data.as_ref().unwrap()["delivery"]["artifact"],
+                "v8-runner"
+            );
+            assert_eq!(
+                result.data.as_ref().unwrap()["delivery"]["status"],
+                "failed"
+            );
+            assert!(!serde_json::to_string(&result)
+                .unwrap()
+                .contains("bundled_tool_missing"));
+
+            for (role, artifact) in [("symbol", "bsl-analyzer"), ("semantic", "rlm-tools-bsl")] {
+                let result = submit_canonical(
+                    &runtime,
+                    &workspace,
+                    ToolIdentity::Search,
+                    serde_json::json!({"query":"Needle","role":role}),
+                );
+                assert!(!result.ok, "{role}: {result:?}");
+                assert_eq!(
+                    result.data.as_ref().unwrap()["delivery"]["artifact"],
+                    artifact,
+                    "{role}: {result:?}"
+                );
+            }
+            for arguments in [
+                serde_json::json!({"query":"Needle","role":"lexical"}),
+                serde_json::json!({"query":"Needle"}),
+            ] {
+                let result =
+                    submit_canonical(&runtime, &workspace, ToolIdentity::Search, arguments);
+                assert!(
+                    result
+                        .data
+                        .as_ref()
+                        .and_then(|data| data.get("delivery"))
+                        .is_none(),
+                    "lexical search must not order an external engine: {result:?}"
+                );
+            }
+            return;
+        }
+
+        // A one-test child owns its environment. Other Rust tests never see
+        // the temporary package or its intentionally absent release manifest.
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        let plugin = root.path().join("plugin");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(plugin.join("third-party")).unwrap();
+        std::fs::create_dir_all(workspace.join("src")).unwrap();
+        std::fs::write(workspace.join("v8project.yaml"), "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\ninfobase:\n  connection: 'File=base'\n").unwrap();
+        std::fs::write(workspace.join("src/Configuration.xml"), r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Test</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#).unwrap();
+        let target = crate::infrastructure::platform::current_target_id().unwrap();
+        let exe = std::env::consts::EXE_SUFFIX;
+        std::fs::write(
+            plugin.join("third-party/manifest.json"),
+            serde_json::json!({
+                "schemaVersion": 2,
+                "tools": [
+                    {
+                        "name": "v8-runner",
+                        "version": "0.11.2",
+                        "binaryPath": format!("bin/{target}/v8-runner{exe}"),
+                        "sha256": "0".repeat(64),
+                    },
+                    {
+                        "name": "bsl-analyzer",
+                        "version": "0.2.67",
+                        "binaryPath": format!("bin/{target}/bsl-analyzer{exe}"),
+                        "sha256": "0".repeat(64),
+                    },
+                    {
+                        "name": "rlm-bsl-mcp",
+                        "artifact": "rlm-tools-bsl",
+                        "version": "1.33.0",
+                        "binaryPath": format!("bin/{target}/rlm-bsl-mcp{exe}"),
+                        "sha256": "0".repeat(64),
+                    }
+                ],
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "infrastructure::daemon::server::actor_capacity_tests::canonical_selected_engine_routes_request_delivery_before_provider_start",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env(ROOT, root.path())
+            .env("UNICA_PLUGIN_ROOT", &plugin)
+            .env("UNICA_ARTIFACT_CACHE", root.path().join("cache"))
+            .env("UNICA_RUNTIME_MANIFEST", root.path().join("missing-release.json"))
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stdout.contains("running 1 test"), "{stdout}\n{stderr}");
+        assert!(output.status.success(), "{stdout}\n{stderr}");
+    }
+
+    #[test]
+    fn canonical_run_and_role_search_deliver_engines_and_run_supported_providers() {
+        const CHILD: &str = "UNICA_CANONICAL_DELIVERY_SUCCESS_CHILD";
+        const ROOT: &str = "UNICA_CANONICAL_DELIVERY_SUCCESS_ROOT";
+        if std::env::var_os(CHILD).is_some() {
+            use sha2::{Digest, Sha256};
+            use unica_bootstrap::{BootstrapError, DownloadObserver, Downloader, HostTarget};
+
+            struct PublishedFixture(
+                std::collections::BTreeMap<String, Vec<u8>>,
+                std::sync::atomic::AtomicUsize,
+            );
+            impl Downloader for PublishedFixture {
+                fn download(
+                    &self,
+                    _url: &str,
+                    destination: &std::path::Path,
+                    observer: &dyn DownloadObserver,
+                ) -> Result<(), BootstrapError> {
+                    let name = _url.rsplit('/').next().unwrap();
+                    let bytes = &self.0[name];
+                    std::fs::write(destination, bytes)?;
+                    observer.transferred(bytes.len() as u64, Some(bytes.len() as u64));
+                    self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Ok(())
+                }
+            }
+
+            let root = std::path::PathBuf::from(std::env::var_os(ROOT).unwrap());
+            let workspace = root.join("workspace");
+            let plugin = root.join("plugin");
+            let cache = root.join("cache");
+            std::fs::create_dir_all(workspace.join("src")).unwrap();
+            std::fs::create_dir_all(plugin.join("third-party")).unwrap();
+            std::fs::write(workspace.join("v8project.yaml"), "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\ninfobase:\n  connection: 'File=base'\n").unwrap();
+            std::fs::write(workspace.join("src/Configuration.xml"), r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Test</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#).unwrap();
+            std::fs::write(workspace.join("sample.cfe"), b"fixture-extension").unwrap();
+            let fixture_source = root.join("fake-engine.rs");
+            std::fs::write(&fixture_source, r###"
+use std::io::{self, BufRead, Write};
+fn main() {
+    let marker = std::path::PathBuf::from(std::env::var("UNICA_TEST_PROVIDER_MARKER_DIR").unwrap());
+    let args = std::env::args().collect::<Vec<_>>();
+    if args.iter().any(|argument| argument == "load") {
+        assert!(args.iter().any(|argument| argument == "--dry-run"));
+        let input = args.windows(2).find(|pair| pair[0] == "--path").unwrap()[1].clone();
+        assert!(input.ends_with("sample.cfe"));
+        std::fs::write(marker.join("upload"), "v8-runner load preview invoked").unwrap();
+        let envelope = r#"{"ok":true,"command":"load","data":{"ok":true,"provider_dispatched":false,"mode":"load","artifact_path":$PATH$,"artifact_type":"extension_cfe","target_kind":"extension","extension":"Sample","execution":{"status":"succeeded","payload":{"applied":false}}}}"#.replace("$PATH$", &format!("{input:?}"));
+        println!("{envelope}");
+        return;
+    }
+    if args.iter().any(|argument| argument == "extensions") {
+        std::fs::write(marker.join("run"), "v8-runner invoked").unwrap();
+        println!("{}", r#"{"ok":true,"command":"extensions","data":{"ok":true,"provider_dispatched":false,"provider":{"selected":"ibcmd","origin":{"kind":"default"}},"requested":{"kind":"all"},"extensions":[],"plan":"fixture"}}"#);
+        return;
+    }
+    if args.get(1).is_some_and(|argument| argument == "index") {
+        let db = std::path::PathBuf::from(std::env::var("RLM_INDEX_DIR").unwrap()).join("bsl_index.db");
+        if args.get(2).is_some_and(|argument| argument == "info") {
+            if db.is_file() {
+                println!("Index: {}\nStatus: fresh", db.display());
+            } else {
+                println!("Index not found");
+            }
+        } else {
+            std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+            std::fs::write(db, "fixture-index").unwrap();
+            std::fs::write(marker.join("index"), "rlm-bsl-index invoked").unwrap();
+        }
+        return;
+    }
+    for line in io::stdin().lock().lines() {
+        let line = line.unwrap();
+        if line.contains("\"method\":\"initialize\"") {
+            println!("{}", r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26","capabilities":{},"serverInfo":{"name":"fixture","version":"1"}}}"#);
+            io::stdout().flush().unwrap();
+        } else if line.contains("\"name\":\"search\"") {
+            assert!(line.contains("search_code"), "wrong analyzer action: {line}");
+            std::fs::write(marker.join("search"), "bsl-analyzer invoked").unwrap();
+            println!("{}", r#"{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"No results found."}]}}"#);
+            io::stdout().flush().unwrap();
+        } else if line.contains("\"name\":\"rlm_start\"") {
+            println!("{}", r#"{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"{\"session_id\":\"fixture\",\"index\":{\"index_status\":\"ready\"}}"}]}}"#);
+            io::stdout().flush().unwrap();
+        } else if line.contains("\"name\":\"rlm_execute\"") {
+            std::fs::write(marker.join("semantic"), "rlm-bsl-mcp invoked").unwrap();
+            println!("{}", r#"{"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"{\"stdout\":\"[]\"}"}]}}"#);
+            io::stdout().flush().unwrap();
+        } else if line.contains("\"name\":\"rlm_end\"") {
+            println!("{}", r#"{"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"{}"}]}}"#);
+            io::stdout().flush().unwrap();
+        }
+    }
+}
+"###).unwrap();
+            let fixture_binary = root.join(format!("fake-engine{}", std::env::consts::EXE_SUFFIX));
+            let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+            let compilation = std::process::Command::new(rustc)
+                .args(["--edition=2021", "-o"])
+                .arg(&fixture_binary)
+                .arg(&fixture_source)
+                .output()
+                .unwrap();
+            assert!(
+                compilation.status.success(),
+                "{}",
+                String::from_utf8_lossy(&compilation.stderr)
+            );
+            let bytes = std::fs::read(&fixture_binary).unwrap();
+            let digest = format!("{:x}", Sha256::digest(&bytes));
+            let mut assets = std::collections::BTreeMap::new();
+            let mut core_targets = serde_json::Map::new();
+            let mut runner_targets = serde_json::Map::new();
+            let mut analyzer_targets = serde_json::Map::new();
+            let mut rlm_targets = serde_json::Map::new();
+            for host in HostTarget::ALL {
+                let target = host.as_str();
+                let suffix = if target == "win-x64" { ".exe" } else { "" };
+                let archive_name = format!("rlm-tools-bsl-{target}.tar.gz");
+                let archive = {
+                    let encoder =
+                        flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+                    let mut builder = tar::Builder::new(encoder);
+                    for name in [
+                        format!("rlm-bsl-mcp{suffix}"),
+                        format!("rlm-bsl-index{suffix}"),
+                    ] {
+                        let mut header = tar::Header::new_gnu();
+                        header.set_size(bytes.len() as u64);
+                        header.set_mode(0o755);
+                        header.set_cksum();
+                        builder
+                            .append_data(&mut header, name, bytes.as_slice())
+                            .unwrap();
+                    }
+                    builder.into_inner().unwrap().finish().unwrap()
+                };
+                let archive_digest = format!("{:x}", Sha256::digest(&archive));
+                assets.insert(archive_name.clone(), archive);
+                rlm_targets.insert(target.to_owned(), serde_json::json!({
+                    "asset": {"name": archive_name, "url": format!("https://github.com/IngvarConsulting/unica-toolchain/releases/download/rlm-tools-bsl-v1.33.0-build.3/{archive_name}"), "mediaType": "application/gzip", "sha256": archive_digest},
+                    "files": [
+                        {"path": format!("rlm-bsl-mcp{suffix}"), "sha256": digest, "executable": true},
+                        {"path": format!("rlm-bsl-index{suffix}"), "sha256": digest, "executable": true}
+                    ],
+                }));
+                let core_asset = format!("unica-runtime-{target}.tar.gz");
+                let core_path = format!("bin/{target}/unica{suffix}");
+                core_targets.insert(target.to_owned(), serde_json::json!({
+                    "asset": {"name": core_asset, "url": format!("https://github.com/IngvarConsulting/unica/releases/download/v{}/{core_asset}", env!("CARGO_PKG_VERSION")), "mediaType": "application/gzip", "sha256": "0".repeat(64)},
+                    "files": [{"path": core_path, "sha256": "0".repeat(64), "executable": true}],
+                    "entrypoint": core_path,
+                }));
+                for (name, targets, origin, version) in [
+                    (
+                        "v8-runner",
+                        &mut runner_targets,
+                        "https://github.com/IngvarConsulting/v8-runner-rust/releases/download",
+                        "0.11.2",
+                    ),
+                    (
+                        "bsl-analyzer",
+                        &mut analyzer_targets,
+                        "https://github.com/IngvarConsulting/unica-toolchain/releases/download",
+                        "0.2.67",
+                    ),
+                ] {
+                    let asset = format!("{name}-{target}{suffix}");
+                    assets.insert(asset.clone(), bytes.clone());
+                    targets.insert(target.to_owned(), serde_json::json!({
+                        "asset": {"name": asset, "url": format!("{origin}/{name}-v{version}-build.1/{asset}"), "mediaType": "application/octet-stream", "sha256": digest},
+                        "files": [{"path": format!("bin/{target}/{name}{suffix}"), "sha256": digest, "executable": true}],
+                    }));
+                }
+            }
+            let release = serde_json::json!({
+                "schemaVersion": 2,
+                "pluginVersion": env!("CARGO_PKG_VERSION"),
+                "source": {"repository": "https://github.com/IngvarConsulting/unica", "commit": "0".repeat(40)},
+                "release": {"repository": "https://github.com/IngvarConsulting/unica", "tag": format!("v{}", env!("CARGO_PKG_VERSION"))},
+                "artifacts": {
+                    "unica": {"version": env!("CARGO_PKG_VERSION"), "role": "core", "targets": core_targets},
+                    "v8-runner": {"version": "0.11.2", "role": "engine", "targets": runner_targets},
+                    "bsl-analyzer": {"version": "0.2.67", "role": "engine", "targets": analyzer_targets},
+                    "rlm-tools-bsl": {"version": "1.33.0", "role": "engine", "targets": rlm_targets},
+                }
+            });
+            let release_path = root.join("runtime-manifest.json");
+            std::fs::write(&release_path, release.to_string()).unwrap();
+            let target = crate::infrastructure::platform::current_target_id().unwrap();
+            let suffix = std::env::consts::EXE_SUFFIX;
+            let rlm_archive = format!("rlm-tools-bsl-{target}.tar.gz");
+            let rlm_digest = format!("{:x}", Sha256::digest(&assets[&rlm_archive]));
+            std::fs::write(plugin.join("third-party/manifest.json"), serde_json::json!({
+                "schemaVersion": 2,
+                "artifactAssets": {
+                    "v8-runner": {"sha256": digest},
+                    "bsl-analyzer": {"sha256": digest},
+                    "rlm-tools-bsl": {"sha256": rlm_digest},
+                },
+                "tools": [
+                    {"name": "v8-runner", "version": "0.11.2", "binaryPath": format!("bin/{target}/v8-runner{suffix}"), "deliveredPath": format!("bin/{target}/v8-runner{suffix}"), "sha256": digest},
+                    {"name": "bsl-analyzer", "version": "0.2.67", "binaryPath": format!("bin/{target}/bsl-analyzer{suffix}"), "deliveredPath": format!("bin/{target}/bsl-analyzer{suffix}"), "sha256": digest},
+                    {"name": "rlm-bsl-mcp", "artifact": "rlm-tools-bsl", "version": "1.33.0", "binaryPath": format!("bin/{target}/rlm-bsl-mcp{suffix}"), "deliveredPath": format!("rlm-bsl-mcp{suffix}"), "sha256": digest},
+                    {"name": "rlm-bsl-index", "artifact": "rlm-tools-bsl", "version": "1.33.0", "binaryPath": format!("bin/{target}/rlm-bsl-index{suffix}"), "deliveredPath": format!("rlm-bsl-index{suffix}"), "sha256": digest},
+                ],
+            }).to_string()).unwrap();
+            std::env::set_var("UNICA_PLUGIN_ROOT", &plugin);
+            std::env::set_var("UNICA_ARTIFACT_CACHE", &cache);
+            std::env::set_var("UNICA_RUNTIME_MANIFEST", &release_path);
+            std::env::set_var("UNICA_TEST_PROVIDER_MARKER_DIR", &root);
+            std::env::set_var("UNICA_WORKSPACE_SERVICE_IDLE_SECS", "1");
+            let server = std::env::current_exe()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join(format!("unica{}", std::env::consts::EXE_SUFFIX));
+            assert!(
+                server.is_file(),
+                "build the Unica binary for workspace service: {}",
+                server.display()
+            );
+            std::env::set_var("UNICA_TEST_WORKSPACE_SERVICE_EXE", server);
+            let downloader = Arc::new(PublishedFixture(
+                assets,
+                std::sync::atomic::AtomicUsize::new(0),
+            ));
+            let runtime = V5CanonicalInvocationRuntime::new(
+                Arc::new(super::super::v13_service::CanonicalV13ReadService::default()),
+                Arc::new(TokioClock),
+            )
+            .with_delivery_downloader_for_test(downloader.clone());
+            assert!(!cache.join("v8-runner").exists());
+            assert!(!cache.join("bsl-analyzer").exists());
+
+            let request = InvocationRequest::new(
+                ToolIdentity::Run,
+                serde_json::json!({"op":"upload","args":{"input":"sample.cfe","extension":"Sample"},"dryRun":true}),
+                workspace.display().to_string(),
+                7_000,
+            )
+            .unwrap();
+            let upload = runtime
+                .bind(request)
+                .unwrap()
+                .prepare()
+                .unwrap()
+                .execute(CancellationToken::new())
+                .unwrap();
+            assert!(upload.ok, "{upload:?}");
+            assert_eq!(upload.data.as_ref().unwrap()["op"], "upload");
+            assert_eq!(upload.data.as_ref().unwrap()["dryRun"], true);
+            assert_eq!(
+                std::fs::read_to_string(root.join("upload")).unwrap(),
+                "v8-runner load preview invoked"
+            );
+
+            let request = InvocationRequest::new(
+                ToolIdentity::Run,
+                serde_json::json!({"op":"extensions.list","args":{},"dryRun":true}),
+                workspace.display().to_string(),
+                7_000,
+            )
+            .unwrap();
+            let run = runtime
+                .bind(request)
+                .unwrap()
+                .prepare()
+                .unwrap()
+                .execute(CancellationToken::new())
+                .unwrap();
+            assert!(run.ok, "{run:?}");
+            assert_eq!(
+                std::fs::read_to_string(root.join("run")).unwrap(),
+                "v8-runner invoked"
+            );
+            let search = submit_canonical(
+                &runtime,
+                &workspace,
+                ToolIdentity::Search,
+                serde_json::json!({"query":"Needle","role":"symbol"}),
+            );
+            assert!(
+                search.ok,
+                "{search:?}; marker={:?}; analyzer_cache_sha_verified={}",
+                std::fs::read_to_string(root.join("search")).ok(),
+                crate::infrastructure::bundled_tools::resolve_bundled_tool(
+                    &plugin,
+                    "bsl-analyzer",
+                    true
+                )
+                .ok()
+                .and_then(|resolved| std::fs::read(resolved.program).ok())
+                .is_some_and(|bytes| format!("{:x}", Sha256::digest(bytes)) == digest)
+            );
+            assert_eq!(
+                std::fs::read_to_string(root.join("search")).unwrap(),
+                "bsl-analyzer invoked"
+            );
+            assert_eq!(
+                search.data.as_ref().unwrap()["matches"][0]["provider"],
+                "bsl-analyzer"
+            );
+            assert_eq!(
+                search.data.as_ref().unwrap()["matches"][0]["status"],
+                "empty"
+            );
+            assert_eq!(
+                search.data.as_ref().unwrap()["matches"][0]["hits"],
+                serde_json::json!([])
+            );
+            let mut semantic = submit_canonical(
+                &runtime,
+                &workspace,
+                ToolIdentity::Search,
+                serde_json::json!({"query":"Needle","role":"semantic"}),
+            );
+            for _ in 0..5 {
+                if semantic.ok {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                semantic = submit_canonical(
+                    &runtime,
+                    &workspace,
+                    ToolIdentity::Search,
+                    serde_json::json!({"query":"Needle","role":"semantic"}),
+                );
+            }
+            assert!(
+                semantic.ok,
+                "{semantic:?}; index={:?}; rlm={:?}",
+                std::fs::read_to_string(root.join("index")),
+                std::fs::read_to_string(root.join("semantic"))
+            );
+            assert_eq!(
+                std::fs::read_to_string(root.join("index")).unwrap(),
+                "rlm-bsl-index invoked"
+            );
+            assert_eq!(
+                std::fs::read_to_string(root.join("semantic")).unwrap(),
+                "rlm-bsl-mcp invoked"
+            );
+            assert_eq!(
+                semantic.data.as_ref().unwrap()["matches"][0]["provider"],
+                "rlm"
+            );
+            for (name, version) in [("v8-runner", "0.11.2"), ("bsl-analyzer", "0.2.67")] {
+                assert!(cache
+                    .join(name)
+                    .join(format!("{version}--{digest}"))
+                    .join(target)
+                    .is_dir());
+            }
+            assert!(cache
+                .join("rlm-tools-bsl")
+                .join(format!("1.33.0--{rlm_digest}"))
+                .join(target)
+                .is_dir());
+            for tool in ["rlm-bsl-index", "rlm-bsl-mcp"] {
+                let resolved =
+                    crate::infrastructure::bundled_tools::resolve_bundled_tool(&plugin, tool, true)
+                        .unwrap();
+                assert_eq!(
+                    format!(
+                        "{:x}",
+                        Sha256::digest(std::fs::read(resolved.program).unwrap())
+                    ),
+                    digest,
+                    "{tool} must resolve to the checked delivery"
+                );
+            }
+            assert_eq!(downloader.1.load(std::sync::atomic::Ordering::SeqCst), 3);
+            // The real service normally lives for hours. Wait for its short
+            // idle shutdown before the parent removes this isolated tempdir.
+            let services = workspace.join(".build/unica/services");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                let live_record = std::fs::read_dir(&services)
+                    .unwrap()
+                    .flatten()
+                    .any(|entry| entry.path().join("service.json").is_file());
+                if !live_record {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "workspace service did not stop after idle timeout"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            return;
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let test_executable = std::env::current_exe().unwrap();
+        let profile_dir = test_executable.parent().unwrap().parent().unwrap();
+        let server = profile_dir.join(format!("unica{}", std::env::consts::EXE_SUFFIX));
+        let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .unwrap();
+        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+        let stdout = std::fs::File::create(root.path().join("cargo-build.stdout")).unwrap();
+        let stderr = std::fs::File::create(root.path().join("cargo-build.stderr")).unwrap();
+        let mut command = std::process::Command::new(cargo);
+        command
+            .current_dir(&workspace)
+            .args([
+                "build",
+                "--offline",
+                "--locked",
+                "-p",
+                "unica-coder",
+                "--bin",
+                "unica",
+            ])
+            .stdout(stdout)
+            .stderr(stderr);
+        if let Some(target_dir) = std::env::var_os("CARGO_TARGET_DIR") {
+            command.env("CARGO_TARGET_DIR", target_dir);
+        }
+        let mut child = command.spawn().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if std::time::Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("offline Unica binary build exceeded 180 seconds");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        };
+        assert!(
+            status.success(),
+            "offline Unica binary build failed: {}",
+            std::fs::read_to_string(root.path().join("cargo-build.stderr")).unwrap()
+        );
+        assert!(
+            server.is_file(),
+            "offline build did not create {}",
+            server.display()
+        );
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "infrastructure::daemon::server::actor_capacity_tests::canonical_run_and_role_search_deliver_engines_and_run_supported_providers",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env(ROOT, root.path())
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stdout.contains("running 1 test"), "{stdout}\n{stderr}");
+        assert!(output.status.success(), "{stdout}\n{stderr}");
     }
 
     #[test]
@@ -2194,10 +2935,15 @@ pub(crate) mod actor_capacity_tests {
             };
             let authority_args = call_arguments(
                 authority,
-                "crate::infrastructure::v13_read::LogicalViewReadAuthority::with_read_authority",
+                "crate::infrastructure::v13_read::LogicalViewReadAuthority::with_read_authority_and_registration_cache",
             )?;
-            let expected_authority_args =
-                ["cancellation", "read", "platform_profile", "self.deadline"];
+            let expected_authority_args = [
+                "cancellation",
+                "read",
+                "platform_profile",
+                "self.deadline",
+                "Arc::clone(&self.registration_cache)",
+            ];
             if authority_args.len() != expected_authority_args.len()
                 || authority_args
                     .iter()
@@ -2205,7 +2951,7 @@ pub(crate) mod actor_capacity_tests {
                     .any(|(actual, expected)| !expression_is(actual, expected))
             {
                 return Err(format!(
-                    "logical authority must preserve cancellation/read/profile/deadline exactly; found `{}`",
+                    "logical authority must preserve cancellation/read/profile/deadline/actor-cache exactly; found `{}`",
                     tokens(authority)
                 ));
             }
@@ -2232,7 +2978,7 @@ pub(crate) mod actor_capacity_tests {
                 "validate_named_identity",
                 "read_immediate_names_bounded",
                 "retain_immediate_child_nofollow",
-                "read_bounded",
+                "open_named_identity_for_read",
                 "remaining",
                 "is_cancelled",
                 "match_starts",
@@ -2262,8 +3008,8 @@ pub(crate) mod actor_capacity_tests {
             for bound in [
                 "CANONICAL_SEARCH_MAX_ENTRIES",
                 "CANONICAL_SEARCH_MAX_DEPTH",
-                "CANONICAL_SEARCH_MAX_FILE_BYTES",
-                "CANONICAL_SEARCH_MAX_TOTAL_BYTES",
+                "CANONICAL_SEARCH_MAX_LINE_BYTES",
+                "read_search_line_bounded",
             ] {
                 if !body.contains(bound) {
                     return Err(format!("literal search must preserve the `{bound}` bound"));
@@ -2863,6 +3609,10 @@ pub(crate) mod actor_capacity_tests {
             ("deadline", "lease.deadline"),
             ("fence", "source.fence.clone()"),
             (
+                "registration_cache",
+                "self.invocation.actor.configuration_registration_cache(&source.binding)?",
+            ),
+            (
                 "identity",
                 "format!(\"{}:{}\", self.invocation.workspace_identity_hash.as_str(), source.binding.source_set_name())",
             ),
@@ -2875,7 +3625,7 @@ pub(crate) mod actor_capacity_tests {
             })
         {
             return Err(format!(
-                "actor capability construction must use exact binding/identity/fence/deadline dataflow; found `{}`",
+                "actor capability construction must use exact binding/identity/fence/deadline/actor-cache dataflow; found `{}`",
                 tokens(expression)
             ));
         }
@@ -2893,7 +3643,7 @@ pub(crate) mod actor_capacity_tests {
             return Err("actor read capability declaration must be exact daemon-visible with no derives or generics".to_string());
         }
         let syn::Fields::Named(named) = &declaration.fields else {
-            return Err("actor read capability must have four named private fields".to_string());
+            return Err("actor read capability must have five named private fields".to_string());
         };
         let mut actual_fields = std::collections::BTreeMap::new();
         for field in &named.named {
@@ -2912,6 +3662,10 @@ pub(crate) mod actor_capacity_tests {
             ("deadline".to_string(), "ProviderDeadline".to_string()),
             ("fence".to_string(), "WorkspaceLogicalReadFence".to_string()),
             ("identity".to_string(), "String".to_string()),
+            (
+                "registration_cache".to_string(),
+                "Arc < RegistrationCache >".to_string(),
+            ),
         ]);
         if actual_fields != expected_fields {
             return Err(format!(
@@ -3008,7 +3762,7 @@ pub(crate) mod actor_capacity_tests {
                 "search_bsl_literal",
                 (
                     true,
-                    "fn search_bsl_literal(&self, matcher: &super::super::v13_read_modes::SearchMatcher, skip: &mut usize, limit: usize, scope_prefix: Option<&str>, scope_at: &QualifiedAddress, cancellation: &CancellationToken,) -> Result<Vec<serde_json::Value>, String>",
+                    "fn search_bsl_literal(&self, matcher: &super::super::v13_read_modes::SearchMatcher, skip: &mut usize, limit: usize, scope_prefix: Option<&str>, scope_at: &QualifiedAddress, cancellation: &CancellationToken,) -> Result<LiteralSearchScan, String>",
                     "",
                 ),
             ),
@@ -6237,6 +6991,197 @@ struct ActorLogicalReadLease {"#,
             admitted.is_empty(),
             "unproved source maps entered canonical Platform XML admission: {admitted:?}"
         );
+    }
+
+    #[test]
+    fn logical_read_admission_deadline_returns_canonical_rejection() {
+        assert_logical_read_deadline_returns_canonical_rejection(
+            LogicalReadDeadlineCase::Admission,
+        );
+    }
+
+    #[test]
+    fn logical_read_publication_deadline_discards_staged_source_data() {
+        assert_logical_read_deadline_returns_canonical_rejection(
+            LogicalReadDeadlineCase::Publication,
+        );
+    }
+
+    #[test]
+    fn logical_read_admission_scan_deadline_returns_canonical_rejection() {
+        assert_logical_read_deadline_returns_canonical_rejection(
+            LogicalReadDeadlineCase::AdmissionScan,
+        );
+    }
+
+    #[test]
+    fn logical_read_publication_scan_deadline_discards_staged_source_data() {
+        assert_logical_read_deadline_returns_canonical_rejection(
+            LogicalReadDeadlineCase::PublicationScan,
+        );
+    }
+
+    #[test]
+    fn logical_read_expired_clock_does_not_reclassify_execution_failure() {
+        assert_logical_read_deadline_returns_canonical_rejection(
+            LogicalReadDeadlineCase::ExecutionFailure,
+        );
+    }
+
+    #[test]
+    fn logical_read_parent_admission_deadline_discards_staged_extension_data() {
+        assert_logical_read_deadline_returns_canonical_rejection(
+            LogicalReadDeadlineCase::ParentAdmissionScan,
+        );
+    }
+
+    #[test]
+    fn logical_read_admission_deadline_is_preserved_by_every_read_tool() {
+        for tool in [
+            ToolIdentity::Resolve,
+            ToolIdentity::Search,
+            ToolIdentity::Check,
+            ToolIdentity::Diff,
+        ] {
+            assert_logical_read_deadline_for_tool(LogicalReadDeadlineCase::Admission, tool);
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum LogicalReadDeadlineCase {
+        Admission,
+        AdmissionScan,
+        Publication,
+        PublicationScan,
+        ExecutionFailure,
+        ParentAdmissionScan,
+    }
+
+    fn assert_logical_read_deadline_returns_canonical_rejection(case: LogicalReadDeadlineCase) {
+        assert_logical_read_deadline_for_tool(case, ToolIdentity::View);
+    }
+
+    fn assert_logical_read_deadline_for_tool(case: LogicalReadDeadlineCase, tool: ToolIdentity) {
+        let parent_admission = matches!(case, LogicalReadDeadlineCase::ParentAdmissionScan);
+        let workspace = if parent_admission {
+            borrowing_view_fixture("normal")
+        } else {
+            source_selection_read_fixture().0
+        };
+        let runtime = bootstrap_runtime();
+        let arguments = match tool {
+            ToolIdentity::Search => {
+                serde_json::json!({"query": "Items", "scope": "main:Configuration"})
+            }
+            ToolIdentity::Diff => {
+                serde_json::json!({"left": "main:Catalog.Items", "right": "main:Catalog.Items"})
+            }
+            _ => {
+                serde_json::json!({"at": if parent_admission { "ext:Catalog.Items" } else { "main:Catalog.Items" }})
+            }
+        };
+        let request = InvocationRequest::new(
+            tool,
+            arguments,
+            std::fs::canonicalize(workspace.path())
+                .unwrap()
+                .to_string_lossy(),
+            7_000,
+        )
+        .unwrap();
+        let invocation = bind_workspace_invocation(
+            &request,
+            &runtime.workspace_actors,
+            Arc::clone(&runtime.deliveries),
+            Arc::clone(&runtime.provider_hosts),
+            Arc::clone(&runtime.runtime_resources),
+            None,
+            runtime.capture_response_deadline_for_test(),
+        )
+        .unwrap();
+        let started = Instant::now();
+        let expires = started + LOGICAL_READ_OPERATION_BUDGET;
+        set_logical_read_now(if matches!(case, LogicalReadDeadlineCase::Admission) {
+            expires
+        } else {
+            started
+        });
+        let deadline = ProviderDeadline::with_clock(expires, logical_read_now);
+        let cancellation = CancellationToken::new();
+        let _admission_scan = matches!(case, LogicalReadDeadlineCase::AdmissionScan).then(|| {
+            crate::infrastructure::source_revision::set_retained_scan_test_mutation(
+                crate::infrastructure::source_revision::RetainedScanTestMutationPoint::ScanStart,
+                move || set_logical_read_now(expires),
+            )
+        });
+        let execution = invocation
+            .begin_execution_with_logical_deadline_for_test(&cancellation, deadline)
+            .unwrap_or_else(|error| {
+                panic!("deadline must remain a domain rejection at admission: {error}")
+            });
+        let service =
+            crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default();
+        let _parent_scan = parent_admission.then(|| {
+            crate::infrastructure::source_revision::set_retained_scan_test_mutation(
+                crate::infrastructure::source_revision::RetainedScanTestMutationPoint::ScanStart,
+                move || set_logical_read_now(expires),
+            )
+        });
+        let staged = service.execute(&execution, cancellation.clone()).unwrap();
+        if parent_admission {
+            assert_eq!(
+                logical_read_now(),
+                expires,
+                "parent scan must exhaust the deadline"
+            );
+            assert_eq!(
+                staged.data.as_ref().unwrap()["props"]["parentStatus"],
+                "unavailable"
+            );
+        }
+        if !matches!(
+            case,
+            LogicalReadDeadlineCase::Admission | LogicalReadDeadlineCase::AdmissionScan
+        ) {
+            assert!(staged.ok, "{staged:?}");
+            assert!(
+                staged.data.is_some(),
+                "the reader must stage actual source data"
+            );
+            if !matches!(case, LogicalReadDeadlineCase::PublicationScan) {
+                set_logical_read_now(expires);
+            }
+        }
+        if matches!(case, LogicalReadDeadlineCase::ExecutionFailure) {
+            let failure = InvocationFailure::new("reader_failed", "unrelated provider failure");
+            let published = execution
+                .publish(Err(failure.clone()), &cancellation)
+                .unwrap();
+            assert_eq!(published, Err(failure));
+            return;
+        }
+        let _publication_scan =
+            matches!(case, LogicalReadDeadlineCase::PublicationScan).then(|| {
+                execution.mark_source_revision_dirty_for_test();
+                crate::infrastructure::source_revision::set_retained_scan_test_mutation(
+                crate::infrastructure::source_revision::RetainedScanTestMutationPoint::ScanStart,
+                move || set_logical_read_now(expires),
+            )
+            });
+        let result = execution
+            .publish(Ok(staged), &cancellation)
+            .unwrap_or_else(|error| {
+                panic!("deadline must remain a domain rejection at publication: {error}")
+            })
+            .expect("deadline must not become an invocation failure");
+        assert!(!result.ok);
+        assert_eq!(result.diagnostics[0]["code"], "deadline_exceeded");
+        assert_eq!(result.diagnostics[0]["outcome"], "retry");
+        assert!(
+            result.data.is_none(),
+            "expired source data escaped: {result:?}"
+        );
+        assert!(result.rev.is_none(), "expired revision escaped: {result:?}");
     }
 
     struct ManualInvocationClock(Mutex<Instant>);

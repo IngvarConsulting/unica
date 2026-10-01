@@ -170,6 +170,12 @@ impl CodeIntelligenceDeadlines {
         }
     }
 
+    pub(crate) fn within_search_budget(mut self, remaining: Duration) -> Self {
+        self.search_total_timeout = self.search_total_timeout.min(remaining);
+        self.search_git_grep_timeout = self.search_git_grep_timeout.min(remaining);
+        self
+    }
+
     #[cfg(test)]
     pub(crate) const fn for_test(timeout: Duration) -> Self {
         Self {

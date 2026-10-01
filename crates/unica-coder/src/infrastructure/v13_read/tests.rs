@@ -25,6 +25,7 @@ use crate::infrastructure::v13_read_port::{
 use serde::Deserialize;
 use serde_json::json;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -2506,6 +2507,174 @@ fn module_body_context_filter_excludes_at_client_source_from_server_slice() {
 
     assert!(result.ok, "{} {:?}", result.summary, result.diagnostics);
     assert_eq!(result.data.as_ref().unwrap()["items"], json!([]));
+}
+
+#[test]
+#[ignore = "blocked by #1119: BSL Body still reads the complete module under an 8 MiB file cap"]
+fn ordinary_bsl_read_over_eight_mib_reassembles_every_body_line() {
+    let fixture = RealReaderFixture::new();
+    let module = fixture
+        .source
+        .join("Reports/ParityReport/Forms/MainForm/Ext/Form/Module.bsl");
+    let mut file = std::io::BufWriter::new(fs::File::create(module).unwrap());
+    writeln!(file, "Процедура ПрочитатьБольшойМодуль()").unwrap();
+    for _ in 0..9 {
+        writeln!(file, "//{}", "я".repeat(512 * 1024)).unwrap();
+    }
+    writeln!(file, "КонецПроцедуры").unwrap();
+    file.flush().unwrap();
+    drop(file);
+
+    let service = fixture.view_service();
+    let at = "main:Report.ParityReport.Form.MainForm.Module.Form.Body";
+    let mut cursor = None;
+    let mut observed_lines = Vec::new();
+    loop {
+        let mut request = ViewRequest::new(at).unwrap().with_limit(2).unwrap();
+        if let Some(previous) = cursor.take() {
+            request = request.with_cursor(previous);
+        }
+        let page = service.view(request);
+        assert!(page.ok, "large Body page failed");
+        for item in page.data.as_ref().unwrap()["items"].as_array().unwrap() {
+            let line = item["line"].as_u64().unwrap();
+            let text = item["text"].as_str().expect("Body line must carry text");
+            observed_lines.push(line);
+            if (2..=10).contains(&line) {
+                assert!(text.starts_with("//"));
+                assert_eq!(text.chars().count(), 2 + 512 * 1024);
+            }
+        }
+        cursor = page.cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(observed_lines, (1..=11).collect::<Vec<_>>());
+}
+
+#[test]
+fn ordinary_xml_read_over_eight_mib_keeps_complete_configuration_facts() {
+    let fixture = RealReaderFixture::new();
+    let path = fixture.source.join("Configuration.xml");
+    let baseline = fixture
+        .view_service()
+        .view(ViewRequest::new("main:Configuration").unwrap());
+    assert!(baseline.ok, "baseline Configuration view failed");
+    let xml = fs::read_to_string(&path).unwrap();
+    let inflated = xml.replace(
+        "</MetaDataObject>",
+        &format!("<!--{}--></MetaDataObject>", "x".repeat(8 * 1024 * 1024)),
+    );
+    fs::write(path, inflated).unwrap();
+
+    let result = fixture
+        .view_service()
+        .view(ViewRequest::new("main:Configuration").unwrap());
+    assert!(result.ok, "large Configuration view failed");
+    assert!(
+        result.data.as_ref().unwrap()["props"] == baseline.data.as_ref().unwrap()["props"],
+        "Configuration root properties changed"
+    );
+    assert!(
+        result.data.as_ref().unwrap()["branches"] == baseline.data.as_ref().unwrap()["branches"],
+        "Configuration root branches changed"
+    );
+}
+
+#[test]
+fn large_configuration_root_keeps_legacy_duplicate_and_namespace_semantics() {
+    let fixture = RealReaderFixture::new();
+    let path = fixture.source.join("Configuration.xml");
+    let xml = fs::read_to_string(&path).unwrap();
+    let xml = xml.replacen(
+        "</ChildObjects>",
+        "<CommonModule>РеактивныйСервер</CommonModule><alien:Catalog xmlns:alien=\"urn:other\">Ghost</alien:Catalog></ChildObjects>",
+        1,
+    );
+    fs::write(&path, &xml).unwrap();
+
+    let reader = fixture.read_authority();
+    let legacy_payload = reader
+        .read
+        .configuration_payload_with_checkpoint(&mut || Ok(()))
+        .unwrap();
+    let route = route_logical_address(
+        &QualifiedAddress::parse("main:Configuration").unwrap(),
+        PlatformProfile::v8_3_27(),
+    )
+    .unwrap();
+    let legacy = project_typed_payload(&route, legacy_payload).unwrap();
+    let module_branch = super::module_branch_for_parent(route.at(), PlatformProfile::v8_3_27())
+        .expect("Configuration has a profile module branch");
+    let expected = serde_json::to_value(legacy.with_branch(module_branch)).unwrap();
+
+    fs::write(
+        &path,
+        xml.replace(
+            "</MetaDataObject>",
+            &format!("<!--{}--></MetaDataObject>", "x".repeat(8 * 1024 * 1024)),
+        ),
+    )
+    .unwrap();
+    let actual = fixture
+        .view_service()
+        .view(ViewRequest::new("main:Configuration").unwrap());
+    assert!(actual.ok, "large Configuration view failed");
+    assert!(
+        actual.data.as_ref().unwrap() == &expected,
+        "streaming Configuration root differs from the bounded reader"
+    );
+}
+
+#[test]
+fn large_configuration_root_rejects_malformed_tail() {
+    let fixture = RealReaderFixture::new();
+    let path = fixture.source.join("Configuration.xml");
+    let xml = fs::read_to_string(&path).unwrap();
+    fs::write(
+        path,
+        xml.replace(
+            "</MetaDataObject>",
+            &format!(
+                "<!--{}--><Broken></MetaDataObject>",
+                "x".repeat(8 * 1024 * 1024)
+            ),
+        ),
+    )
+    .unwrap();
+    let result = fixture
+        .view_service()
+        .view(ViewRequest::new("main:Configuration").unwrap());
+    assert!(!result.ok, "malformed XML tail escaped");
+    assert_eq!(result.diagnostics[0]["code"], "provider_unavailable");
+    assert_eq!(result.diagnostics[0]["detailCode"], "source_unreadable");
+}
+
+#[test]
+fn large_configuration_root_rejects_revision_change_during_owner_proof() {
+    let fixture = RealReaderFixture::new();
+    let root_xml = fixture.source.join("Configuration.xml");
+    let xml = fs::read_to_string(&root_xml).unwrap();
+    fs::write(
+        root_xml,
+        xml.replace(
+            "</MetaDataObject>",
+            &format!("<!--{}--></MetaDataObject>", "x".repeat(8 * 1024 * 1024)),
+        ),
+    )
+    .unwrap();
+    let descriptor = fixture.source.join("Catalogs/Items.xml");
+    review_set_before_owner_proof(move || {
+        let mut text = fs::read_to_string(&descriptor).unwrap();
+        text.push('\n');
+        fs::write(&descriptor, text).unwrap();
+    });
+    let result = fixture
+        .view_service()
+        .view(ViewRequest::new("main:Configuration").unwrap());
+    assert!(!result.ok, "mixed-revision Configuration root escaped");
+    assert_eq!(result.diagnostics[0]["code"], "stale_cursor");
 }
 
 #[test]

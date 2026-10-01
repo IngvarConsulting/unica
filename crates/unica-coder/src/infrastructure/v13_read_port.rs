@@ -1,4 +1,5 @@
 use crate::application::ports::{MetaLocalInfo, MetadataChildProfile};
+use crate::application::v13::body_snapshot::BodySnapshot;
 use crate::application::v13::view::ViewError;
 use crate::domain::address::NodeKind;
 use crate::domain::cancellation::CancellationToken;
@@ -45,9 +46,14 @@ use crate::infrastructure::platform_xml_owner::{
     PlatformXmlSourceSetOwnerEvidence,
 };
 use crate::infrastructure::source_revision::{RetainedRevisionLease, SourceRevisionService};
+use crate::infrastructure::v13_large_configuration::{
+    read_configuration_registration_index, read_configuration_root, RegistrationIndex,
+    StreamedConfigurationRoot,
+};
 use serde_json::{json, Value};
 #[cfg(test)]
 use std::cell::RefCell;
+use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -327,6 +333,82 @@ impl ProviderReadAuthority {
             ),
         );
         Ok(Value::Object(payload))
+    }
+
+    pub(crate) fn streamed_configuration_root(
+        &self,
+        checkpoint: &dyn Fn() -> Result<(), ViewError>,
+        verify_owner: impl FnMut(&str, &str) -> Result<(), ViewError>,
+    ) -> Result<StreamedConfigurationRoot, ViewError> {
+        checkpoint()?;
+        let file = match self
+            .root
+            .open_relative_regular_nofollow(Path::new("Configuration.xml"))
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let mut refusal = ViewError::new(
+                    RefusalCode::InvalidState,
+                    "source set is declared but its directory holds no configuration export; fill it with a scaffold before reading",
+                );
+                refusal.set_next(serde_json::json!({
+                    "tool": "unica.check",
+                    "args": {},
+                    "reason": "вердикт по набору и совет, чем его наполнить",
+                }));
+                return Err(refusal);
+            }
+            Err(error) => {
+                return Err(ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
+                    error.to_string(),
+                ));
+            }
+        };
+        let support = serde_json::to_value(self.configuration_support()?).map_err(|error| {
+            ViewError::detailed(RefusalDetail::BackendBroken, error.to_string())
+        })?;
+        let home_page = serde_json::to_value(self.home_page()?).map_err(|error| {
+            ViewError::detailed(RefusalDetail::BackendBroken, error.to_string())
+        })?;
+        let interface = serde_json::to_value(self.command_interface()?).map_err(|error| {
+            ViewError::detailed(RefusalDetail::BackendBroken, error.to_string())
+        })?;
+        read_configuration_root(
+            file,
+            support,
+            home_page,
+            interface,
+            checkpoint,
+            verify_owner,
+        )
+    }
+
+    /// Build root registration evidence from the complete retained XML once.
+    /// The returned anonymous disk index can serve named reads in this source
+    /// revision without retaining the inventory in process memory.
+    pub(crate) fn streamed_configuration_registration_index(
+        &self,
+        checkpoint: &dyn Fn() -> Result<(), ViewError>,
+    ) -> Result<RegistrationIndex, ViewError> {
+        checkpoint()?;
+        let file = self
+            .root
+            .open_relative_regular_nofollow(Path::new("Configuration.xml"))
+            .map_err(|error| {
+                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+            })?;
+        read_configuration_registration_index(file, checkpoint)
+    }
+
+    /// Preserve the established parser and its full compatibility behavior
+    /// for files that already fit the ordinary read. The streaming route is
+    /// selected only when that read would refuse the file by total size.
+    pub(crate) fn configuration_xml_requires_streaming(&self) -> bool {
+        self.root
+            .open_relative_regular_nofollow(Path::new("Configuration.xml"))
+            .and_then(|file| file.metadata())
+            .is_ok_and(|metadata| metadata.len() > MAX_CONFIGURATION_BYTES as u64)
     }
 
     fn external_inventory_payload(
@@ -843,6 +925,87 @@ impl ProviderReadAuthority {
                     })
             })
             .transpose()
+    }
+
+    pub(crate) fn module_body_snapshot(
+        &self,
+        target: &MetadataAddress,
+        mut checkpoint: impl FnMut() -> Result<(), ViewError>,
+    ) -> Result<BodySnapshot, ViewError> {
+        let relative = self.module_relative(target)?;
+        let mut file = tempfile::tempfile().map_err(|error| {
+            ViewError::detailed(
+                RefusalDetail::BackendBroken,
+                format!("cannot create Body snapshot: {error}"),
+            )
+        })?;
+        let mut carry = Vec::<u8>::new();
+        let mut interrupted = None;
+        let mut scratch_failure = false;
+        let result = self.root.visit_relative_regular_chunks(
+            &relative,
+            || {
+                checkpoint().map_err(|error| {
+                    interrupted = Some(error);
+                    std::io::Error::other("Body capture interrupted")
+                })
+            },
+            |chunk| {
+                let mut candidate = Vec::with_capacity(carry.len() + chunk.len());
+                candidate.extend_from_slice(&carry);
+                candidate.extend_from_slice(chunk);
+                match std::str::from_utf8(&candidate) {
+                    Ok(_) => carry.clear(),
+                    Err(error) if error.error_len().is_none() => {
+                        carry = candidate[error.valid_up_to()..].to_vec();
+                    }
+                    Err(_) => {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "BSL module is not UTF-8",
+                        ))
+                    }
+                }
+                file.write_all(chunk).inspect_err(|_| {
+                    scratch_failure = true;
+                })
+            },
+        );
+        let len = match result {
+            Ok(len) => len,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(error) => {
+                return Err(interrupted.unwrap_or_else(|| {
+                    ViewError::detailed(
+                        if scratch_failure {
+                            RefusalDetail::BackendBroken
+                        } else {
+                            RefusalDetail::SourceUnreadable
+                        },
+                        error.to_string(),
+                    )
+                }))
+            }
+        };
+        if !carry.is_empty() {
+            return Err(ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
+                "BSL module is not UTF-8",
+            ));
+        }
+        file.flush().map_err(|error| {
+            ViewError::detailed(
+                RefusalDetail::BackendBroken,
+                format!("Body snapshot write failed: {error}"),
+            )
+        })?;
+        file.seek(SeekFrom::Start(0)).map_err(|error| {
+            ViewError::detailed(
+                RefusalDetail::BackendBroken,
+                format!("Body snapshot seek failed: {error}"),
+            )
+        })?;
+        Ok(BodySnapshot::new(file, len))
     }
 
     #[cfg(test)]

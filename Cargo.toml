@@ -39,6 +39,7 @@ tar = "0.4"
 # обязан отказывать на неизвестных ключах, derive их молча отбрасывает.
 toml = "0.8"
 roxmltree = "0.20"
+xml = "1.4"
 # Стемминг Snowball ru/en для лексического ядра поиска документации
 # (ADR-0037). Полностью офлайн: таблицы стеммеров вкомпилированы, состояния
 # на диске и сетевых обращений нет. Лицензии MIT/BSD-3.
@@ -64,6 +65,7 @@ windows-sys = { version = "0.59", features = [
   "Win32_System_Console",
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_JobObjects",
+  "Win32_System_ProcessStatus",
   "Win32_System_Threading",
 ] }
 cap-primitives = "4.0.2"

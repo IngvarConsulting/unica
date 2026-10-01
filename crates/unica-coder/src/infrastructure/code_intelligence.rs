@@ -103,6 +103,14 @@ impl<'a> GitGrepProvider<'a> {
             args.push(".".to_string());
         }
         args.push(generated_corpus_exclusion());
+        if let Some(scope) = scope {
+            for subtree in &scope.excluded_subtrees {
+                args.push(format!(
+                    ":(exclude,literal){}",
+                    subtree.to_string_lossy().replace('\\', "/")
+                ));
+            }
+        }
         let command = ProcessCommand {
             program: PathBuf::from("git"),
             args,
@@ -1836,6 +1844,7 @@ mod tests {
             filters: vec![RelativeSearchFilter::Exact(PathBuf::from(
                 "CommonModules/Scoped/Ext/Module.bsl",
             ))],
+            excluded_subtrees: Vec::new(),
             legacy_selector: false,
         })
     }
@@ -2017,13 +2026,17 @@ mod tests {
             commands: Mutex::new(Vec::new()),
         };
         let provider = GitGrepProvider::with_runner(&runner);
+        let mut scope =
+            CodeSearchScope::all("main".to_string(), PathBuf::from("/workspace/src"), false);
+        scope.excluded_subtrees.push(PathBuf::from("lib[ab]"));
+        let context = context().with_search_scope(scope);
 
         let section = provider.search(
             &SearchRequest {
                 query: "Post.*".to_string(),
                 limit: 20,
             },
-            &context(),
+            &context,
             ProviderDeadline::new(Instant::now() + Duration::from_secs(60)),
             &CancellationToken::new(),
         );
@@ -2049,6 +2062,7 @@ mod tests {
                 "--",
                 ".",
                 ":(exclude,glob)**/.build/**",
+                ":(exclude,literal)lib[ab]",
             ]
         );
         assert!(commands[0].args.iter().any(|arg| arg == "-F"));
@@ -2149,6 +2163,62 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn git_grep_excludes_only_the_literal_nested_source_root() {
+        let root = tempfile::tempdir().unwrap();
+        let nested = "lib[ab]";
+        for directory in [nested, "liba", "libb"] {
+            std::fs::create_dir(root.path().join(directory)).unwrap();
+            std::fs::write(
+                root.path().join(directory).join("Module.bsl"),
+                "// Needle\n",
+            )
+            .unwrap();
+        }
+        assert!(std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(root.path())
+            .status()
+            .unwrap()
+            .success());
+
+        let source_root = root.path().to_path_buf();
+        let mut scope = CodeSearchScope::all("main".to_string(), source_root.clone(), false);
+        scope.excluded_subtrees.push(PathBuf::from(nested));
+        let context = CodeIntelligenceContext::new(
+            WorkspaceContext {
+                cwd: source_root.clone(),
+                workspace_root: source_root.clone(),
+                cache_root: source_root.join(".build"),
+                workspace_epoch: 1,
+            },
+            ResolvedSourceRoot {
+                source_set: Some("main".to_string()),
+                path: source_root,
+            },
+        )
+        .with_search_scope(scope);
+        let section = GitGrepProvider::new().search(
+            &SearchRequest {
+                query: "Needle".to_string(),
+                limit: 20,
+            },
+            &context,
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(30)),
+            &CancellationToken::new(),
+        );
+        let paths = section
+            .hits
+            .iter()
+            .map(|hit| location_path(&hit.location).to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            paths,
+            ["liba/Module.bsl", "libb/Module.bsl"],
+            "{section:#?}"
+        );
     }
 
     #[test]

@@ -11,8 +11,6 @@ use crate::domain::address::QualifiedAddress;
 use crate::domain::refusal::RefusalCode;
 use serde::Serialize;
 
-const MAX_PATH_CHARS: usize = 4_096;
-
 /// Откуда пришёл вопрос. Ровно одна сторона: спрашивать обе разом бессмысленно,
 /// а не спрашивать ни одной — нечего разрешать.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,12 +43,6 @@ impl ResolveRequest {
                     return Err(ResolveError::new(
                         RefusalCode::BadValue,
                         "resolve path must not be empty",
-                    ));
-                }
-                if path.chars().count() > MAX_PATH_CHARS {
-                    return Err(ResolveError::new(
-                        RefusalCode::BadValue,
-                        format!("resolve path must not exceed {MAX_PATH_CHARS} characters"),
                     ));
                 }
                 Ok(Self::Path(path.to_string()))

@@ -13,7 +13,7 @@ use crate::infrastructure::diagnostics_jsonl::{
 use crate::infrastructure::platform::filesystem::path_lock_identity;
 use crate::infrastructure::platform::{
     ensure_truncation_diagnostics, ManagedChild, ManagedCommand, ManagedLineOutput, ManagedOutput,
-    StreamControl,
+    StreamControl, STREAM_LINE_TOO_LONG_ERROR,
 };
 use crate::infrastructure::plugin_runtime::{find_plugin_root, value_to_cli_string};
 use crate::infrastructure::redaction::{is_secret_key, redactor};
@@ -105,9 +105,8 @@ pub trait ProcessRunner {
                 continue;
             }
             if bytes.len() > max_line_bytes {
-                line_error.get_or_insert_with(|| {
-                    (index + 1, "line exceeds configured byte limit".to_string())
-                });
+                line_error
+                    .get_or_insert_with(|| (index + 1, STREAM_LINE_TOO_LONG_ERROR.to_string()));
             } else {
                 if on_line(index + 1, bytes) == StreamControl::Stop {
                     return Ok(ProcessStreamOutput {
@@ -1712,7 +1711,13 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
             &mut consume,
         )?;
         if let Some((line_number, reason)) = &output.line_error {
-            parser.reject_line(*line_number, reason);
+            use crate::domain::diagnostics::stream_error::StreamErrorKind;
+            let kind = if reason == STREAM_LINE_TOO_LONG_ERROR {
+                StreamErrorKind::LineTooLong
+            } else {
+                StreamErrorKind::ReadFailure
+            };
+            parser.reject_line(*line_number, kind);
         }
         let stderr = redactor(&output.stderr);
         if output.cancelled {
@@ -5534,6 +5539,126 @@ analyze_timeout_seconds = 900
             result.diagnostics.unwrap().outcome.error.unwrap().code,
             "diagnostics_invalid"
         );
+    }
+
+    #[test]
+    fn diagnostics_analyze_reports_earliest_oversize_or_parse_failure() {
+        let oversized = "private-token".repeat(MAX_DIAGNOSTICS_JSONL_LINE_BYTES / 13 + 1);
+        for (index, (stream, expected)) in [
+            (
+                format!("{oversized}\ninvalid-event"),
+                "line 1: line exceeds 8388608 bytes.",
+            ),
+            (
+                format!("invalid-event\n{oversized}"),
+                "line 1: invalid JSON or event schema.",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let result =
+                analyze_outcome(None, &stream, &format!("diagnostics-error-order-{index}"));
+            assert!(!result.outcome.ok);
+            assert!(result.outcome.stdout.is_none());
+            assert!(!result.outcome.errors.join(" ").contains("private-token"));
+            let batch = result.diagnostics.unwrap();
+            assert!(batch.outcome.observations.is_empty());
+            assert!(batch.outcome.error.unwrap().message.starts_with(expected));
+        }
+    }
+
+    #[test]
+    fn diagnostics_analyze_read_failure_is_safe_and_distinct_from_oversize() {
+        struct ReadFailureRunner;
+        impl ProcessRunner for ReadFailureRunner {
+            fn run(&self, _: &ProcessCommand) -> Result<ProcessOutput, String> {
+                panic!("streaming runner expected")
+            }
+
+            fn run_streaming(
+                &self,
+                _: &ProcessCommand,
+                _: usize,
+                on_line: &mut dyn FnMut(usize, &[u8]) -> StreamControl,
+            ) -> Result<ProcessStreamOutput, String> {
+                on_line(1, br#"{"type":"start","total_files":0,"version":"test"}"#);
+                Ok(ProcessStreamOutput {
+                    status_success: true,
+                    status: "exit status: 0".to_string(),
+                    stderr: String::new(),
+                    timed_out: false,
+                    cancelled: false,
+                    stopped_by_consumer: false,
+                    line_error: Some((
+                        2,
+                        "failed to read process stdout: private-token C:/private/Secret.bsl"
+                            .to_string(),
+                    )),
+                })
+            }
+        }
+        let context = temp_context("diagnostics-read-failure");
+        let result = invoke_analyze(
+            &BslAnalyzerMcpAdapter::with_process_runner(&ReadFailureRunner),
+            &Map::new(),
+            &context,
+            false,
+        );
+        cleanup_context(&context);
+        assert!(!result.outcome.ok);
+        assert!(result.outcome.stdout.is_none());
+        let error = result.diagnostics.unwrap().outcome.error.unwrap();
+        assert_eq!(error.code, "diagnostics_invalid");
+        assert_eq!(error.message, "line 2: failed to read diagnostics stream. Check compatibility between Unica and its bundled analyzer; if the problem persists, report this reason and line number.");
+        assert_eq!(
+            result.outcome.errors,
+            vec![format!("diagnostics_invalid {}", error.message)]
+        );
+    }
+
+    #[test]
+    fn diagnostics_analyze_process_failure_takes_priority_over_invalid_stream() {
+        for (index, (cancelled, timed_out, expected)) in [
+            (true, false, "cancelled:"),
+            (false, true, "timed out"),
+            (false, false, "exit status: 2"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let context = temp_context(&format!("diagnostics-process-priority-{index}"));
+            let mut output = analyze_process_output("invalid-event");
+            output.status_success = false;
+            output.cancelled = cancelled;
+            output.timed_out = timed_out;
+            output.status = "exit status: 2".to_string();
+            let runner = FakeProcessRunner { output };
+            let result = invoke_analyze(
+                &BslAnalyzerMcpAdapter::with_process_runner(&runner),
+                &Map::new(),
+                &context,
+                false,
+            );
+            cleanup_context(&context);
+            assert!(!result.outcome.ok);
+            assert!(result.diagnostics.is_none());
+            assert!(result.outcome.stdout.is_none());
+            assert!(
+                result
+                    .outcome
+                    .errors
+                    .iter()
+                    .any(|error| error.contains(expected)),
+                "{:?}",
+                result.outcome.errors
+            );
+            assert!(!result
+                .outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("diagnostics_invalid")));
+        }
     }
 
     #[test]

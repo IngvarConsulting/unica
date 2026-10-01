@@ -5751,7 +5751,7 @@ fn cfe_patch_validate_form_xml(module_path: &str, path: &Path, raw: &[u8]) -> Re
     Ok(())
 }
 
-fn cfe_patch_mark_extended_property(
+pub(super) fn cfe_patch_mark_extended_property(
     module_path: &str,
     path: &Path,
     raw: &[u8],
@@ -5876,6 +5876,9 @@ fn cfe_patch_mark_extended_property(
         let insertion = fragment[..close]
             .rfind('\n')
             .map(|line_break| line_break + 1)
+            // A closing tag may share its line with the preceding child.
+            // Only indentation belongs before the new sibling state.
+            .filter(|start| fragment[*start..close].trim().is_empty())
             .unwrap_or(close);
         format!(
             "{}{}{}",
@@ -5918,8 +5921,12 @@ fn cfe_patch_mark_extended_property(
     let updated_with_bom = format!("{bom}{updated}");
     let verified = Document::parse(&updated)
         .map_err(|error| format!("failed to build platform XML {}: {error}", path.display()))?;
-    let matching = verified
-        .descendants()
+    let verified_object =
+        cfe_patch_direct_md_child(&verified, object.tag_name().name(), module_path, path)?;
+    let verified_info =
+        cfe_patch_exact_md_child(verified_object, "InternalInfo", module_path, path)?;
+    let matching = verified_info
+        .children()
         .filter(|node| node.has_tag_name((CFE_PATCH_XR_NAMESPACE, "PropertyState")))
         .filter(|state| {
             state.children().any(|node| {

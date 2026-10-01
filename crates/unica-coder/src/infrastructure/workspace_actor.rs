@@ -38,6 +38,7 @@ use crate::infrastructure::support_policy_evidence::{
     RetainedSupportPolicyEvidence, SupportPolicyEvidenceError, SupportPolicyEvidenceErrorKind,
     SupportPolicyMode,
 };
+use crate::infrastructure::v13_large_configuration::RegistrationCache;
 use crate::infrastructure::workspace_index::{IndexRunner, WorkspaceIndexService};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -1485,6 +1486,7 @@ pub(crate) struct WorkspaceActor<R = ()> {
     state_scope: WorkspaceStateScope,
     mutation_lane: DeadlineLock<FailClosed>,
     source_revisions: Mutex<HashMap<WorkspaceSourceSetIdentity, Arc<SourceRevisionService>>>,
+    configuration_registrations: Arc<RegistrationCache>,
     index_work: SharedWork<(), LongWorkFailure>,
     runtime: R,
 }
@@ -1591,6 +1593,7 @@ impl<R> WorkspaceActor<R> {
             state_scope,
             mutation_lane: DeadlineLock::fail_closed("workspace actor mutation lane is poisoned"),
             source_revisions: Mutex::new(HashMap::new()),
+            configuration_registrations: Arc::new(RegistrationCache::default()),
             index_work: SharedWork::new(SharedWorkLifetime::ProducerBound),
             runtime,
         })
@@ -1726,12 +1729,15 @@ impl<R> WorkspaceActor<R> {
         binding: &ProviderRootBinding,
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
-    ) -> Result<WorkspaceLogicalReadFence, String> {
-        self.validate_binding(binding)?;
+    ) -> Result<WorkspaceLogicalReadFence, RetainedRevisionError> {
+        self.validate_binding(binding)
+            .map_err(logical_read_binding_error)?;
         let revision = self
-            .source_revision_service(binding)?
+            .source_revision_service(binding)
+            .map_err(logical_read_binding_error)?
             .begin_retained_operation(&binding.source_root, deadline, cancellation);
-        self.validate_binding(binding)?;
+        self.validate_binding(binding)
+            .map_err(logical_read_binding_error)?;
         Ok(WorkspaceLogicalReadFence {
             actor_identity: self.identity.clone(),
             actor_instance: self.instance_id.clone(),
@@ -2135,9 +2141,11 @@ impl<R> WorkspaceActor<R> {
         staged_result: T,
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
-    ) -> Result<T, String> {
+    ) -> Result<T, RetainedRevisionError> {
         if fences.is_empty() {
-            return Err("logical read publication requires an admitted source fence".to_string());
+            return Err(logical_read_binding_error(
+                "logical read publication requires an admitted source fence".to_string(),
+            ));
         }
         let _publication = self
             .mutation_lane
@@ -2146,7 +2154,7 @@ impl<R> WorkspaceActor<R> {
                 cancellation,
                 "workspace actor logical read publication wait",
             )
-            .map_err(|error| error.to_string())?;
+            .map_err(RetainedRevisionError::from_deadline_lock)?;
         let mut confirmations = Vec::with_capacity(fences.len());
         let mut source_sets = HashSet::with_capacity(fences.len());
         for fence in fences {
@@ -2154,25 +2162,31 @@ impl<R> WorkspaceActor<R> {
                 || fence.actor_instance != self.instance_id
                 || !source_sets.insert(fence.source_set.clone())
             {
-                return Err(
+                return Err(logical_read_binding_error(
                     "logical read revision fence belongs to another or duplicate workspace source"
                         .to_string(),
-                );
+                ));
             }
             let source_root = self
                 .source_roots
                 .get(&fence.source_set)
                 .cloned()
-                .ok_or_else(|| "workspace actor retained root is unavailable".to_string())?;
+                .ok_or_else(|| {
+                    logical_read_binding_error(
+                        "workspace actor retained root is unavailable".to_string(),
+                    )
+                })?;
             let binding = ProviderRootBinding {
                 actor_identity: fence.actor_identity.clone(),
                 actor_instance: fence.actor_instance.clone(),
                 source_set: fence.source_set.clone(),
                 source_root,
             };
-            self.validate_binding(&binding)?;
+            self.validate_binding(&binding)
+                .map_err(logical_read_binding_error)?;
             confirmations.push((
-                self.source_revision_service(&binding)?,
+                self.source_revision_service(&binding)
+                    .map_err(logical_read_binding_error)?,
                 binding,
                 &fence.revision,
             ));
@@ -2350,6 +2364,14 @@ impl<R> WorkspaceActor<R> {
         });
         revisions.insert(binding.source_set.clone(), Arc::clone(&service));
         Ok(service)
+    }
+
+    pub(crate) fn configuration_registration_cache(
+        &self,
+        binding: &ProviderRootBinding,
+    ) -> Result<Arc<RegistrationCache>, String> {
+        self.validate_binding(binding)?;
+        Ok(Arc::clone(&self.configuration_registrations))
     }
 
     fn issue_revision_service_authority(
@@ -2562,6 +2584,10 @@ fn deadline_lock_publication_error(error: DeadlineLockError) -> ApplyPublication
         DeadlineLockErrorKind::Poisoned => ApplyPublicationErrorKind::Invariant,
     };
     ApplyPublicationError::new(kind, error.to_string())
+}
+
+fn logical_read_binding_error(error: String) -> RetainedRevisionError {
+    RetainedRevisionError::new(RetainedRevisionErrorKind::ContainmentIdentity, error)
 }
 
 fn retained_revision_staging_error(error: RetainedRevisionError) -> ApplyStagingError {
@@ -2987,7 +3013,7 @@ pub(crate) mod tests {
         plan_event_implement_batch, EventImplementArgs, EventPlanError, PlannedApplyEffects,
     };
     use crate::infrastructure::platform::source_revision_fence::{
-        expected_platform_fence_capability_for_test, FenceCapability, FenceOutcome,
+        expected_platform_fence_capability_for_test, FenceCapability, FenceError, FenceOutcome,
         SourceRevisionFence,
     };
     use crate::infrastructure::platform::testing::{
@@ -3238,10 +3264,13 @@ pub(crate) mod tests {
         let cancelled = fixture.actor.publish_logical_read(
             std::slice::from_ref(&logical_fence),
             (),
-            ProviderDeadline::from_budget(Duration::from_secs(5)),
+            ProviderDeadline::from_budget(Duration::ZERO),
             &cancellation,
         );
-        assert!(cancelled.unwrap_err().starts_with("cancelled:"));
+        assert_eq!(
+            cancelled.unwrap_err().kind(),
+            super::RetainedRevisionErrorKind::Cancelled
+        );
 
         let deadline = fixture.actor.publish_logical_read(
             &[logical_fence],
@@ -3249,7 +3278,10 @@ pub(crate) mod tests {
             ProviderDeadline::from_budget(Duration::ZERO),
             &CancellationToken::new(),
         );
-        assert!(deadline.unwrap_err().ends_with("deadline exceeded"));
+        assert_eq!(
+            deadline.unwrap_err().kind(),
+            super::RetainedRevisionErrorKind::Deadline
+        );
         drop(owner);
         fixture.cleanup();
     }
@@ -3505,7 +3537,7 @@ pub(crate) mod tests {
             &self,
             _deadline: ProviderDeadline,
             _cancellation: &CancellationToken,
-        ) -> Result<FenceOutcome, String> {
+        ) -> Result<FenceOutcome, FenceError> {
             self.calls.fetch_add(1, Ordering::AcqRel);
             Ok(FenceOutcome::Proven {
                 changed_paths: Vec::new(),
@@ -3526,9 +3558,11 @@ pub(crate) mod tests {
             &self,
             _deadline: ProviderDeadline,
             _cancellation: &CancellationToken,
-        ) -> Result<FenceOutcome, String> {
+        ) -> Result<FenceOutcome, FenceError> {
             self.flush_calls.fetch_add(1, Ordering::AcqRel);
-            Err("unsupported actor fence must never be flushed".to_string())
+            Err(FenceError::Provider(
+                "unsupported actor fence must never be flushed".to_string(),
+            ))
         }
     }
 

@@ -18,7 +18,8 @@ use crate::infrastructure::platform::filesystem::{
     RetainedChildCapability, RetainedDirectoryCapability,
 };
 use crate::infrastructure::platform::source_revision_fence::{
-    deferred_platform_fence, platform_fence, FenceCapability, FenceOutcome, SourceRevisionFence,
+    deferred_platform_fence, platform_fence, FenceCapability, FenceError, FenceOutcome,
+    SourceRevisionFence,
 };
 use crate::infrastructure::revision_artifact_policy::{
     RevisionArtifactDisposition, RevisionArtifactPolicy,
@@ -126,8 +127,6 @@ const MAX_SOURCE_DEPTH: usize = 64;
 const REVISION_RECORD_SCHEMA_VERSION: u32 = 2;
 const RETAINED_HASH_CHUNK_BYTES: usize = 64 * 1024;
 const MAX_RETAINED_SOURCE_ENTRIES: usize = 1_000_000;
-const MAX_RETAINED_SOURCE_FILE_BYTES: u64 = 256 * 1024 * 1024;
-const MAX_RETAINED_SOURCE_TOTAL_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 
 #[cfg(test)]
 thread_local! {
@@ -187,10 +186,9 @@ enum ManifestEntryKind {
 struct SourceEntryDigest {
     kind: ManifestEntryKind,
     digest: [u8; 32],
-    /// Bounded corpus accounting metadata. It deliberately does not
-    /// participate in `digest_source_manifest`, so the legacy revision digest
-    /// remains byte-for-byte stable while incremental updates can enforce the
-    /// same aggregate limit as full captures.
+    /// Exact byte accounting for incremental updates. This deliberately does
+    /// not participate in `digest_source_manifest`, preserving the revision
+    /// digest when the byte-ceiling policy changes.
     content_bytes: u64,
 }
 
@@ -210,7 +208,7 @@ impl SourceRevisionFence for ReconcileEverySnapshotFence {
         &self,
         _deadline: ProviderDeadline,
         _cancellation: &CancellationToken,
-    ) -> Result<FenceOutcome, String> {
+    ) -> Result<FenceOutcome, FenceError> {
         if self.at_reconcile_boundary.fetch_xor(true, Ordering::AcqRel) {
             Ok(FenceOutcome::Proven {
                 changed_paths: Vec::new(),
@@ -240,22 +238,25 @@ enum ManifestProvenance {
 #[derive(Debug, Clone, Copy)]
 struct RetainedScanLimits {
     max_entries: usize,
-    max_file_bytes: u64,
-    max_total_bytes: u64,
+    /// Production scans have no byte ceiling. Small injected ceilings keep
+    /// the shared capture/incremental/projection refusal path testable.
+    max_file_bytes: Option<u64>,
+    max_total_bytes: Option<u64>,
 }
 
 impl RetainedScanLimits {
-    const PRODUCTION: Self = Self::new(
-        MAX_RETAINED_SOURCE_ENTRIES,
-        MAX_RETAINED_SOURCE_FILE_BYTES,
-        MAX_RETAINED_SOURCE_TOTAL_BYTES,
-    );
+    const PRODUCTION: Self = Self {
+        max_entries: MAX_RETAINED_SOURCE_ENTRIES,
+        max_file_bytes: None,
+        max_total_bytes: None,
+    };
 
+    #[cfg(test)]
     const fn new(max_entries: usize, max_file_bytes: u64, max_total_bytes: u64) -> Self {
         Self {
             max_entries,
-            max_file_bytes,
-            max_total_bytes,
+            max_file_bytes: Some(max_file_bytes),
+            max_total_bytes: Some(max_total_bytes),
         }
     }
 }
@@ -347,7 +348,7 @@ pub(crate) struct RetainedRevisionError {
 }
 
 impl RetainedRevisionError {
-    fn new(kind: RetainedRevisionErrorKind, message: impl Into<String>) -> Self {
+    pub(crate) fn new(kind: RetainedRevisionErrorKind, message: impl Into<String>) -> Self {
         Self {
             kind,
             message: message.into(),
@@ -358,11 +359,20 @@ impl RetainedRevisionError {
         self.kind
     }
 
-    fn from_deadline_lock(error: DeadlineLockError) -> Self {
+    pub(super) fn from_deadline_lock(error: DeadlineLockError) -> Self {
         let kind = match error.kind() {
             DeadlineLockErrorKind::Cancelled => RetainedRevisionErrorKind::Cancelled,
             DeadlineLockErrorKind::Deadline => RetainedRevisionErrorKind::Deadline,
             DeadlineLockErrorKind::Poisoned => RetainedRevisionErrorKind::Invariant,
+        };
+        Self::new(kind, error.to_string())
+    }
+
+    fn from_fence(error: FenceError) -> Self {
+        let kind = match &error {
+            FenceError::Cancelled => RetainedRevisionErrorKind::Cancelled,
+            FenceError::Deadline => RetainedRevisionErrorKind::Deadline,
+            FenceError::Provider(_) => RetainedRevisionErrorKind::Provider,
         };
         Self::new(kind, error.to_string())
     }
@@ -789,12 +799,16 @@ impl SourceRevisionService {
                 "source revision fence is unsupported; freshness cannot be proven".to_string(),
             );
         }
-        let fence_outcome = self.fence.flush(deadline, cancellation).inspect_err(|_| {
-            self.machine
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .lose_trust(SourceRevisionTrustLoss::ReconcileFailed);
-        })?;
+        let fence_outcome = self
+            .fence
+            .flush(deadline, cancellation)
+            .inspect_err(|_| {
+                self.machine
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .lose_trust(SourceRevisionTrustLoss::ReconcileFailed);
+            })
+            .map_err(|error| error.to_string())?;
         let needs_reconcile = match fence_outcome {
             FenceOutcome::Proven { changed_paths } => {
                 let (trusted, trust_loss_epoch) = {
@@ -867,6 +881,16 @@ impl SourceRevisionService {
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> Result<SourceRevision, String> {
+        self.snapshot_retained_typed(root, deadline, cancellation)
+            .map_err(|error| error.to_string())
+    }
+
+    fn snapshot_retained_typed(
+        &self,
+        root: &RetainedDirectoryCapability,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<SourceRevision, RetainedRevisionError> {
         let _operation = self
             .operation
             .acquire_before(
@@ -874,24 +898,33 @@ impl SourceRevisionService {
                 cancellation,
                 "retained source revision operation wait",
             )
-            .map_err(|error| error.to_string())?;
+            .map_err(RetainedRevisionError::from_deadline_lock)?;
         if root.identity() != self.source_root_identity {
-            return Err(
-                "retained source revision capability has a different actor identity".to_string(),
-            );
+            return Err(RetainedRevisionError::new(
+                RetainedRevisionErrorKind::ContainmentIdentity,
+                "retained source revision capability has a different actor identity",
+            ));
         }
         root.validate_named_identity().map_err(|error| {
-            format!("retained source revision identity changed after admission: {error}")
+            RetainedRevisionError::new(
+                RetainedRevisionErrorKind::ContainmentIdentity,
+                format!("retained source revision identity changed after admission: {error}"),
+            )
         })?;
         let needs_reconcile = if self.fence.capability() == FenceCapability::Unsupported {
             true
         } else {
-            match self.fence.flush(deadline, cancellation).inspect_err(|_| {
-                self.machine
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .lose_trust(SourceRevisionTrustLoss::ReconcileFailed);
-            })? {
+            match self
+                .fence
+                .flush(deadline, cancellation)
+                .inspect_err(|_| {
+                    self.machine
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .lose_trust(SourceRevisionTrustLoss::ReconcileFailed);
+                })
+                .map_err(RetainedRevisionError::from_fence)?
+            {
                 FenceOutcome::Proven { changed_paths } if changed_paths.is_empty() => {
                     let trusted = matches!(
                         self.machine
@@ -926,10 +959,14 @@ impl SourceRevisionService {
             }
         };
         if !needs_reconcile {
-            return self.trusted_snapshot();
+            return self.trusted_snapshot().map_err(|error| {
+                RetainedRevisionError::new(RetainedRevisionErrorKind::Invariant, error)
+            });
         }
         self.reconcile_retained(root, deadline, cancellation)?;
-        self.trusted_snapshot()
+        self.trusted_snapshot().map_err(|error| {
+            RetainedRevisionError::new(RetainedRevisionErrorKind::Invariant, error)
+        })
     }
 
     pub(crate) fn begin_retained_operation(
@@ -937,8 +974,8 @@ impl SourceRevisionService {
         root: &RetainedDirectoryCapability,
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
-    ) -> Result<RetainedRevisionLease, String> {
-        let revision = self.snapshot_retained(root, deadline, cancellation)?;
+    ) -> Result<RetainedRevisionLease, RetainedRevisionError> {
+        let revision = self.snapshot_retained_typed(root, deadline, cancellation)?;
         Ok(RetainedRevisionLease {
             revision,
             root_identity: root.identity(),
@@ -1099,19 +1136,18 @@ impl SourceRevisionService {
                     )
                 })
             })?;
-        if total_bytes > limits.max_total_bytes {
-            return Err(RetainedRevisionError::new(
-                RetainedRevisionErrorKind::Provider,
-                format!(
-                    "source revision aggregate byte limit {} exceeded",
-                    limits.max_total_bytes
-                ),
-            ));
+        if let Some(max_total_bytes) = limits.max_total_bytes {
+            if total_bytes > max_total_bytes {
+                return Err(RetainedRevisionError::new(
+                    RetainedRevisionErrorKind::Provider,
+                    format!("source revision aggregate byte limit {max_total_bytes} exceeded"),
+                ));
+            }
         }
 
-        // Apply every old-postimage removal before hashing new postimages. The
-        // limit is defined over the final manifest, so one sequential batch may
-        // replace a file and free bytes elsewhere regardless of lexical order.
+        // Subtract old postimages before hashing replacements so projected byte
+        // accounting matches a subsequent capture. Injected test ceilings also
+        // apply to the final manifest, regardless of staged change order.
         for change in changes {
             retained_revision_checkpoint(deadline, cancellation)?;
             let relative_path = native_projection_relative_path(&change.relative_path)?;
@@ -1255,13 +1291,19 @@ impl SourceRevisionService {
         lease: &RetainedRevisionLease,
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
-    ) -> Result<(), String> {
+    ) -> Result<(), RetainedRevisionError> {
         if root.identity() != lease.root_identity {
-            return Err("retained revision lease belongs to another source identity".to_string());
+            return Err(RetainedRevisionError::new(
+                RetainedRevisionErrorKind::ContainmentIdentity,
+                "retained revision lease belongs to another source identity",
+            ));
         }
-        let current = self.snapshot_retained(root, deadline, cancellation)?;
+        let current = self.snapshot_retained_typed(root, deadline, cancellation)?;
         if current != lease.revision {
-            return Err("retained source revision changed during logical operation".to_string());
+            return Err(RetainedRevisionError::new(
+                RetainedRevisionErrorKind::ConcurrentRevision,
+                "retained source revision changed during logical operation",
+            ));
         }
         Ok(())
     }
@@ -1271,7 +1313,7 @@ impl SourceRevisionService {
         root: &RetainedDirectoryCapability,
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
-    ) -> Result<(), String> {
+    ) -> Result<(), RetainedRevisionError> {
         for _ in 0..3 {
             let trust_loss_epoch = {
                 let mut machine = self
@@ -1283,14 +1325,14 @@ impl SourceRevisionService {
                 trust_loss_epoch
             };
             let first = self
-                .capture_retained_manifest(root, deadline, cancellation)
+                .capture_retained_manifest_typed(root, deadline, cancellation)
                 .inspect_err(|_| self.lose_incremental_trust())?;
             if !first.namespace_stable {
                 continue;
             }
             let capture = if self.fence.capability() == FenceCapability::Unsupported {
                 let second = self
-                    .capture_retained_manifest(root, deadline, cancellation)
+                    .capture_retained_manifest_typed(root, deadline, cancellation)
                     .inspect_err(|_| self.lose_incremental_trust())?;
                 if !second.namespace_stable
                     || first.manifest != second.manifest
@@ -1303,12 +1345,17 @@ impl SourceRevisionService {
                 first
             };
             if self.fence.capability() != FenceCapability::Unsupported {
-                match self.fence.flush(deadline, cancellation).inspect_err(|_| {
-                    self.machine
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner())
-                        .lose_trust(SourceRevisionTrustLoss::ReconcileFailed);
-                })? {
+                match self
+                    .fence
+                    .flush(deadline, cancellation)
+                    .inspect_err(|_| {
+                        self.machine
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .lose_trust(SourceRevisionTrustLoss::ReconcileFailed);
+                    })
+                    .map_err(RetainedRevisionError::from_fence)?
+                {
                     FenceOutcome::Proven { changed_paths } if changed_paths.is_empty() => {}
                     FenceOutcome::Proven { .. } => continue,
                     FenceOutcome::TrustLost(reason) => {
@@ -1320,27 +1367,27 @@ impl SourceRevisionService {
                     }
                 }
             }
-            let digest = digest_source_manifest(&capture.manifest)?;
-            if self.publish_revision_with_authority(
-                &capture.manifest,
-                digest,
-                trust_loss_epoch,
-                ManifestProvenance::Retained(root.identity()),
-            )? {
+            let digest = digest_source_manifest(&capture.manifest).map_err(|error| {
+                RetainedRevisionError::new(RetainedRevisionErrorKind::Invariant, error)
+            })?;
+            if self
+                .publish_revision_with_authority(
+                    &capture.manifest,
+                    digest,
+                    trust_loss_epoch,
+                    ManifestProvenance::Retained(root.identity()),
+                )
+                .map_err(|error| {
+                    RetainedRevisionError::new(RetainedRevisionErrorKind::Provider, error)
+                })?
+            {
                 return Ok(());
             }
         }
-        Err("retained source revision did not stabilize during reconcile".to_string())
-    }
-
-    fn capture_retained_manifest(
-        &self,
-        root: &RetainedDirectoryCapability,
-        deadline: ProviderDeadline,
-        cancellation: &CancellationToken,
-    ) -> Result<RetainedManifestCapture, String> {
-        self.capture_retained_manifest_typed(root, deadline, cancellation)
-            .map_err(|error| error.to_string())
+        Err(RetainedRevisionError::new(
+            RetainedRevisionErrorKind::ConcurrentRevision,
+            "retained source revision did not stabilize during reconcile",
+        ))
     }
 
     fn capture_retained_manifest_typed(
@@ -1463,12 +1510,17 @@ impl SourceRevisionService {
                     return Ok(false);
                 }
             }
-            match self.fence.flush(deadline, cancellation).inspect_err(|_| {
-                self.machine
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .lose_trust(SourceRevisionTrustLoss::ReconcileFailed);
-            })? {
+            match self
+                .fence
+                .flush(deadline, cancellation)
+                .inspect_err(|_| {
+                    self.machine
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .lose_trust(SourceRevisionTrustLoss::ReconcileFailed);
+                })
+                .map_err(|error| error.to_string())?
+            {
                 FenceOutcome::Proven {
                     changed_paths: additional,
                 } if !additional.is_empty() => {
@@ -1659,12 +1711,16 @@ impl SourceRevisionService {
                 self.lose_incremental_trust();
                 return Err("ambient source revision identity changed during reconcile".to_string());
             }
-            let fence_outcome = self.fence.flush(deadline, cancellation).inspect_err(|_| {
-                self.machine
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .lose_trust(SourceRevisionTrustLoss::ReconcileFailed);
-            })?;
+            let fence_outcome = self
+                .fence
+                .flush(deadline, cancellation)
+                .inspect_err(|_| {
+                    self.machine
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .lose_trust(SourceRevisionTrustLoss::ReconcileFailed);
+                })
+                .map_err(|error| error.to_string())?;
             match fence_outcome {
                 FenceOutcome::Proven { changed_paths } if !changed_paths.is_empty() => continue,
                 FenceOutcome::TrustLost(reason) => {
@@ -2295,10 +2351,9 @@ fn hash_retained_source_file_with_checkpoint(
     Ok(result)
 }
 
-/// Hashes one Content artifact through the common revision budget. Every
-/// producer of a source manifest uses this routine, so ambient, retained and
-/// incremental captures cannot silently acquire different byte/cancellation
-/// semantics.
+/// Hashes one Content artifact in fixed-size chunks. Every manifest producer
+/// uses this routine, so ambient, retained, incremental and projected captures
+/// share overflow and cancellation semantics.
 fn hash_bounded_source_reader(
     reader: &mut dyn Read,
     relative: &Path,
@@ -2330,15 +2385,16 @@ fn hash_bounded_source_reader(
                 "source revision file byte count overflowed",
             )
         })?;
-        if file_bytes > limits.max_file_bytes {
-            return Err(RetainedRevisionError::new(
-                RetainedRevisionErrorKind::Provider,
-                format!(
-                    "source revision file byte limit {} exceeded: {}",
-                    limits.max_file_bytes,
-                    relative.display()
-                ),
-            ));
+        if let Some(max_file_bytes) = limits.max_file_bytes {
+            if file_bytes > max_file_bytes {
+                return Err(RetainedRevisionError::new(
+                    RetainedRevisionErrorKind::Provider,
+                    format!(
+                        "source revision file byte limit {max_file_bytes} exceeded: {}",
+                        relative.display()
+                    ),
+                ));
+            }
         }
         *total_bytes = total_bytes.checked_add(read).ok_or_else(|| {
             RetainedRevisionError::new(
@@ -2346,14 +2402,13 @@ fn hash_bounded_source_reader(
                 "source revision aggregate byte count overflowed",
             )
         })?;
-        if *total_bytes > limits.max_total_bytes {
-            return Err(RetainedRevisionError::new(
-                RetainedRevisionErrorKind::Provider,
-                format!(
-                    "source revision aggregate byte limit {} exceeded",
-                    limits.max_total_bytes
-                ),
-            ));
+        if let Some(max_total_bytes) = limits.max_total_bytes {
+            if *total_bytes > max_total_bytes {
+                return Err(RetainedRevisionError::new(
+                    RetainedRevisionErrorKind::Provider,
+                    format!("source revision aggregate byte limit {max_total_bytes} exceeded"),
+                ));
+            }
         }
         digest.update(&chunk[..usize::try_from(read).expect("chunk length fits usize")]);
     }
@@ -3723,7 +3778,7 @@ pub(crate) mod tests {
             &self,
             _deadline: ProviderDeadline,
             _cancellation: &CancellationToken,
-        ) -> Result<FenceOutcome, String> {
+        ) -> Result<FenceOutcome, FenceError> {
             Ok(FenceOutcome::TrustLost(
                 SourceRevisionTrustLoss::UnsupportedFence,
             ))
@@ -3741,7 +3796,7 @@ pub(crate) mod tests {
             &self,
             _deadline: ProviderDeadline,
             _cancellation: &CancellationToken,
-        ) -> Result<FenceOutcome, String> {
+        ) -> Result<FenceOutcome, FenceError> {
             Ok(FenceOutcome::Proven {
                 changed_paths: Vec::new(),
             })
@@ -3761,7 +3816,7 @@ pub(crate) mod tests {
             &self,
             _deadline: ProviderDeadline,
             _cancellation: &CancellationToken,
-        ) -> Result<FenceOutcome, String> {
+        ) -> Result<FenceOutcome, FenceError> {
             self.calls.fetch_add(1, Ordering::AcqRel);
             Ok(FenceOutcome::Proven {
                 changed_paths: Vec::new(),
@@ -3963,6 +4018,110 @@ pub(crate) mod tests {
         assert_eq!(service.record_path, legacy_record_path);
     }
 
+    thread_local! {
+        static FENCE_ERROR_NOW: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
+    }
+
+    fn fence_error_now() -> std::time::Instant {
+        FENCE_ERROR_NOW.with(|now| now.get().unwrap())
+    }
+
+    struct ErrorAtFlushFence {
+        calls: AtomicUsize,
+        fail_at: usize,
+        error: FenceError,
+        expires: std::time::Instant,
+    }
+
+    impl SourceRevisionFence for ErrorAtFlushFence {
+        fn capability(&self) -> FenceCapability {
+            FenceCapability::ProvenFast
+        }
+
+        fn flush(
+            &self,
+            _deadline: ProviderDeadline,
+            _cancellation: &CancellationToken,
+        ) -> Result<FenceOutcome, FenceError> {
+            let call = self.calls.fetch_add(1, Ordering::AcqRel);
+            if call == self.fail_at {
+                FENCE_ERROR_NOW.with(|now| now.set(Some(self.expires)));
+                return Err(self.error.clone());
+            }
+            if call.is_multiple_of(2) {
+                Ok(FenceOutcome::TrustLost(SourceRevisionTrustLoss::WatcherGap))
+            } else {
+                Ok(FenceOutcome::Proven {
+                    changed_paths: Vec::new(),
+                })
+            }
+        }
+    }
+
+    #[test]
+    fn retained_fence_deadline_survives_admission_and_confirmation_flushes() {
+        assert_retained_fence_failure(FenceError::Deadline, RetainedRevisionErrorKind::Deadline);
+    }
+
+    #[test]
+    fn retained_fence_cancellation_is_not_reclassified_at_expired_deadline() {
+        assert_retained_fence_failure(FenceError::Cancelled, RetainedRevisionErrorKind::Cancelled);
+    }
+
+    #[test]
+    fn retained_fence_provider_failure_is_not_reclassified_by_clock_or_message() {
+        assert_retained_fence_failure(
+            FenceError::Provider("source revision fence deadline exceeded".to_string()),
+            RetainedRevisionErrorKind::Provider,
+        );
+    }
+
+    fn assert_retained_fence_failure(error: FenceError, expected: RetainedRevisionErrorKind) {
+        for fail_at in 0..4 {
+            let workspace = tempdir().unwrap();
+            let workspace_root = workspace.path().canonicalize().unwrap();
+            let source = workspace_root.join("src");
+            fs::create_dir_all(&source).unwrap();
+            fs::write(source.join("Configuration.xml"), "<Configuration/>").unwrap();
+            let context = WorkspaceContext {
+                cwd: workspace_root.clone(),
+                workspace_root: workspace_root.clone(),
+                cache_root: workspace_root.join("cache"),
+                workspace_epoch: 0,
+            };
+            let start = std::time::Instant::now();
+            let expires = start + std::time::Duration::from_secs(5);
+            FENCE_ERROR_NOW.with(|now| now.set(Some(start)));
+            let fence = Arc::new(ErrorAtFlushFence {
+                calls: AtomicUsize::new(0),
+                fail_at,
+                error: error.clone(),
+                expires,
+            });
+            let service = SourceRevisionService::new_with_fence_for_test(
+                &context,
+                &source,
+                WorkspaceStateScope::LegacyPhysical,
+                fence.clone(),
+            )
+            .unwrap();
+            let root = RetainedDirectoryCapability::open(&source).unwrap();
+            let deadline = ProviderDeadline::with_clock(expires, fence_error_now);
+            let cancellation = CancellationToken::new();
+            let admitted = service.begin_retained_operation(&root, deadline, &cancellation);
+            let failure = if fail_at < 2 {
+                admitted.unwrap_err()
+            } else {
+                service
+                    .confirm_retained_operation(&root, &admitted.unwrap(), deadline, &cancellation)
+                    .unwrap_err()
+            };
+            assert_eq!(fence.calls.load(Ordering::Acquire), fail_at + 1);
+            assert!(deadline.remaining().is_zero());
+            assert_eq!(failure.kind(), expected, "flush {fail_at}: {failure}");
+        }
+    }
+
     struct FailOnceFence {
         calls: AtomicUsize,
     }
@@ -3976,9 +4135,9 @@ pub(crate) mod tests {
             &self,
             _deadline: ProviderDeadline,
             _cancellation: &CancellationToken,
-        ) -> Result<FenceOutcome, String> {
+        ) -> Result<FenceOutcome, FenceError> {
             if self.calls.fetch_add(1, Ordering::AcqRel) == 0 {
-                Err("synthetic fence failure".to_string())
+                Err(FenceError::Provider("synthetic fence failure".to_string()))
             } else {
                 Ok(FenceOutcome::Proven {
                     changed_paths: Vec::new(),
@@ -4000,7 +4159,7 @@ pub(crate) mod tests {
             &self,
             _deadline: ProviderDeadline,
             _cancellation: &CancellationToken,
-        ) -> Result<FenceOutcome, String> {
+        ) -> Result<FenceOutcome, FenceError> {
             Ok(self
                 .outcomes
                 .lock()
@@ -5136,12 +5295,14 @@ pub(crate) mod tests {
         }
 
         fn confirm(&self) -> Result<(), String> {
-            self.service.confirm_retained_operation(
-                &self.retained,
-                &self.lease,
-                self.deadline,
-                &self.cancellation,
-            )
+            self.service
+                .confirm_retained_operation(
+                    &self.retained,
+                    &self.lease,
+                    self.deadline,
+                    &self.cancellation,
+                )
+                .map_err(|error| error.to_string())
         }
     }
 
@@ -5454,5 +5615,65 @@ pub(crate) mod tests {
         assert_eq!(error.to_string(), "cancelled between chunks");
         assert_eq!(checkpoints, 3);
         assert_eq!(state.total_bytes, (RETAINED_HASH_CHUNK_BYTES * 2) as u64);
+    }
+
+    #[test]
+    fn production_revision_scan_does_not_cap_aggregate_content_at_sixteen_gib() {
+        let old_ceiling = 16 * 1024 * 1024 * 1024_u64;
+        let mut total_bytes = old_ceiling;
+        let mut reader = std::io::Cursor::new(b"next".as_slice());
+        let (_, file_bytes) = hash_bounded_source_reader(
+            &mut reader,
+            Path::new("Configuration.xml"),
+            RetainedScanLimits::PRODUCTION,
+            &mut total_bytes,
+            &mut || Ok(()),
+        )
+        .expect("byte accounting may exceed the former aggregate ceiling");
+        assert_eq!(file_bytes, 4);
+        assert_eq!(total_bytes, old_ceiling + 4);
+    }
+
+    #[test]
+    fn production_revision_scan_still_refuses_byte_count_overflow() {
+        let mut total_bytes = u64::MAX;
+        let mut reader = std::io::Cursor::new(b"x".as_slice());
+        let error = hash_bounded_source_reader(
+            &mut reader,
+            Path::new("Configuration.xml"),
+            RetainedScanLimits::PRODUCTION,
+            &mut total_bytes,
+            &mut || Ok(()),
+        )
+        .expect_err("byte accounting cannot wrap");
+        assert_eq!(error.kind(), RetainedRevisionErrorKind::Invariant);
+        assert!(error
+            .to_string()
+            .contains("aggregate byte count overflowed"));
+    }
+
+    #[test]
+    #[ignore = "capacity proof hashes more than 256 MiB; run in the large tier"]
+    fn production_revision_scan_does_not_cap_a_file_at_two_hundred_fifty_six_mib() {
+        let old_ceiling = 256 * 1024 * 1024_u64;
+        let workspace = tempdir().unwrap();
+        let source = workspace.path().join("src");
+        let relative = Path::new("XDTOPackages/Sample/Ext/Package.bin");
+        let path = source.join(relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::File::create(&path)
+            .unwrap()
+            .set_len(old_ceiling + 1)
+            .unwrap();
+        let root = RetainedDirectoryCapability::open(&fs::canonicalize(source).unwrap()).unwrap();
+        let capture = capture_retained_source_manifest_with_limits(
+            &root,
+            ProviderDeadline::from_budget(std::time::Duration::from_secs(60)),
+            &CancellationToken::new(),
+            RetainedScanLimits::PRODUCTION,
+            platform_actor_policy(),
+        )
+        .expect("retained capture may hash beyond the former per-file ceiling");
+        assert_eq!(capture.manifest[relative].content_bytes, old_ceiling + 1);
     }
 }
