@@ -1038,6 +1038,8 @@ pub(crate) struct DaemonServerConfig {
     pub(crate) state_root: std::path::PathBuf,
     pub(crate) core_identity: CoreIdentity,
     pub(crate) idle_grace: Duration,
+    pub(crate) capacity_observer:
+        Arc<crate::infrastructure::capacity_observation::CapacityObserver>,
     invocation_service: Arc<dyn CanonicalInvocationService>,
     /// Overrides installed by tests and the contract harness. Production
     /// leaves every one of them empty; the fields exist unconditionally so
@@ -1056,13 +1058,18 @@ impl DaemonServerConfig {
         core_identity: CoreIdentity,
         idle_grace: Duration,
     ) -> Self {
+        let capacity_observer =
+            Arc::new(crate::infrastructure::capacity_observation::CapacityObserver::default());
         let invocation_service: Arc<dyn CanonicalInvocationService> = Arc::new(
-            crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
+            crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::with_capacity_observer(
+                Arc::clone(&capacity_observer),
+            ),
         );
         Self {
             state_root,
             core_identity,
             idle_grace,
+            capacity_observer,
             invocation_service,
             invocation_clock: None,
             v5_epoch_clock: None,

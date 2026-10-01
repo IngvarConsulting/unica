@@ -11,6 +11,14 @@ fn run() {
         }
         return;
     }
+    if args.iter().any(|arg| arg == "--capacity-report") {
+        if let Err(error) = unica_coder::interfaces::daemon::print_capacity_report_from_args(&args)
+        {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if args.iter().any(|arg| arg == "--workspace-service") {
         if let Err(error) = unica_coder::interfaces::workspace_service::run_from_args(&args) {
             eprintln!("{error}");
@@ -30,6 +38,7 @@ fn run() {
         println!("unica {}", env!("CARGO_PKG_VERSION"));
         println!("stdio MCP orchestrator for Unica workflows");
         println!("Supported MCP methods: initialize, tools/list, tools/call");
+        println!("Local capacity observations: --capacity-report");
         return;
     }
 

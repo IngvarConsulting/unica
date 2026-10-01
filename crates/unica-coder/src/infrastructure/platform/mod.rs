@@ -2,6 +2,7 @@ mod entrypoint;
 pub(crate) mod filesystem;
 pub(crate) mod full_dump_publication;
 mod process;
+mod process_metrics;
 pub(crate) mod secure_read;
 pub(crate) mod source_revision_fence;
 mod target;
@@ -21,6 +22,7 @@ pub(crate) use process::{
     runtime_process_tree_test_scenario_for_test, runtime_tree_cleanup_calls_for_test,
     JobAttachGateForTest,
 };
+pub(crate) use process_metrics::process_peak_rss_bytes;
 pub(crate) use target::current_target_id;
 
 #[cfg(feature = "receipt-ledger-test-support")]

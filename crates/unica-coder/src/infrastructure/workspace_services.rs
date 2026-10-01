@@ -6320,6 +6320,21 @@ mod tests {
                 timeout_nanos: 0,
             },
         );
+        let queued_deadline = Instant::now() + Duration::from_secs(2);
+        while runtime
+            .analyzer_lane()
+            .state
+            .lock()
+            .unwrap()
+            .waiters
+            .is_empty()
+        {
+            assert!(
+                Instant::now() < queued_deadline,
+                "analyzer waiter did not enter the lane queue"
+            );
+            thread::yield_now();
+        }
         let cancel_started = Instant::now();
         assert!(
             send_test_request(
