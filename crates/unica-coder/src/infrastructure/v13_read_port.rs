@@ -1,4 +1,5 @@
 use crate::application::ports::{MetaLocalInfo, MetadataChildProfile};
+use crate::application::v13::body_snapshot::BodySnapshot;
 use crate::application::v13::view::ViewError;
 use crate::domain::address::NodeKind;
 use crate::domain::cancellation::CancellationToken;
@@ -52,6 +53,7 @@ use crate::infrastructure::v13_large_configuration::{
 use serde_json::{json, Value};
 #[cfg(test)]
 use std::cell::RefCell;
+use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -920,6 +922,77 @@ impl ProviderReadAuthority {
                     })
             })
             .transpose()
+    }
+
+    pub(crate) fn module_body_snapshot(
+        &self,
+        target: &MetadataAddress,
+        mut checkpoint: impl FnMut() -> Result<(), ViewError>,
+    ) -> Result<BodySnapshot, ViewError> {
+        let relative = self.module_relative(target)?;
+        let mut file = tempfile::tempfile().map_err(|error| {
+            ViewError::new(
+                RefusalCode::ProviderUnavailable,
+                format!("cannot create Body snapshot: {error}"),
+            )
+        })?;
+        let mut carry = Vec::<u8>::new();
+        let mut interrupted = None;
+        let result = self.root.visit_relative_regular_chunks(
+            &relative,
+            || {
+                checkpoint().map_err(|error| {
+                    interrupted = Some(error);
+                    std::io::Error::other("Body capture interrupted")
+                })
+            },
+            |chunk| {
+                let mut candidate = Vec::with_capacity(carry.len() + chunk.len());
+                candidate.extend_from_slice(&carry);
+                candidate.extend_from_slice(chunk);
+                match std::str::from_utf8(&candidate) {
+                    Ok(_) => carry.clear(),
+                    Err(error) if error.error_len().is_none() => {
+                        carry = candidate[error.valid_up_to()..].to_vec();
+                    }
+                    Err(_) => {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "BSL module is not UTF-8",
+                        ))
+                    }
+                }
+                file.write_all(chunk)
+            },
+        );
+        let len = match result {
+            Ok(len) => len,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(error) => {
+                return Err(interrupted.unwrap_or_else(|| {
+                    ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+                }))
+            }
+        };
+        if !carry.is_empty() {
+            return Err(ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
+                "BSL module is not UTF-8",
+            ));
+        }
+        file.flush().map_err(|error| {
+            ViewError::new(
+                RefusalCode::ProviderUnavailable,
+                format!("Body snapshot write failed: {error}"),
+            )
+        })?;
+        file.seek(SeekFrom::Start(0)).map_err(|error| {
+            ViewError::new(
+                RefusalCode::ProviderUnavailable,
+                format!("Body snapshot seek failed: {error}"),
+            )
+        })?;
+        Ok(BodySnapshot::new(file, len))
     }
 
     #[cfg(test)]

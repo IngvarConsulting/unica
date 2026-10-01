@@ -5,6 +5,7 @@
 //! source. Entries never outlive the server process; TTL, LRU eviction and a
 //! total-bytes quota keep it bounded.
 
+use crate::application::v13::body_snapshot::{BodyPosition, BodySnapshot};
 use crate::domain::refusal::RefusalCode;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -102,6 +103,25 @@ struct ViewCursorEntry {
     last_read: Instant,
 }
 
+struct DiskBodyCursorEntry {
+    snapshot: Arc<DiskBodyCursorSnapshot>,
+    position: BodyPosition,
+    stored_at: Instant,
+    last_read: Instant,
+}
+
+pub(crate) struct DiskBodyCursorSnapshot {
+    pub(crate) binding: ViewCursorBinding,
+    pub(crate) node: Value,
+    pub(crate) body: BodySnapshot,
+    secret: [u8; 32],
+}
+
+pub(crate) struct StoredDiskBodyCursor {
+    pub(crate) snapshot: Arc<DiskBodyCursorSnapshot>,
+    pub(crate) position: BodyPosition,
+}
+
 #[derive(Debug)]
 pub(crate) struct ViewCollectionSnapshot {
     pub(crate) binding: ViewCursorBinding,
@@ -148,6 +168,8 @@ pub(crate) struct ViewCursorStore {
     max_entries: usize,
     max_total_bytes: usize,
     entries: Mutex<HashMap<String, ViewCursorEntry>>,
+    disk_entries: Arc<Mutex<HashMap<String, DiskBodyCursorEntry>>>,
+    disk_cleanup_started: std::sync::atomic::AtomicBool,
     capacity_observer: Option<Arc<dyn ViewCapacityObserver>>,
 }
 
@@ -416,6 +438,8 @@ impl ViewCursorStore {
             max_entries,
             max_total_bytes,
             entries: Mutex::new(HashMap::new()),
+            disk_entries: Arc::new(Mutex::new(HashMap::new())),
+            disk_cleanup_started: std::sync::atomic::AtomicBool::new(false),
             capacity_observer: None,
         }
     }
@@ -426,6 +450,160 @@ impl ViewCursorStore {
     ) -> Self {
         self.capacity_observer = Some(observer);
         self
+    }
+
+    pub(crate) fn insert_disk_body(
+        &self,
+        binding: ViewCursorBinding,
+        node: Value,
+        body: BodySnapshot,
+        position: BodyPosition,
+    ) -> Option<String> {
+        if self.max_entries < 2 || !body.has_more(position) {
+            return None;
+        }
+        self.ensure_disk_cleanup();
+        let mut secret = [0_u8; 32];
+        secret[..16].copy_from_slice(Uuid::new_v4().as_bytes());
+        secret[16..].copy_from_slice(Uuid::new_v4().as_bytes());
+        let snapshot = Arc::new(DiskBodyCursorSnapshot {
+            binding,
+            node,
+            body,
+            secret,
+        });
+        self.insert_disk_entry(snapshot, position, None)
+    }
+
+    pub(crate) fn read_disk_body(
+        &self,
+        token: &str,
+        expected: &ViewCursorBinding,
+        current_revision: &str,
+    ) -> Result<StoredDiskBodyCursor, ViewCursorError> {
+        if !token.starts_with("vd1.") {
+            return Err(ViewCursorError::Invalid);
+        }
+        let mut entries = self
+            .disk_entries
+            .lock()
+            .expect("disk Body cursor store poisoned");
+        let now = Instant::now();
+        let Some(entry) = entries.get(token) else {
+            return Err(ViewCursorError::Invalid);
+        };
+        if now.duration_since(entry.stored_at) >= self.ttl {
+            entries.remove(token);
+            return Err(ViewCursorError::Invalid);
+        }
+        let entry = entries.get_mut(token).expect("checked cursor exists");
+        let binding = &entry.snapshot.binding;
+        if binding.canonical_at != expected.canonical_at
+            || binding.projection != expected.projection
+            || binding.normalized_filter != expected.normalized_filter
+            || binding.source_set_identity != expected.source_set_identity
+            || binding.page_limit != expected.page_limit
+        {
+            return Err(ViewCursorError::Invalid);
+        }
+        if binding.source_revision != current_revision {
+            return Err(ViewCursorError::Stale);
+        }
+        entry.last_read = now;
+        Ok(StoredDiskBodyCursor {
+            snapshot: Arc::clone(&entry.snapshot),
+            position: entry.position,
+        })
+    }
+
+    pub(crate) fn insert_disk_body_next(
+        &self,
+        current: &StoredDiskBodyCursor,
+        position: BodyPosition,
+        current_token: &str,
+    ) -> Option<String> {
+        self.insert_disk_entry(Arc::clone(&current.snapshot), position, Some(current_token))
+    }
+
+    fn insert_disk_entry(
+        &self,
+        snapshot: Arc<DiskBodyCursorSnapshot>,
+        position: BodyPosition,
+        current_token: Option<&str>,
+    ) -> Option<String> {
+        if self.max_entries < 2 || !snapshot.body.has_more(position) {
+            return None;
+        }
+        let mut digest = Sha256::new();
+        digest.update(snapshot.secret);
+        digest.update(position.byte.to_le_bytes());
+        digest.update(position.line.to_le_bytes());
+        let hash = digest.finalize();
+        let token = format!(
+            "vd1.{}",
+            hash[..16]
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        );
+        let now = Instant::now();
+        let mut entries = self
+            .disk_entries
+            .lock()
+            .expect("disk Body cursor store poisoned");
+        entries.retain(|_, entry| now.duration_since(entry.stored_at) < self.ttl);
+        if let Some(current) = current_token {
+            // A retried page must recover precisely the previously published
+            // successor. Preserve it while its predecessor still exists.
+            if let Some((token, _)) = entries.iter().find(|(_, entry)| {
+                Arc::ptr_eq(&entry.snapshot, &snapshot) && entry.position == position
+            }) {
+                return Some(token.clone());
+            }
+            if !entries.contains_key(current) {
+                return None;
+            }
+        }
+        while entries.len() >= self.max_entries {
+            let oldest = entries
+                .iter()
+                .filter(|(token, _)| current_token != Some(token.as_str()))
+                .min_by_key(|(_, entry)| entry.last_read)
+                .map(|(token, _)| token.clone())?;
+            entries.remove(&oldest);
+        }
+        entries.insert(
+            token.clone(),
+            DiskBodyCursorEntry {
+                snapshot,
+                position,
+                stored_at: now,
+                last_read: now,
+            },
+        );
+        Some(token)
+    }
+
+    fn ensure_disk_cleanup(&self) {
+        if self.disk_cleanup_started.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let entries = Arc::downgrade(&self.disk_entries);
+        let ttl = self.ttl;
+        std::thread::spawn(move || {
+            let interval = ttl.min(Duration::from_secs(30)).max(Duration::from_secs(1));
+            loop {
+                std::thread::sleep(interval);
+                let Some(entries) = entries.upgrade() else {
+                    break;
+                };
+                let now = Instant::now();
+                entries
+                    .lock()
+                    .expect("disk Body cursor store poisoned")
+                    .retain(|_, entry| now.duration_since(entry.stored_at) < ttl);
+            }
+        });
     }
 
     pub(crate) fn insert_snapshot(

@@ -1,8 +1,9 @@
 use crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES;
 use crate::application::result_store::{ViewCursorBinding, ViewCursorError, ViewCursorStore};
+use crate::application::v13::body_snapshot::{BodyPosition, BodySnapshot};
 use crate::domain::address::QualifiedAddress;
 use crate::domain::invocation::DomainResult;
-use crate::domain::node_view::NodeViewData;
+use crate::domain::node_view::{NodeView, NodeViewData};
 use crate::domain::refusal::{RefusalCode, RefusalDetail};
 use serde_json::{Map, Value};
 use std::io::{self, Write};
@@ -133,6 +134,10 @@ pub(crate) struct ViewSourceSnapshot {
 pub(crate) trait ViewReadAuthority: Send + Sync {
     fn snapshot(&self, at: &QualifiedAddress) -> Result<ViewSourceSnapshot, ViewError>;
 
+    fn read_checkpoint(&self) -> Result<(), ViewError> {
+        Ok(())
+    }
+
     fn canonical_address(
         &self,
         at: &QualifiedAddress,
@@ -159,6 +164,17 @@ pub(crate) trait ViewReadAuthority: Send + Sync {
         filter: &ViewFilter,
         admitted: &ViewSourceSnapshot,
     ) -> Result<NodeViewData, ViewError>;
+
+    /// A large, unfiltered BSL Body can bypass parser-wide materialization.
+    /// Other readers retain the ordinary projection path.
+    fn read_body_disk(
+        &self,
+        _at: &QualifiedAddress,
+        _filter: &ViewFilter,
+        _admitted: &ViewSourceSnapshot,
+    ) -> Result<Option<BodySnapshot>, ViewError> {
+        Ok(None)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -290,6 +306,41 @@ impl<A: ViewReadAuthority> ViewService<A> {
         };
         let binding = request.binding(&canonical_at, &snapshot);
         if let Some(cursor) = request.cursor.as_deref() {
+            if cursor.starts_with("vd1.") {
+                let stored = self
+                    .cursors
+                    .read_disk_body(cursor, &binding, &snapshot.revision)
+                    .map_err(cursor_error)?;
+                let (items, next, stopped_by) = prepare_disk_page(
+                    &stored.snapshot.node,
+                    &stored.snapshot.body,
+                    stored.position,
+                    request.limit,
+                    &stored.snapshot.binding,
+                    &mut || self.authority.read_checkpoint(),
+                )?;
+                let next_cursor = if stored.snapshot.body.has_more(next) {
+                    Some(
+                        self.cursors
+                            .insert_disk_body_next(&stored, next, cursor)
+                            .ok_or_else(|| {
+                                ViewError::new(
+                                    RefusalCode::ResultTooLarge,
+                                    "view continuation could not be retained",
+                                )
+                            })?,
+                    )
+                } else {
+                    None
+                };
+                return collection_result(
+                    &stored.snapshot.node,
+                    items,
+                    next_cursor,
+                    stopped_by,
+                    &stored.snapshot.binding,
+                );
+            }
             let stored = self
                 .cursors
                 .read(cursor, &binding, &snapshot.revision)
@@ -321,6 +372,67 @@ impl<A: ViewReadAuthority> ViewService<A> {
                 page.stopped_by,
                 &stored.snapshot.binding,
             );
+        }
+
+        if supplied.is_none() {
+            if let Some(body) =
+                self.authority
+                    .read_body_disk(&canonical_at, &request.filter, &snapshot)?
+            {
+                let current = self.authority.snapshot(source_at)?;
+                if current != snapshot {
+                    return Err(ViewError::new(
+                        RefusalCode::ConcurrentChange,
+                        "source changed while the Body snapshot was read; retry the question",
+                    ));
+                }
+                let mut node = serde_json::to_value(NodeView::new(
+                    canonical_at.to_string(),
+                    "Body",
+                    "Body",
+                    Map::new(),
+                ))
+                .map_err(|error| {
+                    ViewError::new(RefusalCode::ProviderUnavailable, error.to_string())
+                })?;
+                if let Some(project) = project {
+                    node.as_object_mut()
+                        .expect("serialized node is object")
+                        .insert("items".to_string(), Value::Array(Vec::new()));
+                    node = project(&node)?;
+                    node.as_object_mut()
+                        .ok_or_else(|| {
+                            ViewError::new(
+                                RefusalCode::ProviderUnavailable,
+                                "Body projection is not an object",
+                            )
+                        })?
+                        .remove("items");
+                }
+                let (items, next, stopped_by) = prepare_disk_page(
+                    &node,
+                    &body,
+                    BodyPosition::default(),
+                    request.limit,
+                    &binding,
+                    &mut || self.authority.read_checkpoint(),
+                )?;
+                let cursor = if body.has_more(next) {
+                    Some(
+                        self.cursors
+                            .insert_disk_body(binding.clone(), node.clone(), body, next)
+                            .ok_or_else(|| {
+                                ViewError::new(
+                                    RefusalCode::ResultTooLarge,
+                                    "Body continuation could not be retained",
+                                )
+                            })?,
+                    )
+                } else {
+                    None
+                };
+                return collection_result(&node, items, cursor, stopped_by, &binding);
+            }
         }
 
         let serialized = if let Some((_, _, data)) = supplied {
@@ -413,6 +525,63 @@ impl<A: ViewReadAuthority> ViewService<A> {
         };
         collection_result(&node, first.items, cursor, first.stopped_by, &binding)
     }
+}
+
+fn prepare_disk_page(
+    node: &Value,
+    body: &BodySnapshot,
+    mut position: BodyPosition,
+    limit: usize,
+    binding: &ViewCursorBinding,
+    checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+) -> Result<(Vec<Value>, BodyPosition, &'static str), ViewError> {
+    let mut items = Vec::new();
+    let mut stopped_by = "complete";
+    while body.has_more(position) {
+        if items.len() >= limit {
+            stopped_by = "limit";
+            break;
+        }
+        let Some((item, next)) = body.next_item(position, &mut *checkpoint)? else {
+            break;
+        };
+        let mut candidate = items.clone();
+        candidate.push(item);
+        let probe = collection_result(
+            node,
+            candidate.clone(),
+            body.has_more(next)
+                .then(|| CURSOR_SIZE_PLACEHOLDER.to_string()),
+            "bytes",
+            binding,
+        )?;
+        let size = serialized_result_size(&probe);
+        if size > MAX_CANONICAL_RESULT_BYTES {
+            if items.is_empty() {
+                return Err(ViewError::new(
+                    RefusalCode::ResultTooLarge,
+                    "one Body line exceeds the transport result limit",
+                ));
+            }
+            stopped_by = "bytes";
+            break;
+        }
+        if size > PREFERRED_PAGE_BYTES
+            && !items.is_empty()
+            && candidate
+                .last()
+                .is_none_or(|item| item.get("byteOffset").is_none())
+        {
+            stopped_by = "bytes";
+            break;
+        }
+        items = candidate;
+        position = next;
+    }
+    if !body.has_more(position) {
+        stopped_by = "complete";
+    }
+    Ok((items, position, stopped_by))
 }
 
 fn collection_result(

@@ -1,4 +1,5 @@
 use crate::application::ports::{MetadataChildProfile, MetadataTemplateType};
+use crate::application::v13::body_snapshot::BodySnapshot;
 use crate::application::v13::view::{ViewError, ViewFilter, ViewReadAuthority, ViewSourceSnapshot};
 use crate::application::v13::LOGICAL_READ_OPERATION_BUDGET;
 use crate::domain::address::{AddressSegment, NodeKind, QualifiedAddress};
@@ -1258,6 +1259,55 @@ impl<'a> LogicalViewReadAuthority<'a> {
 }
 
 impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
+    fn read_checkpoint(&self) -> Result<(), ViewError> {
+        LogicalViewReadAuthority::read_checkpoint(self)
+    }
+
+    fn read_body_disk(
+        &self,
+        at: &QualifiedAddress,
+        filter: &ViewFilter,
+        admitted: &ViewSourceSnapshot,
+    ) -> Result<Option<BodySnapshot>, ViewError> {
+        if !filter.is_empty() {
+            return Ok(None);
+        }
+        let route = route_logical_address(at, self.profile)
+            .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
+        if route.reader() != LogicalReader::Module {
+            return Ok(None);
+        }
+        let Some(capability) = route.module() else {
+            return Ok(None);
+        };
+        let (module_at, prefix_len) = module_prefix(at, self.profile, capability)?;
+        let suffix = &at.segments()[prefix_len..];
+        if !matches!(suffix, [body] if body.kind() == NodeKind::Body && body.name().is_none()) {
+            return Ok(None);
+        }
+        self.read_checkpoint()?;
+        if admitted.source_set_identity != self.read.source_set_identity()
+            || admitted.revision != self.exact_revision()?
+        {
+            return Err(ViewError::new(
+                RefusalCode::StaleCursor,
+                "source revision changed before the Body read",
+            ));
+        }
+        self.verify_module_owner(&module_at, capability, admitted)?;
+        if capability.role() == ModuleRole::WebSocketClient {
+            return Err(ViewError::detailed(
+                RefusalDetail::ProviderAbsent,
+                "WebSocketClient source layout is not specified for platform profile 8.3.27",
+            ));
+        }
+        let target = module_source_address(&module_at, capability)?;
+        let body = self
+            .read
+            .module_body_snapshot(&target, || self.read_checkpoint())?;
+        Ok(Some(body))
+    }
+
     fn snapshot(&self, at: &QualifiedAddress) -> Result<ViewSourceSnapshot, ViewError> {
         if at.source_set() != self.read.source_set() {
             return Err(ViewError::new(

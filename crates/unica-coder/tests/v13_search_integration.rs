@@ -217,6 +217,194 @@ fn canonical_view_reads_configuration_past_eight_mebibytes_with_many_registratio
     mcp.finish();
 }
 
+fn body_workspace(workspace: &std::path::Path, module_bytes: &[u8]) {
+    std::fs::create_dir_all(workspace.join("CommonModules/Main/Ext")).unwrap();
+    std::fs::write(
+        workspace.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\n",
+    )
+    .unwrap();
+    std::fs::write(
+        workspace.join("Configuration.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"><Properties><Name>Main</Name></Properties><ChildObjects><CommonModule>Main</CommonModule></ChildObjects></Configuration></MetaDataObject>"#,
+    ).unwrap();
+    std::fs::write(
+        workspace.join("CommonModules/Main.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule uuid="cccccccc-cccc-4ccc-8ccc-cccccccccccc"><Properties><Name>Main</Name><Global>false</Global><ClientManagedApplication>true</ClientManagedApplication><Server>true</Server><ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ServerCall>false</ServerCall><Privileged>false</Privileged><ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties></CommonModule></MetaDataObject>"#,
+    ).unwrap();
+    std::fs::write(
+        workspace.join("CommonModules/Main/Ext/Module.bsl"),
+        module_bytes,
+    )
+    .unwrap();
+    assert!(Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(workspace)
+        .status()
+        .unwrap()
+        .success());
+    assert!(Command::new("git")
+        .args(["add", "."])
+        .current_dir(workspace)
+        .status()
+        .unwrap()
+        .success());
+}
+
+fn initialize_body_mcp(mcp: &mut McpProcess) {
+    let response = mcp.exchange(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                   "clientInfo": {"name": "body-large-test", "version": "1"}}
+    }));
+    assert_eq!(response["result"]["serverInfo"]["name"], "unica");
+    mcp.notify(json!({"jsonrpc":"2.0", "method":"notifications/initialized", "params":{}}));
+}
+
+fn assert_large_body_line(item: &Value) -> u64 {
+    let line = item["line"].as_u64().unwrap();
+    if (2..=10).contains(&line) {
+        let text = item["text"].as_str().unwrap();
+        assert_eq!(text.len(), 3 + 1024 * 1024);
+        assert!(text.starts_with(&format!("//{}", line - 2)));
+        assert!(text[3..].bytes().all(|byte| byte == b'a'));
+    } else {
+        assert!(!item["text"].as_str().unwrap().contains('\n'));
+    }
+    line
+}
+
+#[test]
+fn public_view_pages_large_bsl_body_and_replays_disk_cursor() {
+    let root = tempfile::tempdir().unwrap();
+    let mut source = Vec::new();
+    source.extend_from_slice(b"Procedure A()\n");
+    for index in 0..9 {
+        source.extend_from_slice(format!("//{index}").as_bytes());
+        source.extend(std::iter::repeat_n(b'a', 1024 * 1024));
+        source.push(b'\n');
+    }
+    source.extend_from_slice(b"EndProcedure\n");
+    body_workspace(root.path(), &source);
+    let mut mcp = McpProcess::start(root.path());
+    initialize_body_mcp(&mut mcp);
+    let at = "main:CommonModule.Main.Body";
+    let first =
+        domain_result(&mcp.exchange(call_tool(2, "unica.view", json!({"at":at, "limit":2}))));
+    assert_eq!(first["ok"], true, "{first:#}");
+    assert_eq!(
+        first["data"]["items"][0],
+        json!({"line":1,"text":"Procedure A()"})
+    );
+    let mut seen = first["data"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(assert_large_body_line)
+        .collect::<Vec<_>>();
+    let mut cursor = first["cursor"]
+        .as_str()
+        .expect("disk continuation")
+        .to_string();
+    let second = domain_result(&mcp.exchange(call_tool(
+        3,
+        "unica.view",
+        json!({"at":at,"limit":2,"cursor":cursor}),
+    )));
+    let replay = domain_result(&mcp.exchange(call_tool(
+        4,
+        "unica.view",
+        json!({"at":at,"limit":2,"cursor":cursor}),
+    )));
+    assert_eq!(second, replay, "cursor replay must be byte-stable");
+    for item in second["data"]["items"].as_array().unwrap() {
+        seen.push(assert_large_body_line(item));
+    }
+    cursor = second["cursor"].as_str().unwrap().to_string();
+    let mut id = 5;
+    loop {
+        let page = domain_result(&mcp.exchange(call_tool(
+            id,
+            "unica.view",
+            json!({"at":at,"limit":2,"cursor":cursor}),
+        )));
+        assert_eq!(page["ok"], true, "{page:#}");
+        for item in page["data"]["items"].as_array().unwrap() {
+            seen.push(assert_large_body_line(item));
+        }
+        match page["cursor"].as_str() {
+            Some(next) => cursor = next.to_string(),
+            None => break,
+        }
+        id += 1;
+    }
+    assert_eq!(seen, (1..=11).collect::<Vec<_>>());
+    std::fs::write(
+        root.path().join("CommonModules/Main/Ext/Module.bsl"),
+        "Procedure Changed()\nEndProcedure\n",
+    )
+    .unwrap();
+    let stale = domain_result(&mcp.exchange(call_tool(
+        id + 1,
+        "unica.view",
+        json!({"at":at,"limit":2,"cursor":first["cursor"]}),
+    )));
+    assert_eq!(stale["ok"], false, "{stale:#}");
+    assert_eq!(stale["diagnostics"][0]["code"], "stale_cursor");
+    mcp.finish();
+}
+
+#[test]
+fn public_view_starts_body_over_sixty_four_mib_and_splits_one_long_line() {
+    let root = tempfile::tempdir().unwrap();
+    let mut source = Vec::with_capacity(70 * 1024 * 1024);
+    source.extend_from_slice(b"//");
+    source.extend(std::iter::repeat_n(b'x', 9 * 1024 * 1024));
+    source.push(b'\n');
+    for _ in 0..62 {
+        source.extend_from_slice(b"//");
+        source.extend(std::iter::repeat_n(b'y', 1024 * 1024));
+        source.push(b'\n');
+    }
+    body_workspace(root.path(), &source);
+    let mut mcp = McpProcess::start(root.path());
+    initialize_body_mcp(&mut mcp);
+    let at = "main:CommonModule.Main.Body";
+    let first =
+        domain_result(&mcp.exchange(call_tool(2, "unica.view", json!({"at":at,"limit":50}))));
+    assert_eq!(first["ok"], true, "{first:#}");
+    assert_eq!(first["data"]["items"][0]["line"], 1);
+    assert_eq!(first["data"]["items"][0]["byteOffset"], 0);
+    assert_eq!(first["data"]["items"][0]["endOfLine"], false);
+    let mut assembled = String::new();
+    let mut page = first;
+    let mut id = 3;
+    'pages: loop {
+        for item in page["data"]["items"].as_array().unwrap() {
+            if item["line"] != 1 {
+                break 'pages;
+            }
+            assert_eq!(item["byteOffset"], assembled.len() as u64);
+            assembled.push_str(item["text"].as_str().unwrap());
+            if item["endOfLine"] == true {
+                break 'pages;
+            }
+        }
+        let cursor = page["cursor"].as_str().expect("long-line continuation");
+        page = domain_result(&mcp.exchange(call_tool(
+            id,
+            "unica.view",
+            json!({"at":at,"limit":50,"cursor":cursor}),
+        )));
+        assert_eq!(page["ok"], true, "{page:#}");
+        id += 1;
+    }
+    assert_eq!(assembled.len(), 2 + 9 * 1024 * 1024);
+    assert!(assembled.starts_with("//"));
+    assert!(assembled[2..].bytes().all(|byte| byte == b'x'));
+    mcp.finish();
+}
+
 // Интеграционная цель — `medium` по `kind(test)`: идёт в очереди и на main,
 // на pull request не идёт. Отдельной джобы и выключателя больше нет.
 #[test]
