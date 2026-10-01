@@ -462,13 +462,58 @@ fn invoke_runner(
     if let Some((_, absolute)) = &prepared.arguments.execute {
         args.extend(["--execute".to_string(), absolute.display().to_string()]);
     }
+    let log_directory = if !prepared.dry_run && prepared.arguments.wait_timeout_ms.is_some() {
+        let directory = tempfile::Builder::new()
+            .prefix("unica-launch-")
+            .tempdir()
+            .and_then(|directory| {
+                let parent = crate::infrastructure::platform::filesystem::open_directory_nofollow(
+                    directory.path(),
+                )?;
+                let logs =
+                    crate::infrastructure::platform::filesystem::create_owner_only_directory_child(
+                        &parent,
+                        std::ffi::OsStr::new("logs"),
+                    )?;
+                for name in ["output.log", "stderr.log"] {
+                    crate::infrastructure::platform::filesystem::create_owner_only_file_child(
+                        &logs,
+                        std::ffi::OsStr::new(name),
+                    )?;
+                }
+                Ok(directory)
+            })
+            .map_err(|_| {
+                reject(
+                    RefusalCode::InvalidState,
+                    "cannot create private launch logs",
+                )
+            })?;
+        Some(directory)
+    } else {
+        None
+    };
     if prepared.dry_run {
         args.push("--dry-run".to_string());
-    } else if let Some(timeout) = prepared.arguments.wait_timeout_ms {
+    } else if let (Some(timeout), Some(directory)) =
+        (prepared.arguments.wait_timeout_ms, &log_directory)
+    {
         args.extend([
             "--wait-for-exit".to_string(),
             "--wait-timeout-ms".to_string(),
             timeout.to_string(),
+            "--output".to_string(),
+            directory
+                .path()
+                .join("logs/output.log")
+                .display()
+                .to_string(),
+            "--stderr-output".to_string(),
+            directory
+                .path()
+                .join("logs/stderr.log")
+                .display()
+                .to_string(),
         ]);
     }
     let output = runner
@@ -483,15 +528,23 @@ fn invoke_runner(
             cancellation: cancellation.clone(),
         })
         .map_err(|error| {
-            reject_absent_runner(format!(
-                "failed to start bundled v8-runner: {}",
-                redactor(&error)
-            ))
+            if log_directory.is_some() {
+                reject_absent_runner("failed to start bundled v8-runner for the waited launch")
+            } else {
+                reject_absent_runner(format!(
+                    "failed to start bundled v8-runner: {}",
+                    redactor(&error)
+                ))
+            }
         })?;
-    parse_runner_output(output, prepared.dry_run)
+    parse_runner_output(output, prepared.dry_run, log_directory.is_some())
 }
 
-fn parse_runner_output(output: ProcessOutput, dry_run: bool) -> Result<Value, DomainResult> {
+fn parse_runner_output(
+    output: ProcessOutput,
+    dry_run: bool,
+    private_output: bool,
+) -> Result<Value, DomainResult> {
     if output.cancelled {
         return Err(reject(RefusalCode::Cancelled, "v8-runner was cancelled"));
     }
@@ -531,10 +584,14 @@ fn parse_runner_output(output: ProcessOutput, dry_run: bool) -> Result<Value, Do
         let code = envelope["error"]["code"]
             .as_str()
             .unwrap_or("provider_failed");
-        let message = envelope["error"]["message"]
-            .as_str()
-            .map(redactor)
-            .unwrap_or_else(|| "v8-runner failed without a typed message".to_string());
+        let message = if private_output {
+            "v8-runner failed while waiting for the external processor".to_string()
+        } else {
+            envelope["error"]["message"]
+                .as_str()
+                .map(redactor)
+                .unwrap_or_else(|| "v8-runner failed without a typed message".to_string())
+        };
         return Err(runner_rejection(Some(OPERATION.to_string()), code, message));
     }
     Ok(envelope)
@@ -727,6 +784,408 @@ mod tests {
             envelope["data"]["external_epf_wait"] = wait;
         }
         envelope
+    }
+
+    fn fake_launch_executable() -> (tempfile::TempDir, BundledTool) {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("fake_launch.rs");
+        let program = crate::infrastructure::platform::testing::fixture_executable_path(
+            directory.path(),
+            "fake-launch",
+        );
+        fs::write(
+            &source,
+            r#"
+use std::{env, fs, path::Path, thread};
+fn main() {
+    let args: Vec<String> = env::args().collect();
+    let value = |flag: &str| -> &str {
+        let index = args.iter().position(|arg| arg == flag).expect(flag);
+        args.get(index + 1).expect(flag)
+    };
+    assert!(args.iter().any(|arg| arg == "--wait-for-exit"));
+    assert_eq!(value("--wait-timeout-ms"), "1500");
+    assert!(Path::new(value("--execute")).is_file());
+    let output = Path::new(value("--output"));
+    let stderr = Path::new(value("--stderr-output"));
+    assert!(output.is_absolute() && stderr.is_absolute());
+    assert_ne!(output, stderr);
+    assert_eq!(output.parent(), stderr.parent());
+    assert!(output.parent().unwrap().is_dir());
+    fs::write(output, "PRIVATE-CLIENT-OUTPUT").unwrap();
+    fs::write(stderr, "PRIVATE-CLIENT-STDERR").unwrap();
+    assert_eq!(fs::read_to_string(output).unwrap(), "PRIVATE-CLIENT-OUTPUT");
+    assert_eq!(fs::read_to_string(stderr).unwrap(), "PRIVATE-CLIENT-STDERR");
+    fs::write("observed-paths", format!("{}\n{}", output.display(), stderr.display())).unwrap();
+    eprintln!("PRIVATE-RUNNER-STDERR {} {}", output.display(), stderr.display());
+    let scenario = fs::read_to_string("scenario").unwrap();
+    if scenario == "runner-timeout" || scenario == "runner-cancel" {
+        loop { thread::park(); }
+    }
+    let escape = |path: &Path| path.to_str().unwrap().replace('\\', "\\\\").replace('"', "\\\"");
+    let reply = fs::read_to_string("reply.json").unwrap()
+        .replace("OUTPUT_PATH", &escape(output))
+        .replace("STDERR_PATH", &escape(stderr));
+    fs::write(output, "PRIVATE-CLIENT-OUTPUT-terminal").unwrap();
+    fs::write(stderr, "PRIVATE-CLIENT-STDERR-terminal").unwrap();
+    println!("{reply}");
+    if scenario == "refusal" { std::process::exit(2); }
+    if scenario == "timeout" { std::process::exit(3); }
+}
+"#,
+        )
+        .unwrap();
+        let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+        let compilation = std::process::Command::new(rustc)
+            .arg("--edition=2021")
+            .arg(&source)
+            .arg("-o")
+            .arg(&program)
+            .output()
+            .expect("compile fake launch executable");
+        assert!(
+            compilation.status.success(),
+            "{}",
+            String::from_utf8_lossy(&compilation.stderr)
+        );
+        (
+            directory,
+            BundledTool {
+                program,
+                warnings: Vec::new(),
+                missing: None,
+            },
+        )
+    }
+
+    #[derive(Default)]
+    struct ObservedSystemRunner {
+        paths: Mutex<Vec<(PathBuf, PathBuf)>>,
+        timeout: bool,
+        cancel_after_output: bool,
+    }
+
+    impl ProcessRunner for ObservedSystemRunner {
+        fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
+            let path = |flag: &str| {
+                let index = command
+                    .args
+                    .iter()
+                    .position(|arg| arg == flag)
+                    .unwrap_or_else(|| panic!("waited launch is missing {flag}"));
+                PathBuf::from(&command.args[index + 1])
+            };
+            let output = path("--output");
+            let stderr = path("--stderr-output");
+            assert_ne!(output, stderr);
+            let directory = output.parent().unwrap();
+            assert_eq!(Some(directory), stderr.parent());
+            assert!(directory.is_dir());
+            assert!(!directory.starts_with(&command.cwd));
+            for path in [&output, &stderr] {
+                let file =
+                    fs::File::open(path).expect("private log must exist before runner starts");
+                assert_eq!(file.metadata().unwrap().len(), 0);
+                crate::infrastructure::platform::filesystem::verify_owner_only_acl(&file).unwrap();
+            }
+            if let Some(mode) =
+                crate::infrastructure::platform::testing::unix_mode_for_test(directory).unwrap()
+            {
+                assert_eq!(mode & 0o077, 0, "launch output directory must be private");
+            }
+            self.paths
+                .lock()
+                .unwrap()
+                .push((output.clone(), stderr.clone()));
+            let mut command = command.clone();
+            if self.timeout {
+                command.timeout = Some(std::time::Duration::from_secs(1));
+            }
+            let result = std::thread::scope(|scope| {
+                if self.cancel_after_output {
+                    scope.spawn(|| {
+                        let ready = command.cwd.join("observed-paths");
+                        let deadline =
+                            std::time::Instant::now() + std::time::Duration::from_secs(5);
+                        while !ready.exists() {
+                            if std::time::Instant::now() >= deadline {
+                                command.cancellation.cancel();
+                                panic!("fixture did not open its logs before cancellation");
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(5));
+                        }
+                        command.cancellation.cancel();
+                    });
+                }
+                crate::infrastructure::internal_adapters::SystemProcessRunner.run(&command)
+            });
+            if let Ok(result) = &result {
+                let suffix = if result.timed_out || result.cancelled {
+                    ""
+                } else {
+                    "-terminal"
+                };
+                assert_eq!(
+                    fs::read_to_string(&output).unwrap(),
+                    format!("PRIVATE-CLIENT-OUTPUT{suffix}")
+                );
+                assert_eq!(
+                    fs::read_to_string(&stderr).unwrap(),
+                    format!("PRIVATE-CLIENT-STDERR{suffix}")
+                );
+                for path in [&output, &stderr] {
+                    let file = fs::File::open(path).unwrap();
+                    crate::infrastructure::platform::filesystem::verify_owner_only_acl(&file)
+                        .unwrap();
+                }
+            }
+            result
+        }
+    }
+
+    fn assert_private_launch_cleanup(result: &DomainResult, paths: &(PathBuf, PathBuf)) {
+        let encoded = serde_json::to_string(result).unwrap();
+        assert!(result.artifacts.is_empty(), "{result:?}");
+        for path in [
+            &paths.0,
+            &paths.1,
+            paths.0.parent().unwrap(),
+            paths.0.parent().unwrap().parent().unwrap(),
+        ] {
+            assert!(
+                !path.exists(),
+                "private output survived terminal result: {path:?}"
+            );
+            let json_path = serde_json::to_string(&path.to_string_lossy()).unwrap();
+            assert!(
+                !encoded.contains(json_path.trim_matches('"')),
+                "path leaked: {encoded}"
+            );
+        }
+        for text in [
+            "PRIVATE-CLIENT-",
+            "PRIVATE-RUNNER-",
+            "--output",
+            "--stderr-output",
+            "output_path",
+            "stderr_path",
+        ] {
+            assert!(!encoded.contains(text), "private output leaked: {encoded}");
+        }
+    }
+
+    #[test]
+    fn waited_launch_real_process_has_private_writable_logs_until_terminal_and_cleans_up() {
+        let (_executable_directory, executable) = fake_launch_executable();
+        let runner = ObservedSystemRunner::default();
+        for scenario in [
+            "success",
+            "nonzero",
+            "timeout",
+            "refusal",
+            "malformed",
+            "invalid-result",
+        ] {
+            let root = workspace();
+            let prepared = prepared(
+                root.path(),
+                json!({"clientMode": "thin", "execute": "tools/Report.epf", "waitForExit": true, "waitTimeoutMs": 1500}),
+                false,
+            );
+            let mut envelope = launched_envelope(
+                "thin",
+                77,
+                Some(json!({
+                    "pid": 77,
+                    "exit_code": if scenario == "timeout" { Value::Null } else { json!(if scenario == "nonzero" { 3 } else { 0 }) },
+                    "timed_out": scenario == "timeout",
+                    "output_path": "OUTPUT_PATH",
+                    "stderr_path": "STDERR_PATH",
+                    "stdout": "PRIVATE-CLIENT-OUTPUT",
+                    "stderr": "PRIVATE-CLIENT-STDERR",
+                })),
+            );
+            if scenario == "refusal" {
+                envelope["ok"] = json!(false);
+                envelope["error"] = json!({
+                    "code": "platform_failure",
+                    "message": "OUTPUT_PATH STDERR_PATH PRIVATE-CLIENT-OUTPUT PRIVATE-CLIENT-STDERR",
+                });
+            }
+            // v8-runner 0.11.2 reports an EPF wait timeout as runtime_failure,
+            // with a nonzero process status, rather than a successful receipt.
+            if scenario == "timeout" {
+                envelope["ok"] = json!(false);
+                envelope["data"]["ok"] = json!(false);
+                envelope["error"] = json!({
+                    "code": "runtime_failure",
+                    "kind": "runtime",
+                    "message": "OUTPUT_PATH STDERR_PATH PRIVATE-CLIENT-OUTPUT wait timed out",
+                });
+            }
+            if scenario == "invalid-result" {
+                envelope["data"]["mode"] = json!("designer");
+            }
+            fs::write(root.path().join("scenario"), scenario).unwrap();
+            fs::write(
+                root.path().join("reply.json"),
+                if scenario == "malformed" {
+                    "not-json OUTPUT_PATH STDERR_PATH PRIVATE-CLIENT-OUTPUT".to_string()
+                } else {
+                    serde_json::to_string(&envelope).unwrap()
+                },
+            )
+            .unwrap();
+            let result = execute_with_resolved_runner(
+                &prepared,
+                &runner,
+                CancellationToken::new(),
+                &executable,
+            );
+            let paths = runner.paths.lock().unwrap().last().unwrap().clone();
+            assert_eq!(
+                fs::read_to_string(root.path().join("observed-paths")).unwrap(),
+                format!("{}\n{}", paths.0.display(), paths.1.display())
+            );
+            assert_private_launch_cleanup(&result, &paths);
+            match scenario {
+                "timeout" => {
+                    assert!(!result.ok, "{result:?}");
+                    assert_eq!(result.diagnostics[0]["code"], "provider_failed");
+                    assert!(result.changed.is_empty());
+                }
+                "refusal" => {
+                    assert!(!result.ok, "{result:?}");
+                    assert_eq!(result.diagnostics[0]["code"], "provider_unavailable");
+                    assert!(result.changed.is_empty());
+                }
+                "malformed" | "invalid-result" => {
+                    assert!(!result.ok, "{result:?}");
+                    assert_eq!(result.diagnostics[0]["code"], "invalid_result");
+                }
+                _ => {
+                    assert!(result.ok, "{result:?}");
+                    let data = result.data.as_ref().unwrap();
+                    assert_eq!(data["pid"], 77);
+                    assert_eq!(data["wait"]["timedOut"], false);
+                    assert_eq!(
+                        data["wait"]["exitCode"],
+                        envelope["data"]["external_epf_wait"]["exit_code"]
+                    );
+                }
+            }
+            assert_eq!(
+                fs::read(root.path().join(CONFIG_NAME)).unwrap(),
+                b"format: DESIGNER\n"
+            );
+            assert_eq!(
+                fs::read(root.path().join("tools/Report.epf")).unwrap(),
+                b"epf"
+            );
+        }
+        let paths = runner.paths.lock().unwrap();
+        let directories: std::collections::HashSet<_> = paths
+            .iter()
+            .map(|(output, _)| output.parent().unwrap())
+            .collect();
+        assert_eq!(
+            directories.len(),
+            paths.len(),
+            "waited applies reused a private directory"
+        );
+    }
+
+    #[test]
+    fn waited_launch_real_process_timeout_cancel_and_spawn_failure_clean_up_private_logs() {
+        let (_executable_directory, executable) = fake_launch_executable();
+        for scenario in ["runner-timeout", "runner-cancel", "spawn-failure"] {
+            let root = workspace();
+            fs::write(root.path().join("scenario"), scenario).unwrap();
+            let prepared = prepared(
+                root.path(),
+                json!({"clientMode": "thin", "execute": "tools/Report.epf", "waitForExit": true, "waitTimeoutMs": 1500}),
+                false,
+            );
+            let runner = ObservedSystemRunner {
+                timeout: scenario == "runner-timeout",
+                cancel_after_output: scenario == "runner-cancel",
+                ..Default::default()
+            };
+            let missing = tool(root.path());
+            let result = execute_with_resolved_runner(
+                &prepared,
+                &runner,
+                CancellationToken::new(),
+                if scenario == "spawn-failure" {
+                    &missing
+                } else {
+                    &executable
+                },
+            );
+            assert!(!result.ok, "{result:?}");
+            assert_eq!(
+                result.diagnostics[0]["code"],
+                match scenario {
+                    "spawn-failure" => "provider_unavailable",
+                    "runner-cancel" => "cancelled",
+                    _ => "deadline_exceeded",
+                }
+            );
+            assert_private_launch_cleanup(&result, &runner.paths.lock().unwrap()[0]);
+            assert!(!serde_json::to_string(&result)
+                .unwrap()
+                .contains(&root.path().display().to_string()));
+        }
+    }
+
+    #[test]
+    fn waited_preview_and_nonwait_launch_omit_private_output_and_wait_flags() {
+        let root = workspace();
+        for dry_run in [true, false] {
+            let args = if dry_run {
+                json!({"clientMode": "thin", "execute": "tools/Report.epf", "waitForExit": true, "waitTimeoutMs": 1500})
+            } else {
+                json!({"clientMode": "thin", "execute": "tools/Report.epf"})
+            };
+            let prepared = prepared(root.path(), args.clone(), dry_run);
+            let runner = SequenceRunner::new(vec![process(
+                if dry_run {
+                    preview_envelope("thin", None)
+                } else {
+                    launched_envelope("thin", 77, None)
+                },
+                true,
+            )]);
+            let result = execute_with_resolved_runner(
+                &prepared,
+                &runner,
+                CancellationToken::new(),
+                &tool(root.path()),
+            );
+            assert!(result.ok, "{result:?}");
+            let calls = runner.calls.lock().unwrap();
+            for flag in [
+                "--output",
+                "--stderr-output",
+                "--wait-for-exit",
+                "--wait-timeout-ms",
+            ] {
+                assert!(
+                    !calls[0].args.iter().any(|arg| arg == flag),
+                    "unexpected {flag}"
+                );
+            }
+            if dry_run {
+                assert_eq!(result.next[0]["args"]["args"], args);
+            }
+        }
+        for field in ["output", "stderrOutput", "stderr-output", "logDirectory"] {
+            let mut args = json!({"clientMode": "thin", "execute": "tools/Report.epf", "waitForExit": true, "waitTimeoutMs": 1500});
+            args[field] = json!("private.log");
+            let result = parse_launch_arguments(args.as_object().unwrap(), &context(root.path()))
+                .unwrap_err();
+            assert_eq!(result.diagnostics[0]["code"], "bad_value");
+        }
     }
 
     #[test]
