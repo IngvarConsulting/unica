@@ -145,9 +145,10 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
         ),
     )
     .expect("main module");
+    let long_synonym = "Я".repeat(1_025);
     std::fs::write(
         workspace.join("CommonModules/Main.xml"),
-        r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule uuid="cccccccc-cccc-4ccc-8ccc-cccccccccccc"><Properties><Name>Main</Name><Global>false</Global><ClientManagedApplication>true</ClientManagedApplication><Server>true</Server><ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ServerCall>false</ServerCall><Privileged>false</Privileged><ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties></CommonModule></MetaDataObject>"#,
+        format!(r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20"><CommonModule uuid="cccccccc-cccc-4ccc-8ccc-cccccccccccc"><Properties><Name>Main</Name><Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>{long_synonym}</v8:content></v8:item></Synonym><Global>false</Global><ClientManagedApplication>true</ClientManagedApplication><Server>true</Server><ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ServerCall>false</ServerCall><Privileged>false</Privileged><ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties></CommonModule></MetaDataObject>"#),
     )
     .expect("main module descriptor");
     std::fs::create_dir_all(workspace.join("CommonModules/Orphan/Ext"))
@@ -341,6 +342,17 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
     assert!(main_matches.iter().all(|item| item["at"]
         .as_str()
         .is_some_and(|at| at.starts_with("main:"))));
+
+    let long_name_result = domain_result(&mcp.exchange(call_tool(
+        36,
+        "unica.search",
+        json!({"query": long_synonym, "corpus": "names", "scope": "main:Configuration"}),
+    )));
+    assert_eq!(long_name_result["ok"], true, "{long_name_result:#}");
+    assert_eq!(
+        long_name_result["data"]["matches"][0]["at"],
+        "main:CommonModule.Main"
+    );
 
     let named_scope = domain_result(&mcp.exchange(call_tool(
         20,

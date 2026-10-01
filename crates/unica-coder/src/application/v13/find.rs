@@ -7,7 +7,6 @@ use std::cmp::Ordering;
 
 const DEFAULT_LIMIT: usize = 20;
 const MAX_LIMIT: usize = 100;
-const MAX_QUERY_CHARS: usize = 1_024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FindRequest {
@@ -24,12 +23,6 @@ impl FindRequest {
             return Err(FindError::new(
                 RefusalCode::BadValue,
                 "find query must not be empty",
-            ));
-        }
-        if query.chars().count() > MAX_QUERY_CHARS {
-            return Err(FindError::new(
-                RefusalCode::BadValue,
-                format!("find query must not exceed {MAX_QUERY_CHARS} characters"),
             ));
         }
         Ok(Self {
@@ -745,9 +738,18 @@ mod tests {
     }
 
     #[test]
-    fn find_rejects_queries_above_the_identity_work_bound() {
-        let error = FindRequest::new(&"Я".repeat(1_025)).unwrap_err();
+    fn find_matches_an_identity_longer_than_the_former_query_ceiling() {
+        let long_name = "Я".repeat(1_025);
+        let address = format!("main:Catalog.{long_name}");
+        let index = FindIndex::new(vec![FindDocument::new(
+            &address,
+            "Catalog",
+            long_name.clone(),
+            vec![FindFact::new(FindFactKind::Name, long_name.clone())],
+        )]);
 
-        assert_eq!(error.code().as_str(), "bad_value");
+        let found = index.find(FindRequest::new(&long_name).unwrap());
+        assert_eq!(found.candidates().len(), 1);
+        assert_eq!(found.candidates()[0].at(), address);
     }
 }
