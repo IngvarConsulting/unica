@@ -5701,7 +5701,7 @@ struct V5ConnectionSlot {
 impl V5ConnectionSlot {
     fn acquire(admitted: Arc<AtomicUsize>) -> Option<Self> {
         admitted
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 (current < MAX_HANDSHAKES).then_some(current + 1)
             })
             .ok()
