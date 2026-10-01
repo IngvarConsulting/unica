@@ -2535,7 +2535,7 @@ fn ordinary_bsl_read_over_eight_mib_reassembles_every_body_line() {
             request = request.with_cursor(previous);
         }
         let page = service.view(request);
-        assert!(page.ok, "{} {:?}", page.summary, page.diagnostics);
+        assert!(page.ok, "large Body page failed");
         for item in page.data.as_ref().unwrap()["items"].as_array().unwrap() {
             let line = item["line"].as_u64().unwrap();
             let text = item["text"].as_str().expect("Body line must carry text");
@@ -2561,7 +2561,7 @@ fn ordinary_xml_read_over_eight_mib_keeps_complete_configuration_facts() {
     let baseline = fixture
         .view_service()
         .view(ViewRequest::new("main:Configuration").unwrap());
-    assert!(baseline.ok, "{:?}", baseline.diagnostics);
+    assert!(baseline.ok, "baseline Configuration view failed");
     let xml = fs::read_to_string(&path).unwrap();
     let inflated = xml.replace(
         "</MetaDataObject>",
@@ -2572,14 +2572,15 @@ fn ordinary_xml_read_over_eight_mib_keeps_complete_configuration_facts() {
     let result = fixture
         .view_service()
         .view(ViewRequest::new("main:Configuration").unwrap());
-    assert!(result.ok, "{} {:?}", result.summary, result.diagnostics);
-    assert_eq!(
-        result.data.as_ref().unwrap()["props"],
-        baseline.data.as_ref().unwrap()["props"]
+    assert!(result.ok, "large Configuration view failed");
+    assert!(
+        result.data.as_ref().unwrap()["props"] == baseline.data.as_ref().unwrap()["props"],
+        "Configuration root properties changed"
     );
-    assert_eq!(
-        result.data.as_ref().unwrap()["branches"],
-        baseline.data.as_ref().unwrap()["branches"]
+    assert!(
+        result.data.as_ref().unwrap()["branches"]
+            == baseline.data.as_ref().unwrap()["branches"],
+        "Configuration root branches changed"
     );
 }
 
