@@ -299,9 +299,16 @@ fn persist_snapshot(directory: &File, snapshot: &CapacitySnapshot) -> io::Result
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CapacityFlushResult {
+    Saved,
+    WriteFailed,
+    Unauthorized,
+}
+
 pub(crate) struct CapacityWriterGuard {
     stop: mpsc::Sender<()>,
-    flushed: mpsc::Receiver<bool>,
+    flushed: mpsc::Receiver<CapacityFlushResult>,
 }
 
 impl Drop for CapacityWriterGuard {
@@ -309,7 +316,10 @@ impl Drop for CapacityWriterGuard {
         // Normal short-lived daemons must not discard the entire interval.
         // Diagnostic I/O cannot hold shutdown indefinitely if the filesystem stalls.
         let _ = self.stop.send(());
-        if !matches!(self.flushed.recv_timeout(SHUTDOWN_FLUSH_WAIT), Ok(true)) {
+        if !matches!(
+            self.flushed.recv_timeout(SHUTDOWN_FLUSH_WAIT),
+            Ok(CapacityFlushResult::Saved | CapacityFlushResult::Unauthorized)
+        ) {
             eprintln!("local capacity observation: shutdown snapshot was not saved");
         }
     }
@@ -361,7 +371,7 @@ fn background_flush_loop(
     authority_valid: Arc<dyn Fn() -> bool + Send + Sync>,
     writer_lock: File,
     receiver: mpsc::Receiver<()>,
-    flushed: mpsc::Sender<bool>,
+    flushed: mpsc::Sender<CapacityFlushResult>,
 ) {
     let mut write_failure_reported = false;
     loop {
@@ -369,19 +379,25 @@ fn background_flush_loop(
             Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => true,
             Err(mpsc::RecvTimeoutError::Timeout) => false,
         };
-        let saved = if authority_valid() {
+        let result = if authority_valid() {
             observer.sample_process_peak_rss();
-            flush_snapshot(&retained, &observer).is_ok()
+            if flush_snapshot(&retained, &observer).is_ok() {
+                CapacityFlushResult::Saved
+            } else {
+                CapacityFlushResult::WriteFailed
+            }
         } else {
-            false
+            CapacityFlushResult::Unauthorized
         };
-        if !saved && !write_failure_reported && !stopping {
+        if result == CapacityFlushResult::WriteFailed && !write_failure_reported && !stopping {
             eprintln!("local capacity observation: snapshot write failed");
         }
-        write_failure_reported = !saved;
+        if result != CapacityFlushResult::Unauthorized {
+            write_failure_reported = result == CapacityFlushResult::WriteFailed;
+        }
         if stopping {
             drop(writer_lock);
-            let _ = flushed.send(saved);
+            let _ = flushed.send(result);
             return;
         }
     }
@@ -596,6 +612,50 @@ mod tests {
         let saved = read_existing_snapshot(state.path()).unwrap().unwrap();
         assert_eq!(saved.find_entries.max_exact, 1);
         assert!(saved.snapshot_captured_unix_ms.is_some());
+    }
+
+    #[test]
+    fn shutdown_without_authority_preserves_snapshot_and_reports_unauthorized() {
+        use crate::infrastructure::daemon::identity::CoreIdentity;
+
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let state = DaemonStateDirectory::open(&root, &CoreIdentity::production_v5()).unwrap();
+        let retained = state
+            .create_private_retained_subdirectory(DIRECTORY_NAME)
+            .unwrap();
+        let directory = retained.try_clone_directory().unwrap();
+        let prior = CapacitySnapshot::default();
+        persist_snapshot(&directory, &prior).unwrap();
+        let before = std::fs::read(state.path().join(DIRECTORY_NAME).join(SNAPSHOT_NAME)).unwrap();
+        let writer_lock =
+            open_directory_ownership_lock(&directory, OsStr::new(WRITER_LOCK_NAME)).unwrap();
+        writer_lock.try_lock_exclusive().unwrap();
+
+        let observer = Arc::new(CapacityObserver::default());
+        observer.record_find(42, 1, true);
+        let (stop, receiver) = mpsc::channel();
+        let (flushed, completed) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            background_flush_loop(
+                retained,
+                observer,
+                Arc::new(|| false),
+                writer_lock,
+                receiver,
+                flushed,
+            )
+        });
+        stop.send(()).unwrap();
+        assert!(matches!(
+            completed.recv_timeout(SHUTDOWN_FLUSH_WAIT),
+            Ok(CapacityFlushResult::Unauthorized)
+        ));
+        worker.join().unwrap();
+        assert_eq!(
+            std::fs::read(state.path().join(DIRECTORY_NAME).join(SNAPSHOT_NAME)).unwrap(),
+            before
+        );
     }
 
     #[test]
