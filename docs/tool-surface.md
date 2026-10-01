@@ -44,7 +44,7 @@ Preview or atomically apply typed edits to one logically addressed 1C node.
 
 ### `unica.check`
 
-Confirm workspace source-set admission, or validate one logical node: readability plus every validator its kind owns. Node diagnostics are returned in stable pages.
+Confirm workspace source-set admission, or validate one logical node: readability plus every validator its kind owns. If an incomplete workspace EOL inspection offers another check, call unica.check with an empty object again to resume its bounded checkpoint; each call uses a fresh deadline. Capacity and other fixed failures require their reported cause to be resolved. Node diagnostics are returned in stable pages.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
@@ -52,7 +52,7 @@ Confirm workspace source-set admission, or validate one logical node: readabilit
 | `cursor` | string | нет | Continuation cursor from an earlier check of the same node. |
 | `limit` | integer | нет | Maximum diagnostics in one node-check page (default 20, maximum 50). |
 
-**Результат сейчас:** Без `at` доказывает admission source set; с `at` читает узел и запускает все валидаторы его вида (`cf`/`cfe` для корня по виду набора, `form`, `dcs`/`mxl` по `TemplateType`, `role`, `subsystem`, `interface`, `meta`, `bsl`), отдавая `status`, `validators` и диагностики страницами; узел без валидаторов отвечает читаемостью (отвечают типизированным `data`)
+**Результат сейчас:** Без `at` доказывает admission source set; если EOL-обход прерван сроком запроса и ёмкость checkpoint доступна, корневой ответ предлагает повторить `unica.check {}` с новым сроком. При исчерпании ёмкости и другой статической неполноте нужно устранить указанную причину. С `at` читает узел и запускает все валидаторы его вида (`cf`/`cfe` для корня по виду набора, `form`, `dcs`/`mxl` по `TemplateType`, `role`, `subsystem`, `interface`, `meta`, `bsl`), отдавая `status`, `validators` и диагностики страницами; узел без валидаторов отвечает читаемостью (отвечают типизированным `data`)
 
 **Целевой контракт:** Держать таблицу вид → валидаторы закрытой и доказанной корпусом; на проводе у `check` нет аргумента выбора валидатора
 

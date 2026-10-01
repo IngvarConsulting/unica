@@ -1,4 +1,5 @@
 pub use crate::domain::code_intelligence::ProviderDeadline;
+pub(crate) mod stream_error;
 use crate::domain::{
     cancellation::CancellationToken,
     operational_config::DIAGNOSTICS_ANALYZE_DEFAULT_SECONDS,

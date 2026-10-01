@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 
 use unica_bootstrap::{
-    BootstrapError, DeliveryForm, DownloadObserver, Failure, HostTarget, HttpDownloader,
-    RuntimeInstaller, RuntimeManifest,
+    BootstrapError, DeliveryForm, DownloadObserver, Downloader, Failure, HostTarget,
+    HttpDownloader, RuntimeInstaller, RuntimeManifest,
 };
 
 use crate::application::shared_work::{
@@ -22,7 +22,9 @@ use crate::application::shared_work::{
     SharedWorkSnapshot,
 };
 use crate::domain::cancellation::CancellationToken;
+use crate::domain::invocation::DomainResult;
 use crate::domain::progress::{ProgressEvent, ProgressSink};
+use crate::domain::refusal::{RefusalCode, RefusalDetail};
 
 /// Ключ, под которым ход доставки едет в `notifications/progress`.
 pub(crate) const DELIVERY_PROGRESS_META_KEY: &str = "io.unica/deliveryProgress";
@@ -36,17 +38,26 @@ const DELIVERY_PROGRESS_STEP: Duration = Duration::from_millis(500);
 /// Кто ведёт учёт идущих доставок.
 pub(crate) struct DeliveryDesk {
     exact: SharedWork<ArtifactReady, DeliveryFailure>,
+    downloader: Arc<dyn Downloader>,
 }
 
 impl Default for DeliveryDesk {
     fn default() -> Self {
         Self {
             exact: SharedWork::new(SharedWorkLifetime::ProducerBound),
+            downloader: Arc::new(HttpDownloader::default()),
         }
     }
 }
 
 impl DeliveryDesk {
+    #[cfg(test)]
+    pub(crate) fn with_downloader_for_test(downloader: Arc<dyn Downloader>) -> Self {
+        Self {
+            exact: SharedWork::new(SharedWorkLifetime::ProducerBound),
+            downloader,
+        }
+    }
     #[allow(dead_code)] // Canonical daemon handlers join here after durable task handoff.
     pub(crate) fn join<W>(
         &self,
@@ -155,7 +166,7 @@ impl DeliveryDesk {
                     progress: moved,
                     elapsed,
                 } => {
-                    if cancellation.is_cancelled() || remaining.is_zero() {
+                    if cancellation.is_cancelled() {
                         return EngineDeliveryState::Working {
                             artifact: artifact.clone(),
                             received: moved.completed,
@@ -164,6 +175,14 @@ impl DeliveryDesk {
                         };
                     }
                     publish_exact(&artifact, moved, progress);
+                    if remaining.is_zero() {
+                        return EngineDeliveryState::Working {
+                            artifact: artifact.clone(),
+                            received: moved.completed,
+                            total: moved.total,
+                            poll_interval_ms: poll_hint(moved, elapsed),
+                        };
+                    }
                 }
             }
         }
@@ -198,6 +217,38 @@ fn publish_exact(artifact: &str, moved: SharedWorkProgress, progress: &dyn Progr
             None => format!("delivering {artifact}: {} bytes", moved.completed),
         },
     });
+}
+
+/// Progress observed by a canonical waiter is retained until its bounded
+/// response is built. The daemon protocol does not stream MCP notifications;
+/// the response carries the final observed byte count and total instead.
+#[derive(Default)]
+pub(crate) struct CanonicalDeliveryProgress {
+    latest: std::sync::Mutex<Option<ProgressEvent>>,
+}
+
+impl ProgressSink for CanonicalDeliveryProgress {
+    fn publish(&self, event: ProgressEvent) {
+        if let Ok(mut latest) = self.latest.lock() {
+            *latest = Some(event);
+        }
+    }
+}
+
+impl CanonicalDeliveryProgress {
+    fn observed(&self, artifact: &str) -> Option<(u64, Option<u64>)> {
+        let latest = self.latest.lock().ok()?;
+        let event = latest.as_ref()?;
+        if event.meta_key != DELIVERY_PROGRESS_META_KEY
+            || event.payload["artifact"].as_str()? != artifact
+        {
+            return None;
+        }
+        Some((
+            event.payload["receivedBytes"].as_u64()?,
+            event.payload["totalBytes"].as_u64(),
+        ))
+    }
 }
 
 /// Что нужно доставить, чтобы у инструмента появился движок.
@@ -235,6 +286,132 @@ const RUNTIME_MANIFEST_ENV: &str = "UNICA_RUNTIME_MANIFEST";
 
 pub(crate) fn order_for(plugin_root: &Path, tool_name: &str) -> Option<EngineOrder> {
     order_for_in(plugin_root, tool_name, &|name| std::env::var_os(name))
+}
+
+/// The one acquisition path for legacy adapters and canonical operations.
+/// Both inspect the same installed location and join an exact delivery in
+/// their coordinator, so a request never starts a second download under
+/// another key in one process.
+pub(crate) fn deliver_if_missing(
+    desk: &DeliveryDesk,
+    plugin_root: &Path,
+    tool_name: &str,
+    cancellation: &CancellationToken,
+    progress: &dyn ProgressSink,
+) -> EngineDeliveryState {
+    if crate::infrastructure::bundled_tools::installed_engine_path(plugin_root, tool_name).is_some()
+    {
+        return EngineDeliveryState::NotRequired;
+    }
+    let Some(order) = order_for(plugin_root, tool_name) else {
+        return EngineDeliveryState::NotRequired;
+    };
+    let artifact = order.artifact().to_owned();
+    let prepared = match order.prepare() {
+        Ok(prepared) => prepared,
+        Err(failure) => {
+            return EngineDeliveryState::Failed {
+                artifact,
+                failure: Arc::new(failure),
+            }
+        }
+    };
+    let identity = prepared.identity().clone();
+    let window = crate::domain::long_work::sync_window(unica_bootstrap::host_tool_deadline());
+    let downloader = Arc::clone(&desk.downloader);
+    match desk.request(
+        identity.clone(),
+        move |delivery| prepared.acquire(delivery, downloader),
+        window,
+        cancellation,
+        progress,
+    ) {
+        EngineDeliveryState::Ready(ready) => {
+            debug_assert_eq!(ready.identity(), &identity);
+            debug_assert!(ready.install_root().is_absolute());
+            EngineDeliveryState::Ready(ready)
+        }
+        state => state,
+    }
+}
+
+/// Canonical callers return a bounded, typed delivery state. A pending
+/// delivery is a retryable refusal, never a successful result for an operation
+/// that has not run. The bootstrap error text can contain a remote URL or
+/// filesystem path, so only its closed class is projected onto the response.
+pub(crate) fn canonical_delivery_result(
+    state: EngineDeliveryState,
+    progress: &CanonicalDeliveryProgress,
+) -> Option<DomainResult> {
+    match state {
+        EngineDeliveryState::NotRequired | EngineDeliveryState::Ready(_) => None,
+        EngineDeliveryState::Working {
+            artifact,
+            received,
+            total,
+            poll_interval_ms,
+        } => {
+            let (received, total) = progress.observed(&artifact).unwrap_or((received, total));
+            let mut result = DomainResult::canonical_rejection_detailed(
+                None,
+                RefusalDetail::DeliveryInProgress,
+                format!("delivery of {artifact} is continuing; repeat the same call"),
+            );
+            result.data = Some(json!({
+                "delivery": {
+                    "artifact": artifact,
+                    "status": "working",
+                    "receivedBytes": received,
+                    "totalBytes": total,
+                    "retryAfterMs": poll_interval_ms.unwrap_or(1000),
+                }
+            }));
+            Some(result)
+        }
+        EngineDeliveryState::Failed { artifact, failure } => {
+            let (class, refusal, advice) = match failure.class() {
+                DeliveryFailureClass::Network => (
+                    "network",
+                    Ok(RefusalDetail::ProviderAbsent),
+                    "check network access to the pinned release and repeat the call",
+                ),
+                DeliveryFailureClass::Timeout => (
+                    "timeout",
+                    Err(RefusalCode::DeadlineExceeded),
+                    "repeat the call after the delivery timeout",
+                ),
+                DeliveryFailureClass::Disk => (
+                    "disk",
+                    Ok(RefusalDetail::ProviderAbsent),
+                    "check the runtime cache disk and repeat the call",
+                ),
+                DeliveryFailureClass::Checksum => (
+                    "checksum",
+                    Ok(RefusalDetail::ProviderAbsent),
+                    "check the pinned artifact and its published checksum",
+                ),
+                DeliveryFailureClass::Configuration => (
+                    "configuration",
+                    Ok(RefusalDetail::ProviderAbsent),
+                    "check the runtime manifest and plugin installation",
+                ),
+                DeliveryFailureClass::Internal => (
+                    "internal",
+                    Ok(RefusalDetail::BackendBroken),
+                    "inspect the Unica runtime delivery failure",
+                ),
+            };
+            let message = format!("delivery of {artifact} failed ({class}); {advice}");
+            let mut result = match refusal {
+                Ok(detail) => DomainResult::canonical_rejection_detailed(None, detail, message),
+                Err(code) => DomainResult::canonical_rejection(None, code, message),
+            };
+            result.data = Some(json!({
+                "delivery": {"artifact": artifact, "status": "failed", "failureClass": class}
+            }));
+            Some(result)
+        }
+    }
 }
 
 /// Разрешение с явно названным окружением: так его видно в тесте.
@@ -312,20 +489,17 @@ impl PreparedEngineOrder {
     pub(crate) fn acquire(
         self,
         delivery: crate::application::shared_work::SharedWorkProducer,
+        downloader: Arc<dyn Downloader>,
     ) -> Result<ArtifactReady, DeliveryFailure> {
-        RuntimeInstaller::new(
-            self.cache_root,
-            env!("CARGO_PKG_VERSION"),
-            Arc::new(HttpDownloader::default()),
-        )
-        .ensure_artifact(
-            &self.manifest,
-            &self.artifact,
-            self.host,
-            &WatchingExact(delivery),
-        )
-        .map_err(classify_failure)
-        .and_then(|root| ArtifactReady::new(self.identity, root))
+        RuntimeInstaller::new(self.cache_root, env!("CARGO_PKG_VERSION"), downloader)
+            .ensure_artifact(
+                &self.manifest,
+                &self.artifact,
+                self.host,
+                &WatchingExact(delivery),
+            )
+            .map_err(classify_failure)
+            .and_then(|root| ArtifactReady::new(self.identity, root))
     }
 }
 
@@ -377,6 +551,72 @@ mod tests {
 
     fn desk() -> DeliveryDesk {
         DeliveryDesk::default()
+    }
+
+    #[test]
+    fn canonical_delivery_state_reports_progress_without_claiming_search_completed() {
+        let progress = CanonicalDeliveryProgress::default();
+        progress.publish(ProgressEvent {
+            meta_key: DELIVERY_PROGRESS_META_KEY,
+            payload: json!({"artifact": "rlm-tools-bsl", "receivedBytes": 4096, "totalBytes": 8192}),
+            progress: 4096.0,
+            total: 8192.0,
+            message: "receiving".to_string(),
+        });
+        let result = canonical_delivery_result(
+            EngineDeliveryState::Working {
+                artifact: "rlm-tools-bsl".to_string(),
+                received: 0,
+                total: None,
+                poll_interval_ms: Some(1500),
+            },
+            &progress,
+        )
+        .expect("unfinished delivery has a public state");
+        assert!(!result.ok);
+        assert_eq!(result.diagnostics[0]["code"], "provider_unavailable");
+        assert_eq!(result.diagnostics[0]["detailCode"], "delivery_in_progress");
+        assert_eq!(result.diagnostics[0]["outcome"], "retry");
+        assert_eq!(
+            result.data.as_ref().unwrap()["delivery"]["status"],
+            "working"
+        );
+        assert_eq!(
+            result.data.as_ref().unwrap()["delivery"]["receivedBytes"],
+            4096
+        );
+        assert_eq!(
+            result.data.as_ref().unwrap()["delivery"]["totalBytes"],
+            8192
+        );
+        assert_eq!(
+            result.data.as_ref().unwrap()["delivery"]["retryAfterMs"],
+            1500
+        );
+    }
+
+    #[test]
+    fn canonical_delivery_failure_exposes_a_closed_class_without_bootstrap_prose() {
+        let result = canonical_delivery_result(
+            EngineDeliveryState::Failed {
+                artifact: "v8-runner".to_string(),
+                failure: Arc::new(DeliveryFailure::new(
+                    DeliveryFailureClass::Checksum,
+                    "secret network URL and private cache path",
+                )),
+            },
+            &CanonicalDeliveryProgress::default(),
+        )
+        .expect("failed delivery has a public refusal");
+        assert!(!result.ok);
+        assert_eq!(result.diagnostics[0]["code"], "provider_unavailable");
+        assert_eq!(
+            result.data.as_ref().unwrap()["delivery"]["failureClass"],
+            "checksum"
+        );
+        let encoded = serde_json::to_string(&result).unwrap();
+        assert!(!encoded.contains("secret network URL"));
+        assert!(!encoded.contains("private cache path"));
     }
 
     fn absolute_install_root(name: &str) -> PathBuf {

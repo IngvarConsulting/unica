@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const TERMINATION_WAIT_LIMIT: Duration = Duration::from_millis(500);
 const READER_WAIT_LIMIT: Duration = Duration::from_millis(500);
+pub(crate) const STREAM_LINE_TOO_LONG_ERROR: &str = "line exceeds configured byte limit";
 
 #[cfg(all(test, windows))]
 struct JobAttachGateState {
@@ -2410,9 +2411,7 @@ where
                 }
             }
             LineMessage::TooLong(number) => {
-                first_error.get_or_insert_with(|| {
-                    (number, "line exceeds configured byte limit".to_string())
-                });
+                first_error.get_or_insert_with(|| (number, STREAM_LINE_TOO_LONG_ERROR.to_string()));
             }
             LineMessage::ReadError(number, error) => {
                 first_error.get_or_insert_with(|| {

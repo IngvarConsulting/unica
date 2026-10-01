@@ -28,6 +28,28 @@ pub fn run_from_args(args: &[String]) -> Result<(), String> {
     crate::infrastructure::daemon::runtime_v5::run_daemon(config)
 }
 
+/// Print the existing local aggregate without starting the daemon or creating state.
+pub fn print_capacity_report_from_args(args: &[String]) -> Result<(), String> {
+    if args.len() != 2 || args[1] != "--capacity-report" {
+        return Err("usage: unica --capacity-report".to_string());
+    }
+    let root = default_user_daemon_state_root()?;
+    match capacity_report_at_root(&root)? {
+        Some(report) => print!("{report}"),
+        None => println!("{{\"status\":\"not-recorded\"}}"),
+    }
+    Ok(())
+}
+
+fn capacity_report_at_root(root: &Path) -> Result<Option<String>, String> {
+    let identity = crate::infrastructure::daemon::identity::DaemonStateDirectory::path_for(
+        root,
+        &CoreIdentity::production(),
+    );
+    crate::infrastructure::capacity_observation::read_existing_snapshot_json(&identity)
+        .map_err(|_| "cannot read local capacity observations securely".to_string())
+}
+
 /// Resolve the persistent state root of the user daemon without mutating the
 /// process environment. Packaged hosts supply the provider root explicitly;
 /// an interactive user falls back to a private directory beneath their home.
@@ -225,6 +247,14 @@ mod tests {
     };
     use crate::infrastructure::daemon::identity::CoreIdentity;
     use std::time::Duration;
+
+    #[test]
+    fn capacity_report_does_not_create_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap().join("unused");
+        assert!(super::capacity_report_at_root(&root).unwrap().is_none());
+        assert!(!root.exists());
+    }
 
     fn base_args() -> Vec<String> {
         vec![

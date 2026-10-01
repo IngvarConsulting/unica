@@ -23,6 +23,7 @@ use super::v13_infobase_exports::{
     resolve_bundled_runner, runner_rejection, valid_1c_identifier, CONFIG_NAME, LOCAL_CONFIG_NAME,
     RUNNER_OUTPUT_LIMIT,
 };
+use super::v13_source_set_name::{source_set_name_guidance, valid_source_set_name};
 use crate::application::invocation_store::ToolIdentity;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::invocation::{DomainResult, SafeIdentityHash};
@@ -42,7 +43,6 @@ pub(super) const OPERATION: &str = "pull";
 /// Имя команды в конверте раннера: словарь читается как слой и направление,
 /// раннер называет свои команды по-своему.
 const RUNNER_COMMAND: &str = "dump";
-const SOURCE_SET_NAME_MAX: usize = 64;
 /// Предел пересчёта файлов в цели: квитанция бережёт время.
 const FILE_COUNT_LIMIT: u64 = 1_000_000;
 
@@ -215,7 +215,7 @@ fn parse_export_arguments(args: &Map<String, Value>) -> Result<ExportArguments, 
         Some(_) => {
             return Err(reject(
                 RefusalCode::BadValue,
-                format!("pull sourceSet must be the name of a source set declared in v8project.yaml: up to {SOURCE_SET_NAME_MAX} letters, digits, `_`, `-` or `.`"),
+                source_set_name_guidance(OPERATION),
             ))
         }
     };
@@ -234,15 +234,6 @@ fn parse_export_arguments(args: &Map<String, Value>) -> Result<ExportArguments, 
         source_set,
         extension,
     })
-}
-
-fn valid_source_set_name(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= SOURCE_SET_NAME_MAX
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
-        && !value.starts_with('.')
 }
 
 /// Проектный файл с локальным дополнением и объявленный состав наборов: план
@@ -1073,6 +1064,44 @@ mod tests {
         assert!(runner.joined_args(0).ends_with(
             "dump --mode incremental --source-set ext-sales --extension Sales --dry-run"
         ));
+    }
+
+    #[test]
+    fn preview_accepts_cyrillic_extension_source_set_from_public_run_request() {
+        let root = workspace();
+        let config = root.path().join(CONFIG_NAME);
+        let yaml = fs::read_to_string(&config)
+            .unwrap()
+            .replace("ext-sales", "Доработки");
+        fs::write(config, yaml).unwrap();
+        let request = InvocationRequest::new(
+            ToolIdentity::Run,
+            json!({
+                "op": "pull",
+                "args": {"sourceSet": "Доработки", "extension": "Доработки", "force": true},
+                "dryRun": true
+            }),
+            root.path().display().to_string(),
+            7000,
+        )
+        .unwrap();
+        let prepared = PreparedSourceExport::parse(&request).expect("Cyrillic source set");
+        let runner = SequenceRunner::new(vec![process(
+            envelope(root.path(), "Доработки", "FULL", Some("Доработки"), false),
+            true,
+        )]);
+        let result = run(root.path(), &prepared, &runner);
+        assert!(result.ok, "{result:?}");
+        assert_eq!(
+            result.data.as_ref().unwrap()["plan"]["sourceSet"],
+            "Доработки"
+        );
+        assert_eq!(result.data.as_ref().unwrap()["plan"]["target"], "Доработки");
+        assert!(runner
+            .joined_args(0)
+            .ends_with("--source-set Доработки --extension Доработки --dry-run"));
+        assert!(result.changed.is_empty());
+        assert!(!root.path().join("Доработки").exists());
     }
 
     #[test]

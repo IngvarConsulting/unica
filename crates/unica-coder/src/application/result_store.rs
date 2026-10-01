@@ -132,6 +132,12 @@ impl ViewCursorError {
     }
 }
 
+/// Optional observation port implemented outside the application layer.
+pub(crate) trait ViewCapacityObserver: Send + Sync {
+    fn record_view(&self, bytes: u64, exact: bool, admitted: bool);
+    fn record_view_admission_refusal(&self);
+}
+
 /// Bounded process-local storage for opaque v0.13 page continuations. Tokens
 /// are opaque replayable capabilities; no numeric parser offset crosses the
 /// public boundary. Entries share one bounded immutable collection snapshot.
@@ -142,6 +148,7 @@ pub(crate) struct ViewCursorStore {
     max_entries: usize,
     max_total_bytes: usize,
     entries: Mutex<HashMap<String, ViewCursorEntry>>,
+    capacity_observer: Option<Arc<dyn ViewCapacityObserver>>,
 }
 
 /// A search continuation stores only the question and the next offset. The
@@ -409,7 +416,16 @@ impl ViewCursorStore {
             max_entries,
             max_total_bytes,
             entries: Mutex::new(HashMap::new()),
+            capacity_observer: None,
         }
+    }
+
+    pub(crate) fn with_capacity_observer(
+        mut self,
+        observer: Arc<dyn ViewCapacityObserver>,
+    ) -> Self {
+        self.capacity_observer = Some(observer);
+        self
     }
 
     pub(crate) fn insert_snapshot(
@@ -419,10 +435,25 @@ impl ViewCursorStore {
         items: Vec<Value>,
         offset: usize,
     ) -> Option<String> {
-        if offset >= items.len() || self.max_entries == 0 {
+        if offset >= items.len() {
             return None;
         }
-        let json_bytes = bounded_json_size(&(&binding, &node, &items), self.max_total_bytes)?;
+        if self.max_entries == 0 {
+            if let Some(observer) = &self.capacity_observer {
+                observer.record_view_admission_refusal();
+            }
+            return None;
+        }
+        let json_bytes =
+            match bounded_json_size_attempt(&(&binding, &node, &items), self.max_total_bytes) {
+                Ok(bytes) => bytes,
+                Err(lower_bound) => {
+                    if let Some(observer) = &self.capacity_observer {
+                        observer.record_view(lower_bound as u64, false, false);
+                    }
+                    return None;
+                }
+            };
         let bytes = snapshot_charge(&binding, &node, &items, json_bytes);
         // The current cursor must remain available while its successor is
         // published. Admit enough quota for both before returning page one,
@@ -433,6 +464,9 @@ impl ViewCursorStore {
             1
         };
         if bytes.saturating_add(reserved_entries * VIEW_ENTRY_CHARGE) > self.max_total_bytes {
+            if let Some(observer) = &self.capacity_observer {
+                observer.record_view(bytes as u64, true, false);
+            }
             return None;
         }
         let mut secret = [0u8; 32];
@@ -445,7 +479,11 @@ impl ViewCursorStore {
             bytes,
             secret,
         });
-        self.insert_entry(snapshot, offset, None)
+        let result = self.insert_entry(snapshot, offset, None);
+        if let Some(observer) = &self.capacity_observer {
+            observer.record_view(bytes as u64, true, result.is_some());
+        }
+        result
     }
 
     /// Reissue the same successor on retries, including when an older LRU
@@ -593,9 +631,13 @@ impl Write for BoundedSizeWriter {
 }
 
 fn bounded_json_size(value: &impl serde::Serialize, limit: usize) -> Option<usize> {
+    bounded_json_size_attempt(value, limit).ok()
+}
+
+fn bounded_json_size_attempt(value: &impl serde::Serialize, limit: usize) -> Result<usize, usize> {
     let mut writer = BoundedSizeWriter { bytes: 0, limit };
-    serde_json::to_writer(&mut writer, value).ok()?;
-    Some(writer.bytes)
+    serde_json::to_writer(&mut writer, value).map_err(|_| writer.bytes)?;
+    Ok(writer.bytes)
 }
 
 fn snapshot_charge(
@@ -807,6 +849,22 @@ fn unix_ms_in(ttl: Duration) -> u64 {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[derive(Default)]
+    struct ViewObservationProbe {
+        samples: Mutex<Vec<(u64, bool, bool)>>,
+        admission_only_refusals: AtomicU64,
+    }
+
+    impl ViewCapacityObserver for ViewObservationProbe {
+        fn record_view(&self, bytes: u64, exact: bool, admitted: bool) {
+            self.samples.lock().unwrap().push((bytes, exact, admitted));
+        }
+
+        fn record_view_admission_refusal(&self) {
+            self.admission_only_refusals.fetch_add(1, Ordering::Relaxed);
+        }
+    }
 
     fn snapshot() -> SnapshotIdentity {
         SnapshotIdentity {
@@ -1207,6 +1265,29 @@ mod tests {
         let page = enough.read(&first, &binding, "rev-1").unwrap();
         let second = enough.insert_next(&page, 2, &first).unwrap();
         assert_eq!(enough.read(&second, &binding, "rev-1").unwrap().offset, 2);
+    }
+
+    #[test]
+    fn view_observation_distinguishes_complete_size_from_quota_lower_bound() {
+        let observer = Arc::new(ViewObservationProbe::default());
+        let port: Arc<dyn ViewCapacityObserver> = observer.clone();
+        let binding = view_binding("main:Document.Заказ.Module.Object.Body", "rev-1");
+        let item = json!("x".repeat(2_048));
+        let capped =
+            ViewCursorStore::new(DEFAULT_TTL, 8, 512).with_capacity_observer(Arc::clone(&port));
+        assert!(capped
+            .insert_snapshot(binding.clone(), json!({}), vec![item], 0)
+            .is_none());
+        let successful =
+            ViewCursorStore::new(DEFAULT_TTL, 8, 4_096).with_capacity_observer(Arc::clone(&port));
+        assert!(successful
+            .insert_snapshot(binding, json!({}), vec![json!(1)], 0)
+            .is_some());
+        let samples = observer.samples.lock().unwrap();
+        assert_eq!(samples.len(), 2);
+        assert!(samples[0].0 > 512);
+        assert_eq!((samples[0].1, samples[0].2), (false, false));
+        assert_eq!((samples[1].1, samples[1].2), (true, true));
     }
 
     #[test]

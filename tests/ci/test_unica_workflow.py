@@ -672,6 +672,73 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
                 self.assertNotIn("github.event_name == 'push'", expression)
         self.assertIn("jobs?per_page=100", script(build))
 
+    def test_pages_build_main_once_the_queue_merged_its_tree(self) -> None:
+        """Сайт ждёт вливания проверенного очередью дерева и собирается из main, а не из коммита очереди.
+
+        Без ожидания сайт брал прежний main и отставал на одно вливание. Из
+        коммита очереди собирать нельзя: снятый с очереди pull request тоже даёт
+        успешный прогон, а прогоны пачки кончаются не по порядку. Любой источник
+        берёт main, какой он сейчас: прогон, отложенный группой, иначе выложил
+        бы main старше опубликованного.
+        """
+        build = job(self.pages, "build")
+        wait = step_named(build, "Дождаться вливания проверенного очередью дерева")
+        self.assertEqual(
+            condition(wait),
+            "github.event.workflow_run.event == 'merge_group' && github.event.workflow_run.conclusion == 'success'",
+        )
+        self.assertIs(wait["continue-on-error"], True)
+        self.assertIn("scripts/ci/await-queue-merge.py", wait["run"])
+        self.assertEqual(wait["env"]["QUEUE_SHA"], "${{ github.event.workflow_run.head_sha }}")
+        self.assertEqual(wait["env"]["QUEUE_BRANCH"], "${{ github.event.workflow_run.head_branch }}")
+
+        # Скрипт ожидания исполняется из дерева события, страницы — из main;
+        # коммит очереди не попадает в checkout никогда.
+        first, current = steps_using(build, "actions/checkout")
+        self.assertNotIn("ref", first["with"])
+        self.assertEqual(current["with"]["ref"], "main")
+        self.assertNotIn("if", current)
+        for checkout in (first, current):
+            self.assertIs(checkout["with"]["persist-credentials"], False)
+        # Второй checkout чистит рабочий каталог: до него — только то, что его
+        # переживает (Python в tool cache) или нужно для ожидания.
+        order = steps(build)
+        self.assertEqual(
+            order[: order.index(current)],
+            [first, steps_using(build, "actions/setup-python")[0], wait],
+        )
+
+        # Подвал называет дерево, из которого собраны страницы, и ведёт на него.
+        rebuild = step_named(build, "Пересобрать страницы с итоговым статусом")
+        self.assertIn('--sha "$(git rev-parse HEAD)"', rebuild["run"])
+        self.assertNotIn("--run-url", rebuild["run"])
+
+    def test_pages_runs_the_build_skips_stay_out_of_the_publishing_group(self) -> None:
+        """Прогон, который build отсечёт, не вытесняет ожидающий прогон с результатами."""
+        group = self.pages["concurrency"]["group"]
+        build = condition(job(self.pages, "build"))
+        expected = "${{ (" + build + ") && 'unica-pages' || format('unica-pages-idle-{0}', github.run_id) }}"
+        self.assertEqual(normalized(group), normalized(expected))
+        self.assertIs(self.pages["concurrency"]["cancel-in-progress"], False)
+
+    def test_publication_queue_keeps_every_admitted_release(self) -> None:
+        """Допущенные публикации ждут в одной очереди, пропущенные gate прогоны в неё не входят.
+
+        Публикацию запускает каждая сборка, а gate пропускает только push
+        тега и ручной запуск. Пустой прогон в общей группе снимал бы
+        ожидающий выпуск, а с одним местом ожидания третий допущенный прогон
+        снимал бы второй. Порядок внутри очереди GitHub не обещает: его держит
+        страж порядка версий в stage и promote.
+        """
+        gate = job(self.publish, "gate")
+        expected_group = (
+            "${{ (" + condition(gate) + ") && 'publish-unica-marketplace' || "
+            "format('publish-unica-marketplace-idle-{0}', github.run_id) }}"
+        )
+        self.assertEqual(normalized(self.publish["concurrency"]["group"]), normalized(expected_group))
+        self.assertEqual(self.publish["concurrency"]["queue"], "max")
+        self.assertIs(self.publish["concurrency"]["cancel-in-progress"], False)
+
     def test_guards_ship_findings_to_code_scanning_not_the_gate(self) -> None:
         """Находка линтера — не исход теста: SARIF в Code Scanning, гейт не краснеет."""
         guards = job(self.release, "guards")
@@ -929,11 +996,10 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn('rev-parse --verify --quiet "refs/tags/${RELEASE_TAG}"', text)
         self.assertNotIn("git tag -f", text)
         self.assertNotIn("--force", text)
-        # Two releases must not interleave, and a stale straggler must fail
-        # forward-only instead of rolling a catalog back — in both writers,
-        # over both host catalogs, in SemVer order, and again after a rebase
-        # retry.
-        self.assertEqual(self.publish["concurrency"], {"group": "publish-unica-marketplace", "cancel-in-progress": False})
+        # A stale straggler must fail forward-only instead of rolling a
+        # catalog back — in both writers, over both host catalogs, in SemVer
+        # order, and again after a rebase retry. That two releases never
+        # interleave is test_publication_queue_keeps_every_admitted_release.
         self.assertNotIn("sort -V", text)
         for writer in (stage_push, promote_move):
             with self.subTest(writer=writer.splitlines()[1]):

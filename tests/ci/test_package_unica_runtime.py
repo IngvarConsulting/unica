@@ -194,6 +194,28 @@ class PackageUnicaRuntimeTests(unittest.TestCase):
             with tarfile.open(first["unica-runtime-linux-x64.tar.gz"], "r:gz") as archive:
                 self.assertTrue(all(member.mtime == 0 for member in archive.getmembers()))
 
+    def test_core_archive_retains_engine_delivery_identity(self) -> None:
+        module = load_module()
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        bundle = make_bundle(root)
+        source = json.loads((bundle / "tools.json").read_text(encoding="utf-8"))
+        produced = {path.name: path for path in module.package_runtime(bundle, root / "out")}
+
+        with tarfile.open(produced["unica-runtime-linux-x64.tar.gz"], "r:gz") as archive:
+            member = archive.extractfile("third-party/manifest.json")
+            self.assertIsNotNone(member)
+            runtime = json.load(member)
+
+        self.assertEqual(runtime["artifactAssets"], source["artifactAssets"])
+        for artifact in ("bsl-analyzer", "rlm-tools-bsl"):
+            published = json.loads(
+                produced[f"{artifact}-runtime-linux-x64.json"].read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                runtime["artifactAssets"][artifact]["sha256"],
+                published["asset"]["sha256"],
+            )
+
     def test_only_the_core_is_packed_here(self) -> None:
         # Движки издаёт тулчейн, и перепубликация тех же байтов стоила 439 МБ
         # на выпуск. Сборка их распаковывает — ради сумм и замыкания, — но

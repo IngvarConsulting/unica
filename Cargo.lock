@@ -1863,6 +1863,7 @@ dependencies = [
  "sha2",
  "syn 2.0.118",
  "syntax",
+ "tar",
  "tempfile",
  "tokio",
  "toml",
