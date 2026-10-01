@@ -221,16 +221,7 @@ impl WorkspaceStateRepository {
         let (_, state_preimage) = self.load_snapshot(context)?;
         let impact = CacheImpact::from_events(events);
         let mut metadata_preimages = BTreeMap::new();
-        let mut retained_metadata = impact.eager_refresh.clone();
-        retained_metadata.extend(
-            cache_access
-                .reads
-                .iter()
-                .copied()
-                .filter(|name| is_lazy_cache(name))
-                .map(str::to_string),
-        );
-        for name in &retained_metadata {
+        for name in &impact.eager_refresh {
             let path = context
                 .cache_root
                 .join("caches")
@@ -273,7 +264,7 @@ impl WorkspaceStateRepository {
             .unwrap_or_else(|| default_state(context));
         let mut invalidated = sorted(impact.invalidated);
         let mut refreshed = sorted(impact.eager_refresh);
-        let mut lazy_rebuilt = Vec::new();
+        let lazy_rebuilt = Vec::new();
         let mut metadata = Vec::new();
         let mut write_state = false;
 
@@ -328,33 +319,7 @@ impl WorkspaceStateRepository {
                             epoch: context.workspace_epoch,
                         },
                     );
-                    continue;
                 }
-                let is_stale = state
-                    .caches
-                    .get(*name)
-                    .map(|entry| entry.status == CacheStatus::Stale)
-                    .unwrap_or_else(|| is_lazy_cache(name));
-                if is_stale && is_lazy_cache(name) {
-                    state.caches.insert(
-                        (*name).to_string(),
-                        CacheEntry {
-                            status: CacheStatus::Fresh,
-                            epoch: context.workspace_epoch,
-                        },
-                    );
-                    metadata.push(self.plan_cache_metadata(
-                        context,
-                        name,
-                        "lazy",
-                        metadata_preimages.get(*name).cloned().flatten(),
-                    )?);
-                    lazy_rebuilt.push((*name).to_string());
-                }
-            }
-            if !lazy_rebuilt.is_empty() {
-                state.workspace_epoch = context.workspace_epoch;
-                write_state = true;
             }
         }
 
@@ -463,10 +428,6 @@ fn sorted(values: std::collections::BTreeSet<String>) -> Vec<String> {
     values.into_iter().collect()
 }
 
-fn is_lazy_cache(name: &str) -> bool {
-    matches!(name, "bsl_diagnostics")
-}
-
 fn cache_cleanup_warnings(cleanup_warnings: Vec<String>) -> Vec<String> {
     if cleanup_warnings.is_empty() {
         return Vec::new();
@@ -520,9 +481,330 @@ pub(crate) fn is_retryable_cache_state_conflict(error: &str, paths: &[PathBuf]) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::cancellation::CancellationToken;
+    use crate::domain::diagnostics::*;
     use crate::domain::events::{DomainEvent, DomainEventKind};
+    use crate::domain::project_sources::{
+        ProjectSourceSet, SourceFormat, SourceSetKind, SourceSetState,
+    };
+    use crate::domain::source_location::SourceLocation;
+    use crate::domain::source_roots::ResolvedSourceRoot;
+    use crate::domain::source_target::{MetadataAddress, ResolvedTarget, TargetKind};
     use crate::infrastructure::workspace_index::rlm_provider_state_root;
+    use serde_json::{json, Map, Value};
+    use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    const ANALYZER: DiagnosticProviderId = DiagnosticProviderId::new_const("bsl-analyzer");
+    static ANALYZER_DESCRIPTOR: DiagnosticProviderDescriptor = DiagnosticProviderDescriptor {
+        id: ANALYZER,
+        actions: &[
+            DiagnosticAction::Analyze,
+            DiagnosticAction::Findings,
+            DiagnosticAction::Status,
+            DiagnosticAction::Catalog,
+        ],
+        findings_target_kinds: &[TargetKind::Module],
+        emits_focus_kinds: &[DiagnosticFocusKind::SourceRange],
+    };
+    struct CacheProvider(DiagnosticProviderOutcome);
+    impl DiagnosticProvider for CacheProvider {
+        fn descriptor(&self) -> &'static DiagnosticProviderDescriptor {
+            &ANALYZER_DESCRIPTOR
+        }
+        fn execute(
+            &self,
+            _: &DiagnosticProviderRequest,
+            _: &DiagnosticContext,
+            _: ProviderDeadline,
+            _: &CancellationToken,
+        ) -> DiagnosticProviderOutcome {
+            self.0.clone()
+        }
+    }
+    fn successful(observations: Vec<DiagnosticObservation>) -> DiagnosticProviderOutcome {
+        DiagnosticProviderOutcome {
+            status: if observations.is_empty() {
+                DiagnosticProviderStatus::Empty
+            } else {
+                DiagnosticProviderStatus::Completed
+            },
+            complete: true,
+            version: Some("test".to_string()),
+            observations,
+            rules: Vec::new(),
+            readiness: None,
+            error: None,
+        }
+    }
+
+    struct CachePorts {
+        workspace: WorkspaceContext,
+        outcome: DiagnosticProviderOutcome,
+    }
+
+    impl crate::application::ports::ApplicationPorts for CachePorts {
+        fn discover_workspace(&self, _: Option<PathBuf>) -> Result<WorkspaceContext, String> {
+            Ok(self.workspace.clone())
+        }
+        fn validate_tool_context(
+            &self,
+            _: crate::application::ToolSpec,
+            _: &Map<String, Value>,
+            _: crate::application::InvocationMode,
+            _: &WorkspaceContext,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        fn evaluate_support_guard(
+            &self,
+            _: crate::application::ToolSpec,
+            _: &Map<String, Value>,
+            _: &WorkspaceContext,
+        ) -> Result<crate::application::ports::SupportGuardCheck, String> {
+            Ok(crate::application::ports::SupportGuardCheck::Allow)
+        }
+        fn invoke_handler(
+            &self,
+            _: crate::application::ToolSpec,
+            _: &Map<String, Value>,
+            _: &WorkspaceContext,
+            _: crate::application::InvocationMode,
+            _: &CancellationToken,
+        ) -> Result<crate::application::ports::HandlerOutcome, String> {
+            unreachable!()
+        }
+        fn diagnostic_provider_registry(&self) -> Result<DiagnosticProviderRegistry, String> {
+            DiagnosticProviderRegistry::new(vec![Arc::new(CacheProvider(self.outcome.clone()))])
+                .map_err(|error| format!("{error:?}"))
+        }
+        fn resolve_diagnostic_context(
+            &self,
+            request: &DiagnosticRequest,
+            workspace: &WorkspaceContext,
+            _: &CancellationToken,
+        ) -> Result<DiagnosticContext, DiagnosticRequestError> {
+            Ok(DiagnosticContext::new(
+                workspace.clone(),
+                ProjectSourceSet {
+                    name: request.source_set.clone(),
+                    kind: SourceSetKind::Configuration,
+                    path: "src".to_string(),
+                    source_format: SourceFormat::PlatformXml,
+                    source_state: SourceSetState::Supported,
+                    format_evidence: Vec::new(),
+                    format_probe_error: None,
+                },
+                ResolvedSourceRoot {
+                    source_set: Some(request.source_set.clone()),
+                    path: workspace.workspace_root.join("src"),
+                },
+                ResolvedTarget {
+                    source_set: request.source_set.clone(),
+                    metadata_path: request.metadata_path.clone(),
+                    target_kind: request
+                        .metadata_path
+                        .as_ref()
+                        .map_or(TargetKind::SourceRoot, MetadataAddress::target_kind),
+                },
+            ))
+        }
+        fn map_diagnostic_observation(
+            &self,
+            observation: DiagnosticObservation,
+            context: &DiagnosticContext,
+            _: &CancellationToken,
+        ) -> Result<DiagnosticItem, DiagnosticMapError> {
+            let location = SourceLocation::Addressed {
+                source_set: context.target.source_set.clone(),
+                metadata_path: context.target.metadata_path.clone(),
+                target_kind: context.target.target_kind,
+            };
+            Ok(match observation {
+                DiagnosticObservation::Diagnostic {
+                    provider,
+                    code,
+                    severity,
+                    message,
+                    tags,
+                    ..
+                } => DiagnosticItem::Diagnostic {
+                    provider: provider.as_str(),
+                    location,
+                    location_reason: None,
+                    focus: DiagnosticFocus::Target,
+                    code,
+                    severity,
+                    message,
+                    tags,
+                },
+                DiagnosticObservation::ResourceFailure {
+                    provider, error, ..
+                } => DiagnosticItem::ResourceFailure {
+                    provider: provider.as_str(),
+                    location,
+                    location_reason: None,
+                    error,
+                },
+            })
+        }
+        fn cache_report(
+            &self,
+            context: &WorkspaceContext,
+            events: &[crate::domain::events::DomainEvent],
+            mode: crate::application::InvocationMode,
+            access: crate::domain::cache::CacheAccess,
+        ) -> Result<crate::domain::cache::CacheReport, String> {
+            crate::infrastructure::workspace_state::WorkspaceStateRepository::new(context).report(
+                context,
+                events,
+                mode.is_preview(),
+                access,
+            )
+        }
+        fn notify_invalidation(
+            &self,
+            _: &WorkspaceContext,
+            _: &[crate::domain::events::DomainEvent],
+        ) {
+        }
+    }
+
+    #[test]
+    fn diagnostics_reads_preserve_workspace_cache_staleness() {
+        use crate::domain::cache::CacheAccess;
+        use crate::domain::events::{DomainEvent, DomainEventKind};
+        use crate::infrastructure::workspace_state::WorkspaceStateRepository;
+        let root = tempfile::tempdir().unwrap();
+        let context = WorkspaceContext {
+            cwd: root.path().to_path_buf(),
+            workspace_root: root.path().to_path_buf(),
+            cache_root: root.path().join(".cache"),
+            workspace_epoch: 1,
+        };
+        let repo = WorkspaceStateRepository::new(&context);
+        repo.report(
+            &context,
+            &[DomainEvent::new(
+                DomainEventKind::ModuleChanged,
+                "Module.bsl",
+            )],
+            false,
+            CacheAccess::default(),
+        )
+        .unwrap();
+        let failed = DiagnosticProviderOutcome {
+            status: DiagnosticProviderStatus::Unavailable,
+            complete: false,
+            error: Some(DiagnosticError {
+                code: "provider_unavailable".to_string(),
+                message: "provider is unavailable".to_string(),
+                retryable: true,
+            }),
+            ..successful(Vec::new())
+        };
+        let partial = DiagnosticProviderOutcome {
+            complete: false,
+            ..successful(vec![DiagnosticObservation::Diagnostic {
+                provider: ANALYZER,
+                location: DiagnosticObservationLocation::Resource {
+                    handle: "selected".to_string(),
+                },
+                focus: DiagnosticObservationFocus::Target,
+                code: "A001".to_string(),
+                severity: DiagnosticSeverity::Warning,
+                message: "warning".to_string(),
+                tags: Vec::new(),
+            }])
+        };
+        let resource_failure = successful(vec![DiagnosticObservation::ResourceFailure {
+            provider: ANALYZER,
+            location: DiagnosticObservationLocation::Resource {
+                handle: "selected".to_string(),
+            },
+            error: DiagnosticError {
+                code: "resource_failed".to_string(),
+                message: "resource failed".to_string(),
+                retryable: false,
+            },
+        }]);
+        for (action, metadata_path, outcome, fresh) in [
+            ("analyze", None, failed.clone(), false),
+            ("analyze", None, partial, false),
+            ("analyze", None, resource_failure, false),
+            (
+                "status",
+                None,
+                DiagnosticProviderOutcome {
+                    status: DiagnosticProviderStatus::Completed,
+                    readiness: Some(DiagnosticReadiness {
+                        state: DiagnosticReadinessState::Ready,
+                        retryable: false,
+                    }),
+                    ..successful(Vec::new())
+                },
+                false,
+            ),
+            ("catalog", None, successful(Vec::new()), false),
+            (
+                "findings",
+                Some("CommonModule.Selected.Module"),
+                successful(Vec::new()),
+                false,
+            ),
+            ("analyze", None, successful(Vec::new()), false),
+            ("analyze", None, failed, false),
+        ] {
+            let mut args = json!({"action": action, "sourceSet": "main"});
+            if let Some(metadata_path) = metadata_path {
+                args["metadataPath"] = json!(metadata_path);
+            }
+            let expected_ok = matches!(
+                outcome.status,
+                DiagnosticProviderStatus::Completed | DiagnosticProviderStatus::Empty
+            );
+            let application =
+                crate::application::UnicaApplication::with_ports(Arc::new(CachePorts {
+                    workspace: context.clone(),
+                    outcome,
+                }));
+            let result = application
+                .call_tool("unica.code.diagnostics", args.as_object().unwrap())
+                .unwrap();
+            assert_eq!(result.ok, expected_ok, "{action}");
+            if !expected_ok {
+                let data = result.data.as_ref().unwrap();
+                assert_eq!(data["action"], "analyze");
+                assert_eq!(
+                    data["providers"][0]["error"]["code"],
+                    "provider_unavailable"
+                );
+                assert_eq!(data["providers"][0]["error"]["retryable"], true);
+            }
+            let cache = result.cache;
+            assert_eq!(
+                cache.fresh.iter().any(|name| name == "bsl_diagnostics"),
+                fresh,
+                "{action}"
+            );
+            assert_eq!(
+                cache.stale.iter().any(|name| name == "bsl_diagnostics"),
+                !fresh,
+                "{action}"
+            );
+            if !fresh {
+                assert!(cache.lazy_rebuilt.is_empty(), "{action}");
+            }
+            let persisted = repo
+                .report(&context, &[], false, CacheAccess::default())
+                .unwrap();
+            assert_eq!(
+                persisted.fresh.iter().any(|name| name == "bsl_diagnostics"),
+                fresh,
+                "persisted {action}"
+            );
+        }
+    }
 
     #[test]
     fn bsl_index_read_reflects_real_index_status_instead_of_lazy_rebuild() {
@@ -622,7 +904,7 @@ mod tests {
     }
 
     #[test]
-    fn lazy_cache_rebuild_replaces_an_existing_exact_preimage() {
+    fn diagnostics_reads_preserve_stale_cache_and_existing_metadata() {
         let root = temp_root("unica-cache-lazy-existing");
         fs::create_dir_all(&root).unwrap();
         let context = WorkspaceContext {
@@ -646,20 +928,21 @@ mod tests {
         fs::create_dir_all(metadata.parent().unwrap()).unwrap();
         fs::write(&metadata, b"existing-lazy-preimage").unwrap();
 
-        let report = repo
-            .report(
-                &context,
-                &[],
-                false,
-                CacheAccess {
-                    reads: &["bsl_diagnostics"],
-                    writes: &[],
-                },
-            )
-            .unwrap();
-
-        assert_eq!(report.lazy_rebuilt, vec!["bsl_diagnostics"]);
-        assert_ne!(fs::read(&metadata).unwrap(), b"existing-lazy-preimage");
+        for tool_name in ["unica.code.graph", "unica.code.diagnostics"] {
+            let tool = crate::application::tools()
+                .into_iter()
+                .find(|tool| tool.name == tool_name)
+                .unwrap();
+            let report = repo
+                .report(&context, &[], false, tool.cache_access)
+                .unwrap();
+            assert!(
+                report.stale.iter().any(|name| name == "bsl_diagnostics"),
+                "{tool_name}"
+            );
+            assert!(report.lazy_rebuilt.is_empty(), "{tool_name}");
+            assert_eq!(fs::read(&metadata).unwrap(), b"existing-lazy-preimage");
+        }
         let _ = fs::remove_dir_all(root);
     }
 

@@ -126,8 +126,6 @@ const MAX_SOURCE_DEPTH: usize = 64;
 const REVISION_RECORD_SCHEMA_VERSION: u32 = 2;
 const RETAINED_HASH_CHUNK_BYTES: usize = 64 * 1024;
 const MAX_RETAINED_SOURCE_ENTRIES: usize = 1_000_000;
-const MAX_RETAINED_SOURCE_FILE_BYTES: u64 = 256 * 1024 * 1024;
-const MAX_RETAINED_SOURCE_TOTAL_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 
 #[cfg(test)]
 thread_local! {
@@ -187,10 +185,9 @@ enum ManifestEntryKind {
 struct SourceEntryDigest {
     kind: ManifestEntryKind,
     digest: [u8; 32],
-    /// Bounded corpus accounting metadata. It deliberately does not
-    /// participate in `digest_source_manifest`, so the legacy revision digest
-    /// remains byte-for-byte stable while incremental updates can enforce the
-    /// same aggregate limit as full captures.
+    /// Exact byte accounting for incremental updates. This deliberately does
+    /// not participate in `digest_source_manifest`, preserving the revision
+    /// digest when the byte-ceiling policy changes.
     content_bytes: u64,
 }
 
@@ -240,22 +237,25 @@ enum ManifestProvenance {
 #[derive(Debug, Clone, Copy)]
 struct RetainedScanLimits {
     max_entries: usize,
-    max_file_bytes: u64,
-    max_total_bytes: u64,
+    /// Production scans have no byte ceiling. Small injected ceilings keep
+    /// the shared capture/incremental/projection refusal path testable.
+    max_file_bytes: Option<u64>,
+    max_total_bytes: Option<u64>,
 }
 
 impl RetainedScanLimits {
-    const PRODUCTION: Self = Self::new(
-        MAX_RETAINED_SOURCE_ENTRIES,
-        MAX_RETAINED_SOURCE_FILE_BYTES,
-        MAX_RETAINED_SOURCE_TOTAL_BYTES,
-    );
+    const PRODUCTION: Self = Self {
+        max_entries: MAX_RETAINED_SOURCE_ENTRIES,
+        max_file_bytes: None,
+        max_total_bytes: None,
+    };
 
+    #[cfg(test)]
     const fn new(max_entries: usize, max_file_bytes: u64, max_total_bytes: u64) -> Self {
         Self {
             max_entries,
-            max_file_bytes,
-            max_total_bytes,
+            max_file_bytes: Some(max_file_bytes),
+            max_total_bytes: Some(max_total_bytes),
         }
     }
 }
@@ -1099,19 +1099,18 @@ impl SourceRevisionService {
                     )
                 })
             })?;
-        if total_bytes > limits.max_total_bytes {
-            return Err(RetainedRevisionError::new(
-                RetainedRevisionErrorKind::Provider,
-                format!(
-                    "source revision aggregate byte limit {} exceeded",
-                    limits.max_total_bytes
-                ),
-            ));
+        if let Some(max_total_bytes) = limits.max_total_bytes {
+            if total_bytes > max_total_bytes {
+                return Err(RetainedRevisionError::new(
+                    RetainedRevisionErrorKind::Provider,
+                    format!("source revision aggregate byte limit {max_total_bytes} exceeded"),
+                ));
+            }
         }
 
-        // Apply every old-postimage removal before hashing new postimages. The
-        // limit is defined over the final manifest, so one sequential batch may
-        // replace a file and free bytes elsewhere regardless of lexical order.
+        // Subtract old postimages before hashing replacements so projected byte
+        // accounting matches a subsequent capture. Injected test ceilings also
+        // apply to the final manifest, regardless of staged change order.
         for change in changes {
             retained_revision_checkpoint(deadline, cancellation)?;
             let relative_path = native_projection_relative_path(&change.relative_path)?;
@@ -2295,10 +2294,9 @@ fn hash_retained_source_file_with_checkpoint(
     Ok(result)
 }
 
-/// Hashes one Content artifact through the common revision budget. Every
-/// producer of a source manifest uses this routine, so ambient, retained and
-/// incremental captures cannot silently acquire different byte/cancellation
-/// semantics.
+/// Hashes one Content artifact in fixed-size chunks. Every manifest producer
+/// uses this routine, so ambient, retained, incremental and projected captures
+/// share overflow and cancellation semantics.
 fn hash_bounded_source_reader(
     reader: &mut dyn Read,
     relative: &Path,
@@ -2330,15 +2328,16 @@ fn hash_bounded_source_reader(
                 "source revision file byte count overflowed",
             )
         })?;
-        if file_bytes > limits.max_file_bytes {
-            return Err(RetainedRevisionError::new(
-                RetainedRevisionErrorKind::Provider,
-                format!(
-                    "source revision file byte limit {} exceeded: {}",
-                    limits.max_file_bytes,
-                    relative.display()
-                ),
-            ));
+        if let Some(max_file_bytes) = limits.max_file_bytes {
+            if file_bytes > max_file_bytes {
+                return Err(RetainedRevisionError::new(
+                    RetainedRevisionErrorKind::Provider,
+                    format!(
+                        "source revision file byte limit {max_file_bytes} exceeded: {}",
+                        relative.display()
+                    ),
+                ));
+            }
         }
         *total_bytes = total_bytes.checked_add(read).ok_or_else(|| {
             RetainedRevisionError::new(
@@ -2346,14 +2345,13 @@ fn hash_bounded_source_reader(
                 "source revision aggregate byte count overflowed",
             )
         })?;
-        if *total_bytes > limits.max_total_bytes {
-            return Err(RetainedRevisionError::new(
-                RetainedRevisionErrorKind::Provider,
-                format!(
-                    "source revision aggregate byte limit {} exceeded",
-                    limits.max_total_bytes
-                ),
-            ));
+        if let Some(max_total_bytes) = limits.max_total_bytes {
+            if *total_bytes > max_total_bytes {
+                return Err(RetainedRevisionError::new(
+                    RetainedRevisionErrorKind::Provider,
+                    format!("source revision aggregate byte limit {max_total_bytes} exceeded"),
+                ));
+            }
         }
         digest.update(&chunk[..usize::try_from(read).expect("chunk length fits usize")]);
     }
@@ -5454,5 +5452,65 @@ pub(crate) mod tests {
         assert_eq!(error.to_string(), "cancelled between chunks");
         assert_eq!(checkpoints, 3);
         assert_eq!(state.total_bytes, (RETAINED_HASH_CHUNK_BYTES * 2) as u64);
+    }
+
+    #[test]
+    fn production_revision_scan_does_not_cap_aggregate_content_at_sixteen_gib() {
+        let old_ceiling = 16 * 1024 * 1024 * 1024_u64;
+        let mut total_bytes = old_ceiling;
+        let mut reader = std::io::Cursor::new(b"next".as_slice());
+        let (_, file_bytes) = hash_bounded_source_reader(
+            &mut reader,
+            Path::new("Configuration.xml"),
+            RetainedScanLimits::PRODUCTION,
+            &mut total_bytes,
+            &mut || Ok(()),
+        )
+        .expect("byte accounting may exceed the former aggregate ceiling");
+        assert_eq!(file_bytes, 4);
+        assert_eq!(total_bytes, old_ceiling + 4);
+    }
+
+    #[test]
+    fn production_revision_scan_still_refuses_byte_count_overflow() {
+        let mut total_bytes = u64::MAX;
+        let mut reader = std::io::Cursor::new(b"x".as_slice());
+        let error = hash_bounded_source_reader(
+            &mut reader,
+            Path::new("Configuration.xml"),
+            RetainedScanLimits::PRODUCTION,
+            &mut total_bytes,
+            &mut || Ok(()),
+        )
+        .expect_err("byte accounting cannot wrap");
+        assert_eq!(error.kind(), RetainedRevisionErrorKind::Invariant);
+        assert!(error
+            .to_string()
+            .contains("aggregate byte count overflowed"));
+    }
+
+    #[test]
+    #[ignore = "capacity proof hashes more than 256 MiB; run in the large tier"]
+    fn production_revision_scan_does_not_cap_a_file_at_two_hundred_fifty_six_mib() {
+        let old_ceiling = 256 * 1024 * 1024_u64;
+        let workspace = tempdir().unwrap();
+        let source = workspace.path().join("src");
+        let relative = Path::new("XDTOPackages/Sample/Ext/Package.bin");
+        let path = source.join(relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::File::create(&path)
+            .unwrap()
+            .set_len(old_ceiling + 1)
+            .unwrap();
+        let root = RetainedDirectoryCapability::open(&fs::canonicalize(source).unwrap()).unwrap();
+        let capture = capture_retained_source_manifest_with_limits(
+            &root,
+            ProviderDeadline::from_budget(std::time::Duration::from_secs(60)),
+            &CancellationToken::new(),
+            RetainedScanLimits::PRODUCTION,
+            platform_actor_policy(),
+        )
+        .expect("retained capture may hash beyond the former per-file ceiling");
+        assert_eq!(capture.manifest[relative].content_bytes, old_ceiling + 1);
     }
 }

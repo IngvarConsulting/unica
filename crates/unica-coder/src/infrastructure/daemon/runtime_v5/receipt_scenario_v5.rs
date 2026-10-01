@@ -7328,7 +7328,7 @@ impl ScenarioEpochClock {
 
     fn advance(&self, millis: u64) -> Result<(), String> {
         self.epoch_ms
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |epoch_ms| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |epoch_ms| {
                 epoch_ms.checked_add(millis)
             })
             .map(|_| ())
@@ -7337,7 +7337,7 @@ impl ScenarioEpochClock {
 
     fn advance_monotonic(&self, millis: u64) -> Result<(), String> {
         self.monotonic_ms
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |monotonic_ms| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |monotonic_ms| {
                 monotonic_ms.checked_add(millis)
             })
             .map(|_| ())

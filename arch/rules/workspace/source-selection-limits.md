@@ -2,7 +2,9 @@
 id: INV.APP.SOURCE-SELECTION-LIMITS
 check:
   - crates/unica-coder/src/infrastructure/source_selection_evidence.rs::actor_admission_rejects_aggregate_exact_byte_budget
-  - crates/unica-coder/src/infrastructure/source_selection_evidence.rs::actor_admission_charges_repeated_exact_work_before_second_read
+  - crates/unica-coder/src/infrastructure/source_selection_evidence.rs::production_exact_work_can_cross_the_former_byte_ceiling
+  - crates/unica-coder/src/infrastructure/source_selection_evidence.rs::unlimited_exact_work_still_rejects_counter_overflow
+  - crates/unica-coder/src/infrastructure/source_selection_evidence.rs::repeated_exact_observations_do_not_exhaust_a_pass_work_ceiling
   - crates/unica-coder/src/infrastructure/source_selection_evidence.rs::actor_admission_bounds_unique_retained_directories_without_ulimit
   - crates/unica-coder/src/infrastructure/source_selection_evidence.rs::actor_admission_bounds_global_membership_across_external_source_sets
   - crates/unica-coder/src/infrastructure/source_selection_evidence.rs::actor_admission_counts_repeated_membership_enumeration_globally
@@ -29,11 +31,12 @@ check:
 о наблюдаемых объектах, 128 открытых каталогов и 8 МиБ путей и имён.
 Одинаковые наблюдения хранятся один раз.
 
-На работу того же прохода выделяются отдельные пределы: 32 МиБ суммарной
-длины содержательно читаемых файлов и 16 384 перечисленных элементов каталогов.
-Повторное чтение или перечисление тратит этот бюджет снова. В него входят
-и элементы, которые не оказались XML-файлами нужного вида. Новый источник
-не получает отдельный бюджет.
+В том же проходе перечисляется не более 16 384 элементов каталогов, включая
+те, которые не оказались XML-файлами нужного вида. Повторное перечисление
+расходует бюджет снова; новый источник не получает отдельный бюджет.
+Суммарная длина файлов, намеченных для точной проверки, учитывается с
+проверкой переполнения, но не служит причиной отказа по фиксированному
+потолку байтов. Повторное чтение проверяет срок и отмену между блоками.
 
 Место проверяется до чтения, перечисления, открытия следующего объекта
 и увеличения буфера. Превышение даёт отказ. Сравнение собранных сведений

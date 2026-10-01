@@ -1169,6 +1169,15 @@ impl RetainedDirectoryCapability {
         read_directory_names_bounded(&self.retained.directory, maximum_entries, checkpoint)
     }
 
+    /// Visits names through the retained handle without accumulating the
+    /// directory. The visitor supplies its own cancellation checkpoint.
+    pub(crate) fn visit_immediate_names<E: From<io::Error>>(
+        &self,
+        visitor: impl FnMut(std::ffi::OsString) -> Result<(), E>,
+    ) -> Result<(), E> {
+        visit_directory_names(&self.retained.directory, visitor)
+    }
+
     /// Classifies and retains one immediate child through this directory
     /// descriptor. The typed reopen on Windows is identity-checked against the
     /// classification handle; Unix keeps the original `openat(O_NOFOLLOW)`
@@ -1946,6 +1955,18 @@ pub(crate) fn read_directory_names_bounded(
     }
     names.sort();
     Ok(names)
+}
+
+#[cfg(unix)]
+fn visit_directory_names<E: From<io::Error>>(
+    directory: &fs::File,
+    mut visitor: impl FnMut(std::ffi::OsString) -> Result<(), E>,
+) -> Result<(), E> {
+    let entries = cap_primitives::fs::read_base_dir(directory)?;
+    for entry in entries {
+        visitor(entry?.file_name())?;
+    }
+    Ok(())
 }
 
 #[cfg(any(test, windows))]
@@ -3490,13 +3511,31 @@ fn parse_directory_information_buffer(
     parse_directory_information_buffer_bounded(buffer, names, usize::MAX, &mut || Ok(()))
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, test))]
 fn parse_directory_information_buffer_bounded(
     buffer: &[u8],
     names: &mut Vec<std::ffi::OsString>,
     maximum_entries: usize,
     checkpoint: &mut impl FnMut() -> io::Result<()>,
 ) -> io::Result<()> {
+    visit_directory_information_buffer(buffer, |name| {
+        checkpoint()?;
+        if names.len() >= maximum_entries {
+            return Err(io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                "directory exceeds the retained enumeration entry limit",
+            ));
+        }
+        names.push(name);
+        Ok(())
+    })
+}
+
+#[cfg(windows)]
+fn visit_directory_information_buffer<E: From<io::Error>>(
+    buffer: &[u8],
+    mut visitor: impl FnMut(std::ffi::OsString) -> Result<(), E>,
+) -> Result<(), E> {
     use std::mem::{offset_of, size_of};
     use std::os::windows::ffi::OsStringExt;
     use windows_sys::Win32::Storage::FileSystem::FILE_ID_BOTH_DIR_INFO;
@@ -3515,7 +3554,8 @@ fn parse_directory_information_buffer_bounded(
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "directory entry complete header exceeds the enumeration buffer",
-            ));
+            )
+            .into());
         }
         // SAFETY: the complete Rust structure was bounds-checked above; read_unaligned accepts
         // every record offset supplied by the filesystem.
@@ -3527,7 +3567,8 @@ fn parse_directory_information_buffer_bounded(
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "directory entry has an invalid UTF-16 name length",
-            ));
+            )
+            .into());
         }
         let name_start = offset.checked_add(file_name_offset).ok_or_else(|| {
             io::Error::new(
@@ -3545,7 +3586,8 @@ fn parse_directory_information_buffer_bounded(
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "directory entry name exceeds the enumeration buffer",
-            ));
+            )
+            .into());
         }
         let mut name = Vec::with_capacity(name_bytes / size_of::<u16>());
         for unit_offset in (name_start..name_end).step_by(size_of::<u16>()) {
@@ -3556,15 +3598,8 @@ fn parse_directory_information_buffer_bounded(
             });
         }
         let name = std::ffi::OsString::from_wide(&name);
-        checkpoint()?;
         if name != "." && name != ".." {
-            if names.len() >= maximum_entries {
-                return Err(io::Error::new(
-                    io::ErrorKind::FileTooLarge,
-                    "directory exceeds the retained enumeration entry limit",
-                ));
-            }
-            names.push(name);
+            visitor(name)?;
         }
 
         let next = entry.NextEntryOffset as usize;
@@ -3581,7 +3616,8 @@ fn parse_directory_information_buffer_bounded(
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "directory entry next-record offset is not 8-byte-aligned or overlaps the name",
-            ));
+            )
+            .into());
         }
         offset = offset.checked_add(next).ok_or_else(|| {
             io::Error::new(
@@ -3593,7 +3629,8 @@ fn parse_directory_information_buffer_bounded(
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "directory entry offset exceeds the enumeration buffer",
-            ));
+            )
+            .into());
         }
     }
     Ok(())
@@ -3614,6 +3651,27 @@ pub(crate) fn read_directory_names_bounded(
     maximum_entries: usize,
     mut checkpoint: impl FnMut() -> io::Result<()>,
 ) -> io::Result<Vec<std::ffi::OsString>> {
+    let mut names = Vec::new();
+    visit_directory_names(directory, |name| {
+        checkpoint()?;
+        if names.len() >= maximum_entries {
+            return Err(io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                "directory exceeds the retained enumeration entry limit",
+            ));
+        }
+        names.push(name);
+        Ok(())
+    })?;
+    names.sort();
+    Ok(names)
+}
+
+#[cfg(windows)]
+fn visit_directory_names<E: From<io::Error>>(
+    directory: &fs::File,
+    mut visitor: impl FnMut(std::ffi::OsString) -> Result<(), E>,
+) -> Result<(), E> {
     use std::mem::size_of;
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{
@@ -3626,7 +3684,6 @@ pub(crate) fn read_directory_names_bounded(
     let word_count = BUFFER_BYTES.div_ceil(size_of::<usize>());
     let mut storage = vec![0usize; word_count];
     let buffer_bytes = storage.len() * size_of::<usize>();
-    let mut names = Vec::new();
     let mut restart = true;
     loop {
         storage.fill(0);
@@ -3650,7 +3707,7 @@ pub(crate) fn read_directory_names_bounded(
             if directory_query_is_end(restart, &error) {
                 break;
             }
-            return Err(error);
+            return Err(error.into());
         }
         restart = false;
 
@@ -3658,15 +3715,9 @@ pub(crate) fn read_directory_names_bounded(
         // complete structure, name, and next-record bounds checks before reading each field.
         let buffer =
             unsafe { std::slice::from_raw_parts(storage.as_ptr().cast::<u8>(), buffer_bytes) };
-        parse_directory_information_buffer_bounded(
-            buffer,
-            &mut names,
-            maximum_entries,
-            &mut checkpoint,
-        )?;
+        visit_directory_information_buffer(buffer, &mut visitor)?;
     }
-    names.sort();
-    Ok(names)
+    Ok(())
 }
 
 #[cfg(windows)]
