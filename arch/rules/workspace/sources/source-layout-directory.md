@@ -21,6 +21,7 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/mod.rs::resolve_path_ignores_the_full_directory_entry_budget
   - crates/unica-coder/tests/platform/v13_resolve_target_isolation.rs::resolve_path_checks_only_target_and_necessary_owner_on_public_mcp
   - crates/unica-coder/tests/platform/v13_resolve_target_isolation.rs::resolve_absolute_xml_ignores_a_broken_foreign_target_and_reports_ambiguous_alias
+  - crates/unica-coder/tests/platform/v13_resolve_target_isolation.rs::resolve_path_does_not_inherit_the_search_source_set_limit
 gap: https://github.com/IngvarConsulting/unica/issues/976
 ---
 
@@ -44,9 +45,9 @@ gap: https://github.com/IngvarConsulting/unica/issues/976
 
 Построение полного справочника для поиска имён ограничено числом наборов
 исходников, числом записей, размером перечисляемой коллекции и суммарным
-объёмом фактов. Разрешение конкретного пути сохраняет ограничение числа
-наборов, но не наследует совокупные ограничения полного справочника или
-размер перечисляемой коллекции. Подтверждение владельца по-прежнему берёт
+объёмом фактов. Разрешение конкретного пути не наследует ограничения числа
+наборов полного справочника, его совокупные ограничения или размер перечисляемой
+коллекции. Подтверждение владельца по-прежнему берёт
 начало XML-дескриптора; если существующий целевой дескриптор не подтверждён
 этой выборкой, вызов отказывает, а не возвращает ложный `not_found`.
 Полноценное потоковое подтверждение XML остаётся открытым пробелом.

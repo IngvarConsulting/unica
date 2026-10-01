@@ -229,6 +229,65 @@ fn resolve_relative_source_prefix_skips_foreign_linked_collections_on_public_mcp
 }
 
 #[test]
+fn resolve_path_does_not_inherit_the_search_source_set_limit() {
+    let root = tempfile::tempdir().expect("resolve workspace");
+    let workspace = root.path();
+    let mut manifest = String::from("format: DESIGNER\nsource-set:\n");
+    for index in 0..65 {
+        let name = format!("source{index:02}");
+        let source = workspace.join("src").join(&name);
+        std::fs::create_dir_all(&source).expect("source root");
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject><Configuration><Properties><Name>Main</Name></Properties></Configuration></MetaDataObject>"#,
+        )
+        .expect("source descriptor");
+        let kind = if index == 0 {
+            "CONFIGURATION"
+        } else {
+            "EXTENSION"
+        };
+        manifest.push_str(&format!(
+            "  - name: {name}\n    type: {kind}\n    path: src/{name}\n"
+        ));
+    }
+    std::fs::write(workspace.join("v8project.yaml"), manifest).expect("workspace manifest");
+    let target = workspace.join("src/source64/Catalogs/Requested.xml");
+    std::fs::create_dir_all(target.parent().unwrap()).expect("target collection");
+    std::fs::write(
+        &target,
+        r#"<MetaDataObject><Catalog><Properties><Name>Requested</Name></Properties></Catalog></MetaDataObject>"#,
+    )
+    .expect("target descriptor");
+
+    let mut mcp = McpProcess::start(workspace);
+    let initialized = mcp.exchange(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                   "clientInfo": {"name": "resolve-many-sources", "version": "1"}}
+    }));
+    assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
+    mcp.notify(json!({"jsonrpc":"2.0", "method":"notifications/initialized", "params":{}}));
+
+    let search = domain_result(&mcp.exchange(call_tool(
+        2,
+        "unica.search",
+        json!({"query": "Requested", "corpus": "names"}),
+    )));
+    assert_eq!(search["ok"], false, "{search:#}");
+    assert_eq!(search["diagnostics"][0]["code"], "provider_limit_exceeded");
+
+    let resolved = domain_result(&mcp.exchange(call_tool(
+        3,
+        "unica.resolve",
+        json!({"path": std::fs::canonicalize(&target).expect("absolute admitted target")}),
+    )));
+    assert_eq!(resolved["ok"], true, "{resolved:#}");
+    assert_eq!(resolved["data"]["at"], "source64:Catalog.Requested");
+    mcp.finish();
+}
+
+#[test]
 fn resolve_absolute_xml_ignores_a_broken_foreign_target_and_reports_ambiguous_alias() {
     use std::os::unix::fs::symlink;
 

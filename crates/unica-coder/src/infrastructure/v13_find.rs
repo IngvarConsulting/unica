@@ -331,12 +331,6 @@ impl WorkspaceFindDirectoryBuilder {
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> Result<Option<FindDocument>, FindBuildError> {
-        if sources.len() > MAX_SOURCE_SETS {
-            return Err(FindBuildError::new(
-                RefusalCode::ProviderLimitExceeded,
-                "find source-set count exceeds the bounded workspace limit",
-            ));
-        }
         let normalized = normalize_layout_path(path);
         let parts = normalized.split('/').collect::<Vec<_>>();
         let absolute_query = layout_path_is_absolute(path, &normalized);
@@ -412,20 +406,11 @@ impl WorkspaceFindDirectoryBuilder {
                 {
                     continue;
                 }
-                // A path with a source prefix names this exact layout entry.
-                // A missing collection member must not fall through to an
-                // unrelated root descriptor with the same final filename.
-                if (source_is_bound || !absolute_query)
-                    && !source_path_matches_query(source, &normalized, tail, absolute_query)
-                {
-                    continue;
-                }
-                if depth == 4
-                    && tail.starts_with("commonmodules/")
-                    && tail.ends_with("/ext/module.bsl")
-                    && absolute_query
-                    && !common_module_query_matches(source, path, tail)
-                {
+                // A relative path with a source prefix names this exact
+                // layout entry. An absolute path already has a retained
+                // physical witness; string spelling may differ by Unicode
+                // normalization on the same filesystem object.
+                if !absolute_query && !source_path_matches_query(source, &normalized, tail) {
                     continue;
                 }
                 source
@@ -772,7 +757,7 @@ impl WorkspaceFindDirectoryBuilder {
         };
         // The alias denotes a concrete module path. Check its source prefix
         // before even enumerating a foreign CommonModules collection.
-        if !common_module_query_matches(source, query, &tail.join("/")) {
+        if physical.is_none() && !common_module_query_matches(source, query, &tail.join("/")) {
             return Ok(());
         }
         for collection_name in matching_names(
@@ -814,7 +799,9 @@ impl WorkspaceFindDirectoryBuilder {
                 }
                 let owner_relative = PathBuf::from(collection_text).join(owner_text);
                 let expected_module_relative = path_text(&owner_relative.join("Ext/Module.bsl"));
-                if !common_module_query_matches(source, query, &expected_module_relative) {
+                if physical.is_none()
+                    && !common_module_query_matches(source, query, &expected_module_relative)
+                {
                     continue;
                 }
                 let owner_root = match retain_enumerated_child(
@@ -1779,17 +1766,8 @@ fn source_path_ends_with_query(source: &LayoutFindSource<'_>, query: &str, relat
             .is_some_and(|prefix| prefix.ends_with('/'))
 }
 
-fn source_path_matches_query(
-    source: &LayoutFindSource<'_>,
-    query: &str,
-    relative: &str,
-    absolute: bool,
-) -> bool {
-    if absolute {
-        normalize_layout_path(&source.root.path().join(relative).to_string_lossy()) == query
-    } else {
-        query == relative || source_path_ends_with_query(source, query, relative)
-    }
+fn source_path_matches_query(source: &LayoutFindSource<'_>, query: &str, relative: &str) -> bool {
+    query == relative || source_path_ends_with_query(source, query, relative)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2914,6 +2892,86 @@ mod tests {
                     .code(),
                 RefusalCode::InvalidSource
             );
+        }
+    }
+
+    #[test]
+    fn absolute_lookup_accepts_a_physical_unicode_alias_of_the_source_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().canonicalize().unwrap();
+        let source_parent = workspace.join("src");
+        let source = source_parent.join("Й");
+        let alias = source_parent.join("И\u{306}");
+        write(
+            &source.join("Catalogs/X.xml"),
+            &owner("X", "Catalog", "X", ""),
+        );
+        write(
+            &source.join("CommonModules/Main.xml"),
+            &owner("Main", "CommonModule", "Main", ""),
+        );
+        write(
+            &source.join("CommonModules/Main/Ext/Module.bsl"),
+            "// module\n",
+        );
+        let parent = RetainedDirectoryCapability::open(&source_parent).unwrap();
+        assert_ne!(
+            super::normalize_layout_path(&source.to_string_lossy()),
+            super::normalize_layout_path(&alias.to_string_lossy()),
+            "the regression requires spellings that the string gate distinguishes"
+        );
+        if !parent
+            .child_names_equivalent(std::ffi::OsStr::new("Й"), std::ffi::OsStr::new("И\u{306}"))
+            .unwrap()
+        {
+            return;
+        }
+        assert!(alias.is_dir(), "the filesystem must resolve the alias");
+        let retained = RetainedDirectoryCapability::open(&source).unwrap();
+        let sources = [LayoutFindSource::new(
+            "main",
+            SourceSetKind::Configuration,
+            &retained,
+        )];
+        let lookup = |path: &Path| {
+            WorkspaceFindDirectoryBuilder::default().locate_path(
+                &sources,
+                path.to_str().unwrap(),
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+        };
+        let catalog = lookup(&alias.join("Catalogs/X.xml"))
+            .unwrap()
+            .expect("physical Unicode alias of catalog source root");
+        assert_eq!(catalog.at(), "main:Catalog.X");
+        let module = lookup(&alias.join("CommonModules/Main/Ext/Module.bsl"))
+            .unwrap()
+            .expect("physical Unicode alias of module source root");
+        assert_eq!(module.at(), "main:CommonModule.Main");
+    }
+
+    #[test]
+    fn windows_drive_and_unc_prefixes_keep_the_same_root_anchor_shape() {
+        if std::path::MAIN_SEPARATOR != '\\' {
+            return;
+        }
+        for (ordinary, extended) in [
+            (r"C:\workspace\src", r"\\?\C:\workspace\src"),
+            (
+                r"\\server\share\workspace\src",
+                r"\\?\UNC\server\share\workspace\src",
+            ),
+        ] {
+            let ordinary = Path::new(ordinary).ancestors().collect::<Vec<_>>();
+            let extended = Path::new(extended).ancestors().collect::<Vec<_>>();
+            assert_eq!(ordinary.len(), extended.len());
+            for (ordinary, extended) in ordinary.into_iter().zip(extended) {
+                assert_eq!(
+                    super::normalize_layout_path(&ordinary.to_string_lossy()),
+                    super::normalize_layout_path(&extended.to_string_lossy()),
+                );
+            }
         }
     }
 
