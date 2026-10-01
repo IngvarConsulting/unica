@@ -66,11 +66,11 @@ fn unreadable_name_descriptor_is_reported_without_losing_proven_matches() {
         "params": {}
     }));
 
-    let found = domain_result(&mcp.exchange(call_tool(
+    let found = mcp.completed_tool_call(call_tool(
         2,
         "unica.search",
         json!({"query": "Visible", "corpus": "names"}),
-    )));
+    ));
     assert_eq!(found["ok"], true, "{found:#}");
     assert_eq!(
         found["data"]["matches"][0]["at"],
@@ -89,11 +89,11 @@ fn unreadable_name_descriptor_is_reported_without_losing_proven_matches() {
         "unproven paths must not enter the public response: {found:#}"
     );
 
-    let approximate = domain_result(&mcp.exchange(call_tool(
+    let approximate = mcp.completed_tool_call(call_tool(
         5,
         "unica.search",
         json!({"query": "Visibke", "corpus": "names"}),
-    )));
+    ));
     assert_eq!(approximate["ok"], true, "{approximate:#}");
     assert_eq!(
         approximate["data"]["matches"][0]["at"],
@@ -102,37 +102,37 @@ fn unreadable_name_descriptor_is_reported_without_losing_proven_matches() {
     assert_eq!(approximate["data"]["approximate"], true);
     assert_eq!(approximate["data"]["sourceCoverage"]["complete"], false);
 
-    let empty = domain_result(&mcp.exchange(call_tool(
+    let empty = mcp.completed_tool_call(call_tool(
         3,
         "unica.search",
         json!({"query": "DefinitelyAbsentWord", "corpus": "names", "kind": "Catalog"}),
-    )));
+    ));
     assert_eq!(empty["ok"], true, "{empty:#}");
     assert_eq!(empty["data"]["matches"], json!([]));
     assert_eq!(empty["data"]["approximate"], false);
     assert_eq!(empty["data"]["sourceCoverage"]["complete"], false);
     assert_eq!(empty["data"]["sourceCoverage"]["omitted"], 1);
 
-    let unsupported = domain_result(&mcp.exchange(call_tool(
+    let unsupported = mcp.completed_tool_call(call_tool(
         6,
         "unica.search",
         json!({"query": "Visible", "corpus": "names", "scope": "main:Form"}),
-    )));
+    ));
     assert_eq!(unsupported["diagnostics"][0]["code"], "unsupported_scope");
 
-    let resolve = domain_result(&mcp.exchange(call_tool(
+    let resolve = mcp.completed_tool_call(call_tool(
         4,
         "unica.resolve",
         json!({"path": "CommonModules/Visible.xml"}),
-    )));
+    ));
     assert_eq!(resolve["ok"], true, "{resolve:#}");
     assert_eq!(resolve["data"]["at"], "main:CommonModule.Visible");
 
-    let hidden_resolve = domain_result(&mcp.exchange(call_tool(
+    let hidden_resolve = mcp.completed_tool_call(call_tool(
         9,
         "unica.resolve",
         json!({"path": "Catalogs/Hidden.xml"}),
-    )));
+    ));
     assert_eq!(hidden_resolve["ok"], false, "{hidden_resolve:#}");
     assert_eq!(
         hidden_resolve["diagnostics"][0]["code"], "provider_unavailable",
@@ -143,20 +143,20 @@ fn unreadable_name_descriptor_is_reported_without_losing_proven_matches() {
         "source_unreadable"
     );
     std::fs::set_permissions(&hidden, restore.1.clone()).expect("restore descriptor access");
-    let complete = domain_result(&mcp.exchange(call_tool(
+    let complete = mcp.completed_tool_call(call_tool(
         7,
         "unica.search",
         json!({"query": "Hidden", "corpus": "names"}),
-    )));
+    ));
     assert_eq!(complete["ok"], true, "{complete:#}");
     assert_eq!(complete["data"]["matches"][0]["at"], "main:Catalog.Hidden");
     assert_eq!(complete["data"]["sourceCoverage"]["complete"], true);
     assert_eq!(complete["data"]["sourceCoverage"]["omitted"], 0);
-    let synonym = domain_result(&mcp.exchange(call_tool(
+    let synonym = mcp.completed_tool_call(call_tool(
         8,
         "unica.search",
         json!({"query": "Concealed", "corpus": "names"}),
-    )));
+    ));
     assert_eq!(synonym["ok"], true, "{synonym:#}");
     assert_eq!(synonym["data"]["matches"][0]["at"], "main:Catalog.Hidden");
     assert_eq!(synonym["data"]["matches"][0]["title"], "Concealed");

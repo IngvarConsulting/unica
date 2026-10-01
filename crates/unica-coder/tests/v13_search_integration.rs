@@ -305,11 +305,11 @@ fn canonical_view_reads_configuration_past_eight_mebibytes_with_many_registratio
     }));
     assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
     mcp.notify(json!({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}));
-    let view = domain_result(&mcp.exchange(call_tool(
+    let view = mcp.completed_tool_call(call_tool(
         2,
         "unica.view",
         json!({"at": "main:Configuration"}),
-    )));
+    ));
     assert_eq!(view["ok"], true, "{view:#}");
     assert_eq!(view["data"]["props"]["name"], "First");
     assert_eq!(view["data"]["props"]["totalObjects"], 300_000);
@@ -322,11 +322,11 @@ fn canonical_view_reads_configuration_past_eight_mebibytes_with_many_registratio
         })
         .expect("registered CommonModule branch");
     assert_eq!(branch["count"], 32);
-    let collection = domain_result(&mcp.exchange(call_tool(
+    let collection = mcp.completed_tool_call(call_tool(
         6,
         "unica.view",
         json!({"at": "main:CommonModule", "limit": 50}),
-    )));
+    ));
     assert_eq!(collection["ok"], true, "{collection:#}");
     let items = collection["data"]["items"]
         .as_array()
@@ -334,18 +334,18 @@ fn canonical_view_reads_configuration_past_eight_mebibytes_with_many_registratio
     assert_eq!(items.len(), 32);
     assert_eq!(items.first().unwrap()["at"], "main:CommonModule.Module00");
     assert_eq!(items.last().unwrap()["at"], "main:CommonModule.Module31");
-    let named = domain_result(&mcp.exchange(call_tool(
+    let named = mcp.completed_tool_call(call_tool(
         3,
         "unica.view",
         json!({"at": "main:CommonModule.Module00"}),
-    )));
+    ));
     assert_eq!(named["ok"], true, "{named:#}");
     assert_eq!(named["data"]["at"], "main:CommonModule.Module00");
-    let other = domain_result(&mcp.exchange(call_tool(
+    let other = mcp.completed_tool_call(call_tool(
         4,
         "unica.view",
         json!({"at": "main:CommonModule.Module31"}),
-    )));
+    ));
     assert_eq!(other["ok"], true, "{other:#}");
     let old_revision = other["rev"].clone();
     let source = std::fs::read_to_string(&path).expect("read large root for revision change");
@@ -355,18 +355,18 @@ fn canonical_view_reads_configuration_past_eight_mebibytes_with_many_registratio
         1,
     );
     std::fs::write(&path, source).expect("publish changed root registration");
-    let changed = domain_result(&mcp.exchange(call_tool(
+    let changed = mcp.completed_tool_call(call_tool(
         5,
         "unica.view",
         json!({"at": "main:CommonModule.ModuleNew"}),
-    )));
+    ));
     assert_eq!(changed["ok"], true, "{changed:#}");
     assert_ne!(changed["rev"], old_revision, "source revision must change");
-    let changed_collection = domain_result(&mcp.exchange(call_tool(
+    let changed_collection = mcp.completed_tool_call(call_tool(
         7,
         "unica.view",
         json!({"at": "main:CommonModule", "limit": 50}),
-    )));
+    ));
     assert_eq!(changed_collection["ok"], true, "{changed_collection:#}");
     assert_eq!(changed_collection["rev"], changed["rev"]);
     assert_eq!(
@@ -665,22 +665,22 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
         "{rejected:#}"
     );
 
-    let main = domain_result(&mcp.exchange(call_tool(
+    let main = mcp.completed_tool_call(call_tool(
         3,
         "unica.search",
         json!({"query": "MainNeedle", "scope": "main:Configuration"}),
-    )));
+    ));
     assert_eq!(main["ok"], true, "{main:#}");
     assert_eq!(main["data"]["matches"].as_array().map(Vec::len), Some(20));
     assert_eq!(main["data"]["matches"][0]["scope"], "main:Configuration");
     assert!(main["data"]["matches"][0].get("file").is_none());
     assert_eq!(main["page"]["stoppedBy"], "limit");
     let cursor = main["cursor"].as_str().expect("search continuation");
-    let remaining = domain_result(&mcp.exchange(call_tool(
+    let remaining = mcp.completed_tool_call(call_tool(
         5,
         "unica.search",
         json!({"query": "MainNeedle", "scope": "main:Configuration", "cursor": cursor}),
-    )));
+    ));
     assert_eq!(remaining["ok"], true, "{remaining:#}");
     assert_eq!(
         remaining["data"]["matches"].as_array().map(Vec::len),
@@ -688,27 +688,27 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
     );
     assert_eq!(remaining["page"]["stoppedBy"], "complete");
     assert!(remaining.get("cursor").is_none());
-    let replay = domain_result(&mcp.exchange(call_tool(
+    let replay = mcp.completed_tool_call(call_tool(
         6,
         "unica.search",
         json!({"query": "MainNeedle", "scope": "main:Configuration", "cursor": cursor}),
-    )));
+    ));
     assert_eq!(
         replay, remaining,
         "retry of one cursor must replay its page"
     );
-    let wrong_question = domain_result(&mcp.exchange(call_tool(
+    let wrong_question = mcp.completed_tool_call(call_tool(
         7,
         "unica.search",
         json!({"query": "Needle", "scope": "main:Configuration", "cursor": cursor}),
-    )));
+    ));
     assert_eq!(wrong_question["diagnostics"][0]["code"], "invalid_cursor");
 
-    let extension = domain_result(&mcp.exchange(call_tool(
+    let extension = mcp.completed_tool_call(call_tool(
         4,
         "unica.search",
         json!({"query": "ExtensionNeedle", "scope": "extension:Configuration"}),
-    )));
+    ));
     assert_eq!(extension["ok"], true, "{extension:#}");
     assert_eq!(
         extension["data"]["matches"].as_array().map(Vec::len),
@@ -719,11 +719,11 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
         "extension:Configuration"
     );
 
-    let lexical = domain_result(&mcp.exchange(call_tool(
+    let lexical = mcp.completed_tool_call(call_tool(
         24,
         "unica.search",
         json!({"query": "MainNeedle", "role": "lexical", "scope": "main:CommonModule.Main", "limit": 7}),
-    )));
+    ));
     assert_eq!(lexical["ok"], true, "{lexical:#}");
     assert_eq!(lexical["data"]["mode"], "lexical");
     let sections = lexical["data"]["matches"]
@@ -745,11 +745,11 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
         .to_string();
     let mut lexical_pages = 1;
     loop {
-        let page = domain_result(&mcp.exchange(call_tool(
+        let page = mcp.completed_tool_call(call_tool(
             30 + lexical_pages,
             "unica.search",
             json!({"query": "MainNeedle", "role": "lexical", "scope": "main:CommonModule.Main", "limit": 7, "cursor": lexical_cursor}),
-        )));
+        ));
         assert_eq!(page["ok"], true, "{page:#}");
         let hits = page["data"]["matches"][0]["hits"].as_array().unwrap();
         assert_eq!(
@@ -771,18 +771,18 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
         lexical_lines,
         std::iter::once(1).chain(3..=23).collect::<Vec<_>>()
     );
-    let cross_mode = domain_result(&mcp.exchange(call_tool(
+    let cross_mode = mcp.completed_tool_call(call_tool(
         35,
         "unica.search",
         json!({"query": "MainNeedle", "role": "lexical", "scope": "main:Configuration", "cursor": cursor}),
-    )));
+    ));
     assert_eq!(cross_mode["diagnostics"][0]["code"], "invalid_cursor");
 
-    let main_names = domain_result(&mcp.exchange(call_tool(
+    let main_names = mcp.completed_tool_call(call_tool(
         19,
         "unica.search",
         json!({"query": "CommonModule", "corpus": "names", "scope": "main:Configuration"}),
-    )));
+    ));
     assert_eq!(main_names["ok"], true, "{main_names:#}");
     let main_matches = main_names["data"]["matches"]
         .as_array()
@@ -792,22 +792,22 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
         .as_str()
         .is_some_and(|at| at.starts_with("main:"))));
 
-    let long_name_result = domain_result(&mcp.exchange(call_tool(
+    let long_name_result = mcp.completed_tool_call(call_tool(
         36,
         "unica.search",
         json!({"query": long_synonym, "corpus": "names", "scope": "main:Configuration"}),
-    )));
+    ));
     assert_eq!(long_name_result["ok"], true, "{long_name_result:#}");
     assert_eq!(
         long_name_result["data"]["matches"][0]["at"],
         "main:CommonModule.Main"
     );
 
-    let named_scope = domain_result(&mcp.exchange(call_tool(
+    let named_scope = mcp.completed_tool_call(call_tool(
         20,
         "unica.search",
         json!({"query": "Main", "corpus": "names", "scope": "main:CommonModule.Main"}),
-    )));
+    ));
     assert_eq!(named_scope["ok"], true, "{named_scope:#}");
     assert_eq!(
         named_scope["data"]["matches"].as_array().map(Vec::len),
@@ -818,54 +818,53 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
         "main:CommonModule.Main"
     );
 
-    let missing_scope = domain_result(&mcp.exchange(call_tool(
+    let missing_scope = mcp.completed_tool_call(call_tool(
         21,
         "unica.search",
         json!({"query": "Main", "corpus": "names", "scope": "main:CommonModule.Missing"}),
-    )));
+    ));
     assert_eq!(missing_scope["diagnostics"][0]["code"], "not_found");
-    let unsupported_scope = domain_result(&mcp.exchange(call_tool(
+    let unsupported_scope = mcp.completed_tool_call(call_tool(
         22,
         "unica.search",
         json!({"query": "Main", "corpus": "names", "scope": "main:CommonModule.Main.Attribute.Missing"}),
-    )));
+    ));
     assert_eq!(
         unsupported_scope["diagnostics"][0]["code"],
         "unsupported_scope"
     );
-    let unsupported_root = domain_result(&mcp.exchange(call_tool(
+    let unsupported_root = mcp.completed_tool_call(call_tool(
         23,
         "unica.search",
         json!({"query": "Main", "corpus": "names", "scope": "main:Form"}),
-    )));
+    ));
     assert_eq!(
         unsupported_root["diagnostics"][0]["code"],
         "unsupported_scope"
     );
 
-    let absent_scope = domain_result(&mcp.exchange(call_tool(
+    let absent_scope = mcp.completed_tool_call(call_tool(
         16,
         "unica.search",
         json!({"query": "MainNeedle", "scope": "main:CommonModule.Missing"}),
-    )));
+    ));
     assert_eq!(absent_scope["diagnostics"][0]["code"], "not_found");
-    let orphan_scope = domain_result(&mcp.exchange(call_tool(
+    let orphan_scope = mcp.completed_tool_call(call_tool(
         17,
         "unica.search",
         json!({"query": "OrphanNeedle", "scope": "main:CommonModule.Orphan"}),
-    )));
+    ));
     assert_eq!(orphan_scope["diagnostics"][0]["code"], "not_found");
-    let branch = domain_result(&mcp.exchange(call_tool(
+    let branch = mcp.completed_tool_call(call_tool(
         18,
         "unica.search",
         json!({"query": "MainNeedle", "scope": "main:CommonModule"}),
-    )));
+    ));
     assert_eq!(branch["ok"], true, "{branch:#}");
     assert_eq!(branch["data"]["matches"].as_array().map(Vec::len), Some(20));
     assert!(branch["cursor"].as_str().is_some());
 
-    let broad =
-        domain_result(&mcp.exchange(call_tool(8, "unica.search", json!({"query": "Needle"}))));
+    let broad = mcp.completed_tool_call(call_tool(8, "unica.search", json!({"query": "Needle"})));
     assert_eq!(broad["page"]["stoppedBy"], "limit");
     let broad_cursor = broad["cursor"].as_str().expect("multi-source cursor");
     std::fs::write(
@@ -873,18 +872,18 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
         "Procedure ExtensionNeedle() Export\nEndProcedure\n// changed source\n",
     )
     .expect("change a source not reached by the first page");
-    let stale = domain_result(&mcp.exchange(call_tool(
+    let stale = mcp.completed_tool_call(call_tool(
         9,
         "unica.search",
         json!({"query": "Needle", "cursor": broad_cursor}),
-    )));
+    ));
     assert_eq!(stale["diagnostics"][0]["code"], "stale_cursor");
 
-    let cross_corpus = domain_result(&mcp.exchange(call_tool(
+    let cross_corpus = mcp.completed_tool_call(call_tool(
         10,
         "unica.search",
         json!({"query": "MainNeedle", "scope": "main:Configuration", "corpus": "names", "cursor": cursor}),
-    )));
+    ));
     assert_eq!(cross_corpus["diagnostics"][0]["code"], "invalid_cursor");
 
     for (id, arguments) in [
@@ -902,7 +901,7 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
             json!({"query": "Needle", "role": "lexical", "limit": 0}),
         ),
     ] {
-        let refused = domain_result(&mcp.exchange(call_tool(id, "unica.search", arguments)));
+        let refused = mcp.completed_tool_call(call_tool(id, "unica.search", arguments));
         assert_eq!(
             refused["diagnostics"][0]["code"], "bad_value",
             "{refused:#}"
@@ -953,7 +952,7 @@ fn a_long_single_line_can_be_read_across_more_than_one_hundred_search_pages() {
         if let Some(token) = cursor.as_ref() {
             arguments["cursor"] = Value::String(token.clone());
         }
-        let result = domain_result(&mcp.exchange(call_tool(2 + pages, "unica.search", arguments)));
+        let result = mcp.completed_tool_call(call_tool(2 + pages, "unica.search", arguments));
         assert_eq!(result["ok"], true, "{result:#}");
         let matches = result["data"]["matches"].as_array().expect("matches");
         assert!(!matches.is_empty());
@@ -1003,11 +1002,11 @@ fn text_search_pages_matches_after_two_mebibytes_of_source() {
     assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
     mcp.notify(json!({"jsonrpc":"2.0", "method":"notifications/initialized", "params":{}}));
 
-    let first = domain_result(&mcp.exchange(call_tool(
+    let first = mcp.completed_tool_call(call_tool(
         2,
         "unica.search",
         json!({"query": "Needle", "scope": "main:Configuration", "limit": 50}),
-    )));
+    ));
     assert_eq!(first["ok"], true, "{first:#}");
     let matches = first["data"]["matches"].as_array().expect("first page");
     assert_eq!(matches.len(), 50);
@@ -1016,21 +1015,21 @@ fn text_search_pages_matches_after_two_mebibytes_of_source() {
     assert_eq!(matches[0]["snippet"], "// яNeedle");
     assert!(matches.iter().all(|hit| hit.get("file").is_none()));
     let cursor = first["cursor"].as_str().expect("remaining match");
-    let second = domain_result(&mcp.exchange(call_tool(
+    let second = mcp.completed_tool_call(call_tool(
         3,
         "unica.search",
         json!({"query": "Needle", "scope": "main:Configuration", "limit": 50, "cursor": cursor}),
-    )));
+    ));
     assert_eq!(second["ok"], true, "{second:#}");
     assert_eq!(second["data"]["matches"].as_array().map(Vec::len), Some(1));
     assert_eq!(second["data"]["matches"][0]["line"], 24_051);
     assert_eq!(second["page"]["stoppedBy"], "complete");
 
-    let anchored = domain_result(&mcp.exchange(call_tool(
+    let anchored = mcp.completed_tool_call(call_tool(
         4,
         "unica.search",
         json!({"query": "^// яNeedle$", "regex": true, "scope": "main:Configuration"}),
-    )));
+    ));
     assert_eq!(anchored["ok"], true, "{anchored:#}");
     assert_eq!(
         anchored["data"]["matches"].as_array().map(Vec::len),
@@ -1075,11 +1074,11 @@ fn text_search_reads_more_than_thirty_two_mebibytes_across_sources() {
     assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
     mcp.notify(json!({"jsonrpc":"2.0", "method":"notifications/initialized", "params":{}}));
 
-    let result = domain_result(&mcp.exchange(call_tool(
+    let result = mcp.completed_tool_call(call_tool(
         2,
         "unica.search",
         json!({"query": "LastNeedle", "scope": "main:Configuration"}),
-    )));
+    ));
     assert_eq!(result["ok"], true, "{result:#}");
     assert_eq!(result["data"]["matches"].as_array().map(Vec::len), Some(1));
     assert_eq!(result["data"]["matches"][0]["line"], 17);
@@ -1116,11 +1115,11 @@ fn text_search_preserves_whole_line_regex_beyond_two_mebibytes() {
     assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
     mcp.notify(json!({"jsonrpc":"2.0", "method":"notifications/initialized", "params":{}}));
 
-    let result = domain_result(&mcp.exchange(call_tool(
+    let result = mcp.completed_tool_call(call_tool(
         2,
         "unica.search",
         json!({"query": "^// x+Needle$", "regex": true, "scope": "main:Configuration"}),
-    )));
+    ));
     assert_eq!(result["ok"], true, "{result:#}");
     assert_eq!(result["data"]["matches"].as_array().map(Vec::len), Some(1));
     assert_eq!(result["data"]["matches"][0]["line"], 1);
@@ -1165,21 +1164,21 @@ fn unreadable_source_lines_keep_other_hits_and_truthful_coverage_across_pages() 
     assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
     mcp.notify(json!({"jsonrpc":"2.0", "method":"notifications/initialized", "params":{}}));
 
-    let first = domain_result(&mcp.exchange(call_tool(
+    let first = mcp.completed_tool_call(call_tool(
         2,
         "unica.search",
         json!({"query": "Needle", "scope": "main:Configuration"}),
-    )));
+    ));
     assert_eq!(first["ok"], true, "{first:#}");
     assert_eq!(first["page"]["stoppedBy"], "limit");
     assert_eq!(first["data"]["fileCoverage"]["complete"], false);
     assert_eq!(first["data"]["fileCoverage"]["scanComplete"], false);
     let cursor = first["cursor"].as_str().expect("unread part of corpus");
-    let partial = domain_result(&mcp.exchange(call_tool(
+    let partial = mcp.completed_tool_call(call_tool(
         3,
         "unica.search",
         json!({"query": "Needle", "scope": "main:Configuration", "cursor": cursor}),
-    )));
+    ));
     assert_eq!(partial["ok"], true, "{partial:#}");
     assert!(partial["summary"].as_str().unwrap().contains("partial"));
     assert_eq!(
@@ -1210,20 +1209,20 @@ fn unreadable_source_lines_keep_other_hits_and_truthful_coverage_across_pages() 
     assert!(!partial
         .to_string()
         .contains(&workspace.display().to_string()));
-    let replay = domain_result(&mcp.exchange(call_tool(
+    let replay = mcp.completed_tool_call(call_tool(
         4,
         "unica.search",
         json!({"query": "Needle", "scope": "main:Configuration", "cursor": cursor}),
-    )));
+    ));
     assert_eq!(
         replay, partial,
         "cursor replay preserves omissions and hits"
     );
-    let terminal = domain_result(&mcp.exchange(call_tool(
+    let terminal = mcp.completed_tool_call(call_tool(
         5,
         "unica.search",
         json!({"query": "Needle", "scope": "main:Configuration", "cursor": partial_cursor}),
-    )));
+    ));
     assert_eq!(terminal["ok"], true, "{terminal:#}");
     assert!(terminal["summary"].as_str().unwrap().contains("partial"));
     assert_eq!(
@@ -1275,11 +1274,11 @@ fn text_file_coverage_counts_all_uncovered_files_when_details_are_capped() {
     assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
     mcp.notify(json!({"jsonrpc":"2.0", "method":"notifications/initialized", "params":{}}));
 
-    let result = domain_result(&mcp.exchange(call_tool(
+    let result = mcp.completed_tool_call(call_tool(
         2,
         "unica.search",
         json!({"query": "Needle", "scope": "main:Configuration"}),
-    )));
+    ));
     assert_eq!(result["ok"], true, "{result:#}");
     assert_eq!(result["data"]["matches"].as_array().map(Vec::len), Some(1));
     assert_eq!(result["data"]["fileCoverage"]["scanComplete"], true);
@@ -1335,11 +1334,11 @@ fn text_search_refuses_unvisited_depth_instead_of_claiming_complete_coverage() {
     assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
     mcp.notify(json!({"jsonrpc":"2.0", "method":"notifications/initialized", "params":{}}));
 
-    let result = domain_result(&mcp.exchange(call_tool(
+    let result = mcp.completed_tool_call(call_tool(
         2,
         "unica.search",
         json!({"query": "Needle", "scope": "main:Configuration"}),
-    )));
+    ));
     assert_eq!(result["ok"], false, "{result:#}");
     assert_eq!(result["diagnostics"][0]["code"], "provider_unavailable");
     assert!(result["summary"].as_str().unwrap().contains("depth limit"));
@@ -1378,27 +1377,27 @@ fn scoped_text_search_does_not_need_a_projected_view_of_the_root() {
     assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
     mcp.notify(json!({"jsonrpc":"2.0", "method":"notifications/initialized", "params":{}}));
 
-    let view = domain_result(&mcp.exchange(call_tool(
+    let view = mcp.completed_tool_call(call_tool(
         2,
         "unica.view",
         json!({"at": "main:Configuration"}),
-    )));
+    ));
     assert_eq!(view["ok"], false, "typed root must be unreadable: {view:#}");
-    let search = domain_result(&mcp.exchange(call_tool(
+    let search = mcp.completed_tool_call(call_tool(
         3,
         "unica.search",
         json!({"query": "Needle", "scope": "main:Configuration"}),
-    )));
+    ));
     assert_eq!(search["ok"], true, "{search:#}");
     assert_eq!(search["data"]["matches"].as_array().map(Vec::len), Some(1));
     assert_eq!(search["page"]["stoppedBy"], "complete");
     std::fs::remove_file(workspace.join("Configuration.xml"))
         .expect("remove the branch owner descriptor");
-    let missing_root = domain_result(&mcp.exchange(call_tool(
+    let missing_root = mcp.completed_tool_call(call_tool(
         4,
         "unica.search",
         json!({"query": "Needle", "scope": "main:CommonModule"}),
-    )));
+    ));
     assert_eq!(missing_root["diagnostics"][0]["code"], "invalid_state");
     mcp.finish();
 }
@@ -1452,8 +1451,7 @@ fn names_search_pages_all_ranked_matches_and_rejects_changed_answers() {
         if let Some(token) = &cursor {
             arguments["cursor"] = json!(token);
         }
-        let page =
-            domain_result(&mcp.exchange(call_tool(10 + page_index, "unica.search", arguments)));
+        let page = mcp.completed_tool_call(call_tool(10 + page_index, "unica.search", arguments));
         assert_eq!(page["ok"], true, "{page:#}");
         assert_eq!(page["data"]["approximate"], false);
         assert_eq!(page["data"]["sourceCoverage"]["complete"], true);
@@ -1496,8 +1494,7 @@ fn names_search_pages_all_ranked_matches_and_rejects_changed_answers() {
         if let Some(token) = &nearest_cursor {
             arguments["cursor"] = json!(token);
         }
-        let page =
-            domain_result(&mcp.exchange(call_tool(100 + page_index, "unica.search", arguments)));
+        let page = mcp.completed_tool_call(call_tool(100 + page_index, "unica.search", arguments));
         assert_eq!(page["ok"], true, "{page:#}");
         assert_eq!(page["data"]["approximate"], true);
         nearest_seen.extend(
@@ -1516,51 +1513,51 @@ fn names_search_pages_all_ranked_matches_and_rejects_changed_answers() {
     }
     assert_eq!(nearest_seen, seen);
 
-    let default_page = domain_result(&mcp.exchange(call_tool(
+    let default_page = mcp.completed_tool_call(call_tool(
         200,
         "unica.search",
         json!({"query": "Item", "corpus": "names", "kind": "Catalog"}),
-    )));
+    ));
     assert_eq!(
         default_page["data"]["matches"].as_array().map(Vec::len),
         Some(20)
     );
     assert_eq!(default_page["page"]["stoppedBy"], "limit");
-    let max_page = domain_result(&mcp.exchange(call_tool(
+    let max_page = mcp.completed_tool_call(call_tool(
         201,
         "unica.search",
         json!({"query": "Item", "corpus": "names", "kind": "Catalog", "limit": 50}),
-    )));
+    ));
     assert_eq!(
         max_page["data"]["matches"].as_array().map(Vec::len),
         Some(50)
     );
     assert_eq!(max_page["page"]["stoppedBy"], "limit");
-    let over_limit = domain_result(&mcp.exchange(call_tool(
+    let over_limit = mcp.completed_tool_call(call_tool(
         202,
         "unica.search",
         json!({"query": "Item", "corpus": "names", "kind": "Catalog", "limit": 51}),
-    )));
+    ));
     assert_eq!(over_limit["diagnostics"][0]["code"], "bad_value");
 
-    let replay = domain_result(&mcp.exchange(call_tool(
+    let replay = mcp.completed_tool_call(call_tool(
         30,
         "unica.search",
         json!({"query": "Item", "corpus": "names", "kind": "Catalog", "limit": 17, "cursor": first_cursor}),
-    )));
+    ));
     assert_eq!(replay["ok"], true, "{replay:#}");
     assert_eq!(replay["data"]["matches"][0]["at"], "main:Catalog.Item017");
-    let wrong_kind = domain_result(&mcp.exchange(call_tool(
+    let wrong_kind = mcp.completed_tool_call(call_tool(
         31,
         "unica.search",
         json!({"query": "Item", "corpus": "names", "kind": "Document", "limit": 17, "cursor": first_cursor}),
-    )));
+    ));
     assert_eq!(wrong_kind["diagnostics"][0]["code"], "invalid_cursor");
-    let wrong_limit = domain_result(&mcp.exchange(call_tool(
+    let wrong_limit = mcp.completed_tool_call(call_tool(
         32,
         "unica.search",
         json!({"query": "Item", "corpus": "names", "kind": "Catalog", "limit": 18, "cursor": first_cursor}),
-    )));
+    ));
     assert_eq!(wrong_limit["diagnostics"][0]["code"], "invalid_cursor");
 
     std::fs::write(
@@ -1568,11 +1565,11 @@ fn names_search_pages_all_ranked_matches_and_rejects_changed_answers() {
         r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>Item060Changed</Name></Properties></Catalog></MetaDataObject>"#,
     )
     .expect("change one ranked name");
-    let stale = domain_result(&mcp.exchange(call_tool(
+    let stale = mcp.completed_tool_call(call_tool(
         33,
         "unica.search",
         json!({"query": "Item", "corpus": "names", "kind": "Catalog", "limit": 17, "cursor": first_cursor}),
-    )));
+    ));
     assert_eq!(stale["diagnostics"][0]["code"], "stale_cursor", "{stale:#}");
     mcp.finish();
 }

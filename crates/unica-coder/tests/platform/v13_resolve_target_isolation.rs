@@ -57,21 +57,21 @@ fn resolve_path_checks_only_target_and_necessary_owner_on_public_mcp() {
     assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
     mcp.notify(json!({"jsonrpc":"2.0", "method":"notifications/initialized", "params":{}}));
 
-    let resolved = domain_result(&mcp.exchange(call_tool(
+    let resolved = mcp.completed_tool_call(call_tool(
         2,
         "unica.resolve",
         json!({"path": "Catalogs/Visible/Forms/Form.xml"}),
-    )));
+    ));
     assert_eq!(resolved["ok"], true, "{resolved:#}");
     assert_eq!(resolved["data"]["at"], "main:Catalog.Visible.Form.Form");
 
     let absolute_form = std::fs::canonicalize(workspace.join("Catalogs/Visible/Forms/Form.xml"))
         .expect("absolute form path");
-    let absolute_resolved = domain_result(&mcp.exchange(call_tool(
+    let absolute_resolved = mcp.completed_tool_call(call_tool(
         5,
         "unica.resolve",
         json!({"path": absolute_form}),
-    )));
+    ));
     assert_eq!(absolute_resolved["ok"], true, "{absolute_resolved:#}");
     assert_eq!(
         absolute_resolved["data"]["at"],
@@ -79,11 +79,11 @@ fn resolve_path_checks_only_target_and_necessary_owner_on_public_mcp() {
     );
 
     let absolute_module = std::fs::canonicalize(&module).expect("absolute module path");
-    let alias = domain_result(&mcp.exchange(call_tool(
+    let alias = mcp.completed_tool_call(call_tool(
         6,
         "unica.resolve",
         json!({"path": absolute_module}),
-    )));
+    ));
     assert_eq!(alias["ok"], true, "{alias:#}");
     assert_eq!(alias["data"]["at"], "main:CommonModule.Main");
     assert_eq!(alias["data"]["path"], "CommonModules/Main/Ext/Module.bsl");
@@ -91,15 +91,15 @@ fn resolve_path_checks_only_target_and_necessary_owner_on_public_mcp() {
     let outside = tempfile::tempdir().expect("outside path prefix");
     let false_path = outside.path().join("CommonModules/Main/Ext/Module.bsl");
     let false_match =
-        domain_result(&mcp.exchange(call_tool(8, "unica.resolve", json!({"path": false_path}))));
+        mcp.completed_tool_call(call_tool(8, "unica.resolve", json!({"path": false_path})));
     assert_eq!(false_match["ok"], false, "{false_match:#}");
     assert_eq!(false_match["diagnostics"][0]["code"], "not_found");
 
-    let names = domain_result(&mcp.exchange(call_tool(
+    let names = mcp.completed_tool_call(call_tool(
         3,
         "unica.search",
         json!({"query": "Visible", "corpus": "names"}),
-    )));
+    ));
     assert_eq!(
         names["ok"], false,
         "full name search must expose the fault: {names:#}"
@@ -109,11 +109,11 @@ fn resolve_path_checks_only_target_and_necessary_owner_on_public_mcp() {
     let physical_owner = workspace.join("physical-visible.xml");
     std::fs::rename(&owner, &physical_owner).expect("move the required owner descriptor");
     symlink(&physical_owner, &owner).expect("link the required owner descriptor");
-    let refused = domain_result(&mcp.exchange(call_tool(
+    let refused = mcp.completed_tool_call(call_tool(
         4,
         "unica.resolve",
         json!({"path": "Catalogs/Visible/Forms/Form.xml"}),
-    )));
+    ));
     assert_eq!(refused["ok"], false, "{refused:#}");
     assert_eq!(refused["diagnostics"][0]["code"], "invalid_source");
     mcp.finish();
@@ -182,27 +182,27 @@ fn resolve_relative_source_prefix_skips_foreign_linked_collections_on_public_mcp
     assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
     mcp.notify(json!({"jsonrpc":"2.0", "method":"notifications/initialized", "params":{}}));
 
-    let catalog = domain_result(&mcp.exchange(call_tool(
+    let catalog = mcp.completed_tool_call(call_tool(
         6,
         "unica.resolve",
         json!({"path": "src/extension/Catalogs/Visible.xml"}),
-    )));
+    ));
     assert_eq!(catalog["ok"], true, "{catalog:#}");
     assert_eq!(catalog["data"]["at"], "extension:Catalog.Visible");
 
-    let form = domain_result(&mcp.exchange(call_tool(
+    let form = mcp.completed_tool_call(call_tool(
         2,
         "unica.resolve",
         json!({"path": "src/extension/Catalogs/Visible/Forms/Form.xml"}),
-    )));
+    ));
     assert_eq!(form["ok"], true, "{form:#}");
     assert_eq!(form["data"]["at"], "extension:Catalog.Visible.Form.Form");
 
-    let module = domain_result(&mcp.exchange(call_tool(
+    let module = mcp.completed_tool_call(call_tool(
         3,
         "unica.resolve",
         json!({"path": "src/extension/CommonModules/Main/Ext/Module.bsl"}),
-    )));
+    ));
     assert_eq!(module["ok"], true, "{module:#}");
     assert_eq!(module["data"]["at"], "extension:CommonModule.Main");
     assert_eq!(module["data"]["path"], "CommonModules/Main/Ext/Module.bsl");
@@ -210,19 +210,19 @@ fn resolve_relative_source_prefix_skips_foreign_linked_collections_on_public_mcp
     let absolute_module =
         std::fs::canonicalize(extension.join("CommonModules/Main/Ext/Module.bsl"))
             .expect("absolute extension module path");
-    let absolute = domain_result(&mcp.exchange(call_tool(
+    let absolute = mcp.completed_tool_call(call_tool(
         5,
         "unica.resolve",
         json!({"path": absolute_module}),
-    )));
+    ));
     assert_eq!(absolute["ok"], true, "{absolute:#}");
     assert_eq!(absolute["data"]["at"], "extension:CommonModule.Main");
 
-    let ambiguous = domain_result(&mcp.exchange(call_tool(
+    let ambiguous = mcp.completed_tool_call(call_tool(
         4,
         "unica.resolve",
         json!({"path": "Catalogs/Visible/Forms/Form.xml"}),
-    )));
+    ));
     assert_eq!(ambiguous["ok"], false, "{ambiguous:#}");
     assert_eq!(ambiguous["diagnostics"][0]["code"], "invalid_source");
     mcp.finish();
@@ -269,19 +269,19 @@ fn resolve_path_does_not_inherit_the_search_source_set_limit() {
     assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
     mcp.notify(json!({"jsonrpc":"2.0", "method":"notifications/initialized", "params":{}}));
 
-    let search = domain_result(&mcp.exchange(call_tool(
+    let search = mcp.completed_tool_call(call_tool(
         2,
         "unica.search",
         json!({"query": "Requested", "corpus": "names"}),
-    )));
+    ));
     assert_eq!(search["ok"], false, "{search:#}");
     assert_eq!(search["diagnostics"][0]["code"], "provider_limit_exceeded");
 
-    let resolved = domain_result(&mcp.exchange(call_tool(
+    let resolved = mcp.completed_tool_call(call_tool(
         3,
         "unica.resolve",
         json!({"path": std::fs::canonicalize(&target).expect("absolute admitted target")}),
-    )));
+    ));
     assert_eq!(resolved["ok"], true, "{resolved:#}");
     assert_eq!(resolved["data"]["at"], "source64:Catalog.Requested");
     mcp.finish();
@@ -348,16 +348,15 @@ fn resolve_absolute_xml_ignores_a_broken_foreign_target_and_reports_ambiguous_al
 
     let canonical_first = std::fs::canonicalize(&first).expect("retained first source root");
     let absolute = canonical_first.join("Catalogs/X.xml");
-    let catalog =
-        domain_result(&mcp.exchange(call_tool(2, "unica.resolve", json!({"path": absolute}))));
+    let catalog = mcp.completed_tool_call(call_tool(2, "unica.resolve", json!({"path": absolute})));
     assert_eq!(catalog["ok"], true, "{catalog:#}");
     assert_eq!(catalog["data"]["at"], "main:Catalog.X");
 
-    let requested_broken = domain_result(&mcp.exchange(call_tool(
+    let requested_broken = mcp.completed_tool_call(call_tool(
         7,
         "unica.resolve",
         json!({"path": std::fs::canonicalize(&second).unwrap().join("Catalogs/X.xml")}),
-    )));
+    ));
     assert_eq!(requested_broken["ok"], false, "{requested_broken:#}");
     assert_eq!(requested_broken["diagnostics"][0]["code"], "invalid_source");
 
@@ -368,53 +367,53 @@ fn resolve_absolute_xml_ignores_a_broken_foreign_target_and_reports_ambiguous_al
         r#"<MetaDataObject><Catalog><Properties><Name>X</Name></Properties></Catalog></MetaDataObject>"#,
     )
     .expect("outside catalog descriptor");
-    let outside_result = domain_result(&mcp.exchange(call_tool(
+    let outside_result = mcp.completed_tool_call(call_tool(
         8,
         "unica.resolve",
         json!({"path": std::fs::canonicalize(&outside).unwrap()}),
-    )));
+    ));
     assert_eq!(outside_result["diagnostics"][0]["code"], "not_found");
 
-    let missing_collection_member = domain_result(&mcp.exchange(call_tool(
+    let missing_collection_member = mcp.completed_tool_call(call_tool(
         5,
         "unica.resolve",
         json!({"path": "src/A/Catalogs/Configuration.xml"}),
-    )));
+    ));
     assert_eq!(
         missing_collection_member["diagnostics"][0]["code"], "not_found",
         "{missing_collection_member:#}"
     );
-    let missing_absolute = domain_result(&mcp.exchange(call_tool(
+    let missing_absolute = mcp.completed_tool_call(call_tool(
         6,
         "unica.resolve",
         json!({"path": canonical_first.join("Catalogs/Configuration.xml")}),
-    )));
+    ));
     assert_eq!(
         missing_absolute["diagnostics"][0]["code"], "not_found",
         "{missing_absolute:#}"
     );
 
-    let invalid_name = domain_result(&mcp.exchange(call_tool(
+    let invalid_name = mcp.completed_tool_call(call_tool(
         3,
         "unica.resolve",
         json!({"path": canonical_first.join("Catalogs/Bad.Name.xml")}),
-    )));
+    ));
     assert_eq!(invalid_name["ok"], false, "{invalid_name:#}");
     assert_eq!(invalid_name["diagnostics"][0]["code"], "invalid_source");
 
-    let ambiguous_alias = domain_result(&mcp.exchange(call_tool(
+    let ambiguous_alias = mcp.completed_tool_call(call_tool(
         4,
         "unica.resolve",
         json!({"path": "CommonModules/Main/Ext/Module.bsl"}),
-    )));
+    ));
     assert_eq!(ambiguous_alias["ok"], false, "{ambiguous_alias:#}");
     assert_eq!(ambiguous_alias["diagnostics"][0]["code"], "bad_value");
 
-    let absolute_module = domain_result(&mcp.exchange(call_tool(
+    let absolute_module = mcp.completed_tool_call(call_tool(
         9,
         "unica.resolve",
         json!({"path": canonical_first.join("CommonModules/Main/Ext/Module.bsl")}),
-    )));
+    ));
     assert_eq!(absolute_module["ok"], true, "{absolute_module:#}");
     assert_eq!(absolute_module["data"]["at"], "main:CommonModule.Main");
     mcp.finish();
@@ -453,8 +452,7 @@ fn resolve_absolute_path_uses_the_deepest_admitted_source_root() {
     assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
     mcp.notify(json!({"jsonrpc":"2.0", "method":"notifications/initialized", "params":{}}));
     let absolute = std::fs::canonicalize(nested.join("X.xml")).expect("absolute nested target");
-    let result =
-        domain_result(&mcp.exchange(call_tool(2, "unica.resolve", json!({"path": absolute}))));
+    let result = mcp.completed_tool_call(call_tool(2, "unica.resolve", json!({"path": absolute})));
     assert_eq!(result["ok"], false, "{result:#}");
     assert_eq!(result["diagnostics"][0]["code"], "not_found");
     mcp.finish();
@@ -509,22 +507,22 @@ fn resolve_path_succeeds_above_the_full_directory_byte_budget() {
     assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
     mcp.notify(json!({"jsonrpc":"2.0", "method":"notifications/initialized", "params":{}}));
 
-    let full_search = domain_result(&mcp.exchange(call_tool(
+    let full_search = mcp.completed_tool_call(call_tool(
         2,
         "unica.search",
         json!({"query": "Requested", "corpus": "names"}),
-    )));
+    ));
     assert_eq!(full_search["ok"], false, "{full_search:#}");
     assert_eq!(
         full_search["diagnostics"][0]["code"], "provider_limit_exceeded",
         "{full_search:#}"
     );
 
-    let resolved = domain_result(&mcp.exchange(call_tool(
+    let resolved = mcp.completed_tool_call(call_tool(
         3,
         "unica.resolve",
         json!({"path": "Catalogs/Requested.xml"}),
-    )));
+    ));
     assert_eq!(resolved["ok"], true, "{resolved:#}");
     assert_eq!(resolved["data"]["at"], "main:Catalog.Requested");
     mcp.finish();
