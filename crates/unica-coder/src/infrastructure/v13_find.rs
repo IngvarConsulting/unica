@@ -1,4 +1,6 @@
-use crate::application::v13::find::{FindDocument, FindFact, FindFactKind, FindIndex};
+use crate::application::v13::find::{
+    normalize_layout_path, FindDocument, FindFact, FindFactKind, FindIndex, FindPathAlias,
+};
 use crate::domain::address::{NodeKind, QualifiedAddress};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
@@ -6,9 +8,10 @@ use crate::domain::project_sources::SourceSetKind;
 use crate::domain::refusal::{RefusalCode, RefusalDetail};
 use crate::infrastructure::metadata_kinds::metadata_kind_by_directory;
 use crate::infrastructure::platform::filesystem::{
-    RetainedChildCapability, RetainedDirectoryCapability, RetainedRegularFileCapability,
+    FileIdentity, RetainedChildCapability, RetainedDirectoryCapability,
+    RetainedRegularFileCapability,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -150,6 +153,7 @@ struct DirectoryBuild {
     documents: Vec<FindDocument>,
     fact_bytes: usize,
     omissions: FindOmissions,
+    include_module_aliases: bool,
 }
 
 impl DirectoryBuild {
@@ -217,7 +221,27 @@ impl WorkspaceFindDirectoryBuilder {
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> Result<FindIndex, FindBuildError> {
-        let outcome = self.build_for_search(sources, deadline, cancellation)?;
+        self.build_exact(sources, deadline, cancellation, false)
+    }
+
+    pub(crate) fn build_for_path(
+        &self,
+        sources: &[LayoutFindSource<'_>],
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<FindIndex, FindBuildError> {
+        self.build_exact(sources, deadline, cancellation, true)
+    }
+
+    fn build_exact(
+        &self,
+        sources: &[LayoutFindSource<'_>],
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+        include_module_aliases: bool,
+    ) -> Result<FindIndex, FindBuildError> {
+        let outcome =
+            self.build_internal(sources, deadline, cancellation, include_module_aliases)?;
         if outcome.omissions.total != 0 {
             return Err(FindBuildError::with_detail(
                 RefusalDetail::SourceUnreadable,
@@ -236,6 +260,16 @@ impl WorkspaceFindDirectoryBuilder {
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> Result<FindBuildOutcome, FindBuildError> {
+        self.build_internal(sources, deadline, cancellation, false)
+    }
+
+    fn build_internal(
+        &self,
+        sources: &[LayoutFindSource<'_>],
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+        include_module_aliases: bool,
+    ) -> Result<FindBuildOutcome, FindBuildError> {
         if sources.len() > MAX_SOURCE_SETS {
             return Err(FindBuildError::new(
                 RefusalCode::ProviderLimitExceeded,
@@ -246,6 +280,7 @@ impl WorkspaceFindDirectoryBuilder {
             documents: Vec::new(),
             fact_bytes: 0,
             omissions: FindOmissions::default(),
+            include_module_aliases,
         };
         for source in sources {
             find_checkpoint(deadline, cancellation)?;
@@ -273,35 +308,145 @@ impl WorkspaceFindDirectoryBuilder {
                 "find source-set count exceeds the bounded workspace limit",
             ));
         }
-        // FindIndex::locate_path accepts the stored layout path as a
-        // segment-aligned suffix of an absolute or workspace-relative query.
-        let normalized = path.trim().replace('\\', "/").to_lowercase();
+        let normalized = normalize_layout_path(path);
         let parts = normalized.split('/').collect::<Vec<_>>();
+        let absolute_query = layout_path_is_absolute(path, &normalized);
+        // Bind a path carrying a retained source-root prefix once for the
+        // whole lookup. Recomputing the owner at each shorter suffix would
+        // let an unrelated source supply a fallback after the target misses.
+        let mut absolute_witnesses = Vec::with_capacity(sources.len());
+        let mut source_matches = Vec::with_capacity(sources.len());
+        for source in sources {
+            if absolute_query {
+                let witness = absolute_query_witness(source, path, deadline, cancellation)?;
+                source_matches.push(witness.is_some());
+                absolute_witnesses.push(witness);
+            } else {
+                source_matches.push((1..=parts.len().min(4)).any(|depth| {
+                    let tail = parts[parts.len() - depth..].join("/");
+                    normalized != tail && source_path_ends_with_query(source, &normalized, &tail)
+                }));
+                absolute_witnesses.push(None);
+            }
+        }
+        let source_is_bound = source_matches.iter().any(|matched| *matched);
+        if absolute_query && !source_is_bound {
+            find_checkpoint(deadline, cancellation)?;
+            return Ok(None);
+        }
         // The full index chooses the longest stored path. Probe equal-length
         // candidates in every source set before trying shorter fallbacks, so
         // a damaged, unrelated fallback cannot block an exact target.
         for depth in [4, 3, 2, 1] {
+            let tail = parts
+                .len()
+                .checked_sub(depth)
+                .map(|start| parts[start..].join("/"));
             let mut located = None;
-            for source in sources {
+            let mut ambiguous_alias = false;
+            for ((source, source_matches), witness) in
+                sources.iter().zip(&source_matches).zip(&absolute_witnesses)
+            {
                 find_checkpoint(deadline, cancellation)?;
+                if source_is_bound && !source_matches {
+                    continue;
+                }
+                let Some(tail) = tail.as_deref() else {
+                    continue;
+                };
+                if absolute_query
+                    && witness
+                        .as_ref()
+                        .is_none_or(|witness| witness.relative.components().count() != depth)
+                {
+                    continue;
+                }
+                // A path with a source prefix names this exact layout entry.
+                // A missing collection member must not fall through to an
+                // unrelated root descriptor with the same final filename.
+                if (source_is_bound || !absolute_query)
+                    && !source_path_matches_query(source, &normalized, tail, absolute_query)
+                {
+                    continue;
+                }
+                if depth == 4
+                    && tail.starts_with("commonmodules/")
+                    && tail.ends_with("/ext/module.bsl")
+                    && absolute_query
+                    && !common_module_query_matches(source, path, tail)
+                {
+                    continue;
+                }
                 source
                     .root
                     .validate_named_identity()
                     .map_err(|_| unsafe_layout_entry())?;
                 self.locate_path_in_source(
                     source,
+                    path,
                     &parts,
                     depth,
                     deadline,
                     cancellation,
                     &mut located,
+                    &mut ambiguous_alias,
                 )?;
                 source
                     .root
                     .validate_named_identity()
                     .map_err(|_| unsafe_layout_entry())?;
             }
+            // A shared relative alias names two real owners; report the
+            // ambiguity instead of claiming that the module is absent.
+            if ambiguous_alias {
+                return Err(FindBuildError::new(
+                    RefusalCode::BadValue,
+                    "resolve path matches multiple equally specific objects; use their logical address",
+                ));
+            }
             if located.is_some() {
+                // The exact physical target must still have the identity that
+                // selected this source before its descriptor was inspected.
+                if absolute_query {
+                    for ((source, matched), witness) in
+                        sources.iter().zip(&source_matches).zip(&absolute_witnesses)
+                    {
+                        if *matched
+                            && absolute_query_witness(source, path, deadline, cancellation)?
+                                != *witness
+                        {
+                            return Err(FindBuildError::new(
+                                RefusalCode::ConcurrentChange,
+                                "resolve target changed during path lookup",
+                            ));
+                        }
+                    }
+                    let found = located.as_ref().ok_or_else(unsafe_layout_entry)?;
+                    let address =
+                        QualifiedAddress::parse(found.at()).map_err(|_| unsafe_layout_entry())?;
+                    let Some((source, witness)) = sources
+                        .iter()
+                        .zip(&absolute_witnesses)
+                        .find(|(source, _)| source.name == address.source_set())
+                    else {
+                        return Err(unsafe_layout_entry());
+                    };
+                    let Some(witness) = witness else {
+                        return Err(unsafe_layout_entry());
+                    };
+                    let Some(placed_path) = found.placed_path() else {
+                        return Err(unsafe_layout_entry());
+                    };
+                    if !absolute_query_matches_placement(
+                        source,
+                        witness,
+                        placed_path,
+                        deadline,
+                        cancellation,
+                    )? {
+                        return Ok(None);
+                    }
+                }
                 find_checkpoint(deadline, cancellation)?;
                 return Ok(located);
             }
@@ -310,14 +455,17 @@ impl WorkspaceFindDirectoryBuilder {
         Ok(None)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn locate_path_in_source(
         &self,
         source: &LayoutFindSource<'_>,
+        query: &str,
         parts: &[&str],
         depth: usize,
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
         located: &mut Option<FindDocument>,
+        ambiguous_alias: &mut bool,
     ) -> Result<(), FindBuildError> {
         if matches!(
             source.kind,
@@ -368,7 +516,7 @@ impl WorkspaceFindDirectoryBuilder {
                             stem,
                             synonym.as_deref(),
                             &relative,
-                        ),
+                        )?,
                     )?;
                 }
             }
@@ -415,7 +563,7 @@ impl WorkspaceFindDirectoryBuilder {
                         &name,
                         synonym.as_deref(),
                         relative,
-                    ),
+                    )?,
                 )?;
             }
         }
@@ -464,13 +612,22 @@ impl WorkspaceFindDirectoryBuilder {
                             stem,
                             synonym.as_deref(),
                             &relative,
-                        ),
+                        )?,
                     )?;
                 }
             }
         }
         if depth == 4 && parts.len() >= 4 {
             let tail = &parts[parts.len() - 4..];
+            self.locate_common_module_file(
+                source,
+                query,
+                tail,
+                deadline,
+                cancellation,
+                located,
+                ambiguous_alias,
+            )?;
             for directory in matching_names(source.root, tail[0], deadline, cancellation)? {
                 let Some(directory_name) = directory.to_str() else {
                     continue;
@@ -493,6 +650,122 @@ impl WorkspaceFindDirectoryBuilder {
                     cancellation,
                     located,
                 )?;
+            }
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn locate_common_module_file(
+        &self,
+        source: &LayoutFindSource<'_>,
+        query: &str,
+        tail: &[&str],
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+        located: &mut Option<FindDocument>,
+        ambiguous_alias: &mut bool,
+    ) -> Result<(), FindBuildError> {
+        let [collection_query, owner_query, "ext", "module.bsl"] = tail else {
+            return Ok(());
+        };
+        // The alias denotes a concrete module path. Check its source prefix
+        // before even enumerating a foreign CommonModules collection.
+        if !common_module_query_matches(source, query, &tail.join("/")) {
+            return Ok(());
+        }
+        for collection_name in
+            matching_names(source.root, collection_query, deadline, cancellation)?
+        {
+            let Some(collection_text) = collection_name.to_str() else {
+                continue;
+            };
+            if metadata_kind_by_directory(collection_text).map(|layout| layout.tag)
+                != Some("CommonModule")
+            {
+                continue;
+            }
+            let collection = match retain_enumerated_child(
+                source.root,
+                &collection_name,
+                deadline,
+                cancellation,
+            )? {
+                RetainedChildCapability::Directory(collection) => collection,
+                _ => return Err(unsafe_layout_entry()),
+            };
+            for owner_name in matching_names(&collection, owner_query, deadline, cancellation)? {
+                let Some(owner_text) = owner_name.to_str() else {
+                    continue;
+                };
+                if owner_text.ends_with(".xml") {
+                    continue;
+                }
+                let owner_relative = PathBuf::from(collection_text).join(owner_text);
+                let expected_module_relative = path_text(&owner_relative.join("Ext/Module.bsl"));
+                if !common_module_query_matches(source, query, &expected_module_relative) {
+                    continue;
+                }
+                let owner_root = match retain_enumerated_child(
+                    &collection,
+                    &owner_name,
+                    deadline,
+                    cancellation,
+                )? {
+                    RetainedChildCapability::Directory(owner_root) => owner_root,
+                    _ => return Err(unsafe_layout_entry()),
+                };
+                let Some(module_relative) =
+                    common_module_path(&owner_root, &owner_relative, deadline, cancellation)?
+                else {
+                    continue;
+                };
+                let owner_descriptor = format!("{owner_text}.xml");
+                let Some(owner_file) = retain_optional_child(
+                    &collection,
+                    OsStr::new(&owner_descriptor),
+                    deadline,
+                    cancellation,
+                )?
+                else {
+                    continue;
+                };
+                let RetainedChildCapability::RegularFile(owner_file) = owner_file else {
+                    return Err(unsafe_layout_entry());
+                };
+                let descriptor_relative = PathBuf::from(collection_text).join(&owner_descriptor);
+                let (_, synonym) = require_target_identity(self.read_target_identity(
+                    &owner_file,
+                    &descriptor_relative,
+                    source,
+                    "CommonModule",
+                    Some(owner_text),
+                    deadline,
+                    cancellation,
+                )?)?;
+                owner_root
+                    .validate_named_identity()
+                    .map_err(|_| unsafe_layout_entry())?;
+                collection
+                    .validate_named_identity()
+                    .map_err(|_| unsafe_layout_entry())?;
+                let candidate = find_document(
+                    source,
+                    &format!("{}:CommonModule.{owner_text}", source.name),
+                    "CommonModule",
+                    owner_text,
+                    synonym.as_deref(),
+                    &descriptor_relative,
+                )?
+                .with_path(module_relative);
+                if located
+                    .as_ref()
+                    .is_some_and(|previous| previous.at() != candidate.at())
+                {
+                    *ambiguous_alias = true;
+                } else if !*ambiguous_alias {
+                    add_path_match(located, candidate)?;
+                }
             }
         }
         Ok(())
@@ -624,7 +897,7 @@ impl WorkspaceFindDirectoryBuilder {
                             nested_name,
                             synonym.as_deref(),
                             &relative,
-                        ),
+                        )?,
                     )?;
                 }
             }
@@ -647,6 +920,7 @@ impl WorkspaceFindDirectoryBuilder {
             documents: Vec::new(),
             fact_bytes: 0,
             omissions: FindOmissions::default(),
+            include_module_aliases: false,
         };
         let head = self.read_descriptor_head(
             file,
@@ -748,7 +1022,7 @@ impl WorkspaceFindDirectoryBuilder {
                     RetainedChildCapability::Directory(collection) => collection,
                     _ => return Err(unsafe_layout_entry()),
                 };
-            let mut proved_owners = HashSet::new();
+            let mut proved_owners = HashMap::new();
             let mut owner_directories = Vec::new();
             let mut unsafe_owner_directories = HashSet::new();
             for owner in immediate_names(
@@ -796,6 +1070,7 @@ impl WorkspaceFindDirectoryBuilder {
                             continue;
                         }
                         let synonym = descriptor_identity(&head).1;
+                        let document_index = build.documents.len();
                         self.push(
                             build,
                             source,
@@ -805,7 +1080,10 @@ impl WorkspaceFindDirectoryBuilder {
                             synonym.as_deref(),
                             &relative,
                         )?;
-                        proved_owners.insert(stem.to_string());
+                        proved_owners.insert(
+                            stem.to_string(),
+                            (build.documents.len() > document_index).then_some(document_index),
+                        );
                     }
                     RetainedChildCapability::Directory(owner_root) => {
                         if owner_name.ends_with(".xml") {
@@ -825,13 +1103,13 @@ impl WorkspaceFindDirectoryBuilder {
             }
             if unsafe_owner_directories
                 .iter()
-                .any(|name| proved_owners.contains(name))
+                .any(|name| proved_owners.contains_key(name))
             {
                 return Err(unsafe_layout_entry());
             }
             for (owner_name, original_identity) in owner_directories {
                 find_checkpoint(deadline, cancellation)?;
-                if proved_owners.contains(&owner_name) {
+                if let Some(document_index) = proved_owners.get(&owner_name) {
                     let owner_root = match retain_enumerated_child(
                         &collection,
                         OsStr::new(&owner_name),
@@ -845,6 +1123,44 @@ impl WorkspaceFindDirectoryBuilder {
                         }
                         _ => return Err(unsafe_layout_entry()),
                     };
+                    if build.include_module_aliases && layout.tag == "CommonModule" {
+                        if let Some(document_index) = document_index {
+                            let alias = match common_module_path(
+                                &owner_root,
+                                &PathBuf::from(directory).join(&owner_name),
+                                deadline,
+                                cancellation,
+                            ) {
+                                Ok(alias) => alias,
+                                Err(error) if error.is_local_unreadable() => {
+                                    find_checkpoint(deadline, cancellation)?;
+                                    build.record_omission(source.name, "module_unreadable");
+                                    None
+                                }
+                                Err(error) => return Err(error),
+                            };
+                            let alias = alias.map(|relative| FindPathAlias {
+                                absolute: source
+                                    .root
+                                    .path()
+                                    .join(&relative)
+                                    .to_string_lossy()
+                                    .into_owned(),
+                                relative,
+                            });
+                            let next_total = build.fact_bytes.saturating_add(
+                                alias.as_ref().map_or(0, FindPathAlias::estimated_bytes),
+                            );
+                            if next_total > self.max_total_fact_bytes {
+                                return Err(FindBuildError::new(
+                                    RefusalCode::ProviderLimitExceeded,
+                                    "find directory exceeds the bounded workspace byte budget",
+                                ));
+                            }
+                            build.fact_bytes = next_total;
+                            build.documents[*document_index].set_path_alias(alias);
+                        }
+                    }
                     self.add_nested_families(
                         source,
                         build,
@@ -1177,12 +1493,15 @@ fn find_document(
     name: &str,
     synonym: Option<&str>,
     relative: &Path,
-) -> Option<FindDocument> {
+) -> Result<FindDocument, FindBuildError> {
     if QualifiedAddress::parse(at)
         .ok()
         .is_none_or(|address| address.source_set() != source.name)
     {
-        return None;
+        return Err(FindBuildError::new(
+            RefusalCode::InvalidSource,
+            "resolve target has no valid logical address",
+        ));
     }
     let path = path_text(relative);
     let mut facts = vec![
@@ -1193,16 +1512,13 @@ fn find_document(
         facts.push(FindFact::new(FindFactKind::Synonym, synonym));
     }
     let title = synonym.filter(|value| !value.is_empty()).unwrap_or(name);
-    Some(FindDocument::new(at, kind, title, facts).with_path(path))
+    Ok(FindDocument::new(at, kind, title, facts).with_path(path))
 }
 
 fn add_path_match(
     located: &mut Option<FindDocument>,
-    candidate: Option<FindDocument>,
+    candidate: FindDocument,
 ) -> Result<(), FindBuildError> {
-    let Some(candidate) = candidate else {
-        return Ok(());
-    };
     if let Some(previous) = located {
         let previous_len = previous.placed_path().map_or(0, str::len);
         let candidate_len = candidate.placed_path().map_or(0, str::len);
@@ -1221,6 +1537,225 @@ fn add_path_match(
         *located = Some(candidate);
     }
     Ok(())
+}
+
+fn common_module_path(
+    owner: &RetainedDirectoryCapability,
+    relative: &Path,
+    deadline: ProviderDeadline,
+    cancellation: &CancellationToken,
+) -> Result<Option<String>, FindBuildError> {
+    let ext = match retain_optional_child(owner, OsStr::new("Ext"), deadline, cancellation)? {
+        Some(RetainedChildCapability::Directory(ext)) => ext,
+        None => return Ok(None),
+        Some(_) => return Err(unsafe_layout_entry()),
+    };
+    match retain_optional_child(&ext, OsStr::new("Module.bsl"), deadline, cancellation)? {
+        Some(RetainedChildCapability::RegularFile(file)) => {
+            file.validate_named_identity()
+                .map_err(|_| unsafe_layout_entry())?;
+            ext.validate_named_identity()
+                .map_err(|_| unsafe_layout_entry())?;
+            owner
+                .validate_named_identity()
+                .map_err(|_| unsafe_layout_entry())?;
+            find_checkpoint(deadline, cancellation)?;
+            Ok(Some(path_text(&relative.join("Ext/Module.bsl"))))
+        }
+        None => Ok(None),
+        Some(_) => Err(unsafe_layout_entry()),
+    }
+}
+
+fn common_module_query_matches(source: &LayoutFindSource<'_>, query: &str, relative: &str) -> bool {
+    let query_normalized = normalize_layout_path(query);
+    let absolute = normalize_layout_path(&source.root.path().join(relative).to_string_lossy());
+    if query_normalized == absolute {
+        return true;
+    }
+    if layout_path_is_absolute(query, &query_normalized) {
+        return false;
+    }
+    query_normalized == normalize_layout_path(relative)
+        || absolute
+            .strip_suffix(&query_normalized)
+            .is_some_and(|prefix| prefix.ends_with('/'))
+}
+
+fn layout_path_is_absolute(query: &str, normalized: &str) -> bool {
+    let bytes = normalized.as_bytes();
+    Path::new(query).is_absolute()
+        || normalized.starts_with("//")
+        || (bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && bytes[2] == b'/')
+}
+
+fn source_path_ends_with_query(source: &LayoutFindSource<'_>, query: &str, relative: &str) -> bool {
+    let candidate = normalize_layout_path(&source.root.path().join(relative).to_string_lossy());
+    candidate == query
+        || candidate
+            .strip_suffix(query)
+            .is_some_and(|prefix| prefix.ends_with('/'))
+}
+
+fn source_path_matches_query(
+    source: &LayoutFindSource<'_>,
+    query: &str,
+    relative: &str,
+    absolute: bool,
+) -> bool {
+    if absolute {
+        normalize_layout_path(&source.root.path().join(relative).to_string_lossy()) == query
+    } else {
+        query == relative || source_path_ends_with_query(source, query, relative)
+    }
+}
+
+fn normalize_physical_path(path: &str) -> String {
+    let normalized = path.replace('\\', "/");
+    let normalized = if normalized
+        .get(..8)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("//?/unc/"))
+    {
+        format!("//{}", &normalized[8..])
+    } else {
+        normalized
+            .strip_prefix("//?/")
+            .unwrap_or(&normalized)
+            .to_string()
+    };
+    if std::path::MAIN_SEPARATOR == '\\' {
+        normalized.to_lowercase()
+    } else {
+        normalized
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AbsoluteTargetWitness {
+    identity: FileIdentity,
+    relative: PathBuf,
+}
+
+/// An absolute query selects a source only when its spelled root opens to the
+/// retained root and its exact target can be traversed without following a
+/// link. Logical lookup may fold case; physical source identity may not.
+fn absolute_query_witness(
+    source: &LayoutFindSource<'_>,
+    query: &str,
+    deadline: ProviderDeadline,
+    cancellation: &CancellationToken,
+) -> Result<Option<AbsoluteTargetWitness>, FindBuildError> {
+    let Some(root) = source.root.path().to_str() else {
+        return Ok(None);
+    };
+    let root = normalize_physical_path(root);
+    let query_path = Path::new(query);
+    for ancestor in query_path.ancestors() {
+        find_checkpoint(deadline, cancellation)?;
+        if !ancestor
+            .to_str()
+            .is_some_and(|path| normalize_physical_path(path) == root)
+        {
+            continue;
+        }
+        let reopened = match RetainedDirectoryCapability::open(ancestor) {
+            Ok(reopened) => reopened,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(child_read_error(error)),
+        };
+        if reopened.identity() != source.root.identity() {
+            return Ok(None);
+        }
+        let relative = query_path
+            .strip_prefix(ancestor)
+            .map_err(|_| unsafe_layout_entry())?;
+        let depth = relative.components().count();
+        if !(1..=4).contains(&depth) {
+            return Ok(None);
+        }
+        let mut current = source.root.clone();
+        for (index, component) in relative.components().enumerate() {
+            let std::path::Component::Normal(name) = component else {
+                return Ok(None);
+            };
+            let child = retain_optional_child(&current, name, deadline, cancellation)?;
+            if index + 1 == depth {
+                let identity = match child {
+                    Some(RetainedChildCapability::Directory(child)) => {
+                        child
+                            .validate_named_identity()
+                            .map_err(|_| unsafe_layout_entry())?;
+                        child.identity()
+                    }
+                    Some(RetainedChildCapability::RegularFile(child)) => {
+                        child
+                            .validate_named_identity()
+                            .map_err(|_| unsafe_layout_entry())?;
+                        child.identity()
+                    }
+                    None => return Ok(None),
+                    Some(_) => return Err(unsafe_layout_entry()),
+                };
+                return Ok(Some(AbsoluteTargetWitness {
+                    identity,
+                    relative: relative.to_path_buf(),
+                }));
+            }
+            current = match child {
+                Some(RetainedChildCapability::Directory(child)) => child,
+                None => return Ok(None),
+                Some(_) => return Err(unsafe_layout_entry()),
+            };
+        }
+    }
+    Ok(None)
+}
+
+fn absolute_query_matches_placement(
+    source: &LayoutFindSource<'_>,
+    witness: &AbsoluteTargetWitness,
+    placed_path: &str,
+    deadline: ProviderDeadline,
+    cancellation: &CancellationToken,
+) -> Result<bool, FindBuildError> {
+    let requested = witness.relative.components().collect::<Vec<_>>();
+    let placed = Path::new(placed_path).components().collect::<Vec<_>>();
+    let depth = requested.len();
+    if depth != placed.len() || !(1..=4).contains(&depth) {
+        return Ok(false);
+    }
+    let mut parent = source.root.clone();
+    for (index, (requested, placed)) in requested.iter().zip(&placed).enumerate() {
+        let (std::path::Component::Normal(requested), std::path::Component::Normal(placed)) =
+            (requested, placed)
+        else {
+            return Ok(false);
+        };
+        if !parent
+            .child_names_equivalent(requested, placed)
+            .map_err(child_read_error)?
+        {
+            return Ok(false);
+        }
+        if index + 1 != depth {
+            parent = match retain_optional_child(&parent, requested, deadline, cancellation)? {
+                Some(RetainedChildCapability::Directory(next)) => next,
+                None => return Ok(false),
+                Some(_) => return Err(unsafe_layout_entry()),
+            };
+        }
+    }
+    let placed_absolute = source.root.path().join(placed_path);
+    let Some(placed_absolute) = placed_absolute.to_str() else {
+        return Ok(false);
+    };
+    Ok(
+        absolute_query_witness(source, placed_absolute, deadline, cancellation)?
+            .is_some_and(|placed| placed.identity == witness.identity),
+    )
 }
 
 fn read_descriptor_head_prefix(
@@ -1474,6 +2009,21 @@ mod tests {
             }
         }
 
+        fn directory_for_paths(&self) -> crate::application::v13::find::FindIndex {
+            let root = RetainedDirectoryCapability::open(&self.source).unwrap();
+            WorkspaceFindDirectoryBuilder::default()
+                .build_for_path(
+                    &[LayoutFindSource::new(
+                        "main",
+                        SourceSetKind::Configuration,
+                        &root,
+                    )],
+                    ProviderDeadline::from_budget(Duration::from_secs(7)),
+                    &CancellationToken::new(),
+                )
+                .unwrap()
+        }
+
         fn directory(&self) -> crate::application::v13::find::FindIndex {
             let root = RetainedDirectoryCapability::open(&self.source).unwrap();
             WorkspaceFindDirectoryBuilder::default()
@@ -1545,7 +2095,7 @@ mod tests {
             let located = index
                 .locate_path(query)
                 .unwrap_or_else(|| panic!("{query} must locate its owner"));
-            assert_eq!(located.at(), "main:Catalog.Валюты", "{query}");
+            assert_eq!(located.owner.at(), "main:Catalog.Валюты", "{query}");
         }
         // Хвост принимается только целиком, посегментно: иначе «Валюты.xml»
         // притянул бы «НеВалюты.xml».
@@ -1558,6 +2108,311 @@ mod tests {
         assert_eq!(located.placed_path(), Some("Catalogs/Валюты.xml"));
         // Мост не гадает: близкого адреса для него не существует.
         assert!(index.locate_address("main:Catalog.Валют").is_none());
+    }
+
+    #[test]
+    fn a_common_module_file_resolves_to_its_owner_without_becoming_a_name_fact() {
+        let fixture = Fixture::new();
+        write(
+            &fixture.source.join("CommonModules/Main.xml"),
+            &owner("Main", "CommonModule", "Main", ""),
+        );
+        write(
+            &fixture.source.join("CommonModules/Main/Ext/Module.bsl"),
+            "Procedure HiddenSymbol()\nEndProcedure\n",
+        );
+        let index = fixture.directory_for_paths();
+        let absolute = fixture.source.join("CommonModules/Main/Ext/Module.bsl");
+        for path in [
+            "CommonModules/Main/Ext/Module.bsl",
+            "src/CommonModules/Main/Ext/Module.bsl",
+            absolute.to_str().unwrap(),
+        ] {
+            let found = index.locate_path(path).expect("existing module file");
+            assert_eq!(found.owner.at(), "main:CommonModule.Main");
+            assert_eq!(found.path, "CommonModules/Main/Ext/Module.bsl");
+        }
+        assert_eq!(
+            single(&index, "Main"),
+            (
+                "main:CommonModule.Main".into(),
+                "CommonModules/Main.xml".into()
+            )
+        );
+        assert_eq!(
+            index
+                .find(
+                    FindRequest::new("Main")
+                        .unwrap()
+                        .with_kind("CommonModule")
+                        .unwrap()
+                )
+                .candidates()
+                .len(),
+            1
+        );
+        for query in ["Module.bsl", "HiddenSymbol"] {
+            assert!(index.find(FindRequest::new(query).unwrap()).is_nearest());
+        }
+        assert_eq!(
+            index
+                .locate_address("main:CommonModule.Main")
+                .unwrap()
+                .placed_path(),
+            Some("CommonModules/Main.xml")
+        );
+    }
+
+    #[test]
+    fn a_common_module_alias_requires_both_the_descriptor_and_the_file() {
+        let fixture = Fixture::new();
+        write(
+            &fixture.source.join("CommonModules/Main.xml"),
+            &owner("Main", "CommonModule", "Main", ""),
+        );
+        assert!(fixture
+            .directory_for_paths()
+            .locate_path("CommonModules/Main/Ext/Module.bsl")
+            .is_none());
+        for directory in ["CommonModules/Main", "CommonModules/Main/Ext"] {
+            fs::create_dir_all(fixture.source.join(directory)).unwrap();
+            let index = fixture.directory_for_paths();
+            assert!(index
+                .locate_path("CommonModules/Main/Ext/Module.bsl")
+                .is_none());
+            assert!(index.locate_address("main:CommonModule.Main").is_some());
+        }
+        fs::remove_file(fixture.source.join("CommonModules/Main.xml")).unwrap();
+        write(
+            &fixture.source.join("CommonModules/Main/Ext/Module.bsl"),
+            "",
+        );
+        let index = fixture.directory_for_paths();
+        assert!(index
+            .locate_path("CommonModules/Main/Ext/Module.bsl")
+            .is_none());
+        assert!(index.locate_address("main:CommonModule.Main").is_none());
+    }
+
+    #[test]
+    fn a_common_module_alias_is_not_chosen_between_source_sets() {
+        let fixture = Fixture::new();
+        write(
+            &fixture.source.join("CommonModules/Main.xml"),
+            &owner("Main", "CommonModule", "Main", ""),
+        );
+        write(
+            &fixture.source.join("CommonModules/Main/Ext/Module.bsl"),
+            "",
+        );
+        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let index = WorkspaceFindDirectoryBuilder::default()
+            .build_for_path(
+                &[
+                    LayoutFindSource::new("main", SourceSetKind::Configuration, &root),
+                    LayoutFindSource::new("other", SourceSetKind::Extension, &root),
+                ],
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert!(index
+            .locate_path("CommonModules/Main/Ext/Module.bsl")
+            .is_none());
+        assert!(index.locate_address("main:CommonModule.Main").is_some());
+        assert!(index.locate_address("other:CommonModule.Main").is_some());
+        assert_eq!(
+            index
+                .locate_path("CommonModules/Main.xml")
+                .unwrap()
+                .owner
+                .at(),
+            "other:CommonModule.Main"
+        );
+    }
+
+    #[test]
+    fn an_absolute_common_module_alias_identifies_its_source_root() {
+        let main = Fixture::new();
+        let extension = main.source.join("src/extension");
+        for source in [&main.source, &extension] {
+            write(
+                &source.join("CommonModules/Main.xml"),
+                &owner("Main", "CommonModule", "Main", ""),
+            );
+            write(&source.join("CommonModules/Main/Ext/Module.bsl"), "");
+        }
+        let main_root = RetainedDirectoryCapability::open(&main.source).unwrap();
+        let extension_root = RetainedDirectoryCapability::open(&extension).unwrap();
+        let index = WorkspaceFindDirectoryBuilder::default()
+            .build_for_path(
+                &[
+                    LayoutFindSource::new("main", SourceSetKind::Configuration, &main_root),
+                    LayoutFindSource::new("extension", SourceSetKind::Extension, &extension_root),
+                ],
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert!(index
+            .locate_path("CommonModules/Main/Ext/Module.bsl")
+            .is_none());
+        for (source, expected) in [
+            (&main.source, "main:CommonModule.Main"),
+            (&extension, "extension:CommonModule.Main"),
+        ] {
+            let path = source.join("CommonModules/Main/Ext/Module.bsl");
+            for query in [path.clone(), fs::canonicalize(&path).unwrap()] {
+                let found = index
+                    .locate_path(query.to_str().unwrap())
+                    .expect("absolute alias selects its source");
+                assert_eq!(found.owner.at(), expected);
+                assert_eq!(found.path, "CommonModules/Main/Ext/Module.bsl");
+            }
+        }
+        let found = index
+            .locate_path("src/extension/CommonModules/Main/Ext/Module.bsl")
+            .expect("workspace-relative alias selects its source");
+        assert_eq!(found.owner.at(), "extension:CommonModule.Main");
+        assert_eq!(found.path, "CommonModules/Main/Ext/Module.bsl");
+        assert!(index
+            .locate_path("missing-prefix/CommonModules/Main/Ext/Module.bsl")
+            .is_none());
+        assert!(index.locate_path("Module.bsl").is_none());
+        assert!(index.locate_path("Main/Ext/Module.bsl").is_none());
+        let outside = tempfile::tempdir().unwrap();
+        assert!(index
+            .locate_path(
+                outside
+                    .path()
+                    .join("CommonModules/Main/Ext/Module.bsl")
+                    .to_str()
+                    .unwrap()
+            )
+            .is_none());
+    }
+
+    #[test]
+    fn a_common_module_alias_consumes_the_directory_byte_budget() {
+        let root = tempfile::tempdir().unwrap();
+        write(
+            &root.path().join("CommonModules/Main.xml"),
+            &owner("Main", "CommonModule", "Main", ""),
+        );
+        let capability =
+            RetainedDirectoryCapability::open(&root.path().canonicalize().unwrap()).unwrap();
+        let sources = [LayoutFindSource::new(
+            "main",
+            SourceSetKind::Configuration,
+            &capability,
+        )];
+        let deadline = ProviderDeadline::from_budget(Duration::from_secs(7));
+        let cancellation = CancellationToken::new();
+        let baseline = WorkspaceFindDirectoryBuilder::default()
+            .build_for_path(&sources, deadline, &cancellation)
+            .unwrap();
+        let bytes = baseline
+            .locate_address("main:CommonModule.Main")
+            .unwrap()
+            .estimated_identity_bytes();
+        WorkspaceFindDirectoryBuilder::with_limits(1, bytes)
+            .build_for_path(&sources, deadline, &cancellation)
+            .unwrap();
+        write(&root.path().join("CommonModules/Main/Ext/Module.bsl"), "");
+        let failure = WorkspaceFindDirectoryBuilder::with_limits(1, bytes)
+            .build_for_path(&sources, deadline, &cancellation)
+            .unwrap_err();
+        assert_eq!(failure.code(), RefusalCode::ProviderLimitExceeded);
+        let index = WorkspaceFindDirectoryBuilder::with_limits(
+            1,
+            bytes
+                + "CommonModules/Main/Ext/Module.bsl".len()
+                + capability
+                    .path()
+                    .join("CommonModules/Main/Ext/Module.bsl")
+                    .to_string_lossy()
+                    .len(),
+        )
+        .build_for_path(&sources, deadline, &cancellation)
+        .unwrap();
+        assert!(index
+            .locate_path("CommonModules/Main/Ext/Module.bsl")
+            .is_some());
+    }
+
+    #[test]
+    fn a_nonregular_common_module_alias_refuses_the_layout() {
+        let fixture = Fixture::new();
+        write(
+            &fixture.source.join("CommonModules/Main.xml"),
+            &owner("Main", "CommonModule", "Main", ""),
+        );
+        fs::create_dir_all(fixture.source.join("CommonModules/Main/Ext/Module.bsl")).unwrap();
+        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let sources = [LayoutFindSource::new(
+            "main",
+            SourceSetKind::Configuration,
+            &root,
+        )];
+        let deadline = ProviderDeadline::from_budget(Duration::from_secs(7));
+        let cancellation = CancellationToken::new();
+        let search = WorkspaceFindDirectoryBuilder::default()
+            .build_for_search(&sources, deadline, &cancellation)
+            .unwrap();
+        assert_eq!(search.omissions.total, 0);
+        assert_eq!(single(&search.index, "Main").0, "main:CommonModule.Main");
+        assert!(WorkspaceFindDirectoryBuilder::default()
+            .build(&sources, deadline, &cancellation)
+            .unwrap()
+            .locate_address("main:CommonModule.Main")
+            .is_some());
+        let failure = WorkspaceFindDirectoryBuilder::default()
+            .build_for_path(
+                &[LayoutFindSource::new(
+                    "main",
+                    SourceSetKind::Configuration,
+                    &root,
+                )],
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+            .unwrap_err();
+        assert_eq!(failure.code(), RefusalCode::InvalidSource);
+    }
+
+    #[test]
+    fn a_linked_common_module_alias_refuses_the_layout() {
+        use crate::infrastructure::platform::testing::{
+            create_file_link_fixture_for_test, FileLinkFixtureOutcome,
+        };
+
+        let fixture = Fixture::new();
+        write(
+            &fixture.source.join("CommonModules/Main.xml"),
+            &owner("Main", "CommonModule", "Main", ""),
+        );
+        let physical = fixture.source.join("physical-module.bsl");
+        write(&physical, "");
+        fs::create_dir_all(fixture.source.join("CommonModules/Main/Ext")).unwrap();
+        let alias = fixture.source.join("CommonModules/Main/Ext/Module.bsl");
+        match create_file_link_fixture_for_test(&physical, &alias).unwrap() {
+            FileLinkFixtureOutcome::Created => {}
+            FileLinkFixtureOutcome::Unsupported
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => return,
+        }
+        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let failure = WorkspaceFindDirectoryBuilder::default()
+            .build_for_path(
+                &[LayoutFindSource::new(
+                    "main",
+                    SourceSetKind::Configuration,
+                    &root,
+                )],
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+            .unwrap_err();
+        assert_eq!(failure.code(), RefusalCode::InvalidSource);
     }
 
     #[test]
@@ -1584,11 +2439,6 @@ mod tests {
             ("Configuration.xml", "main:Configuration"),
             ("Catalogs/Валюты.xml", "main:Catalog.Валюты"),
             ("src/Catalogs/Валюты.xml", "main:Catalog.Валюты"),
-            ("/workspace/src/catalogs/валюты.XML", "main:Catalog.Валюты"),
-            (
-                r"C:\workspace\src\Catalogs\Валюты.xml",
-                "main:Catalog.Валюты",
-            ),
             (
                 "Catalogs/Валюты/Forms/ФормаЭлемента.xml",
                 "main:Catalog.Валюты.Form.ФормаЭлемента",
@@ -1606,14 +2456,251 @@ mod tests {
             assert_eq!(entry.at(), expected, "{path}");
             assert!(entry.placed_path().is_some(), "{path}");
         }
+        let absolute = fixture.source.join("Catalogs/Валюты.xml");
+        assert_eq!(
+            locate(absolute.to_str().unwrap()).unwrap().unwrap().at(),
+            "main:Catalog.Валюты"
+        );
+        if std::path::MAIN_SEPARATOR == '\\' {
+            let physical = absolute.to_string_lossy();
+            let extended = if physical.starts_with(r"\\?\") {
+                physical.into_owned()
+            } else {
+                format!(r"\\?\{physical}")
+            };
+            assert_eq!(
+                locate(&extended).unwrap().unwrap().at(),
+                "main:Catalog.Валюты"
+            );
+        }
         for path in [
             "алюты.xml",
             "Валюты.xml",
             "Forms/ФормаЭлемента.xml",
             "Catalogs/Нет.xml",
+            "/workspace/src/catalogs/валюты.XML",
+            r"C:\workspace\src\Catalogs\Валюты.xml",
         ] {
             assert!(locate(path).unwrap().is_none(), "{path}");
         }
+        if std::path::MAIN_SEPARATOR == '/' {
+            let non_layout = fixture.source.join(r"Catalogs\Валюты.xml");
+            write(&non_layout, "unrelated physical file");
+            write(&fixture.source.join("Catalogs/Валюты.xml"), "<broken");
+            assert!(locate(non_layout.to_str().unwrap()).unwrap().is_none());
+        }
+    }
+
+    #[test]
+    fn point_lookup_common_module_file_requires_target_and_owner_without_full_directory() {
+        let fixture = Fixture::new();
+        let descriptor = fixture.source.join("CommonModules/Main.xml");
+        let module = fixture.source.join("CommonModules/Main/Ext/Module.bsl");
+        write(&descriptor, &owner("Main", "CommonModule", "Main", ""));
+        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let lookup = |query: &str| {
+            WorkspaceFindDirectoryBuilder::with_fact_byte_limit_for_test(1).locate_path(
+                &[LayoutFindSource::new(
+                    "main",
+                    SourceSetKind::Configuration,
+                    &root,
+                )],
+                query,
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+        };
+        let relative = "CommonModules/Main/Ext/Module.bsl";
+        assert!(lookup(relative).unwrap().is_none(), "missing module file");
+        write(&module, "// module\n");
+        let placed = lookup(relative)
+            .unwrap()
+            .expect("module file and owner exist");
+        assert_eq!(placed.at(), "main:CommonModule.Main");
+        assert_eq!(placed.placed_path(), Some(relative));
+        assert_eq!(
+            lookup(module.to_str().unwrap()).unwrap().unwrap().at(),
+            "main:CommonModule.Main"
+        );
+        assert!(lookup("other/CommonModules/Main/Ext/Module.bsl")
+            .unwrap()
+            .is_none());
+        let outside = tempfile::tempdir().unwrap();
+        assert!(lookup(outside.path().join(relative).to_str().unwrap())
+            .unwrap()
+            .is_none());
+
+        write(&descriptor, "<broken");
+        let failure = lookup(relative).expect_err("broken required owner must refuse");
+        assert_eq!(failure.code(), RefusalCode::InvalidSource);
+        fs::remove_file(&descriptor).unwrap();
+        assert!(
+            lookup(relative).unwrap().is_none(),
+            "orphan module has no owner"
+        );
+        write(&descriptor, &owner("Main", "CommonModule", "Main", ""));
+        fs::remove_file(&module).unwrap();
+        fs::create_dir(&module).unwrap();
+        let failure = lookup(relative).expect_err("non-file module must refuse");
+        assert_eq!(failure.code(), RefusalCode::InvalidSource);
+    }
+
+    #[test]
+    fn absolute_common_module_path_skips_a_broken_alias_in_another_source() {
+        let first = Fixture::new();
+        let second = Fixture::new();
+        let relative = "CommonModules/Main/Ext/Module.bsl";
+        for source in [&first.source, &second.source] {
+            write(
+                &source.join("CommonModules/Main.xml"),
+                &owner("Main", "CommonModule", "Main", ""),
+            );
+        }
+        write(&first.source.join(relative), "// valid\n");
+        fs::create_dir_all(second.source.join(relative)).unwrap();
+        let first_root = RetainedDirectoryCapability::open(&first.source).unwrap();
+        let second_root = RetainedDirectoryCapability::open(&second.source).unwrap();
+        let sources = [
+            LayoutFindSource::new("main", SourceSetKind::Configuration, &first_root),
+            LayoutFindSource::new("other", SourceSetKind::Extension, &second_root),
+        ];
+        let lookup = |path: &str| {
+            WorkspaceFindDirectoryBuilder::default().locate_path(
+                &sources,
+                path,
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+        };
+        let absolute = first.source.join(relative);
+        let found = lookup(absolute.to_str().unwrap())
+            .unwrap()
+            .expect("the other source is outside this absolute path");
+        assert_eq!(found.at(), "main:CommonModule.Main");
+        assert_eq!(found.placed_path(), Some(relative));
+        assert_eq!(
+            lookup(relative)
+                .expect_err("both sources can own a relative path")
+                .code(),
+            RefusalCode::InvalidSource
+        );
+    }
+
+    #[test]
+    fn absolute_lookup_keeps_distinct_source_roots_with_different_case() {
+        use std::ffi::OsStr;
+
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().canonicalize().unwrap();
+        let upper = workspace.join("src/A");
+        let lower = workspace.join("src/a");
+        fs::create_dir_all(&upper).unwrap();
+        match fs::create_dir(&lower) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return,
+            Err(error) => panic!("could not create case-distinct source root: {error}"),
+        }
+        write(
+            &upper.join("Catalogs/X.xml"),
+            &owner("X", "Catalog", "X", ""),
+        );
+        write(&lower.join("Catalogs/X.xml"), "<broken");
+        let upper_root = RetainedDirectoryCapability::open(&upper).unwrap();
+        let lower_root = RetainedDirectoryCapability::open(&lower).unwrap();
+        assert_ne!(upper_root.identity(), lower_root.identity());
+        let lookup = |query: &str| {
+            WorkspaceFindDirectoryBuilder::default().locate_path(
+                &[
+                    LayoutFindSource::new("main", SourceSetKind::Configuration, &upper_root),
+                    LayoutFindSource::new("other", SourceSetKind::Configuration, &lower_root),
+                ],
+                query,
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+        };
+        let found = lookup(upper.join("Catalogs/X.xml").to_str().unwrap())
+            .unwrap()
+            .expect("absolute path belongs only to the case-exact source");
+        assert_eq!(found.at(), "main:Catalog.X");
+        let collection = RetainedDirectoryCapability::open(&upper.join("Catalogs")).unwrap();
+        if !collection
+            .child_names_equivalent(OsStr::new("X.xml"), OsStr::new("x.xml"))
+            .unwrap()
+        {
+            assert!(lookup(upper.join("Catalogs/x.xml").to_str().unwrap())
+                .unwrap()
+                .is_none());
+        }
+    }
+
+    #[test]
+    fn relative_source_prefix_skips_linked_collections_in_another_source() {
+        use crate::infrastructure::platform::testing::{
+            create_directory_link_fixture_for_test, FileLinkFixtureOutcome,
+        };
+
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().canonicalize().unwrap();
+        let extension = workspace.join("src/extension");
+        write(
+            &extension.join("Catalogs/Visible.xml"),
+            &owner("Visible", "Catalog", "Visible", ""),
+        );
+        write(
+            &extension.join("CommonModules/Main.xml"),
+            &owner("Main", "CommonModule", "Main", ""),
+        );
+        write(
+            &extension.join("CommonModules/Main/Ext/Module.bsl"),
+            "// module\n",
+        );
+        for collection in ["Catalogs", "CommonModules"] {
+            match create_directory_link_fixture_for_test(
+                extension.join(collection),
+                workspace.join(collection),
+            )
+            .unwrap()
+            {
+                FileLinkFixtureOutcome::Created => {}
+                FileLinkFixtureOutcome::Unsupported
+                | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => return,
+            }
+        }
+        let main_root = RetainedDirectoryCapability::open(&workspace).unwrap();
+        let extension_root = RetainedDirectoryCapability::open(&extension).unwrap();
+        let sources = [
+            LayoutFindSource::new("main", SourceSetKind::Configuration, &main_root),
+            LayoutFindSource::new("extension", SourceSetKind::Extension, &extension_root),
+        ];
+        let locate = |query: &str| {
+            WorkspaceFindDirectoryBuilder::default().locate_path(
+                &sources,
+                query,
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+        };
+        assert_eq!(
+            locate("src/extension/Catalogs/Visible.xml")
+                .unwrap()
+                .unwrap()
+                .at(),
+            "extension:Catalog.Visible"
+        );
+        assert_eq!(
+            locate("src/extension/CommonModules/Main/Ext/Module.bsl")
+                .unwrap()
+                .unwrap()
+                .at(),
+            "extension:CommonModule.Main"
+        );
+        assert_eq!(
+            locate("Catalogs/Visible.xml")
+                .expect_err("without a source prefix the linked collection is a candidate")
+                .code(),
+            RefusalCode::InvalidSource
+        );
     }
 
     #[test]
@@ -1637,7 +2724,7 @@ mod tests {
     }
 
     #[test]
-    fn point_lookup_prefers_the_longest_stored_path() {
+    fn point_lookup_uses_the_full_layout_path_even_with_a_shorter_suffix() {
         let fixture = Fixture::new();
         write(
             &fixture.source.join("Catalogs/Configuration.xml"),
@@ -1657,7 +2744,7 @@ mod tests {
                 &CancellationToken::new(),
             )
             .unwrap()
-            .expect("the more specific stored path wins");
+            .expect("the requested catalog descriptor exists");
         assert_eq!(entry.at(), "main:Catalog.Configuration");
 
         write(
@@ -1665,7 +2752,7 @@ mod tests {
             &owner("Магазин", "Configuration", "Магазин", ""),
         );
         fs::remove_file(fixture.source.join("Catalogs/Configuration.xml")).unwrap();
-        let fallback = WorkspaceFindDirectoryBuilder::default()
+        let missing = WorkspaceFindDirectoryBuilder::default()
             .locate_path(
                 &[LayoutFindSource::new(
                     "main",
@@ -1676,9 +2763,8 @@ mod tests {
                 ProviderDeadline::from_budget(Duration::from_secs(7)),
                 &CancellationToken::new(),
             )
-            .unwrap()
-            .expect("the root descriptor is a valid shorter suffix");
-        assert_eq!(fallback.at(), "main:Configuration");
+            .unwrap();
+        assert!(missing.is_none(), "the requested catalog file is absent");
     }
 
     #[test]
@@ -2284,6 +3370,7 @@ mod tests {
             documents: Vec::new(),
             fact_bytes: 0,
             omissions: super::FindOmissions::default(),
+            include_module_aliases: false,
         };
         for _ in 0..=super::MAX_OMISSION_DETAILS {
             build.record_omission("main", "descriptor_unreadable");

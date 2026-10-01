@@ -5,10 +5,16 @@ check:
   - crates/unica-coder/src/application/v13/resolve.rs::resolve_takes_exactly_one_side_of_the_bridge
   - crates/unica-coder/src/application/v13/resolve.rs::absent_lines_are_named_rather_than_omitted
   - crates/unica-coder/src/infrastructure/daemon/mod.rs::resolve_path_ignores_the_full_directory_entry_budget
+  - crates/unica-coder/tests/platform/v13_resolve_target_isolation.rs::resolve_path_checks_only_target_and_necessary_owner_on_public_mcp
+  - crates/unica-coder/tests/platform/v13_resolve_target_isolation.rs::resolve_absolute_xml_ignores_a_broken_foreign_target_and_reports_ambiguous_alias
+  - crates/unica-coder/tests/platform/v13_resolve_target_isolation.rs::resolve_relative_source_prefix_skips_foreign_linked_collections_on_public_mcp
   - crates/unica-coder/src/infrastructure/daemon/mod.rs::name_search_reports_an_injected_local_read_fault_through_the_live_daemon
   - crates/unica-coder/src/infrastructure/v13_find.rs::point_lookup_preserves_full_relative_paths_and_checks_every_source_before_not_found
   - crates/unica-coder/src/infrastructure/v13_find.rs::point_lookup_refuses_ambiguous_paths_across_admitted_sources
-  - crates/unica-coder/src/infrastructure/v13_find.rs::point_lookup_prefers_the_longest_stored_path
+  - crates/unica-coder/src/infrastructure/v13_find.rs::point_lookup_uses_the_full_layout_path_even_with_a_shorter_suffix
+  - crates/unica-coder/src/infrastructure/v13_find.rs::absolute_common_module_path_skips_a_broken_alias_in_another_source
+  - crates/unica-coder/src/infrastructure/v13_find.rs::absolute_lookup_keeps_distinct_source_roots_with_different_case
+  - crates/unica-coder/src/infrastructure/v13_find.rs::relative_source_prefix_skips_linked_collections_in_another_source
   - crates/unica-coder/src/infrastructure/v13_find.rs::point_lookup_checks_the_owner_of_a_nested_object
   - crates/unica-coder/src/infrastructure/v13_find.rs::point_lookup_nested_path_ignores_an_unrelated_linked_owner_directory
   - crates/unica-coder/src/infrastructure/v13_find.rs::linked_proven_owner_directory_refuses_instead_of_hiding_nested_names
@@ -32,11 +38,15 @@ gap: https://github.com/IngvarConsulting/unica/issues/976
 модуля, а не к XML-дескриптору его владельца. У древовидного ресурса диапазон
 не выдумывается. Эти гарантии текущего вызова требуют проверки из `gap`.
 
-При `path` проверяются возможные совпадения и необходимые владельцы в каждом
-допущенном наборе исходников. Размер общего справочника имён и повреждение
-дескриптора вне этого доказательства не препятствуют ответу о запрошенном
+При `path` проверяются запрошенный объект и необходимые владельцы. Абсолютный
+путь внутри допущенного корня выбирает только этот набор исходников; путь вне
+всех допущенных корней не указывает на объект. Относительный путь с доказанным
+префиксом корня также выбирает свой набор; без такого префикса проверяются
+подходящие кандидаты всех допущенных наборов. Размер общего справочника имён
+и повреждение постороннего дескриптора не препятствуют ответу о запрошенном
 объекте. Запрос содержит полный путь из раскладки, возможно с префиксом
-рабочей области; укороченное имя файла не является таким путём. Если несколько
-записей соответствуют хвосту запроса, побеждает самая длинная раскладка;
-равноточные разные объекты дают отказ вместо произвольного выбора.
-`not_found` возможен лишь после проверки всех кандидатов.
+рабочей области; укороченное имя файла не является таким путём. Отсутствующую
+часть раскладки нельзя отбросить ради совпадения с более коротким чужим путём.
+Разные объекты по одному относительному пути дают отказ вместо произвольного
+выбора. `not_found` возможен лишь после проверки всех относящихся к запросу
+кандидатов.

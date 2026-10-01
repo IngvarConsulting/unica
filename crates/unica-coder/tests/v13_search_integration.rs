@@ -110,6 +110,9 @@ fn domain_result(response: &Value) -> Value {
     serde_json::from_str(text).expect("decode canonical DomainResult")
 }
 
+#[path = "platform/v13_resolve_target_isolation.rs"]
+mod target_isolation;
+
 // Интеграционная цель — `medium` по `kind(test)`: идёт в очереди и на main,
 // на pull request не идёт. Отдельной джобы и выключателя больше нет.
 #[test]
@@ -357,6 +360,13 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
         "main:CommonModule.Main"
     );
 
+    let module_path = "CommonModules/Main/Ext/Module.bsl";
+    let resolved =
+        domain_result(&mcp.exchange(call_tool(36, "unica.resolve", json!({"path": module_path}))));
+    assert_eq!(resolved["ok"], true, "{resolved:#}");
+    assert_eq!(resolved["data"]["at"], "main:CommonModule.Main");
+    assert_eq!(resolved["data"]["path"], module_path);
+
     let missing_scope = domain_result(&mcp.exchange(call_tool(
         21,
         "unica.search",
@@ -450,6 +460,52 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
 
     let ping = mcp.exchange(json!({"jsonrpc": "2.0", "id": 15, "method": "ping"}));
     assert!(ping.get("result").is_some(), "{ping:#}");
+    let extension_main = workspace.join("src/extension/CommonModules/Main/Ext/Module.bsl");
+    std::fs::create_dir_all(extension_main.parent().unwrap()).expect("duplicate module directory");
+    std::fs::copy(
+        workspace.join("CommonModules/Main.xml"),
+        workspace.join("src/extension/CommonModules/Main.xml"),
+    )
+    .expect("duplicate module descriptor");
+    std::fs::write(
+        &extension_main,
+        "Procedure Duplicate() Export\nEndProcedure\n",
+    )
+    .expect("duplicate module source");
+    let absolute_extension =
+        std::fs::canonicalize(&extension_main).expect("absolute extension module");
+    let resolved = domain_result(&mcp.exchange(call_tool(
+        37,
+        "unica.resolve",
+        json!({"path": absolute_extension}),
+    )));
+    assert_eq!(resolved["ok"], true, "{resolved:#}");
+    assert_eq!(resolved["data"]["at"], "extension:CommonModule.Main");
+    assert_eq!(
+        resolved["data"]["path"],
+        "CommonModules/Main/Ext/Module.bsl"
+    );
+    let ambiguous = domain_result(&mcp.exchange(call_tool(
+        38,
+        "unica.resolve",
+        json!({"path": "CommonModules/Main/Ext/Module.bsl"}),
+    )));
+    assert_eq!(ambiguous["ok"], false, "{ambiguous:#}");
+    assert_eq!(ambiguous["diagnostics"][0]["code"], "bad_value");
+    let relative_extension = domain_result(&mcp.exchange(call_tool(
+        39,
+        "unica.resolve",
+        json!({"path": "src/extension/CommonModules/Main/Ext/Module.bsl"}),
+    )));
+    assert_eq!(relative_extension["ok"], true, "{relative_extension:#}");
+    assert_eq!(
+        relative_extension["data"]["at"],
+        "extension:CommonModule.Main"
+    );
+    assert_eq!(
+        relative_extension["data"]["path"],
+        "CommonModules/Main/Ext/Module.bsl"
+    );
     mcp.finish();
 }
 
