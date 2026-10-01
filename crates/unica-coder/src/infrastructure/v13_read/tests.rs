@@ -2578,8 +2578,7 @@ fn ordinary_xml_read_over_eight_mib_keeps_complete_configuration_facts() {
         "Configuration root properties changed"
     );
     assert!(
-        result.data.as_ref().unwrap()["branches"]
-            == baseline.data.as_ref().unwrap()["branches"],
+        result.data.as_ref().unwrap()["branches"] == baseline.data.as_ref().unwrap()["branches"],
         "Configuration root branches changed"
     );
 }
