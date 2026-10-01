@@ -141,7 +141,7 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
     std::fs::write(
         workspace.join("CommonModules/Main/Ext/Module.bsl"),
         format!(
-            "Procedure MainNeedle() Export\nEndProcedure\n{}",
+            "Procedure MainNeedle() Export\nEndProcedure\n{}// CapNeedle main\n",
             (0..21)
                 .map(|index| format!("// MainNeedle {index}\n"))
                 .collect::<String>()
@@ -168,7 +168,12 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
     .expect("unregistered module source");
     std::fs::write(
         workspace.join("src/extension/CommonModules/Extension/Ext/Module.bsl"),
-        "Procedure ExtensionNeedle() Export\nEndProcedure\n",
+        format!(
+            "Procedure ExtensionNeedle() Export\nEndProcedure\n{}",
+            (0..201)
+                .map(|index| format!("// CapNeedle extension {index}\n"))
+                .collect::<String>()
+        ),
     )
     .expect("extension module");
     std::fs::write(
@@ -272,6 +277,80 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
         extension["data"]["matches"][0]["scope"],
         "extension:Configuration"
     );
+
+    let unscoped_lexical = domain_result(&mcp.exchange(call_tool(
+        46,
+        "unica.search",
+        json!({"query": "MainNeedle", "role": "lexical"}),
+    )));
+    assert_eq!(unscoped_lexical["ok"], true, "{unscoped_lexical:#}");
+    assert!(
+        unscoped_lexical["data"]["matches"][0]["hits"]
+            .as_array()
+            .is_some_and(|hits| !hits.is_empty()),
+        "unscoped lexical search skipped the main source set: {unscoped_lexical:#}"
+    );
+    assert_eq!(
+        unscoped_lexical["data"]["matches"][0]["matches"]["total"],
+        22
+    );
+    assert_eq!(
+        unscoped_lexical["data"]["matches"][0]["searchComplete"],
+        true
+    );
+    let unscoped_cursor = unscoped_lexical["cursor"]
+        .as_str()
+        .expect("combined window pages");
+    let tail = domain_result(&mcp.exchange(call_tool(
+        47,
+        "unica.search",
+        json!({"query": "MainNeedle", "role": "lexical", "cursor": unscoped_cursor}),
+    )));
+    assert_eq!(tail["ok"], true, "{tail:#}");
+    assert_eq!(
+        tail["data"]["matches"][0]["hits"].as_array().map(Vec::len),
+        Some(2)
+    );
+
+    let nested_root = domain_result(&mcp.exchange(call_tool(
+        48,
+        "unica.search",
+        json!({"query": "ExtensionNeedle", "role": "lexical"}),
+    )));
+    assert_eq!(nested_root["ok"], true, "{nested_root:#}");
+    let nested_section = &nested_root["data"]["matches"][0];
+    assert_eq!(
+        nested_section["matches"]["total"], 1,
+        "nested root must occur once"
+    );
+    assert_eq!(
+        nested_section["hits"][0]["location"]["sourceSet"],
+        "extension"
+    );
+    assert_eq!(nested_section["searchComplete"], true);
+
+    let capped = domain_result(&mcp.exchange(call_tool(
+        49,
+        "unica.search",
+        json!({"query": "CapNeedle", "role": "lexical", "limit": 50}),
+    )));
+    assert_eq!(capped["ok"], true, "{capped:#}");
+    let capped_section = &capped["data"]["matches"][0];
+    assert_eq!(capped_section["status"], "limitReached");
+    assert_eq!(capped_section["searchComplete"], false);
+    assert_eq!(capped_section["matches"]["total"], 200);
+    assert_eq!(capped_section["matches"]["relation"], "lowerBound");
+
+    let absent = domain_result(&mcp.exchange(call_tool(
+        50,
+        "unica.search",
+        json!({"query": "NoSuchNeedleInEitherSource", "role": "lexical"}),
+    )));
+    assert_eq!(absent["ok"], true, "{absent:#}");
+    let absent_section = &absent["data"]["matches"][0];
+    assert_eq!(absent_section["status"], "empty");
+    assert_eq!(absent_section["searchComplete"], true);
+    assert_eq!(absent_section["matches"]["total"], 0);
 
     let lexical = domain_result(&mcp.exchange(call_tool(
         24,
