@@ -360,3 +360,113 @@ fn resolve_absolute_xml_ignores_a_broken_foreign_target_and_reports_ambiguous_al
     assert_eq!(absolute_module["data"]["at"], "main:CommonModule.Main");
     mcp.finish();
 }
+
+#[test]
+fn resolve_absolute_path_uses_the_deepest_admitted_source_root() {
+    let root = tempfile::tempdir().expect("nested source workspace");
+    let workspace = root.path();
+    let nested = workspace.join("Catalogs");
+    std::fs::create_dir_all(&nested).expect("nested source root");
+    std::fs::write(
+        workspace.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\n  - name: nested\n    type: EXTENSION\n    path: Catalogs\n",
+    )
+    .expect("source manifest");
+    for source in [workspace, nested.as_path()] {
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject><Configuration><Properties><Name>Main</Name></Properties></Configuration></MetaDataObject>"#,
+        )
+        .expect("source descriptor");
+    }
+    std::fs::write(
+        nested.join("X.xml"),
+        r#"<MetaDataObject><Catalog><Properties><Name>X</Name></Properties></Catalog></MetaDataObject>"#,
+    )
+    .expect("parent-visible catalog descriptor");
+
+    let mut mcp = McpProcess::start(workspace);
+    let initialized = mcp.exchange(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                   "clientInfo": {"name": "resolve-deepest-root", "version": "1"}}
+    }));
+    assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
+    mcp.notify(json!({"jsonrpc":"2.0", "method":"notifications/initialized", "params":{}}));
+    let absolute = std::fs::canonicalize(nested.join("X.xml")).expect("absolute nested target");
+    let result =
+        domain_result(&mcp.exchange(call_tool(2, "unica.resolve", json!({"path": absolute}))));
+    assert_eq!(result["ok"], false, "{result:#}");
+    assert_eq!(result["diagnostics"][0]["code"], "not_found");
+    mcp.finish();
+}
+
+#[test]
+fn resolve_path_succeeds_above_the_full_directory_byte_budget() {
+    let root = tempfile::tempdir().expect("large resolve workspace");
+    let workspace = root.path();
+    let catalogs = workspace.join("Catalogs");
+    std::fs::create_dir(&catalogs).expect("catalog collection");
+    std::fs::write(
+        workspace.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\n",
+    )
+    .expect("source manifest");
+    std::fs::write(
+        workspace.join("Configuration.xml"),
+        r#"<MetaDataObject><Configuration><Properties><Name>Main</Name></Properties></Configuration></MetaDataObject>"#,
+    )
+    .expect("configuration descriptor");
+    std::fs::write(
+        catalogs.join("Requested.xml"),
+        r#"<MetaDataObject><Catalog><Properties><Name>Requested</Name></Properties></Catalog></MetaDataObject>"#,
+    )
+    .expect("requested descriptor");
+
+    // The full directory charges the synonym once as the title and again as
+    // a fact. These unrelated valid objects alone exceed its 16 MiB budget.
+    const UNRELATED: usize = 1_200;
+    const SYNONYM_BYTES: usize = 7_200;
+    assert!(UNRELATED * SYNONYM_BYTES * 2 > 16 * 1024 * 1024);
+    let synonym = "Q".repeat(SYNONYM_BYTES);
+    for index in 0..UNRELATED {
+        let name = format!("U{index:04}");
+        std::fs::write(
+            catalogs.join(format!("{name}.xml")),
+            format!(
+                "<MetaDataObject><Catalog><Properties><Name>{name}</Name><Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>{synonym}</v8:content></v8:item></Synonym></Properties></Catalog></MetaDataObject>"
+            ),
+        )
+        .expect("unrelated catalog descriptor");
+    }
+    std::fs::write(catalogs.join("ZZBroken.xml"), "<broken").expect("damaged foreign descriptor");
+
+    let mut mcp = McpProcess::start(workspace);
+    let initialized = mcp.exchange(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                   "clientInfo": {"name": "resolve-large-proof", "version": "1"}}
+    }));
+    assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
+    mcp.notify(json!({"jsonrpc":"2.0", "method":"notifications/initialized", "params":{}}));
+
+    let full_search = domain_result(&mcp.exchange(call_tool(
+        2,
+        "unica.search",
+        json!({"query": "Requested", "corpus": "names"}),
+    )));
+    assert_eq!(full_search["ok"], false, "{full_search:#}");
+    assert_eq!(
+        full_search["diagnostics"][0]["code"], "provider_limit_exceeded",
+        "{full_search:#}"
+    );
+
+    let resolved = domain_result(&mcp.exchange(call_tool(
+        3,
+        "unica.resolve",
+        json!({"path": "Catalogs/Requested.xml"}),
+    )));
+    assert_eq!(resolved["ok"], true, "{resolved:#}");
+    assert_eq!(resolved["data"]["at"], "main:Catalog.Requested");
+    mcp.finish();
+}

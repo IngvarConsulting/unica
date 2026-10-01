@@ -8,6 +8,8 @@ check:
   - crates/unica-coder/tests/platform/v13_resolve_target_isolation.rs::resolve_path_checks_only_target_and_necessary_owner_on_public_mcp
   - crates/unica-coder/tests/platform/v13_resolve_target_isolation.rs::resolve_absolute_xml_ignores_a_broken_foreign_target_and_reports_ambiguous_alias
   - crates/unica-coder/tests/platform/v13_resolve_target_isolation.rs::resolve_relative_source_prefix_skips_foreign_linked_collections_on_public_mcp
+  - crates/unica-coder/tests/platform/v13_resolve_target_isolation.rs::resolve_absolute_path_uses_the_deepest_admitted_source_root
+  - crates/unica-coder/tests/platform/v13_resolve_target_isolation.rs::resolve_path_succeeds_above_the_full_directory_byte_budget
   - crates/unica-coder/src/infrastructure/daemon/mod.rs::name_search_reports_an_injected_local_read_fault_through_the_live_daemon
   - crates/unica-coder/src/infrastructure/v13_find.rs::point_lookup_preserves_full_relative_paths_and_checks_every_source_before_not_found
   - crates/unica-coder/src/infrastructure/v13_find.rs::point_lookup_refuses_ambiguous_paths_across_admitted_sources
@@ -39,7 +41,8 @@ gap: https://github.com/IngvarConsulting/unica/issues/976
 не выдумывается. Эти гарантии текущего вызова требуют проверки из `gap`.
 
 При `path` проверяются запрошенный объект и необходимые владельцы. Абсолютный
-путь внутри допущенного корня выбирает только этот набор исходников; его связь
+путь внутри допущенного корня выбирает самый глубокий подходящий набор
+исходников, когда допущенные корни вложены; его связь
 с корнем и объектом подтверждается физической идентичностью и правилами имён
 каталогов. Путь вне всех допущенных корней не указывает на объект.
 Относительный путь с доказанным

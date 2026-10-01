@@ -345,12 +345,34 @@ impl WorkspaceFindDirectoryBuilder {
         // let an unrelated source supply a fallback after the target misses.
         let mut absolute_witnesses = Vec::with_capacity(sources.len());
         let mut source_matches = Vec::with_capacity(sources.len());
-        for source in sources {
-            if absolute_query {
-                let witness = absolute_query_witness(source, path, deadline, cancellation)?;
-                source_matches.push(witness.is_some());
-                absolute_witnesses.push(witness);
-            } else {
+        if absolute_query {
+            let root_matches = sources
+                .iter()
+                .map(|source| absolute_query_relative_path(source, path, deadline, cancellation))
+                .collect::<Result<Vec<_>, _>>()?;
+            let deepest = sources
+                .iter()
+                .zip(&root_matches)
+                .filter(|(_, relative)| relative.is_some())
+                .map(|(source, _)| source.root.path().components().count())
+                .max();
+            for (source, relative) in sources.iter().zip(root_matches) {
+                let selected =
+                    relative.is_some() && deepest == Some(source.root.path().components().count());
+                source_matches.push(selected);
+                absolute_witnesses.push(if selected {
+                    retain_absolute_target(
+                        source,
+                        relative.as_deref().ok_or_else(unsafe_layout_entry)?,
+                        deadline,
+                        cancellation,
+                    )?
+                } else {
+                    None
+                });
+            }
+        } else {
+            for source in sources {
                 source_matches.push((1..=parts.len().min(4)).any(|depth| {
                     let tail = parts[parts.len() - depth..].join("/");
                     normalized != tail && source_path_ends_with_query(source, &normalized, &tail)
@@ -414,6 +436,7 @@ impl WorkspaceFindDirectoryBuilder {
                     source,
                     path,
                     &parts,
+                    witness.as_ref().map(|witness| witness.relative.as_path()),
                     depth,
                     deadline,
                     cancellation,
@@ -490,12 +513,27 @@ impl WorkspaceFindDirectoryBuilder {
         source: &LayoutFindSource<'_>,
         query: &str,
         parts: &[&str],
+        absolute_relative: Option<&Path>,
         depth: usize,
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
         located: &mut Option<FindDocument>,
         ambiguous_alias: &mut bool,
     ) -> Result<(), FindBuildError> {
+        let physical_names = absolute_relative.map(|relative| {
+            relative
+                .components()
+                .filter_map(|component| match component {
+                    std::path::Component::Normal(name) => Some(name),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        });
+        let physical_name = |index| {
+            physical_names
+                .as_ref()
+                .and_then(|names| names.get(index).copied())
+        };
         if matches!(
             source.kind,
             SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
@@ -509,7 +547,9 @@ impl WorkspaceFindDirectoryBuilder {
                 let Some(&name) = parts.last() else {
                     return Ok(());
                 };
-                for entry in matching_names(source.root, name, deadline, cancellation)? {
+                for entry in
+                    matching_names(source.root, name, physical_name(0), deadline, cancellation)?
+                {
                     let Some(stem) = entry.to_str().and_then(|name| name.strip_suffix(".xml"))
                     else {
                         continue;
@@ -554,6 +594,7 @@ impl WorkspaceFindDirectoryBuilder {
                     source,
                     None,
                     &parts[parts.len() - 3..],
+                    physical_names.as_deref(),
                     kind.as_str(),
                     deadline,
                     cancellation,
@@ -563,7 +604,17 @@ impl WorkspaceFindDirectoryBuilder {
             return Ok(());
         }
 
-        if depth == 1 && parts.last() == Some(&"configuration.xml") {
+        let configuration_spelling_matches = match physical_name(0) {
+            Some(name) => source
+                .root
+                .child_names_equivalent(name, OsStr::new("Configuration.xml"))
+                .map_err(child_read_error)?,
+            None => true,
+        };
+        if depth == 1
+            && parts.last() == Some(&"configuration.xml")
+            && configuration_spelling_matches
+        {
             if let Some(child) = retain_optional_child(
                 source.root,
                 OsStr::new("Configuration.xml"),
@@ -598,7 +649,13 @@ impl WorkspaceFindDirectoryBuilder {
         }
         if depth == 2 && parts.len() >= 2 {
             let tail = &parts[parts.len() - 2..];
-            for directory in matching_names(source.root, tail[0], deadline, cancellation)? {
+            for directory in matching_names(
+                source.root,
+                tail[0],
+                physical_name(0),
+                deadline,
+                cancellation,
+            )? {
                 let Some(directory_name) = directory.to_str() else {
                     continue;
                 };
@@ -611,7 +668,13 @@ impl WorkspaceFindDirectoryBuilder {
                         RetainedChildCapability::Directory(collection) => collection,
                         _ => return Err(unsafe_layout_entry()),
                     };
-                for entry in matching_names(&collection, tail[1], deadline, cancellation)? {
+                for entry in matching_names(
+                    &collection,
+                    tail[1],
+                    physical_name(1),
+                    deadline,
+                    cancellation,
+                )? {
                     let Some(stem) = entry.to_str().and_then(|name| name.strip_suffix(".xml"))
                     else {
                         continue;
@@ -652,12 +715,19 @@ impl WorkspaceFindDirectoryBuilder {
                 source,
                 query,
                 tail,
+                physical_names.as_deref(),
                 deadline,
                 cancellation,
                 located,
                 ambiguous_alias,
             )?;
-            for directory in matching_names(source.root, tail[0], deadline, cancellation)? {
+            for directory in matching_names(
+                source.root,
+                tail[0],
+                physical_name(0),
+                deadline,
+                cancellation,
+            )? {
                 let Some(directory_name) = directory.to_str() else {
                     continue;
                 };
@@ -674,6 +744,7 @@ impl WorkspaceFindDirectoryBuilder {
                     source,
                     Some((&collection, directory_name)),
                     &tail[1..],
+                    physical_names.as_deref().and_then(|names| names.get(1..)),
                     layout.tag,
                     deadline,
                     cancellation,
@@ -690,6 +761,7 @@ impl WorkspaceFindDirectoryBuilder {
         source: &LayoutFindSource<'_>,
         query: &str,
         tail: &[&str],
+        physical: Option<&[&OsStr]>,
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
         located: &mut Option<FindDocument>,
@@ -703,9 +775,13 @@ impl WorkspaceFindDirectoryBuilder {
         if !common_module_query_matches(source, query, &tail.join("/")) {
             return Ok(());
         }
-        for collection_name in
-            matching_names(source.root, collection_query, deadline, cancellation)?
-        {
+        for collection_name in matching_names(
+            source.root,
+            collection_query,
+            physical.and_then(|names| names.first().copied()),
+            deadline,
+            cancellation,
+        )? {
             let Some(collection_text) = collection_name.to_str() else {
                 continue;
             };
@@ -723,7 +799,13 @@ impl WorkspaceFindDirectoryBuilder {
                 RetainedChildCapability::Directory(collection) => collection,
                 _ => return Err(unsafe_layout_entry()),
             };
-            for owner_name in matching_names(&collection, owner_query, deadline, cancellation)? {
+            for owner_name in matching_names(
+                &collection,
+                owner_query,
+                physical.and_then(|names| names.get(1).copied()),
+                deadline,
+                cancellation,
+            )? {
                 let Some(owner_text) = owner_name.to_str() else {
                     continue;
                 };
@@ -744,8 +826,14 @@ impl WorkspaceFindDirectoryBuilder {
                     RetainedChildCapability::Directory(owner_root) => owner_root,
                     _ => return Err(unsafe_layout_entry()),
                 };
-                let Some(module_relative) =
-                    common_module_path(&owner_root, &owner_relative, deadline, cancellation)?
+                let Some(module_relative) = common_module_path(
+                    &owner_root,
+                    &owner_relative,
+                    physical.and_then(|names| names.get(2).copied()),
+                    physical.and_then(|names| names.get(3).copied()),
+                    deadline,
+                    cancellation,
+                )?
                 else {
                     continue;
                 };
@@ -806,6 +894,7 @@ impl WorkspaceFindDirectoryBuilder {
         source: &LayoutFindSource<'_>,
         collection: Option<(&RetainedDirectoryCapability, &str)>,
         parts: &[&str],
+        physical: Option<&[&OsStr]>,
         owner_kind: &str,
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
@@ -821,7 +910,13 @@ impl WorkspaceFindDirectoryBuilder {
             return Ok(());
         }
         let parent = collection.map_or(source.root, |(root, _)| root);
-        for owner_name in matching_names(parent, owner_query, deadline, cancellation)? {
+        for owner_name in matching_names(
+            parent,
+            owner_query,
+            physical.and_then(|names| names.first().copied()),
+            deadline,
+            cancellation,
+        )? {
             let Some(owner_name_text) = owner_name.to_str() else {
                 continue;
             };
@@ -835,6 +930,14 @@ impl WorkspaceFindDirectoryBuilder {
                 if family_name.to_lowercase() != *family_query {
                     continue;
                 }
+                if let Some(requested_family) = physical.and_then(|names| names.get(1).copied()) {
+                    if !owner_root
+                        .child_names_equivalent(requested_family, OsStr::new(family_name))
+                        .map_err(child_read_error)?
+                    {
+                        continue;
+                    }
+                }
                 let Some(family) = retain_optional_child(
                     &owner_root,
                     OsStr::new(family_name),
@@ -847,7 +950,13 @@ impl WorkspaceFindDirectoryBuilder {
                 let RetainedChildCapability::Directory(family) = family else {
                     return Err(unsafe_layout_entry());
                 };
-                for child_name in matching_names(&family, leaf_query, deadline, cancellation)? {
+                for child_name in matching_names(
+                    &family,
+                    leaf_query,
+                    physical.and_then(|names| names.get(2).copied()),
+                    deadline,
+                    cancellation,
+                )? {
                     let Some(child_name_text) = child_name.to_str() else {
                         continue;
                     };
@@ -1161,6 +1270,8 @@ impl WorkspaceFindDirectoryBuilder {
                             let alias = match common_module_path(
                                 &owner_root,
                                 &PathBuf::from(directory).join(&owner_name),
+                                None,
+                                None,
                                 deadline,
                                 cancellation,
                             ) {
@@ -1492,16 +1603,26 @@ impl WorkspaceFindDirectoryBuilder {
 fn matching_names(
     directory: &RetainedDirectoryCapability,
     normalized_name: &str,
+    physical_name: Option<&OsStr>,
     deadline: ProviderDeadline,
     cancellation: &CancellationToken,
 ) -> Result<Vec<std::ffi::OsString>, FindBuildError> {
     let mut found = Vec::new();
+    let comparator = physical_name
+        .map(|_| directory.child_name_comparator().map_err(child_read_error))
+        .transpose()?;
     directory.visit_immediate_names(|name| {
         find_checkpoint(deadline, cancellation)?;
-        if name
-            .to_str()
-            .is_some_and(|name| name.to_lowercase() == normalized_name)
+        let matches = if let (Some(physical_name), Some(comparator)) = (physical_name, &comparator)
         {
+            comparator
+                .names_equivalent(&name, physical_name)
+                .map_err(child_read_error)?
+        } else {
+            name.to_str()
+                .is_some_and(|name| name.to_lowercase() == normalized_name)
+        };
+        if matches {
             if !found.is_empty() {
                 return Err(FindBuildError::new(
                     RefusalCode::BadValue,
@@ -1582,14 +1703,32 @@ fn add_path_match(
 fn common_module_path(
     owner: &RetainedDirectoryCapability,
     relative: &Path,
+    physical_ext: Option<&OsStr>,
+    physical_module: Option<&OsStr>,
     deadline: ProviderDeadline,
     cancellation: &CancellationToken,
 ) -> Result<Option<String>, FindBuildError> {
+    if let Some(physical_ext) = physical_ext {
+        if !owner
+            .child_names_equivalent(physical_ext, OsStr::new("Ext"))
+            .map_err(child_read_error)?
+        {
+            return Ok(None);
+        }
+    }
     let ext = match retain_optional_child(owner, OsStr::new("Ext"), deadline, cancellation)? {
         Some(RetainedChildCapability::Directory(ext)) => ext,
         None => return Ok(None),
         Some(_) => return Err(unsafe_layout_entry()),
     };
+    if let Some(physical_module) = physical_module {
+        if !ext
+            .child_names_equivalent(physical_module, OsStr::new("Module.bsl"))
+            .map_err(child_read_error)?
+        {
+            return Ok(None);
+        }
+    }
     match retain_optional_child(&ext, OsStr::new("Module.bsl"), deadline, cancellation)? {
         Some(RetainedChildCapability::RegularFile(file)) => {
             file.validate_named_identity()
@@ -1653,58 +1792,31 @@ fn source_path_matches_query(
     }
 }
 
-fn normalize_physical_path(path: &str) -> String {
-    let normalized = path.replace('\\', "/");
-    let normalized = if normalized
-        .get(..8)
-        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("//?/unc/"))
-    {
-        format!("//{}", &normalized[8..])
-    } else {
-        normalized
-            .strip_prefix("//?/")
-            .unwrap_or(&normalized)
-            .to_string()
-    };
-    if std::path::MAIN_SEPARATOR == '\\' {
-        normalized.to_lowercase()
-    } else {
-        normalized
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AbsoluteTargetWitness {
     identity: FileIdentity,
     relative: PathBuf,
 }
 
-/// An absolute query selects a source only when its spelled root opens to the
-/// retained root and its exact target can be traversed without following a
-/// link. Logical lookup may fold case; physical source identity may not.
-fn absolute_query_witness(
+/// Compare the ancestor at the retained root's depth by its no-follow
+/// identity. This accepts real case-insensitive aliases without folding two
+/// distinct roots on a case-sensitive filesystem into one source.
+fn absolute_query_relative_path(
     source: &LayoutFindSource<'_>,
     query: &str,
     deadline: ProviderDeadline,
     cancellation: &CancellationToken,
-) -> Result<Option<AbsoluteTargetWitness>, FindBuildError> {
-    let Some(root) = source.root.path().to_str() else {
-        return Ok(None);
-    };
-    let root = normalize_physical_path(root);
+) -> Result<Option<PathBuf>, FindBuildError> {
     let query_path = Path::new(query);
+    let root_depth = source.root.path().components().count();
     for ancestor in query_path.ancestors() {
         find_checkpoint(deadline, cancellation)?;
-        if !ancestor
-            .to_str()
-            .is_some_and(|path| normalize_physical_path(path) == root)
-        {
+        if ancestor.components().count() != root_depth {
             continue;
         }
         let reopened = match RetainedDirectoryCapability::open(ancestor) {
             Ok(reopened) => reopened,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(child_read_error(error)),
+            Err(_) => return Ok(None),
         };
         if reopened.identity() != source.root.identity() {
             return Ok(None);
@@ -1712,46 +1824,71 @@ fn absolute_query_witness(
         let relative = query_path
             .strip_prefix(ancestor)
             .map_err(|_| unsafe_layout_entry())?;
-        let depth = relative.components().count();
-        if !(1..=4).contains(&depth) {
+        return Ok(Some(relative.to_path_buf()));
+    }
+    Ok(None)
+}
+
+/// The selected source retains exactly the requested target through its own
+/// root; unrelated source trees and their descriptors are not consulted.
+fn retain_absolute_target(
+    source: &LayoutFindSource<'_>,
+    relative: &Path,
+    deadline: ProviderDeadline,
+    cancellation: &CancellationToken,
+) -> Result<Option<AbsoluteTargetWitness>, FindBuildError> {
+    let depth = relative.components().count();
+    if !(1..=4).contains(&depth) {
+        return Ok(None);
+    }
+    let mut current = source.root.clone();
+    for (index, component) in relative.components().enumerate() {
+        let std::path::Component::Normal(name) = component else {
             return Ok(None);
-        }
-        let mut current = source.root.clone();
-        for (index, component) in relative.components().enumerate() {
-            let std::path::Component::Normal(name) = component else {
-                return Ok(None);
-            };
-            let child = retain_optional_child(&current, name, deadline, cancellation)?;
-            if index + 1 == depth {
-                let identity = match child {
-                    Some(RetainedChildCapability::Directory(child)) => {
-                        child
-                            .validate_named_identity()
-                            .map_err(|_| unsafe_layout_entry())?;
-                        child.identity()
-                    }
-                    Some(RetainedChildCapability::RegularFile(child)) => {
-                        child
-                            .validate_named_identity()
-                            .map_err(|_| unsafe_layout_entry())?;
-                        child.identity()
-                    }
-                    None => return Ok(None),
-                    Some(_) => return Err(unsafe_layout_entry()),
-                };
-                return Ok(Some(AbsoluteTargetWitness {
-                    identity,
-                    relative: relative.to_path_buf(),
-                }));
-            }
-            current = match child {
-                Some(RetainedChildCapability::Directory(child)) => child,
+        };
+        let child = retain_optional_child(&current, name, deadline, cancellation)?;
+        if index + 1 == depth {
+            let identity = match child {
+                Some(RetainedChildCapability::Directory(child)) => {
+                    child
+                        .validate_named_identity()
+                        .map_err(|_| unsafe_layout_entry())?;
+                    child.identity()
+                }
+                Some(RetainedChildCapability::RegularFile(child)) => {
+                    child
+                        .validate_named_identity()
+                        .map_err(|_| unsafe_layout_entry())?;
+                    child.identity()
+                }
                 None => return Ok(None),
                 Some(_) => return Err(unsafe_layout_entry()),
             };
+            return Ok(Some(AbsoluteTargetWitness {
+                identity,
+                relative: relative.to_path_buf(),
+            }));
         }
+        current = match child {
+            Some(RetainedChildCapability::Directory(child)) => child,
+            None => return Ok(None),
+            Some(_) => return Err(unsafe_layout_entry()),
+        };
     }
     Ok(None)
+}
+
+fn absolute_query_witness(
+    source: &LayoutFindSource<'_>,
+    query: &str,
+    deadline: ProviderDeadline,
+    cancellation: &CancellationToken,
+) -> Result<Option<AbsoluteTargetWitness>, FindBuildError> {
+    let Some(relative) = absolute_query_relative_path(source, query, deadline, cancellation)?
+    else {
+        return Ok(None);
+    };
+    retain_absolute_target(source, &relative, deadline, cancellation)
 }
 
 fn absolute_query_matches_placement(
@@ -2645,15 +2782,32 @@ mod tests {
         let upper = workspace.join("src/A");
         let lower = workspace.join("src/a");
         fs::create_dir_all(&upper).unwrap();
-        match fs::create_dir(&lower) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return,
-            Err(error) => panic!("could not create case-distinct source root: {error}"),
-        }
         write(
             &upper.join("Catalogs/X.xml"),
             &owner("X", "Catalog", "X", ""),
         );
+        match fs::create_dir(&lower) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                let root = RetainedDirectoryCapability::open(&upper).unwrap();
+                let found = WorkspaceFindDirectoryBuilder::default()
+                    .locate_path(
+                        &[LayoutFindSource::new(
+                            "main",
+                            SourceSetKind::Configuration,
+                            &root,
+                        )],
+                        lower.join("Catalogs/X.xml").to_str().unwrap(),
+                        ProviderDeadline::from_budget(Duration::from_secs(7)),
+                        &CancellationToken::new(),
+                    )
+                    .unwrap()
+                    .expect("case-insensitive root spelling names the retained root");
+                assert_eq!(found.at(), "main:Catalog.X");
+                return;
+            }
+            Err(error) => panic!("could not create case-distinct source root: {error}"),
+        }
         write(&lower.join("Catalogs/X.xml"), "<broken");
         let upper_root = RetainedDirectoryCapability::open(&upper).unwrap();
         let lower_root = RetainedDirectoryCapability::open(&lower).unwrap();
@@ -2681,6 +2835,17 @@ mod tests {
             assert!(lookup(upper.join("Catalogs/x.xml").to_str().unwrap())
                 .unwrap()
                 .is_none());
+            write(&upper.join("Catalogs/x.xml"), "<broken");
+            let found = lookup(upper.join("Catalogs/X.xml").to_str().unwrap())
+                .unwrap()
+                .expect("case-distinct sibling must not block the requested target");
+            assert_eq!(found.at(), "main:Catalog.X");
+            assert_eq!(
+                lookup(upper.join("Catalogs/x.xml").to_str().unwrap())
+                    .expect_err("broken requested sibling must refuse")
+                    .code(),
+                RefusalCode::InvalidSource
+            );
         }
     }
 
