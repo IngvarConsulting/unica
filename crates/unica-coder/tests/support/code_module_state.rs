@@ -47,10 +47,16 @@ fn canonical_stdio_code_insert_publishes_borrowed_module_and_state() {
     assert!(fs::read_to_string(&module)
         .unwrap()
         .contains("Procedure Added()"));
-    assert_ne!(preview["rev"], applied["rev"]);
-    args["ifRev"] = applied["rev"].clone();
-    let repeated = call(&mut mcp, 4, args);
-    assert_eq!(applied["rev"], repeated["rev"]);
+    assert_eq!(preview["rev"], applied["rev"]);
+    args["dryRun"] = json!(true);
+    args.as_object_mut().unwrap().remove("ifRev");
+    let repeat_preview = call(&mut mcp, 4, args.clone());
+    assert_eq!(fs::read_to_string(&descriptor).unwrap(), after);
+    args["dryRun"] = json!(false);
+    args["ifRev"] = repeat_preview["rev"].clone();
+    let repeated = call(&mut mcp, 5, args);
+    assert_eq!(repeat_preview["rev"], repeated["rev"]);
+    assert!(repeated["changed"].as_array().is_none_or(Vec::is_empty));
     assert_eq!(fs::read_to_string(&descriptor).unwrap(), after);
     mcp.finish();
 }
@@ -85,7 +91,7 @@ fn canonical_stdio_root_modules_publish_configuration_state_and_repeat() {
         let before = fs::read_to_string(&descriptor).unwrap();
         let at = format!("ext:Module.{role}");
         let mut args = json!({"at":at,"ops":[{"op":"code.insert","args":{"at":at,"text":"Procedure Added() Export\nEndProcedure"}}],"dryRun":true});
-        let id = 2 + index as u64 * 3;
+        let id = 2 + index as u64 * 4;
         let preview = call(&mut mcp, id, args.clone());
         assert_eq!(fs::read_to_string(&descriptor).unwrap(), before);
         let module = source.join(format!("Ext/{role}Module.bsl"));
@@ -93,7 +99,7 @@ fn canonical_stdio_root_modules_publish_configuration_state_and_repeat() {
         args["dryRun"] = json!(false);
         args["ifRev"] = preview["rev"].clone();
         let applied = call(&mut mcp, id + 1, args.clone());
-        assert_ne!(preview["rev"], applied["rev"]);
+        assert_eq!(preview["rev"], applied["rev"]);
         let after = fs::read_to_string(&descriptor).unwrap();
         let document = roxmltree::Document::parse(&after).unwrap();
         let property = format!("{role}Module");
@@ -117,9 +123,16 @@ fn canonical_stdio_root_modules_publish_configuration_state_and_repeat() {
             && child.text() == Some("Extended")));
         let bsl = fs::read(&module).unwrap();
         assert!(String::from_utf8_lossy(&bsl).contains("Procedure Added()"));
-        args["ifRev"] = applied["rev"].clone();
-        let repeated = call(&mut mcp, id + 2, args);
-        assert_eq!(repeated["rev"], applied["rev"]);
+        args["dryRun"] = json!(true);
+        args.as_object_mut().unwrap().remove("ifRev");
+        let repeat_preview = call(&mut mcp, id + 2, args.clone());
+        assert_eq!(fs::read_to_string(&descriptor).unwrap(), after);
+        assert_eq!(fs::read(&module).unwrap(), bsl);
+        args["dryRun"] = json!(false);
+        args["ifRev"] = repeat_preview["rev"].clone();
+        let repeated = call(&mut mcp, id + 3, args);
+        assert_eq!(repeated["rev"], repeat_preview["rev"]);
+        assert!(repeated["changed"].as_array().is_none_or(Vec::is_empty));
         assert_eq!(fs::read_to_string(&descriptor).unwrap(), after);
         assert_eq!(fs::read(&module).unwrap(), bsl);
     }

@@ -84,6 +84,11 @@ impl ApplyStagingError {
 impl From<RetainedApplyValidationError> for ApplyStagingError {
     fn from(error: RetainedApplyValidationError) -> Self {
         let kind = match error.kind() {
+            RetainedApplyValidationErrorKind::Cancelled => ApplyStagingErrorKind::Cancelled,
+            RetainedApplyValidationErrorKind::Deadline => ApplyStagingErrorKind::Deadline,
+            RetainedApplyValidationErrorKind::ConcurrentRevision => {
+                ApplyStagingErrorKind::ConcurrentRevision
+            }
             RetainedApplyValidationErrorKind::ContainmentIdentity => {
                 ApplyStagingErrorKind::ContainmentIdentity
             }
@@ -311,10 +316,224 @@ enum StagedTargetIdentity {
     },
 }
 
+/// A directory that a planner actually enumerated. Child kinds, including
+/// absence, are input evidence; only this operation's publications may alter it.
+#[derive(Debug)]
+pub(super) struct RetainedNamespaceGuard {
+    root: Arc<RetainedDirectoryCapability>,
+    relative: PathBuf,
+    identity: Option<FileIdentity>,
+    children: Option<std::collections::BTreeMap<OsString, u8>>,
+    entry_limit: usize,
+    deadline: ProviderDeadline,
+    cancellation: CancellationToken,
+}
+
+type NamespaceObservation = (
+    Option<FileIdentity>,
+    Option<std::collections::BTreeMap<OsString, u8>>,
+);
+
+impl RetainedNamespaceGuard {
+    fn capture(
+        root: Arc<RetainedDirectoryCapability>,
+        relative: PathBuf,
+        entry_limit: usize,
+        deadline: ProviderDeadline,
+        cancellation: CancellationToken,
+    ) -> Result<Self, ApplyStagingError> {
+        let mut guard = Self {
+            root,
+            relative,
+            identity: None,
+            children: None,
+            entry_limit,
+            deadline,
+            cancellation,
+        };
+        let (identity, children) = guard.observe(0)?;
+        guard.identity = identity;
+        guard.children = children;
+        Ok(guard)
+    }
+
+    fn observe(
+        &self,
+        own_entry_allowance: usize,
+    ) -> Result<NamespaceObservation, ApplyStagingError> {
+        let mut directory = self.root.as_ref().clone();
+        directory
+            .validate_named_identity()
+            .map_err(generated_component_identity_error)?;
+        for component in self.relative.components() {
+            self.checkpoint()?;
+            let Component::Normal(name) = component else {
+                return Err(ApplyStagingError::new(
+                    ApplyStagingErrorKind::Invariant,
+                    "namespace path is not relative",
+                ));
+            };
+            match directory.retain_immediate_child_nofollow(name) {
+                Ok(RetainedChildCapability::Directory(child)) => directory = child,
+                Err(error) if error.kind() == ErrorKind::NotFound => return Ok((None, None)),
+                Ok(_) => {
+                    return Err(ApplyStagingError::new(
+                        ApplyStagingErrorKind::ContainmentIdentity,
+                        "namespace input is not a directory",
+                    ))
+                }
+                Err(error) => return Err(generated_component_identity_error(error)),
+            }
+        }
+        let mut stopped = None;
+        let names = directory
+            .read_immediate_names_bounded(
+                self.entry_limit.saturating_add(own_entry_allowance),
+                || {
+                    self.checkpoint().map_err(|error| {
+                        stopped = Some(error);
+                        std::io::Error::other("namespace input checkpoint stopped enumeration")
+                    })
+                },
+            )
+            .map_err(|error| {
+                stopped.unwrap_or_else(|| generated_component_identity_error(error))
+            })?;
+        let comparator = directory
+            .child_name_comparator()
+            .map_err(generated_component_identity_error)?;
+        let mut children = std::collections::BTreeMap::new();
+        for name in names {
+            self.checkpoint()?;
+            if comparator
+                .names_equivalent(&name, OsStr::new(GENERATED_DIR_NAME))
+                .map_err(generated_component_identity_error)?
+            {
+                continue;
+            }
+            let kind = match directory
+                .retain_immediate_child_nofollow(&name)
+                .map_err(generated_component_identity_error)?
+            {
+                RetainedChildCapability::Directory(_) => 1,
+                RetainedChildCapability::RegularFile(_) => 2,
+                _ => {
+                    return Err(ApplyStagingError::new(
+                        ApplyStagingErrorKind::ContainmentIdentity,
+                        "enumerated input contains a link or unsupported entry",
+                    ))
+                }
+            };
+            children.insert(name, kind);
+        }
+        directory
+            .validate_named_identity()
+            .map_err(generated_component_identity_error)?;
+        self.checkpoint()?;
+        Ok((Some(directory.identity()), Some(children)))
+    }
+
+    fn checkpoint(&self) -> Result<(), ApplyStagingError> {
+        if self.cancellation.is_cancelled() {
+            return Err(ApplyStagingError::new(
+                ApplyStagingErrorKind::Cancelled,
+                "namespace input check cancelled",
+            ));
+        }
+        if self.deadline.remaining().is_zero() {
+            return Err(ApplyStagingError::new(
+                ApplyStagingErrorKind::Deadline,
+                "namespace input check deadline elapsed",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(super) fn validate(
+        &self,
+        deltas: &[(PathBuf, Option<u8>)],
+    ) -> Result<(), ApplyStagingError> {
+        let (identity, actual) = self.observe(deltas.len())?;
+        if self.identity.is_some() && self.identity != identity {
+            return Err(ApplyStagingError::new(
+                ApplyStagingErrorKind::ContainmentIdentity,
+                "enumerated directory identity changed",
+            ));
+        }
+        let mut expected = self.children.clone();
+        for (path, kind) in deltas {
+            if path
+                .components()
+                .any(|part| part.as_os_str() == OsStr::new(GENERATED_DIR_NAME))
+            {
+                continue;
+            }
+            if path == &self.relative && *kind == Some(1) {
+                expected.get_or_insert_with(Default::default);
+            }
+            if path.parent() == Some(self.relative.as_path()) {
+                if let Some(name) = path.file_name() {
+                    if let Some(kind) = kind {
+                        expected
+                            .get_or_insert_with(Default::default)
+                            .insert(name.to_os_string(), *kind);
+                    } else if let Some(entries) = expected.as_mut() {
+                        entries.remove(name);
+                    }
+                }
+            }
+        }
+        if actual != expected {
+            return Err(ApplyStagingError::new(
+                ApplyStagingErrorKind::ConcurrentRevision,
+                format!("enumerated namespace changed: {}", self.relative.display()),
+            ));
+        }
+        self.checkpoint()
+    }
+
+    fn fingerprint(&self, hash: &mut sha2::Sha256) -> Result<(), ApplyStagingError> {
+        use sha2::Digest;
+        self.checkpoint()?;
+        let path =
+            crate::infrastructure::platform::filesystem::stable_path_identity_bytes(&self.relative)
+                .map_err(|error| {
+                    ApplyStagingError::new(ApplyStagingErrorKind::ContainmentIdentity, error)
+                })?;
+        hash.update((path.len() as u64).to_be_bytes());
+        hash.update(path);
+        match &self.children {
+            None => hash.update([0]),
+            Some(children) => {
+                hash.update([1]);
+                hash.update((children.len() as u64).to_be_bytes());
+                for (name, kind) in children {
+                    self.checkpoint()?;
+                    let name =
+                        crate::infrastructure::platform::filesystem::stable_path_identity_bytes(
+                            Path::new(name),
+                        )
+                        .map_err(|error| {
+                            ApplyStagingError::new(
+                                ApplyStagingErrorKind::ContainmentIdentity,
+                                error,
+                            )
+                        })?;
+                    hash.update((name.len() as u64).to_be_bytes());
+                    hash.update(name);
+                    hash.update([*kind]);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct ApplyStagedState {
     root: Arc<RetainedDirectoryCapability>,
     entries: Vec<StagedEntry>,
+    namespaces: std::collections::BTreeMap<PathBuf, RetainedNamespaceGuard>,
     deadline: ProviderDeadline,
     cancellation: CancellationToken,
     writer_authority: crate::infrastructure::workspace_actor::ApplyWriterAuthority,
@@ -333,6 +552,7 @@ impl ApplyStagedState {
         Self {
             root,
             entries: Vec::new(),
+            namespaces: Default::default(),
             deadline,
             cancellation,
             writer_authority,
@@ -347,46 +567,87 @@ impl ApplyStagedState {
         self
     }
 
-    /// Whether every parent directory of `relative` exists below the retained
-    /// root, walked without following links and without recording an entry.
-    /// A read of a path below a missing parent retains that missing chain as a
-    /// postimage the publication must own; a gate that only wants to know
-    /// whether an optional marker is present asks this first.
-    pub(crate) fn parent_exists(&mut self, relative: &Path) -> Result<bool, ApplyStagingError> {
-        self.checkpoint("apply staged probe")?;
-        let relative = strict_relative(relative)?;
-        let mut ancestor = self.root.as_ref().clone();
-        for component in relative.components() {
-            let Component::Normal(name) = component else {
+    /// Enumerate only a subtree needed by this planner and retain its membership.
+    pub(crate) fn enumerate_tree(
+        &mut self,
+        relative: &Path,
+    ) -> Result<Vec<PathBuf>, ApplyStagingError> {
+        self.enumerate_tree_with_limits(relative, 256, 1_000_000)
+    }
+
+    fn enumerate_tree_with_limits(
+        &mut self,
+        relative: &Path,
+        max_depth: usize,
+        max_entries: usize,
+    ) -> Result<Vec<PathBuf>, ApplyStagingError> {
+        let initial_depth = relative.components().count();
+        let mut pending = vec![relative.to_path_buf()];
+        let mut files = Vec::new();
+        let mut count = 0usize;
+        while let Some(path) = pending.pop() {
+            if path.components().count() - initial_depth > max_depth {
                 return Err(ApplyStagingError::new(
-                    ApplyStagingErrorKind::ContainmentIdentity,
-                    format!(
-                        "staged target must contain only normal relative components: {}",
-                        relative.display()
-                    ),
+                    ApplyStagingErrorKind::UnsupportedProvider,
+                    "namespace input exceeds maximum depth",
                 ));
-            };
-            if Some(name) == relative.file_name() {
-                break;
             }
-            match ancestor.retain_immediate_child_nofollow(name) {
-                Ok(RetainedChildCapability::Directory(directory)) => ancestor = directory,
-                Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
-                Ok(_) => return Ok(false),
-                Err(error) => {
+            let guard = RetainedNamespaceGuard::capture(
+                Arc::clone(&self.root),
+                path.clone(),
+                max_entries.saturating_sub(count),
+                self.deadline,
+                self.cancellation.clone(),
+            )?;
+            if let Some(children) = &guard.children {
+                count = count.checked_add(children.len()).ok_or_else(|| {
+                    ApplyStagingError::new(
+                        ApplyStagingErrorKind::UnsupportedProvider,
+                        "namespace entry count overflow",
+                    )
+                })?;
+                if count > max_entries {
                     return Err(ApplyStagingError::new(
                         ApplyStagingErrorKind::UnsupportedProvider,
-                        format!("staged target parent rejected link/reparse traversal: {error}"),
-                    ))
+                        "namespace input exceeds entry bound",
+                    ));
+                }
+                for (name, kind) in children {
+                    if *kind == 1 {
+                        pending.push(path.join(name));
+                    } else {
+                        files.push(path.join(name));
+                    }
                 }
             }
+            if let Some(previous) = self.namespaces.get(&path) {
+                previous.validate(&[])?;
+            } else {
+                self.namespaces.insert(path, guard);
+            }
         }
-        Ok(true)
+        files.sort();
+        Ok(files)
     }
 
     pub(crate) fn read(&mut self, relative: &Path) -> Result<Option<Vec<u8>>, ApplyStagingError> {
+        self.read_bounded(relative, MAX_APPLY_FILE_BYTES)
+    }
+
+    pub(crate) fn read_bounded(
+        &mut self,
+        relative: &Path,
+        limit: usize,
+    ) -> Result<Option<Vec<u8>>, ApplyStagingError> {
         let relative = strict_relative(relative)?;
-        let index = self.ensure_loaded(&relative)?;
+        let index = self.ensure_loaded_bounded(&relative, limit.min(MAX_APPLY_FILE_BYTES))?;
+        if matches!(&self.entries[index].current, StagedFileState::Bytes(bytes) if bytes.len() > limit)
+        {
+            return Err(ApplyStagingError::new(
+                ApplyStagingErrorKind::UnsupportedProvider,
+                format!("staged input exceeds read bound: {}", relative.display()),
+            ));
+        }
         Ok(self.entries[index].current.as_option())
     }
 
@@ -478,6 +739,48 @@ impl ApplyStagedState {
         Ok(())
     }
 
+    /// All observed inputs, including read-only dependencies and absent targets,
+    /// and their planned postimages bind the preview to its exact write intent.
+    pub(crate) fn fingerprint_inputs(
+        &self,
+        hash: &mut sha2::Sha256,
+    ) -> Result<(), ApplyStagingError> {
+        use sha2::Digest;
+        hash.update(self.root.identity().stable_bytes());
+        hash.update((self.entries.len() as u64).to_be_bytes());
+        let mut entries = self.entries.iter().collect::<Vec<_>>();
+        entries.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+        for entry in entries {
+            self.checkpoint("apply plan inputs")?;
+            let path = crate::infrastructure::platform::filesystem::stable_path_identity_bytes(
+                &entry.relative_path,
+            )
+            .map_err(|error| {
+                ApplyStagingError::new(ApplyStagingErrorKind::ContainmentIdentity, error)
+            })?;
+            hash.update((path.len() as u64).to_be_bytes());
+            hash.update(path);
+            for state in [&entry.original, &entry.current] {
+                match state {
+                    StagedFileState::Absent => hash.update([0]),
+                    StagedFileState::Bytes(bytes) => {
+                        hash.update([1]);
+                        hash.update((bytes.len() as u64).to_be_bytes());
+                        for chunk in bytes.chunks(64 * 1024) {
+                            self.checkpoint("apply plan input content")?;
+                            hash.update(chunk);
+                        }
+                    }
+                }
+            }
+        }
+        hash.update((self.namespaces.len() as u64).to_be_bytes());
+        for guard in self.namespaces.values() {
+            guard.fingerprint(hash)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn planned_changes(&self) -> Vec<StagedApplyChange> {
         let mut changes = self
             .entries
@@ -511,6 +814,7 @@ impl ApplyStagedState {
         transaction
             .bind_retained_apply_root(Arc::clone(&self.root), &self.writer_authority)
             .map_err(|error| ApplyStagingError::new(ApplyStagingErrorKind::Invariant, error))?;
+        transaction.bind_retained_namespaces(self.namespaces.into_values().collect());
         let mut entries = self.entries;
         entries.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
         for entry in entries {
@@ -558,6 +862,14 @@ impl ApplyStagedState {
     }
 
     fn ensure_loaded(&mut self, relative: &Path) -> Result<usize, ApplyStagingError> {
+        self.ensure_loaded_bounded(relative, MAX_APPLY_FILE_BYTES)
+    }
+
+    fn ensure_loaded_bounded(
+        &mut self,
+        relative: &Path,
+        limit: usize,
+    ) -> Result<usize, ApplyStagingError> {
         self.checkpoint("apply staged read")?;
         if let Some(index) = self
             .entries
@@ -709,7 +1021,7 @@ impl ApplyStagedState {
                         ),
                     ));
                 }
-                let bytes = file.read_bounded(MAX_APPLY_FILE_BYTES).map_err(|error| {
+                let bytes = file.read_bounded(limit).map_err(|error| {
                     ApplyStagingError::new(
                         ApplyStagingErrorKind::UnsupportedProvider,
                         format!("staged target fixed read bound failed: {error}"),
@@ -806,7 +1118,7 @@ impl ApplyStagedState {
         }
     }
 
-    fn checkpoint(&self, phase: &str) -> Result<(), ApplyStagingError> {
+    pub(super) fn checkpoint(&self, phase: &str) -> Result<(), ApplyStagingError> {
         if self.cancellation.is_cancelled() {
             Err(ApplyStagingError::new(
                 ApplyStagingErrorKind::Cancelled,
@@ -1008,6 +1320,202 @@ pub(crate) mod tests {
             )
             .is_err());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn read_only_absence_below_missing_parent_is_guarded_without_creating_it() {
+        for occupied in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path();
+            std::fs::write(root.join("Module.bsl"), b"before").unwrap();
+            let authority =
+                crate::infrastructure::workspace_actor::apply_writer_authority_for_test();
+            let mut state = staged_with_authority(root, authority.clone());
+            assert!(state
+                .read(Path::new("Ext/ParentConfigurations.bin"))
+                .unwrap()
+                .is_none());
+            state
+                .replace("Module.bsl", b"before", b"after".to_vec())
+                .unwrap();
+            let transaction = state.finalize().unwrap();
+            if occupied {
+                std::fs::create_dir(root.join("Ext")).unwrap();
+                std::fs::write(root.join("Ext/ParentConfigurations.bin"), b"locked").unwrap();
+            }
+            let result = transaction.commit_retained_apply_with(authority, || Ok(()), || Ok(()));
+            if occupied {
+                assert!(result.is_err());
+                assert_eq!(std::fs::read(root.join("Module.bsl")).unwrap(), b"before");
+            } else {
+                result.unwrap();
+                assert!(!root.join("Ext").exists());
+                assert_eq!(std::fs::read(root.join("Module.bsl")).unwrap(), b"after");
+            }
+        }
+    }
+
+    #[test]
+    fn enumerated_payload_changes_refuse_before_write_and_roll_back_late_writes() {
+        for late in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path();
+            std::fs::create_dir(root.join("Payload")).unwrap();
+            let original = root.join("Payload/Module.bsl");
+            let foreign = root.join("Payload/Added.bsl");
+            std::fs::write(&original, b"original").unwrap();
+            let authority =
+                crate::infrastructure::workspace_actor::apply_writer_authority_for_test();
+            let mut state = staged_with_authority(root, authority.clone());
+            assert_eq!(
+                state.enumerate_tree(Path::new("Payload")).unwrap(),
+                vec![PathBuf::from("Payload/Module.bsl")]
+            );
+            state.remove("Payload/Module.bsl", b"original").unwrap();
+            let transaction = state.finalize().unwrap();
+            if !late {
+                std::fs::write(&foreign, b"foreign").unwrap();
+            }
+            let mut injected = false;
+            let result = transaction.commit_retained_apply_with(
+                authority,
+                || {
+                    if late && !original.exists() && !injected {
+                        std::fs::write(&foreign, b"foreign").unwrap();
+                        injected = true;
+                    }
+                    Ok(())
+                },
+                || Ok(()),
+            );
+            assert!(result.is_err(), "namespace race returned success");
+            assert_eq!(std::fs::read(&original).unwrap(), b"original");
+            assert_eq!(std::fs::read(&foreign).unwrap(), b"foreign");
+            assert_eq!(injected, late);
+        }
+    }
+
+    #[test]
+    fn reference_scan_entry_budget_stops_incrementally_at_a_test_limit() {
+        let root = temp_root("namespace-entry-budget");
+        std::fs::create_dir_all(&root).unwrap();
+        for name in ["A.xml", "B.xml", "C.xml"] {
+            std::fs::write(root.join(name), b"<Root/>").unwrap();
+        }
+        let mut state = staged(&root);
+        let error = state
+            .enumerate_tree_with_limits(Path::new(""), 4, 1)
+            .unwrap_err();
+        assert!(error.to_string().contains("entry limit"), "{error}");
+        assert!(
+            state.namespaces.is_empty(),
+            "over-budget enumeration must not admit the directory"
+        );
+        assert!(
+            state.entries.is_empty(),
+            "no file bytes may be read past the enumeration budget"
+        );
+    }
+
+    #[test]
+    fn reference_scan_depth_budget_stops_before_recursive_descent() {
+        let root = temp_root("namespace-depth-budget");
+        std::fs::create_dir_all(root.join("Level1/Level2")).unwrap();
+        std::fs::write(root.join("Level1/Level2/deep.xml"), b"<Root/>").unwrap();
+        let mut state = staged(&root);
+        let error = state
+            .enumerate_tree_with_limits(Path::new(""), 1, 8)
+            .unwrap_err();
+        assert!(error.to_string().contains("maximum depth"), "{error}");
+        assert!(!state.namespaces.contains_key(Path::new("Level1/Level2")));
+        assert!(state.entries.is_empty());
+    }
+
+    #[test]
+    fn reference_scan_rejects_a_direct_symlink_before_any_recursive_descent() {
+        let root = temp_root("namespace-symlink-before-recursion");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir(root.join("A-directory")).unwrap();
+        crate::infrastructure::platform::filesystem::create_test_directory_link(
+            &root.join("external"),
+            &root.join("Z-symlink-directory"),
+        )
+        .unwrap();
+        let error = staged(&root)
+            .enumerate_tree_with_limits(Path::new(""), 0, 8)
+            .unwrap_err();
+        assert!(error.to_string().contains("link"), "{error}");
+        assert!(!error.to_string().contains("maximum depth"), "{error}");
+    }
+
+    #[test]
+    fn reference_scan_refuses_a_file_larger_than_the_per_file_budget() {
+        use crate::infrastructure::native_operations::meta::remove::META_REMOVE_REFERENCE_FILE_MAX_BYTES;
+        let root = temp_root("reference-file-budget");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::File::create(root.join("Huge.xml"))
+            .unwrap()
+            .set_len(META_REMOVE_REFERENCE_FILE_MAX_BYTES as u64 + 1)
+            .unwrap();
+        let mut state = staged(&root);
+        let error = state
+            .read_bounded(Path::new("Huge.xml"), META_REMOVE_REFERENCE_FILE_MAX_BYTES)
+            .unwrap_err();
+        assert!(error.to_string().contains("bound"), "{error}");
+        assert!(
+            state.entries.is_empty(),
+            "oversized input must not enter the staged byte set"
+        );
+        std::fs::write(root.join("Small.xml"), "\u{feff}<Root/>".as_bytes()).unwrap();
+        assert_eq!(
+            state
+                .read_bounded(Path::new("Small.xml"), META_REMOVE_REFERENCE_FILE_MAX_BYTES)
+                .unwrap(),
+            Some("\u{feff}<Root/>".as_bytes().to_vec())
+        );
+    }
+
+    #[test]
+    fn reference_scan_refuses_a_path_outside_the_source_root() {
+        let root = temp_root("reference-root-bound");
+        std::fs::create_dir_all(&root).unwrap();
+        let outside = temp_root("reference-outside").join("outside.xml");
+        std::fs::create_dir_all(outside.parent().unwrap()).unwrap();
+        std::fs::write(&outside, b"<Secret/>").unwrap();
+        let mut state = staged(&root);
+        assert!(state.read(&outside).is_err());
+        assert!(state.read(Path::new("../outside.xml")).is_err());
+        assert!(state.entries.is_empty());
+        assert_eq!(std::fs::read(outside).unwrap(), b"<Secret/>");
+    }
+
+    #[test]
+    fn namespace_inputs_bind_the_plan_and_accept_only_owned_removals() {
+        use sha2::Digest;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::create_dir(root.join("Payload")).unwrap();
+        std::fs::write(root.join("Payload/Module.bsl"), b"original").unwrap();
+        let authority = crate::infrastructure::workspace_actor::apply_writer_authority_for_test();
+        let mut state = staged_with_authority(root, authority.clone());
+        state.enumerate_tree(Path::new("Payload")).unwrap();
+        state.remove("Payload/Module.bsl", b"original").unwrap();
+        let mut first = sha2::Sha256::new();
+        state.fingerprint_inputs(&mut first).unwrap();
+        std::fs::create_dir(root.join("Payload/NewEmptyDirectory")).unwrap();
+        let mut changed = staged_with_authority(root, authority.clone());
+        changed.enumerate_tree(Path::new("Payload")).unwrap();
+        changed.remove("Payload/Module.bsl", b"original").unwrap();
+        let mut second = sha2::Sha256::new();
+        changed.fingerprint_inputs(&mut second).unwrap();
+        assert_ne!(first.finalize(), second.finalize());
+        changed
+            .finalize()
+            .unwrap()
+            .commit_retained_apply_with(authority, || Ok(()), || Ok(()))
+            .unwrap();
+        assert!(!root.join("Payload/Module.bsl").exists());
+        assert!(root.join("Payload/NewEmptyDirectory").is_dir());
     }
 
     #[test]
@@ -1575,6 +2083,14 @@ pub(crate) mod tests {
 
         assert_eq!(error.kind(), ApplyStagingErrorKind::ContainmentIdentity);
         assert!(!root.join("Nested/.BUILD").exists());
+        std::fs::create_dir(nested.join(".BUILD")).unwrap();
+        std::fs::write(nested.join(".BUILD/Generated.bsl"), b"generated").unwrap();
+        assert!(state
+            .enumerate_tree(Path::new("Nested"))
+            .unwrap()
+            .is_empty());
+        assert!(!state.namespaces.contains_key(Path::new("Nested/.BUILD")));
+        assert!(state.entries.is_empty());
         std::fs::remove_dir_all(root).unwrap();
     }
 

@@ -17,15 +17,15 @@ use crate::domain::project_sources::{
 use crate::domain::refusal::RefusalCode;
 use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
 use crate::infrastructure::runtime_jobs::{RuntimeJobService, RuntimeResourceOwner};
-use crate::infrastructure::source_revision::RetainedRevisionErrorKind;
 use crate::infrastructure::source_selection_evidence::discover_project_source_admission;
 use crate::infrastructure::source_selection_evidence::SourceSelectionEvidenceErrorKind;
 use crate::infrastructure::v13_large_configuration::RegistrationCache;
 use crate::infrastructure::workspace::discover_workspace;
+#[cfg(test)]
+use crate::infrastructure::workspace_actor::WorkspaceRevisionFence;
 use crate::infrastructure::workspace_actor::{
     ApplyAdmission, ApplyAdmissionError, IndexWorkIdentity, ProviderRootBinding, WorkspaceActor,
-    WorkspaceActorRegistry, WorkspaceActorRegistryError, WorkspaceLogicalReadFence,
-    WorkspaceRevisionFence, WorkspaceSourceSetInput,
+    WorkspaceActorRegistry, WorkspaceActorRegistryError, WorkspaceSourceSetInput,
 };
 use std::io::BufRead;
 use std::sync::Arc;
@@ -60,8 +60,8 @@ impl LiteralSearchScan {
         if self.details.len() < CANONICAL_SEARCH_MAX_UNCOVERED_DETAILS {
             let mut detail = serde_json::Map::new();
             detail.insert("sourceSet".to_owned(), source_set.into());
-            // The ordinal is stable under a cursor's scope and revision
-            // binding, but reveals no retained-relative path.
+            // The ordinal identifies this file within the current live scan
+            // without revealing its retained-relative path.
             detail.insert("fileId".to_owned(), format!("bsl-{file_ordinal}").into());
             detail.insert("reason".to_owned(), reason.into());
             self.details.push(serde_json::Value::Object(detail));
@@ -129,7 +129,7 @@ struct ActorReadSourceBinding {
 pub(in crate::infrastructure::daemon) struct ActorReadSourceCapability {
     binding: ProviderRootBinding,
     identity: String,
-    fence: WorkspaceLogicalReadFence,
+    read_identity: String,
     deadline: ProviderDeadline,
     registration_cache: Arc<RegistrationCache>,
 }
@@ -164,14 +164,13 @@ impl ActorReadSourceCapability {
         let platform_profile = source_profile.platform_profile().ok_or_else(|| {
             "actor-bound logical source has no supported platform profile".to_string()
         })?;
-        let read =
-            crate::infrastructure::v13_read_port::ProviderReadAuthority::new_with_revision_lease(
-                self.binding.source_set_name(),
-                self.identity.clone(),
-                self.binding.source_kind(),
-                self.binding.retained_root(),
-                self.fence.revision(),
-            );
+        let read = crate::infrastructure::v13_read_port::ProviderReadAuthority::new_local_snapshot(
+            self.binding.source_set_name(),
+            self.identity.clone(),
+            self.binding.source_kind(),
+            self.binding.retained_root(),
+            self.read_identity.clone(),
+        );
         Ok(
             crate::infrastructure::v13_read::LogicalViewReadAuthority::with_read_authority_and_registration_cache(
                 cancellation,
@@ -190,7 +189,7 @@ impl ActorReadSourceCapability {
     }
 
     pub(in crate::infrastructure::daemon) fn revision_identity(&self) -> String {
-        self.fence.revision().revision_identity()
+        self.read_identity.clone()
     }
 
     pub(in crate::infrastructure::daemon) fn search_bsl_literal(
@@ -444,13 +443,13 @@ impl ActorReadSourceCapability {
 pub(super) fn actor_read_source_capability_for_test(
     binding: ProviderRootBinding,
     identity: String,
-    fence: WorkspaceLogicalReadFence,
+    fence: crate::infrastructure::workspace_actor::WorkspaceLogicalReadFence,
     deadline: ProviderDeadline,
 ) -> ActorReadSourceCapability {
     ActorReadSourceCapability {
         binding,
         identity,
-        fence,
+        read_identity: fence.revision().revision_identity(),
         deadline,
         registration_cache: Arc::new(RegistrationCache::default()),
     }
@@ -469,7 +468,7 @@ pub(super) fn actor_read_source_metadata_for_test(
 
 struct ActorLogicalReadSourceLease {
     binding: ProviderRootBinding,
-    fence: WorkspaceLogicalReadFence,
+    read_identity: String,
 }
 
 struct ActorLogicalReadLease {
@@ -576,6 +575,9 @@ impl ActorBoundInvocation {
         cancellation: &CancellationToken,
         logical_deadline: ProviderDeadline,
     ) -> Result<ActorBoundExecution, String> {
+        if cancellation.is_cancelled() {
+            return Err("source operation was cancelled before admission".into());
+        }
         let revision = match self.tool {
             crate::application::invocation_store::ToolIdentity::Apply => {
                 ActorExecutionRevision::UnpublishedApply(std::sync::atomic::AtomicBool::new(false))
@@ -583,8 +585,8 @@ impl ActorBoundInvocation {
             // Поиск по именам ходит в тот же справочник адресов и путей, что
             // и разрешение локатора, и потому просит тот же допуск: раскладку
             // без аренды ревизии. Свод выбирает режим, потому что режимы у
-            // сводов разные по природе — текст читается на ревизии и отдаёт
-            // `rev`, справочник имён ревизией не является.
+            // сводов разные по природе: текст читается из текущих файлов,
+            // справочник имён использует раскладку, и ни один не собирает ревизию.
             crate::application::invocation_store::ToolIdentity::Search
                 if self
                     .arguments
@@ -626,7 +628,7 @@ impl ActorBoundInvocation {
             | crate::application::invocation_store::ToolIdentity::Search
             | crate::application::invocation_store::ToolIdentity::Check
             | crate::application::invocation_store::ToolIdentity::Diff => {
-                let (selected, mut route) = match self.tool {
+                let (selected, route) = match self.tool {
                     crate::application::invocation_store::ToolIdentity::View
                     | crate::application::invocation_store::ToolIdentity::Resolve => {
                         match self.arguments.get("at").and_then(serde_json::Value::as_str) {
@@ -679,28 +681,13 @@ impl ActorBoundInvocation {
                         "logical read admission selected no actor-owned source sets".to_string()
                     );
                 }
-                let mut sources = Vec::with_capacity(selected.len());
-                for source in selected {
-                    let fence = match self.actor.capture_logical_read_revision(
-                        &source.binding,
-                        logical_deadline,
-                        cancellation,
-                    ) {
-                        Ok(fence) => fence,
-                        Err(error) if error.kind() == RetainedRevisionErrorKind::Deadline => {
-                            sources.clear();
-                            route = ActorLogicalReadRoute::Rejected(Box::new(
-                                logical_read_deadline_result(),
-                            ));
-                            break;
-                        }
-                        Err(error) => return Err(error.to_string()),
-                    };
-                    sources.push(ActorLogicalReadSourceLease {
+                let sources = selected
+                    .into_iter()
+                    .map(|source| ActorLogicalReadSourceLease {
                         binding: source.binding.clone(),
-                        fence,
-                    });
-                }
+                        read_identity: uuid::Uuid::new_v4().to_string(),
+                    })
+                    .collect();
                 ActorExecutionRevision::LogicalRead(ActorLogicalReadLease {
                     deadline: logical_deadline,
                     sources,
@@ -708,11 +695,14 @@ impl ActorBoundInvocation {
                     route,
                 })
             }
-            _ => ActorExecutionRevision::Legacy(self.actor.capture_revision(
-                &self.provider_root,
-                ProviderDeadline::from_budget(ACTOR_OPERATION_BUDGET),
-                cancellation,
-            )?),
+            _ => ActorExecutionRevision::LayoutRead(ActorLayoutReadLease {
+                deadline: logical_deadline,
+                bindings: self
+                    .read_sources
+                    .iter()
+                    .map(|source| source.binding.clone())
+                    .collect(),
+            }),
         };
         Ok(ActorBoundExecution {
             invocation: self,
@@ -764,6 +754,8 @@ pub(crate) struct ActorBoundExecution {
 }
 
 enum ActorExecutionRevision {
+    #[cfg(test)]
+    #[allow(dead_code)]
     Legacy(WorkspaceRevisionFence),
     LogicalRead(ActorLogicalReadLease),
     /// `find` reads the physical layout of the admitted roots and answers a
@@ -911,12 +903,9 @@ impl ActorBoundExecution {
                         self.invocation.workspace_identity_hash.as_str(),
                         source.binding.source_set_name()
                     ),
-                    fence: source.fence.clone(),
+                    read_identity: source.read_identity.clone(),
                     deadline: lease.deadline,
-                    registration_cache: self
-                        .invocation
-                        .actor
-                        .configuration_registration_cache(&source.binding)?,
+                    registration_cache: Arc::new(RegistrationCache::default()),
                 })
             })
             .collect()
@@ -944,12 +933,6 @@ impl ActorBoundExecution {
                 .find(|source| source.binding.source_set_name() == name)
                 .ok_or_else(|| "a declared parent source is unavailable".to_string())?;
             self.invocation.actor.validate_binding(&source.binding)?;
-            let fence = self
-                .invocation
-                .actor
-                .capture_logical_read_revision(&source.binding, lease.deadline, cancellation)
-                .map_err(|error| error.to_string())?;
-
             if !lease
                 .sources
                 .iter()
@@ -957,7 +940,7 @@ impl ActorBoundExecution {
             {
                 fences.push(ActorLogicalReadSourceLease {
                     binding: source.binding.clone(),
-                    fence,
+                    read_identity: uuid::Uuid::new_v4().to_string(),
                 });
             }
         }
@@ -1014,17 +997,15 @@ impl ActorBoundExecution {
         &self,
         provider: &str,
         profile: &str,
+        generation: &str,
         work: W,
     ) -> Result<(IndexWorkIdentity, SharedWorkLease<(), LongWorkFailure>), String>
     where
         W: FnOnce(SharedWorkProducer) -> Result<(), LongWorkFailure> + Send + 'static,
     {
-        let ActorExecutionRevision::Legacy(revision) = &self.revision else {
-            return Err("index work is unavailable to a logical read invocation".to_string());
-        };
         self.invocation.actor.join_index_work(
             &self.invocation.provider_root,
-            revision,
+            generation,
             provider,
             profile,
             work,
@@ -1092,6 +1073,7 @@ impl ActorBoundExecution {
         cancellation: &CancellationToken,
     ) -> Result<Result<DomainResult, InvocationFailure>, String> {
         match self.revision {
+            #[cfg(test)]
             ActorExecutionRevision::Legacy(revision) => self
                 .invocation
                 .actor
@@ -1107,7 +1089,31 @@ impl ActorBoundExecution {
                 ),
             // A layout directory publishes no revision state: `find` neither
             // captures a lease nor confirms one, so its result stands as read.
-            ActorExecutionRevision::LayoutRead(_) => Ok(staged),
+            ActorExecutionRevision::LayoutRead(lease) => {
+                if staged.is_err() {
+                    return Ok(staged);
+                }
+                for binding in &lease.bindings {
+                    self.invocation.actor.validate_binding(binding)?;
+                }
+                if matches!(
+                    self.invocation.tool,
+                    crate::application::invocation_store::ToolIdentity::Search
+                        | crate::application::invocation_store::ToolIdentity::Resolve
+                ) {
+                    if cancellation.is_cancelled() {
+                        return Ok(Ok(DomainResult::canonical_rejection(
+                            None,
+                            RefusalCode::Cancelled,
+                            "Source layout read was cancelled before publication.",
+                        )));
+                    }
+                    if lease.deadline.remaining().is_zero() {
+                        return Ok(Ok(logical_read_deadline_result()));
+                    }
+                }
+                Ok(staged)
+            }
             ActorExecutionRevision::LogicalRead(lease) => {
                 if let ActorLogicalReadRoute::Rejected(expected) = lease.route {
                     let is_closed_typed_rejection = staged.as_ref() == Ok(expected.as_ref());
@@ -1136,24 +1142,20 @@ impl ActorBoundExecution {
                         };
                     }
                 }
-                let mut sources = lease.sources;
-                sources.extend(parent_sources);
-                let fences = sources
-                    .into_iter()
-                    .map(|source| source.fence)
-                    .collect::<Vec<_>>();
-                match self.invocation.actor.publish_logical_read(
-                    &fences,
-                    staged,
-                    lease.deadline,
-                    cancellation,
-                ) {
-                    Ok(result) => Ok(result),
-                    Err(error) if error.kind() == RetainedRevisionErrorKind::Deadline => {
-                        Ok(Ok(logical_read_deadline_result()))
-                    }
-                    Err(error) => Err(error.to_string()),
+                for source in lease.sources.into_iter().chain(parent_sources) {
+                    self.invocation.actor.validate_binding(&source.binding)?;
                 }
+                if cancellation.is_cancelled() {
+                    return Ok(Ok(DomainResult::canonical_rejection(
+                        None,
+                        RefusalCode::Cancelled,
+                        "Logical source read was cancelled before publishing its result.",
+                    )));
+                }
+                if lease.deadline.remaining().is_zero() {
+                    return Ok(Ok(logical_read_deadline_result()));
+                }
+                Ok(staged)
             }
             ActorExecutionRevision::UnpublishedApply(confirmed) => {
                 if confirmed.load(std::sync::atomic::Ordering::Acquire) {

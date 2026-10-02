@@ -27,7 +27,7 @@ pub(crate) struct CatalogSemantics {
     pub(crate) check_reads_persisted_state: bool,
     pub(crate) apply_dry_run_uses_validator_registry: bool,
     pub(crate) diff_is_read_only: bool,
-    pub(crate) diff_cursor_carries_both_source_revisions: bool,
+    pub(crate) diff_cursor_keeps_the_saved_comparison: bool,
     pub(crate) diff_rejects_incomparable_node_kinds: bool,
     pub(crate) search_scope_is_logical_subtree_address: bool,
     pub(crate) docs_filters_source_kinds_not_provider_identities: bool,
@@ -293,7 +293,7 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                                 },
                             },
                             "dryRun": {"type": "boolean", "description": "Validate and return the plan without publishing when true.", "default": false},
-                            "ifRev": {"type": "string", "description": "Revision returned by a prior dryRun preview; required when dryRun is false."},
+                            "ifRev": {"type": "string", "description": "Plan token returned by a prior dryRun preview of the same operations and inputs; required when dryRun is false."},
                         }),
                         json!(["at", "ops"]),
                     ),
@@ -322,7 +322,7 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                             "regex": {"type": "boolean", "description": "Use a regular expression for local text search.", "default": false},
                             "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20,
                                 "description": "Maximum matches per page, from 1 to 50. Provider roles may stop after their first 200 retrieved matches and mark the search incomplete."},
-                            "cursor": cursor("Continue a previous search page. Bound to the question, source sets, page limit and the relevant revision or complete retrieved result."),
+                            "cursor": cursor("Continue a previous search page. Bound to the question, source sets and page limit. Text search reads live sources; indexed providers report freshness and the build generation when known."),
                         }),
                         json!(["query"]),
                     ),
@@ -387,7 +387,7 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                 check_reads_persisted_state: true,
                 apply_dry_run_uses_validator_registry: true,
                 diff_is_read_only: true,
-                diff_cursor_carries_both_source_revisions: true,
+                diff_cursor_keeps_the_saved_comparison: true,
                 diff_rejects_incomparable_node_kinds: true,
                 search_scope_is_logical_subtree_address: true,
                 docs_filters_source_kinds_not_provider_identities: true,
@@ -919,7 +919,7 @@ mod tests {
         assert!(catalog.semantics.check_reads_persisted_state);
         assert!(catalog.semantics.apply_dry_run_uses_validator_registry);
         assert!(catalog.semantics.diff_is_read_only);
-        assert!(catalog.semantics.diff_cursor_carries_both_source_revisions);
+        assert!(catalog.semantics.diff_cursor_keeps_the_saved_comparison);
         assert!(catalog.semantics.diff_rejects_incomparable_node_kinds);
         assert!(
             catalog

@@ -28,10 +28,10 @@ Preview or atomically apply typed edits to one logically addressed 1C node.
 | --- | --- | --- | --- |
 | `at` | string | да | Qualified logical address: <sourceSet>:<Kind>[.<Name>...]. Omit only for workspace bootstrap where allowed. |
 | `dryRun` | boolean | нет | Validate and return the plan without publishing when true. |
-| `ifRev` | string | по условию | Revision returned by a prior dryRun preview; required when dryRun is false. |
+| `ifRev` | string | по условию | Plan token returned by a prior dryRun preview of the same operations and inputs; required when dryRun is false. |
 | `ops` | array | да | Ordered operations advertised by the target node's can data. |
 
-**Результат сейчас:** Для `props.set` и `attribute.add/set/remove` доказаны общий ordered staged planner, одинаковый postimage/effect plan hash в dry-run/real и атомарная retained-публикация (отвечают типизированным `data`)
+**Результат сейчас:** Поддержанные типизированные операции проходят общий последовательный планировщик и атомарную публикацию. Токен `rev` связывает запрос, прочитанные входы и ожидаемые результаты конкретного плана; применение передаёт его в `ifRev`. Посторонние файлы не входят в эту проверку. (отвечают типизированным `data`)
 
 **Целевой контракт:** Спроектировать недостающие object/relation contracts, затем переносить остальные типизированные семейства операций
 
@@ -76,9 +76,9 @@ Compare two readable logical nodes of the same kind without changing files.
 | `limit` | integer | нет | Maximum differences to return. |
 | `right` | string | да | Qualified logical address of the right node. |
 
-**Результат сейчас:** Сравнивает два узла одного логического вида и возвращает bounded JSON changes с общей revision; закрытые `paths`/`sections` фильтры поддержаны, cursor пока неподдержан (отвечают типизированным `data`)
+**Результат сейчас:** Сравнивает два узла одного логического вида и возвращает bounded JSON changes без общей ревизии исходников; закрытые `paths`/`sections` фильтры поддержаны, cursor пока неподдержан (отвечают типизированным `data`)
 
-**Целевой контракт:** Добавить предметные diff-проекции и revision-bound pagination
+**Целевой контракт:** Добавить предметные diff-проекции и продолжение сохранённого сравнения
 
 **Сценарии:**
 
@@ -162,7 +162,7 @@ Search one corpus for a query: BSL module text, or the names and synonyms of met
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
 | `corpus` | string | нет | Where to search: `text` matches BSL module content and answers scope, line, column and snippet; `names` matches metadata names and synonyms and answers at, kind and title. Defaults to `text`. |
-| `cursor` | string | нет | Continue a previous search page. Bound to the question, source sets, page limit and the relevant revision or complete retrieved result. |
+| `cursor` | string | нет | Continue a previous search page. Bound to the question, source sets and page limit. Text search reads live sources; indexed providers report freshness and the build generation when known. |
 | `kind` | string | нет | `names` corpus only: narrow the search to one logical node kind. |
 | `limit` | integer | нет | Maximum matches per page, from 1 to 50. Provider roles may stop after their first 200 retrieved matches and mark the search incomplete. |
 | `query` | string | да | Literal BSL text, symbol, or metadata name to search for. |
@@ -170,7 +170,7 @@ Search one corpus for a query: BSL module text, or the names and synonyms of met
 | `role` | string | нет | `text` corpus only: which provider answers. `lexical` matches literally, `symbol` uses the symbol index, `semantic` matches by meaning. Omit for the literal search Unica performs itself. |
 | `scope` | string | нет | logical subtree address |
 
-**Результат сейчас:** Локальный поиск по BSL и именам и поиск через поставщика возвращают `data.matches`, `page.stoppedBy` и, пока есть следующие полученные совпадения, `cursor`. Текстовый курсор повторно читает исходники и проверяет их ревизии; курсоры имён и поставщика повторно собирают ответ и проверяют его отпечаток. Если проверяемые сведения изменились, приходит `stale_cursor`; повтор того же курсора возвращает ту же страницу. Локальный текстовый режим поддерживает литерал и regex. Кодовая роль запрашивает до 200 совпадений, но внутренние пределы bsl-analyzer и RLM могут остановить поиск раньше. Последняя страница полученного окна имеет `page.stoppedBy: complete`; при достижении квоты секция сохраняет `searchComplete: false`, `status: limitReached` и нижнюю оценку числа совпадений; при потере результата статус становится `partial`. При 200 полученных совпадениях ответ рекомендует уточнить запрос. (отвечают типизированным `data`)
+**Результат сейчас:** Локальный поиск по BSL и именам и поиск через поставщика возвращают `data.matches`, `page.stoppedBy` и, пока есть следующие полученные совпадения, `cursor`. Текстовый курсор повторно читает исходники и сообщает `dataFreshness: unknown`, `pageConsistency: live`: изменения могут сдвигать совпадения между страницами. Курсоры имён и поставщика повторно собирают ответ и проверяют его отпечаток; изменение такого ответа даёт `stale_cursor`. Ответы RLM сообщают поколение сборки и неизвестную актуальность относительно исходников, включая пустой результат. Ответы bsl-analyzer также помечают актуальность как неизвестную; поколение его собственного индекса Unica не определяет. Общая ревизия дерева не вычисляется. Локальный текстовый режим поддерживает литерал и regex. Кодовая роль запрашивает до 200 совпадений, но внутренние пределы bsl-analyzer и RLM могут остановить поиск раньше. Последняя страница полученного окна имеет `page.stoppedBy: complete`; при достижении квоты секция сохраняет `searchComplete: false`, `status: limitReached` и нижнюю оценку числа совпадений; при потере результата статус становится `partial`. При 200 полученных совпадениях ответ рекомендует уточнить запрос. (отвечают типизированным `data`)
 
 **Целевой контракт:** достигнут
 
@@ -243,7 +243,7 @@ Inspect the workspace with no arguments, or read one logical 1C node by address.
 | `filter` | object | нет | Optional projection such as sections; valid only with at. |
 | `limit` | integer | нет | Maximum child items per addressed view page; a preferred 64 KiB page size may stop earlier, but an indivisible item remains whole. |
 
-**Результат сейчас:** Без аргументов `data` описывает workspace, `v8project.yaml`, source sets, infobase target, readiness и только релевантный setup; infobase-only workspace получает точные preview-продолжения CF и DT; обычная адресная коллекция `view` возвращает до 20 элементов по умолчанию (максимум 50) с целевым размером страницы 64 КиБ; неделимый элемент возвращается целиком до технического предела результата, `page.stoppedBy` называет `limit`, `bytes` или `complete`, курсор продолжает ту же ревизию; ветвь графа вызовов пока не проходит через эту пагинацию; с квалифицированным `at` узел содержит закрытые секции `props`/`branches`/`can`/`limits`/`items` (отвечают типизированным `data`)
+**Результат сейчас:** Без аргументов `data` описывает workspace, `v8project.yaml`, source sets, infobase target, readiness и только релевантный setup; infobase-only workspace получает точные preview-продолжения CF и DT; обычная адресная коллекция `view` возвращает до 20 элементов по умолчанию (максимум 50) с целевым размером страницы 64 КиБ; неделимый элемент возвращается целиком до технического предела результата, `page.stoppedBy` называет `limit`, `bytes` или `complete`, курсор продолжает сохранённый снимок; ветвь графа вызовов сохраняет полученные связи для продолжения; с квалифицированным `at` узел содержит закрытые секции `props`/`branches`/`can`/`limits`/`items` (отвечают типизированным `data`)
 
 **Целевой контракт:** Расширять проекции через закрытые `filter`, не возвращая физические пути
 
@@ -252,4 +252,4 @@ Inspect the workspace with no arguments, or read one logical 1C node by address.
 - Обнаружить workspace и получить точный рецепт v8project.yaml до source admission
 - Распознать существующую ИБ без исходников и предложить preview выгрузки CF или DT
 - Прочитать конфигурацию или объект метаданных по квалифицированному адресу
-- Получить наблюдаемую структуру узла и revision для последующей проверки
+- Получить наблюдаемую структуру узла без вычисления ревизии дерева исходников

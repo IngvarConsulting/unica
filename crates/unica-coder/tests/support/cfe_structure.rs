@@ -262,29 +262,26 @@ fn canonical_stdio_borrow_refresh_preserves_module_and_identity() {
         borrow_args["dryRun"] = json!(false);
         borrow_args["ifRev"] = repeated_preview["rev"].clone();
         let refreshed = call(&mut mcp, "unica.apply", borrow_args.clone());
-        if kind == "Catalog" {
-            assert_ne!(refreshed["rev"], repeated_preview["rev"]);
-        } else {
-            assert_eq!(refreshed["rev"], repeated_preview["rev"]);
-        }
+        assert_eq!(refreshed["rev"], repeated_preview["rev"]);
         assert_eq!(
             fs::read_to_string(&descriptor).unwrap(),
             expected_refresh,
             "refresh must change only the transferred property, keeping UUID, generated type IDs and module state bytes"
         );
         assert_eq!(fs::read(&module).unwrap(), bsl);
-        // After applying the parent change, a true repeat has no new revision
-        // and leaves both metadata and module bytes identical.
+        // A repeat previews its own no-op plan and leaves metadata and module
+        // bytes identical through preview and publication.
         borrow_args["dryRun"] = json!(true);
-        borrow_args["ifRev"] = refreshed["rev"].clone();
+        borrow_args.as_object_mut().unwrap().remove("ifRev");
         let noop_preview = call(&mut mcp, "unica.apply", borrow_args.clone());
-        assert_eq!(noop_preview["rev"], refreshed["rev"]);
+        assert!(noop_preview["changed"].as_array().is_none_or(Vec::is_empty));
         assert_eq!(fs::read_to_string(&descriptor).unwrap(), expected_refresh);
         assert_eq!(fs::read(&module).unwrap(), bsl);
         borrow_args["dryRun"] = json!(false);
         borrow_args["ifRev"] = noop_preview["rev"].clone();
         let noop = call(&mut mcp, "unica.apply", borrow_args);
-        assert_eq!(noop["rev"], refreshed["rev"]);
+        assert_eq!(noop["rev"], noop_preview["rev"]);
+        assert!(noop["changed"].as_array().is_none_or(Vec::is_empty));
         assert_eq!(fs::read_to_string(&descriptor).unwrap(), expected_refresh);
         assert_eq!(fs::read(&module).unwrap(), bsl);
         let checked = call(&mut mcp, "unica.check", json!({"at":"ext:Configuration"}));

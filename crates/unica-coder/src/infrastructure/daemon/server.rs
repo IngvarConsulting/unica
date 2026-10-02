@@ -2903,14 +2903,14 @@ fn main() {
             let read = local_initializer(&method.block.stmts[2], "read")?;
             let read_args = call_arguments(
                 read,
-                "crate::infrastructure::v13_read_port::ProviderReadAuthority::new_with_revision_lease",
+                "crate::infrastructure::v13_read_port::ProviderReadAuthority::new_local_snapshot",
             )?;
             let expected_read_args = [
                 "self.binding.source_set_name()",
                 "self.identity.clone()",
                 "self.binding.source_kind()",
                 "self.binding.retained_root()",
-                "self.fence.revision()",
+                "self.read_identity.clone()",
             ];
             if read_args.len() != expected_read_args.len()
                 || read_args
@@ -3607,10 +3607,10 @@ fn main() {
         let expected_construction_fields = std::collections::BTreeMap::from([
             ("binding", "source.binding.clone()"),
             ("deadline", "lease.deadline"),
-            ("fence", "source.fence.clone()"),
+            ("read_identity", "source.read_identity.clone()"),
             (
                 "registration_cache",
-                "self.invocation.actor.configuration_registration_cache(&source.binding)?",
+                "Arc::new(RegistrationCache::default())",
             ),
             (
                 "identity",
@@ -3660,7 +3660,7 @@ fn main() {
         let expected_fields = std::collections::BTreeMap::from([
             ("binding".to_string(), "ProviderRootBinding".to_string()),
             ("deadline".to_string(), "ProviderDeadline".to_string()),
-            ("fence".to_string(), "WorkspaceLogicalReadFence".to_string()),
+            ("read_identity".to_string(), "String".to_string()),
             ("identity".to_string(), "String".to_string()),
             (
                 "registration_cache".to_string(),
@@ -3755,7 +3755,7 @@ fn main() {
                 (
                     true,
                     "fn revision_identity(&self) -> String",
-                    "self.fence.revision().revision_identity()",
+                    "self.read_identity.clone()",
                 ),
             ),
             (
@@ -4780,8 +4780,8 @@ struct ActorLogicalReadLease {"#,
                 "identity: String::from(\"caller-supplied\"),",
             ),
             (
-                "fence: source.fence.clone(),",
-                "fence: lease.sources[0].fence.clone(),",
+                "read_identity: source.read_identity.clone(),",
+                "read_identity: lease.sources[0].read_identity.clone(),",
             ),
             (
                 "deadline: lease.deadline,",
@@ -4857,9 +4857,13 @@ struct ActorLogicalReadLease {"#,
     fn actor_read_source_capability_ast_audit_rejects_hardcoded_source_kind() {
         let source = include_str!("invocation_service.rs");
         let hardcoded_kind = source.replacen(
-            "self.binding.source_kind(),\n                self.binding.retained_root(),",
-            "SourceSetKind::Configuration,\n                self.binding.retained_root(),",
+            "self.binding.source_kind(),\n            self.binding.retained_root(),",
+            "SourceSetKind::Configuration,\n            self.binding.retained_root(),",
             1,
+        );
+        assert_ne!(
+            hardcoded_kind, source,
+            "the hostile fixture must alter the local snapshot constructor"
         );
         assert!(
             audit_actor_read_source_capability_api(&hardcoded_kind).is_err(),
@@ -5657,7 +5661,10 @@ struct ActorLogicalReadLease {"#,
             serde_json::json!({"at": "main:Catalog.Bare"}),
         );
         assert!(current.ok, "{current:?}");
-        let admitted_revision = current.rev.expect("view carries the admitted revision");
+        assert!(
+            current.rev.is_none(),
+            "read responses do not carry an apply fence"
+        );
         let expected_revision = "unica-source-sha256-v1:0:stale";
         let stale = call(
             ToolIdentity::Apply,
@@ -5670,8 +5677,9 @@ struct ActorLogicalReadLease {"#,
         );
         let stale_message = stale.diagnostics[0]["message"].as_str().unwrap();
         assert!(
-            stale_message.contains(expected_revision) && stale_message.contains(&admitted_revision),
-            "the conflict names both revisions for recovery: {stale_message}"
+            stale_message.contains(expected_revision)
+                && stale_message.contains("unica-apply-plan-v2:"),
+            "the conflict names the expected and newly planned markers: {stale_message}"
         );
 
         let bare_scope = call(
@@ -6157,7 +6165,7 @@ struct ActorLogicalReadLease {"#,
     }
 
     #[test]
-    fn borrowing_view_rejects_parent_changes_before_final_publication() {
+    fn borrowing_view_publishes_saved_parent_facts_and_new_read_rechecks_parent() {
         let workspace = borrowing_view_fixture("normal");
         let runtime = v13_runtime_for_borrowing_test();
         let request = InvocationRequest::new(
@@ -6194,9 +6202,31 @@ struct ActorLogicalReadLease {"#,
             "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
         );
         std::fs::write(parent, text).unwrap();
+        let published = execution
+            .publish(Ok(result), &cancellation)
+            .unwrap()
+            .unwrap();
+        assert!(published.ok, "{published:?}");
+        assert_eq!(
+            published.data.as_ref().unwrap()["props"]["parentStatus"],
+            "resolved"
+        );
+        assert_eq!(
+            published.data.as_ref().unwrap()["props"]["extends"],
+            "parent:Catalog.Items"
+        );
+        let current = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::View,
+            serde_json::json!({"at":"ext:Catalog.Items"}),
+        );
+        assert!(current.ok, "{current:?}");
+        let props = &current.data.as_ref().unwrap()["props"];
+        assert_eq!(props["parentStatus"], "not_found", "{current:?}");
         assert!(
-            execution.publish(Ok(result), &cancellation).is_err(),
-            "a stale parent address must not escape"
+            props.get("extends").is_none(),
+            "a new read must not reuse the old parent proof"
         );
     }
 
@@ -6591,7 +6621,7 @@ struct ActorLogicalReadLease {"#,
     /// диагностики — потерянное обновление в чистом виде. Пример на один план
     /// такого не показывает, поэтому сценарий строится на двух.
     #[test]
-    fn two_plans_on_one_revision_cannot_both_publish() {
+    fn conflicting_preview_plans_cannot_both_publish() {
         let workspace = tempfile::tempdir().unwrap();
         let source = workspace.path().join("src");
         std::fs::create_dir_all(source.join("Documents")).unwrap();
@@ -6651,10 +6681,15 @@ struct ActorLogicalReadLease {"#,
         // Оба агента планируют по одному и тому же состоянию исходников.
         let first_fence = preview("от первого");
         let second_fence = preview("от второго");
-        assert_eq!(
+        assert_ne!(
             first_fence, second_fence,
-            "планы построены на одной ревизии"
+            "each token binds its own operations and postimages"
         );
+        // Changes outside the plan inputs do not invalidate its preview.
+        std::fs::write(source.join("unrelated.bsl"), "unrelated change").unwrap();
+        let wrong_arguments = publish("подмена операции", &first_fence);
+        assert!(!wrong_arguments.ok, "{wrong_arguments:?}");
+        assert_eq!(wrong_arguments.diagnostics[0]["code"], "stale_revision");
 
         let first = publish("от первого", &first_fence);
         assert!(first.ok, "{first:?}");
@@ -6995,44 +7030,32 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn logical_read_admission_deadline_returns_canonical_rejection() {
-        assert_logical_read_deadline_returns_canonical_rejection(
-            LogicalReadDeadlineCase::Admission,
-        );
+        assert_logical_read_deadline_case(LogicalReadDeadlineCase::Admission);
     }
 
     #[test]
     fn logical_read_publication_deadline_discards_staged_source_data() {
-        assert_logical_read_deadline_returns_canonical_rejection(
-            LogicalReadDeadlineCase::Publication,
-        );
+        assert_logical_read_deadline_case(LogicalReadDeadlineCase::Publication);
     }
 
     #[test]
-    fn logical_read_admission_scan_deadline_returns_canonical_rejection() {
-        assert_logical_read_deadline_returns_canonical_rejection(
-            LogicalReadDeadlineCase::AdmissionScan,
-        );
+    fn logical_read_admission_does_not_scan_source_revisions() {
+        assert_logical_read_deadline_case(LogicalReadDeadlineCase::AdmissionNoScan);
     }
 
     #[test]
-    fn logical_read_publication_scan_deadline_discards_staged_source_data() {
-        assert_logical_read_deadline_returns_canonical_rejection(
-            LogicalReadDeadlineCase::PublicationScan,
-        );
+    fn logical_read_publication_does_not_scan_source_revisions() {
+        assert_logical_read_deadline_case(LogicalReadDeadlineCase::PublicationNoScan);
     }
 
     #[test]
     fn logical_read_expired_clock_does_not_reclassify_execution_failure() {
-        assert_logical_read_deadline_returns_canonical_rejection(
-            LogicalReadDeadlineCase::ExecutionFailure,
-        );
+        assert_logical_read_deadline_case(LogicalReadDeadlineCase::ExecutionFailure);
     }
 
     #[test]
-    fn logical_read_parent_admission_deadline_discards_staged_extension_data() {
-        assert_logical_read_deadline_returns_canonical_rejection(
-            LogicalReadDeadlineCase::ParentAdmissionScan,
-        );
+    fn logical_read_parent_publication_deadline_discards_staged_extension_data() {
+        assert_logical_read_deadline_case(LogicalReadDeadlineCase::ParentPublication);
     }
 
     #[test]
@@ -7050,20 +7073,20 @@ struct ActorLogicalReadLease {"#,
     #[derive(Clone, Copy)]
     enum LogicalReadDeadlineCase {
         Admission,
-        AdmissionScan,
+        AdmissionNoScan,
         Publication,
-        PublicationScan,
+        PublicationNoScan,
         ExecutionFailure,
-        ParentAdmissionScan,
+        ParentPublication,
     }
 
-    fn assert_logical_read_deadline_returns_canonical_rejection(case: LogicalReadDeadlineCase) {
+    fn assert_logical_read_deadline_case(case: LogicalReadDeadlineCase) {
         assert_logical_read_deadline_for_tool(case, ToolIdentity::View);
     }
 
     fn assert_logical_read_deadline_for_tool(case: LogicalReadDeadlineCase, tool: ToolIdentity) {
-        let parent_admission = matches!(case, LogicalReadDeadlineCase::ParentAdmissionScan);
-        let workspace = if parent_admission {
+        let parent_publication = matches!(case, LogicalReadDeadlineCase::ParentPublication);
+        let workspace = if parent_publication {
             borrowing_view_fixture("normal")
         } else {
             source_selection_read_fixture().0
@@ -7077,7 +7100,7 @@ struct ActorLogicalReadLease {"#,
                 serde_json::json!({"left": "main:Catalog.Items", "right": "main:Catalog.Items"})
             }
             _ => {
-                serde_json::json!({"at": if parent_admission { "ext:Catalog.Items" } else { "main:Catalog.Items" }})
+                serde_json::json!({"at": if parent_publication { "ext:Catalog.Items" } else { "main:Catalog.Items" }})
             }
         };
         let request = InvocationRequest::new(
@@ -7108,7 +7131,11 @@ struct ActorLogicalReadLease {"#,
         });
         let deadline = ProviderDeadline::with_clock(expires, logical_read_now);
         let cancellation = CancellationToken::new();
-        let _admission_scan = matches!(case, LogicalReadDeadlineCase::AdmissionScan).then(|| {
+        let _admission_scan = matches!(
+            case,
+            LogicalReadDeadlineCase::AdmissionNoScan | LogicalReadDeadlineCase::ParentPublication
+        )
+        .then(|| {
             crate::infrastructure::source_revision::set_retained_scan_test_mutation(
                 crate::infrastructure::source_revision::RetainedScanTestMutationPoint::ScanStart,
                 move || set_logical_read_now(expires),
@@ -7121,34 +7148,28 @@ struct ActorLogicalReadLease {"#,
             });
         let service =
             crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default();
-        let _parent_scan = parent_admission.then(|| {
-            crate::infrastructure::source_revision::set_retained_scan_test_mutation(
-                crate::infrastructure::source_revision::RetainedScanTestMutationPoint::ScanStart,
-                move || set_logical_read_now(expires),
-            )
-        });
         let staged = service.execute(&execution, cancellation.clone()).unwrap();
-        if parent_admission {
+        if parent_publication {
             assert_eq!(
                 logical_read_now(),
-                expires,
-                "parent scan must exhaust the deadline"
+                started,
+                "parent read must not run the old revision scan"
             );
             assert_eq!(
                 staged.data.as_ref().unwrap()["props"]["parentStatus"],
-                "unavailable"
+                "resolved"
             );
         }
         if !matches!(
             case,
-            LogicalReadDeadlineCase::Admission | LogicalReadDeadlineCase::AdmissionScan
+            LogicalReadDeadlineCase::Admission | LogicalReadDeadlineCase::AdmissionNoScan
         ) {
             assert!(staged.ok, "{staged:?}");
             assert!(
                 staged.data.is_some(),
                 "the reader must stage actual source data"
             );
-            if !matches!(case, LogicalReadDeadlineCase::PublicationScan) {
+            if !matches!(case, LogicalReadDeadlineCase::PublicationNoScan) {
                 set_logical_read_now(expires);
             }
         }
@@ -7161,8 +7182,7 @@ struct ActorLogicalReadLease {"#,
             return;
         }
         let _publication_scan =
-            matches!(case, LogicalReadDeadlineCase::PublicationScan).then(|| {
-                execution.mark_source_revision_dirty_for_test();
+            matches!(case, LogicalReadDeadlineCase::PublicationNoScan).then(|| {
                 crate::infrastructure::source_revision::set_retained_scan_test_mutation(
                 crate::infrastructure::source_revision::RetainedScanTestMutationPoint::ScanStart,
                 move || set_logical_read_now(expires),
@@ -7174,6 +7194,22 @@ struct ActorLogicalReadLease {"#,
                 panic!("deadline must remain a domain rejection at publication: {error}")
             })
             .expect("deadline must not become an invocation failure");
+        if matches!(
+            case,
+            LogicalReadDeadlineCase::AdmissionNoScan | LogicalReadDeadlineCase::PublicationNoScan
+        ) {
+            assert_eq!(
+                logical_read_now(),
+                started,
+                "logical read invoked a global source revision scan"
+            );
+            assert!(result.ok, "{result:?}");
+            assert!(
+                result.data.is_some(),
+                "successful read must keep source data"
+            );
+            return;
+        }
         assert!(!result.ok);
         assert_eq!(result.diagnostics[0]["code"], "deadline_exceeded");
         assert_eq!(result.diagnostics[0]["outcome"], "retry");
@@ -7204,7 +7240,7 @@ struct ActorLogicalReadLease {"#,
     }
 
     #[test]
-    pub(crate) fn hidden_v13_logical_lease_survives_the_handoff_window_and_confirms_once() {
+    pub(crate) fn logical_reads_preserve_deadline_without_source_scans_or_mutation_lane_wait() {
         let workspace = tempfile::tempdir().unwrap();
         let source = workspace.path().join("src");
         let sibling = workspace.path().join("dep");
@@ -7263,6 +7299,10 @@ struct ActorLogicalReadLease {"#,
             .actor_for_test()
             .source_revision_service(&sibling_binding)
             .unwrap();
+        let selected_revisions = invocation
+            .actor_for_test()
+            .source_revision_service(invocation.read_source_binding_for_test("main").unwrap())
+            .unwrap();
         let started = Instant::now();
         set_logical_read_now(started);
         let deadline =
@@ -7296,6 +7336,76 @@ struct ActorLogicalReadLease {"#,
             .execute(&execution, cancellation.clone())
             .expect("canonical v0.13 execution");
         assert!(result.ok, "canonical v0.13 execution must succeed");
+        assert!(result.rev.is_none());
+        assert_eq!(
+            selected_revisions.retained_scan_count(),
+            0,
+            "view admission and execution must not scan even the selected source tree"
+        );
+        for (tool, arguments) in [
+            (
+                ToolIdentity::Resolve,
+                serde_json::json!({"at":"main:Catalog.Items"}),
+            ),
+            (
+                ToolIdentity::Search,
+                serde_json::json!({"query":"Items","scope":"main:Configuration"}),
+            ),
+            (
+                ToolIdentity::Check,
+                serde_json::json!({"at":"main:Catalog.Items"}),
+            ),
+            (
+                ToolIdentity::Diff,
+                serde_json::json!({"left":"main:Catalog.Items","right":"main:Catalog.Items"}),
+            ),
+        ] {
+            let read_request = InvocationRequest::new(
+                tool,
+                arguments,
+                std::fs::canonicalize(workspace.path())
+                    .unwrap()
+                    .to_string_lossy(),
+                7_000,
+            )
+            .unwrap();
+            let read_invocation = bind_workspace_invocation(
+                &read_request,
+                &runtime.workspace_actors,
+                Arc::clone(&runtime.deliveries),
+                Arc::clone(&runtime.provider_hosts),
+                Arc::clone(&runtime.runtime_resources),
+                None,
+                runtime.capture_response_deadline_for_test(),
+            )
+            .unwrap();
+            let read_execution = read_invocation
+                .begin_execution_with_logical_deadline_for_test(&cancellation, deadline)
+                .unwrap();
+            let read_result = service
+                .execute(&read_execution, cancellation.clone())
+                .unwrap();
+            assert!(read_result.ok, "{tool:?}: {read_result:?}");
+            assert!(
+                read_result.rev.is_none(),
+                "{tool:?} must not expose a source revision"
+            );
+            let published = read_execution
+                .publish(Ok(read_result), &cancellation)
+                .unwrap()
+                .unwrap();
+            assert!(published.ok);
+            assert_eq!(
+                selected_revisions.retained_scan_count(),
+                0,
+                "{tool:?} must not scan the selected source tree"
+            );
+            assert_eq!(
+                sibling_revisions.retained_scan_count(),
+                0,
+                "{tool:?} must not scan the unrelated source tree"
+            );
+        }
         let actor = Arc::clone(execution.actor_for_test());
         let legacy_fence = actor
             .capture_revision(execution.provider_root_for_test(), deadline, &cancellation)
@@ -7303,6 +7413,7 @@ struct ActorLogicalReadLease {"#,
         let held_publication = actor
             .begin_publication(&legacy_fence, deadline, &cancellation)
             .expect("hold the actor mutation lane");
+        let scans_before_publish = selected_revisions.retained_scan_count();
         let (published_tx, published_rx) = mpsc::channel();
         let publish_cancellation = cancellation.clone();
         std::thread::spawn(move || {
@@ -7311,20 +7422,19 @@ struct ActorLogicalReadLease {"#,
                 .send(execution.publish(Ok(result), &publish_cancellation))
                 .unwrap();
         });
-        assert!(
-            matches!(
-                published_rx.recv_timeout(Duration::from_millis(100)),
-                Err(mpsc::RecvTimeoutError::Timeout)
-            ),
-            "logical read publication must wait on the actor mutation lane"
-        );
-        drop(held_publication);
         let published = published_rx
             .recv_timeout(Duration::from_secs(2))
-            .expect("logical publication resumes after mutation lane release")
+            .expect("logical publication must not wait on the mutation lane")
             .unwrap()
             .unwrap();
+        drop(held_publication);
         assert!(published.ok);
+        assert!(published.rev.is_none());
+        assert_eq!(
+            selected_revisions.retained_scan_count(),
+            scans_before_publish,
+            "read publication must not scan the selected source tree"
+        );
         assert_eq!(
             sibling_revisions.retained_scan_count(),
             0,
@@ -7444,8 +7554,8 @@ struct ActorLogicalReadLease {"#,
         )
         .unwrap();
         assert!(
-            execution.publish(Ok(result), &cancellation).is_err(),
-            "a selected-source mutation must fail final retained confirmation"
+            execution.publish(Ok(result), &cancellation).is_ok(),
+            "a completed read remains usable after source content changes"
         );
     }
 
@@ -7800,7 +7910,7 @@ struct ActorLogicalReadLease {"#,
         release: Arc<(Mutex<bool>, Condvar)>,
     }
 
-    struct RevisionChangingIndexService {
+    struct GenerationChangingIndexService {
         producers: Arc<AtomicUsize>,
         producer_entered: mpsc::Sender<()>,
         joined: mpsc::Sender<IndexWorkIdentity>,
@@ -8494,7 +8604,7 @@ struct ActorLogicalReadLease {"#,
             };
             let (key, lease) = match &self.kind {
                 LongCapabilityKind::Index => invocation
-                    .join_index_work("rlm", "bsl-1", make_work())
+                    .join_index_work("rlm", "bsl-1", "test-build-1", make_work())
                     .map(|(key, lease)| (JoinedCapabilityIdentity::Index(key), lease))
                     .map_err(|_| InvocationFailure::new("index_failed", "index unavailable"))?,
                 LongCapabilityKind::Provider(key) => (
@@ -8523,7 +8633,7 @@ struct ActorLogicalReadLease {"#,
         }
     }
 
-    impl CanonicalInvocationService for RevisionChangingIndexService {
+    impl CanonicalInvocationService for GenerationChangingIndexService {
         fn prepare(
             &self,
             _invocation: &ActorBoundInvocation,
@@ -8540,18 +8650,27 @@ struct ActorLogicalReadLease {"#,
             let producer_entered = self.producer_entered.clone();
             let release = Arc::clone(&self.release);
             let (key, lease) = invocation
-                .join_index_work("rlm", "bsl-1", move |_| {
-                    producers.fetch_add(1, Ordering::SeqCst);
-                    producer_entered
-                        .send(())
-                        .expect("index producer observation");
-                    let (released, wake) = &*release;
-                    let mut released = released.lock().expect("index release");
-                    while !*released {
-                        released = wake.wait(released).expect("index release wait");
-                    }
-                    Ok(())
-                })
+                .join_index_work(
+                    "rlm",
+                    "bsl-1",
+                    if self.first_execution.load(Ordering::SeqCst) {
+                        "test-build-2"
+                    } else {
+                        "test-build-1"
+                    },
+                    move |_| {
+                        producers.fetch_add(1, Ordering::SeqCst);
+                        producer_entered
+                            .send(())
+                            .expect("index producer observation");
+                        let (released, wake) = &*release;
+                        let mut released = released.lock().expect("index release");
+                        while !*released {
+                            released = wake.wait(released).expect("index release wait");
+                        }
+                        Ok(())
+                    },
+                )
                 .map_err(|_| InvocationFailure::new("index_failed", "index unavailable"))?;
             self.joined.send(key).expect("index join observation");
             if !self.first_execution.swap(true, Ordering::SeqCst) {
@@ -9025,7 +9144,7 @@ fn main() {
     }
 
     #[test]
-    fn daemon_index_work_separates_worktrees_and_rejects_stale_revision_publication() {
+    fn daemon_index_work_separates_worktrees_and_build_generations() {
         // Distinct actor identities intentionally cannot join one Index key.
         let workspace_parent = tempfile::tempdir().unwrap();
         let roots = (0..2)
@@ -9088,8 +9207,8 @@ fn main() {
         );
         daemon.finish(owner);
 
-        // A new trusted source revision starts a new producer, and the result
-        // staged under the prior revision cannot cross the actor publication fence.
+        // A new build generation starts a separate producer; source edits do not
+        // invalidate an already admitted build result.
         let workspace = tempfile::tempdir().unwrap();
         std::fs::write(workspace.path().join("marker.txt"), "old").unwrap();
         std::fs::write(
@@ -9105,7 +9224,7 @@ fn main() {
         let release = Arc::new((Mutex::new(false), Condvar::new()));
         let (mark_dirty, dirty_request) = mpsc::channel();
         let (dirty_done, dirty_wait) = mpsc::channel();
-        let service = Arc::new(RevisionChangingIndexService {
+        let service = Arc::new(GenerationChangingIndexService {
             producers: Arc::clone(&producers),
             producer_entered,
             joined,
@@ -9139,7 +9258,7 @@ fn main() {
                     Duration::from_millis(OWNERSHIP_CONTRACT_WAIT_MS)
                 )
                 .status(),
-            InvocationStatus::Failed
+            InvocationStatus::Completed
         );
         let second = daemon.wait_terminal(
             &owner,
@@ -9240,7 +9359,7 @@ fn main() {
             "infrastructure::daemon::server::actor_capacity_tests::daemon_long_work_capabilities_handoff_before_wait_and_preserve_exact_ownership",
         );
         run_long_work_contract_obligation(
-            "infrastructure::daemon::server::actor_capacity_tests::daemon_index_work_separates_worktrees_and_rejects_stale_revision_publication",
+            "infrastructure::daemon::server::actor_capacity_tests::daemon_index_work_separates_worktrees_and_build_generations",
         );
         run_long_work_contract_obligation(
             "infrastructure::daemon::server::actor_capacity_tests::daemon_long_work_rejects_replaced_actor_root_before_reuse_or_publication",

@@ -8,6 +8,7 @@ use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::events::DomainEvent;
 use crate::domain::invocation::SafeIdentityHash;
 use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind};
+#[cfg(test)]
 use crate::domain::source_revision::SourceRevision;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::deadline_lock::{
@@ -16,17 +17,15 @@ use crate::infrastructure::deadline_lock::{
 use crate::infrastructure::native_operations::apply::{
     ApplyPlanError, ApplyPlanErrorKind, ApplyStagedState, ApplyStagingError, ApplyStagingErrorKind,
 };
-use crate::infrastructure::native_operations::compile_transaction::{
-    CompileTransaction, RetainedApplyRevisionTransients,
-};
+use crate::infrastructure::native_operations::compile_transaction::CompileTransaction;
 use crate::infrastructure::native_operations::event::PlannedApplyEffects;
 use crate::infrastructure::platform::filesystem::{
     path_starts_with_host_root, stable_path_identity_bytes, RetainedChildCapability,
     RetainedDirectoryCapability,
 };
+#[cfg(test)]
 use crate::infrastructure::source_revision::{
-    PreparedRevisionReconciliation, RetainedRevisionError, RetainedRevisionErrorKind,
-    RetainedRevisionLease, SourceRevisionService, WorkspaceStateScope,
+    RetainedRevisionError, RetainedRevisionErrorKind, RetainedRevisionLease, SourceRevisionService,
 };
 use crate::infrastructure::source_roots::{normalize_path_identity, GENERATED_DIR_NAME};
 use crate::infrastructure::source_selection_evidence::{
@@ -38,15 +37,17 @@ use crate::infrastructure::support_policy_evidence::{
     RetainedSupportPolicyEvidence, SupportPolicyEvidenceError, SupportPolicyEvidenceErrorKind,
     SupportPolicyMode,
 };
-use crate::infrastructure::v13_large_configuration::RegistrationCache;
 use crate::infrastructure::workspace_index::{IndexRunner, WorkspaceIndexService};
+use crate::infrastructure::workspace_state_scope::WorkspaceStateScope;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, Weak};
+#[cfg(test)]
+use std::sync::MutexGuard;
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 #[cfg(test)]
@@ -54,6 +55,7 @@ thread_local! {
     static LOGICAL_PUBLICATION_AFTER_CONFIRMATION_HOOK: std::cell::RefCell<
         Option<Box<dyn FnOnce()>>,
     > = std::cell::RefCell::new(None);
+    static APPLY_BEFORE_INPUT_CONFIRMATION_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = std::cell::RefCell::new(None);
     static APPLY_DRY_RUN_AFTER_CONFIRMATION_HOOK: std::cell::RefCell<
         Option<Box<dyn FnOnce()>>,
     > = std::cell::RefCell::new(None);
@@ -72,6 +74,20 @@ pub(crate) fn set_logical_publication_after_confirmation_hook(hook: impl FnOnce(
 #[cfg(test)]
 fn run_logical_publication_after_confirmation_hook() {
     LOGICAL_PUBLICATION_AFTER_CONFIRMATION_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+#[cfg(test)]
+fn set_apply_before_input_confirmation_hook(hook: impl FnOnce() + 'static) {
+    APPLY_BEFORE_INPUT_CONFIRMATION_HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+}
+
+#[cfg(test)]
+fn run_apply_before_input_confirmation_hook() {
+    APPLY_BEFORE_INPUT_CONFIRMATION_HOOK.with(|slot| {
         if let Some(hook) = slot.borrow_mut().take() {
             hook();
         }
@@ -117,7 +133,6 @@ pub(crate) const WARM_WORKSPACE_ACTORS: usize = 8;
 /// Idle time after which a warm actor is released together with its retained
 /// root descriptors and fence.
 pub(crate) const WARM_WORKSPACE_ACTOR_TTL: Duration = Duration::from_secs(600);
-const INDEX_FENCE_BUDGET: Duration = Duration::from_secs(7);
 static APPLY_WRITER_AUTHORITY_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -158,12 +173,12 @@ assert_not_impl_production!(FormResourceApplyAuthority<'static>: serde::de::Dese
 assert_not_impl_production!(DcsMxlApplyAuthority<'static>: Clone);
 assert_not_impl_production!(DcsMxlApplyAuthority<'static>: serde::Serialize);
 assert_not_impl_production!(DcsMxlApplyAuthority<'static>: serde::de::DeserializeOwned);
+#[cfg(test)]
 assert_not_impl_production!(ActorRevisionServiceAuthority: Clone);
+#[cfg(test)]
 assert_not_impl_production!(ActorRevisionServiceAuthority: serde::Serialize);
+#[cfg(test)]
 assert_not_impl_production!(ActorRevisionServiceAuthority: serde::de::DeserializeOwned);
-assert_not_impl_production!(RetainedApplyRevisionTransients<'static>: Clone);
-assert_not_impl_production!(RetainedApplyRevisionTransients<'static>: serde::Serialize);
-assert_not_impl_production!(RetainedApplyRevisionTransients<'static>: serde::de::DeserializeOwned);
 assert_not_impl_production!(PlannedApplyEffects: Clone);
 assert_not_impl_production!(PlannedApplyEffects: serde::Serialize);
 assert_not_impl_production!(PlannedApplyEffects: serde::de::DeserializeOwned);
@@ -397,6 +412,7 @@ impl ProviderRootBinding {
 /// Its private fields bind the retained root, actor state namespace and source
 /// profile together; infrastructure consumers may use the proof but cannot
 /// assemble or replay a mismatched tuple.
+#[cfg(test)]
 pub(in crate::infrastructure) struct ActorRevisionServiceAuthority {
     source_root: Arc<RetainedDirectoryCapability>,
     state_scope: WorkspaceStateScope,
@@ -405,6 +421,7 @@ pub(in crate::infrastructure) struct ActorRevisionServiceAuthority {
     source_profile: SourceProfile,
 }
 
+#[cfg(test)]
 impl ActorRevisionServiceAuthority {
     pub(super) fn source_root(&self) -> &Path {
         self.source_root.path()
@@ -463,6 +480,7 @@ pub(in crate::infrastructure) fn apply_writer_authority_for_test() -> ApplyWrite
 }
 
 #[derive(Clone)]
+#[cfg(test)]
 pub(crate) struct WorkspaceRevisionFence {
     actor_identity: WorkspaceIdentity,
     actor_instance: ActorInstanceId,
@@ -474,6 +492,7 @@ pub(crate) struct WorkspaceRevisionFence {
 /// The caller can copy its revision identity into typed readers, but cannot
 /// substitute a root, revision service or actor identity at publication.
 #[derive(Clone)]
+#[cfg(test)]
 pub(crate) struct WorkspaceLogicalReadFence {
     actor_identity: WorkspaceIdentity,
     actor_instance: ActorInstanceId,
@@ -481,19 +500,17 @@ pub(crate) struct WorkspaceLogicalReadFence {
     revision: RetainedRevisionLease,
 }
 
+#[cfg(test)]
 impl WorkspaceLogicalReadFence {
     pub(crate) fn revision(&self) -> RetainedRevisionLease {
         self.revision.clone()
     }
 }
 
-/// Why an apply admission was refused. A stale `ifRev` is a caller-visible
-/// conflict with its own recovery strategy (re-read the revision and retry),
-/// so it is distinguished from every infrastructure failure instead of
-/// travelling as one more opaque string.
+/// Admission failures describe root, policy and layout authority. The plan
+/// token is compared only after the concrete plan has been prepared.
 #[derive(Debug)]
 pub(crate) enum ApplyAdmissionError {
-    StaleRevision { expected: String, admitted: String },
     Other(String),
 }
 
@@ -512,10 +529,6 @@ impl From<ApplyAdmissionError> for String {
 impl std::fmt::Display for ApplyAdmissionError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::StaleRevision { expected, admitted } => write!(
-                formatter,
-                "apply ifRev is stale: expected {expected}, admitted {admitted}"
-            ),
             Self::Other(message) => message.fmt(formatter),
         }
     }
@@ -524,15 +537,15 @@ impl std::fmt::Display for ApplyAdmissionError {
 impl std::error::Error for ApplyAdmissionError {}
 
 /// Actor-issued authority for planning exactly one hidden-v0.13 apply batch.
-/// All identity, root, revision, deadline and cancellation fields are closed;
+/// All identity, root, plan, deadline and cancellation fields are closed;
 /// callers can stage bytes but cannot substitute publication authority.
 pub(crate) struct ApplyAdmission {
     actor_identity: WorkspaceIdentity,
     actor_instance: ActorInstanceId,
     source_set: WorkspaceSourceSetIdentity,
     source_root: Arc<RetainedDirectoryCapability>,
-    revision_service: Arc<SourceRevisionService>,
-    revision: RetainedRevisionLease,
+    expected_plan: Option<String>,
+    request_identity: Vec<u8>,
     read_dependencies: Vec<ApplyReadDependency>,
     dry_run: bool,
     deadline: ProviderDeadline,
@@ -547,51 +560,7 @@ pub(crate) struct ApplyAdmission {
 /// Read-only authority retained by the actor that also owns the destination.
 struct ApplyReadDependency {
     binding: ProviderRootBinding,
-    revision_service: Arc<SourceRevisionService>,
-    revision: RetainedRevisionLease,
-}
-
-fn apply_revision_identity(
-    destination_name: &str,
-    destination_revision: &str,
-    dependencies: &[ApplyReadDependency],
-) -> String {
-    let entries = dependencies
-        .iter()
-        .map(|dependency| {
-            (
-                dependency.binding.source_set_name().to_string(),
-                dependency.revision.revision_identity(),
-            )
-        })
-        .collect::<Vec<_>>();
-    apply_revision_from_entries(destination_name, destination_revision, &entries)
-}
-
-fn apply_revision_from_entries(
-    destination_name: &str,
-    destination_revision: &str,
-    dependencies: &[(String, String)],
-) -> String {
-    if dependencies.is_empty() {
-        return destination_revision.to_string();
-    }
-    use sha2::Digest;
-    let mut revisions = vec![(destination_name, destination_revision.to_string())];
-    revisions.extend(
-        dependencies
-            .iter()
-            .map(|(name, revision)| (name.as_str(), revision.clone())),
-    );
-    revisions.sort_by(|left, right| left.0.cmp(right.0));
-    let mut hash = sha2::Sha256::new();
-    for (name, revision) in revisions {
-        hash.update((name.len() as u64).to_be_bytes());
-        hash.update(name.as_bytes());
-        hash.update((revision.len() as u64).to_be_bytes());
-        hash.update(revision.as_bytes());
-    }
-    format!("unica-apply-sources-sha256-v1:{:x}", hash.finalize())
+    reads: Mutex<std::collections::BTreeMap<PathBuf, Vec<u8>>>,
 }
 
 /// Admission-sealed authority for dormant Code planning. It borrows the exact
@@ -792,12 +761,76 @@ impl std::fmt::Debug for ApplyAdmission {
 }
 
 impl ApplyAdmission {
-    pub(crate) fn revision_identity(&self) -> String {
-        apply_revision_identity(
-            &self.source_set.name,
-            &self.revision.revision_identity(),
-            &self.read_dependencies,
-        )
+    pub(crate) fn bind_request(&mut self, request: &crate::domain::apply::ApplyRequest) {
+        let operations = request.ops().iter().map(|operation| {
+            serde_json::json!({"op": operation.name(), "at": operation.at().to_string(), "args": operation.args()})
+        }).collect::<Vec<_>>();
+        let mut value = serde_json::json!({"at": request.at().to_string(), "ops": operations});
+        value.sort_all_objects();
+        self.request_identity = serde_json::to_vec(&value).expect("parsed apply request is JSON");
+    }
+
+    fn plan_identity(
+        &self,
+        state: &ApplyStagedState,
+        events: &[DomainEvent],
+    ) -> Result<String, ApplyStagingError> {
+        fn field(hash: &mut Sha256, bytes: &[u8]) {
+            hash.update((bytes.len() as u64).to_be_bytes());
+            hash.update(bytes);
+        }
+        let checkpoint = || {
+            apply_staging_checkpoint(self.deadline, &self.cancellation, "apply plan fingerprint")
+        };
+        checkpoint()?;
+        let mut hash = Sha256::new();
+        hash.update(b"unica-apply-plan-v2\0");
+        field(
+            &mut hash,
+            &stable_path_identity_bytes(&self.actor_identity.workspace_root).map_err(|error| {
+                ApplyStagingError::new(ApplyStagingErrorKind::ContainmentIdentity, error)
+            })?,
+        );
+        field(&mut hash, self.actor_identity.provider_profile.as_bytes());
+        field(&mut hash, format!("{:?}", self.source_set).as_bytes());
+        field(
+            &mut hash,
+            format!("{:?}", self.support_policy.mode()).as_bytes(),
+        );
+        field(&mut hash, &self.request_identity);
+        state.fingerprint_inputs(&mut hash)?;
+        hash.update((self.read_dependencies.len() as u64).to_be_bytes());
+        for dependency in &self.read_dependencies {
+            checkpoint()?;
+            field(&mut hash, dependency.binding.source_set_name().as_bytes());
+            hash.update(dependency.binding.source_root.identity().stable_bytes());
+            let reads = dependency.reads.lock().map_err(|_| {
+                ApplyStagingError::new(
+                    ApplyStagingErrorKind::Invariant,
+                    "apply dependency inputs are poisoned",
+                )
+            })?;
+            hash.update((reads.len() as u64).to_be_bytes());
+            for (path, bytes) in reads.iter() {
+                let path = stable_path_identity_bytes(path).map_err(|error| {
+                    ApplyStagingError::new(ApplyStagingErrorKind::ContainmentIdentity, error)
+                })?;
+                field(&mut hash, &path);
+                hash.update((bytes.len() as u64).to_be_bytes());
+                for chunk in bytes.chunks(64 * 1024) {
+                    checkpoint()?;
+                    hash.update(chunk);
+                }
+            }
+        }
+        hash.update((events.len() as u64).to_be_bytes());
+        for event in events {
+            checkpoint()?;
+            field(&mut hash, event.name().as_bytes());
+            field(&mut hash, event.artifact.as_bytes());
+        }
+        checkpoint()?;
+        Ok(format!("unica-apply-plan-v2:{:x}", hash.finalize()))
     }
 
     pub(crate) fn read_apply_dependency(
@@ -824,26 +857,69 @@ impl ApplyAdmission {
             .map_err(|error| {
                 ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, error.to_string())
             })?;
-        let bytes = dependency
+        let mut bytes = Vec::new();
+        let mut stopped = None;
+        let read = dependency
             .binding
             .source_root
-            .read_relative_regular_bounded(relative, 16 * 1024 * 1024)
-            .map_err(|error| {
-                ApplyPlanError::new(
-                    if error.kind() == std::io::ErrorKind::NotFound {
-                        ApplyPlanErrorKind::NotFound
-                    } else {
-                        ApplyPlanErrorKind::InvalidSource
-                    },
-                    error.to_string(),
-                )
-            })?;
+            .visit_relative_regular_chunks(
+                relative,
+                || {
+                    apply_staging_checkpoint(
+                        self.deadline,
+                        &self.cancellation,
+                        "apply dependency read",
+                    )
+                    .map_err(|error| {
+                        stopped = Some(error);
+                        std::io::Error::other("apply dependency read stopped")
+                    })
+                },
+                |chunk| {
+                    if chunk.len() > (16 * 1024 * 1024_usize).saturating_sub(bytes.len()) {
+                        return Err(std::io::Error::other(
+                            "apply dependency exceeds the input limit",
+                        ));
+                    }
+                    bytes.extend_from_slice(chunk);
+                    Ok(())
+                },
+            );
+        if let Some(error) = stopped {
+            return Err(ApplyPlanError::staging(error, source_name));
+        }
+        read.map_err(|error| {
+            ApplyPlanError::new(
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    ApplyPlanErrorKind::NotFound
+                } else {
+                    ApplyPlanErrorKind::InvalidSource
+                },
+                error.to_string(),
+            )
+        })?;
         apply_staging_checkpoint(
             self.deadline,
             &self.cancellation,
             "apply dependency read result",
         )
         .map_err(|error| ApplyPlanError::staging(error, source_name))?;
+        let mut reads = dependency.reads.lock().map_err(|_| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidState,
+                "apply dependency inputs are poisoned",
+            )
+        })?;
+        if reads
+            .get(relative)
+            .is_some_and(|previous| previous != &bytes)
+        {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidState,
+                "apply dependency changed while planning",
+            ));
+        }
+        reads.insert(relative.to_path_buf(), bytes.clone());
         Ok(bytes)
     }
 
@@ -1058,19 +1134,24 @@ impl ApplyAdmission {
                 "apply staged state belongs to another actor-issued authority",
             ));
         }
-        let source_changes = state.planned_changes();
-        let no_op = source_changes.is_empty() && events.is_empty();
+        let policy = crate::infrastructure::revision_artifact_policy::RevisionArtifactPolicy::from_source_profile(
+            self.source_set.kind, self.source_set.source_format, self.source_set.source_profile,
+        ).map_err(|error| ApplyStagingError::new(ApplyStagingErrorKind::UnsupportedProvider, error))?;
+        for change in state.planned_changes() {
+            if policy.classify(&change.relative_path) == crate::infrastructure::revision_artifact_policy::RevisionArtifactDisposition::Ignored {
+                return Err(ApplyStagingError::new(ApplyStagingErrorKind::Invariant, format!("staged artifact is not part of the supported source profile: {}", change.relative_path.display())));
+            }
+        }
+        let plan_identity = self.plan_identity(&state, &events)?;
+        if self
+            .expected_plan
+            .as_ref()
+            .is_some_and(|expected| expected != &plan_identity)
+        {
+            return Err(ApplyStagingError::new(ApplyStagingErrorKind::ConcurrentRevision, format!("apply ifRev is stale: expected {}, planned {plan_identity}; prepare a new dryRun preview", self.expected_plan.as_deref().unwrap_or_default())));
+        }
+        let no_op = state.planned_changes().is_empty() && events.is_empty();
         let source_transaction = state.finalize()?;
-        let revision_reconciliation = self
-            .revision_service
-            .prepare_retained_apply_reconciliation(
-                &self.source_root,
-                &self.revision,
-                &source_changes,
-                self.deadline,
-                &self.cancellation,
-            )
-            .map_err(retained_revision_staging_error)?;
         let mut cache_state = ApplyStagedState::from_retained_root(
             Arc::clone(&self.workspace_cache.anchor),
             self.deadline,
@@ -1087,30 +1168,6 @@ impl ApplyAdmission {
                     false,
                     CacheAccess::default(),
                 )?;
-        let record_path =
-            normalize_path_identity(revision_reconciliation.record_path()).map_err(|error| {
-                ApplyStagingError::new(ApplyStagingErrorKind::ContainmentIdentity, error)
-            })?;
-        let record_suffix = record_path
-            .strip_prefix(&self.workspace_cache.logical_root)
-            .map_err(|_| {
-                ApplyStagingError::new(
-                    ApplyStagingErrorKind::ContainmentIdentity,
-                    "source revision record escaped the actor-owned cache root",
-                )
-            })?;
-        let record_relative = self.workspace_cache.relative_root.join(record_suffix);
-        match cache_state.read(&record_relative)? {
-            Some(previous) => cache_state.replace(
-                &record_relative,
-                &previous,
-                revision_reconciliation.record_bytes().to_vec(),
-            )?,
-            None => cache_state.create(
-                &record_relative,
-                revision_reconciliation.record_bytes().to_vec(),
-            )?,
-        }
         let cache_transaction = cache_state.finalize()?;
         let transaction = source_transaction
             .close_with_workspace_cache_participant(
@@ -1123,8 +1180,7 @@ impl ApplyAdmission {
             actor_instance: self.actor_instance,
             source_set: self.source_set,
             source_root: self.source_root,
-            revision_service: self.revision_service,
-            revision: self.revision,
+            plan_identity,
             read_dependencies: self.read_dependencies,
             dry_run: self.dry_run,
             no_op,
@@ -1139,7 +1195,6 @@ impl ApplyAdmission {
                 events,
                 cache: projected_cache_report,
             },
-            revision_reconciliation,
         })
     }
 }
@@ -1164,8 +1219,7 @@ pub(crate) struct PreparedApplyBatch {
     actor_instance: ActorInstanceId,
     source_set: WorkspaceSourceSetIdentity,
     source_root: Arc<RetainedDirectoryCapability>,
-    revision_service: Arc<SourceRevisionService>,
-    revision: RetainedRevisionLease,
+    plan_identity: String,
     read_dependencies: Vec<ApplyReadDependency>,
     dry_run: bool,
     no_op: bool,
@@ -1177,7 +1231,6 @@ pub(crate) struct PreparedApplyBatch {
     support_policy: RetainedSupportPolicyEvidence,
     source_selection: RetainedSourceSelectionEvidence,
     effects: PreparedApplyEffectReceipt,
-    revision_reconciliation: PreparedRevisionReconciliation,
 }
 
 #[derive(Debug)]
@@ -1412,6 +1465,7 @@ impl ApplyPublicationResult {
 /// nor a generic publication callback.  Task 15 can add descriptor-relative
 /// writer operations to this capability when writers are routed through the
 /// actor; until then there is no production validate-then-unchecked escape.
+#[cfg(test)]
 pub(crate) struct WorkspacePublicationLease<'actor, R> {
     actor: &'actor WorkspaceActor<R>,
     binding: ProviderRootBinding,
@@ -1442,6 +1496,7 @@ pub(super) trait WorkspaceActorRuntimeTestProjection {
     fn project_mut_for_actor_test(&mut self) -> Self::ProjectionMut<'_>;
 }
 
+#[cfg(test)]
 impl<R> std::fmt::Debug for WorkspacePublicationLease<'_, R> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -1451,6 +1506,7 @@ impl<R> std::fmt::Debug for WorkspacePublicationLease<'_, R> {
     }
 }
 
+#[cfg(test)]
 impl<R> WorkspacePublicationLease<'_, R> {
     pub(crate) fn publish<T>(
         self,
@@ -1475,9 +1531,8 @@ impl<R> WorkspacePublicationLease<'_, R> {
 
 /// One daemon-owned coordination boundary for a canonical worktree.
 ///
-/// Reads do not take the mutation lane. Read-only staged-result confirmation
-/// is exclusive and rechecks the actor-owned source revision immediately
-/// before that result is returned. Task 15 adds the writer boundary.
+/// Reads retain their selected roots and do not take the mutation lane.
+/// Concrete prepared writes publish in that lane after checking their inputs.
 pub(crate) struct WorkspaceActor<R = ()> {
     identity: WorkspaceIdentity,
     instance_id: ActorInstanceId,
@@ -1485,8 +1540,8 @@ pub(crate) struct WorkspaceActor<R = ()> {
     source_roots: HashMap<WorkspaceSourceSetIdentity, Arc<RetainedDirectoryCapability>>,
     state_scope: WorkspaceStateScope,
     mutation_lane: DeadlineLock<FailClosed>,
+    #[cfg(test)]
     source_revisions: Mutex<HashMap<WorkspaceSourceSetIdentity, Arc<SourceRevisionService>>>,
-    configuration_registrations: Arc<RegistrationCache>,
     index_work: SharedWork<(), LongWorkFailure>,
     runtime: R,
 }
@@ -1592,8 +1647,8 @@ impl<R> WorkspaceActor<R> {
             source_roots,
             state_scope,
             mutation_lane: DeadlineLock::fail_closed("workspace actor mutation lane is poisoned"),
+            #[cfg(test)]
             source_revisions: Mutex::new(HashMap::new()),
-            configuration_registrations: Arc::new(RegistrationCache::default()),
             index_work: SharedWork::new(SharedWorkLifetime::ProducerBound),
             runtime,
         })
@@ -1704,6 +1759,7 @@ impl<R> WorkspaceActor<R> {
         result
     }
 
+    #[cfg(test)]
     pub(crate) fn capture_revision(
         &self,
         binding: &ProviderRootBinding,
@@ -1724,6 +1780,7 @@ impl<R> WorkspaceActor<R> {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn capture_logical_read_revision(
         &self,
         binding: &ProviderRootBinding,
@@ -1768,13 +1825,6 @@ impl<R> WorkspaceActor<R> {
     ) -> Result<ApplyAdmission, ApplyAdmissionError> {
         apply_checkpoint(deadline, cancellation, "apply admission")?;
         self.validate_binding(binding)?;
-        let revision_service = self.source_revision_service(binding)?;
-        let revision = revision_service.observe_retained_operation(
-            &binding.source_root,
-            deadline,
-            cancellation,
-        )?;
-        self.validate_binding(binding)?;
         let mut dependency_bindings = dependencies.to_vec();
         dependency_bindings
             .sort_by(|left, right| left.source_set_name().cmp(right.source_set_name()));
@@ -1806,28 +1856,9 @@ impl<R> WorkspaceActor<R> {
                         .to_string(),
                 ));
             }
-            let parent_service = self.source_revision_service(&parent)?;
-            let parent_revision = parent_service.observe_retained_operation(
-                &parent.source_root,
-                deadline,
-                cancellation,
-            )?;
-            self.validate_binding(&parent)?;
             read_dependencies.push(ApplyReadDependency {
                 binding: parent,
-                revision_service: parent_service,
-                revision: parent_revision,
-            });
-        }
-        let revision_identity = apply_revision_identity(
-            binding.source_set_name(),
-            &revision.revision_identity(),
-            &read_dependencies,
-        );
-        if if_rev.is_some_and(|expected| expected != revision_identity) {
-            return Err(ApplyAdmissionError::StaleRevision {
-                expected: if_rev.unwrap_or_default().to_string(),
-                admitted: revision_identity,
+                reads: Mutex::new(std::collections::BTreeMap::new()),
             });
         }
         let source_selection = {
@@ -1859,8 +1890,8 @@ impl<R> WorkspaceActor<R> {
             actor_instance: self.instance_id.clone(),
             source_set: binding.source_set.clone(),
             source_root: Arc::clone(&binding.source_root),
-            revision_service,
-            revision,
+            expected_plan: if_rev.map(str::to_string),
+            request_identity: Vec::new(),
             read_dependencies,
             dry_run,
             deadline,
@@ -1887,15 +1918,62 @@ impl<R> WorkspaceActor<R> {
                         error,
                     )
                 })?;
-            dependency
-                .revision_service
-                .confirm_retained_observation_typed(
-                    &dependency.binding.source_root,
-                    &dependency.revision,
+            let reads = dependency.reads.lock().map_err(|_| {
+                ApplyPublicationError::new(
+                    ApplyPublicationErrorKind::Invariant,
+                    "apply dependency inputs are poisoned",
+                )
+            })?;
+            for (path, expected) in reads.iter() {
+                apply_publication_checkpoint(
                     deadline,
                     cancellation,
-                )
-                .map_err(retained_revision_publication_error)?;
+                    "apply dependency confirmation",
+                )?;
+                let mut offset = 0;
+                let mut stopped = None;
+                let read = dependency
+                    .binding
+                    .source_root
+                    .visit_relative_regular_chunks(
+                        path,
+                        || {
+                            apply_publication_checkpoint(
+                                deadline,
+                                cancellation,
+                                "apply dependency confirmation",
+                            )
+                            .map_err(|error| {
+                                stopped = Some(error);
+                                std::io::Error::other("apply dependency confirmation stopped")
+                            })
+                        },
+                        |chunk| {
+                            if expected.get(offset..offset + chunk.len()) != Some(chunk) {
+                                return Err(std::io::Error::other(
+                                    "apply dependency bytes changed",
+                                ));
+                            }
+                            offset += chunk.len();
+                            Ok(())
+                        },
+                    );
+                if let Some(error) = stopped {
+                    return Err(error);
+                }
+                read.map_err(|error| {
+                    ApplyPublicationError::new(
+                        ApplyPublicationErrorKind::ConcurrentRevision,
+                        format!("apply dependency is no longer the planned input: {error}"),
+                    )
+                })?;
+                if offset != expected.len() {
+                    return Err(ApplyPublicationError::new(
+                        ApplyPublicationErrorKind::ConcurrentRevision,
+                        "apply dependency changed before publication",
+                    ));
+                }
+            }
             self.validate_binding(&dependency.binding)
                 .map_err(|error| {
                     ApplyPublicationError::new(
@@ -1999,15 +2077,6 @@ impl<R> WorkspaceActor<R> {
                 )
             })?;
         prepared
-            .revision_service
-            .confirm_retained_observation_typed(
-                &prepared.source_root,
-                &prepared.revision,
-                prepared.deadline,
-                &prepared.cancellation,
-            )
-            .map_err(retained_revision_publication_error)?;
-        prepared
             .support_policy
             .validate(prepared.deadline, &prepared.cancellation)
             .map_err(support_policy_publication_error)?;
@@ -2015,6 +2084,8 @@ impl<R> WorkspaceActor<R> {
             .source_selection
             .validate(prepared.deadline, &prepared.cancellation)
             .map_err(source_selection_publication_error)?;
+        #[cfg(test)]
+        run_apply_before_input_confirmation_hook();
         self.confirm_apply_dependencies(
             &prepared.read_dependencies,
             prepared.deadline,
@@ -2025,15 +2096,6 @@ impl<R> WorkspaceActor<R> {
                 .transaction
                 .validate_retained_for_apply_typed()
                 .map_err(apply_validation_publication_error)?;
-            prepared
-                .revision_service
-                .confirm_retained_observation_typed(
-                    &prepared.source_root,
-                    &prepared.revision,
-                    prepared.deadline,
-                    &prepared.cancellation,
-                )
-                .map_err(retained_revision_publication_error)?;
             #[cfg(test)]
             run_apply_dry_run_after_confirmation_hook();
             prepared
@@ -2058,11 +2120,7 @@ impl<R> WorkspaceActor<R> {
                 &prepared.cancellation,
             )?;
             return Ok(ApplyPublicationResult {
-                rev: apply_revision_identity(
-                    binding.source_set_name(),
-                    &prepared.revision.revision_identity(),
-                    &prepared.read_dependencies,
-                ),
+                rev: prepared.plan_identity,
                 effects: prepared.effects.into_terminal(if prepared.dry_run {
                     ApplyEffectDisposition::Projected
                 } else {
@@ -2073,17 +2131,7 @@ impl<R> WorkspaceActor<R> {
             });
         }
 
-        let dependency_revisions = prepared
-            .read_dependencies
-            .iter()
-            .map(|dependency| {
-                (
-                    dependency.binding.source_set_name().to_string(),
-                    dependency.revision.revision_identity(),
-                )
-            })
-            .collect::<Vec<_>>();
-        let destination_name = binding.source_set_name().to_string();
+        let plan_identity = prepared.plan_identity;
         let final_gate = RetainedApplyFinalGate {
             actor: self,
             binding,
@@ -2093,11 +2141,11 @@ impl<R> WorkspaceActor<R> {
             source_selection: prepared.source_selection,
             read_dependencies: prepared.read_dependencies,
         };
-        let (report, revision) = prepared.transaction.commit_retained_apply(
-            prepared.writer_authority,
-            prepared.revision_reconciliation,
-            final_gate,
-        )?;
+        let report = prepared
+            .transaction
+            .commit_retained_apply(prepared.writer_authority, final_gate)?;
+        #[cfg(test)]
+        self.mark_source_revisions_dirty();
         debug_assert_eq!(
             report.cleanup_warnings.len(),
             report.retained_apply_cleanup_diagnostics.len(),
@@ -2116,14 +2164,7 @@ impl<R> WorkspaceActor<R> {
             })
             .collect();
         Ok(ApplyPublicationResult {
-            rev: apply_revision_from_entries(
-                &destination_name,
-                &format!(
-                    "{}:{}:{}",
-                    revision.algorithm, revision.generation, revision.digest
-                ),
-                &dependency_revisions,
-            ),
+            rev: plan_identity,
             effects: prepared
                 .effects
                 .into_terminal(ApplyEffectDisposition::Committed),
@@ -2135,6 +2176,7 @@ impl<R> WorkspaceActor<R> {
     /// Makes one staged logical-read result observable while holding the
     /// actor's single mutation lane across validation of every selected source
     /// and every retained final confirmation.
+    #[cfg(test)]
     pub(crate) fn publish_logical_read<T>(
         &self,
         fences: &[WorkspaceLogicalReadFence],
@@ -2204,13 +2246,12 @@ impl<R> WorkspaceActor<R> {
         Ok(staged_result)
     }
 
-    /// Exact actor-owned index readiness identity. The workspace component is
-    /// derived from this actor's complete canonical identity; the source-set
-    /// and revision come from capabilities issued by this same actor instance.
+    /// Shared index work is keyed by the concrete build generation and selected
+    /// root. Source freshness is reported separately; admission never scans it.
     pub(crate) fn join_index_work<W>(
         &self,
         binding: &ProviderRootBinding,
-        fence: &WorkspaceRevisionFence,
+        generation: &str,
         provider: &str,
         profile: &str,
         work: W,
@@ -2219,45 +2260,24 @@ impl<R> WorkspaceActor<R> {
         W: FnOnce(SharedWorkProducer) -> Result<(), LongWorkFailure> + Send + 'static,
     {
         self.validate_binding(binding)?;
-        if fence.actor_identity != self.identity
-            || fence.actor_instance != self.instance_id
-            || fence.source_set != binding.source_set
-        {
-            return Err("index revision fence belongs to another workspace actor".to_string());
-        }
         if !closed_index_component(provider)
             || !closed_index_component(profile)
-            || fence.revision.algorithm != crate::domain::source_revision::SOURCE_REVISION_ALGORITHM
-            || fence.revision.generation == 0
-            || !is_lowercase_sha256(&fence.revision.digest)
+            || generation.is_empty()
+            || generation.len() > 256
+            || generation.contains(char::is_control)
         {
-            return Err("actor-owned index work identity is invalid".to_string());
+            return Err("actor-owned index build identity is invalid".into());
         }
-        let revision_service = self.source_revision_service(binding)?;
-        let current = revision_service.snapshot_retained(
-            &binding.source_root,
-            ProviderDeadline::from_budget(INDEX_FENCE_BUDGET),
-            &CancellationToken::new(),
-        );
-        self.validate_binding(binding)?;
-        if current? != fence.revision {
-            return Err("index revision fence changed before shared-work admission".to_string());
-        }
-
         let mut digest = Sha256::new();
-        digest.update(b"unica-index-work-v2\0");
+        digest.update(b"unica-index-work-v3\0");
         digest.update(self.identity.state_scope_digest()?);
         digest_index_component(&mut digest, binding.source_set.name.as_bytes())?;
-        digest_index_component(&mut digest, fence.revision.algorithm.as_bytes())?;
-        digest.update(fence.revision.generation.to_le_bytes());
-        digest_index_component(&mut digest, fence.revision.digest.as_bytes())?;
+        digest.update(binding.source_root.identity().stable_bytes());
+        digest_index_component(&mut digest, generation.as_bytes())?;
         digest_index_component(&mut digest, provider.as_bytes())?;
         digest_index_component(&mut digest, profile.as_bytes())?;
         let identity = IndexWorkIdentity(digest.finalize().into());
-
         let retained_root = Arc::clone(&binding.source_root);
-        let expected_revision = fence.revision.clone();
-        let producer_revision_service = Arc::clone(&revision_service);
         let lease = self.index_work.join_or_start(
             SharedWorkKey::Index {
                 identity: identity.0,
@@ -2266,25 +2286,13 @@ impl<R> WorkspaceActor<R> {
                 retained_root
                     .validate_named_identity()
                     .map_err(|_| LongWorkFailure::Invalidated)?;
-                let current = producer_revision_service
-                    .snapshot_retained(
-                        &retained_root,
-                        ProviderDeadline::from_budget(INDEX_FENCE_BUDGET),
-                        &CancellationToken::new(),
-                    )
-                    .map_err(|_| LongWorkFailure::Invalidated)?;
-                retained_root
-                    .validate_named_identity()
-                    .map_err(|_| LongWorkFailure::Invalidated)?;
-                if current != expected_revision {
-                    return Err(LongWorkFailure::Invalidated);
-                }
                 work(producer)
             },
         );
         Ok((identity, lease))
     }
 
+    #[cfg(test)]
     pub(crate) fn begin_publication(
         &self,
         fence: &WorkspaceRevisionFence,
@@ -2336,11 +2344,11 @@ impl<R> WorkspaceActor<R> {
     ) -> Result<WorkspaceIndexService<'a>, String> {
         self.validate_binding(binding)?;
         Ok(WorkspaceIndexService::with_runner(runner)
-            .with_source_revision_service(self.source_revision_service(binding)?)
             .with_bound_source_root(Arc::clone(&binding.source_root))
             .with_state_scope(self.state_scope.clone()))
     }
 
+    #[cfg(test)]
     pub(crate) fn source_revision_service(
         &self,
         binding: &ProviderRootBinding,
@@ -2366,14 +2374,7 @@ impl<R> WorkspaceActor<R> {
         Ok(service)
     }
 
-    pub(crate) fn configuration_registration_cache(
-        &self,
-        binding: &ProviderRootBinding,
-    ) -> Result<Arc<RegistrationCache>, String> {
-        self.validate_binding(binding)?;
-        Ok(Arc::clone(&self.configuration_registrations))
-    }
-
+    #[cfg(test)]
     fn issue_revision_service_authority(
         &self,
         binding: &ProviderRootBinding,
@@ -2391,6 +2392,7 @@ impl<R> WorkspaceActor<R> {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn mark_source_revisions_dirty(&self) {
         if let Ok(revisions) = self.source_revisions.lock() {
             for revision in revisions.values() {
@@ -2586,40 +2588,9 @@ fn deadline_lock_publication_error(error: DeadlineLockError) -> ApplyPublication
     ApplyPublicationError::new(kind, error.to_string())
 }
 
+#[cfg(test)]
 fn logical_read_binding_error(error: String) -> RetainedRevisionError {
     RetainedRevisionError::new(RetainedRevisionErrorKind::ContainmentIdentity, error)
-}
-
-fn retained_revision_staging_error(error: RetainedRevisionError) -> ApplyStagingError {
-    let kind = match error.kind() {
-        RetainedRevisionErrorKind::Cancelled => ApplyStagingErrorKind::Cancelled,
-        RetainedRevisionErrorKind::Deadline => ApplyStagingErrorKind::Deadline,
-        RetainedRevisionErrorKind::ConcurrentRevision => ApplyStagingErrorKind::ConcurrentRevision,
-        RetainedRevisionErrorKind::ContainmentIdentity => {
-            ApplyStagingErrorKind::ContainmentIdentity
-        }
-        RetainedRevisionErrorKind::Provider => ApplyStagingErrorKind::UnsupportedProvider,
-        RetainedRevisionErrorKind::Invariant => ApplyStagingErrorKind::Invariant,
-    };
-    ApplyStagingError::new(kind, error.to_string())
-}
-
-pub(in crate::infrastructure) fn retained_revision_publication_error(
-    error: RetainedRevisionError,
-) -> ApplyPublicationError {
-    let kind = match error.kind() {
-        RetainedRevisionErrorKind::Cancelled => ApplyPublicationErrorKind::Cancelled,
-        RetainedRevisionErrorKind::Deadline => ApplyPublicationErrorKind::Deadline,
-        RetainedRevisionErrorKind::ConcurrentRevision => {
-            ApplyPublicationErrorKind::ConcurrentRevision
-        }
-        RetainedRevisionErrorKind::ContainmentIdentity => {
-            ApplyPublicationErrorKind::ContainmentIdentity
-        }
-        RetainedRevisionErrorKind::Provider => ApplyPublicationErrorKind::ProviderPostvalidation,
-        RetainedRevisionErrorKind::Invariant => ApplyPublicationErrorKind::Invariant,
-    };
-    ApplyPublicationError::new(kind, error.to_string())
 }
 
 fn apply_validation_publication_error(
@@ -2628,6 +2599,11 @@ fn apply_validation_publication_error(
     use crate::infrastructure::native_operations::compile_transaction::RetainedApplyValidationErrorKind;
 
     let kind = match error.kind() {
+        RetainedApplyValidationErrorKind::Cancelled => ApplyPublicationErrorKind::Cancelled,
+        RetainedApplyValidationErrorKind::Deadline => ApplyPublicationErrorKind::Deadline,
+        RetainedApplyValidationErrorKind::ConcurrentRevision => {
+            ApplyPublicationErrorKind::ConcurrentRevision
+        }
         RetainedApplyValidationErrorKind::ContainmentIdentity
         | RetainedApplyValidationErrorKind::AbsentChainOccupied => {
             ApplyPublicationErrorKind::ContainmentIdentity
@@ -2701,13 +2677,6 @@ fn validate_physical_root(root: &RetainedDirectoryCapability) -> Result<(), Stri
 
 fn closed_index_component(value: &str) -> bool {
     !value.is_empty() && value.trim() == value && !value.bytes().any(|byte| byte == 0)
-}
-
-fn is_lowercase_sha256(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn digest_index_component(digest: &mut Sha256, bytes: &[u8]) -> Result<(), String> {
@@ -2994,7 +2963,7 @@ impl WorkspaceActorRegistry {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::{
-        set_apply_dry_run_after_confirmation_hook,
+        set_apply_before_input_confirmation_hook, set_apply_dry_run_after_confirmation_hook,
         set_revision_service_after_binding_validation_hook, ApplyAdmission, ApplyEffectDisposition,
         ApplyEffectReceipt, PreparedApplyBatch, WorkspaceActorRegistry,
         WorkspaceActorRegistryError, WorkspaceIdentity, WorkspaceSourceSetInput,
@@ -3604,7 +3573,7 @@ pub(crate) mod tests {
         let (producer_entered, producer_entered_wait) = mpsc::channel();
         let (_, index_work) = fixture
             .actor
-            .join_index_work(&binding, &revision, "rlm", "bsl-1", move |_| {
+            .join_index_work(&binding, "test-build", "rlm", "bsl-1", move |_| {
                 producer_entered.send(()).unwrap();
                 Ok(())
             })
@@ -5050,22 +5019,36 @@ pub(crate) mod tests {
                 &cancellation,
             )
         };
-        let before = admit(&[parent.clone(), other.clone()], None)
-            .unwrap()
-            .revision_identity();
+        let plan = |parents: &[super::ProviderRootBinding], expected: Option<&str>| {
+            let admission = admit(parents, expected).unwrap();
+            admission
+                .read_apply_dependency("parent", Path::new("Configuration.xml"))
+                .unwrap();
+            let state = admission.staged_state().unwrap();
+            admission.prepare(state)
+        };
+        let before = fixture
+            .actor
+            .publish_prepared_apply(plan(&[parent.clone(), other.clone()], None).unwrap())
+            .unwrap();
+        let reordered = fixture
+            .actor
+            .publish_prepared_apply(
+                plan(&[other.clone(), parent.clone(), parent.clone()], None).unwrap(),
+            )
+            .unwrap();
         assert_eq!(
-            before,
-            admit(&[other.clone(), parent.clone(), parent.clone()], None)
-                .unwrap()
-                .revision_identity(),
-            "dependency order and duplicates must not alter the fence"
+            before.rev(),
+            reordered.rev(),
+            "dependency order and duplicates must not alter the plan"
         );
         std::fs::write(&path, b"parent after").unwrap();
-        let stale = admit(&[parent, other], Some(&before)).unwrap_err();
-        assert!(matches!(
-            stale,
-            super::ApplyAdmissionError::StaleRevision { .. }
-        ));
+        assert_eq!(
+            plan(&[parent, other], Some(before.rev()))
+                .unwrap_err()
+                .kind(),
+            ApplyStagingErrorKind::ConcurrentRevision
+        );
         assert!(
             !fixture.actor.context().cache_root.exists(),
             "preview admission must not publish revision caches"
@@ -5143,6 +5126,9 @@ pub(crate) mod tests {
                 &CancellationToken::new(),
             )
             .unwrap();
+        admission
+            .read_apply_dependency("parent", Path::new("Configuration.xml"))
+            .unwrap();
         let staged = admission.staged_state().unwrap();
         let prepared = admission
             .prepare_with_effects(staged, Default::default())
@@ -5180,6 +5166,9 @@ pub(crate) mod tests {
                 ProviderDeadline::from_budget(Duration::from_secs(10)),
                 &CancellationToken::new(),
             )
+            .unwrap();
+        admission
+            .read_apply_dependency("parent", Path::new("Module.bsl"))
             .unwrap();
         let mut staged = admission.staged_state().unwrap();
         let before = staged.read(Path::new("Module.bsl")).unwrap().unwrap();
@@ -5234,6 +5223,132 @@ pub(crate) mod tests {
                 &CancellationToken::new()
             )
             .is_err());
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn apply_plan_fence_is_targeted_and_binds_read_only_inputs() {
+        let fixture = actor_fixture("targeted-plan-fence", &["src"]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        std::fs::write(fixture.roots[0].join("Module.bsl"), b"before").unwrap();
+        std::fs::write(fixture.roots[0].join("Dependency.bsl"), b"dependency").unwrap();
+        let revisions = fixture.actor.source_revision_service(&binding).unwrap();
+        let cancellation = CancellationToken::new();
+        let stage = |dry_run, expected: Option<&str>| {
+            let admission = fixture
+                .actor
+                .admit_apply(
+                    &binding,
+                    expected,
+                    dry_run,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &cancellation,
+                )
+                .unwrap();
+            let mut state = admission.staged_state().unwrap();
+            state.read(Path::new("Dependency.bsl")).unwrap();
+            state
+                .replace("Module.bsl", b"before", b"after".to_vec())
+                .unwrap();
+            admission.prepare(state)
+        };
+        let preview = fixture
+            .actor
+            .publish_prepared_apply(stage(true, None).unwrap())
+            .unwrap();
+        assert!(preview.rev().starts_with("unica-apply-plan-v2:"));
+        assert_eq!(
+            std::fs::read(fixture.roots[0].join("Module.bsl")).unwrap(),
+            b"before"
+        );
+        std::fs::write(fixture.roots[0].join("unrelated.xml"), b"unrelated").unwrap();
+        let repeated = fixture
+            .actor
+            .publish_prepared_apply(stage(true, None).unwrap())
+            .unwrap();
+        assert_eq!(
+            repeated.rev(),
+            preview.rev(),
+            "unrelated source changes must not invalidate the plan"
+        );
+        std::fs::write(fixture.roots[0].join("Dependency.bsl"), b"changed").unwrap();
+        assert_eq!(
+            stage(false, Some(preview.rev())).unwrap_err().kind(),
+            ApplyStagingErrorKind::ConcurrentRevision
+        );
+        assert_eq!(
+            std::fs::read(fixture.roots[0].join("Module.bsl")).unwrap(),
+            b"before"
+        );
+        std::fs::write(fixture.roots[0].join("Dependency.bsl"), b"dependency").unwrap();
+        let real = fixture
+            .actor
+            .publish_prepared_apply(stage(false, Some(preview.rev())).unwrap())
+            .unwrap();
+        assert_eq!(real.commit_count_for_test(), 1);
+        assert_eq!(
+            std::fs::read(fixture.roots[0].join("Module.bsl")).unwrap(),
+            b"after"
+        );
+        assert_eq!(
+            revisions.retained_scan_count(),
+            0,
+            "preview, prepare and commit must not scan the source tree"
+        );
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn disjoint_apply_plans_publish_without_a_global_revision_conflict() {
+        let fixture = actor_fixture("disjoint-plan-fences", &["src"]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        for name in ["First.bsl", "Second.bsl"] {
+            std::fs::write(fixture.roots[0].join(name), b"before").unwrap();
+        }
+        let cancellation = CancellationToken::new();
+        let stage = |name, dry_run, expected: Option<&str>| {
+            let admission = fixture
+                .actor
+                .admit_apply(
+                    &binding,
+                    expected,
+                    dry_run,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &cancellation,
+                )
+                .unwrap();
+            let mut state = admission.staged_state().unwrap();
+            state.replace(name, b"before", b"after".to_vec()).unwrap();
+            admission.prepare(state).unwrap()
+        };
+        let first = fixture
+            .actor
+            .publish_prepared_apply(stage("First.bsl", true, None))
+            .unwrap();
+        let second = fixture
+            .actor
+            .publish_prepared_apply(stage("Second.bsl", true, None))
+            .unwrap();
+        fixture
+            .actor
+            .publish_prepared_apply(stage("First.bsl", false, Some(first.rev())))
+            .unwrap();
+        fixture
+            .actor
+            .publish_prepared_apply(stage("Second.bsl", false, Some(second.rev())))
+            .unwrap();
+        for name in ["First.bsl", "Second.bsl"] {
+            assert_eq!(
+                std::fs::read(fixture.roots[0].join(name)).unwrap(),
+                b"after"
+            );
+        }
         fixture.cleanup();
     }
 
@@ -5594,7 +5709,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    pub(crate) fn actor_revision_platform_resource_projection_matches_live_capture() {
+    pub(crate) fn prepared_apply_publishes_classified_binary_resource() {
         let fixture = actor_fixture("revision-package-projection", &["src"]);
         let package = fixture.roots[0].join("XDTOPackages/Sample/Ext/Package.bin");
         std::fs::create_dir_all(package.parent().unwrap()).unwrap();
@@ -5625,23 +5740,14 @@ pub(crate) mod tests {
             .actor
             .publish_prepared_apply(admitted.prepare(state).unwrap())
             .expect("classified Platform resource must publish through retained equality");
-        let observed = fixture
-            .actor
-            .admit_apply(
-                &binding,
-                Some(result.rev()),
-                true,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
-            )
-            .unwrap();
 
         assert_eq!(std::fs::read(package).unwrap(), b"package-after");
-        assert_eq!(observed.revision_identity(), result.rev());
+        assert_eq!(result.commit_count_for_test(), 1);
         fixture.cleanup();
     }
 
-    pub(crate) fn replacement_commit_at_entry_limit_survives_owned_backup() {
+    #[test]
+    pub(crate) fn replacement_commit_cleans_its_owned_recovery() {
         let fixture = actor_fixture("revision-replacement-entry-limit", &["src"]);
         let relative = "XDTOPackages/Sample/Ext/Package.bin";
         let package = fixture.roots[0].join(relative);
@@ -5668,24 +5774,20 @@ pub(crate) mod tests {
         let result = fixture
             .actor
             .publish_prepared_apply(admitted.prepare(state).unwrap())
-            .expect("journal-owned recovery must not consume final-tree entry capacity");
-        let reproduced = fixture
-            .actor
-            .admit_apply(
-                &binding,
-                Some(result.rev()),
-                true,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
-            )
-            .unwrap();
+            .expect("replacement publication must retain and clean its recovery");
 
         assert_eq!(std::fs::read(package).unwrap(), b"after");
-        assert_eq!(reproduced.revision_identity(), result.rev());
+        assert_eq!(result.commit_count_for_test(), 1);
+        assert!(
+            !snapshot_tree(&fixture.roots[0]).iter().any(|(path, _)| path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with(".unica-apply-")))
+        );
         fixture.cleanup();
     }
 
-    pub(crate) fn new_leaf_commit_at_entry_limit_survives_owned_backup() {
+    #[test]
+    pub(crate) fn replace_and_create_commit_cleans_the_owned_recovery() {
         let fixture = actor_fixture("revision-new-leaf-entry-limit", &["src"]);
         let first = "Catalogs/Items/Forms/Main/Ext/Form/Items/a.png";
         let second = "Catalogs/Items/Forms/Main/Ext/Form/Items/b.png";
@@ -5713,25 +5815,16 @@ pub(crate) mod tests {
         let result = fixture
             .actor
             .publish_prepared_apply(admitted.prepare(state).unwrap())
-            .expect("owned recovery must not make an exact-limit replace/create batch fail");
-        let reproduced = fixture
-            .actor
-            .admit_apply(
-                &binding,
-                Some(result.rev()),
-                true,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
-            )
-            .unwrap();
+            .expect("replace/create batch must publish both postimages");
 
         assert_eq!(std::fs::read(first_path).unwrap(), b"after");
         assert_eq!(std::fs::read(second_path).unwrap(), b"created");
-        assert_eq!(reproduced.revision_identity(), result.rev());
+        assert_eq!(result.commit_count_for_test(), 1);
         fixture.cleanup();
     }
 
-    pub(crate) fn multiple_recoveries_across_parents_preserve_exact_entry_limit() {
+    #[test]
+    pub(crate) fn multiple_recoveries_across_parents_preserve_each_postimage() {
         let fixture = actor_fixture("revision-multiple-recovery-entry-limit", &["src"]);
         let paths = [
             "Catalogs/Items/Forms/Main/Ext/Form/Items/a.png",
@@ -5766,23 +5859,25 @@ pub(crate) mod tests {
         let result = fixture
             .actor
             .publish_prepared_apply(admitted.prepare(state).unwrap())
-            .expect("three journal recoveries must preserve the exact final-tree limit");
-        let reproduced = fixture
-            .actor
-            .admit_apply(
-                &binding,
-                Some(result.rev()),
-                true,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
-            )
-            .unwrap();
+            .expect("multiple recoveries must preserve every published postimage");
 
-        assert_eq!(reproduced.revision_identity(), result.rev());
+        assert_eq!(result.commit_count_for_test(), 1);
+        for path in paths {
+            assert_eq!(
+                std::fs::read(fixture.roots[0].join(path)).unwrap(),
+                format!("after-{path}").into_bytes()
+            );
+        }
+        assert!(
+            !snapshot_tree(&fixture.roots[0]).iter().any(|(path, _)| path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with(".unica-apply-")))
+        );
         fixture.cleanup();
     }
 
-    pub(crate) fn remove_create_batch_at_entry_limit_preserves_final_tree_accounting() {
+    #[test]
+    pub(crate) fn remove_create_batch_preserves_unmodified_sibling() {
         let fixture = actor_fixture("revision-remove-create-entry-limit", &["src"]);
         let first = "Catalogs/Items/Forms/Main/Ext/Form/Items/a.png";
         let second = "Catalogs/Items/Forms/Main/Ext/Form/Items/b.png";
@@ -5812,24 +5907,18 @@ pub(crate) mod tests {
         let result = fixture
             .actor
             .publish_prepared_apply(admitted.prepare(state).unwrap())
-            .expect("one removal must fund one creation despite the live recovery sibling");
-        let reproduced = fixture
-            .actor
-            .admit_apply(
-                &binding,
-                Some(result.rev()),
-                true,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
-            )
-            .unwrap();
+            .expect("remove/create batch must preserve the unmodified sibling");
 
         assert!(!fixture.roots[0].join(first).exists());
         assert_eq!(
             std::fs::read(fixture.roots[0].join(created)).unwrap(),
             b"created"
         );
-        assert_eq!(reproduced.revision_identity(), result.rev());
+        assert_eq!(result.commit_count_for_test(), 1);
+        assert_eq!(
+            std::fs::read(fixture.roots[0].join(second)).unwrap(),
+            b"before"
+        );
         fixture.cleanup();
     }
 
@@ -5954,11 +6043,11 @@ pub(crate) mod tests {
         fixture.cleanup();
     }
 
-    pub(crate) fn exact_limit_late_failure_reaches_phase_and_rolls_back_without_receipt() {
+    #[test]
+    pub(crate) fn retained_recovery_late_failure_reaches_phase_and_rolls_back_without_receipt() {
         use crate::infrastructure::native_operations::compile_transaction::RetainedApplyFailpoint;
 
         for (label, failpoint) in [
-            ("revision-record", RetainedApplyFailpoint::RevisionRecord),
             ("state-marker", RetainedApplyFailpoint::StateMarker),
             (
                 "after-postimages",
@@ -6014,7 +6103,8 @@ pub(crate) mod tests {
         }
     }
 
-    pub(crate) fn revision_transient_spoofs_still_consume_capacity() {
+    #[test]
+    pub(crate) fn unrelated_recovery_lookalikes_do_not_gain_cleanup_authority() {
         for foreign_name in [".unica-apply-spoof", "ordinary-ignored.bin"] {
             let fixture = actor_fixture(
                 &format!("revision-transient-spoof-{foreign_name}"),
@@ -6049,20 +6139,16 @@ pub(crate) mod tests {
                 move || std::fs::write(hook_foreign, b"foreign").unwrap(),
             );
 
-            let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
-
-            assert_eq!(
-                error.kind(),
-                super::ApplyPublicationErrorKind::ProviderPostvalidation,
-                "{foreign_name}: {error}"
-            );
-            assert_eq!(std::fs::read(&target).unwrap(), b"before");
+            let result = fixture.actor.publish_prepared_apply(prepared).unwrap();
+            assert_eq!(result.commit_count_for_test(), 1);
+            assert_eq!(std::fs::read(&target).unwrap(), b"after");
             assert_eq!(std::fs::read(&foreign).unwrap(), b"foreign");
             fixture.cleanup();
         }
     }
 
-    pub(crate) fn revision_transient_create_only_and_restart_are_exact() {
+    #[test]
+    pub(crate) fn create_only_plan_survives_actor_restart_and_commits_exactly_once() {
         let fixture = actor_fixture("revision-transient-create-only", &["src"]);
         let relative = "XDTOPackages/Sample/Ext/Package.bin";
         let binding = fixture
@@ -6074,7 +6160,7 @@ pub(crate) mod tests {
             .admit_apply(
                 &binding,
                 None,
-                false,
+                true,
                 ProviderDeadline::from_budget(Duration::from_secs(5)),
                 &CancellationToken::new(),
             )
@@ -6101,13 +6187,19 @@ pub(crate) mod tests {
             .admit_apply(
                 &restarted_binding,
                 Some(result.rev()),
-                true,
+                false,
                 ProviderDeadline::from_budget(Duration::from_secs(5)),
                 &CancellationToken::new(),
             )
             .unwrap();
 
-        assert_eq!(reproduced.revision_identity(), result.rev());
+        let mut state = reproduced.staged_state().unwrap();
+        state.create(relative, b"created".to_vec()).unwrap();
+        let committed = restarted
+            .publish_prepared_apply(reproduced.prepare(state).unwrap())
+            .unwrap();
+        assert_eq!(committed.rev(), result.rev());
+        assert_eq!(committed.commit_count_for_test(), 1);
         assert_eq!(
             std::fs::read(fixture.roots[0].join(relative)).unwrap(),
             b"created"
@@ -6115,7 +6207,8 @@ pub(crate) mod tests {
         fixture.cleanup();
     }
 
-    pub(crate) fn revision_transient_cleanup_failure_does_not_persist_authority() {
+    #[test]
+    pub(crate) fn retained_cleanup_failure_preserves_foreign_names_across_restart() {
         let fixture = actor_fixture("revision-transient-cleanup-lifetime", &["src"]);
         let relative = "XDTOPackages/Sample/Ext/Package.bin";
         let target = fixture.roots[0].join(relative);
@@ -6155,30 +6248,11 @@ pub(crate) mod tests {
         let result = fixture
             .actor
             .publish_prepared_apply(prepared)
-            .expect("cleanup failure occurs after revision installation");
+            .expect("cleanup failure occurs after successful publication");
 
         assert_eq!(result.cleanup_diagnostics().len(), 1);
         assert!(moved.exists());
-        let error = fixture
-            .actor
-            .admit_apply(
-                &binding,
-                Some(result.rev()),
-                true,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
-            )
-            .expect_err("cleanup residue must consume the next admission's entry budget");
-        assert!(
-            matches!(
-                &error,
-                super::ApplyAdmissionError::Other(message)
-                    if message == "retained source revision entry limit 4 exceeded"
-                        || message == "retained source revision directory cannot be read: directory exceeds the retained enumeration entry limit"
-            ),
-            "{error}"
-        );
-
+        let retained_after_cleanup = snapshot_tree(&fixture.roots[0]);
         let restart_context = context(&fixture.root);
         let restart_identity = WorkspaceIdentity::new(
             &restart_context,
@@ -6190,35 +6264,35 @@ pub(crate) mod tests {
         let restarted_binding = restarted
             .bind_provider_root("src", &fixture.roots[0])
             .unwrap();
-        let error = restarted
+        let admission = restarted
             .admit_apply(
                 &restarted_binding,
-                Some(result.rev()),
+                None,
                 true,
                 ProviderDeadline::from_budget(Duration::from_secs(5)),
                 &CancellationToken::new(),
             )
-            .expect_err("cleanup residue must consume the restarted actor's entry budget");
-        assert!(
-            matches!(
-                &error,
-                super::ApplyAdmissionError::Other(message)
-                    if message == "retained source revision entry limit 4 exceeded"
-                        || message == "retained source revision directory cannot be read: directory exceeds the retained enumeration entry limit"
-            ),
-            "{error}"
-        );
+            .unwrap();
+        let mut state = admission.staged_state().unwrap();
+        state.replace(relative, b"after", b"next".to_vec()).unwrap();
+        let preview = restarted
+            .publish_prepared_apply(admission.prepare(state).unwrap())
+            .unwrap();
+        assert_eq!(preview.commit_count_for_test(), 0);
+        assert_eq!(snapshot_tree(&fixture.roots[0]), retained_after_cleanup);
+        assert_eq!(std::fs::read(&moved).unwrap(), b"before");
         fixture.cleanup();
     }
 
     #[test]
-    pub(crate) fn revision_transient_stop_causes_preserve_rollback() {
-        for phase in [
-            "before-enumeration",
-            "after-enumeration",
-            "between-captures",
+    fn retained_apply_stop_causes_preserve_rollback_at_every_late_gate() {
+        for (phase, deadline_case) in [
+            ("recovery", false),
+            ("postimages", false),
+            ("postimages", true),
         ] {
-            let fixture = actor_fixture(&format!("revision-transient-cancel-{phase}"), &["src"]);
+            let fixture =
+                actor_fixture(&format!("retained-stop-{phase}-{deadline_case}"), &["src"]);
             let relative = "XDTOPackages/Sample/Ext/Package.bin";
             let target = fixture.roots[0].join(relative);
             std::fs::create_dir_all(target.parent().unwrap()).unwrap();
@@ -6227,7 +6301,6 @@ pub(crate) mod tests {
                 .actor
                 .bind_provider_root("src", &fixture.roots[0])
                 .unwrap();
-            let service = fixture.actor.source_revision_service(&binding).unwrap();
             let cancellation = CancellationToken::new();
             let admitted = fixture
                 .actor
@@ -6243,102 +6316,46 @@ pub(crate) mod tests {
             state
                 .replace(relative, b"before", b"after".to_vec())
                 .unwrap();
-            let prepared = admitted.prepare(state).unwrap();
+            let mut prepared = admitted.prepare(state).unwrap();
             let source_before = snapshot_tree(&fixture.roots[0]);
             let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
-            let machine_before = service.machine_state_for_test();
-            let _scan_guard = match phase {
-                "before-enumeration" => {
-                    let cancel = cancellation.clone();
-                    crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_revision_validation_hook(
-                        move || cancel.cancel(),
-                    );
-                    None
-                }
-                "after-enumeration" => {
-                    let cancel = cancellation.clone();
-                    Some(crate::infrastructure::source_revision::set_retained_scan_test_mutation(
-                        crate::infrastructure::source_revision::RetainedScanTestMutationPoint::AfterDirectoryEnumeration,
-                        move || cancel.cancel(),
-                    ))
-                }
-                "between-captures" => {
-                    let cancel = cancellation.clone();
-                    let scans = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-                    let observed = Arc::clone(&scans);
-                    Some(crate::infrastructure::source_revision::set_repeating_retained_scan_test_mutation(
-                        crate::infrastructure::source_revision::RetainedScanTestMutationPoint::ScanStart,
-                        move || {
-                            if observed.fetch_add(1, Ordering::AcqRel) == 1 {
-                                cancel.cancel();
-                            }
-                        },
-                    ))
-                }
-                _ => unreachable!(),
-            };
-
+            if deadline_case {
+                let now = Instant::now();
+                RETAINED_APPLY_DEADLINE_TEST_NOW.set(now);
+                prepared.deadline = ProviderDeadline::with_clock(
+                    now + Duration::from_secs(1),
+                    retained_apply_deadline_test_now,
+                );
+                crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_post_validation_hook(
+                    move || RETAINED_APPLY_DEADLINE_TEST_NOW.set(now + Duration::from_secs(2)));
+            } else if phase == "recovery" {
+                let cancel = cancellation.clone();
+                crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_revision_validation_hook(move || cancel.cancel());
+            } else {
+                let cancel = cancellation.clone();
+                crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_post_validation_hook(move || cancel.cancel());
+            }
             let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
-
-            assert_eq!(error.kind(), super::ApplyPublicationErrorKind::Cancelled);
+            assert_eq!(
+                error.kind(),
+                if deadline_case {
+                    super::ApplyPublicationErrorKind::Deadline
+                } else {
+                    super::ApplyPublicationErrorKind::Cancelled
+                }
+            );
             assert_eq!(snapshot_tree(&fixture.roots[0]), source_before, "{phase}");
             assert_eq!(
                 snapshot_tree(&fixture.root.join(".build/unica")),
                 cache_before,
                 "{phase}"
             );
-            assert_eq!(service.machine_state_for_test(), machine_before, "{phase}");
             fixture.cleanup();
         }
-
-        let fixture = actor_fixture("revision-transient-deadline", &["src"]);
-        let relative = "XDTOPackages/Sample/Ext/Package.bin";
-        let target = fixture.roots[0].join(relative);
-        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
-        std::fs::write(&target, b"before").unwrap();
-        let binding = fixture
-            .actor
-            .bind_provider_root("src", &fixture.roots[0])
-            .unwrap();
-        let service = fixture.actor.source_revision_service(&binding).unwrap();
-        let admitted = fixture
-            .actor
-            .admit_apply(
-                &binding,
-                None,
-                false,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
-            )
-            .unwrap();
-        let mut state = admitted.staged_state().unwrap();
-        state
-            .replace(relative, b"before", b"after".to_vec())
-            .unwrap();
-        let mut prepared = admitted.prepare(state).unwrap();
-        prepared.deadline = ProviderDeadline::from_budget(Duration::from_millis(100));
-        let source_before = snapshot_tree(&fixture.roots[0]);
-        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
-        let machine_before = service.machine_state_for_test();
-        let _scan_guard = crate::infrastructure::source_revision::set_retained_scan_test_mutation(
-            crate::infrastructure::source_revision::RetainedScanTestMutationPoint::AfterDirectoryEnumeration,
-            || std::thread::sleep(Duration::from_millis(150)),
-        );
-
-        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
-
-        assert_eq!(error.kind(), super::ApplyPublicationErrorKind::Deadline);
-        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
-        assert_eq!(
-            snapshot_tree(&fixture.root.join(".build/unica")),
-            cache_before
-        );
-        assert_eq!(service.machine_state_for_test(), machine_before);
-        fixture.cleanup();
     }
 
     #[test]
-    pub(crate) fn actor_revision_external_resource_drift_rotates_subsequent_admission() {
+    pub(crate) fn actor_logical_revision_tracks_classified_resource_drift() {
         let content_rows = [
             ("xdto", "XDTOPackages/Sample/Ext/Package.bin"),
             ("support", "Ext/ParentConfigurations.bin"),
@@ -6373,10 +6390,10 @@ pub(crate) mod tests {
                 .unwrap();
             let before = fixture
                 .actor
-                .admit_apply(
-                    &binding,
-                    None,
-                    true,
+                .source_revision_service(&binding)
+                .unwrap()
+                .observe_retained_operation(
+                    &binding.retained_root(),
                     ProviderDeadline::from_budget(Duration::from_secs(5)),
                     &CancellationToken::new(),
                 )
@@ -6385,10 +6402,10 @@ pub(crate) mod tests {
             std::fs::write(&path, b"after").unwrap();
             let after = fixture
                 .actor
-                .admit_apply(
-                    &binding,
-                    None,
-                    true,
+                .source_revision_service(&binding)
+                .unwrap()
+                .observe_retained_operation(
+                    &binding.retained_root(),
                     ProviderDeadline::from_budget(Duration::from_secs(5)),
                     &CancellationToken::new(),
                 )
@@ -6413,10 +6430,10 @@ pub(crate) mod tests {
                 .unwrap();
             let before = fixture
                 .actor
-                .admit_apply(
-                    &binding,
-                    None,
-                    true,
+                .source_revision_service(&binding)
+                .unwrap()
+                .observe_retained_operation(
+                    &binding.retained_root(),
                     ProviderDeadline::from_budget(Duration::from_secs(5)),
                     &CancellationToken::new(),
                 )
@@ -6426,10 +6443,10 @@ pub(crate) mod tests {
                 std::fs::write(&vendor, b"different vendor bytes are still not hashed").unwrap();
                 let after_byte_rewrite = fixture
                     .actor
-                    .admit_apply(
-                        &binding,
-                        None,
-                        true,
+                    .source_revision_service(&binding)
+                    .unwrap()
+                    .observe_retained_operation(
+                        &binding.retained_root(),
                         ProviderDeadline::from_budget(Duration::from_secs(5)),
                         &CancellationToken::new(),
                     )
@@ -6445,10 +6462,10 @@ pub(crate) mod tests {
             }
             let after = fixture
                 .actor
-                .admit_apply(
-                    &binding,
-                    None,
-                    true,
+                .source_revision_service(&binding)
+                .unwrap()
+                .observe_retained_operation(
+                    &binding.retained_root(),
                     ProviderDeadline::from_budget(Duration::from_secs(5)),
                     &CancellationToken::new(),
                 )
@@ -6464,111 +6481,6 @@ pub(crate) mod tests {
             unchanged.is_empty(),
             "resource drift omitted from actor revision: {unchanged:?}"
         );
-    }
-
-    #[test]
-    pub(crate) fn actor_revision_policy_migrates_old_scoped_record_once_then_is_restart_stable() {
-        let fixture = actor_fixture("revision-record-migration", &["src"]);
-        let package = fixture.roots[0].join("XDTOPackages/Sample/Ext/Package.bin");
-        std::fs::create_dir_all(package.parent().unwrap()).unwrap();
-        std::fs::write(&package, b"package-before").unwrap();
-        let binding = fixture
-            .actor
-            .bind_provider_root("src", &fixture.roots[0])
-            .unwrap();
-        let old = crate::infrastructure::source_revision::seed_observed_revision_record_for_test(
-            &fixture.actor.source_revision_service(&binding).unwrap(),
-            &binding.retained_root(),
-        )
-        .unwrap();
-
-        let rebuilt_identity = WorkspaceIdentity::new(
-            &context(&fixture.root),
-            [source_input("src", &fixture.roots[0])],
-            "test-provider",
-        )
-        .unwrap();
-        let rebuilt =
-            Arc::new(super::WorkspaceActor::new(rebuilt_identity, context(&fixture.root)).unwrap());
-        let rebuilt_binding = rebuilt
-            .bind_provider_root("src", &fixture.roots[0])
-            .unwrap();
-        let migrated = rebuilt
-            .admit_apply(
-                &rebuilt_binding,
-                None,
-                true,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
-            )
-            .unwrap()
-            .revision_identity();
-
-        let admitted = rebuilt
-            .admit_apply(
-                &rebuilt_binding,
-                Some(&migrated),
-                false,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
-            )
-            .unwrap();
-        let mut state = admitted.staged_state().unwrap();
-        state
-            .replace(
-                "XDTOPackages/Sample/Ext/Package.bin",
-                b"package-before",
-                b"package-after".to_vec(),
-            )
-            .unwrap();
-        let committed = rebuilt
-            .publish_prepared_apply(admitted.prepare(state).unwrap())
-            .map(|result| result.rev().to_string());
-
-        let mut failures = Vec::new();
-        if migrated == old {
-            failures.push(
-                "old scoped record did not rotate for newly classified Package.bin".to_string(),
-            );
-        }
-        match committed {
-            Ok(committed) => {
-                let final_identity = WorkspaceIdentity::new(
-                    &context(&fixture.root),
-                    [source_input("src", &fixture.roots[0])],
-                    "test-provider",
-                )
-                .unwrap();
-                let final_actor = Arc::new(
-                    super::WorkspaceActor::new(final_identity, context(&fixture.root)).unwrap(),
-                );
-                let final_binding = final_actor
-                    .bind_provider_root("src", &fixture.roots[0])
-                    .unwrap();
-                let after_restart = final_actor
-                    .admit_apply(
-                        &final_binding,
-                        None,
-                        true,
-                        ProviderDeadline::from_budget(Duration::from_secs(5)),
-                        &CancellationToken::new(),
-                    )
-                    .unwrap()
-                    .revision_identity();
-                if committed != after_restart {
-                    failures.push(format!(
-                        "committed revision was not restart-stable: {committed} != {after_restart}"
-                    ));
-                }
-            }
-            Err(error) => failures.push(format!("classified Package.bin commit failed: {error}")),
-        }
-
-        assert!(
-            failures.is_empty(),
-            "revision migration failures: {failures:?}"
-        );
-        fixture.cleanup();
     }
 
     #[test]
@@ -6607,7 +6519,7 @@ pub(crate) mod tests {
 
         assert_eq!(error.kind(), ApplyStagingErrorKind::Invariant);
         assert!(
-            error.to_string().contains("revision artifact policy"),
+            error.to_string().contains("supported source profile"),
             "{error}"
         );
         assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
@@ -6656,7 +6568,7 @@ pub(crate) mod tests {
 
         assert_eq!(error.kind(), ApplyStagingErrorKind::Invariant);
         assert!(
-            error.to_string().contains("revision artifact policy"),
+            error.to_string().contains("supported source profile"),
             "{error}"
         );
         assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
@@ -6674,7 +6586,6 @@ pub(crate) mod tests {
 
         let mut failures = Vec::new();
         for (label, failpoint) in [
-            ("revision-record", RetainedApplyFailpoint::RevisionRecord),
             ("state-marker", RetainedApplyFailpoint::StateMarker),
             (
                 "after-postimages",
@@ -6809,23 +6720,13 @@ pub(crate) mod tests {
 
         let result = platform_commit
             .expect("classified Platform resource commit must precede compatibility guards");
-        let replay = fixture
-            .actor
-            .admit_apply(
-                &binding,
-                Some(result.rev()),
-                true,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
-            )
-            .unwrap();
-        assert_eq!(replay.revision_identity(), result.rev());
+        assert_eq!(result.commit_count_for_test(), 1);
         let _ = std::fs::remove_dir_all(legacy_root);
         fixture.cleanup();
     }
 
     #[test]
-    fn prepared_apply_observer_sees_source_eager_revision_and_state_marker_order() {
+    fn prepared_apply_observer_sees_source_eager_cache_and_state_marker_order() {
         let fixture = actor_fixture("prepared-apply-publication-order", &["src"]);
         std::fs::write(fixture.roots[0].join("Module.bsl"), b"original").unwrap();
         let binding = fixture
@@ -6868,7 +6769,6 @@ pub(crate) mod tests {
                     RetainedApplyObservedEvent::Source(_),
                     RetainedApplyObservedEvent::EagerMetadata(_),
                     RetainedApplyObservedEvent::EagerMetadata(_),
-                    RetainedApplyObservedEvent::RevisionRecord(_),
                     RetainedApplyObservedEvent::StateMarker(_),
                 ]
             ),
@@ -6878,7 +6778,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn prepared_apply_success_publishes_source_cache_record_and_state_as_one_revision() {
+    fn prepared_apply_success_publishes_source_cache_and_state_without_revision_record() {
         let fixture = actor_fixture("prepared-apply-cache-success", &["src"]);
         let target = fixture.roots[0].join("Module.bsl");
         std::fs::write(&target, b"original").unwrap();
@@ -6893,7 +6793,6 @@ pub(crate) mod tests {
             .actor
             .admit_apply(&binding, None, false, deadline, &cancellation)
             .unwrap();
-        let before_rev = admitted.revision_identity().to_string();
         let mut state = admitted.staged_state().unwrap();
         state
             .replace("Module.bsl", b"original", b"published".to_vec())
@@ -6908,31 +6807,17 @@ pub(crate) mod tests {
             )
             .unwrap();
 
+        let plan = prepared.plan_identity.clone();
         let result = fixture.actor.publish_prepared_apply(prepared).unwrap();
         let cache_root = fixture.root.join(".build/unica");
         assert_eq!(std::fs::read(&target).unwrap(), b"published");
         assert!(cache_root.join("caches/workspace_graph.json").is_file());
         assert!(cache_root.join("caches/metadata_graph.json").is_file());
         assert!(cache_root.join("state.json").is_file());
-        assert_eq!(
-            std::fs::read_dir(cache_root.join("source-revisions"))
-                .unwrap()
-                .count(),
-            1
-        );
-        assert_ne!(result.rev(), before_rev);
+        assert!(!cache_root.join("source-revisions").exists());
+        assert_eq!(result.rev(), plan);
 
-        let observed = fixture
-            .actor
-            .admit_apply(
-                &binding,
-                Some(result.rev()),
-                true,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
-            )
-            .unwrap();
-        assert_eq!(observed.revision_identity(), result.rev());
+        assert_eq!(result.commit_count_for_test(), 1);
         fixture.cleanup();
     }
 
@@ -6943,7 +6828,6 @@ pub(crate) mod tests {
         for (name, failpoint) in [
             ("second-source", RetainedApplyFailpoint::Source(2)),
             ("eager-cache", RetainedApplyFailpoint::EagerMetadata(1)),
-            ("revision-record", RetainedApplyFailpoint::RevisionRecord),
             ("state-marker", RetainedApplyFailpoint::StateMarker),
             ("postimages", RetainedApplyFailpoint::AfterAllPostimages),
         ] {
@@ -7191,7 +7075,6 @@ pub(crate) mod tests {
             .map(|event| match event {
                 RetainedApplyObservedEvent::Source(path)
                 | RetainedApplyObservedEvent::EagerMetadata(path)
-                | RetainedApplyObservedEvent::RevisionRecord(path)
                 | RetainedApplyObservedEvent::StateMarker(path) => path.clone(),
                 RetainedApplyObservedEvent::Rollback(_) => unreachable!(),
             })
@@ -7208,7 +7091,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn retained_apply_trust_epoch_race_rolls_back_without_overwriting_foreign_state() {
+    fn retained_apply_global_revision_dirtiness_does_not_veto_prepared_plan() {
         let fixture = actor_fixture("retained-trust-epoch-race", &["src"]);
         std::fs::write(fixture.roots[0].join("Module.bsl"), b"before").unwrap();
         let binding = fixture
@@ -7239,24 +7122,16 @@ pub(crate) mod tests {
                 )],
             )
             .unwrap();
-        let source_before = snapshot_tree(&fixture.roots[0]);
-        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
         let race_service = Arc::clone(&service);
         crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_post_validation_hook(
             move || race_service.mark_dirty(),
         );
 
-        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
-
-        assert!(error.contains("trust epoch"), "{error}");
+        let result = fixture.actor.publish_prepared_apply(prepared).unwrap();
+        assert_eq!(result.commit_count_for_test(), 1);
         assert_eq!(
-            error.kind(),
-            super::ApplyPublicationErrorKind::ConcurrentRevision
-        );
-        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
-        assert_eq!(
-            snapshot_tree(&fixture.root.join(".build/unica")),
-            cache_before
+            std::fs::read(fixture.roots[0].join("Module.bsl")).unwrap(),
+            b"after"
         );
         assert!(matches!(
             service.machine_state_for_test().state(),
@@ -7270,10 +7145,6 @@ pub(crate) mod tests {
 
     #[test]
     fn retained_apply_publication_preserves_exact_typed_causes_end_to_end() {
-        use crate::infrastructure::source_revision::{
-            set_repeating_retained_scan_test_mutation, RetainedScanTestMutationPoint,
-        };
-
         let fixture = actor_fixture("typed-cause-cancelled-scan", &["src"]);
         std::fs::write(fixture.roots[0].join("Module.bsl"), b"before").unwrap();
         let binding = fixture
@@ -7296,17 +7167,8 @@ pub(crate) mod tests {
             .replace("Module.bsl", b"before", b"after".to_vec())
             .unwrap();
         let prepared = admitted.prepare(state).unwrap();
-        let cancel_during_scan = cancellation.clone();
-        let cancel_scan_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let cancel_scan_observed = Arc::clone(&cancel_scan_count);
-        let _mutation = set_repeating_retained_scan_test_mutation(
-            RetainedScanTestMutationPoint::AfterDirectoryEnumeration,
-            move || {
-                if cancel_scan_observed.fetch_add(1, Ordering::AcqRel) == 2 {
-                    cancel_during_scan.cancel();
-                }
-            },
-        );
+        let cancel_during_confirmation = cancellation.clone();
+        set_apply_before_input_confirmation_hook(move || cancel_during_confirmation.cancel());
         let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
         assert_eq!(error.kind(), super::ApplyPublicationErrorKind::Cancelled);
         fixture.cleanup();
@@ -7332,62 +7194,17 @@ pub(crate) mod tests {
             .replace("Module.bsl", b"before", b"after".to_vec())
             .unwrap();
         let mut prepared = admitted.prepare(state).unwrap();
-        prepared.deadline = ProviderDeadline::from_budget(Duration::from_millis(200));
-        let deadline_scan_ran = Arc::new(AtomicBool::new(false));
-        let deadline_scan_observed = Arc::clone(&deadline_scan_ran);
-        let deadline_scan_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let deadline_scan_counter = Arc::clone(&deadline_scan_count);
-        let _mutation = set_repeating_retained_scan_test_mutation(
-            RetainedScanTestMutationPoint::AfterDirectoryEnumeration,
-            move || {
-                if deadline_scan_counter.fetch_add(1, Ordering::AcqRel) == 2 {
-                    deadline_scan_observed.store(true, Ordering::Release);
-                    std::thread::sleep(Duration::from_millis(250));
-                }
-            },
+        let now = Instant::now();
+        RETAINED_APPLY_DEADLINE_TEST_NOW.set(now);
+        prepared.deadline = ProviderDeadline::with_clock(
+            now + Duration::from_secs(1),
+            retained_apply_deadline_test_now,
         );
+        set_apply_before_input_confirmation_hook(move || {
+            RETAINED_APPLY_DEADLINE_TEST_NOW.set(now + Duration::from_secs(2))
+        });
         let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
-        assert!(deadline_scan_ran.load(Ordering::Acquire));
         assert_eq!(error.kind(), super::ApplyPublicationErrorKind::Deadline);
-        fixture.cleanup();
-
-        let fixture = actor_fixture("typed-cause-provider-scan", &["src"]);
-        std::fs::write(fixture.roots[0].join("Module.bsl"), b"before").unwrap();
-        let nested = fixture.roots[0].join("Nested");
-        std::fs::create_dir_all(&nested).unwrap();
-        std::fs::write(nested.join("NestedModule.bsl"), b"nested").unwrap();
-        if !crate::infrastructure::platform::testing::set_unix_mode_for_test(&nested, 0o700)
-            .unwrap()
-        {
-            fixture.cleanup();
-            return;
-        }
-        let binding = fixture
-            .actor
-            .bind_provider_root("src", &fixture.roots[0])
-            .unwrap();
-        let admitted = fixture
-            .actor
-            .admit_apply(
-                &binding,
-                None,
-                false,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
-            )
-            .unwrap();
-        let mut state = admitted.staged_state().unwrap();
-        state
-            .replace("Module.bsl", b"before", b"after".to_vec())
-            .unwrap();
-        let prepared = admitted.prepare(state).unwrap();
-        crate::infrastructure::platform::testing::set_unix_mode_for_test(&nested, 0o000).unwrap();
-        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
-        crate::infrastructure::platform::testing::set_unix_mode_for_test(&nested, 0o700).unwrap();
-        assert_eq!(
-            error.kind(),
-            super::ApplyPublicationErrorKind::ProviderPostvalidation
-        );
         fixture.cleanup();
 
         let fixture = actor_fixture("typed-cause-concurrent-scan", &["src"]);
@@ -7411,17 +7228,10 @@ pub(crate) mod tests {
             .replace("Module.bsl", b"before", b"after".to_vec())
             .unwrap();
         let prepared = admitted.prepare(state).unwrap();
-        let concurrent = fixture.roots[0].join("Concurrent.bsl");
-        let concurrent_scan_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let concurrent_scan_counter = Arc::clone(&concurrent_scan_count);
-        let _mutation = set_repeating_retained_scan_test_mutation(
-            RetainedScanTestMutationPoint::AfterDirectoryEnumeration,
-            move || {
-                if concurrent_scan_counter.fetch_add(1, Ordering::AcqRel) == 2 {
-                    std::fs::write(&concurrent, b"foreign").unwrap();
-                }
-            },
-        );
+        let concurrent = fixture.roots[0].join("Module.bsl");
+        set_apply_before_input_confirmation_hook(move || {
+            std::fs::write(&concurrent, b"foreign").unwrap()
+        });
         let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
         assert_eq!(
             error.kind(),
@@ -7616,21 +7426,16 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn cache_and_revision_preimage_races_fail_closed_and_preserve_foreign_names() {
-        for case in ["cache-replaced", "revision-disappeared", "cache-hard-link"] {
+    fn cache_preimage_races_fail_closed_and_preserve_foreign_names() {
+        for case in ["cache-replaced", "state-disappeared", "cache-hard-link"] {
             let (fixture, binding) = publish_cache_fixture(&format!("preimage-{case}"));
             let prepared = prepare_cache_fixture_apply(&fixture, &binding);
             let cache_root = fixture.root.join(".build/unica");
             let metadata = cache_root.join("caches/metadata_graph.json");
-            let revision = std::fs::read_dir(cache_root.join("source-revisions"))
-                .unwrap()
-                .next()
-                .unwrap()
-                .unwrap()
-                .path();
+            let state_marker = cache_root.join("state.json");
             match case {
                 "cache-replaced" => std::fs::write(&metadata, b"foreign-cache").unwrap(),
-                "revision-disappeared" => std::fs::remove_file(&revision).unwrap(),
+                "state-disappeared" => std::fs::remove_file(&state_marker).unwrap(),
                 "cache-hard-link" => {
                     let foreign = fixture.root.join("foreign-cache.json");
                     std::fs::write(&foreign, b"foreign-hard-link").unwrap();
@@ -7657,7 +7462,7 @@ pub(crate) mod tests {
             );
             match case {
                 "cache-replaced" => assert_eq!(std::fs::read(metadata).unwrap(), b"foreign-cache"),
-                "revision-disappeared" => assert!(!revision.exists()),
+                "state-disappeared" => assert!(!state_marker.exists()),
                 "cache-hard-link" => {
                     assert_eq!(std::fs::read(metadata).unwrap(), b"foreign-hard-link")
                 }
@@ -7842,7 +7647,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn apply_admission_and_dry_run_revision_observation_are_cache_tree_write_free() {
+    fn apply_admission_and_dry_run_are_cache_tree_write_free() {
         for existing_cache in [false, true] {
             let fixture = actor_fixture("apply-observation-write-free", &["src"]);
             let target = fixture.roots[0].join("Module.bsl");
@@ -7891,7 +7696,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn prepared_apply_dry_run_is_byte_identical_and_real_apply_commits_once_with_new_revision() {
+    fn prepared_apply_dry_run_is_byte_identical_and_real_apply_commits_the_same_plan_once() {
         let fixture = actor_fixture("prepared-apply", &["src"]);
         let target = fixture.roots[0].join("Module.bsl");
         std::fs::write(&target, b"original").unwrap();
@@ -7910,19 +7715,18 @@ pub(crate) mod tests {
                 &cancellation,
             )
             .unwrap();
-        let admitted_rev = admitted.revision_identity().to_string();
         let mut state = admitted.staged_state().unwrap();
         state
-            .replace("Module.bsl", b"original", b"dry-run".to_vec())
+            .replace("Module.bsl", b"original", b"published".to_vec())
             .unwrap();
         state
-            .create("Ext/Form/Module.bsl", b"dry-run-create".to_vec())
+            .create("Ext/Form/Module.bsl", b"published-create".to_vec())
             .unwrap();
         let dry_result = fixture
             .actor
             .publish_prepared_apply(admitted.prepare(state).unwrap())
             .unwrap();
-        assert_eq!(dry_result.rev(), admitted_rev);
+        let preview_plan = dry_result.rev().to_string();
         assert_eq!(std::fs::read(&target).unwrap(), b"original");
         assert!(!fixture.roots[0].join("Ext").exists());
         assert_eq!(dry_result.commit_count_for_test(), 0);
@@ -7932,7 +7736,7 @@ pub(crate) mod tests {
             .actor
             .admit_apply(
                 &binding,
-                Some(&admitted_rev),
+                Some(&preview_plan),
                 false,
                 ProviderDeadline::from_budget(Duration::from_secs(5)),
                 &cancellation,
@@ -7954,7 +7758,7 @@ pub(crate) mod tests {
             std::fs::read(fixture.roots[0].join("Ext/Form/Module.bsl")).unwrap(),
             b"published-create"
         );
-        assert_ne!(result.rev(), admitted_rev);
+        assert_eq!(result.rev(), preview_plan);
         assert_eq!(result.commit_count_for_test(), 1);
         assert!(result.cleanup_diagnostics().is_empty());
         fixture.cleanup();
@@ -8896,7 +8700,7 @@ pub(crate) mod tests {
             .bind_provider_root("src", &fixture.roots[0])
             .unwrap();
         let cancellation = CancellationToken::new();
-        assert!(fixture
+        let stale = fixture
             .actor
             .admit_apply(
                 &binding,
@@ -8905,9 +8709,14 @@ pub(crate) mod tests {
                 ProviderDeadline::from_budget(Duration::from_secs(5)),
                 &cancellation,
             )
-            .unwrap_err()
-            .to_string()
-            .contains("ifRev"));
+            .unwrap();
+        let mut stale_state = stale.staged_state().unwrap();
+        stale_state
+            .replace("Module.bsl", b"original", b"must-not-publish".to_vec())
+            .unwrap();
+        let error = stale.prepare(stale_state).unwrap_err();
+        assert_eq!(error.kind(), ApplyStagingErrorKind::ConcurrentRevision);
+        assert!(error.to_string().contains("ifRev"));
 
         let admitted = fixture
             .actor
@@ -8925,11 +8734,11 @@ pub(crate) mod tests {
             .unwrap();
         let prepared = admitted.prepare(state).unwrap();
         std::fs::write(&target, b"concurrent").unwrap();
-        assert!(fixture
-            .actor
-            .publish_prepared_apply(prepared)
-            .unwrap_err()
-            .contains("revision"));
+        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+        assert_eq!(
+            error.kind(),
+            super::ApplyPublicationErrorKind::ConcurrentRevision
+        );
         assert_eq!(std::fs::read(&target).unwrap(), b"concurrent");
 
         let cancelled = CancellationToken::new();
@@ -9622,7 +9431,6 @@ pub(crate) mod tests {
                 &CancellationToken::new(),
             )
             .unwrap();
-        let admitted_rev = admitted.revision_identity().to_string();
         let (state, effects) = plan_actor_events(
             &admitted,
             &[event_operation(
@@ -9631,12 +9439,13 @@ pub(crate) mod tests {
         )
         .unwrap();
         let prepared = admitted.prepare_with_effects(state, effects).unwrap();
+        let plan = prepared.plan_identity.clone();
 
         let result = fixture.actor.publish_prepared_apply(prepared).unwrap();
         let receipt = result.effects();
 
         assert_form_module_effect_subject(receipt, ApplyEffectDisposition::Projected);
-        assert_eq!(result.rev(), admitted_rev);
+        assert_eq!(result.rev(), plan);
         assert_eq!(result.commit_count_for_test(), 0);
         assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
         assert_eq!(snapshot_tree(&cache_root), cache_before);
@@ -9669,7 +9478,6 @@ pub(crate) mod tests {
                 &CancellationToken::new(),
             )
             .unwrap();
-        let admitted_rev = admitted.revision_identity().to_string();
         let (state, effects) = plan_actor_events(
             &admitted,
             &[event_operation(
@@ -9678,13 +9486,14 @@ pub(crate) mod tests {
         )
         .unwrap();
         let prepared = admitted.prepare_with_effects(state, effects).unwrap();
+        let plan = prepared.plan_identity.clone();
         let _ = crate::infrastructure::native_operations::compile_transaction::take_retained_apply_observed_events();
 
         let result = fixture.actor.publish_prepared_apply(prepared).unwrap();
         let receipt = result.effects();
 
         assert_form_module_effect_subject(receipt, ApplyEffectDisposition::Committed);
-        assert_ne!(result.rev(), admitted_rev);
+        assert_eq!(result.rev(), plan);
         assert_eq!(result.commit_count_for_test(), 1);
         assert!(fixture.roots[0]
             .join("Catalogs/Products/Forms/Main/Ext/Form/Module.bsl")
@@ -9700,7 +9509,6 @@ pub(crate) mod tests {
                     RetainedApplyObservedEvent::Source(_),
                     RetainedApplyObservedEvent::Source(_),
                     RetainedApplyObservedEvent::EagerMetadata(_),
-                    RetainedApplyObservedEvent::RevisionRecord(_),
                     RetainedApplyObservedEvent::StateMarker(_),
                 ]
             ),
@@ -9922,7 +9730,6 @@ pub(crate) mod tests {
         for (name, failpoint) in [
             ("second-source", RetainedApplyFailpoint::Source(2)),
             ("eager-cache", RetainedApplyFailpoint::EagerMetadata(1)),
-            ("revision-record", RetainedApplyFailpoint::RevisionRecord),
             ("state-marker", RetainedApplyFailpoint::StateMarker),
             (
                 "final-validation",
@@ -10036,7 +9843,7 @@ pub(crate) mod tests {
             .actor
             .bind_provider_root("main", &stale.roots[0])
             .unwrap();
-        let stale_error = stale
+        let stale_admission = stale
             .actor
             .admit_apply(
                 &stale_binding,
@@ -10045,7 +9852,21 @@ pub(crate) mod tests {
                 ProviderDeadline::from_budget(Duration::from_secs(5)),
                 &CancellationToken::new(),
             )
+            .unwrap();
+        let (state, effects) = plan_actor_events(
+            &stale_admission,
+            &[event_operation(
+                "main:Catalog.Products.Form.Main.Event.OnOpen",
+            )],
+        )
+        .unwrap();
+        let stale_error = stale_admission
+            .prepare_with_effects(state, effects)
             .unwrap_err();
+        assert_eq!(
+            stale_error.kind(),
+            ApplyStagingErrorKind::ConcurrentRevision
+        );
         assert!(stale_error.to_string().contains("ifRev"));
         assert!(!stale.root.join(".build/unica").exists());
         stale.cleanup();
@@ -10063,7 +9884,11 @@ pub(crate) mod tests {
             "racing prepared batch discarded the receipt subject before the gate"
         );
         let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
-        std::fs::write(fixture.roots[0].join("Concurrent.bsl"), b"foreign").unwrap();
+        std::fs::write(
+            fixture.roots[0].join("Catalogs/Products/Forms/Main/Ext/Form.xml"),
+            b"foreign",
+        )
+        .unwrap();
         let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
         assert_eq!(
             error.kind(),
@@ -10074,7 +9899,8 @@ pub(crate) mod tests {
             cache_before
         );
         assert_eq!(
-            std::fs::read(fixture.roots[0].join("Concurrent.bsl")).unwrap(),
+            std::fs::read(fixture.roots[0].join("Catalogs/Products/Forms/Main/Ext/Form.xml"))
+                .unwrap(),
             b"foreign"
         );
         fixture.cleanup();
@@ -10185,34 +10011,6 @@ pub(crate) mod tests {
         set_apply_dry_run_after_confirmation_hook(move || cancel.cancel());
         let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
         assert_eq!(error.kind(), super::ApplyPublicationErrorKind::Cancelled);
-        fixture.cleanup();
-
-        let fixture = actor_fixture("effect-race-trust-epoch", &["main"]);
-        write_actor_event_fixture(&fixture.roots[0]);
-        let binding = fixture
-            .actor
-            .bind_provider_root("main", &fixture.roots[0])
-            .unwrap();
-        let service = fixture.actor.source_revision_service(&binding).unwrap();
-        let prepared =
-            prepare_property_effect_batch(&fixture, &binding, false, &CancellationToken::new());
-        assert!(!prepared.effects.events.is_empty());
-        let source_before = snapshot_tree(&fixture.roots[0]);
-        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
-        let race_service = Arc::clone(&service);
-        crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_post_validation_hook(
-            move || race_service.mark_dirty(),
-        );
-        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
-        assert_eq!(
-            error.kind(),
-            super::ApplyPublicationErrorKind::ConcurrentRevision
-        );
-        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
-        assert_eq!(
-            snapshot_tree(&fixture.root.join(".build/unica")),
-            cache_before
-        );
         fixture.cleanup();
     }
 
@@ -10367,12 +10165,8 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn real_effect_mid_scan_cancellation_preserves_exact_state() {
-        use crate::infrastructure::source_revision::{
-            set_repeating_retained_scan_test_mutation, RetainedScanTestMutationPoint,
-        };
-
-        let fixture = actor_fixture("effect-mid-scan-cancel", &["main"]);
+    fn real_effect_input_confirmation_cancellation_preserves_exact_state() {
+        let fixture = actor_fixture("effect-input confirmation-cancel", &["main"]);
         write_actor_event_fixture(&fixture.roots[0]);
         let binding = fixture
             .actor
@@ -10386,29 +10180,15 @@ pub(crate) mod tests {
         let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
         let machine_before = service.machine_state_for_test();
         let _ = crate::infrastructure::native_operations::compile_transaction::take_retained_apply_observed_events();
-        let scan_ran = Arc::new(AtomicBool::new(false));
-        let scan_observed = Arc::clone(&scan_ran);
-        let scan_count = Arc::new(AtomicUsize::new(0));
-        let scan_counter = Arc::clone(&scan_count);
-        let cancel_during_scan = cancellation.clone();
-        let _mutation = set_repeating_retained_scan_test_mutation(
-            RetainedScanTestMutationPoint::AfterDirectoryEnumeration,
-            move || {
-                if scan_counter.fetch_add(1, Ordering::AcqRel) == 2 {
-                    scan_observed.store(true, Ordering::Release);
-                    cancel_during_scan.cancel();
-                }
-            },
-        );
-
+        let cancel_during_confirmation = cancellation.clone();
+        set_apply_before_input_confirmation_hook(move || cancel_during_confirmation.cancel());
         let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
 
-        assert!(scan_ran.load(Ordering::Acquire));
         assert_eq!(error.kind(), super::ApplyPublicationErrorKind::Cancelled);
         assert!(
             crate::infrastructure::native_operations::compile_transaction::take_retained_apply_observed_events()
                 .is_empty(),
-            "mid-scan cancellation reached retained publication"
+            "input confirmation cancellation reached retained publication"
         );
         assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
         assert_eq!(
@@ -10420,12 +10200,8 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn real_effect_mid_scan_deadline_preserves_exact_state() {
-        use crate::infrastructure::source_revision::{
-            set_repeating_retained_scan_test_mutation, RetainedScanTestMutationPoint,
-        };
-
-        let fixture = actor_fixture("effect-mid-scan-deadline", &["main"]);
+    fn real_effect_input_confirmation_deadline_preserves_exact_state() {
+        let fixture = actor_fixture("effect-input confirmation-deadline", &["main"]);
         write_actor_event_fixture(&fixture.roots[0]);
         let binding = fixture
             .actor
@@ -10440,28 +10216,22 @@ pub(crate) mod tests {
         let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
         let machine_before = service.machine_state_for_test();
         let _ = crate::infrastructure::native_operations::compile_transaction::take_retained_apply_observed_events();
-        let scan_ran = Arc::new(AtomicBool::new(false));
-        let scan_observed = Arc::clone(&scan_ran);
-        let scan_count = Arc::new(AtomicUsize::new(0));
-        let scan_counter = Arc::clone(&scan_count);
-        let _mutation = set_repeating_retained_scan_test_mutation(
-            RetainedScanTestMutationPoint::AfterDirectoryEnumeration,
-            move || {
-                if scan_counter.fetch_add(1, Ordering::AcqRel) == 2 {
-                    scan_observed.store(true, Ordering::Release);
-                    std::thread::sleep(Duration::from_millis(250));
-                }
-            },
+        let now = Instant::now();
+        RETAINED_APPLY_DEADLINE_TEST_NOW.set(now);
+        prepared.deadline = ProviderDeadline::with_clock(
+            now + Duration::from_secs(1),
+            retained_apply_deadline_test_now,
         );
-
+        set_apply_before_input_confirmation_hook(move || {
+            RETAINED_APPLY_DEADLINE_TEST_NOW.set(now + Duration::from_secs(2))
+        });
         let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
 
-        assert!(scan_ran.load(Ordering::Acquire));
         assert_eq!(error.kind(), super::ApplyPublicationErrorKind::Deadline);
         assert!(
             crate::infrastructure::native_operations::compile_transaction::take_retained_apply_observed_events()
                 .is_empty(),
-            "mid-scan deadline reached retained publication"
+            "input confirmation deadline reached retained publication"
         );
         assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
         assert_eq!(

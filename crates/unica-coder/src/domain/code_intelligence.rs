@@ -611,6 +611,13 @@ pub struct ProviderSearchSection {
     pub matches: SearchMatchCount,
     pub hits: Vec<ProviderSearchHit>,
     pub diagnostics: Vec<String>,
+    /// Freshness against current workspace sources, when this provider can
+    /// identify it. An index answer can be complete for its build while its
+    /// freshness against later edits remains unknown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index_freshness: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index_build_id: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub artifacts: Vec<String>,
 }
@@ -721,6 +728,8 @@ impl ProviderSearchSection {
             matches,
             hits,
             diagnostics,
+            index_freshness: None,
+            index_build_id: None,
             artifacts: Vec::new(),
         })
     }
@@ -1159,6 +1168,10 @@ pub struct CallGraphResult {
 pub struct CodeDefinitionResult {
     pub name: String,
     pub definitions: Vec<CodeDefinition>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index_freshness: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index_build_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

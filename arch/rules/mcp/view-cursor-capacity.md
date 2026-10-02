@@ -7,7 +7,7 @@ check:
   - crates/unica-coder/src/application/result_store.rs::snapshot_admission_reserves_room_for_the_next_cursor
   - crates/unica-coder/src/application/result_store.rs::many_small_items_are_charged_for_retained_heap_not_only_json
   - crates/unica-coder/src/application/v13/view.rs::snapshot_over_byte_quota_refuses_before_promising_a_continuation
-  - crates/unica-coder/src/application/result_store.rs::exact_revision_change_is_stale_but_tampering_and_expiry_are_invalid
+  - crates/unica-coder/src/application/result_store.rs::source_change_preserves_the_snapshot_but_tampering_and_expiry_are_invalid
   - crates/unica-coder/tests/v13_search_integration.rs::public_view_pages_large_bsl_body_and_replays_disk_cursor
 ---
 

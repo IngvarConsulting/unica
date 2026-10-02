@@ -45,6 +45,7 @@ use crate::infrastructure::platform_xml_owner::{
     prove_already_read_metadata_owner, prove_already_read_source_set_owner,
     PlatformXmlSourceSetOwnerEvidence,
 };
+#[cfg(test)]
 use crate::infrastructure::source_revision::{RetainedRevisionLease, SourceRevisionService};
 use crate::infrastructure::v13_large_configuration::{
     read_configuration_registration_index, read_configuration_root, RegistrationIndex,
@@ -114,11 +115,15 @@ pub(crate) struct ProviderReadAuthority {
 }
 
 enum ProviderRevisionAuthority {
+    #[cfg(test)]
     Live(Arc<SourceRevisionService>),
+    #[cfg(test)]
     Operation(RetainedRevisionLease),
+    LocalSnapshot(String),
 }
 
 impl ProviderReadAuthority {
+    #[cfg(test)]
     pub(crate) fn new(
         source_set: impl Into<String>,
         source_set_identity: impl Into<String>,
@@ -144,6 +149,7 @@ impl ProviderReadAuthority {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn new_with_revision_lease(
         source_set: impl Into<String>,
         source_set_identity: impl Into<String>,
@@ -157,6 +163,31 @@ impl ProviderReadAuthority {
             source_set_kind,
             root,
             revisions: ProviderRevisionAuthority::Operation(revision),
+            support_state: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            module_source_reads: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+            #[cfg(test)]
+            metadata_descriptor_reads: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+            #[cfg(test)]
+            configuration_payload_reads: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            support_state_reads: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    pub(crate) fn new_local_snapshot(
+        source_set: impl Into<String>,
+        source_set_identity: impl Into<String>,
+        source_set_kind: SourceSetKind,
+        root: Arc<RetainedDirectoryCapability>,
+        snapshot_identity: String,
+    ) -> Self {
+        Self {
+            source_set: source_set.into(),
+            source_set_identity: source_set_identity.into(),
+            source_set_kind,
+            root,
+            revisions: ProviderRevisionAuthority::LocalSnapshot(snapshot_identity),
             support_state: std::sync::Mutex::new(None),
             #[cfg(test)]
             module_source_reads: std::sync::Mutex::new(std::collections::BTreeMap::new()),
@@ -206,6 +237,7 @@ impl ProviderReadAuthority {
             }
         });
         match &self.revisions {
+            #[cfg(test)]
             ProviderRevisionAuthority::Live(revisions) => revisions
                 .snapshot_retained(&self.root, deadline, cancellation)
                 .map(|revision| {
@@ -215,6 +247,25 @@ impl ProviderReadAuthority {
                     )
                 })
                 .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error)),
+            ProviderRevisionAuthority::LocalSnapshot(identity) => {
+                if cancellation.is_cancelled() {
+                    Err(ViewError::new(
+                        RefusalCode::Cancelled,
+                        "logical read was cancelled",
+                    ))
+                } else if deadline.remaining().is_zero() {
+                    Err(ViewError::new(
+                        RefusalCode::DeadlineExceeded,
+                        "logical read operation deadline elapsed",
+                    ))
+                } else {
+                    self.root.validate_named_identity().map_err(|error| {
+                        ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+                    })?;
+                    Ok(identity.clone())
+                }
+            }
+            #[cfg(test)]
             ProviderRevisionAuthority::Operation(revision) => {
                 if cancellation.is_cancelled() {
                     Err(ViewError::new(

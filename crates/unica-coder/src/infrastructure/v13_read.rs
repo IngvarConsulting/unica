@@ -1,6 +1,7 @@
 use crate::application::ports::{MetadataChildProfile, MetadataTemplateType};
 use crate::application::v13::body_snapshot::BodySnapshot;
 use crate::application::v13::view::{ViewError, ViewFilter, ViewReadAuthority, ViewSourceSnapshot};
+#[cfg(test)]
 use crate::application::v13::LOGICAL_READ_OPERATION_BUDGET;
 use crate::domain::address::{AddressSegment, NodeKind, QualifiedAddress};
 use crate::domain::cancellation::CancellationToken;
@@ -32,12 +33,14 @@ use crate::infrastructure::logical_event_source::{
 use crate::infrastructure::logical_event_source::{resolve_event_source, LogicalEventSource};
 use crate::infrastructure::logical_tree::{route_logical_address, LogicalReader, LogicalTreeRoute};
 use crate::infrastructure::native_operations::form::{FormEventEvidence, FormInfoData};
+#[cfg(test)]
 use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
 use crate::infrastructure::platform_xml_owner::PlatformXmlSourceSetOwnerEvidence;
 #[cfg(test)]
 use crate::infrastructure::platform_xml_source_targets::{
     resolve_platform_xml_target, TargetKindPolicy,
 };
+#[cfg(test)]
 use crate::infrastructure::source_revision::SourceRevisionService;
 use crate::infrastructure::v13_large_configuration::{RegistrationCache, RegistrationIndex};
 use crate::infrastructure::v13_read_port::ProviderReadAuthority;
@@ -158,6 +161,7 @@ struct OwnerEdgeCacheKey {
 }
 
 impl<'a> LogicalViewReadAuthority<'a> {
+    #[cfg(test)]
     pub(crate) fn new(
         cancellation: &'a CancellationToken,
         source_set: impl Into<String>,
