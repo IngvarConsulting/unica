@@ -3964,9 +3964,9 @@ fn apply_typed_properties(
         None
     };
     let range = properties.range();
-    drop(doc);
     let mut text = xml_text[range.clone()].to_string();
     let indent = meta_edit_property_child_indent(&text);
+    let mut replacements = Vec::new();
     for (key, value) in changes.entries() {
         let tag = METADATA_PROPERTY_SPECS
             .iter()
@@ -3979,22 +3979,13 @@ fn apply_typed_properties(
                     Some("values"),
                 )
             })?;
-        if meta_edit_xml_element_range(&text, tag)
-            .map_err(|_| {
-                typed_diagnostic(
-                    MetaDiagnosticCode::ProviderUnavailable,
-                    "metadata property image is malformed",
-                    Some("values"),
-                )
-            })?
-            .is_none()
-        {
-            return Err(typed_diagnostic(
+        let property = meta_info_child(properties, tag).ok_or_else(|| {
+            typed_diagnostic(
                 MetaDiagnosticCode::InvalidArguments,
                 format!("property `{tag}` is not present on this metadata object"),
                 Some("values"),
-            ));
-        }
+            )
+        })?;
         let replacement = match (key, value) {
             (MetaPropertyKey::Type, MetaPropertyValue::Type(metadata_type)) => {
                 if previous_type
@@ -4039,16 +4030,19 @@ fn apply_typed_properties(
                 format!("{indent}<{tag}>{value}</{tag}>")
             }
         };
-        meta_edit_replace_or_insert_property(&mut text, tag, &replacement, &indent).map_err(
-            |_| {
-                typed_diagnostic(
-                    MetaDiagnosticCode::ProviderUnavailable,
-                    "metadata property could not be updated",
-                    Some("values"),
-                )
-            },
-        )?;
+        let property_range = property.range();
+        replacements.push((
+            property_range.start - range.start..property_range.end - range.start,
+            replacement.trim_start().to_string(),
+        ));
     }
+    // XML node ranges include nested elements with the same local name.
+    // Apply from the end so earlier replacements keep their original offsets.
+    replacements.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
+    for (property_range, replacement) in replacements {
+        text.replace_range(property_range, &replacement);
+    }
+    drop(doc);
     xml_text.replace_range(range, &text);
     Ok(())
 }
@@ -5321,6 +5315,34 @@ pub(crate) mod tests {
                 assert_eq!(counts.effects[0].before, counts.effects[0].after);
             }
         }
+    }
+
+    #[test]
+    fn constant_type_replaces_the_complete_node_with_nested_unprefixed_type() {
+        let mut xml = object_xml(
+            "Constant",
+            "Setting",
+            r#"<Type><Type xmlns="http://v8.1c.ru/8.1/data/core">xs:string</Type></Type>"#,
+        );
+        let operation =
+            constant_type_change(MetadataType::new(vec![MetadataTypeVariant::Boolean]).unwrap());
+        apply_typed_operations(&mut xml, std::slice::from_ref(&operation)).unwrap();
+        let doc = Document::parse(&xml).unwrap();
+        let properties =
+            meta_info_child(meta_edit_object_node(&doc).unwrap(), "Properties").unwrap();
+        let observed =
+            super::super::info_projection::parse_observed_metadata_type_node(properties).unwrap();
+        assert_eq!(
+            MetadataType::try_from(observed).unwrap(),
+            MetadataType::new(vec![MetadataTypeVariant::Boolean]).unwrap()
+        );
+        assert_eq!(
+            meta_info_child_text(properties, "Name").as_deref(),
+            Some("Setting")
+        );
+        let before = xml.clone();
+        apply_typed_operations(&mut xml, &[operation]).unwrap();
+        assert_eq!(xml, before);
     }
 
     #[test]
