@@ -58,7 +58,7 @@ allowed-tools:
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
         {"op": "formAttribute.add", "args": {"items": [{"name": "Объект", "type": "CatalogObject.Валюты", "main": true}]}},
-        {"op": "element.add", "args": {"items": [{"input": "Наименование", "path": "Объект.Наименование"}]}}
+        {"op": "element.add", "args": {"items": [{"name": "Наименование", "type": "InputField", "path": "Объект.Наименование"}]}}
       ],
       "dryRun": true
     }
@@ -67,7 +67,9 @@ allowed-tools:
 ```
 
 Точечные правки готовой формы держит `form-edit`; DSL ниже описывает, как
-выражать элементы в `items`.
+выражать внутреннее описание элементов. На публичной поверхности `items[]`
+использует `name` и `type`, как в примере выше; для HTML-поля —
+`type: "HTMLDocumentField"`. Его параметры и пример описаны в `form-edit`.
 
 ## Чего словарь не пишет
 
@@ -114,6 +116,7 @@ allowed-tools:
 |--------------|-------------------|---------------------------------------------------|
 | `"group"`    | UsualGroup        | `"horizontal"` / `"vertical"` / `"alwaysHorizontal"` / `"alwaysVertical"` / `"collapsible"` |
 | `"input"`    | InputField        | имя элемента                                      |
+| `"html"`     | HTMLDocumentField | имя; события `OnClick`, `DocumentComplete`          |
 | `"check"`    | CheckBoxField     | имя                                               |
 | `"label"`    | LabelDecoration   | имя — надпись-декорация; текст задаётся `title`, гиперссылка `hyperlink` |
 | `"labelField"` | LabelField      | имя                                               |
