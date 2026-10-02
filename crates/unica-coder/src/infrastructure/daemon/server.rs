@@ -1315,21 +1315,20 @@ pub(crate) mod actor_capacity_tests {
                 .unwrap();
                 direct_v5(&runtime, request).unwrap()
             };
-            let mut arguments = serde_json::json!({
+            let arguments = serde_json::json!({
                 "at": "main:Subsystem.Sales",
                 "ops": [
                     {"op": "content.add", "args": {"items": [{"object": "Catalog.Items"}]}},
                     {"op": "content.remove", "args": {"items": [{"object": "Catalog.Old"}]}}
-                ],
-                "dryRun": true
+                ]
             });
             let before = crate::test_support::tree_snapshot(workspace.path());
             let preview = call(arguments.clone());
             assert!(preview.ok, "{preview:?}");
             assert_eq!(before, crate::test_support::tree_snapshot(workspace.path()));
-            arguments["dryRun"] = serde_json::json!(false);
-            arguments["ifRev"] = serde_json::json!(preview.rev.as_ref().unwrap());
-            let applied = call(arguments);
+            let applied = call(
+                serde_json::json!({"executionToken": preview.data.as_ref().unwrap()["executionToken"]}),
+            );
             assert!(applied.ok, "{applied:?}");
             let preview_data = preview.data.as_ref().unwrap();
             let applied_data = applied.data.as_ref().unwrap();
@@ -1353,10 +1352,9 @@ pub(crate) mod actor_capacity_tests {
             assert_eq!(value("LoadTransparent"), transparent);
             assert_eq!(value("Ref"), reference.then_some("CommonPicture.Sales"));
 
-            let mut child = serde_json::json!({
+            let child = serde_json::json!({
                 "at": "main:Subsystem.Sales",
-                "ops": [{"op": "childSubsystem.add", "args": {"items": [{"name": "Orders"}]}}],
-                "dryRun": true
+                "ops": [{"op": "childSubsystem.add", "args": {"items": [{"name": "Orders"}]}}]
             });
             let before = crate::test_support::tree_snapshot(workspace.path());
             let preview = call(child.clone());
@@ -1366,9 +1364,9 @@ pub(crate) mod actor_capacity_tests {
                 .path()
                 .join("src/Subsystems/Sales/Subsystems")
                 .exists());
-            child["dryRun"] = serde_json::json!(false);
-            child["ifRev"] = serde_json::json!(preview.rev.unwrap());
-            let applied = call(child);
+            let applied = call(
+                serde_json::json!({"executionToken": preview.data.as_ref().unwrap()["executionToken"]}),
+            );
             assert!(applied.ok, "{applied:?}");
             assert_eq!(
                 preview.data.unwrap()["planHash"],
@@ -1394,18 +1392,17 @@ pub(crate) mod actor_capacity_tests {
                 .and_then(|node| node.text());
             assert_eq!(transparency, transparent);
 
-            let mut removal = serde_json::json!({
+            let removal = serde_json::json!({
                 "at": "main:Subsystem.Sales",
-                "ops": [{"op": "childSubsystem.remove", "args": {"items": [{"name": "Orders"}]}}],
-                "dryRun": true
+                "ops": [{"op": "childSubsystem.remove", "args": {"items": [{"name": "Orders"}]}}]
             });
             let before = crate::test_support::tree_snapshot(workspace.path());
             let preview = call(removal.clone());
             assert!(preview.ok, "{preview:?}");
             assert_eq!(before, crate::test_support::tree_snapshot(workspace.path()));
-            removal["dryRun"] = serde_json::json!(false);
-            removal["ifRev"] = serde_json::json!(preview.rev.unwrap());
-            let applied = call(removal);
+            let applied = call(
+                serde_json::json!({"executionToken": preview.data.as_ref().unwrap()["executionToken"]}),
+            );
             assert!(applied.ok, "{applied:?}");
             assert_eq!(
                 preview.data.unwrap()["planHash"],
@@ -1433,7 +1430,8 @@ pub(crate) mod actor_capacity_tests {
     }
 
     #[test]
-    fn canonical_subsystem_picture_property_refusal_is_write_free_in_both_modes() {
+    fn canonical_subsystem_picture_property_refusal_never_mints_a_token_and_execution_cannot_override_ops(
+    ) {
         let workspace =
             subsystem_picture_workspace("<xr:LoadTransparent>true</xr:LoadTransparent>", false);
         let runtime = V5CanonicalInvocationRuntime::new(
@@ -1455,8 +1453,7 @@ pub(crate) mod actor_capacity_tests {
         };
         let mut arguments = serde_json::json!({
             "at": "main:Subsystem.Sales",
-            "ops": [{"op": "childSubsystem.add", "args": {"items": [{"name": "Orders"}]}}],
-            "dryRun": true
+            "ops": [{"op": "childSubsystem.add", "args": {"items": [{"name": "Orders"}]}}]
         });
         let before = crate::test_support::tree_snapshot(workspace.path());
         let preview = call(arguments.clone());
@@ -1469,16 +1466,20 @@ pub(crate) mod actor_capacity_tests {
             arguments["ops"][1] = serde_json::json!({
                 "op": "props.set", "args": {"values": {property: true}}
             });
-            arguments["dryRun"] = serde_json::json!(true);
             let refused_preview = call(arguments.clone());
-            arguments["dryRun"] = serde_json::json!(false);
-            arguments["ifRev"] = serde_json::json!(preview.rev.as_ref().unwrap());
-            let refused_apply = call(arguments.clone());
+            let refused_apply = call(serde_json::json!({
+                "executionToken": preview.data.as_ref().unwrap()["executionToken"],
+                "ops": arguments["ops"]
+            }));
             assert!(!refused_preview.ok, "{refused_preview:?}");
             assert!(!refused_apply.ok, "{refused_apply:?}");
             assert_eq!(refused_preview.diagnostics[0]["code"], "bad_value");
-            assert_eq!(refused_preview.diagnostics, refused_apply.diagnostics);
-            assert_eq!(refused_preview.at, refused_apply.at);
+            assert!(refused_preview
+                .data
+                .as_ref()
+                .and_then(|data| data.get("executionToken"))
+                .is_none());
+            assert_eq!(refused_apply.diagnostics[0]["code"], "bad_value");
             assert!(format!("{refused_preview:?}").contains(property));
             assert_eq!(before, crate::test_support::tree_snapshot(workspace.path()));
             assert!(!workspace
