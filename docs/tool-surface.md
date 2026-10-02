@@ -30,7 +30,7 @@ Plan typed edits with at and ops without writing; execute that saved plan with e
 | `executionToken` | string | по ветви | data.executionToken returned by a successful plan; executes that saved plan without resending at or ops. |
 | `ops` | array | по ветви | Ordered operations advertised by the target node's can data. |
 
-**Результат сейчас:** `at` и `ops` возвращают план без записи и `data.executionToken`; вызов только с `executionToken` исполняет сохранённый план с проверкой ревизии. Для `props.set` и `attribute.add/set/remove` доказаны общий ordered staged planner и атомарная retained-публикация (отвечают типизированным `data`)
+**Результат сейчас:** `at` и `ops` возвращают план без записи и `data.executionToken`; вызов только с `executionToken` исполняет сохранённый план с точечными проверками сохранённых входов и корней. Для `props.set` и `attribute.add/set/remove` доказаны общий ordered staged planner и атомарная retained-публикация (отвечают типизированным `data`)
 
 **Целевой контракт:** Спроектировать недостающие object/relation contracts, затем переносить остальные типизированные семейства операций
 

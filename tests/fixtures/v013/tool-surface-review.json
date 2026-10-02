@@ -18,7 +18,7 @@
   "unica.apply": {
     "result": {
       "contract": "typed",
-      "now": "`at` и `ops` возвращают план без записи и `data.executionToken`; вызов только с `executionToken` исполняет сохранённый план с проверкой ревизии. Для `props.set` и `attribute.add/set/remove` доказаны общий ordered staged planner и атомарная retained-публикация",
+      "now": "`at` и `ops` возвращают план без записи и `data.executionToken`; вызов только с `executionToken` исполняет сохранённый план с точечными проверками сохранённых входов и корней. Для `props.set` и `attribute.add/set/remove` доказаны общий ordered staged planner и атомарная retained-публикация",
       "target": "Спроектировать недостающие object/relation contracts, затем переносить остальные типизированные семейства операций"
     },
     "scenarios": [
