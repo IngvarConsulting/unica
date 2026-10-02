@@ -360,6 +360,7 @@ fn mutation_property_is_observable(kind: MetadataKind, key: MetaPropertyKey) -> 
     use MetadataKind::*;
 
     match key {
+        ClientOrdinaryApplication => false,
         Synonym | Comment => true,
         ActionPeriod | BasePeriod => kind == CalculationRegister,
         ActionPeriodUse | DependenceOnCalculationTypes => kind == ChartOfCalculationTypes,
@@ -825,6 +826,17 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn ordinary_client_read_property_stays_independent_from_the_writer_registry() {
+        assert!(mutation_compatible_read_key("ClientOrdinaryApplication").is_none());
+
+        let observed = META_INFO_PROPERTY_PROFILE
+            .resolve(MetadataKind::CommonModule, "ClientOrdinaryApplication")
+            .expect("the independent read profile already observes this platform property");
+        assert_eq!(observed.key, "ClientOrdinaryApplication");
+        assert_eq!(observed.value_kind, MetaInfoPropertyValueKind::Boolean);
     }
 
     #[test]

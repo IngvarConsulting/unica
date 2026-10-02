@@ -253,3 +253,4 @@ Inspect the workspace with no arguments, or read one logical 1C node by address.
 - Распознать существующую ИБ без исходников и предложить preview выгрузки CF или DT
 - Прочитать конфигурацию или объект метаданных по квалифицированному адресу
 - Получить наблюдаемую структуру узла без вычисления ревизии дерева исходников
+- Прочитать ClientOrdinaryApplication в props.commonModule.clientOrdinaryApplication общего модуля после применения true и false через unica.apply
