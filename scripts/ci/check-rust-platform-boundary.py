@@ -22,9 +22,12 @@ WINDOWS_SYS_ROOT_IMPORT = re.compile(
     r"\b(?:use|extern\s+crate)\s+(?:::)?(?P<crate>windows_sys)\b"
 )
 HOST_FACADE_ROOTS = ("crates/unica-bootstrap/src/host/",)
-HOST_ENVIRONMENT_VARIABLES = ("CODEX_HOME", "CLAUDE_PLUGIN_DATA", "CLAUDE_PLUGIN_ROOT")
-HOST_MANIFEST_DIRECTORIES = (".codex-plugin", ".claude-plugin")
-HOST_NAMES = ("codex", "claude")
+HOST_ENVIRONMENT_VARIABLES = (
+    "CODEX_HOME", "CLAUDE_PLUGIN_DATA", "CLAUDE_PLUGIN_ROOT", "CLAUDE_PROJECT_DIR",
+    "ZCODE_PROJECT_DIR", "ZCODE_PLUGIN_ROOT", "ZCODE_PLUGIN_DATA",
+)
+HOST_MANIFEST_DIRECTORIES = (".codex-plugin", ".claude-plugin", ".zcode-plugin")
+HOST_NAMES = ("codex", "claude", "zcode")
 # Host knowledge travels as names: environment variables, manifest directories
 # and the host names themselves. In Rust those names live almost only inside
 # string literals and prose, so this marker is matched against the raw source.

@@ -1,0 +1,5 @@
+{
+  "metadataKey": "codex/sandbox-state-meta",
+  "metadataPath": "sandboxCwd",
+  "projectEnvironment": ["CLAUDE_PROJECT_DIR", "ZCODE_PROJECT_DIR"]
+}

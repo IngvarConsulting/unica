@@ -17,21 +17,88 @@ use crate::domain::project_sources::{
 use crate::domain::refusal::RefusalCode;
 use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
 use crate::infrastructure::runtime_jobs::{RuntimeJobService, RuntimeResourceOwner};
+use crate::infrastructure::source_revision::RetainedRevisionErrorKind;
 use crate::infrastructure::source_selection_evidence::discover_project_source_admission;
+use crate::infrastructure::source_selection_evidence::SourceSelectionEvidenceErrorKind;
+use crate::infrastructure::v13_large_configuration::RegistrationCache;
 use crate::infrastructure::workspace::discover_workspace;
 use crate::infrastructure::workspace_actor::{
     ApplyAdmission, ApplyAdmissionError, IndexWorkIdentity, ProviderRootBinding, WorkspaceActor,
     WorkspaceActorRegistry, WorkspaceActorRegistryError, WorkspaceLogicalReadFence,
     WorkspaceRevisionFence, WorkspaceSourceSetInput,
 };
+use std::io::BufRead;
 use std::sync::Arc;
 use std::time::Duration;
 
 const ACTOR_OPERATION_BUDGET: Duration = Duration::from_secs(7);
 const CANONICAL_SEARCH_MAX_ENTRIES: usize = 16_384;
-const CANONICAL_SEARCH_MAX_FILE_BYTES: usize = 2 * 1024 * 1024;
-const CANONICAL_SEARCH_MAX_TOTAL_BYTES: usize = 32 * 1024 * 1024;
+// Regex anchors and Unicode columns require a complete line. Keep that
+// indivisible unit bounded; neither file nor corpus size is a memory budget.
+const CANONICAL_SEARCH_MAX_LINE_BYTES: usize = 8 * 1024 * 1024;
 const CANONICAL_SEARCH_MAX_DEPTH: usize = 32;
+const CANONICAL_SEARCH_MAX_UNCOVERED_DETAILS: usize = 32;
+
+#[derive(Default)]
+pub(in crate::infrastructure::daemon) struct LiteralSearchScan {
+    pub(in crate::infrastructure::daemon) matches: Vec<serde_json::Value>,
+    pub(in crate::infrastructure::daemon) uncovered: usize,
+    pub(in crate::infrastructure::daemon) details: Vec<serde_json::Value>,
+    pub(in crate::infrastructure::daemon) scan_complete: bool,
+}
+
+impl LiteralSearchScan {
+    fn complete() -> Self {
+        Self {
+            scan_complete: true,
+            ..Self::default()
+        }
+    }
+
+    fn mark_uncovered(&mut self, source_set: &str, file_ordinal: usize, reason: &str) {
+        self.uncovered += 1;
+        if self.details.len() < CANONICAL_SEARCH_MAX_UNCOVERED_DETAILS {
+            let mut detail = serde_json::Map::new();
+            detail.insert("sourceSet".to_owned(), source_set.into());
+            // The ordinal is stable under a cursor's scope and revision
+            // binding, but reveals no retained-relative path.
+            detail.insert("fileId".to_owned(), format!("bsl-{file_ordinal}").into());
+            detail.insert("reason".to_owned(), reason.into());
+            self.details.push(serde_json::Value::Object(detail));
+        }
+    }
+}
+
+fn read_search_line_bounded(
+    reader: &mut impl BufRead,
+    line: &mut Vec<u8>,
+    max_bytes: usize,
+    mut checkpoint: impl FnMut() -> std::io::Result<()>,
+) -> std::io::Result<bool> {
+    line.clear();
+    loop {
+        checkpoint()?;
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return Ok(!line.is_empty());
+        }
+        let count = available
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(available.len(), |index| index + 1);
+        if count > max_bytes.saturating_sub(line.len()) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::FileTooLarge,
+                format!("source line exceeds the {max_bytes}-byte search limit"),
+            ));
+        }
+        line.extend_from_slice(&available[..count]);
+        reader.consume(count);
+        if line.last() == Some(&b'\n') {
+            return Ok(true);
+        }
+    }
+}
 
 #[derive(Clone)]
 pub(crate) struct ActorBoundInvocation {
@@ -42,6 +109,9 @@ pub(crate) struct ActorBoundInvocation {
     provider_root: ProviderRootBinding,
     #[allow(dead_code)] // consumed only by the injected Task 14 service before Task 22
     read_sources: Arc<[ActorReadSourceBinding]>,
+    parent_source_names: Vec<String>,
+    parent_source_selection:
+        Arc<crate::infrastructure::source_selection_evidence::RetainedSourceSelectionEvidence>,
     workspace_identity_hash: SafeIdentityHash,
     deliveries: Arc<crate::infrastructure::engine_delivery::DeliveryDesk>,
     provider_hosts: Arc<ProviderHostOwner>,
@@ -61,6 +131,7 @@ pub(in crate::infrastructure::daemon) struct ActorReadSourceCapability {
     identity: String,
     fence: WorkspaceLogicalReadFence,
     deadline: ProviderDeadline,
+    registration_cache: Arc<RegistrationCache>,
 }
 
 #[allow(dead_code)]
@@ -102,11 +173,12 @@ impl ActorReadSourceCapability {
                 self.fence.revision(),
             );
         Ok(
-            crate::infrastructure::v13_read::LogicalViewReadAuthority::with_read_authority(
+            crate::infrastructure::v13_read::LogicalViewReadAuthority::with_read_authority_and_registration_cache(
                 cancellation,
                 read,
                 platform_profile,
                 self.deadline,
+                Arc::clone(&self.registration_cache),
             ),
         )
     }
@@ -124,11 +196,12 @@ impl ActorReadSourceCapability {
     pub(in crate::infrastructure::daemon) fn search_bsl_literal(
         &self,
         matcher: &super::super::v13_read_modes::SearchMatcher,
+        skip: &mut usize,
         limit: usize,
         scope_prefix: Option<&str>,
         scope_at: &QualifiedAddress,
         cancellation: &CancellationToken,
-    ) -> Result<Vec<serde_json::Value>, String> {
+    ) -> Result<LiteralSearchScan, String> {
         use crate::infrastructure::platform::filesystem::RetainedChildCapability;
 
         // A raw OS error carries no recovery signal for the caller; every
@@ -154,7 +227,7 @@ impl ActorReadSourceCapability {
                         .retain_immediate_child_nofollow(std::ffi::OsStr::new(component))
                     {
                         Ok(child) => child,
-                        Err(error) if vanished(&error) => return Ok(Vec::new()),
+                        Err(error) if vanished(&error) => return Ok(LiteralSearchScan::complete()),
                         Err(error) => {
                             return Err(context("could not open the scope subtree", error))
                         }
@@ -167,7 +240,9 @@ impl ActorReadSourceCapability {
                             )
                         }
                         RetainedChildCapability::RegularFile(_)
-                        | RetainedChildCapability::Unsupported => return Ok(Vec::new()),
+                        | RetainedChildCapability::Unsupported => {
+                            return Ok(LiteralSearchScan::complete())
+                        }
                     }
                 }
                 (relative, directory)
@@ -175,8 +250,8 @@ impl ActorReadSourceCapability {
         };
         let mut stack = vec![(start_relative, start_directory, 0_usize)];
         let mut visited_entries = 0_usize;
-        let mut read_bytes = 0_usize;
-        let mut matches = Vec::new();
+        let mut scan = LiteralSearchScan::complete();
+        let mut file_ordinal = 0_usize;
         while let Some((relative_directory, directory, depth)) = stack.pop() {
             if cancellation.is_cancelled() {
                 return Err("canonical search was cancelled".to_string());
@@ -216,10 +291,7 @@ impl ActorReadSourceCapability {
                 if visited_entries > CANONICAL_SEARCH_MAX_ENTRIES {
                     return Err("canonical search exceeded its retained entry limit".to_string());
                 }
-                let Some(name_text) = name.to_str() else {
-                    continue;
-                };
-                let relative = relative_directory.join(name_text);
+                let relative = relative_directory.join(&name);
                 let child = match directory.retain_immediate_child_nofollow(&name) {
                     Ok(child) => child,
                     Err(error) if vanished(&error) => continue,
@@ -233,37 +305,103 @@ impl ActorReadSourceCapability {
                     {
                         stack.push((relative, child_directory, depth + 1));
                     }
+                    RetainedChildCapability::Directory(_) => {
+                        return Err("canonical search exceeded its retained depth limit".to_string())
+                    }
                     RetainedChildCapability::RegularFile(file)
                         if relative
                             .extension()
                             .and_then(std::ffi::OsStr::to_str)
                             .is_some_and(|extension| extension.eq_ignore_ascii_case("bsl")) =>
                     {
-                        match file.validate_named_identity() {
-                            Ok(()) => {}
+                        file_ordinal += 1;
+                        let opened = match file.open_named_identity_for_read() {
+                            Ok(opened) => opened,
                             Err(error) if vanished(&error) => continue,
                             Err(error) => {
                                 return Err(context("lost a retained source file", error))
                             }
-                        }
-                        let bytes = match file.read_bounded(CANONICAL_SEARCH_MAX_FILE_BYTES) {
-                            Ok(bytes) => bytes,
-                            Err(error) if vanished(&error) => continue,
-                            Err(error) => {
-                                return Err(context("could not read a source file", error))
-                            }
                         };
-                        read_bytes = read_bytes.saturating_add(bytes.len());
-                        if read_bytes > CANONICAL_SEARCH_MAX_TOTAL_BYTES {
-                            return Err(
-                                "canonical search exceeded its retained byte limit".to_string()
+                        let mut reader = std::io::BufReader::new(opened);
+                        let mut raw_line = Vec::new();
+                        let mut line_index = 0_usize;
+                        loop {
+                            let has_line = read_search_line_bounded(
+                                &mut reader,
+                                &mut raw_line,
+                                CANONICAL_SEARCH_MAX_LINE_BYTES,
+                                || {
+                                    if cancellation.is_cancelled() {
+                                        Err(std::io::Error::new(
+                                            std::io::ErrorKind::Interrupted,
+                                            "canonical search was cancelled",
+                                        ))
+                                    } else if self.deadline.remaining().is_zero() {
+                                        Err(std::io::Error::new(
+                                            std::io::ErrorKind::TimedOut,
+                                            "canonical search operation deadline elapsed",
+                                        ))
+                                    } else {
+                                        Ok(())
+                                    }
+                                },
                             );
-                        }
-                        let Ok(text) = std::str::from_utf8(&bytes) else {
-                            continue;
-                        };
-                        for (line_index, line) in text.lines().enumerate() {
+                            let has_line = match has_line {
+                                Ok(has_line) => has_line,
+                                Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => {
+                                    scan.mark_uncovered(
+                                        self.binding.source_set_name(),
+                                        file_ordinal,
+                                        "line_too_long",
+                                    );
+                                    break;
+                                }
+                                Err(error)
+                                    if matches!(
+                                        error.kind(),
+                                        std::io::ErrorKind::Interrupted
+                                            | std::io::ErrorKind::TimedOut
+                                    ) =>
+                                {
+                                    return Err(error.to_string())
+                                }
+                                Err(error) => {
+                                    return Err(context("could not read a source file", error))
+                                }
+                            };
+                            if !has_line {
+                                break;
+                            }
+                            line_index += 1;
+                            let Ok(text) = std::str::from_utf8(&raw_line) else {
+                                scan.mark_uncovered(
+                                    self.binding.source_set_name(),
+                                    file_ordinal,
+                                    "invalid_utf8",
+                                );
+                                break;
+                            };
+                            let line = text.strip_suffix('\n').map_or(text, |without_lf| {
+                                without_lf.strip_suffix('\r').unwrap_or(without_lf)
+                            });
+                            let mut previous_byte = 0;
+                            let mut column = 1;
+                            let mut snippet = None::<String>;
                             for byte_column in matcher.match_starts(line) {
+                                if cancellation.is_cancelled() {
+                                    return Err("canonical search was cancelled".to_string());
+                                }
+                                if self.deadline.remaining().is_zero() {
+                                    return Err(
+                                        "canonical search operation deadline elapsed".to_string()
+                                    );
+                                }
+                                column += line[previous_byte..byte_column].chars().count();
+                                previous_byte = byte_column;
+                                if *skip > 0 {
+                                    *skip -= 1;
+                                    continue;
+                                }
                                 let mut item = serde_json::Map::new();
                                 item.insert(
                                     "scope".to_string(),
@@ -271,35 +409,34 @@ impl ActorReadSourceCapability {
                                 );
                                 item.insert(
                                     "line".to_string(),
-                                    serde_json::Value::from(line_index + 1),
+                                    serde_json::Value::from(line_index),
                                 );
-                                item.insert(
-                                    "column".to_string(),
-                                    serde_json::Value::from(
-                                        line[..byte_column].chars().count() + 1,
-                                    ),
-                                );
+                                item.insert("column".to_string(), serde_json::Value::from(column));
                                 item.insert(
                                     "snippet".to_string(),
                                     serde_json::Value::String(
-                                        line.chars().take(512).collect::<String>(),
+                                        snippet
+                                            .get_or_insert_with(|| {
+                                                line.chars().take(512).collect::<String>()
+                                            })
+                                            .clone(),
                                     ),
                                 );
-                                matches.push(serde_json::Value::Object(item));
-                                if matches.len() == limit {
-                                    return Ok(matches);
+                                scan.matches.push(serde_json::Value::Object(item));
+                                if scan.matches.len() == limit {
+                                    scan.scan_complete = false;
+                                    return Ok(scan);
                                 }
                             }
                         }
                     }
-                    RetainedChildCapability::Directory(_)
-                    | RetainedChildCapability::RegularFile(_)
+                    RetainedChildCapability::RegularFile(_)
                     | RetainedChildCapability::ReparsePoint
                     | RetainedChildCapability::Unsupported => {}
                 }
             }
         }
-        Ok(matches)
+        Ok(scan)
     }
 }
 
@@ -315,6 +452,7 @@ pub(super) fn actor_read_source_capability_for_test(
         identity,
         fence,
         deadline,
+        registration_cache: Arc::new(RegistrationCache::default()),
     }
 }
 
@@ -337,6 +475,7 @@ struct ActorLogicalReadSourceLease {
 struct ActorLogicalReadLease {
     deadline: ProviderDeadline,
     sources: Vec<ActorLogicalReadSourceLease>,
+    parent_sources: std::sync::Mutex<Vec<ActorLogicalReadSourceLease>>,
     route: ActorLogicalReadRoute,
 }
 
@@ -487,7 +626,7 @@ impl ActorBoundInvocation {
             | crate::application::invocation_store::ToolIdentity::Search
             | crate::application::invocation_store::ToolIdentity::Check
             | crate::application::invocation_store::ToolIdentity::Diff => {
-                let (selected, route) = match self.tool {
+                let (selected, mut route) = match self.tool {
                     crate::application::invocation_store::ToolIdentity::View
                     | crate::application::invocation_store::ToolIdentity::Resolve => {
                         match self.arguments.get("at").and_then(serde_json::Value::as_str) {
@@ -542,11 +681,21 @@ impl ActorBoundInvocation {
                 }
                 let mut sources = Vec::with_capacity(selected.len());
                 for source in selected {
-                    let fence = self.actor.capture_logical_read_revision(
+                    let fence = match self.actor.capture_logical_read_revision(
                         &source.binding,
                         logical_deadline,
                         cancellation,
-                    )?;
+                    ) {
+                        Ok(fence) => fence,
+                        Err(error) if error.kind() == RetainedRevisionErrorKind::Deadline => {
+                            sources.clear();
+                            route = ActorLogicalReadRoute::Rejected(Box::new(
+                                logical_read_deadline_result(),
+                            ));
+                            break;
+                        }
+                        Err(error) => return Err(error.to_string()),
+                    };
                     sources.push(ActorLogicalReadSourceLease {
                         binding: source.binding.clone(),
                         fence,
@@ -555,6 +704,7 @@ impl ActorBoundInvocation {
                 ActorExecutionRevision::LogicalRead(ActorLogicalReadLease {
                     deadline: logical_deadline,
                     sources,
+                    parent_sources: std::sync::Mutex::new(Vec::new()),
                     route,
                 })
             }
@@ -569,6 +719,14 @@ impl ActorBoundInvocation {
             revision,
         })
     }
+}
+
+fn logical_read_deadline_result() -> DomainResult {
+    DomainResult::canonical_rejection(
+        None,
+        RefusalCode::DeadlineExceeded,
+        "Logical source read exceeded its operation deadline; retry the call.",
+    )
 }
 
 fn invalid_view_address_result(at: &str, detail: impl std::fmt::Display) -> DomainResult {
@@ -671,8 +829,36 @@ impl ActorBoundExecution {
                 )
             })?;
         self.invocation.actor.validate_binding(&binding)?;
-        let admission = self.invocation.actor.admit_apply(
+        let dependencies = request
+            .ops()
+            .iter()
+            .filter(|operation| operation.name() == "object.borrow")
+            .map(|operation| {
+                let from = operation
+                    .args()
+                    .get("from")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| {
+                        ApplyAdmissionError::Other("borrow parent address is missing".to_string())
+                    })?;
+                let parent = crate::domain::address::QualifiedAddress::parse(from)
+                    .map_err(|error| ApplyAdmissionError::Other(error.to_string()))?;
+                self.invocation
+                    .read_sources
+                    .iter()
+                    .find(|source| source.binding.source_set_name() == parent.source_set())
+                    .map(|source| source.binding.clone())
+                    .ok_or_else(|| {
+                        ApplyAdmissionError::Other(
+                            "borrow parent source was not admitted by the workspace actor"
+                                .to_string(),
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>, ApplyAdmissionError>>()?;
+        let admission = self.invocation.actor.admit_apply_with_dependencies(
             &binding,
+            &dependencies,
             request.if_rev(),
             request.dry_run(),
             ProviderDeadline::from_budget(ACTOR_OPERATION_BUDGET),
@@ -708,9 +894,14 @@ impl ActorBoundExecution {
         let ActorExecutionRevision::LogicalRead(lease) = &self.revision else {
             return Err("logical read sources are unavailable to a legacy invocation".to_string());
         };
+        let parents = lease
+            .parent_sources
+            .lock()
+            .map_err(|_| "parent read leases are poisoned")?;
         lease
             .sources
             .iter()
+            .chain(parents.iter())
             .map(|source| {
                 self.invocation.actor.validate_binding(&source.binding)?;
                 Ok(ActorReadSourceCapability {
@@ -722,9 +913,59 @@ impl ActorBoundExecution {
                     ),
                     fence: source.fence.clone(),
                     deadline: lease.deadline,
+                    registration_cache: self
+                        .invocation
+                        .actor
+                        .configuration_registration_cache(&source.binding)?,
                 })
             })
             .collect()
+    }
+
+    /// Lazy parent reads use actor-issued leases and join the final read publication.
+    /// Failure to admit any declared candidate makes the whole parent lookup incomplete.
+    pub(in crate::infrastructure::daemon) fn admit_borrowing_parent_sources(
+        &self,
+        cancellation: &CancellationToken,
+    ) -> Result<(), String> {
+        let ActorExecutionRevision::LogicalRead(lease) = &self.revision else {
+            return Err("parent lookup requires a logical read".into());
+        };
+        self.invocation
+            .parent_source_selection
+            .validate(lease.deadline, cancellation)
+            .map_err(|error| error.to_string())?;
+        let mut fences = Vec::new();
+        for name in &self.invocation.parent_source_names {
+            let source = self
+                .invocation
+                .read_sources
+                .iter()
+                .find(|source| source.binding.source_set_name() == name)
+                .ok_or_else(|| "a declared parent source is unavailable".to_string())?;
+            self.invocation.actor.validate_binding(&source.binding)?;
+            let fence = self
+                .invocation
+                .actor
+                .capture_logical_read_revision(&source.binding, lease.deadline, cancellation)
+                .map_err(|error| error.to_string())?;
+
+            if !lease
+                .sources
+                .iter()
+                .any(|selected| selected.binding.source_set_name() == name)
+            {
+                fences.push(ActorLogicalReadSourceLease {
+                    binding: source.binding.clone(),
+                    fence,
+                });
+            }
+        }
+        *lease
+            .parent_sources
+            .lock()
+            .map_err(|_| "parent read leases are poisoned")? = fences;
+        Ok(())
     }
 
     /// Admitted roots for the `find` directory: the retained no-follow root of
@@ -875,17 +1116,44 @@ impl ActorBoundExecution {
                             .to_string()
                     });
                 }
-                let fences = lease
-                    .sources
+                if staged.is_err() {
+                    return Ok(staged);
+                }
+                let parent_sources = lease
+                    .parent_sources
+                    .into_inner()
+                    .map_err(|_| "parent read leases are poisoned")?;
+                if !parent_sources.is_empty() {
+                    if let Err(error) = self
+                        .invocation
+                        .parent_source_selection
+                        .validate(lease.deadline, cancellation)
+                    {
+                        return if error.kind() == SourceSelectionEvidenceErrorKind::Deadline {
+                            Ok(Ok(logical_read_deadline_result()))
+                        } else {
+                            Err(error.to_string())
+                        };
+                    }
+                }
+                let mut sources = lease.sources;
+                sources.extend(parent_sources);
+                let fences = sources
                     .into_iter()
                     .map(|source| source.fence)
                     .collect::<Vec<_>>();
-                self.invocation.actor.publish_logical_read(
+                match self.invocation.actor.publish_logical_read(
                     &fences,
                     staged,
                     lease.deadline,
                     cancellation,
-                )
+                ) {
+                    Ok(result) => Ok(result),
+                    Err(error) if error.kind() == RetainedRevisionErrorKind::Deadline => {
+                        Ok(Ok(logical_read_deadline_result()))
+                    }
+                    Err(error) => Err(error.to_string()),
+                }
             }
             ActorExecutionRevision::UnpublishedApply(confirmed) => {
                 if confirmed.load(std::sync::atomic::Ordering::Acquire) {
@@ -1053,9 +1321,39 @@ fn bind_workspace_invocation_controlled(
             },
         )?;
     let declared_sources = &source_admission.map().source_sets;
+    let parent_source_names = declared_sources
+        .iter()
+        .filter(|source| source.kind == SourceSetKind::Configuration)
+        .map(|source| source.name.clone())
+        .collect::<Vec<_>>();
+    let view_extension_target = (request.tool()
+        == crate::application::invocation_store::ToolIdentity::View)
+        .then(|| {
+            request
+                .arguments()
+                .get("at")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|at| QualifiedAddress::parse(at).ok())
+        })
+        .flatten()
+        .filter(|at| {
+            declared_sources.iter().any(|source| {
+                source.name == at.source_set() && source.kind == SourceSetKind::Extension
+            })
+        });
     let mut admitted_sources = declared_sources
         .iter()
         .filter(|source| source.source_format == SourceFormat::PlatformXml)
+        .filter(|source| {
+            // An unavailable possible parent must not hide a healthy extension.
+            // Its name remains in parent_source_names, making resolution incomplete.
+            !(view_extension_target.is_some()
+                && source.kind == SourceSetKind::Configuration
+                && closed_daemon_source_relative_path(&source.path)
+                    .ok()
+                    .and_then(|relative| source_admission.source_root_identity(&relative))
+                    .is_none())
+        })
         .map(|source| {
             let unreadable = |reason| {
                 unadmitted(UnadmittedCause::SourceRootUnreadable {
@@ -1153,6 +1451,8 @@ fn bind_workspace_invocation_controlled(
         actor,
         provider_root,
         read_sources: Arc::from(read_sources),
+        parent_source_names,
+        parent_source_selection: Arc::new(source_admission.into_evidence()),
         workspace_identity_hash,
         deliveries: resources.deliveries,
         provider_hosts: resources.provider_hosts,
@@ -1220,4 +1520,21 @@ pub(super) enum UnadmittedCause {
     },
     /// Наборы отобраны, но актор их не связал.
     ActorBindingFailed { stage: &'static str },
+}
+
+#[cfg(test)]
+mod search_line_tests {
+    use super::read_search_line_bounded;
+    use std::io::{BufReader, Cursor, ErrorKind};
+
+    #[test]
+    fn overlong_line_refuses_before_retaining_unbounded_bytes() {
+        let mut reader = BufReader::with_capacity(3, Cursor::new(b"abcdefghij\n"));
+        let mut line = Vec::new();
+        let error = read_search_line_bounded(&mut reader, &mut line, 8, || Ok(()))
+            .expect_err("a line beyond the search limit must not be matched in fragments");
+        assert_eq!(error.kind(), ErrorKind::FileTooLarge);
+        assert!(error.to_string().contains("source line exceeds"));
+        assert!(line.len() <= 8);
+    }
 }

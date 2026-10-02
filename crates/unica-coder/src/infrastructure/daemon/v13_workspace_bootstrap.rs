@@ -2,22 +2,32 @@ use super::protocol::InvocationRequest;
 use crate::application::invocation::InvocationResponseDeadline;
 use crate::application::invocation_store::ToolIdentity;
 use crate::domain::address::QualifiedAddress;
-use crate::domain::cancellation::CancellationToken;
+use crate::domain::cancellation::{cancelled_error, CancellationToken};
 use crate::domain::code_intelligence::ProviderDeadline;
-use crate::domain::invocation::DomainResult;
+use crate::domain::invocation::{DomainResult, InvocationFailure, SafeIdentityHash};
 use crate::domain::project_health::evaluate_project_health;
 use crate::domain::project_sources::{ProjectSourceMap, SourceFormat, SourceSetKind};
 use crate::domain::refusal::RefusalCode;
+use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::platform::secure_read::read_root_relative_regular_file;
-use crate::infrastructure::project_health::inspect_project_health;
+use crate::infrastructure::project_health::{
+    inspect_project_health, inspect_project_health_continued,
+    resources::{ResourceContinuation, ResourceInspectionProgress, RootCheckContinuationStore},
+};
 use crate::infrastructure::project_sources::discover_project_source_map_controlled;
 use crate::infrastructure::source_roots::normalize_path_identity;
 use crate::infrastructure::workspace::discover_workspace;
 use serde::Serialize;
 use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::Mutex;
 
 const PROJECT_CONFIG_MAX_BYTES: usize = 8 * 1024 * 1024;
+
+#[cfg(test)]
+pub(super) mod test_control;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct InfobaseTarget {
@@ -38,20 +48,32 @@ enum RootQuestion {
     Verdict,
 }
 
-pub(super) fn execute_view_bootstrap(
+pub(super) struct PreparedWorkspaceInspection {
+    context: WorkspaceContext,
+    question: RootQuestion,
+    response_deadline: InvocationResponseDeadline,
+    workspace_identity_hash: SafeIdentityHash,
+    continuation: Option<Arc<Mutex<ResourceContinuation>>>,
+}
+
+pub(super) enum Preparation {
+    NotApplicable,
+    Rejected(Box<DomainResult>),
+    Ready(Arc<PreparedWorkspaceInspection>),
+}
+
+pub(super) fn prepare(
     request: &InvocationRequest,
-    deadline: &InvocationResponseDeadline,
-) -> Option<DomainResult> {
+    response_deadline: InvocationResponseDeadline,
+    continuations: &RootCheckContinuationStore,
+) -> Preparation {
     if request.arguments().contains_key("at") {
-        return None;
+        return Preparation::NotApplicable;
     }
     let question = match request.tool() {
         ToolIdentity::View => RootQuestion::Facts,
-        // Вердикт по рабочему пространству обязан отвечать и до допуска: он и
-        // объясняет, почему ни один набор не допущен. Поэтому `check {}`
-        // разбирается здесь же, а не в actor-bound службе.
         ToolIdentity::Check => RootQuestion::Verdict,
-        _ => return None,
+        _ => return Preparation::NotApplicable,
     };
     if !request.arguments().is_empty() {
         let (tool, summary) = match question {
@@ -61,7 +83,7 @@ pub(super) fn execute_view_bootstrap(
             ),
             RootQuestion::Verdict => (
                 "unica.check",
-                "check takes only `at`; call unica.check with an empty object for the workspace verdict",
+                "check limit and cursor require `at`; call unica.check with an empty object for the workspace verdict",
             ),
         };
         let mut result = DomainResult::canonical_rejection(None, RefusalCode::BadValue, summary);
@@ -70,23 +92,66 @@ pub(super) fn execute_view_bootstrap(
             Value::Object(Map::new()),
             "discover source sets and canonical logical addresses",
         ));
-        return Some(result);
+        return Preparation::Rejected(Box::new(result));
     }
 
-    let context = match discover_workspace(Some(PathBuf::from(request.workspace_hint()))) {
-        Ok(context) => context,
+    let discovered =
+        discover_workspace(Some(PathBuf::from(request.workspace_hint()))).and_then(|context| {
+            let canonical_root = normalize_path_identity(&context.workspace_root)?;
+            Ok((context, canonical_root))
+        });
+    let (context, canonical_root) = match discovered {
+        Ok(discovered) => discovered,
         Err(error) => {
-            return Some(DomainResult::canonical_rejection(
+            return Preparation::Rejected(Box::new(DomainResult::canonical_rejection(
                 None,
                 RefusalCode::ProviderUnavailable,
                 format!("workspace discovery failed: {error}"),
-            ))
+            )))
         }
     };
-    let config_present = project_config_present(&context.workspace_root);
-    let mut checkpoint = || deadline.checkpoint_handoff().map_err(str::to_string);
-    let source_map =
-        match discover_project_source_map_controlled(&context.workspace_root, &mut checkpoint) {
+    let mut hasher = Sha256::new();
+    hasher.update(b"unica-v13-workspace-inspection-v1\0");
+    hasher.update(canonical_root.as_os_str().as_encoded_bytes());
+    Preparation::Ready(Arc::new(PreparedWorkspaceInspection {
+        context,
+        question,
+        response_deadline,
+        workspace_identity_hash: SafeIdentityHash::from_sha256(hasher.finalize().into()),
+        continuation: (question == RootQuestion::Verdict)
+            .then(|| continuations.for_workspace(&canonical_root))
+            .flatten(),
+    }))
+}
+
+impl PreparedWorkspaceInspection {
+    pub(super) fn workspace_identity_hash(&self) -> &SafeIdentityHash {
+        &self.workspace_identity_hash
+    }
+
+    pub(super) fn response_deadline(&self) -> &InvocationResponseDeadline {
+        &self.response_deadline
+    }
+
+    pub(super) fn execute(
+        &self,
+        cancellation: CancellationToken,
+    ) -> Result<DomainResult, InvocationFailure> {
+        check_cancellation(&cancellation)?;
+        let context = &self.context;
+        let deadline = &self.response_deadline;
+        let config_present = project_config_present(&context.workspace_root);
+        let mut checkpoint = || {
+            if cancellation.is_cancelled() {
+                Err(cancelled_error("workspace inspection cancelled"))
+            } else {
+                Ok(())
+            }
+        };
+        let discovery =
+            discover_project_source_map_controlled(&context.workspace_root, &mut checkpoint);
+        check_cancellation(&cancellation)?;
+        let source_map = match discovery {
             Ok(source_map) => source_map,
             Err(error) if config_present => {
                 let mut result = DomainResult::canonical_rejection(
@@ -104,40 +169,69 @@ pub(super) fn execute_view_bootstrap(
                         ]),
                     ),
                 ]));
-                return Some(result);
+                return Ok(result);
             }
             Err(error) => {
-                return Some(DomainResult::canonical_rejection(
+                return Ok(DomainResult::canonical_rejection(
                     None,
                     RefusalCode::ProviderUnavailable,
                     format!("workspace source discovery failed: {error}"),
                 ))
             }
         };
-    let infobase = match inspect_infobase_target(&context.workspace_root, config_present) {
-        Ok(target) => target,
-        Err(error) => {
-            let mut result = DomainResult::canonical_rejection(
-                None,
-                RefusalCode::InvalidState,
-                format!("infobase target configuration is invalid: {error}"),
-            );
-            result.data = Some(object([
-                ("workspaceRoot", value(&context.workspace_root)),
-                (
-                    "config",
-                    object([
-                        ("state", Value::String("invalid".to_string())),
-                        ("path", Value::String("v8project.yaml".to_string())),
-                    ]),
-                ),
-            ]));
-            return Some(result);
+        let inspected_infobase = inspect_infobase_target(&context.workspace_root, config_present);
+        check_cancellation(&cancellation)?;
+        let infobase = match inspected_infobase {
+            Ok(target) => target,
+            Err(error) => {
+                let mut result = DomainResult::canonical_rejection(
+                    None,
+                    RefusalCode::InvalidState,
+                    format!("infobase target configuration is invalid: {error}"),
+                );
+                result.data = Some(object([
+                    ("workspaceRoot", value(&context.workspace_root)),
+                    (
+                        "config",
+                        object([
+                            ("state", Value::String("invalid".to_string())),
+                            ("path", Value::String("v8project.yaml".to_string())),
+                        ]),
+                    ),
+                ]));
+                return Ok(result);
+            }
+        };
+        let mut continuation = self
+            .continuation
+            .as_ref()
+            .and_then(|state| state.try_lock().ok());
+        if let Some(state) = continuation.as_deref_mut() {
+            state.progress = ResourceInspectionProgress::default();
         }
-    };
-    Some(bootstrap_result(
-        &context, source_map, infobase, deadline, question,
-    ))
+        let result = bootstrap_result(
+            context,
+            source_map,
+            infobase,
+            deadline,
+            self.question,
+            &cancellation,
+            continuation.as_deref_mut(),
+        );
+        check_cancellation(&cancellation)?;
+        Ok(result)
+    }
+}
+
+fn check_cancellation(cancellation: &CancellationToken) -> Result<(), InvocationFailure> {
+    if cancellation.is_cancelled() {
+        Err(InvocationFailure::new(
+            "cancelled",
+            "workspace inspection cancelled",
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 fn bootstrap_result(
@@ -146,6 +240,8 @@ fn bootstrap_result(
     infobase: InfobaseTarget,
     response_deadline: &InvocationResponseDeadline,
     question: RootQuestion,
+    cancellation: &CancellationToken,
+    mut continuation: Option<&mut ResourceContinuation>,
 ) -> DomainResult {
     let config_state = if source_map.config_path.is_some() {
         "configured"
@@ -164,16 +260,27 @@ fn bootstrap_result(
     let health = if source_map.source_sets.is_empty() {
         None
     } else {
+        #[cfg(test)]
+        test_control::pause_before_health(&context.workspace_root);
         let health_budget = response_deadline.remaining_handoff_budget();
-        let cancellation = CancellationToken::new();
-        Some(
+        let inspection = if question == RootQuestion::Verdict {
+            inspect_project_health_continued(
+                context,
+                cancellation,
+                ProviderDeadline::from_budget(health_budget),
+                continuation.as_deref_mut(),
+            )
+        } else {
             inspect_project_health(
                 context,
-                &cancellation,
+                cancellation,
                 ProviderDeadline::from_budget(health_budget),
             )
-            .map_err(|error| format!("{error:?}"))
-            .and_then(evaluate_project_health),
+        };
+        Some(
+            inspection
+                .map_err(|error| format!("{error:?}"))
+                .and_then(evaluate_project_health),
         )
     };
     let (mut ready, repository_ready, checks, mut diagnostics, readiness_state) = match health {
@@ -375,7 +482,45 @@ fn bootstrap_result(
         } else {
             "workspace readiness reported findings"
         });
-        result.data = Some(object([
+        let capacity_limited = readiness_state == "incomplete"
+            && continuation
+                .as_ref()
+                .is_some_and(|state| state.progress.capacity_limited);
+        let continuable_eol_timeout = readiness_state == "incomplete"
+            && continuation
+                .as_ref()
+                .is_some_and(|state| state.progress.continuable_eol_timeout);
+        if capacity_limited {
+            if let Value::Array(items) = &mut diagnostics {
+                items.push(object([
+                    ("code", Value::String("git.eol_checkpoint_capacity".into())),
+                    ("severity", Value::String("error".into())),
+                    ("scope", Value::String("repository".into())),
+                    ("paths", Value::Array(Vec::new())),
+                    ("count", value(1)),
+                    (
+                        "message",
+                        Value::String("The bounded EOL checkpoint cannot retain this resource set; repeating the same check cannot guarantee progress".into()),
+                    ),
+                    ("evidence", Value::Array(Vec::new())),
+                    (
+                        "remediation",
+                        object([
+                            (
+                                "summary",
+                                Value::String("Reduce the number of tracked text resources before checking again".into()),
+                            ),
+                            ("steps", Value::Array(Vec::new())),
+                            ("commands", Value::Array(Vec::new())),
+                        ]),
+                    ),
+                ]));
+                items.sort_by(|left, right| {
+                    root_diagnostic_order(left).cmp(&root_diagnostic_order(right))
+                });
+            }
+        }
+        let mut data = object([
             (
                 "status",
                 Value::String(if ready { "passed" } else { "failed" }.to_string()),
@@ -386,7 +531,32 @@ fn bootstrap_result(
             ("readinessState", Value::String(readiness_state.to_string())),
             ("checks", checks),
             ("diagnostics", diagnostics),
-        ]));
+        ]);
+        if readiness_state == "incomplete" {
+            if let Some(progress) = continuation.as_ref().map(|state| state.progress) {
+                if progress.text_resources > 0 {
+                    if let Value::Object(fields) = &mut data {
+                        fields.insert(
+                            "inspectionProgress".into(),
+                            object([
+                                ("textResources", value(progress.text_resources)),
+                                ("stagedEolRetained", value(progress.staged_eol_retained)),
+                                ("workingEolRetained", value(progress.working_eol_retained)),
+                                ("capacityLimited", Value::Bool(progress.capacity_limited)),
+                            ]),
+                        );
+                    }
+                }
+            }
+            if continuable_eol_timeout && !capacity_limited {
+                result.next.push(next_action(
+                    "unica.check",
+                    Value::Object(Map::new()),
+                    "continue the incomplete workspace readiness inspection with a fresh request deadline",
+                ));
+            }
+        }
+        result.data = Some(data);
         if !ready {
             result.next.push(next_action(
                 "unica.view",
@@ -453,10 +623,7 @@ fn bootstrap_result(
         result.next.push(next_action(
             "unica.run",
             object([
-                (
-                    "op",
-                    Value::String("infobase.configuration.export".to_string()),
-                ),
+                ("op", Value::String("download".to_string())),
                 (
                     "args",
                     object([
@@ -530,7 +697,7 @@ fn inspect_infobase_target(
     })
 }
 
-fn read_yaml_config(
+pub(super) fn read_yaml_config(
     workspace_root: &std::path::Path,
     name: &str,
 ) -> Result<Option<serde_yaml::Value>, String> {
@@ -563,7 +730,11 @@ fn yaml_infobase_connection(
     let Some(mapping) = root.as_mapping() else {
         return Err(format!("{source} document root must be a mapping"));
     };
-    let Some(infobase) = mapping.get(serde_yaml::Value::String("infobase".to_string())) else {
+    let Some(infobase) = mapping
+        .get(serde_yaml::Value::from("infobases"))
+        .and_then(|v| v.get("origin"))
+        .or_else(|| mapping.get(serde_yaml::Value::from("infobase")))
+    else {
         return Ok(None);
     };
     let Some(infobase) = infobase.as_mapping() else {
@@ -584,6 +755,31 @@ fn object<const N: usize>(entries: [(&str, Value); N]) -> Value {
             .into_iter()
             .map(|(key, value)| (key.to_string(), value))
             .collect(),
+    )
+}
+
+fn root_diagnostic_order(diagnostic: &Value) -> (u8, u8, Option<&str>, &str, Option<&str>) {
+    let severity = match diagnostic["severity"].as_str() {
+        Some("error") => 0,
+        Some("warning") => 1,
+        Some("info") => 2,
+        _ => 3,
+    };
+    let scope = match diagnostic["scope"].as_str() {
+        Some("workspace") => 0,
+        Some("repository") => 1,
+        Some("sourceSet") => 2,
+        _ => 3,
+    };
+    (
+        severity,
+        scope,
+        diagnostic["sourceSet"].as_str(),
+        diagnostic["code"].as_str().unwrap_or_default(),
+        diagnostic["paths"]
+            .as_array()
+            .and_then(|paths| paths.first())
+            .and_then(Value::as_str),
     )
 }
 
@@ -685,6 +881,350 @@ mod tests {
     use crate::domain::project_sources::{
         ProjectSourceMap, ProjectSourceSet, SourceFormat, SourceSetKind,
     };
+
+    fn eol_check_fixture() -> (tempfile::TempDir, std::path::PathBuf) {
+        let workspace = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(workspace.path()).unwrap();
+        std::fs::create_dir(root.join("src")).unwrap();
+        std::fs::write(root.join("src/Configuration.xml"), "<MetaDataObject/>\n").unwrap();
+        std::fs::write(root.join("src/A.xml"), "<A/>\n").unwrap();
+        std::fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join(".gitignore"),
+            "**/.build/\nConfigDumpInfo.xml\nDumpFilesIndex.txt\n",
+        )
+        .unwrap();
+        std::fs::write(root.join(".gitattributes"), "*.xml text eol=lf\n").unwrap();
+        for args in [["init"].as_slice(), ["add", "."].as_slice()] {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        (workspace, root)
+    }
+
+    #[test]
+    fn root_check_repeats_after_eol_timeout_and_finishes_with_shared_checkpoint() {
+        use super::{prepare, Preparation, RootCheckContinuationStore};
+        use crate::application::invocation::InvocationResponseDeadline;
+        use crate::application::invocation_store::ToolIdentity;
+        use crate::application::ports::TokioClock;
+        use crate::domain::cancellation::CancellationToken;
+        use crate::infrastructure::daemon::protocol::InvocationRequest;
+        use crate::infrastructure::project_health::resources::stop_staged_eol_after_for_test;
+        use std::sync::Arc;
+
+        let (_workspace, root) = eol_check_fixture();
+        let request = InvocationRequest::new(
+            ToolIdentity::Check,
+            serde_json::json!({}),
+            root.to_string_lossy(),
+            7_000,
+        )
+        .unwrap();
+        let continuations = RootCheckContinuationStore::default();
+        stop_staged_eol_after_for_test(1);
+        let Preparation::Ready(first) = prepare(
+            &request,
+            InvocationResponseDeadline::capture(Arc::new(TokioClock)),
+            &continuations,
+        ) else {
+            panic!("first root check must prepare");
+        };
+        let first = first.execute(CancellationToken::new()).unwrap();
+        assert!(first
+            .next
+            .iter()
+            .any(|action| action["tool"] == "unica.check"));
+        let first_data = first.data.unwrap();
+        assert_eq!(first_data["readinessState"], "incomplete");
+        assert_eq!(first_data["inspectionProgress"]["stagedEolRetained"], 1);
+
+        let Preparation::Ready(second) = prepare(
+            &request,
+            InvocationResponseDeadline::capture(Arc::new(TokioClock)),
+            &continuations,
+        ) else {
+            panic!("repeated root check must prepare");
+        };
+        let second = second.execute(CancellationToken::new()).unwrap();
+        assert_eq!(second.data.as_ref().unwrap()["readinessState"], "complete");
+        assert_eq!(second.data.as_ref().unwrap()["repositoryReady"], true);
+    }
+
+    #[test]
+    fn root_eol_timeout_keeps_earlier_attribute_failure() {
+        use super::{prepare, Preparation, RootCheckContinuationStore};
+        use crate::application::invocation::InvocationResponseDeadline;
+        use crate::application::invocation_store::ToolIdentity;
+        use crate::application::ports::TokioClock;
+        use crate::domain::cancellation::CancellationToken;
+        use crate::infrastructure::daemon::protocol::InvocationRequest;
+        use crate::infrastructure::project_health::resources::stop_staged_eol_after_for_test;
+        use std::sync::Arc;
+
+        let (_workspace, root) = eol_check_fixture();
+        std::fs::write(
+            root.join(".gitattributes"),
+            "src/Configuration.xml text eol=lf\n",
+        )
+        .unwrap();
+        let output = std::process::Command::new("git")
+            .args(["add", ".gitattributes"])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let request = InvocationRequest::new(
+            ToolIdentity::Check,
+            serde_json::json!({}),
+            root.to_string_lossy(),
+            7_000,
+        )
+        .unwrap();
+        stop_staged_eol_after_for_test(0);
+        let Preparation::Ready(inspection) = prepare(
+            &request,
+            InvocationResponseDeadline::capture(Arc::new(TokioClock)),
+            &RootCheckContinuationStore::default(),
+        ) else {
+            panic!("root check must prepare");
+        };
+        let result = inspection.execute(CancellationToken::new()).unwrap();
+        let data = result.data.unwrap();
+        assert_eq!(data["readinessState"], "incomplete");
+        assert!(data["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| { diagnostic["code"] == "git.text_policy_missing" }));
+        assert!(data["checks"].as_array().unwrap().iter().any(|check| {
+            check["id"] == "repository.attributes" && check["status"] == "failed"
+        }));
+        assert!(data["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|check| { check["id"] == "repository.index_eol" && check["status"] == "notRun" }));
+    }
+
+    #[test]
+    fn root_check_does_not_recommend_repeat_for_fixed_failure_or_full_checkpoint() {
+        use super::{prepare, Preparation, RootCheckContinuationStore};
+        use crate::application::invocation::InvocationResponseDeadline;
+        use crate::application::invocation_store::ToolIdentity;
+        use crate::application::ports::TokioClock;
+        use crate::domain::cancellation::CancellationToken;
+        use crate::infrastructure::daemon::protocol::InvocationRequest;
+        use crate::infrastructure::project_health::resources::stop_staged_eol_after_for_test;
+        use std::sync::Arc;
+
+        let (_workspace, root) = eol_check_fixture();
+        let request = InvocationRequest::new(
+            ToolIdentity::Check,
+            serde_json::json!({}),
+            root.to_string_lossy(),
+            7_000,
+        )
+        .unwrap();
+        let continuations = RootCheckContinuationStore::default();
+        continuations
+            .for_workspace(&root)
+            .unwrap()
+            .lock()
+            .unwrap()
+            .set_test_evidence_limit(0);
+        stop_staged_eol_after_for_test(1);
+        let Preparation::Ready(inspection) = prepare(
+            &request,
+            InvocationResponseDeadline::capture(Arc::new(TokioClock)),
+            &continuations,
+        ) else {
+            panic!("root check must prepare");
+        };
+        let result = inspection.execute(CancellationToken::new()).unwrap();
+        let data = result.data.unwrap();
+        assert_eq!(data["readinessState"], "incomplete");
+        assert_eq!(data["inspectionProgress"]["capacityLimited"], true);
+        assert!(data["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| { diagnostic["code"] == "git.eol_checkpoint_capacity" }));
+        assert!(data["diagnostics"]
+            .as_array()
+            .unwrap()
+            .windows(2)
+            .all(|pair| {
+                super::root_diagnostic_order(&pair[0]) <= super::root_diagnostic_order(&pair[1])
+            }));
+        assert!(!result
+            .next
+            .iter()
+            .any(|action| action["tool"] == "unica.check"));
+
+        // A malformed Git index is static until the repository is repaired.
+        std::fs::write(root.join(".git/index"), b"bad index").unwrap();
+        let Preparation::Ready(inspection) = prepare(
+            &request,
+            InvocationResponseDeadline::capture(Arc::new(TokioClock)),
+            &RootCheckContinuationStore::default(),
+        ) else {
+            panic!("root check must prepare even for a broken index");
+        };
+        let result = inspection.execute(CancellationToken::new()).unwrap();
+        assert_eq!(
+            result.data.as_ref().unwrap()["readinessState"],
+            "incomplete"
+        );
+        assert!(!result
+            .next
+            .iter()
+            .any(|action| action["tool"] == "unica.check"));
+    }
+
+    #[test]
+    fn root_inspection_discovers_sources_after_response_handoff() {
+        use super::{prepare, Preparation, RootCheckContinuationStore};
+        use crate::application::invocation::InvocationResponseDeadline;
+        use crate::application::invocation_store::ToolIdentity;
+        use crate::application::ports::Clock;
+        use crate::domain::cancellation::CancellationToken;
+        use crate::infrastructure::daemon::protocol::InvocationRequest;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+
+        struct ManualClock {
+            start: Instant,
+            elapsed_ms: AtomicU64,
+        }
+
+        impl Clock for ManualClock {
+            fn now(&self) -> Instant {
+                self.start + Duration::from_millis(self.elapsed_ms.load(Ordering::SeqCst))
+            }
+        }
+
+        for configured in [true, false] {
+            for tool in [ToolIdentity::View, ToolIdentity::Check] {
+                let workspace = tempfile::tempdir().unwrap();
+                let root = std::fs::canonicalize(workspace.path()).unwrap();
+                std::fs::create_dir(root.join("src")).unwrap();
+                std::fs::write(root.join("src/Configuration.xml"), "<MetaDataObject/>").unwrap();
+                if configured {
+                    std::fs::write(
+                        root.join("v8project.yaml"),
+                        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+                    )
+                    .unwrap();
+                }
+                let clock = Arc::new(ManualClock {
+                    start: Instant::now(),
+                    elapsed_ms: AtomicU64::new(0),
+                });
+                let request = InvocationRequest::new(
+                    tool,
+                    serde_json::json!({}),
+                    root.to_string_lossy(),
+                    7_000,
+                )
+                .unwrap();
+                let continuations = RootCheckContinuationStore::default();
+                let Preparation::Ready(inspection) = prepare(
+                    &request,
+                    InvocationResponseDeadline::capture(clock.clone()),
+                    &continuations,
+                ) else {
+                    panic!("root inspection must prepare before response handoff");
+                };
+
+                clock.elapsed_ms.store(9_000, Ordering::SeqCst);
+                let result = inspection.execute(CancellationToken::new()).unwrap();
+                assert!(result.ok, "{tool:?}, configured={configured}: {result:?}");
+                if tool == ToolIdentity::Check {
+                    assert!(!result
+                        .next
+                        .iter()
+                        .any(|action| action["tool"] == "unica.check"));
+                }
+                let data = result.data.unwrap();
+                if tool == ToolIdentity::Check {
+                    assert_eq!(data["readinessState"], "incomplete");
+                } else {
+                    assert_eq!(data["sourceSets"][0]["name"], "main");
+                    assert_eq!(
+                        data["config"]["state"],
+                        if configured {
+                            "configured"
+                        } else {
+                            "autodetected"
+                        }
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn root_inspection_cancellation_prevents_discovery_and_late_publication() {
+        use super::{prepare, Preparation, RootCheckContinuationStore};
+        use crate::application::invocation::InvocationResponseDeadline;
+        use crate::application::invocation_store::ToolIdentity;
+        use crate::application::ports::TokioClock;
+        use crate::domain::cancellation::CancellationToken;
+        use crate::infrastructure::daemon::protocol::InvocationRequest;
+        use std::sync::Arc;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(workspace.path()).unwrap();
+        std::fs::create_dir(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("src/Configuration.xml"), "<MetaDataObject/>").unwrap();
+        let request = InvocationRequest::new(
+            ToolIdentity::Check,
+            serde_json::json!({}),
+            root.to_string_lossy(),
+            7_000,
+        )
+        .unwrap();
+        let Preparation::Ready(inspection) = prepare(
+            &request,
+            InvocationResponseDeadline::capture(Arc::new(TokioClock)),
+            &RootCheckContinuationStore::default(),
+        ) else {
+            panic!("root inspection must prepare before source admission");
+        };
+        let pause = super::test_control::HealthInspectionPause::install(root);
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        assert_eq!(inspection.execute(cancelled).unwrap_err().code, "cancelled");
+        assert_eq!(pause.entries(), 0);
+
+        let cancellation = CancellationToken::new();
+        let worker_cancellation = cancellation.clone();
+        let worker = std::thread::spawn(move || inspection.execute(worker_cancellation));
+        pause.wait_until_entered();
+        cancellation.cancel();
+        pause.release();
+        assert_eq!(worker.join().unwrap().unwrap_err().code, "cancelled");
+        assert_eq!(pause.entries(), 1);
+    }
 
     #[test]
     fn project_config_recipe_quotes_yaml_significant_source_identity() {

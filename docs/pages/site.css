@@ -155,8 +155,8 @@
     .cards:has(> :nth-child(4)) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   }
   @media (max-width: 1100px) { .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-  /* На телефоне версия и пререлиз короткие и встают парой, плитка линии
-     занимает всю ширину: так четыре карточки не уводят установку на два
+  /* На телефоне стабильная версия и кандидат короткие и встают парой, плитка
+     линии занимает всю ширину: так четыре карточки не уводят установку на два
      экрана вниз. */
   @media (max-width: 560px) {
     .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
@@ -164,9 +164,6 @@
     .card-version { padding: 16px; }
     .card-version .metric { font-size: 22px; }
     .card-version .sub { font-size: 12.5px; }
-    /* В узкой карточке ссылке на заметки не хватает места; номер версии
-       и так ведёт на выпуск. */
-    .card-version .card-action { display: none; }
   }
   /* Совсем узкий экран: пара карточек версий переносит и подпись, и номер,
      поэтому они снова идут столбиком. */
@@ -181,9 +178,7 @@
   .card h3 { margin: 0 0 12px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); font-weight: 600; }
   .card h3.ident { text-transform: none; letter-spacing: 0; font-family: var(--mono); font-size: 12.5px; }
   .metric { display: block; font-size: 30px; font-weight: 680; letter-spacing: -0.02em; line-height: 1.1; }
-  a.metric { color: var(--ink); }
   .metric-idle { color: var(--muted); }
-  a.metric:hover { color: var(--blue); text-decoration: none; }
   .metric small { font-size: 15px; font-weight: 500; color: var(--muted); }
   .sub { color: var(--muted); font-size: 13px; margin-top: 8px; }
   .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 8px; vertical-align: 1px; }
@@ -203,7 +198,7 @@
   .note { font-size: 14px; color: var(--muted); }
 
   /* Переключатель агентов держится на радиокнопках: без скрипта он работает
-     так же, как со скриптом. Скрипт нужен только кнопке «Скопировать». */
+     так же, как со скриптом. Скрипт запоминает выбор между страницами. */
   .tabs { margin-top: 24px; }
   .tabs > input { position: absolute; opacity: 0; pointer-events: none; }
   .tabbar { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 16px; }
@@ -213,10 +208,14 @@
   }
   .tabbar label:hover { color: var(--ink); }
   #host-codex:checked ~ .tabbar label[for="host-codex"],
-  #host-claude:checked ~ .tabbar label[for="host-claude"] { color: var(--ink); border-bottom-color: var(--blue); }
-  .tabs > input:focus-visible ~ .tabbar label { outline: 2px solid var(--blue); outline-offset: 2px; }
+  #host-claude:checked ~ .tabbar label[for="host-claude"],
+  #host-zcode:checked ~ .tabbar label[for="host-zcode"] { color: var(--ink); border-bottom-color: var(--blue); }
+  #host-codex:focus-visible ~ .tabbar label[for="host-codex"],
+  #host-claude:focus-visible ~ .tabbar label[for="host-claude"],
+  #host-zcode:focus-visible ~ .tabbar label[for="host-zcode"] { outline: 2px solid var(--blue); outline-offset: 2px; }
   .panel { display: none; position: relative; }
-  #host-codex:checked ~ .panel-codex, #host-claude:checked ~ .panel-claude { display: block; }
+  #host-codex:checked ~ .panel-codex, #host-claude:checked ~ .panel-claude,
+  #host-zcode:checked ~ .panel-zcode { display: block; }
   .panel pre { padding-right: 56px; margin: 0; }
   .copy {
     position: absolute; top: 9px; right: 9px;
@@ -592,9 +591,29 @@ td.catalog-count { padding: 9px 12px; font-size: 13.5px; color: var(--muted); fo
 .step-answer + pre { margin-top: 8px; }
 /* Имя поля — идентификатор: переносить его по слогам нельзя. */
 .field-col { width: 14ch; white-space: nowrap; }
-/* Ссылка на отчёт стоит в строке с числом: справа от него всё равно пусто,
-   а отдельной строкой она оставляла в карточке провал. */
-.metric-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+/* Карточки состояния — столбцы: действие стоит последней строкой и прижато
+   к низу, поэтому в соседних карточках оно на одной высоте, какой бы длины ни
+   было число. В строке с числом ссылка уезжала под него, как только число не
+   помещалось (v0.13.0-rc.3), и строки соседних карточек расходились. Число —
+   не ссылка: две ссылки на один адрес в одной карточке только мешали. */
+.card-version, .card-line { display: flex; flex-direction: column; }
+.card-foot { margin-top: auto; padding-top: 14px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; font-size: 13px; }
+.card-foot .quiet { color: var(--muted); }
+.card-foot .quiet:hover { color: var(--blue); }
+/* Кандидат отличается от стабильной версии с одного взгляда: метка канала
+   синяя, как всё, что впереди. В паре на узком экране метка переносилась бы
+   и опускала номер кандидата ниже соседнего, поэтому там её нет: подпись
+   «Кандидат выпуска» остаётся. */
+.card-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px 10px; margin: 0 0 12px; }
+.card-head h3 { margin: 0; }
+.card-head .status { font-size: 12px; padding: 2px 8px; }
+@media (min-width: 401px) and (max-width: 560px) { .card-head .status { display: none; } }
+/* Счётчики переносятся целиком и без разделителей: точка между ними
+   повисала в конце строки. */
+.stats { display: flex; flex-wrap: wrap; gap: 2px 14px; }
+/* Текст для программы чтения: номер версии в ссылке различает «Заметки о
+   выпуске» соседних карточек, глазу он не нужен — номер крупно выше. */
+.vh { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 /* Путь для того, кто пришёл вносить вклад: шаги по порядку, у каждого — куда
    идти и что там лежит. Номер рисует счётчик, чтобы разметка осталась списком,
    а не списком с вписанными цифрами. */
@@ -627,7 +646,6 @@ td.catalog-count { padding: 9px 12px; font-size: 13.5px; color: var(--muted); fo
 .steps p { margin: 4px 0 0; color: var(--muted); font-size: 14px; }
 @media (max-width: 560px) { .steps li { padding: 14px 0; gap: 11px; } }
 
-.card-action { white-space: nowrap; font-size: 13px; }
 /* Точка, число и слово — одна величина: переносится группа целиком. */
 .stat { white-space: nowrap; }
 
@@ -771,7 +789,8 @@ td.catalog-count { padding: 9px 12px; font-size: 13.5px; color: var(--muted); fo
 .qa-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 9px; font-size: 15px; color: var(--muted); }
 .qa-list li { position: relative; padding-left: 18px; }
 .qa-list li::before { content: ""; position: absolute; left: 2px; top: 10px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
-.qa-list code, .stub code, .setup p code, .needs code, .kv code {
+.qa-list code, .stub code, .setup p code, .needs code, .kv code,
+.channel .note code, .channel section > .wrap > p code, .card-version .sub code {
   background: color-mix(in srgb, var(--blue) 13%, transparent);
   color: var(--blue); padding: 2px 6px; border-radius: 5px; overflow-wrap: anywhere;
 }
@@ -785,3 +804,30 @@ td.catalog-count { padding: 9px 12px; font-size: 13.5px; color: var(--muted); fo
 @media (max-width: 760px) {
   .qa { grid-template-columns: 1fr; gap: 14px; padding: 20px 0; }
 }
+
+/* Канал кандидатов: один выбор агента на всю страницу. Радиокнопки стоят
+   первыми в <main>, а подписи к ним — в каждом разделе, поэтому агент,
+   выбранный в установке, остаётся выбранным в обновлении и в возврате.
+   Без скрипта выбор работает так же. Кнопки закреплены в окне: щелчок по
+   подписи внизу страницы иначе прокрутил бы её к кнопке наверх. */
+.host-pick { position: fixed; top: 0; left: 0; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+#pick-codex:checked ~ * .for-claude,
+#pick-codex:checked ~ * .for-zcode,
+#pick-claude:checked ~ * .for-codex,
+#pick-claude:checked ~ * .for-zcode,
+#pick-zcode:checked ~ * .for-codex,
+#pick-zcode:checked ~ * .for-claude { display: none; }
+#pick-codex:checked ~ * .hostbar label[for="pick-codex"],
+#pick-claude:checked ~ * .hostbar label[for="pick-claude"],
+#pick-zcode:checked ~ * .hostbar label[for="pick-zcode"] { color: var(--ink); border-bottom-color: var(--blue); }
+#pick-codex:focus-visible ~ * .hostbar label[for="pick-codex"],
+#pick-claude:focus-visible ~ * .hostbar label[for="pick-claude"],
+#pick-zcode:focus-visible ~ * .hostbar label[for="pick-zcode"] { outline: 2px solid var(--blue); outline-offset: 2px; }
+.hostbar { margin-top: 20px; }
+.channel-cards { margin-top: 26px; }
+.card-version .sub code { font-size: 12px; }
+.channel .hero .note { margin: 14px 0 0; max-width: 68ch; }
+/* Команда на блок: у каждой своя кнопка копирования. */
+.cmd { position: relative; }
+.cmd + .cmd { margin-top: 10px; }
+.cmd pre { margin: 0; padding-right: 56px; }

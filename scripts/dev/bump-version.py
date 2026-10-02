@@ -2,8 +2,8 @@
 """Set the Unica release version everywhere the package contract declares it.
 
 The version appears in several files because each one is read by a different
-consumer: Cargo compiles it into the binaries, the two host manifests ship it to
-Codex and Claude Code, and the tools lock pins it alongside the third-party
+consumer: Cargo compiles it into the binaries, the three host manifests ship it to
+Codex, Claude Code and ZCode, and the tools lock pins it alongside the third-party
 tools. They are separate artifacts, so the version cannot live in one file, but
 it can be written by one command and verified by one check.
 
@@ -56,26 +56,25 @@ def render_tools_lock_version(original: str, version: str, path: Path) -> str:
 
 
 def bump(repo_root: Path, version: str) -> list[str]:
-    """Render every file first, then write.
+    """Read and render every required file before starting writes.
 
-    A malformed file part-way through the list would otherwise leave the
-    repository straddling two versions, which is the exact state the version
-    contract exists to forbid. Rendering everything before touching disk keeps a
-    failure a no-op.
+    Missing inputs and parsing/rendering failures leave all files unchanged.
+    Writes are sequential, not transactional: a write failure can leave a
+    partial update. Return the repository-relative paths that were changed.
     """
     plugin = repo_root / "plugins" / "unica"
     targets = [
         (repo_root / "Cargo.toml", render_cargo_version),
         (plugin / ".codex-plugin" / "plugin.json", render_json_version),
         (plugin / ".claude-plugin" / "plugin.json", render_json_version),
+        (plugin / ".zcode-plugin" / "plugin.json", render_json_version),
         (plugin / "third-party" / "tools.lock.json", render_tools_lock_version),
     ]
 
     pending = []
     for path, render in targets:
         if not path.is_file():
-            # A host manifest may legitimately not exist yet on older branches.
-            continue
+            raise SystemExit(f"version contract file is missing: {path}")
         original = path.read_text(encoding="utf-8")
         updated = render(original, version, path)
         if original != updated:

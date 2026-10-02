@@ -1,3 +1,4 @@
+use crate::domain::diagnostics::stream_error::{StreamErrorKind, MISSING_START_MESSAGE};
 use crate::domain::diagnostics::{
     DiagnosticError, DiagnosticObservation, DiagnosticObservationFocus,
     DiagnosticObservationLocation, DiagnosticProviderOutcome, DiagnosticProviderStatus,
@@ -32,7 +33,7 @@ pub(crate) struct AnalyzerDiagnosticsBatch {
 #[derive(Debug)]
 pub(crate) struct DiagnosticsJsonlParser {
     source_root: PathBuf,
-    first_error: Option<String>,
+    first_error: Option<(usize, StreamErrorKind)>,
     started: bool,
     done: bool,
     version: Option<String>,
@@ -72,50 +73,48 @@ impl DiagnosticsJsonlParser {
             return;
         }
         if bytes.len() > MAX_DIAGNOSTICS_JSONL_LINE_BYTES {
-            self.reject_line(line_number, "line exceeds 8388608 bytes");
+            self.reject_line(line_number, StreamErrorKind::LineTooLong);
             return;
         }
         let line = match std::str::from_utf8(bytes) {
             Ok(line) => line.trim_end_matches(['\r', '\n']),
             Err(_) => {
-                self.reject_line(line_number, "line is not valid UTF-8");
+                self.reject_line(line_number, StreamErrorKind::InvalidUtf8);
                 return;
             }
         };
         if line.trim().is_empty() {
-            self.reject_line(line_number, "line is empty");
+            self.reject_line(line_number, StreamErrorKind::EmptyLine);
             return;
         }
         let event = match serde_json::from_str::<JsonlEvent>(line) {
             Ok(event) => event,
-            Err(error) => {
-                self.reject_line(line_number, &format!("invalid event: {error}"));
+            Err(_) => {
+                self.reject_line(line_number, StreamErrorKind::InvalidEvent);
                 return;
             }
         };
         if let Err(error) = self.accept_event(event) {
-            self.reject_line(line_number, &error);
+            self.reject_line(line_number, error);
         }
     }
 
-    pub(crate) fn reject_line(&mut self, line_number: usize, reason: &str) {
-        if self.first_error.is_none() {
-            self.first_error = Some(format!("line {line_number}: {reason}"));
+    pub(crate) fn reject_line(&mut self, line_number: usize, reason: StreamErrorKind) {
+        if self
+            .first_error
+            .is_none_or(|(first_line, _)| line_number < first_line)
+        {
+            self.first_error = Some((line_number, reason));
         }
     }
 
     pub(crate) fn finish(mut self) -> AnalyzerDiagnosticsBatch {
-        if self.first_error.is_none() && self.done {
-            if let Err(error) = self.validate_totals() {
-                self.first_error = Some(error);
-            }
-        }
-        if let Some(message) = self.first_error.take() {
+        if let Some((line, reason)) = self.first_error.take() {
             return self.failure(
                 DiagnosticProviderStatus::Failed,
                 "diagnostics_invalid",
                 false,
-                message,
+                reason.message(line),
             );
         }
         if !self.started {
@@ -123,7 +122,7 @@ impl DiagnosticsJsonlParser {
                 DiagnosticProviderStatus::Failed,
                 "diagnostics_invalid",
                 false,
-                "line 0: stream is missing start event".to_string(),
+                MISSING_START_MESSAGE.to_string(),
             );
         }
         if !self.done {
@@ -171,17 +170,17 @@ impl DiagnosticsJsonlParser {
         }
     }
 
-    fn accept_event(&mut self, event: JsonlEvent) -> Result<(), String> {
+    fn accept_event(&mut self, event: JsonlEvent) -> Result<(), StreamErrorKind> {
         if self.done {
-            return Err("event appeared after terminal done".to_string());
+            return Err(StreamErrorKind::AfterDone);
         }
         match event {
             JsonlEvent::Start(event) => {
                 if self.started {
-                    return Err("duplicate start event".to_string());
+                    return Err(StreamErrorKind::DuplicateStart);
                 }
                 if event.version.trim().is_empty() {
-                    return Err("start.version must be non-empty".to_string());
+                    return Err(StreamErrorKind::EmptyVersion);
                 }
                 self.started = true;
                 self.discovered = Some(event.total_files);
@@ -189,21 +188,18 @@ impl DiagnosticsJsonlParser {
             }
             JsonlEvent::File(event) => {
                 if !self.started {
-                    return Err("file event appeared before start".to_string());
+                    return Err(StreamErrorKind::FileBeforeStart);
                 }
                 let path = normalize_reported_path(&self.source_root, &event.path)?;
                 if !self.files_seen.insert(path.clone()) {
-                    return Err(format!("duplicate normalized file path `{path}`"));
+                    return Err(StreamErrorKind::DuplicateFile);
                 }
                 if let Some(error) = event.error {
                     if error.trim().is_empty() {
-                        return Err("file.error must be non-empty".to_string());
+                        return Err(StreamErrorKind::EmptyFileError);
                     }
                     if !event.diagnostics.is_empty() || event.metrics.is_some() {
-                        return Err(
-                            "file.error is mutually exclusive with diagnostics and metrics"
-                                .to_string(),
-                        );
+                        return Err(StreamErrorKind::ConflictingFileError);
                     }
                     self.failures_seen += 1;
                     self.observations
@@ -241,43 +237,35 @@ impl DiagnosticsJsonlParser {
             }
             JsonlEvent::Done(event) => {
                 if !self.started {
-                    return Err("done event appeared before start".to_string());
+                    return Err(StreamErrorKind::DoneBeforeStart);
                 }
                 if !event.elapsed_secs.is_finite() || event.elapsed_secs < 0.0 {
-                    return Err("done.elapsed_secs must be finite and non-negative".to_string());
+                    return Err(StreamErrorKind::InvalidElapsed);
                 }
                 self.done = true;
                 self.elapsed_seconds = Some(event.elapsed_secs);
                 self.reported = Some(event.total_diagnostics);
                 self.done_files = Some(event.total_files);
                 self.done_failures = Some(event.failed_files);
+                self.validate_totals()?;
             }
         }
         Ok(())
     }
 
-    fn validate_totals(&self) -> Result<(), String> {
+    fn validate_totals(&self) -> Result<(), StreamErrorKind> {
         let discovered = self.discovered.expect("start required before done");
         let done_files = self.done_files.expect("done total_files recorded");
         let reported = self.reported.expect("done total_diagnostics recorded");
         let failed = self.done_failures.expect("done failed_files recorded");
         if done_files != discovered || self.files_seen.len() != discovered {
-            return Err(format!(
-                "file totals disagree: start={discovered}, events={}, done={done_files}",
-                self.files_seen.len()
-            ));
+            return Err(StreamErrorKind::FileTotals);
         }
         if reported != self.diagnostics_seen {
-            return Err(format!(
-                "diagnostic totals disagree: events={}, done={reported}",
-                self.diagnostics_seen
-            ));
+            return Err(StreamErrorKind::DiagnosticTotals);
         }
         if failed != self.failures_seen || failed > discovered {
-            return Err(format!(
-                "failed file totals disagree: events={}, done={failed}",
-                self.failures_seen
-            ));
+            return Err(StreamErrorKind::FailedFileTotals);
         }
         Ok(())
     }
@@ -377,22 +365,22 @@ struct UpstreamDiagnostic {
 }
 
 impl UpstreamDiagnostic {
-    fn validate(&self) -> Result<(DiagnosticSeverity, Vec<DiagnosticTag>), String> {
+    fn validate(&self) -> Result<(DiagnosticSeverity, Vec<DiagnosticTag>), StreamErrorKind> {
         if self.code.trim().is_empty() {
-            return Err("diagnostic.code must be non-empty".to_string());
+            return Err(StreamErrorKind::EmptyCode);
         }
         if self.message.trim().is_empty() {
-            return Err("diagnostic.message must be non-empty".to_string());
+            return Err(StreamErrorKind::EmptyMessage);
         }
         let severity = map_severity(&self.severity)?;
         if (self.end_line, self.end_column) < (self.start_line, self.start_column) {
-            return Err("diagnostic range end precedes its start".to_string());
+            return Err(StreamErrorKind::InvalidRange);
         }
         let mut unique_tags = BTreeSet::new();
         let mut tags = Vec::with_capacity(self.tags.len());
         for tag in &self.tags {
             if !unique_tags.insert(*tag) {
-                return Err("diagnostic tags must be unique".to_string());
+                return Err(StreamErrorKind::DuplicateTags);
             }
             tags.push((*tag).into());
         }
@@ -415,13 +403,13 @@ impl UpstreamTag {
     }
 }
 
-fn map_severity(value: &str) -> Result<DiagnosticSeverity, String> {
+fn map_severity(value: &str) -> Result<DiagnosticSeverity, StreamErrorKind> {
     match value {
         "Blocker" | "Critical" | "Major" | "Error" => Ok(DiagnosticSeverity::Error),
         "Warning" => Ok(DiagnosticSeverity::Warning),
         "Information" => Ok(DiagnosticSeverity::Info),
         "Hint" => Ok(DiagnosticSeverity::Hint),
-        _ => Err(format!("unknown diagnostic severity `{value}`")),
+        _ => Err(StreamErrorKind::UnknownSeverity),
     }
 }
 
@@ -435,24 +423,23 @@ fn normalize_absolute_root(path: &Path) -> Result<PathBuf, String> {
     normalize_path_identity(&normalize_lexical(path)?)
 }
 
-fn normalize_reported_path(source_root: &Path, raw: &str) -> Result<String, String> {
+fn normalize_reported_path(source_root: &Path, raw: &str) -> Result<String, StreamErrorKind> {
     if raw.trim().is_empty() {
-        return Err("file.path must be non-empty".to_string());
+        return Err(StreamErrorKind::EmptyPath);
     }
     let path = Path::new(raw);
     let candidate = if path.is_absolute() {
-        normalize_lexical(path).map_err(|_| "file.path contains invalid traversal".to_string())?
+        normalize_lexical(path).map_err(|_| StreamErrorKind::PathTraversal)?
     } else {
-        normalize_lexical(&source_root.join(path))
-            .map_err(|_| "file.path contains invalid traversal".to_string())?
+        normalize_lexical(&source_root.join(path)).map_err(|_| StreamErrorKind::PathTraversal)?
     };
-    let identity = normalize_path_identity(&candidate)
-        .map_err(|_| "file.path could not be resolved safely".to_string())?;
+    let identity =
+        normalize_path_identity(&candidate).map_err(|_| StreamErrorKind::UnresolvedPath)?;
     let relative = identity
         .strip_prefix(source_root)
-        .map_err(|_| "file.path resolves outside diagnostics source root".to_string())?;
+        .map_err(|_| StreamErrorKind::OutsidePath)?;
     if relative.as_os_str().is_empty() {
-        return Err("file.path must name a file below the diagnostics source root".to_string());
+        return Err(StreamErrorKind::RootPath);
     }
     Ok(relative
         .components()
@@ -743,7 +730,7 @@ mod tests {
     #[test]
     fn line_length_failure_names_the_physical_line_without_copying_it() {
         let mut parser = parser();
-        parser.reject_line(7, "line exceeds 8388608 bytes");
+        parser.reject_line(7, StreamErrorKind::LineTooLong);
         let result = parser.finish();
         let error = result.outcome.error.unwrap();
         assert_eq!(error.code, "diagnostics_invalid");
@@ -807,7 +794,7 @@ mod tests {
         assert_eq!(error.code, "diagnostics_invalid");
         assert_eq!(
             error.message,
-            "line 2: file.path resolves outside diagnostics source root"
+            "line 2: file.path resolves outside diagnostics source root. Check compatibility between Unica and its bundled analyzer; if the problem persists, report this reason and line number."
         );
         assert!(!error
             .message
@@ -826,6 +813,144 @@ mod tests {
         assert!(error.message.contains("line 3"));
         assert!(!error.message.contains("secret"));
         assert!(batch.outcome.observations.is_empty());
+    }
+
+    #[test]
+    fn unknown_severity_reports_safe_line_and_reason_without_raw_values() {
+        let fixture = TempDir::new().unwrap();
+        let private_path = fixture.path().join("Secret.bsl");
+        let secret = "private-severity-token-1064";
+        let mut parser = DiagnosticsJsonlParser::new(fixture.path()).unwrap();
+        let invalid = json!({
+            "type": "file",
+            "path": private_path,
+            "diagnostics": [{
+                "code": "X",
+                "message": format!("{secret} at {}", private_path.display()),
+                "severity": format!("{secret} at {}", private_path.display()),
+                "start_line": 0,
+                "start_column": 0,
+                "end_line": 0,
+                "end_column": 1,
+                "tags": []
+            }]
+        });
+        feed(
+            &mut parser,
+            &[
+                r#"{"type":"start","total_files":1,"version":"test"}"#,
+                &invalid.to_string(),
+            ],
+        );
+        let outcome = parser.finish().outcome;
+        assert_eq!(outcome.status, DiagnosticProviderStatus::Failed);
+        assert!(!outcome.complete);
+        assert!(outcome.observations.is_empty());
+        let error = outcome.error.unwrap();
+        assert_eq!(error.code, "diagnostics_invalid");
+        assert!(!error.retryable);
+        assert_eq!(
+            error.message,
+            "line 2: unknown diagnostic severity. Check compatibility between Unica and its bundled analyzer; if the problem persists, report this reason and line number."
+        );
+        assert!(!error.message.contains(secret));
+        assert!(!error.message.contains("Secret.bsl"));
+        assert!(!error
+            .message
+            .contains(fixture.path().to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn empty_stream_reports_missing_start_without_a_line_number() {
+        let outcome = parser().finish().outcome;
+        assert_eq!(outcome.status, DiagnosticProviderStatus::Failed);
+        assert!(!outcome.complete);
+        assert!(outcome.observations.is_empty());
+        let error = outcome.error.unwrap();
+        assert_eq!(error.code, "diagnostics_invalid");
+        assert!(!error.retryable);
+        assert_eq!(
+            error.message,
+            "stream is missing start event. Check compatibility between Unica and its bundled analyzer; if the problem persists, report this reason."
+        );
+    }
+
+    #[test]
+    fn hostile_schema_values_and_duplicate_paths_never_enter_protocol_errors() {
+        for invalid in [
+            json!({"type": "private-token C:/private/Secret.bsl"}),
+            json!({"type": "file", "path": "Module.bsl", "diagnostics": [], "private-token C:/private/Secret.bsl": true}),
+            json!({"type": "file", "path": "Module.bsl", "diagnostics": [{
+                "code": "X", "message": "m", "severity": "Warning", "start_line": 0,
+                "start_column": 0, "end_line": 0, "end_column": 1,
+                "tags": ["private-token C:/private/Secret.bsl"]
+            }]}),
+            json!({"type": "file", "path": "private-token-Secret.bsl", "diagnostics": []}),
+        ] {
+            let mut parser = parser();
+            feed(
+                &mut parser,
+                &[
+                    r#"{"type":"start","total_files":2,"version":"test"}"#,
+                    r#"{"type":"file","path":"private-token-Secret.bsl","diagnostics":[]}"#,
+                    &invalid.to_string(),
+                ],
+            );
+            let batch = parser.finish();
+            assert!(batch.outcome.observations.is_empty());
+            let error = batch.outcome.error.unwrap();
+            assert_eq!(error.code, "diagnostics_invalid");
+            assert!(error.message.starts_with("line 3: "));
+            assert!(!error.message.contains("private-token"));
+            assert!(!error.message.contains("Secret.bsl"));
+            assert_eq!(
+                crate::domain::diagnostics::stream_error::canonical_stream_error(&error.message),
+                Some(error.message)
+            );
+        }
+    }
+
+    #[test]
+    fn totals_failure_reports_the_terminal_event_line() {
+        for (totals, expected) in [
+            ((2, 1, 0), "file totals disagree"),
+            ((1, 0, 0), "diagnostic totals disagree"),
+            ((1, 1, 1), "failed file totals disagree"),
+        ] {
+            let mut parser = parser();
+            let file = diagnostic("Keep", "Warning", 1);
+            let done = json!({"type": "done", "elapsed_secs": 0.1,
+                "total_files": totals.0, "total_diagnostics": totals.1, "failed_files": totals.2});
+            feed(
+                &mut parser,
+                &[
+                    r#"{"type":"start","total_files":1,"version":"test"}"#,
+                    &file,
+                    &done.to_string(),
+                    "invalid event after inconsistent totals",
+                ],
+            );
+            let batch = parser.finish();
+            assert!(batch.outcome.observations.is_empty());
+            let error = batch.outcome.error.unwrap();
+            assert_eq!(error.code, "diagnostics_invalid");
+            assert!(error.message.starts_with(&format!("line 3: {expected}.")));
+        }
+    }
+
+    #[test]
+    fn delayed_line_error_preserves_the_earliest_physical_failure() {
+        for (stream_line, injected_line, expected) in [
+            (3, 2, "line 2: line exceeds 8388608 bytes."),
+            (2, 3, "line 2: invalid JSON or event schema."),
+        ] {
+            let mut parser = parser();
+            parser.push_line(stream_line, b"invalid private-token");
+            parser.reject_line(injected_line, StreamErrorKind::LineTooLong);
+            let batch = parser.finish();
+            assert!(batch.outcome.observations.is_empty());
+            assert!(batch.outcome.error.unwrap().message.starts_with(expected));
+        }
     }
 
     #[test]

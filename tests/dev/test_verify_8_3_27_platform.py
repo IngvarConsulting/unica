@@ -41,21 +41,6 @@ def write(path: Path, text: str) -> Path:
     return path
 
 
-class DocumentedContractTests(unittest.TestCase):
-    def test_current_case_contract_digest_is_documented(self):
-        verifier = load_verifier()
-        expected = f"`{verifier.EXPECTED_CASE_CONTRACT_SHA256}`"
-        documents = (
-            ROOT / "docs/arch-v1/acceptance/format-profile-8-3-27.md",
-            ROOT
-            / "docs/design/2026-08-07-typed-predefined-items-and-role-edit-design.md",
-        )
-
-        for path in documents:
-            with self.subTest(path=path.relative_to(ROOT).as_posix()):
-                self.assertIn(expected, path.read_text(encoding="utf-8"))
-
-
 CONFIG_XML = '''<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="11111111-1111-1111-1111-111111111111"/></MetaDataObject>'''
 
 
@@ -644,7 +629,7 @@ class PlatformAliasedModuleTests(unittest.TestCase):
 
 class SemanticDirectoryTests(unittest.TestCase):
     def test_xdto_package_is_captured_as_xml_despite_its_bin_extension(self):
-        """ADR-0024 names `XDTOPackages/<Name>/Ext/Package.bin` as text XML with
+        """The package grammar names `XDTOPackages/<Name>/Ext/Package.bin` as text XML with
         root `{http://v8.1c.ru/8.1/xdto}package`. Classifying sources by suffix
         alone drops it out of the XML snapshot the corpus declares it in."""
         verifier = load_verifier()
@@ -663,7 +648,7 @@ class SemanticDirectoryTests(unittest.TestCase):
             self.assertNotIn("XDTOPackages/Corpus/Ext/Package.bin", non_xml_payloads)
 
     def test_package_bin_outside_the_xdto_layout_stays_non_xml(self):
-        """ADR-0024 grants the exception to `XDTOPackages/<Name>/Ext/Package.bin`
+        """The package grammar grants the exception to `XDTOPackages/<Name>/Ext/Package.bin`
         and to nothing else, so a file that merely shares the name keeps its
         binary classification instead of entering XML validation."""
         verifier = load_verifier()

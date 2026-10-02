@@ -300,6 +300,8 @@ pub struct CodeSearchScope {
     pub source_set: String,
     pub source_root: PathBuf,
     pub filters: Vec<RelativeSearchFilter>,
+    /// Source sets nested below this root own their files independently.
+    pub excluded_subtrees: Vec<PathBuf>,
     pub legacy_selector: bool,
 }
 
@@ -309,6 +311,7 @@ impl CodeSearchScope {
             source_set,
             source_root,
             filters: Vec::new(),
+            excluded_subtrees: Vec::new(),
             legacy_selector,
         }
     }
@@ -323,6 +326,13 @@ impl CodeSearchScope {
                         | std::path::Component::Prefix(_)
                 )
             })
+        {
+            return false;
+        }
+        if self
+            .excluded_subtrees
+            .iter()
+            .any(|path| relative_path.starts_with(path))
         {
             return false;
         }
@@ -433,6 +443,7 @@ impl ProviderDeadline {
 pub enum ProviderSectionStatus {
     Ok,
     Empty,
+    Partial,
     LimitReached,
     TimedOut,
     Unavailable,
@@ -444,6 +455,7 @@ impl ProviderSectionStatus {
         match self {
             Self::Ok => "ok",
             Self::Empty => "empty",
+            Self::Partial => "partial",
             Self::LimitReached => "limitReached",
             Self::TimedOut => "timedOut",
             Self::Unavailable => "unavailable",
@@ -652,6 +664,19 @@ impl ProviderSearchSection {
                     );
                 }
             }
+            ProviderSectionStatus::Partial => {
+                if search_complete
+                    || hits.is_empty()
+                    || diagnostics.is_empty()
+                    || matches.relation != SearchCountRelation::LowerBound
+                    || matches.total.is_none_or(|total| total < hits.len())
+                {
+                    return Err(
+                        "partial search section must retain hits, diagnostics, and a lower bound"
+                            .to_string(),
+                    );
+                }
+            }
             ProviderSectionStatus::Unavailable | ProviderSectionStatus::Failed => {
                 if search_complete
                     || !hits.is_empty()
@@ -745,6 +770,24 @@ impl ProviderSearchSection {
             hits,
             diagnostics,
             SearchTermination::limit_reached(),
+        )
+    }
+
+    pub fn partial(
+        identity: ProviderIdentity,
+        ranking: SearchRanking,
+        ordering: SearchOrdering,
+        hits: Vec<ProviderSearchHit>,
+        diagnostics: Vec<String>,
+    ) -> Result<Self, String> {
+        Self::bounded(
+            identity,
+            ProviderSectionStatus::Partial,
+            ranking,
+            ordering,
+            hits,
+            diagnostics,
+            SearchTermination::provider_failed(),
         )
     }
 
@@ -917,6 +960,9 @@ fn validate_search_termination(
         (
             ProviderSectionStatus::Ok | ProviderSectionStatus::Empty,
             None
+        ) | (
+            ProviderSectionStatus::Partial,
+            Some(SearchTerminationCode::ProviderFailed)
         ) | (
             ProviderSectionStatus::LimitReached,
             Some(SearchTerminationCode::LimitReached)
@@ -1099,6 +1145,10 @@ pub struct CallGraphResult {
     /// Ревизия графа и её свежесть по мнению самого анализатора.
     pub revision: Option<u64>,
     pub stale: Option<bool>,
+    /// Whether the provider returned every neighbouring call edge. Internal
+    /// admission fact; the public branch reports completeness through a cursor.
+    #[serde(skip)]
+    pub complete: bool,
 }
 
 /// Typed answer of `unica.code.definition` (ADR-0023). The index already
@@ -1369,6 +1419,10 @@ mod tests {
     fn registry_resolves_an_executable_provider_for_read_capabilities() {
         let registry = CodeIntelligenceRegistry::new(vec![
             Arc::new(FakeProvider {
+                identity: ProviderId::GitGrep.identity(),
+                capabilities: vec![ProviderCapability::Search],
+            }),
+            Arc::new(FakeProvider {
                 identity: ProviderId::Rlm.identity(),
                 capabilities: vec![
                     ProviderCapability::Search,
@@ -1376,10 +1430,6 @@ mod tests {
                     ProviderCapability::Outline,
                     ProviderCapability::ObjectProfile,
                 ],
-            }),
-            Arc::new(FakeProvider {
-                identity: ProviderId::GitGrep.identity(),
-                capabilities: vec![ProviderCapability::Search],
             }),
         ])
         .unwrap();
@@ -1689,5 +1739,40 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(error, "empty search section must carry an exact zero count");
+    }
+
+    #[test]
+    fn partial_section_requires_proven_hits_and_diagnostics() {
+        let identity = ProviderIdentity::new(ProviderRole::Semantic, "replacement-semantic");
+        assert!(ProviderSearchSection::partial(
+            identity.clone(),
+            SearchRanking::Provider,
+            SearchOrdering::Provider,
+            Vec::new(),
+            vec!["malformed result".to_string()],
+        )
+        .is_err());
+        assert!(ProviderSearchSection::partial(
+            identity,
+            SearchRanking::Provider,
+            SearchOrdering::Provider,
+            vec![ProviderSearchHit {
+                rank: Some(1),
+                provider_score: None,
+                location: SourceLocation::Unaddressable {
+                    source_set: "main".to_string(),
+                    owner_metadata_path: None,
+                    path: "Module.bsl".to_string(),
+                },
+                line: 1,
+                end_line: None,
+                symbol: None,
+                kind: None,
+                snippet: String::new(),
+                attributes: Map::new(),
+            }],
+            Vec::new(),
+        )
+        .is_err());
     }
 }

@@ -1,18 +1,16 @@
 # v8project.yaml Contract
 
 `v8project.yaml` is the only project configuration format used by Unica skills.
-In a preview, use MCP `unica.runtime.execute` argument `config` when the config
-file is not located at `./v8project.yaml`.
+Unica reads it from the workspace root together with `v8project.local.yaml`;
+there is no argument that points a call at another file.
 
-По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
-показывает запланированную команду без побочных эффектов, а с `dryRun: false`
-исполняет классифицированную операцию и отвечает её терминальным результатом в
-том же вызове, приложив названную причину риска (`runtime_risk_*`)
-предупреждением; неклассифицированная операция по-прежнему отказывает
-`runtime_operation_unbounded` до обнаружения рабочего пространства. Preview
-исполнением не является. Работу, которую вызов ждать не должен, запускай через
-`unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
-`unica.build.*`.
+Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
+контракт каждой — `argsSchema`, `execution`, `previewRequired`,
+`ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
+при `implemented: true` используй опубликованную `argsSchema`; при
+`support.state: limited` разрешено только подмножество `support.supportedArgs`.
+При `support.state: unavailable` остановись; не выдумывай аргументов при
+`argsSchema: null`. Превью исполнением не является. Не обходи контракт прямым runner-ом.
 
 For a new repository with no workspace, call `unica.view {}` first. Оно
 работает и без проектного файла: отвечает `config.state: "autodetected"`,
@@ -33,19 +31,26 @@ For a new repository with no workspace, call `unica.view {}` first. Оно
 workPath: 'build'
 execution_timeout: 300000
 format: DESIGNER
-builder: DESIGNER
-infobase:
-  connection: 'File=build/ib'
+infobases:
+  origin:
+    connection: 'File=build/ib'
 source-set:
   - name: main
     type: CONFIGURATION
     path: 'src'
-build:
+push:
   partialLoadThreshold: 20
 ```
 
-`infobase.connection` is the current runner key. Do not use legacy top-level
-`connection` in `v8project.yaml`.
+`infobases.origin.connection` is the target form. Put machine addresses and
+credentials in `v8project.local.yaml`; the primary example is only a minimal
+local project. The runner 0.11 adapter privately projects this form into its
+legacy config and removes the temporary files after execution. It supports
+only `origin`; multiple named bases, raw connection argv and mixed old/new
+infobase keys are refused. `unica.run` accepts optional top-level
+`infobase: "origin"`; another target is never silently redirected to origin.
+Legacy `infobase.connection` remains readable during migration. Do not use
+legacy top-level `connection` in `v8project.yaml`.
 
 `basePath` is also removed from the pinned v8-runner contract. Relative
 `workPath`, infobase file paths, and source-set paths are resolved from the
@@ -53,18 +58,27 @@ directory containing the primary config.
 
 `execution_timeout` is the v8-runner operation budget in milliseconds. The
 default is `300000`; v8-runner validates the value in the `1..=86400000` range.
-For a future admitted long operation, this project config value is the runner
-budget; it is not a reason to attempt an unclassified applied call or add
-a Unica wrapper timeout argument.
+For a `unica.run` operation this project config value is the runner budget;
+Unica adds no timeout argument of its own.
 
 Server infobase connections use the normal 1C connection string form in
-`infobase.connection`, for example `Srvr="srv01";Ref="dev";`. IBCMD server
-connections also require the documented `infobase.dbms` block.
+`infobases.origin.connection`, for example `Srvr="srv01";Ref="dev";`. IBCMD server
+connections also require the documented `infobases.origin.dbms` block.
 
 `v8project.local.yaml` is loaded automatically next to the primary config. It
-may override local-only `workPath`, `infobase`, `tools`, `tests`, and `mcp`
-settings. It cannot be passed as `config` and must not redefine shared
-`source-set`, `format`, `builder`, or `execution_timeout`.
+may override local-only `workPath`, `infobases` (or legacy `infobase`), `providers`, `tools`, `tests`, and `mcp`
+settings. It is not selectable by a call and must not redefine shared
+`source-set`, `format`, or `execution_timeout`.
+
+## Runner 0.11 migration
+
+The top-level `builder` key is rejected. Remove it to use the runner's per-operation
+provider defaults. If the project requires a particular executor, declare it in
+`providers`, for example `providers: {download: designer, extensions: ibcmd}`.
+Names are lowercase (`designer`, `agent`, `ibcmd`); the runner validates each
+operation/provider pair. Do not mechanically replace `builder` with one global
+provider: each operation has its own supported executors. Keep machine-specific
+overrides in `v8project.local.yaml`. Unica does not rewrite existing project files.
 
 ## Strict platform resolution
 
@@ -89,8 +103,8 @@ resolved platform utility fixes one canonical installation root, and sibling
 With `path` and omitted/false `strict`, the runner still stays inside `path`,
 but it ignores `version` for that boundary. With no `path`, omitted/false
 `strict` preserves legacy discovery through the normal roots and `PATH`;
-`strict: true` alone creates no boundary. This project config field is not a
-new argument of `unica.runtime.execute`.
+`strict: true` alone creates no boundary. This project config field is not an
+argument of `unica.run`.
 
 ## Source-set format discovery
 
@@ -114,8 +128,7 @@ has global `format: EDT`.
 ## Autodetected source-sets
 
 A workspace without `v8project.yaml` still gets a source map. Autodetection
-looks only in a closed catalog of layouts (ADR-0075,
-`INV-SOURCE-AUTODETECT-CATALOG`) and never competes with the file: one declared
+looks only in a closed catalog of layouts and never competes with the file: one declared
 source-set replaces autodetection entirely.
 
 | Layout | Source-set |
@@ -139,68 +152,55 @@ directory named `main` keeps it.
 
 ## Command Mapping
 
-Таблица ниже называет аргументы снятого `unica.runtime.execute` и остаётся
-здесь как карта прежних намерений. Именами операций, их состоянием и схемами
-аргументов на проводе v0.13 отвечает только `unica.run {}`; значения из этой
-таблицы ему не передаются. Создания проектного файла в ней больше нет —
-наследника у него нет ни в одном инструменте.
+Именами операций, их состоянием и схемами аргументов на проводе v0.13 отвечает
+только `unica.run {}`. Таблица ниже — карта прежних намерений на операции
+словаря; значения из неё в вызов не передаются, контракт бери из словаря.
+Создания проектного файла в ней нет — наследника у него нет ни в одном
+инструменте.
 
-| Legacy intent | Legacy `unica.runtime.execute` arguments |
+| Intent | `unica.run` operation |
 | --- | --- |
-| Preview infobase/workspace initialization | `operation=init`, `dryRun=true` |
-| Preview loading XML sources | `operation=build`, `dryRun=true` |
-| Preview a full source load | `operation=build`, `fullRebuild=true`, `dryRun=true` |
-| Preview configuration/extension XML dump | synchronous `operation=dump`, `mode=full`, `dryRun=true`; applied post-run validation/publication has no proved receipt bound |
-| Preview external source-set dump | `operation=dump`, `mode=full`, `sourceSet=<external>`, `dryRun=true`; the applied run writes without a bounded recovery contract |
-| Preview incremental/selected dump | `operation=dump`, `mode=incremental` or `mode=partial`, `dryRun=true`; partial also requires `object=TYPE:NAME` or `objects=[...]` |
-| Preview `.cf` / `.cfe` artifact load | `operation=load`, `path=<file>`, `mode=load` or `mode=merge`, `dryRun=true` |
-| Preview `.cf` / `.cfe` artifact export | `operation=make`, `output=<file>`, `dryRun=true` |
-| Preview 1C launch arguments | `operation=launch`, one of `clientMode=thin`, `clientMode=thick`, `clientMode=designer`, or `clientMode=ordinary`, `dryRun=true` |
-| Preview syntax arguments | `operation=syntax`, one of `mode=designer-config`, `mode=designer-modules`, or `mode=edt`, `dryRun=true` |
-| Preview test arguments | `operation=test`, one of `testRunner=yaxunit` or `testRunner=va`, `dryRun=true` |
-| Preview configured tool download | `operation=tools-download`, one of `tool=yaxunit`, `tool=vanessa`, or `tool=client-mcp`, `dryRun=true` |
+| Create an absent empty infobase | `infobase.create`, empty args; then send sources separately; no sync baseline |
+| Send sources / delete an extension | `push`, `force:true`, optional `sourceSet` and `full`; applies the database configuration. Deletion uses only `delete: "InstalledName"` |
+| Replace one source set from the working configuration | `pull`, `force:true`, optional `sourceSet`, `extension`; no local-work protection |
+| Export the configuration or an extension as `.cf`/`.cfe` | `download`, `state=working` or `state=database`, `output`, optional `extension` |
+| Load a `.cf`/`.cfe` into the working configuration only | `upload`, `input`, optional `extension`; loading does not apply the database configuration |
+| Build a `.cf`/`.cfe` from sources | `make`, `output`, optional `sourceSet`, `extension`; `.epf`/`.erf` are not published |
+| Export the whole infobase as `.dt` | `infobase.dump`, `output` |
+| Load a `.dt` | `infobase.restore`, `input`, `mode=create` or `mode=replace` |
+| Launch a 1C client | `launch`, `clientMode`, optional `execute`, `waitForExit`, `waitTimeoutMs`; terminal, no preview required |
+| Inspect installed extensions | `extensions.list`, empty args; preview/apply opens a platform session |
+| Change installed extension activity | `extensions.set`, `name`, boolean `active`; other properties are unavailable |
+| Apply or discard pending configuration changes | `apply`, optional `extension`; `reset`, `force:true`, optional `extension`; Designer only |
 
-A classified applied mode runs and answers with its named risk; a mode the
-completion map does not classify still fails closed before workspace discovery
-and process spawn. The named risks are non-interruptible phases,
-persistent writes without bounded recovery, and unproved ownership of
-separately grouped 1C processes. ADR-0016 continues to own the future full-dump
-publication contract; its transaction guarantees do not make the current
-applied route executable.
+Syntax checks are `unica.check`; test runs and Designer/EDT conversion are not
+operations of the dictionary. A previewApply operation is applied with the
+`ifRev` its preview returned; a changed workspace or plan answers
+`stale_revision` or `concurrent_change` instead of applying. The remaining gap in binding preview to its inputs is tracked in
+[issue #950](https://github.com/IngvarConsulting/unica/issues/950).
 
-On Windows, macOS, and Linux, synchronous full dump (`mode=full`) for DESIGNER
-`CONFIGURATION` and `EXTENSION` source-sets runs applied and answers with a named
-risk: verified transactional publication still has post-run work without a proved
-terminal receipt bound, so a cancelled or timed-out dump has no bounded recovery.
-
-On Windows, Unica attests a local system installation through no-follow handles:
-its trusted owner and DACL must prevent mutation of the install tree by the
-invoking non-elevated user, while the ancestry must prevent deletion,
-replacement, or retargeting of path components. On macOS and Linux, Unica
-validates physical DESIGNER markers, attests the exact installation with sibling
-`ibcmd --version`, and requires a root-owned, link-free install tree without
-group/world write or ACLs. Effective configuration and credentials are never
-retained in recovery. User-owned platform installs are rejected before `ibcmd`
-or `v8-runner` would execute; other Unix hosts fail closed as well.
+The runner 0.11.2 adapter supports source `push` and `pull` with explicit
+`force:true`, without local-work protection or generation checks. Source
+`push` also applies the database configuration; `noApply:true` is unavailable.
+`upload` keeps loading separate from applying.
+`unica.apply` edits source files; `unica.run` with `op: "apply"` applies pending
+changes to the database configuration, optionally for one named extension.
 
 ## Skill Rules
 
 - Do not create or read any legacy JSON project registry.
-- Resolve the active config from the explicit MCP `config` argument when present; otherwise use `./v8project.yaml`.
+- The active config is `./v8project.yaml` at the workspace root; no `unica` call takes a `config` argument.
 - If the config is missing, read the recommended content from `setup` in
   `unica.view {}` and write `v8project.yaml` yourself: no tool creates it.
 - Prefer `source-set` names over ad hoc source directories.
 - Treat a platform-generated CDFI sidecar `ConfigDumpInfo.xml` whose root is `ConfigDumpInfo` as local per-infobase runtime state: keep it out of Git and never use it as source-format evidence. A legitimate metadata descriptor (including an external EPF/ERF descriptor) for an object actually named `ConfigDumpInfo` remains source and belongs in Git.
-- `execution_timeout` in `v8project.yaml` describes a future runner-operation
-  budget; Unica does not expose `timeoutMs` for `unica.runtime.execute`, and
-  changing this value does not admit a current applied operation.
-- Do not use `mode=update` for `operation=load`; v8-runner rejects it. Use `mode=load` or `mode=merge` with `settings`.
-- Every applied operation carries a named risk; `convert` additionally lacks a
-  verified private-stage publication boundary.
-- Do not pass `DumpConfigToFiles` or `LoadConfigFromFiles` through Designer `rawKeys`; Unica rejects these unverified source bypasses.
+- `execution_timeout` in `v8project.yaml` is the runner budget for `unica.run`
+  operations; Unica exposes no `timeoutMs` argument.
+- `upload` with adapter 0.11.2 loads a CF/CFE without applying the database configuration. Use the separate `apply` operation to apply it; both operations require preview and its `ifRev`.
+- Designer/EDT conversion is not on the surface: Unica reads platform XML only.
+- Designer `rawKeys` are not on the surface; source `push` and `pull` require explicit `force:true` with the 0.11.2 adapter and do not protect generations or local work.
 - When credentials are absent, do not initiate a runtime probe to discover them. Ask the user; classify only authentication evidence already supplied by a verified boundary.
 - If a command reports a 1C license problem, stop and ask the user to fix licensing. Do not edit license services, HASP settings, registry, or license files.
-- If a runtime flag or debug-server step is missing from
-  `unica.runtime.execute`, treat it as a Unica MCP contract gap. EPF/ERF
-  external-source-set build/dump flows can currently be previewed only with
-  `dryRun=true`; neither flow performs runtime work.
+- If a runtime flag or debug-server step is missing from the `unica.run`
+  dictionary, treat it as a Unica MCP contract gap. `.epf`/`.erf` publication
+  is one such gap: `make` builds `.cf` and `.cfe` only.

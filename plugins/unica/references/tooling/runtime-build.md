@@ -8,17 +8,34 @@
 являются разрешённым пользовательским workflow Unica и не должны запускаться
 напрямую как обход публичной границы.
 
-По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
-показывает запланированную команду без побочных эффектов, а с `dryRun: false`
-исполняет классифицированную операцию и отвечает её терминальным результатом в
-том же вызове, приложив названную причину риска (`runtime_risk_*`)
-предупреждением; неклассифицированная операция по-прежнему отказывает
-`runtime_operation_unbounded` до обнаружения рабочего пространства. Preview
-исполнением не является. Работу, которую вызов ждать не должен, запускай через
-`unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
-`unica.build.*`.
+Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
+контракт каждой — `argsSchema`, `execution`, `previewRequired`,
+`ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
+при `implemented: true` используй опубликованную `argsSchema`; при
+`support.state: limited` разрешено только подмножество `support.supportedArgs`.
+При `support.state: unavailable` остановись; не выдумывай аргументов при
+`argsSchema: null`. Превью исполнением не является. Не обходи контракт прямым runner-ом.
 
-**Два режима запуска:**
+Пример превью поддержанной выгрузки CF из основной конфигурации базы:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "unica.run",
+    "arguments": {
+      "op": "download",
+      "args": {"output": "dist/main.cf", "state": "working"},
+      "dryRun": true
+    }
+  }
+}
+```
+
+После проверки превью повтори запрос с `dryRun: false` и полученным `ifRev`.
+
+**Режимы запуска платформы:**
 
 | Режим | Назначение |
 |-------|-----------|
@@ -137,56 +154,10 @@
 
 #### Режимы выгрузки
 
-> Ниже приведён низкоуровневый синтаксис платформы, а не рекомендуемый путь
-> Unica. Не направляй incremental/partial/CDFI-only команды прямо в
-> Git-visible source root: они допустимы только во временный private staging,
-> принадлежащий runtime-слою. Синхронный full dump (`mode=full`) для DESIGNER
-> `CONFIGURATION`/`EXTENSION` исполняется с названным риском записи без ограниченного восстановления: его applied path проходит через внешний private stage Unica,
-> платформа независимо фиксируется на exact 8.3.27.x, XML проверяется на raw
-> `version="2.20"` до целой публикации. На Windows, macOS и Linux verified
-> transactional publication определяет этот synchronous full dump, но
-> постпроцессинг не имеет доказанного terminal-receipt bound. Владельцем контракта публикации остаётся ADR-0016;
-> `INV-SOURCE-BOUND-PREIMAGES` и `INV-SOURCE-ROLLBACK-VISIBLE` описывают
-> проверяемую транзакцию, а OS-зависимая реализация остаётся за
-> `INV-PLATFORM-OS-BEHIND-FACADE`.
->
-> Async full и applied external source-set несут тот же риск публикации. Неполные режимы
-> дополнительно не имеют безопасного merge receipt. На Windows Unica через
-> no-follow handles проверяет локальную системную установку: trusted owner и DACL
-> защищают install tree от изменения запускающим non-elevated пользователем, а
-> ancestry — от удаления, замены и перенаправления компонентов пути. На macOS и
-> Linux проверяются физические DESIGNER-маркеры, exact sibling
-> `ibcmd --version` и root-owned, link-free install tree без group/world write и
-> ACL. Secret-bearing effective config отделён от сохраняемого recovery.
-> Пользовательская или изменяемая установка отклоняется до `ibcmd` и
-> `v8-runner`; прочие Unix fail-closed.
-
-**Полная выгрузка** — все объекты конфигурации:
-```
-1cv8.exe DESIGNER /F <база> /DisableStartupDialogs /DumpConfigToFiles "C:\src\config" /Out log.txt
-```
-
-**Инкрементальная выгрузка** — только изменённые объекты:
-```
-1cv8.exe DESIGNER /F <база> /DisableStartupDialogs /DumpConfigToFiles "C:\runtime\private-staging\config" -update -force /Out log.txt
-```
-
-Инкрементальная выгрузка с отслеживанием изменений:
-```
-1cv8.exe DESIGNER /F <база> /DisableStartupDialogs /DumpConfigToFiles "C:\runtime\private-staging\config" -update -getChanges "changes.txt" -configDumpInfoForChanges "C:\runtime\ib-state\ConfigDumpInfo.xml" /Out log.txt
-```
-
-**Частичная выгрузка** — выбранные объекты по списку:
-```
-1cv8.exe DESIGNER /F <база> /DisableStartupDialogs /DumpConfigToFiles "C:\runtime\private-staging\config" -listFile "dump_objects.txt" /Out log.txt
-```
-
-**Обновление ConfigDumpInfo.xml** — без выгрузки файлов:
-```
-1cv8.exe DESIGNER /F <база> /DisableStartupDialogs /DumpConfigToFiles "C:\runtime\ib-state" -configDumpInfoOnly /Out log.txt
-```
-
-#### Параметры выгрузки
+> Ниже приведён низкоуровневый справочник платформы. Целевой `pull`
+> доступен на адаптере 0.11.2 только с `force:true` для полной замены одного
+> набора. Защита локальных изменений и поколений отсутствует. Не используй
+> низкоуровневые параметры как обход закрытой схемы `unica.run`. Поддерживаемые аргументы возвращает `unica.run {}`.
 
 | Параметр | Описание |
 |----------|----------|
@@ -307,84 +278,9 @@ Documents/РеализацияТоваровУслуг/Forms/ФормаДоку�
 
 ## Сборка и разборка внешних обработок (EPF/ERF)
 
-EPF/ERF runtime-аргументы в packaged Unica plugin предпросматриваются через
-`v8-runner` и MCP `unica.runtime.execute`. Отдельные EPF/ERF build/dump skills
-не являются пользовательским workflow, а текущий preview не собирает и не
-выгружает артефакты.
-
-### Preview публикации внешних обработок и отчетов
-
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.runtime.execute",
-    "arguments": {
-      "operation": "make",
-      "cwd": "<workspace>",
-      "sourceSet": "external-processors",
-      "output": "build/external",
-      "dryRun": true
-    }
-  }
-}
-```
-
-Для preview внешних отчетов используй `sourceSet: "external-reports"`.
-`output` задаёт предполагаемый каталог будущей публикации; текущий вызов не
-создаёт `.epf` или `.erf`.
-
-### Выгрузка внешних исходников
-
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.runtime.execute",
-    "arguments": {
-      "operation": "dump",
-      "cwd": "<workspace>",
-      "sourceSet": "external-processors",
-      "mode": "full",
-      "dryRun": true
-    }
-  }
-}
-```
-
-Для выгрузки внешних отчетов используй `sourceSet: "external-reports"`.
-Сейчас это только preview: applied external dump блокируется до появления
-такой же проверяемой private-stage публикации, как для configuration/extension.
-
-### Preview загрузки XML-исходников в базу
-
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.runtime.execute",
-    "arguments": {
-      "operation": "build",
-      "cwd": "<workspace>",
-      "sourceSet": "external-processors",
-      "mode": "full",
-      "dryRun": true
-    }
-  }
-}
-```
-
-### Примечания
-
-- `operation=load` моделирует `.cf` и `.cfe`; `.epf` и `.erf` моделируются
-  через preview `build` и `make` external source-set. Все эти текущие операции,
-  включая `dump`, вызываются только с `dryRun=true`.
-- Внешние source-set должны быть объявлены в `v8project.yaml` с типами `EXTERNAL_DATA_PROCESSORS` или `EXTERNAL_REPORTS`.
-- Dump требует базу с конфигурацией, содержащей используемые типы. Dump в пустой базе может потерять ссылочные типы (`CatalogRef.XXX` превращается в `xs:string`).
-- Категории колонок регистров (Dimension/Resource/Attribute) зависят от Form.xml и конфигурации базы; при round-trip через неподходящую базу привязки полей формы могут не сохраниться.
+`make` поддерживает только `.cf` и `.cfe`. Публикация `.epf`/`.erf`
+через Unica MCP пока недоступна. `push`, `pull` и `upload` для внешних
+наборов также unavailable: не подменяй их низкоуровневыми командами.
 
 ## Запуск в режиме предприятия
 
@@ -425,7 +321,7 @@ EPF/ERF runtime-аргументы в packaged Unica plugin предпросма
 
 Platform-generated CDFI sidecar с корнем `<ConfigDumpInfo>` — локальное
 runtime-состояние конкретной ИБ, а не коллективный XML-исходник. Не добавляй
-этот sidecar в Git и не передавай его в `unica.cf.*` или `unica.meta.*`. Чистый
+этот sidecar в Git и не редактируй его как объект метаданных через `unica.apply`. Чистый
 checkout без него является нормальным состоянием. Unica не считает его
 признаком формата source-set и не включает в mutation targets/receipts.
 Legitimate metadata descriptor (включая external EPF/ERF) объекта с именем
@@ -440,22 +336,10 @@ Legitimate metadata descriptor (включая external EPF/ERF) объекта 
 - `-configDumpInfoOnly` — обновить только этот файл без выгрузки объектов
 - `-updateConfigDumpInfo` — обновить файл после частичной загрузки (`/LoadConfigFromFiles`)
 
-Платформа предоставляет параметры для использования вспомогательного CDFI при
-сравнении, но управление приватным CDFI для пары `source-set + ИБ` относится к
- runtime-слою. На Windows, macOS и Linux синхронный full dump (`mode=full`) для
-DESIGNER `CONFIGURATION`/`EXTENSION` исполняется с названным риском; его verified transactional
-publication Unica перенаправляет выбранный source-set во внешний private
-stage, платформа проверяется как exact 8.3.27.x, а version-bearing XML roots —
-как raw `2.20`; только затем целое дерево публикуется с проверкой preimage и
-rollback (ADR-0016, `INV-PLATFORM-OS-BEHIND-FACADE`). До реализации private
-state и shadow publication в `alkoleft/v8-runner-rust#30`
-`mode=incremental|partial` исполняется, но доверять его результату вслепую
-нельзя: закреплённый runner не возвращает точные processed paths/hashes и не
-выполняет divergence-safe merge, поэтому расхождение обнаруживается только
-сравнением исходников после прогона.
-Будущий applied-маршрут сможет принять только системную установку платформы,
-неизменяемую для вызывающего пользователя; сейчас любой applied-вызов
-останавливается ещё до проверки или исполнения установки.
+Платформа использует CDFI для сравнения исходников. Управление приватным
+состоянием и защита от расхождения поколений принадлежат раннеру. Адаптер 0.11.2 разрешает `pull` и `push` только с `force:true`: `pull`
+полностью заменяет один набор, а `push` сразу применяет конфигурацию БД.
+Контроль поколений и сохранение локальной работы этим не обеспечиваются.
 
 ## Выбор платформы 1С
 

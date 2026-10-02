@@ -2,6 +2,7 @@ mod entrypoint;
 pub(crate) mod filesystem;
 pub(crate) mod full_dump_publication;
 mod process;
+mod process_metrics;
 pub(crate) mod secure_read;
 pub(crate) mod source_revision_fence;
 mod target;
@@ -13,13 +14,15 @@ pub(crate) use filesystem::short_private_runtime_dir;
 pub(crate) use process::{
     ensure_truncation_diagnostics, ManagedChild, ManagedCommand, ManagedLineOutput, ManagedOutput,
     ManagedStartupChild, RuntimeProcessTreeHandle, RuntimeProcessTreeState, StreamControl,
-    STDERR_CAPTURE_LIMIT, STDOUT_CAPTURE_LIMIT,
+    STDERR_CAPTURE_LIMIT, STDOUT_CAPTURE_LIMIT, STREAM_LINE_TOO_LONG_ERROR,
 };
 #[cfg(test)]
 pub(crate) use process::{
     inject_runtime_tree_cleanup_timeout_for_test, reset_runtime_tree_cleanup_calls_for_test,
     runtime_process_tree_test_scenario_for_test, runtime_tree_cleanup_calls_for_test,
+    JobAttachGateForTest,
 };
+pub(crate) use process_metrics::process_peak_rss_bytes;
 pub(crate) use target::current_target_id;
 
 #[cfg(feature = "receipt-ledger-test-support")]

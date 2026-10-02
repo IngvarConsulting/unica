@@ -1,16 +1,18 @@
-use crate::domain::address::NodeKind;
+use crate::domain::address::{NodeKind, QualifiedAddress};
+use crate::domain::cancellation::CancellationToken;
+use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::refusal::RefusalCode;
 use serde::Serialize;
 use std::cmp::Ordering;
 
 const DEFAULT_LIMIT: usize = 20;
 const MAX_LIMIT: usize = 100;
-const MAX_QUERY_CHARS: usize = 1_024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FindRequest {
     query: String,
     kind: Option<String>,
+    scope: Option<QualifiedAddress>,
     limit: usize,
 }
 
@@ -23,15 +25,10 @@ impl FindRequest {
                 "find query must not be empty",
             ));
         }
-        if query.chars().count() > MAX_QUERY_CHARS {
-            return Err(FindError::new(
-                RefusalCode::BadValue,
-                format!("find query must not exceed {MAX_QUERY_CHARS} characters"),
-            ));
-        }
         Ok(Self {
             query: query.to_string(),
             kind: None,
+            scope: None,
             limit: DEFAULT_LIMIT,
         })
     }
@@ -58,6 +55,25 @@ impl FindRequest {
         }
         self.limit = limit.min(MAX_LIMIT);
         Ok(self)
+    }
+
+    pub(crate) fn with_scope(mut self, scope: QualifiedAddress) -> Self {
+        self.scope = Some(scope);
+        self
+    }
+
+    fn contains_address(&self, at: &str) -> bool {
+        let Some(scope) = &self.scope else {
+            return true;
+        };
+        if scope.segments().len() == 1 && scope.segments()[0].kind() == NodeKind::Configuration {
+            return at.starts_with(&format!("{}:", scope.source_set()));
+        }
+        let at_scope = scope.to_string();
+        at == at_scope
+            || at
+                .strip_prefix(&at_scope)
+                .is_some_and(|tail| tail.starts_with('.'))
     }
 }
 
@@ -107,6 +123,7 @@ pub(crate) struct FindDocument {
     /// Where this object lives in the source layout, relative to the
     /// source-set root: a descriptor file, or the directory of a command.
     path: Option<String>,
+    path_alias: Option<FindPathAlias>,
     facts: Vec<FindFact>,
 }
 
@@ -136,6 +153,7 @@ impl FindDocument {
             kind,
             title: title.into(),
             path: None,
+            path_alias: None,
             facts,
         }
     }
@@ -151,6 +169,11 @@ impl FindDocument {
             .saturating_add(self.kind.len())
             .saturating_add(self.title.len())
             .saturating_add(
+                self.path_alias
+                    .as_ref()
+                    .map_or(0, FindPathAlias::estimated_bytes),
+            )
+            .saturating_add(
                 self.facts
                     .iter()
                     .fold(0usize, |total, fact| total.saturating_add(fact.value.len())),
@@ -160,6 +183,27 @@ impl FindDocument {
     pub(crate) fn at(&self) -> &str {
         &self.at
     }
+
+    pub(crate) fn set_path_alias(&mut self, path: Option<FindPathAlias>) {
+        self.path_alias = path;
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FindPathAlias {
+    pub(crate) relative: String,
+    pub(crate) absolute: String,
+}
+
+impl FindPathAlias {
+    pub(crate) fn estimated_bytes(&self) -> usize {
+        self.relative.len().saturating_add(self.absolute.len())
+    }
+}
+
+pub(crate) struct FindPathMatch<'a> {
+    pub(crate) owner: &'a FindDocument,
+    pub(crate) path: &'a str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -285,65 +329,164 @@ impl FindIndex {
             .find(|document| document.at == at && document.path.is_some())
     }
 
+    pub(crate) fn has_address(&self, at: &str) -> bool {
+        self.documents
+            .binary_search_by(|document| document.at.as_str().cmp(at))
+            .is_ok()
+    }
+
     /// Точный поиск по пути. Путь мог прийти абсолютным или относительно
     /// корня рабочего пространства, поэтому хвост принимается тоже — но
     /// только целиком, посегментно, а не подстрокой.
-    pub(crate) fn locate_path(&self, path: &str) -> Option<&FindDocument> {
-        let query = normalize(&path.replace('\\', "/"));
-        self.documents
-            .iter()
-            .filter(|document| {
-                document.path.as_ref().is_some_and(|stored| {
-                    let stored = normalize(stored);
-                    query == stored
-                        || query
-                            .strip_suffix(&stored)
-                            .is_some_and(|head| head.ends_with('/'))
-                })
-            })
-            // Каталог команды и файл дескриптора могут оба претендовать на
-            // путь; побеждает самый длинный, то есть самый точный.
-            .max_by_key(|document| document.path.as_ref().map_or(0, String::len))
+    pub(crate) fn locate_path(&self, path: &str) -> Option<FindPathMatch<'_>> {
+        let absolute_query = std::path::Path::new(path).is_absolute();
+        let query = normalize_layout_path(path);
+        let mut best: Option<FindPathMatch<'_>> = None;
+        let mut best_is_alias = false;
+        let mut ambiguous = false;
+        for document in &self.documents {
+            for (path, absolute_alias) in document.path.iter().map(|path| (path, None)).chain(
+                document
+                    .path_alias
+                    .iter()
+                    .map(|alias| (&alias.relative, Some(&alias.absolute))),
+            ) {
+                let is_alias = absolute_alias.is_some();
+                let matches = {
+                    if let Some(absolute) = absolute_alias {
+                        let stored = normalize_layout_path(absolute);
+                        query == stored
+                            || (!absolute_query
+                                && query.len() >= normalize(path).len()
+                                && stored
+                                    .strip_suffix(&query)
+                                    .is_some_and(|head| head.ends_with('/')))
+                    } else {
+                        let stored = normalize(path);
+                        query == stored
+                            || query
+                                .strip_suffix(&stored)
+                                .is_some_and(|head| head.ends_with('/'))
+                    }
+                };
+                if !matches {
+                    continue;
+                }
+                match best.as_ref().map(|found| path.len().cmp(&found.path.len())) {
+                    None | Some(Ordering::Greater) => {
+                        best = Some(FindPathMatch {
+                            owner: document,
+                            path,
+                        });
+                        best_is_alias = is_alias;
+                        ambiguous = false;
+                    }
+                    Some(Ordering::Equal) if is_alias || best_is_alias => ambiguous = true,
+                    Some(Ordering::Equal) => {
+                        best = Some(FindPathMatch {
+                            owner: document,
+                            path,
+                        });
+                    }
+                    Some(Ordering::Less) => {}
+                }
+            }
+        }
+        best.filter(|_| !ambiguous)
     }
 
     pub(crate) fn find(&self, request: FindRequest) -> FindResult {
+        let limit = request.limit;
+        self.find_ranked(request, Some(limit), || Ok(()))
+            .expect("an unchecked find cannot fail")
+    }
+
+    /// Return the entire ranked stream for a paged public search. The
+    /// historical `find` limit remains intact for internal readers.
+    pub(crate) fn find_all_checked(
+        &self,
+        request: FindRequest,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<FindResult, FindError> {
+        self.find_ranked(request, None, || {
+            if cancellation.is_cancelled() {
+                return Err(FindError::new(
+                    RefusalCode::Cancelled,
+                    "name search was cancelled",
+                ));
+            }
+            if deadline.remaining().is_zero() {
+                return Err(FindError::new(
+                    RefusalCode::DeadlineExceeded,
+                    "name search deadline elapsed",
+                ));
+            }
+            Ok(())
+        })
+    }
+
+    fn find_ranked(
+        &self,
+        request: FindRequest,
+        cap: Option<usize>,
+        mut checkpoint: impl FnMut() -> Result<(), FindError>,
+    ) -> Result<FindResult, FindError> {
+        checkpoint()?;
         let query = normalize(&request.query);
         let eligible = self.documents.iter().filter(|document| {
             request
                 .kind
                 .as_ref()
                 .is_none_or(|kind| kind == &document.kind)
+                && request.contains_address(&document.at)
         });
-        let mut direct = eligible
-            .clone()
-            .filter_map(|document| best_direct_match(document, &query))
-            .collect::<Vec<_>>();
+        let mut direct = Vec::new();
+        for (index, document) in eligible.clone().enumerate() {
+            if index % 128 == 0 {
+                checkpoint()?;
+            }
+            if let Some(candidate) = best_direct_match(document, &query) {
+                direct.push(candidate);
+            }
+        }
+        checkpoint()?;
         direct.sort_by(scored_order);
         direct.dedup_by(|left, right| left.document.at == right.document.at);
+        checkpoint()?;
         if !direct.is_empty() {
-            return FindResult {
+            return Ok(FindResult {
                 candidates: direct
                     .into_iter()
-                    .take(request.limit)
+                    .take(cap.unwrap_or(usize::MAX))
                     .map(ScoredCandidate::into_candidate)
                     .collect(),
                 nearest: false,
-            };
+            });
         }
 
-        let mut nearest = eligible
-            .filter_map(|document| nearest_match(document, &query))
-            .collect::<Vec<_>>();
+        let mut nearest = Vec::new();
+        for (index, document) in eligible.enumerate() {
+            if index % 128 == 0 {
+                checkpoint()?;
+            }
+            if let Some(candidate) = nearest_match(document, &query) {
+                nearest.push(candidate);
+            }
+        }
+        checkpoint()?;
         nearest.sort_by(scored_order);
         nearest.dedup_by(|left, right| left.document.at == right.document.at);
-        FindResult {
+        let has_nearest = !nearest.is_empty();
+        checkpoint()?;
+        Ok(FindResult {
             candidates: nearest
                 .into_iter()
-                .take(request.limit.min(10))
+                .take(cap.map_or(usize::MAX, |limit| limit.min(10)))
                 .map(ScoredCandidate::into_candidate)
                 .collect(),
-            nearest: true,
-        }
+            nearest: has_nearest,
+        })
     }
 
     #[cfg(test)]
@@ -443,6 +586,18 @@ fn normalize(value: &str) -> String {
     value.trim().to_lowercase()
 }
 
+pub(crate) fn normalize_layout_path(path: &str) -> String {
+    let normalized = normalize(&path.replace('\\', "/"));
+    if let Some(unc) = normalized.strip_prefix("//?/unc/") {
+        format!("//{unc}")
+    } else {
+        normalized
+            .strip_prefix("//?/")
+            .unwrap_or(&normalized)
+            .to_string()
+    }
+}
+
 fn bounded_levenshtein(left: &str, right: &str, bound: usize) -> Option<usize> {
     let left = left.chars().take(bound + 1).collect::<Vec<_>>();
     let right = right.chars().take(bound + 1).collect::<Vec<_>>();
@@ -467,6 +622,11 @@ fn bounded_levenshtein(left: &str, right: &str, bound: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::{FindDocument, FindFact, FindFactKind, FindIndex, FindRequest};
+    use crate::domain::address::QualifiedAddress;
+    use crate::domain::cancellation::CancellationToken;
+    use crate::domain::code_intelligence::ProviderDeadline;
+    use crate::domain::refusal::RefusalCode;
+    use std::time::Duration;
 
     fn index() -> FindIndex {
         FindIndex::new(vec![
@@ -524,6 +684,25 @@ mod tests {
     }
 
     #[test]
+    fn empty_search_has_no_approximate_match() {
+        let absent_kind = index().find(
+            FindRequest::new("Валюты")
+                .unwrap()
+                .with_kind("Role")
+                .unwrap(),
+        );
+        assert!(absent_kind.candidates().is_empty());
+        assert!(!absent_kind.is_nearest());
+
+        let distant = index().find(
+            FindRequest::new("A query longer than the nearest bound of thirty two characters")
+                .unwrap(),
+        );
+        assert!(distant.candidates().is_empty());
+        assert!(!distant.is_nearest());
+    }
+
+    #[test]
     fn default_and_oversized_limits_are_bounded() {
         let documents = (0..150)
             .map(|index| {
@@ -556,12 +735,100 @@ mod tests {
                 .len(),
             100,
         );
+        assert_eq!(
+            index
+                .find_all_checked(
+                    FindRequest::new("Node").unwrap(),
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .unwrap()
+                .candidates()
+                .len(),
+            150,
+        );
     }
 
     #[test]
-    fn find_rejects_queries_above_the_identity_work_bound() {
-        let error = FindRequest::new(&"Я".repeat(1_025)).unwrap_err();
+    fn paged_name_ranking_keeps_all_nearest_candidates_and_checks_cancellation() {
+        let documents = (0..15)
+            .map(|index| {
+                FindDocument::new(
+                    format!("main:Catalog.Node{index:02}"),
+                    "Catalog",
+                    format!("Node{index:02}"),
+                    vec![FindFact::new(FindFactKind::Name, format!("Node{index:02}"))],
+                )
+            })
+            .collect();
+        let index = FindIndex::new(documents);
+        let request = FindRequest::new("Nade").unwrap();
+        let found = index
+            .find_all_checked(
+                request.clone(),
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert!(found.is_nearest());
+        assert_eq!(found.candidates().len(), 15);
+        assert_eq!(index.find(request.clone()).candidates().len(), 10);
 
-        assert_eq!(error.code().as_str(), "bad_value");
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        assert_eq!(
+            index
+                .find_all_checked(
+                    request.clone(),
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &cancelled,
+                )
+                .unwrap_err()
+                .code(),
+            RefusalCode::Cancelled,
+        );
+        assert_eq!(
+            index
+                .find_all_checked(
+                    request,
+                    ProviderDeadline::from_budget(Duration::ZERO),
+                    &CancellationToken::new(),
+                )
+                .unwrap_err()
+                .code(),
+            RefusalCode::DeadlineExceeded,
+        );
+    }
+
+    #[test]
+    fn name_scope_stops_at_a_logical_segment_boundary() {
+        let index = FindIndex::new(vec![
+            FindDocument::new("main:Catalog.Item", "Catalog", "Item", vec![]),
+            FindDocument::new("main:Catalog.Items", "Catalog", "Items", vec![]),
+            FindDocument::new("other:Catalog.Item", "Catalog", "Item", vec![]),
+        ]);
+        let request = FindRequest::new("Item")
+            .unwrap()
+            .with_scope(QualifiedAddress::parse("main:Catalog.Item").unwrap());
+
+        let found = index.find(request);
+        assert_eq!(found.candidates().len(), 1);
+        assert_eq!(found.candidates()[0].at(), "main:Catalog.Item");
+    }
+
+    #[test]
+    fn find_matches_an_identity_longer_than_the_former_query_ceiling() {
+        let long_name = "Я".repeat(1_025);
+        let address = format!("main:Catalog.{long_name}");
+        let index = FindIndex::new(vec![FindDocument::new(
+            &address,
+            "Catalog",
+            long_name.clone(),
+            vec![FindFact::new(FindFactKind::Name, long_name.clone())],
+        )]);
+
+        let found = index.find(FindRequest::new(&long_name).unwrap());
+        assert_eq!(found.candidates().len(), 1);
+        assert_eq!(found.candidates()[0].at(), address);
     }
 }

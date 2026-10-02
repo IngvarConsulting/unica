@@ -21,20 +21,61 @@ def load_module(path: Path, name: str):
     return module
 
 
+def packaged_linux_pair(root: Path) -> Path:
+    """Собрать настоящую пару ассетов ядра для linux-x64 и вернуть каталог."""
+    packager = load_module(REPO_ROOT / "scripts/ci/package-unica-runtime.py", "runtime_packager")
+    bundle = root / "linux-x64"
+    binary = bundle / "bin" / "linux-x64" / "unica"
+    binary.parent.mkdir(parents=True)
+    binary.write_bytes(b"linux-x64")
+    binary.chmod(0o755)
+    (bundle / "tools.json").write_text(
+        json.dumps(
+            {
+                "schemaVersion": 2,
+                "target": "linux-x64",
+                "targetTriple": "x86_64-unknown-linux-gnu",
+                "artifactAssets": {},
+                "runtimeFiles": [
+                    {
+                        "path": "bin/linux-x64/unica",
+                        "deliveredPath": "bin/linux-x64/unica",
+                        "sha256": packager.sha256(binary),
+                        "size": binary.stat().st_size,
+                        "executable": True,
+                        "artifact": "unica",
+                    }
+                ],
+                "tools": [
+                    {
+                        "name": "unica",
+                        "version": "0.7.0",
+                        "targetTriple": "x86_64-unknown-linux-gnu",
+                        "binaryPath": "bin/linux-x64/unica",
+                        "sha256": packager.sha256(binary),
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    assets = root / "assets"
+    packager.package_runtime(bundle, assets)
+    return assets
+
+
 class VerifyReleaseAssetsTests(unittest.TestCase):
     def test_builds_machine_readable_outcome_for_verified_target(self) -> None:
         verifier = load_module(REPO_ROOT / "scripts/ci/verify-release-assets.py", "asset_verifier")
 
         with tempfile.TemporaryDirectory() as tmp:
-            with mock.patch.object(verifier, "verify_release_target", return_value="0.13.0-rc.1"):
-                report = verifier.build_verification_report(
-                    Path(tmp), "linux-x64", source="local-build"
-                )
+            assets = packaged_linux_pair(Path(tmp))
+            report = verifier.build_verification_report(assets, "linux-x64", source="local-build")
 
         self.assertEqual(report["schemaVersion"], 1)
         self.assertEqual(report["status"], "passed")
         self.assertEqual(report["source"], "local-build")
-        self.assertEqual(report["pluginVersion"], "0.13.0-rc.1")
+        self.assertEqual(report["pluginVersion"], "0.7.0")
         self.assertEqual(report["targets"], ["linux-x64"])
         self.assertEqual(
             report["checks"],
@@ -45,6 +86,32 @@ class VerifyReleaseAssetsTests(unittest.TestCase):
                 "memberMetadata": True,
             },
         )
+
+    def test_report_checks_are_observations_of_the_verifier_not_literals(self) -> None:
+        # Четыре ключа `checks` обязаны отвечать за четыре шага верификатора:
+        # проверка, которой не было, в отчёте остаётся `false` (#701, п. 1).
+        verifier = load_module(REPO_ROOT / "scripts/ci/verify-release-assets.py", "asset_verifier")
+
+        def only_composition(asset_dir: Path, target: str, checks: dict) -> str:
+            checks["artifactSet"] = True
+            return "0.13.0-rc.1"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(verifier, "verify_release_target", side_effect=only_composition):
+                report = verifier.build_verification_report(
+                    Path(tmp), "linux-x64", source="local-build"
+                )
+
+        self.assertEqual(
+            report["checks"],
+            {
+                "artifactSet": True,
+                "archiveChecksum": False,
+                "memberChecksums": False,
+                "memberMetadata": False,
+            },
+        )
+        self.assertEqual(report["status"], "failed")
 
     def test_verifies_one_packaged_runtime_pair_and_detects_tampering(self) -> None:
         packager = load_module(REPO_ROOT / "scripts/ci/package-unica-runtime.py", "runtime_packager")

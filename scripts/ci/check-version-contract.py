@@ -12,6 +12,11 @@ from pathlib import Path
 
 
 def read_version_contract(repo_root: Path) -> dict[str, str]:
+    """Read required version labels without checking their agreement or syntax.
+
+    Missing or malformed files are not skipped. The tools lock must contain
+    exactly one Unica entry; validate_version_contract checks the returned labels.
+    """
     workspace = tomllib.loads((repo_root / "Cargo.toml").read_text(encoding="utf-8"))
     plugin = json.loads(
         (repo_root / "plugins" / "unica" / ".codex-plugin" / "plugin.json").read_text(
@@ -20,6 +25,11 @@ def read_version_contract(repo_root: Path) -> dict[str, str]:
     )
     claude_plugin = json.loads(
         (repo_root / "plugins" / "unica" / ".claude-plugin" / "plugin.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    zcode_plugin = json.loads(
+        (repo_root / "plugins" / "unica" / ".zcode-plugin" / "plugin.json").read_text(
             encoding="utf-8"
         )
     )
@@ -36,6 +46,7 @@ def read_version_contract(repo_root: Path) -> dict[str, str]:
         "workspace": workspace["workspace"]["package"]["version"],
         "plugin": plugin["version"],
         "claude-plugin": claude_plugin["version"],
+        "zcode-plugin": zcode_plugin["version"],
         "tools-lock-unica": unica_tools[0]["version"],
     }
 

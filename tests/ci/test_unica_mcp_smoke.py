@@ -345,8 +345,9 @@ class UnicaMcpSmokeTests(unittest.TestCase):
         """A long-lived packaged MCP must outlive its replaced plugin directory.
 
         Marketplace ``.mcp.json`` starts the server with ``cwd: \".\"``.
-        The v0.13 frontend captures an absolute workspace hint before the
-        handshake and sends it to the daemon; cwd is not a public tool argument.
+        The host supplies an absolute project directory at startup. The
+        frontend captures it and sends it to the daemon; the plugin cwd
+        does not select the project and is not a public tool argument.
         Neither process may need its launch directory for later workspace,
         typed metadata, or code-search requests.
         """
@@ -354,7 +355,7 @@ class UnicaMcpSmokeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             temp = Path(tmp).resolve()
             workspace = temp / "workspace"
-            launch_dir = workspace / "plugins/unica"
+            launch_dir = temp / "plugins/unica"
             launch_dir.mkdir(parents=True)
             self.source_fixture(workspace)
             workspace = workspace.resolve()
@@ -408,6 +409,8 @@ class UnicaMcpSmokeTests(unittest.TestCase):
             entry_env = {
                 **server.get("env", {}),
                 "CLAUDE_PLUGIN_ROOT": "",
+                "CLAUDE_PROJECT_DIR": str(workspace),
+                "ZCODE_PROJECT_DIR": str(workspace),
                 "UNICA_BOOTSTRAP_UNAME_S": "Linux",
                 "UNICA_BOOTSTRAP_UNAME_M": "x86_64",
                 "UNICA_TEST_CORE": str(core),
@@ -458,6 +461,11 @@ class UnicaMcpSmokeTests(unittest.TestCase):
                     self.assertTrue(search["data"]["matches"], search)
 
                 inspect_workspace(2)
+                state = temp / "provider-state"
+                endpoints = list(state.glob("daemon-*/endpoint.json"))
+                self.assertEqual(len(endpoints), 1)
+                endpoint = endpoints[0]
+                daemon_before = json.loads(endpoint.read_text(encoding="utf-8"))
                 shutil.rmtree(launch_dir)
                 inspect_workspace(5)
 
@@ -466,11 +474,6 @@ class UnicaMcpSmokeTests(unittest.TestCase):
                 # at their original paths while retiring that launch directory.
                 # This makes getcwd fail in the actual executor without deleting
                 # its receipt ledger, socket, or workspace data.
-                state = temp / "provider-state"
-                endpoints = list(state.glob("daemon-*/endpoint.json"))
-                self.assertEqual(len(endpoints), 1)
-                endpoint = endpoints[0]
-                daemon_before = json.loads(endpoint.read_text(encoding="utf-8"))
                 retired = temp / "retired-daemon-cwd"
                 state.rename(retired)
                 state.mkdir(mode=0o700)

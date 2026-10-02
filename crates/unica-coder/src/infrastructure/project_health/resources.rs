@@ -1,3 +1,4 @@
+use crate::application::invocation::INVOCATION_HANDOFF_WINDOW;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::project_health::{
@@ -9,33 +10,307 @@ use crate::infrastructure::internal_adapters::{
     system_process_runner, ProcessCommand, ProcessOutput, ProcessRunner,
 };
 use crate::infrastructure::platform::filesystem::{
-    host_path_text, open_absolute_directory_path_nofollow, open_any_child_nofollow,
-    open_child_for_secure_tree_use, OpenedChildKind,
+    file_change_time, file_identity, host_path_text, open_absolute_directory_path_nofollow,
+    open_any_child_nofollow, open_child_for_secure_tree_use, OpenedChildKind,
 };
-use crate::infrastructure::project_health::git::GitIndexEntry;
+use crate::infrastructure::project_health::git::{
+    parse_git_index_entries_controlled, GitIndexEntry, IndexParseError,
+};
 use crate::infrastructure::project_health::layout::InspectedSourceRoot;
 use crate::infrastructure::project_health::{
     SourceRootOwnerIndex, SourceRootOwnerIndexError, SourceRootOwnerLookupError,
 };
 use crate::infrastructure::source_roots::normalize_path_identity;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime};
 use tempfile::TempDir;
 
 pub(crate) const LFS_SINGLE_FILE_THRESHOLD_BYTES: u64 = 10 * 1024 * 1024;
 pub(crate) const LFS_AGGREGATE_THRESHOLD_BYTES: u64 = 100 * 1024 * 1024;
 pub(crate) const MAX_WORKING_EOL_FILE_BYTES: u64 = 32 * 1024 * 1024;
-pub(crate) const MAX_WORKING_EOL_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_STAGED_POLICY_FILES: usize = 1024;
 const MAX_STAGED_POLICY_TOTAL_BYTES: usize = 8 * 1024 * 1024;
 const MAX_INDEX_EOL_FILE_BYTES: usize = 32 * 1024 * 1024;
-const MAX_INDEX_EOL_TOTAL_BYTES: usize = 256 * 1024 * 1024;
+const MAX_INDEX_EOL_BATCH_FILES: usize = 64;
+const MAX_INDEX_EOL_BATCH_BLOB_BYTES: usize = 32 * 1024 * 1024;
 const MAX_CLASSIFIED_RESOURCES: usize = 65_536;
 const MAX_RESOURCE_OWNER_EXPANSION_BYTES: usize = 8 * 1024 * 1024;
 const MAX_RESOURCE_OWNERSHIP_REASON_BYTES: usize = 512;
+const MAX_CONTINUATION_WORKSPACES: usize = 4;
+const MAX_CONTINUATION_EVIDENCE_BYTES: usize = 32 * 1024 * 1024;
+const CONTINUATION_TTL: Duration = Duration::from_secs(15 * 60);
+
+#[cfg(test)]
+thread_local! {
+    static BEFORE_WORKING_REVALIDATION: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+    static STAGED_EOL_STOP_AFTER: std::cell::Cell<Option<usize>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn run_working_revalidation_test_hook() {
+    BEFORE_WORKING_REVALIDATION.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+#[cfg(not(test))]
+fn run_working_revalidation_test_hook() {}
+
+#[cfg(test)]
+pub(crate) fn stop_staged_eol_after_for_test(completed: usize) {
+    STAGED_EOL_STOP_AFTER.with(|slot| slot.set(Some(completed)));
+}
+
+#[cfg(test)]
+fn staged_eol_test_timeout() -> bool {
+    STAGED_EOL_STOP_AFTER.with(|slot| match slot.get() {
+        Some(0) => {
+            slot.set(None);
+            true
+        }
+        Some(remaining) => {
+            slot.set(Some(remaining - 1));
+            false
+        }
+        None => false,
+    })
+}
+
+#[cfg(not(test))]
+fn staged_eol_test_timeout() -> bool {
+    false
+}
+
+#[derive(Default)]
+pub(crate) struct RootCheckContinuationStore {
+    entries: Mutex<BTreeMap<PathBuf, ContinuationEntry>>,
+}
+
+struct ContinuationEntry {
+    state: Arc<Mutex<ResourceContinuation>>,
+    last_used: Instant,
+}
+
+impl RootCheckContinuationStore {
+    pub(crate) fn for_workspace(&self, root: &Path) -> Option<Arc<Mutex<ResourceContinuation>>> {
+        let mut entries = self.entries.lock().ok()?;
+        let now = Instant::now();
+        entries.retain(|_, entry| {
+            now.duration_since(entry.last_used) < CONTINUATION_TTL
+                || Arc::strong_count(&entry.state) > 1
+        });
+        if let Some(entry) = entries.get_mut(root) {
+            entry.last_used = now;
+            return Some(Arc::clone(&entry.state));
+        }
+        if entries.len() >= MAX_CONTINUATION_WORKSPACES {
+            let oldest_idle = entries
+                .iter()
+                .filter(|(_, entry)| Arc::strong_count(&entry.state) == 1)
+                .min_by_key(|(_, entry)| entry.last_used)
+                .map(|(root, _)| root.clone())?;
+            entries.remove(&oldest_idle);
+        }
+        let state = Arc::new(Mutex::new(ResourceContinuation::default()));
+        entries.insert(
+            root.to_path_buf(),
+            ContinuationEntry {
+                state: Arc::clone(&state),
+                last_used: now,
+            },
+        );
+        Some(state)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ResourceInspectionProgress {
+    pub(crate) text_resources: usize,
+    pub(crate) staged_eol_retained: usize,
+    pub(crate) working_eol_retained: usize,
+    pub(crate) capacity_limited: bool,
+    pub(crate) continuable_eol_timeout: bool,
+}
+
+#[derive(Default)]
+pub(crate) struct ResourceContinuation {
+    index_eol: BTreeMap<EvidenceKey, IndexEol>,
+    working_eol: BTreeMap<EvidenceKey, WorkingEolEvidence>,
+    evidence_bytes: usize,
+    index_eol_batch_files: Option<usize>,
+    pub(crate) progress: ResourceInspectionProgress,
+    #[cfg(test)]
+    limit_override: Option<usize>,
+}
+
+type EvidenceKey = [u8; 32];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IndexEol {
+    Lf,
+    CrLf,
+    Mixed,
+    None,
+    Binary,
+}
+
+impl IndexEol {
+    fn from_git(value: &str) -> Option<Self> {
+        match value {
+            "lf" => Some(Self::Lf),
+            "crlf" => Some(Self::CrLf),
+            "mixed" => Some(Self::Mixed),
+            "none" => Some(Self::None),
+            "-text" => Some(Self::Binary),
+            _ => None,
+        }
+    }
+
+    fn as_git(self) -> &'static str {
+        match self {
+            Self::Lf => "lf",
+            Self::CrLf => "crlf",
+            Self::Mixed => "mixed",
+            Self::None => "none",
+            Self::Binary => "-text",
+        }
+    }
+}
+
+#[derive(Clone)]
+struct WorkingEolEvidence {
+    fingerprint: WorkingFileFingerprint,
+    eol: WorkingEol,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WorkingFileFingerprint {
+    identity: crate::infrastructure::platform::filesystem::FileIdentity,
+    size: u64,
+    modified: SystemTime,
+    change_time: (i64, i64),
+}
+
+impl ResourceContinuation {
+    // BTreeMap nodes reserve up to 11 slots but may hold only five entries
+    // after splits. Twice the fixed-size pair plus 64 bytes per entry covers
+    // that occupancy, child pointers, headers, and allocator metadata.
+    const INDEX_CHARGE: usize = 2 * std::mem::size_of::<(EvidenceKey, IndexEol)>() + 64;
+    const WORKING_CHARGE: usize = 2 * std::mem::size_of::<(EvidenceKey, WorkingEolEvidence)>() + 64;
+
+    fn index_eol_batch_files(&self) -> usize {
+        self.index_eol_batch_files
+            .unwrap_or(MAX_INDEX_EOL_BATCH_FILES)
+    }
+
+    fn reduce_index_eol_batch(&mut self, failed_files: usize) {
+        self.index_eol_batch_files = Some((failed_files / 2).max(1));
+    }
+
+    fn evidence_limit(&self) -> usize {
+        #[cfg(test)]
+        if let Some(limit) = self.limit_override {
+            return limit;
+        }
+        MAX_CONTINUATION_EVIDENCE_BYTES
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_test_evidence_limit(&mut self, limit: usize) {
+        self.limit_override = Some(limit);
+    }
+
+    fn retain_current(&mut self, index: &BTreeSet<EvidenceKey>, working: &BTreeSet<EvidenceKey>) {
+        self.index_eol.retain(|key, _| index.contains(key));
+        self.working_eol.retain(|key, _| working.contains(key));
+        self.evidence_bytes = self
+            .index_eol
+            .len()
+            .saturating_mul(Self::INDEX_CHARGE)
+            .saturating_add(self.working_eol.len().saturating_mul(Self::WORKING_CHARGE));
+    }
+
+    fn remember_index(&mut self, key: EvidenceKey, eol: IndexEol) {
+        let new_charge = if self.index_eol.contains_key(&key) {
+            0
+        } else {
+            Self::INDEX_CHARGE
+        };
+        let next_bytes = self.evidence_bytes.saturating_add(new_charge);
+        if next_bytes > self.evidence_limit() {
+            self.progress.capacity_limited = true;
+        } else {
+            self.index_eol.insert(key, eol);
+            self.evidence_bytes = next_bytes;
+        }
+    }
+
+    fn remember_working(&mut self, key: EvidenceKey, evidence: WorkingEolEvidence) {
+        let new_charge = if self.working_eol.contains_key(&key) {
+            0
+        } else {
+            Self::WORKING_CHARGE
+        };
+        let next_bytes = self.evidence_bytes.saturating_add(new_charge);
+        if next_bytes > self.evidence_limit() {
+            self.progress.capacity_limited = true;
+        } else {
+            self.working_eol.insert(key, evidence);
+            self.evidence_bytes = next_bytes;
+        }
+    }
+
+    fn forget_working(&mut self, key: &EvidenceKey) {
+        if self.working_eol.remove(key).is_some() {
+            self.evidence_bytes = self.evidence_bytes.saturating_sub(Self::WORKING_CHARGE);
+        }
+    }
+}
+
+fn hash_evidence_field(hasher: &mut Sha256, field: &str) {
+    hasher.update((field.len() as u64).to_be_bytes());
+    hasher.update(field.as_bytes());
+}
+
+fn index_evidence_key(
+    path: &str,
+    oid: &str,
+    staged: &AttributeValues,
+    effective: &AttributeValues,
+) -> EvidenceKey {
+    let mut hasher = Sha256::new();
+    hasher.update(b"unica-index-eol-v1\0");
+    for field in [
+        path,
+        oid,
+        &staged.text,
+        &staged.eol,
+        &staged.filter,
+        &effective.text,
+        &effective.eol,
+        &effective.filter,
+    ] {
+        hash_evidence_field(&mut hasher, field);
+    }
+    hasher.finalize().into()
+}
+
+fn working_evidence_key(path: &str) -> EvidenceKey {
+    let mut hasher = Sha256::new();
+    hasher.update(b"unica-working-eol-v1\0");
+    hash_evidence_field(&mut hasher, path);
+    hasher.finalize().into()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RepositoryResourceKind {
@@ -362,6 +637,28 @@ impl<'a> SourceResourcePolicyInspector<'a> {
         cancellation: &CancellationToken,
         deadline: ProviderDeadline,
     ) -> Result<RepositoryPolicyInspection, ProjectHealthInspectionError> {
+        self.inspect_excluding_continued(
+            repository_root,
+            roots,
+            entries,
+            excluded_runtime_sidecars,
+            cancellation,
+            deadline,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn inspect_excluding_continued(
+        &self,
+        repository_root: &Path,
+        roots: &[InspectedSourceRoot],
+        entries: &[GitIndexEntry],
+        excluded_runtime_sidecars: &BTreeSet<String>,
+        cancellation: &CancellationToken,
+        deadline: ProviderDeadline,
+        mut continuation: Option<&mut ResourceContinuation>,
+    ) -> Result<RepositoryPolicyInspection, ProjectHealthInspectionError> {
         if cancellation.is_cancelled() {
             return Err(ProjectHealthInspectionError::Cancelled);
         }
@@ -654,7 +951,7 @@ impl<'a> SourceResourcePolicyInspector<'a> {
             repository_root,
             &staged_attribute_entries,
             MAX_STAGED_POLICY_TOTAL_BYTES,
-            MAX_STAGED_POLICY_TOTAL_BYTES,
+            Some(MAX_STAGED_POLICY_TOTAL_BYTES),
             "staged attribute policy",
             cancellation,
             deadline,
@@ -803,41 +1100,76 @@ impl<'a> SourceResourcePolicyInspector<'a> {
             .iter()
             .filter(|resource| resource.kind == RepositoryResourceKind::Text)
             .collect::<Vec<_>>();
-        if let Err(reason) = self.validate_resource_blob_sizes(
+        if let Some(state) = continuation.as_deref_mut() {
+            state.progress.text_resources = expected_text_resources.len();
+        }
+        let blob_sizes = match self.validate_resource_blob_sizes(
             repository_root,
             &expected_text_resources,
             cancellation,
             deadline,
         ) {
-            if cancellation.is_cancelled() {
-                return Err(ProjectHealthInspectionError::Cancelled);
+            Ok(sizes) => sizes,
+            Err(reason) => {
+                if cancellation.is_cancelled() {
+                    return Err(ProjectHealthInspectionError::Cancelled);
+                }
+                mark_check_not_run(
+                    &mut observations,
+                    ProjectCheckId::RepositoryIndexEol,
+                    &reason,
+                );
+                facts.push(ProjectHealthFact::GitInspectionIncomplete {
+                    check: ProjectCheckId::RepositoryIndexEol,
+                    source_set: None,
+                    reason,
+                });
+                return Ok(RepositoryPolicyInspection {
+                    observations,
+                    facts,
+                });
             }
-            mark_check_not_run(
-                &mut observations,
-                ProjectCheckId::RepositoryIndexEol,
-                &reason,
-            );
-            facts.push(ProjectHealthFact::GitInspectionIncomplete {
-                check: ProjectCheckId::RepositoryIndexEol,
-                source_set: None,
-                reason,
-            });
-            return Ok(RepositoryPolicyInspection {
-                observations,
-                facts,
-            });
-        }
-        let eol_entries = expected_text_resources
-            .iter()
-            .map(|resource| GitIndexEntry {
-                repo_path: resource.repo_path.clone(),
-                blob_oid: Some(resource.blob_oid.clone()),
-                mode: Some("100644".into()),
-            })
-            .collect::<Vec<_>>();
-        let eol = if eol_entries.is_empty() {
+        };
+        let eol = if expected_text_resources.is_empty() {
             BTreeMap::new()
+        } else if let Some(state) = continuation.as_deref_mut() {
+            match self.incremental_index_eol(
+                repository_root,
+                &expected_text_resources,
+                &blob_sizes,
+                &staged,
+                &effective,
+                state,
+                cancellation,
+                deadline,
+            ) {
+                Ok(eol) => eol,
+                Err(ResourceProtocolParseError::Cancelled) => {
+                    return Err(ProjectHealthInspectionError::Cancelled)
+                }
+                Err(ResourceProtocolParseError::TimedOut) => {
+                    state.progress.continuable_eol_timeout = true;
+                    return Ok(retain_prior_facts(
+                        timeout_policy(observations, ProjectCheckId::RepositoryIndexEol),
+                        facts,
+                    ));
+                }
+                Err(ResourceProtocolParseError::Malformed(reason)) => {
+                    return Ok(retain_prior_facts(
+                        incomplete_policy(observations, ProjectCheckId::RepositoryIndexEol, reason),
+                        facts,
+                    ));
+                }
+            }
         } else {
+            let eol_entries = expected_text_resources
+                .iter()
+                .map(|resource| GitIndexEntry {
+                    repo_path: resource.repo_path.clone(),
+                    blob_oid: Some(resource.blob_oid.clone()),
+                    mode: Some("100644".into()),
+                })
+                .collect::<Vec<_>>();
             let eol_entry_refs = eol_entries.iter().collect::<Vec<_>>();
             let eol_index = match self.create_isolated_index(
                 repository_root,
@@ -972,6 +1304,9 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                 return Err(ProjectHealthInspectionError::Cancelled)
             }
             Err(ResourceProtocolParseError::TimedOut) => {
+                if let Some(state) = continuation.as_deref_mut() {
+                    state.progress.continuable_eol_timeout = true;
+                }
                 let reason = "Git index EOL evaluation exceeded the inspection deadline";
                 mark_check_not_run(
                     &mut observations,
@@ -988,10 +1323,9 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                 });
             }
             Err(ResourceProtocolParseError::Malformed(reason)) => {
-                return Ok(incomplete_policy(
-                    observations,
-                    ProjectCheckId::RepositoryIndexEol,
-                    reason,
+                return Ok(retain_prior_facts(
+                    incomplete_policy(observations, ProjectCheckId::RepositoryIndexEol, reason),
+                    facts,
                 ));
             }
         };
@@ -1001,10 +1335,10 @@ impl<'a> SourceResourcePolicyInspector<'a> {
             ProjectCheckId::RepositoryIndexEol,
             &incomplete_source_sets,
         );
-        let mut total_working_bytes = 0_u64;
         let mut working_incomplete_source_sets = BTreeSet::new();
         let mut working_timed_out = false;
         let mut working_facts = Vec::new();
+        let mut working_witnesses = Vec::new();
         let mut lfs_incomplete_source_sets = BTreeSet::new();
         let mut lfs_timed_out = false;
         let mut binary_by_source = BTreeMap::<String, Vec<(String, u64)>>::new();
@@ -1029,27 +1363,41 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                     if text_marked_binary.contains(&resource.repo_path) {
                         continue;
                     }
-                    match inspect_working_eol(
-                        repository_root,
-                        Path::new(&resource.repo_path),
-                        &mut total_working_bytes,
-                        cancellation,
-                        deadline,
-                    ) {
-                        Ok(Some(WorkingEol::Mixed)) => {
+                    let inspected = if let Some(state) = continuation.as_deref_mut() {
+                        inspect_working_eol_continued(
+                            repository_root,
+                            Path::new(&resource.repo_path),
+                            state,
+                            cancellation,
+                            deadline,
+                        )
+                    } else {
+                        inspect_working_eol(
+                            repository_root,
+                            Path::new(&resource.repo_path),
+                            cancellation,
+                            deadline,
+                        )
+                        .map(|eol| (eol, None))
+                    };
+                    if let Ok((_, fingerprint)) = &inspected {
+                        working_witnesses.push((resource.repo_path.clone(), fingerprint.clone()));
+                    }
+                    match inspected {
+                        Ok((Some(WorkingEol::Mixed), _)) => {
                             working_facts.push(ProjectHealthFact::MixedEol {
                                 source_set: resource.source_set.clone(),
                                 path: resource.repo_path.clone(),
                             });
                         }
-                        Ok(Some(WorkingEol::BareCr)) => {
+                        Ok((Some(WorkingEol::BareCr), _)) => {
                             working_facts.push(ProjectHealthFact::WorkingEolUnsupported {
                                 source_set: resource.source_set.clone(),
                                 path: resource.repo_path.clone(),
                                 observed: "cr".into(),
                             });
                         }
-                        Ok(Some(WorkingEol::Supported) | None) => {}
+                        Ok((Some(WorkingEol::Supported) | None, _)) => {}
                         Err(WorkingEolInspectionError::Cancelled) => {
                             return Err(ProjectHealthInspectionError::Cancelled);
                         }
@@ -1105,7 +1453,49 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                 }
             }
         }
-        if working_timed_out {
+        if continuation.is_some() && !working_timed_out {
+            run_working_revalidation_test_hook();
+        }
+        if cancellation.is_cancelled() {
+            return Err(ProjectHealthInspectionError::Cancelled);
+        }
+        let working_revalidation_error = if continuation.is_some() && !working_timed_out {
+            working_witnesses.iter().find_map(|(path, expected)| {
+                if cancellation.is_cancelled() || deadline.remaining().is_zero() {
+                    return None;
+                }
+                let current =
+                    open_repository_regular_file_nofollow(repository_root, Path::new(path))
+                        .and_then(|file| working_file_fingerprint(&file));
+                match (expected, current) {
+                    (Some(expected), Ok(current)) if current == *expected => None,
+                    (None, Err(error)) if error.kind() == std::io::ErrorKind::NotFound => None,
+                    (_, Ok(_)) | (None, Err(_)) => {
+                        Some(format!("working path {path} changed during EOL inspection"))
+                    }
+                    (Some(_), Err(error)) => Some(format!(
+                        "working path {path} could not be revalidated: {error}"
+                    )),
+                }
+            })
+        } else {
+            None
+        };
+        if let Some(reason) = working_revalidation_error {
+            mark_check_not_run(
+                &mut observations,
+                ProjectCheckId::RepositoryWorkingEol,
+                &reason,
+            );
+            facts.push(ProjectHealthFact::GitInspectionIncomplete {
+                check: ProjectCheckId::RepositoryWorkingEol,
+                source_set: None,
+                reason,
+            });
+        } else if working_timed_out || (continuation.is_some() && deadline.remaining().is_zero()) {
+            if let Some(state) = continuation.as_deref_mut() {
+                state.progress.continuable_eol_timeout = true;
+            }
             let reason = "deadline expired during working EOL inspection";
             mark_check_not_run(
                 &mut observations,
@@ -1188,6 +1578,163 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                 }
             }
         }
+        if cancellation.is_cancelled() {
+            return Err(ProjectHealthInspectionError::Cancelled);
+        }
+        if continuation.is_some()
+            && !observations.iter().any(|observation| {
+                resource_check_ids().contains(&observation.id)
+                    && matches!(observation.outcome, ProjectCheckOutcome::NotRun { .. })
+            })
+        {
+            // A failed final fence cannot substantiate any earlier resource
+            // finding. The helpers restart NotRun at RepositoryAttributes and
+            // intentionally discard the facts from the old index snapshot.
+            if deadline.remaining().is_zero() {
+                return Ok(timeout_policy(
+                    observations,
+                    ProjectCheckId::RepositoryAttributes,
+                ));
+            }
+            let current_index = match self.run(
+                repository_root,
+                ["ls-files", "--cached", "--stage", "-z"],
+                cancellation,
+                deadline,
+            ) {
+                Ok(output) if semantic_success(&output) => output,
+                Ok(output) if output.cancelled => {
+                    return Err(ProjectHealthInspectionError::Cancelled)
+                }
+                Ok(output) if output.timed_out => {
+                    return Ok(timeout_policy(
+                        observations,
+                        ProjectCheckId::RepositoryAttributes,
+                    ));
+                }
+                Ok(output) => {
+                    return Ok(incomplete_policy(
+                        observations,
+                        ProjectCheckId::RepositoryAttributes,
+                        output_reason(&output),
+                    ));
+                }
+                Err(_reason) if cancellation.is_cancelled() => {
+                    return Err(ProjectHealthInspectionError::Cancelled)
+                }
+                Err(reason) => {
+                    return Ok(incomplete_policy(
+                        observations,
+                        ProjectCheckId::RepositoryAttributes,
+                        reason,
+                    ));
+                }
+            };
+            let current_entries = match parse_git_index_entries_controlled(
+                &current_index.stdout,
+                cancellation,
+                deadline,
+            ) {
+                Ok(entries) => entries,
+                Err(IndexParseError::Cancelled) => {
+                    return Err(ProjectHealthInspectionError::Cancelled)
+                }
+                Err(IndexParseError::TimedOut) => {
+                    return Ok(timeout_policy(
+                        observations,
+                        ProjectCheckId::RepositoryAttributes,
+                    ));
+                }
+                Err(IndexParseError::Malformed(reason)) => {
+                    return Ok(incomplete_policy(
+                        observations,
+                        ProjectCheckId::RepositoryAttributes,
+                        reason,
+                    ));
+                }
+            };
+            if current_entries != entries {
+                return Ok(incomplete_policy(
+                    observations,
+                    ProjectCheckId::RepositoryAttributes,
+                    "Git index changed during resource inspection".into(),
+                ));
+            }
+            let current_effective = match self.run_with_input(
+                repository_root,
+                [
+                    "check-attr",
+                    "-z",
+                    "--cached",
+                    "text",
+                    "eol",
+                    "filter",
+                    "--stdin",
+                ],
+                &input,
+                cancellation,
+                deadline,
+            ) {
+                Ok(output) if semantic_success(&output) => output,
+                Ok(output) if output.cancelled => {
+                    return Err(ProjectHealthInspectionError::Cancelled)
+                }
+                Ok(output) if output.timed_out => {
+                    return Ok(timeout_policy(
+                        observations,
+                        ProjectCheckId::RepositoryAttributes,
+                    ));
+                }
+                Ok(output) => {
+                    return Ok(incomplete_policy(
+                        observations,
+                        ProjectCheckId::RepositoryAttributes,
+                        output_reason(&output),
+                    ));
+                }
+                Err(_reason) if cancellation.is_cancelled() => {
+                    return Err(ProjectHealthInspectionError::Cancelled)
+                }
+                Err(reason) => {
+                    return Ok(incomplete_policy(
+                        observations,
+                        ProjectCheckId::RepositoryAttributes,
+                        reason,
+                    ));
+                }
+            };
+            let current_effective = match parse_attribute_records_controlled(
+                &current_effective.stdout,
+                &paths,
+                cancellation,
+                deadline,
+            ) {
+                Ok(attributes) => attributes,
+                Err(ResourceProtocolParseError::Cancelled) => {
+                    return Err(ProjectHealthInspectionError::Cancelled)
+                }
+                Err(ResourceProtocolParseError::TimedOut) => {
+                    return Ok(timeout_policy(
+                        observations,
+                        ProjectCheckId::RepositoryAttributes,
+                    ));
+                }
+                Err(ResourceProtocolParseError::Malformed(reason)) => {
+                    return Ok(incomplete_policy(
+                        observations,
+                        ProjectCheckId::RepositoryAttributes,
+                        reason,
+                    ));
+                }
+            };
+            if current_effective != effective {
+                return Ok(incomplete_policy(
+                    observations,
+                    ProjectCheckId::RepositoryAttributes,
+                    "effective Git attributes changed during resource inspection".into(),
+                ));
+            }
+        }
         Ok(RepositoryPolicyInspection {
             observations,
             facts,
@@ -1241,13 +1788,249 @@ impl<'a> SourceResourcePolicyInspector<'a> {
         sticky_process_result(result, cancellation)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn incremental_index_eol(
+        &self,
+        repository_root: &Path,
+        resources: &[&RepositoryResource],
+        blob_sizes: &BTreeMap<String, usize>,
+        staged: &BTreeMap<String, AttributeValues>,
+        effective: &BTreeMap<String, AttributeValues>,
+        continuation: &mut ResourceContinuation,
+        cancellation: &CancellationToken,
+        deadline: ProviderDeadline,
+    ) -> Result<BTreeMap<String, EolValues>, ResourceProtocolParseError> {
+        let mut current_index = BTreeSet::new();
+        let mut current_working = BTreeSet::new();
+        for (position, resource) in resources.iter().enumerate() {
+            if position.is_multiple_of(256) {
+                resource_protocol_checkpoint(cancellation, deadline)?;
+            }
+            let path = &resource.repo_path;
+            let staged_attributes = staged.get(path).ok_or_else(|| {
+                ResourceProtocolParseError::Malformed(format!(
+                    "staged Git attribute policy omitted {path}"
+                ))
+            })?;
+            let effective_attributes = effective.get(path).ok_or_else(|| {
+                ResourceProtocolParseError::Malformed(format!(
+                    "effective Git attribute policy omitted {path}"
+                ))
+            })?;
+            current_index.insert(index_evidence_key(
+                path,
+                &resource.blob_oid,
+                staged_attributes,
+                effective_attributes,
+            ));
+            current_working.insert(working_evidence_key(path));
+        }
+        continuation.retain_current(&current_index, &current_working);
+        let mut result = BTreeMap::new();
+        let mut pending = Vec::<(&RepositoryResource, EvidenceKey)>::new();
+        let mut pending_bytes = 0_usize;
+        let mut completed_batches = 0_usize;
+        for resource in resources {
+            resource_protocol_checkpoint(cancellation, deadline)?;
+            let path = &resource.repo_path;
+            let staged_attributes = staged.get(path).ok_or_else(|| {
+                ResourceProtocolParseError::Malformed(format!(
+                    "staged Git attribute policy omitted {path}"
+                ))
+            })?;
+            let effective_attributes = effective.get(path).ok_or_else(|| {
+                ResourceProtocolParseError::Malformed(format!(
+                    "effective Git attribute policy omitted {path}"
+                ))
+            })?;
+            let key = index_evidence_key(
+                path,
+                &resource.blob_oid,
+                staged_attributes,
+                effective_attributes,
+            );
+            if let Some(cached) = continuation.index_eol.get(&key) {
+                result.insert(
+                    path.clone(),
+                    EolValues {
+                        index: cached.as_git().into(),
+                        worktree: String::new(),
+                    },
+                );
+                continuation.progress.staged_eol_retained += 1;
+                continue;
+            }
+            if staged_eol_test_timeout() {
+                if !pending.is_empty() {
+                    self.commit_index_eol_batch(
+                        repository_root,
+                        &pending,
+                        continuation,
+                        &mut result,
+                        cancellation,
+                        deadline,
+                        completed_batches == 0,
+                    )?;
+                }
+                return Err(ResourceProtocolParseError::TimedOut);
+            }
+            let size = *blob_sizes.get(&resource.blob_oid).ok_or_else(|| {
+                ResourceProtocolParseError::Malformed(format!(
+                    "Git omitted staged text blob metadata for {path}"
+                ))
+            })?;
+            if !pending.is_empty()
+                && (pending.len() >= continuation.index_eol_batch_files()
+                    || pending_bytes.saturating_add(size) > MAX_INDEX_EOL_BATCH_BLOB_BYTES)
+            {
+                self.commit_index_eol_batch(
+                    repository_root,
+                    &pending,
+                    continuation,
+                    &mut result,
+                    cancellation,
+                    deadline,
+                    completed_batches == 0,
+                )?;
+                completed_batches += 1;
+                pending.clear();
+                pending_bytes = 0;
+            }
+            pending.push((resource, key));
+            pending_bytes = pending_bytes.saturating_add(size);
+        }
+        if !pending.is_empty() {
+            self.commit_index_eol_batch(
+                repository_root,
+                &pending,
+                continuation,
+                &mut result,
+                cancellation,
+                deadline,
+                completed_batches == 0,
+            )?;
+        }
+        // A completed index pass proves the retained paths for this snapshot;
+        // start at full throughput when a later revision adds new work.
+        continuation.index_eol_batch_files = None;
+        Ok(result)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn commit_index_eol_batch(
+        &self,
+        repository_root: &Path,
+        batch: &[(&RepositoryResource, EvidenceKey)],
+        continuation: &mut ResourceContinuation,
+        result: &mut BTreeMap<String, EolValues>,
+        cancellation: &CancellationToken,
+        deadline: ProviderDeadline,
+        first_batch: bool,
+    ) -> Result<(), ResourceProtocolParseError> {
+        let budget_at_start = deadline.remaining();
+        let inspected =
+            self.inspect_index_eol_batch(repository_root, batch, cancellation, deadline);
+        let inspected = match inspected {
+            Err(ResourceProtocolParseError::TimedOut) => {
+                // A later batch normally inherits only the tail of this call's
+                // deadline. Only a first batch given at least half of the
+                // seven-second handoff window can indicate an oversized group.
+                if first_batch && budget_at_start >= INVOCATION_HANDOFF_WINDOW / 2 {
+                    continuation.reduce_index_eol_batch(batch.len());
+                }
+                return Err(ResourceProtocolParseError::TimedOut);
+            }
+            other => other?,
+        };
+        // A timed-out, cancelled, truncated or malformed response must never
+        // publish evidence for only a prefix of this batch.
+        for ((resource, key), (index_eol, eol)) in batch.iter().zip(inspected) {
+            continuation.remember_index(*key, index_eol);
+            if continuation.index_eol.contains_key(key) {
+                continuation.progress.staged_eol_retained += 1;
+            }
+            result.insert(resource.repo_path.clone(), eol);
+        }
+        Ok(())
+    }
+
+    fn inspect_index_eol_batch(
+        &self,
+        repository_root: &Path,
+        batch: &[(&RepositoryResource, EvidenceKey)],
+        cancellation: &CancellationToken,
+        deadline: ProviderDeadline,
+    ) -> Result<Vec<(IndexEol, EolValues)>, ResourceProtocolParseError> {
+        let entries = batch
+            .iter()
+            .map(|(resource, _)| GitIndexEntry {
+                repo_path: resource.repo_path.clone(),
+                blob_oid: Some(resource.blob_oid.clone()),
+                mode: Some("100644".into()),
+            })
+            .collect::<Vec<_>>();
+        let index = self
+            .create_isolated_index(
+                repository_root,
+                &entries.iter().collect::<Vec<_>>(),
+                cancellation,
+                deadline,
+            )
+            .map_err(|reason| resource_process_error(reason, cancellation, deadline))?;
+        let command = isolated_git_command(
+            repository_root,
+            &index,
+            vec!["ls-files".into(), "--eol".into(), "-z".into()],
+            cancellation,
+            deadline,
+        );
+        let output = sticky_process_result(self.runner.run(&command), cancellation)
+            .map_err(|reason| resource_process_error(reason, cancellation, deadline))?;
+        if output.cancelled || cancellation.is_cancelled() {
+            return Err(ResourceProtocolParseError::Cancelled);
+        }
+        if output.timed_out || deadline.remaining().is_zero() {
+            return Err(ResourceProtocolParseError::TimedOut);
+        }
+        if !semantic_success(&output) {
+            return Err(ResourceProtocolParseError::Malformed(output_reason(
+                &output,
+            )));
+        }
+        let paths = entries
+            .iter()
+            .map(|entry| entry.repo_path.clone())
+            .collect::<Vec<_>>();
+        let records = parse_eol_records_controlled(&output.stdout, &paths, cancellation, deadline)?;
+        if records.len() != paths.len() {
+            return Err(ResourceProtocolParseError::Malformed(
+                "git ls-files --eol returned an unexpected path".into(),
+            ));
+        }
+        let mut inspected = Vec::with_capacity(batch.len());
+        for path in &paths {
+            let eol = records
+                .get(path)
+                .expect("parser checks every expected path")
+                .clone();
+            let index_eol = IndexEol::from_git(&eol.index).ok_or_else(|| {
+                ResourceProtocolParseError::Malformed(format!(
+                    "git ls-files --eol returned unsupported index EOL metadata for {path}"
+                ))
+            })?;
+            inspected.push((index_eol, eol));
+        }
+        resource_protocol_checkpoint(cancellation, deadline)?;
+        Ok(inspected)
+    }
+
     fn validate_resource_blob_sizes(
         &self,
         repository_root: &Path,
         resources: &[&RepositoryResource],
         cancellation: &CancellationToken,
         deadline: ProviderDeadline,
-    ) -> Result<(), String> {
+    ) -> Result<BTreeMap<String, usize>, String> {
         let entries = resources
             .iter()
             .map(|resource| GitIndexEntry {
@@ -1260,7 +2043,7 @@ impl<'a> SourceResourcePolicyInspector<'a> {
             repository_root,
             &entries.iter().collect::<Vec<_>>(),
             MAX_INDEX_EOL_FILE_BYTES,
-            MAX_INDEX_EOL_TOTAL_BYTES,
+            None,
             "staged text resource policy",
             cancellation,
             deadline,
@@ -1273,11 +2056,11 @@ impl<'a> SourceResourcePolicyInspector<'a> {
         repository_root: &Path,
         entries: &[&GitIndexEntry],
         max_file_bytes: usize,
-        max_total_bytes: usize,
+        max_total_bytes: Option<usize>,
         label: &str,
         cancellation: &CancellationToken,
         deadline: ProviderDeadline,
-    ) -> Result<(), String> {
+    ) -> Result<BTreeMap<String, usize>, String> {
         let mut unique_oids = BTreeSet::new();
         for entry in entries {
             if cancellation.is_cancelled() {
@@ -1359,13 +2142,13 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                 ));
             }
             total = total.saturating_add(size);
-            if total > max_total_bytes {
+            if let Some(max_total_bytes) = max_total_bytes.filter(|bound| total > *bound) {
                 return Err(format!(
                     "{label} is {total} bytes; inspection supports at most {max_total_bytes} bytes in total"
                 ));
             }
         }
-        Ok(())
+        Ok(by_oid)
     }
 
     fn create_isolated_index(
@@ -1690,6 +2473,20 @@ fn resource_protocol_checkpoint(
         Err(ResourceProtocolParseError::TimedOut)
     } else {
         Ok(())
+    }
+}
+
+fn resource_process_error(
+    reason: String,
+    cancellation: &CancellationToken,
+    deadline: ProviderDeadline,
+) -> ResourceProtocolParseError {
+    if cancellation.is_cancelled() {
+        ResourceProtocolParseError::Cancelled
+    } else if deadline.remaining().is_zero() {
+        ResourceProtocolParseError::TimedOut
+    } else {
+        ResourceProtocolParseError::Malformed(reason)
     }
 }
 
@@ -2068,6 +2865,15 @@ fn incomplete_policy(
     }
 }
 
+fn retain_prior_facts(
+    mut policy: RepositoryPolicyInspection,
+    mut prior_facts: Vec<ProjectHealthFact>,
+) -> RepositoryPolicyInspection {
+    prior_facts.append(&mut policy.facts);
+    policy.facts = prior_facts;
+    policy
+}
+
 fn timeout_policy(
     mut observations: Vec<ProjectCheckObservation>,
     check: ProjectCheckId,
@@ -2259,7 +3065,6 @@ impl std::fmt::Display for WorkingEolInspectionError {
 fn inspect_working_eol(
     repository_root: &Path,
     repo_path: &Path,
-    total_working_bytes: &mut u64,
     cancellation: &CancellationToken,
     deadline: ProviderDeadline,
 ) -> Result<Option<WorkingEol>, WorkingEolInspectionError> {
@@ -2277,19 +3082,86 @@ fn inspect_working_eol(
             MAX_WORKING_EOL_FILE_BYTES
         )));
     }
-    inspect_working_eol_reader(
-        file,
-        metadata.len(),
-        total_working_bytes,
-        cancellation,
-        deadline,
-    )
+    inspect_working_eol_reader(file, cancellation, deadline)
+}
+
+fn inspect_working_eol_continued(
+    repository_root: &Path,
+    repo_path: &Path,
+    continuation: &mut ResourceContinuation,
+    cancellation: &CancellationToken,
+    deadline: ProviderDeadline,
+) -> Result<(Option<WorkingEol>, Option<WorkingFileFingerprint>), WorkingEolInspectionError> {
+    let path = repo_path.to_string_lossy();
+    let key = working_evidence_key(&path);
+    let mut file = match open_repository_regular_file_nofollow(repository_root, repo_path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            continuation.forget_working(&key);
+            return Ok((None, None));
+        }
+        Err(error) => return Err(WorkingEolInspectionError::Incomplete(error.to_string())),
+    };
+    let before = working_file_fingerprint(&file)
+        .map_err(|error| WorkingEolInspectionError::Incomplete(error.to_string()))?;
+    if before.size > MAX_WORKING_EOL_FILE_BYTES {
+        return Err(WorkingEolInspectionError::Incomplete(format!(
+            "working file exceeds {} bytes",
+            MAX_WORKING_EOL_FILE_BYTES
+        )));
+    }
+    if let Some(cached) = continuation.working_eol.get(&key) {
+        if cached.fingerprint == before {
+            continuation.progress.working_eol_retained += 1;
+            return Ok((Some(cached.eol), Some(before)));
+        }
+    }
+    continuation.forget_working(&key);
+    let eol = inspect_working_eol_reader(&mut file, cancellation, deadline)?;
+    let after = working_file_fingerprint(&file)
+        .map_err(|error| WorkingEolInspectionError::Incomplete(error.to_string()))?;
+    if before != after {
+        return Err(WorkingEolInspectionError::Incomplete(
+            "working file changed during EOL inspection".into(),
+        ));
+    }
+    let named = open_repository_regular_file_nofollow(repository_root, repo_path)
+        .map_err(|error| WorkingEolInspectionError::Incomplete(error.to_string()))?;
+    if working_file_fingerprint(&named)
+        .map_err(|error| WorkingEolInspectionError::Incomplete(error.to_string()))?
+        != before
+    {
+        return Err(WorkingEolInspectionError::Incomplete(
+            "working path changed during EOL inspection".into(),
+        ));
+    }
+    if let Some(eol) = eol {
+        continuation.remember_working(
+            key,
+            WorkingEolEvidence {
+                fingerprint: before.clone(),
+                eol,
+            },
+        );
+        if continuation.working_eol.contains_key(&key) {
+            continuation.progress.working_eol_retained += 1;
+        }
+    }
+    Ok((eol, Some(before)))
+}
+
+fn working_file_fingerprint(file: &File) -> std::io::Result<WorkingFileFingerprint> {
+    let metadata = file.metadata()?;
+    Ok(WorkingFileFingerprint {
+        identity: file_identity(file)?,
+        size: metadata.len(),
+        modified: metadata.modified()?,
+        change_time: file_change_time(file, &metadata)?,
+    })
 }
 
 fn inspect_working_eol_reader(
     mut file: impl Read,
-    metadata_len: u64,
-    total_working_bytes: &mut u64,
     cancellation: &CancellationToken,
     deadline: ProviderDeadline,
 ) -> Result<Option<WorkingEol>, WorkingEolInspectionError> {
@@ -2319,12 +3191,6 @@ fn inspect_working_eol_reader(
                 MAX_WORKING_EOL_FILE_BYTES
             )));
         }
-        if total_working_bytes.saturating_add(bytes_read) > MAX_WORKING_EOL_TOTAL_BYTES {
-            return Err(WorkingEolInspectionError::Incomplete(format!(
-                "working text total exceeds {} bytes",
-                MAX_WORKING_EOL_TOTAL_BYTES
-            )));
-        }
         for byte in &buffer[..count] {
             if previous_cr {
                 if *byte == b'\n' {
@@ -2344,14 +3210,6 @@ fn inspect_working_eol_reader(
     }
     if previous_cr {
         bare_cr = true;
-    }
-    let accounted_bytes = metadata_len.max(bytes_read);
-    *total_working_bytes = total_working_bytes.saturating_add(accounted_bytes);
-    if *total_working_bytes > MAX_WORKING_EOL_TOTAL_BYTES {
-        return Err(WorkingEolInspectionError::Incomplete(format!(
-            "working text total exceeds {} bytes",
-            MAX_WORKING_EOL_TOTAL_BYTES
-        )));
     }
     let styles = usize::from(lf) + usize::from(crlf) + usize::from(bare_cr);
     Ok(Some(if styles > 1 {
@@ -2459,6 +3317,7 @@ mod tests {
         InspectedSourceRoot, SourceLayoutInspector,
     };
     use std::cell::{Cell, RefCell};
+    use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::process::Command;
@@ -2466,6 +3325,83 @@ mod tests {
     use std::sync::OnceLock;
     use std::time::{Duration, Instant};
     use tempfile::TempDir;
+
+    #[test]
+    fn continuation_checkpoint_retains_maximum_text_resources_with_fixed_charge() {
+        let fixture = policy_fixture();
+        let file = fs::File::open(fixture.root.join("src/Configuration.xml")).unwrap();
+        let fingerprint = super::working_file_fingerprint(&file).unwrap();
+        let mut path = String::with_capacity(1024 * 1024);
+        let mut text = String::with_capacity(1024 * 1024);
+        text.push_str("set");
+        let attributes = super::AttributeValues {
+            text,
+            eol: "lf".into(),
+            filter: "unspecified".into(),
+        };
+        let oid = "a".repeat(64);
+        let mut continuation = super::ResourceContinuation::default();
+        const {
+            assert!(
+                MAX_CLASSIFIED_RESOURCES
+                    * (super::ResourceContinuation::INDEX_CHARGE
+                        + super::ResourceContinuation::WORKING_CHARGE)
+                    <= super::MAX_CONTINUATION_EVIDENCE_BYTES
+            );
+        }
+        for number in 0..MAX_CLASSIFIED_RESOURCES {
+            path.clear();
+            path.push_str(&format!("src/{number:05}.xml"));
+            let index_key = super::index_evidence_key(&path, &oid, &attributes, &attributes);
+            let working_key = super::working_evidence_key(&path);
+            continuation.remember_index(index_key, super::IndexEol::Lf);
+            continuation.remember_working(
+                working_key,
+                super::WorkingEolEvidence {
+                    fingerprint: fingerprint.clone(),
+                    eol: super::WorkingEol::Supported,
+                },
+            );
+        }
+        assert_eq!(continuation.index_eol.len(), MAX_CLASSIFIED_RESOURCES);
+        assert_eq!(continuation.working_eol.len(), MAX_CLASSIFIED_RESOURCES);
+        assert!(!continuation.progress.capacity_limited);
+        assert_eq!(
+            continuation.evidence_bytes,
+            MAX_CLASSIFIED_RESOURCES
+                * (super::ResourceContinuation::INDEX_CHARGE
+                    + super::ResourceContinuation::WORKING_CHARGE)
+        );
+
+        // Removing a source set must release both kinds of retained evidence.
+        continuation.retain_current(&BTreeSet::new(), &BTreeSet::new());
+        assert!(continuation.index_eol.is_empty());
+        assert!(continuation.working_eol.is_empty());
+        assert_eq!(continuation.evidence_bytes, 0);
+    }
+
+    #[test]
+    fn continuation_checkpoint_reports_capacity_instead_of_repeating_a_stalled_suffix() {
+        let mut continuation = super::ResourceContinuation {
+            limit_override: Some(super::ResourceContinuation::INDEX_CHARGE),
+            ..Default::default()
+        };
+        let first = [1; 32];
+        let second = [2; 32];
+        continuation.remember_index(first, super::IndexEol::Lf);
+        continuation.remember_index(second, super::IndexEol::CrLf);
+        assert_eq!(continuation.index_eol.len(), 1);
+        assert!(continuation.progress.capacity_limited);
+        continuation.retain_current(&BTreeSet::from([second]), &BTreeSet::new());
+        assert_eq!(continuation.evidence_bytes, 0);
+        continuation.progress = Default::default();
+        continuation.remember_index(second, super::IndexEol::CrLf);
+        assert_eq!(
+            continuation.index_eol.get(&second),
+            Some(&super::IndexEol::CrLf)
+        );
+        assert!(!continuation.progress.capacity_limited);
+    }
 
     #[test]
     fn project_health_repository_policy_classifies_platform_xml_roles_exactly() {
@@ -3406,7 +4342,6 @@ mod tests {
         let error = inspect_working_eol(
             &physical_root,
             Path::new("link.xml"),
-            &mut 0,
             &CancellationToken::new(),
             ProviderDeadline::from_budget(Duration::from_secs(1)),
         )
@@ -3442,7 +4377,6 @@ mod tests {
         let error = inspect_working_eol(
             &physical_root,
             Path::new("large.xml"),
-            &mut 0,
             &CancellationToken::new(),
             deadline,
         )
@@ -3453,12 +4387,10 @@ mod tests {
     }
 
     #[test]
-    fn project_health_worktree_eol_counts_bytes_read_after_metadata_snapshot() {
+    fn project_health_worktree_eol_enforces_file_bound_while_reading() {
         let bytes = vec![b'x'; super::MAX_WORKING_EOL_FILE_BYTES as usize + 1];
         let error = super::inspect_working_eol_reader(
             std::io::Cursor::new(bytes),
-            0,
-            &mut 0,
             &CancellationToken::new(),
             ProviderDeadline::from_budget(Duration::from_secs(2)),
         )
@@ -3468,18 +4400,1092 @@ mod tests {
     }
 
     #[test]
-    fn project_health_worktree_eol_stops_at_aggregate_byte_budget() {
-        let mut total = super::MAX_WORKING_EOL_TOTAL_BYTES - 1;
-        let error = super::inspect_working_eol_reader(
-            std::io::Cursor::new(b"xx"),
-            2,
-            &mut total,
-            &CancellationToken::new(),
-            ProviderDeadline::from_budget(Duration::from_secs(2)),
-        )
-        .unwrap_err();
+    fn project_health_worktree_eol_scans_bounded_files_past_former_total_limit() {
+        use std::io::Read;
 
-        assert!(error.to_string().contains("working text total exceeds"));
+        let file_bytes = 31 * 1024 * 1024_u64;
+        assert!(file_bytes * 9 > 256 * 1024 * 1024);
+        for _ in 0..9 {
+            let result = super::inspect_working_eol_reader(
+                std::io::repeat(b'x').take(file_bytes),
+                &CancellationToken::new(),
+                ProviderDeadline::from_budget(Duration::from_secs(30)),
+            )
+            .unwrap();
+            assert_eq!(result, Some(super::WorkingEol::Supported));
+        }
+    }
+
+    #[test]
+    fn project_health_index_eol_accepts_large_aggregate_of_bounded_blobs() {
+        struct LargeBlobMetadataRunner;
+
+        impl ProcessRunner for LargeBlobMetadataRunner {
+            fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
+                AttributeProbeRunner::default().run(command)
+            }
+
+            fn run_with_input(
+                &self,
+                command: &ProcessCommand,
+                input: &[u8],
+            ) -> Result<ProcessOutput, String> {
+                if command.args.iter().any(|arg| arg == "cat-file") {
+                    let rows = std::str::from_utf8(input)
+                        .unwrap()
+                        .lines()
+                        .map(|oid| format!("{oid} blob {}\n", 31 * 1024 * 1024))
+                        .collect::<String>();
+                    return Ok(success_output(&rows));
+                }
+                AttributeProbeRunner::default().run_with_input(command, input)
+            }
+        }
+
+        let root = TempDir::new().unwrap();
+        let resources = (0..9)
+            .map(|index| super::RepositoryResource {
+                source_set: "main".into(),
+                repo_path: format!("src/Module{index}.bsl"),
+                worktree_path: root.path().join(format!("src/Module{index}.bsl")),
+                kind: RepositoryResourceKind::Text,
+                blob_oid: format!("{index:040x}"),
+            })
+            .collect::<Vec<_>>();
+        SourceResourcePolicyInspector::with_process_runner(&LargeBlobMetadataRunner)
+            .validate_resource_blob_sizes(
+                root.path(),
+                &resources.iter().collect::<Vec<_>>(),
+                &CancellationToken::new(),
+                ProviderDeadline::from_budget(Duration::from_secs(2)),
+            )
+            .expect("nine 31 MiB blobs fit the per-file bound without a total-memory bound");
+    }
+
+    #[test]
+    fn continued_repository_eol_resumes_after_a_staged_timeout_and_rechecks_working_bytes() {
+        let fixture = policy_fixture();
+        fs::write(fixture.root.join("src/A.xml"), "<A>first</A>\n").unwrap();
+        fs::write(fixture.root.join(".gitattributes"), "*.xml text eol=lf\n").unwrap();
+        git(&fixture.root, &["add", ".gitattributes", "src"]);
+        let cancellation = CancellationToken::new();
+        let layout = SourceLayoutInspector::inspect(
+            &fixture.context,
+            &cancellation,
+            ProviderDeadline::from_budget(Duration::from_secs(5)),
+        )
+        .unwrap();
+        let repository = GitRepositoryInspector::new()
+            .inspect_base(
+                &fixture.context,
+                &layout,
+                &cancellation,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+            )
+            .unwrap();
+        let root = repository.repository_root.as_ref().unwrap();
+        let mut continuation = super::ResourceContinuation::default();
+        super::stop_staged_eol_after_for_test(1);
+        let first = SourceResourcePolicyInspector::new()
+            .inspect_excluding_continued(
+                root,
+                &layout.roots,
+                &repository.entries,
+                &Default::default(),
+                &cancellation,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                Some(&mut continuation),
+            )
+            .unwrap();
+        assert!(first.observations.iter().any(|observation| {
+            observation.id == ProjectCheckId::RepositoryIndexEol
+                && matches!(observation.outcome, ProjectCheckOutcome::NotRun { .. })
+        }));
+        assert_eq!(continuation.progress.staged_eol_retained, 1);
+
+        continuation.progress = Default::default();
+        let second = SourceResourcePolicyInspector::new()
+            .inspect_excluding_continued(
+                root,
+                &layout.roots,
+                &repository.entries,
+                &Default::default(),
+                &cancellation,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                Some(&mut continuation),
+            )
+            .unwrap();
+        assert!(second.observations.iter().all(|observation| {
+            observation.id != ProjectCheckId::RepositoryIndexEol
+                || !matches!(observation.outcome, ProjectCheckOutcome::NotRun { .. })
+        }));
+        assert_eq!(continuation.progress.staged_eol_retained, 2);
+        assert_eq!(continuation.progress.working_eol_retained, 2);
+
+        fs::write(
+            fixture.root.join("src/A.xml"),
+            b"<A>mixed\r\nsecond\n</A>\n",
+        )
+        .unwrap();
+        continuation.progress = Default::default();
+        let changed = SourceResourcePolicyInspector::new()
+            .inspect_excluding_continued(
+                root,
+                &layout.roots,
+                &repository.entries,
+                &Default::default(),
+                &cancellation,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                Some(&mut continuation),
+            )
+            .unwrap();
+        assert!(changed.facts.iter().any(|fact| {
+            matches!(fact, ProjectHealthFact::MixedEol { path, .. } if path == "src/A.xml")
+        }));
+
+        let old_keys = continuation
+            .index_eol
+            .keys()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        git(&fixture.root, &["add", "src/A.xml"]);
+        let restaged = GitRepositoryInspector::new()
+            .inspect_base(
+                &fixture.context,
+                &layout,
+                &cancellation,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+            )
+            .unwrap();
+        continuation.progress = Default::default();
+        SourceResourcePolicyInspector::new()
+            .inspect_excluding_continued(
+                root,
+                &layout.roots,
+                &restaged.entries,
+                &Default::default(),
+                &cancellation,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                Some(&mut continuation),
+            )
+            .unwrap();
+        assert_ne!(
+            continuation
+                .index_eol
+                .keys()
+                .copied()
+                .collect::<BTreeSet<_>>(),
+            old_keys
+        );
+        assert_eq!(continuation.progress.staged_eol_retained, 2);
+
+        let current_oid = restaged
+            .entries
+            .iter()
+            .find(|entry| entry.repo_path == "src/A.xml")
+            .unwrap()
+            .blob_oid
+            .clone();
+        let old_keys = continuation
+            .index_eol
+            .keys()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        fs::write(fixture.root.join(".gitattributes"), "*.xml text eol=crlf\n").unwrap();
+        git(&fixture.root, &["add", ".gitattributes"]);
+        let changed_attributes = GitRepositoryInspector::new()
+            .inspect_base(
+                &fixture.context,
+                &layout,
+                &cancellation,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+            )
+            .unwrap();
+        assert_eq!(
+            changed_attributes
+                .entries
+                .iter()
+                .find(|entry| entry.repo_path == "src/A.xml")
+                .unwrap()
+                .blob_oid,
+            current_oid
+        );
+        continuation.progress = Default::default();
+        SourceResourcePolicyInspector::new()
+            .inspect_excluding_continued(
+                root,
+                &layout.roots,
+                &changed_attributes.entries,
+                &Default::default(),
+                &cancellation,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                Some(&mut continuation),
+            )
+            .unwrap();
+        assert_ne!(
+            continuation
+                .index_eol
+                .keys()
+                .copied()
+                .collect::<BTreeSet<_>>(),
+            old_keys
+        );
+        assert_eq!(continuation.progress.staged_eol_retained, 2);
+    }
+
+    #[test]
+    fn continued_repository_eol_uses_bounded_git_batches() {
+        #[derive(Default)]
+        struct BatchCountingRunner {
+            eol_batch_sizes: RefCell<Vec<usize>>,
+        }
+
+        impl ProcessRunner for BatchCountingRunner {
+            fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
+                let output = crate::infrastructure::internal_adapters::system_process_runner()
+                    .run(command)?;
+                if command.args.iter().any(|arg| arg == "--eol") {
+                    self.eol_batch_sizes
+                        .borrow_mut()
+                        .push(output.stdout.matches('\0').count());
+                }
+                Ok(output)
+            }
+
+            fn run_with_input(
+                &self,
+                command: &ProcessCommand,
+                input: &[u8],
+            ) -> Result<ProcessOutput, String> {
+                crate::infrastructure::internal_adapters::system_process_runner()
+                    .run_with_input(command, input)
+            }
+        }
+
+        let fixture = policy_fixture();
+        fs::write(fixture.root.join(".gitattributes"), "*.xml text eol=lf\n").unwrap();
+        for number in 0..129 {
+            fs::write(
+                fixture.root.join(format!("src/File{number:03}.xml")),
+                format!("<Object name=\"{number}\"/>\n"),
+            )
+            .unwrap();
+        }
+        git(&fixture.root, &["add", ".gitattributes", "src"]);
+        let cancellation = CancellationToken::new();
+        let deadline = ProviderDeadline::from_budget(Duration::from_secs(15));
+        let layout =
+            SourceLayoutInspector::inspect(&fixture.context, &cancellation, deadline).unwrap();
+        let repository = GitRepositoryInspector::new()
+            .inspect_base(&fixture.context, &layout, &cancellation, deadline)
+            .unwrap();
+        let runner = BatchCountingRunner::default();
+        let mut continuation = super::ResourceContinuation::default();
+        let inspection = SourceResourcePolicyInspector::with_process_runner(&runner)
+            .inspect_excluding_continued(
+                repository.repository_root.as_ref().unwrap(),
+                &layout.roots,
+                &repository.entries,
+                &Default::default(),
+                &cancellation,
+                deadline,
+                Some(&mut continuation),
+            )
+            .unwrap();
+        assert!(inspection.observations.iter().any(|observation| {
+            observation.id == ProjectCheckId::RepositoryIndexEol
+                && !matches!(observation.outcome, ProjectCheckOutcome::NotRun { .. })
+        }));
+        assert_eq!(*runner.eol_batch_sizes.borrow(), vec![64, 64, 2]);
+        assert_eq!(continuation.index_eol.len(), 130);
+    }
+
+    #[test]
+    fn continued_repository_eol_halves_a_timed_out_batch_on_retry() {
+        struct TimeoutFirstBatchRunner {
+            timed_out: Cell<bool>,
+            eol_batch_sizes: RefCell<Vec<usize>>,
+        }
+
+        impl ProcessRunner for TimeoutFirstBatchRunner {
+            fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
+                let mut output = crate::infrastructure::internal_adapters::system_process_runner()
+                    .run(command)?;
+                if command.args.iter().any(|arg| arg == "--eol") {
+                    if !self.timed_out.get() {
+                        self.timed_out.set(true);
+                        let end_of_first_record = output.stdout.find('\0').unwrap() + 1;
+                        output.stdout.truncate(end_of_first_record);
+                        output.status_success = false;
+                        output.timed_out = true;
+                        return Ok(output);
+                    }
+                    self.eol_batch_sizes
+                        .borrow_mut()
+                        .push(output.stdout.matches('\0').count());
+                }
+                Ok(output)
+            }
+
+            fn run_with_input(
+                &self,
+                command: &ProcessCommand,
+                input: &[u8],
+            ) -> Result<ProcessOutput, String> {
+                crate::infrastructure::internal_adapters::system_process_runner()
+                    .run_with_input(command, input)
+            }
+        }
+
+        let fixture = policy_fixture();
+        fs::write(fixture.root.join(".gitattributes"), "*.xml text eol=lf\n").unwrap();
+        for number in 0..65 {
+            fs::write(
+                fixture.root.join(format!("src/File{number:03}.xml")),
+                format!("<Object name=\"{number}\"/>\n"),
+            )
+            .unwrap();
+        }
+        git(&fixture.root, &["add", ".gitattributes", "src"]);
+        let cancellation = CancellationToken::new();
+        let layout = SourceLayoutInspector::inspect(
+            &fixture.context,
+            &cancellation,
+            ProviderDeadline::from_budget(Duration::from_secs(15)),
+        )
+        .unwrap();
+        let repository = GitRepositoryInspector::new()
+            .inspect_base(
+                &fixture.context,
+                &layout,
+                &cancellation,
+                ProviderDeadline::from_budget(Duration::from_secs(15)),
+            )
+            .unwrap();
+        let root = repository.repository_root.as_ref().unwrap();
+        let runner = TimeoutFirstBatchRunner {
+            timed_out: Cell::new(false),
+            eol_batch_sizes: RefCell::new(Vec::new()),
+        };
+        let mut continuation = super::ResourceContinuation::default();
+        let first = SourceResourcePolicyInspector::with_process_runner(&runner)
+            .inspect_excluding_continued(
+                root,
+                &layout.roots,
+                &repository.entries,
+                &Default::default(),
+                &cancellation,
+                ProviderDeadline::from_budget(Duration::from_secs(15)),
+                Some(&mut continuation),
+            )
+            .unwrap();
+        assert!(first.observations.iter().any(|observation| {
+            observation.id == ProjectCheckId::RepositoryIndexEol
+                && matches!(observation.outcome, ProjectCheckOutcome::NotRun { .. })
+        }));
+        assert!(continuation.index_eol.is_empty());
+        assert_eq!(continuation.index_eol_batch_files(), 32);
+
+        continuation.progress = Default::default();
+        let retry = SourceResourcePolicyInspector::with_process_runner(&runner)
+            .inspect_excluding_continued(
+                root,
+                &layout.roots,
+                &repository.entries,
+                &Default::default(),
+                &cancellation,
+                ProviderDeadline::from_budget(Duration::from_secs(15)),
+                Some(&mut continuation),
+            )
+            .unwrap();
+        assert!(retry.observations.iter().any(|observation| {
+            observation.id == ProjectCheckId::RepositoryIndexEol
+                && !matches!(observation.outcome, ProjectCheckOutcome::NotRun { .. })
+        }));
+        assert_eq!(*runner.eol_batch_sizes.borrow(), vec![32, 32, 2]);
+        assert_eq!(continuation.index_eol.len(), 66);
+        assert_eq!(continuation.index_eol_batch_files(), 64);
+    }
+
+    #[test]
+    fn continued_repository_eol_keeps_batch_width_after_short_first_budget() {
+        static ORIGIN: OnceLock<Instant> = OnceLock::new();
+
+        fn fixed_clock() -> Instant {
+            *ORIGIN.get_or_init(Instant::now)
+        }
+
+        struct TimeoutFirstEolRunner(Cell<bool>);
+
+        impl ProcessRunner for TimeoutFirstEolRunner {
+            fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
+                let mut output = crate::infrastructure::internal_adapters::system_process_runner()
+                    .run(command)?;
+                if command.args.iter().any(|arg| arg == "--eol") {
+                    self.0.set(true);
+                    output.status_success = false;
+                    output.timed_out = true;
+                }
+                Ok(output)
+            }
+
+            fn run_with_input(
+                &self,
+                command: &ProcessCommand,
+                input: &[u8],
+            ) -> Result<ProcessOutput, String> {
+                crate::infrastructure::internal_adapters::system_process_runner()
+                    .run_with_input(command, input)
+            }
+        }
+
+        let fixture = policy_fixture();
+        git(&fixture.root, &["add", "src"]);
+        let cancellation = CancellationToken::new();
+        let layout = SourceLayoutInspector::inspect(
+            &fixture.context,
+            &cancellation,
+            ProviderDeadline::from_budget(Duration::from_secs(15)),
+        )
+        .unwrap();
+        let repository = GitRepositoryInspector::new()
+            .inspect_base(
+                &fixture.context,
+                &layout,
+                &cancellation,
+                ProviderDeadline::from_budget(Duration::from_secs(15)),
+            )
+            .unwrap();
+        let runner = TimeoutFirstEolRunner(Cell::new(false));
+        let mut continuation = super::ResourceContinuation::default();
+        let incomplete = SourceResourcePolicyInspector::with_process_runner(&runner)
+            .inspect_excluding_continued(
+                repository.repository_root.as_ref().unwrap(),
+                &layout.roots,
+                &repository.entries,
+                &Default::default(),
+                &cancellation,
+                ProviderDeadline::with_clock(fixed_clock() + Duration::from_secs(3), fixed_clock),
+                Some(&mut continuation),
+            )
+            .unwrap();
+        assert!(
+            runner.0.get(),
+            "the first EOL Git batch must reach the runner"
+        );
+        assert!(incomplete.observations.iter().any(|observation| {
+            observation.id == ProjectCheckId::RepositoryIndexEol
+                && matches!(observation.outcome, ProjectCheckOutcome::NotRun { .. })
+        }));
+        assert!(continuation.index_eol.is_empty());
+        assert_eq!(continuation.index_eol_batch_files(), 64);
+    }
+
+    #[test]
+    fn continued_repository_eol_keeps_batch_width_across_later_timeouts() {
+        struct TimeoutAfterSuccessfulBatchRunner {
+            eol_calls: Cell<usize>,
+            completed_batch_sizes: RefCell<Vec<usize>>,
+        }
+
+        impl ProcessRunner for TimeoutAfterSuccessfulBatchRunner {
+            fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
+                let mut output = crate::infrastructure::internal_adapters::system_process_runner()
+                    .run(command)?;
+                if command.args.iter().any(|arg| arg == "--eol") {
+                    let call = self.eol_calls.get() + 1;
+                    self.eol_calls.set(call);
+                    if matches!(call, 2 | 4) {
+                        output.status_success = false;
+                        output.timed_out = true;
+                    } else {
+                        self.completed_batch_sizes
+                            .borrow_mut()
+                            .push(output.stdout.matches('\0').count());
+                    }
+                }
+                Ok(output)
+            }
+
+            fn run_with_input(
+                &self,
+                command: &ProcessCommand,
+                input: &[u8],
+            ) -> Result<ProcessOutput, String> {
+                crate::infrastructure::internal_adapters::system_process_runner()
+                    .run_with_input(command, input)
+            }
+        }
+
+        let fixture = policy_fixture();
+        fs::write(fixture.root.join(".gitattributes"), "*.xml text eol=lf\n").unwrap();
+        for number in 0..199 {
+            fs::write(
+                fixture.root.join(format!("src/File{number:03}.xml")),
+                format!("<Object name=\"{number}\"/>\n"),
+            )
+            .unwrap();
+        }
+        git(&fixture.root, &["add", ".gitattributes", "src"]);
+        let cancellation = CancellationToken::new();
+        let layout = SourceLayoutInspector::inspect(
+            &fixture.context,
+            &cancellation,
+            ProviderDeadline::from_budget(Duration::from_secs(15)),
+        )
+        .unwrap();
+        let repository = GitRepositoryInspector::new()
+            .inspect_base(
+                &fixture.context,
+                &layout,
+                &cancellation,
+                ProviderDeadline::from_budget(Duration::from_secs(15)),
+            )
+            .unwrap();
+        let root = repository.repository_root.as_ref().unwrap();
+        let runner = TimeoutAfterSuccessfulBatchRunner {
+            eol_calls: Cell::new(0),
+            completed_batch_sizes: RefCell::new(Vec::new()),
+        };
+        let mut continuation = super::ResourceContinuation::default();
+        for expected_retained in [64, 128] {
+            continuation.progress = Default::default();
+            let incomplete = SourceResourcePolicyInspector::with_process_runner(&runner)
+                .inspect_excluding_continued(
+                    root,
+                    &layout.roots,
+                    &repository.entries,
+                    &Default::default(),
+                    &cancellation,
+                    ProviderDeadline::from_budget(Duration::from_secs(15)),
+                    Some(&mut continuation),
+                )
+                .unwrap();
+            assert!(incomplete.observations.iter().any(|observation| {
+                observation.id == ProjectCheckId::RepositoryIndexEol
+                    && matches!(observation.outcome, ProjectCheckOutcome::NotRun { .. })
+            }));
+            assert_eq!(continuation.index_eol.len(), expected_retained);
+            assert_eq!(continuation.index_eol_batch_files(), 64);
+        }
+
+        continuation.progress = Default::default();
+        let completed = SourceResourcePolicyInspector::with_process_runner(&runner)
+            .inspect_excluding_continued(
+                root,
+                &layout.roots,
+                &repository.entries,
+                &Default::default(),
+                &cancellation,
+                ProviderDeadline::from_budget(Duration::from_secs(15)),
+                Some(&mut continuation),
+            )
+            .unwrap();
+        assert!(completed.observations.iter().any(|observation| {
+            observation.id == ProjectCheckId::RepositoryIndexEol
+                && !matches!(observation.outcome, ProjectCheckOutcome::NotRun { .. })
+        }));
+        assert_eq!(continuation.index_eol.len(), 200);
+        assert_eq!(*runner.completed_batch_sizes.borrow(), vec![64, 64, 64, 8]);
+        assert_eq!(continuation.index_eol_batch_files(), 64);
+    }
+
+    #[test]
+    fn continued_repository_eol_keeps_pending_batch_size_when_deadline_expires_before_git() {
+        thread_local! {
+            static TICKS: Cell<u64> = const { Cell::new(0) };
+        }
+        static ORIGIN: OnceLock<Instant> = OnceLock::new();
+
+        fn advancing_clock() -> Instant {
+            let tick = TICKS.with(|ticks| {
+                let tick = ticks.get();
+                ticks.set(tick + 1);
+                tick
+            });
+            *ORIGIN.get_or_init(Instant::now) + Duration::from_millis(tick)
+        }
+
+        let root = TempDir::new().unwrap();
+        let resources = (0..2)
+            .map(|number| super::RepositoryResource {
+                source_set: "main".into(),
+                repo_path: format!("src/File{number}.xml"),
+                worktree_path: root.path().join(format!("src/File{number}.xml")),
+                kind: RepositoryResourceKind::Text,
+                blob_oid: format!("{number:040x}"),
+            })
+            .collect::<Vec<_>>();
+        let attributes = resources
+            .iter()
+            .map(|resource| {
+                (
+                    resource.repo_path.clone(),
+                    super::AttributeValues {
+                        text: "set".into(),
+                        eol: "lf".into(),
+                        filter: "unspecified".into(),
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let blob_sizes = resources
+            .iter()
+            .map(|resource| (resource.blob_oid.clone(), 1_usize))
+            .collect::<BTreeMap<_, _>>();
+        TICKS.with(|ticks| ticks.set(0));
+        let deadline = ProviderDeadline::with_clock(
+            *ORIGIN.get_or_init(Instant::now) + Duration::from_millis(3),
+            advancing_clock,
+        );
+        let mut continuation = super::ResourceContinuation::default();
+        let result = SourceResourcePolicyInspector::with_process_runner(&FailingRunner)
+            .incremental_index_eol(
+                root.path(),
+                &resources.iter().collect::<Vec<_>>(),
+                &blob_sizes,
+                &attributes,
+                &attributes,
+                &mut continuation,
+                &CancellationToken::new(),
+                deadline,
+            );
+        assert_eq!(result, Err(super::ResourceProtocolParseError::TimedOut));
+        assert!(continuation.index_eol.is_empty());
+        assert_eq!(continuation.index_eol_batch_files(), 64);
+    }
+
+    #[test]
+    fn continued_repository_eol_rejects_extra_batch_record_without_cache_commit() {
+        struct ExtraEolRecordRunner;
+
+        impl ProcessRunner for ExtraEolRecordRunner {
+            fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
+                let mut output = crate::infrastructure::internal_adapters::system_process_runner()
+                    .run(command)?;
+                if command.args.iter().any(|arg| arg == "--eol") {
+                    output
+                        .stdout
+                        .push_str("i/lf w/lf attr/text\tsrc/Unexpected.xml\0");
+                }
+                Ok(output)
+            }
+
+            fn run_with_input(
+                &self,
+                command: &ProcessCommand,
+                input: &[u8],
+            ) -> Result<ProcessOutput, String> {
+                crate::infrastructure::internal_adapters::system_process_runner()
+                    .run_with_input(command, input)
+            }
+        }
+
+        let fixture = policy_fixture();
+        fs::write(fixture.root.join("src/A.xml"), "<A/>\n").unwrap();
+        fs::write(fixture.root.join(".gitattributes"), "*.xml text eol=lf\n").unwrap();
+        git(&fixture.root, &["add", ".gitattributes", "src"]);
+        let cancellation = CancellationToken::new();
+        let deadline = ProviderDeadline::from_budget(Duration::from_secs(5));
+        let layout =
+            SourceLayoutInspector::inspect(&fixture.context, &cancellation, deadline).unwrap();
+        let repository = GitRepositoryInspector::new()
+            .inspect_base(&fixture.context, &layout, &cancellation, deadline)
+            .unwrap();
+        let mut continuation = super::ResourceContinuation::default();
+        let inspection = SourceResourcePolicyInspector::with_process_runner(&ExtraEolRecordRunner)
+            .inspect_excluding_continued(
+                repository.repository_root.as_ref().unwrap(),
+                &layout.roots,
+                &repository.entries,
+                &Default::default(),
+                &cancellation,
+                deadline,
+                Some(&mut continuation),
+            )
+            .unwrap();
+        assert!(inspection.facts.iter().any(|fact| matches!(
+            fact,
+            ProjectHealthFact::GitInspectionIncomplete {
+                check: ProjectCheckId::RepositoryIndexEol,
+                reason,
+                ..
+            } if reason.contains("unexpected path")
+        )));
+        assert!(continuation.index_eol.is_empty());
+    }
+
+    #[test]
+    fn continued_repository_eol_bounds_batch_by_git_blob_sizes() {
+        struct LargeMetadataRunner {
+            shared_oid: String,
+            eol_batch_sizes: RefCell<Vec<usize>>,
+        }
+
+        impl ProcessRunner for LargeMetadataRunner {
+            fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
+                let output = crate::infrastructure::internal_adapters::system_process_runner()
+                    .run(command)?;
+                if command.args.iter().any(|arg| arg == "--eol") {
+                    self.eol_batch_sizes
+                        .borrow_mut()
+                        .push(output.stdout.matches('\0').count());
+                }
+                Ok(output)
+            }
+
+            fn run_with_input(
+                &self,
+                command: &ProcessCommand,
+                input: &[u8],
+            ) -> Result<ProcessOutput, String> {
+                let mut output = crate::infrastructure::internal_adapters::system_process_runner()
+                    .run_with_input(command, input)?;
+                if command
+                    .args
+                    .iter()
+                    .any(|arg| arg.starts_with("--batch-check="))
+                    && input == format!("{}\n", self.shared_oid).as_bytes()
+                {
+                    output.stdout = format!("{} blob {}\n", self.shared_oid, 31 * 1024 * 1024);
+                }
+                Ok(output)
+            }
+        }
+
+        let fixture = policy_fixture();
+        for name in ["Configuration.xml", "A.xml", "B.xml"] {
+            fs::write(fixture.root.join("src").join(name), "<Same/>\n").unwrap();
+        }
+        fs::write(fixture.root.join(".gitattributes"), "*.xml text eol=lf\n").unwrap();
+        git(&fixture.root, &["add", ".gitattributes", "src"]);
+        let cancellation = CancellationToken::new();
+        let deadline = ProviderDeadline::from_budget(Duration::from_secs(5));
+        let layout =
+            SourceLayoutInspector::inspect(&fixture.context, &cancellation, deadline).unwrap();
+        let repository = GitRepositoryInspector::new()
+            .inspect_base(&fixture.context, &layout, &cancellation, deadline)
+            .unwrap();
+        let runner = LargeMetadataRunner {
+            shared_oid: repository
+                .entries
+                .iter()
+                .find(|entry| entry.repo_path == "src/A.xml")
+                .unwrap()
+                .blob_oid
+                .clone()
+                .unwrap(),
+            eol_batch_sizes: RefCell::new(Vec::new()),
+        };
+        let mut continuation = super::ResourceContinuation::default();
+        let inspection = SourceResourcePolicyInspector::with_process_runner(&runner)
+            .inspect_excluding_continued(
+                repository.repository_root.as_ref().unwrap(),
+                &layout.roots,
+                &repository.entries,
+                &Default::default(),
+                &cancellation,
+                deadline,
+                Some(&mut continuation),
+            )
+            .unwrap();
+        assert!(inspection.observations.iter().any(|observation| {
+            observation.id == ProjectCheckId::RepositoryIndexEol
+                && !matches!(observation.outcome, ProjectCheckOutcome::NotRun { .. })
+        }));
+        assert_eq!(*runner.eol_batch_sizes.borrow(), vec![1, 1, 1]);
+        assert_eq!(continuation.index_eol.len(), 3);
+    }
+
+    #[test]
+    fn continued_repository_eol_cancellation_keeps_only_complete_batches() {
+        struct CancelSecondBatchRunner {
+            eol_calls: Cell<usize>,
+            cancellation: CancellationToken,
+        }
+
+        impl ProcessRunner for CancelSecondBatchRunner {
+            fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
+                let output = crate::infrastructure::internal_adapters::system_process_runner()
+                    .run(command)?;
+                if command.args.iter().any(|arg| arg == "--eol") {
+                    let calls = self.eol_calls.get() + 1;
+                    self.eol_calls.set(calls);
+                    if calls == 2 {
+                        self.cancellation.cancel();
+                    }
+                }
+                Ok(output)
+            }
+
+            fn run_with_input(
+                &self,
+                command: &ProcessCommand,
+                input: &[u8],
+            ) -> Result<ProcessOutput, String> {
+                crate::infrastructure::internal_adapters::system_process_runner()
+                    .run_with_input(command, input)
+            }
+        }
+
+        let fixture = policy_fixture();
+        fs::write(fixture.root.join(".gitattributes"), "*.xml text eol=lf\n").unwrap();
+        for number in 0..65 {
+            fs::write(
+                fixture.root.join(format!("src/File{number:03}.xml")),
+                format!("<Object name=\"{number}\"/>\n"),
+            )
+            .unwrap();
+        }
+        git(&fixture.root, &["add", ".gitattributes", "src"]);
+        let cancellation = CancellationToken::new();
+        let layout = SourceLayoutInspector::inspect(
+            &fixture.context,
+            &cancellation,
+            ProviderDeadline::from_budget(Duration::from_secs(15)),
+        )
+        .unwrap();
+        let repository = GitRepositoryInspector::new()
+            .inspect_base(
+                &fixture.context,
+                &layout,
+                &cancellation,
+                ProviderDeadline::from_budget(Duration::from_secs(15)),
+            )
+            .unwrap();
+        let runner = CancelSecondBatchRunner {
+            eol_calls: Cell::new(0),
+            cancellation: cancellation.clone(),
+        };
+        let mut continuation = super::ResourceContinuation::default();
+        let inspection = SourceResourcePolicyInspector::with_process_runner(&runner)
+            .inspect_excluding_continued(
+                repository.repository_root.as_ref().unwrap(),
+                &layout.roots,
+                &repository.entries,
+                &Default::default(),
+                &cancellation,
+                ProviderDeadline::from_budget(Duration::from_secs(15)),
+                Some(&mut continuation),
+            );
+        assert!(matches!(
+            inspection,
+            Err(ProjectHealthInspectionError::Cancelled)
+        ));
+        assert_eq!(runner.eol_calls.get(), 2);
+        assert_eq!(continuation.index_eol.len(), 64);
+    }
+
+    #[test]
+    fn continued_staged_eol_malformed_protocol_keeps_attribute_findings() {
+        struct MalformedEolRunner;
+
+        impl ProcessRunner for MalformedEolRunner {
+            fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
+                if command.args.iter().any(|argument| argument == "--eol") {
+                    return Ok(success_output("malformed\0"));
+                }
+                crate::infrastructure::internal_adapters::system_process_runner().run(command)
+            }
+
+            fn run_with_input(
+                &self,
+                command: &ProcessCommand,
+                input: &[u8],
+            ) -> Result<ProcessOutput, String> {
+                crate::infrastructure::internal_adapters::system_process_runner()
+                    .run_with_input(command, input)
+            }
+        }
+
+        let fixture = policy_fixture();
+        fs::write(fixture.root.join("src/A.xml"), "<A/>\n").unwrap();
+        fs::write(
+            fixture.root.join(".gitattributes"),
+            "src/Configuration.xml text eol=lf\n",
+        )
+        .unwrap();
+        git(&fixture.root, &["add", ".gitattributes", "src"]);
+        let cancellation = CancellationToken::new();
+        let layout = SourceLayoutInspector::inspect(
+            &fixture.context,
+            &cancellation,
+            ProviderDeadline::from_budget(Duration::from_secs(5)),
+        )
+        .unwrap();
+        let repository = GitRepositoryInspector::new()
+            .inspect_base(
+                &fixture.context,
+                &layout,
+                &cancellation,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+            )
+            .unwrap();
+        let mut continuation = super::ResourceContinuation::default();
+        let policy = SourceResourcePolicyInspector::with_process_runner(&MalformedEolRunner)
+            .inspect_excluding_continued(
+                repository.repository_root.as_ref().unwrap(),
+                &layout.roots,
+                &repository.entries,
+                &Default::default(),
+                &cancellation,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                Some(&mut continuation),
+            )
+            .unwrap();
+        assert!(policy.facts.iter().any(|fact| {
+            matches!(fact, ProjectHealthFact::TextPolicyMissing { path, .. } if path == "src/A.xml")
+        }));
+        assert!(policy.facts.iter().any(|fact| {
+            matches!(
+                fact,
+                ProjectHealthFact::GitInspectionIncomplete {
+                    check: ProjectCheckId::RepositoryIndexEol,
+                    ..
+                }
+            )
+        }));
+        assert!(policy.observations.iter().any(|observation| {
+            observation.id == ProjectCheckId::RepositoryAttributes
+                && matches!(observation.outcome, ProjectCheckOutcome::Completed)
+        }));
+    }
+
+    #[test]
+    fn final_index_change_invalidates_earlier_attribute_findings() {
+        let fixture = policy_fixture();
+        fs::write(fixture.root.join("src/A.xml"), "<A/>\n").unwrap();
+        fs::write(
+            fixture.root.join(".gitattributes"),
+            "src/Configuration.xml text eol=lf\n",
+        )
+        .unwrap();
+        git(&fixture.root, &["add", ".gitattributes", "src"]);
+        let cancellation = CancellationToken::new();
+        let layout = SourceLayoutInspector::inspect(
+            &fixture.context,
+            &cancellation,
+            ProviderDeadline::from_budget(Duration::from_secs(5)),
+        )
+        .unwrap();
+        let repository = GitRepositoryInspector::new()
+            .inspect_base(
+                &fixture.context,
+                &layout,
+                &cancellation,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+            )
+            .unwrap();
+        let root = fixture.root.clone();
+        super::BEFORE_WORKING_REVALIDATION.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || {
+                fs::write(root.join(".gitignore"), "*.scratch\n").unwrap();
+                git(&root, &["add", ".gitignore"]);
+            }));
+        });
+        let mut continuation = super::ResourceContinuation::default();
+        let policy = SourceResourcePolicyInspector::new()
+            .inspect_excluding_continued(
+                repository.repository_root.as_ref().unwrap(),
+                &layout.roots,
+                &repository.entries,
+                &Default::default(),
+                &cancellation,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                Some(&mut continuation),
+            )
+            .unwrap();
+        assert!(policy.observations.iter().any(|observation| {
+            observation.id == ProjectCheckId::RepositoryAttributes
+                && matches!(observation.outcome, ProjectCheckOutcome::NotRun { .. })
+        }));
+        assert!(policy.facts.iter().any(|fact| {
+            matches!(
+                fact,
+                ProjectHealthFact::GitInspectionIncomplete {
+                    check: ProjectCheckId::RepositoryAttributes,
+                    ..
+                }
+            )
+        }));
+        assert!(!policy
+            .facts
+            .iter()
+            .any(|fact| { matches!(fact, ProjectHealthFact::TextPolicyMissing { .. }) }));
+    }
+
+    #[test]
+    fn continued_working_eol_rejects_a_new_file_and_late_cancellation() {
+        let fixture = policy_fixture();
+        let file = fixture.root.join("src/A.xml");
+        fs::write(&file, "<A/>\n").unwrap();
+        fs::write(fixture.root.join(".gitattributes"), "*.xml text eol=lf\n").unwrap();
+        git(&fixture.root, &["add", ".gitattributes", "src"]);
+        fs::remove_file(&file).unwrap();
+        let cancellation = CancellationToken::new();
+        let layout = SourceLayoutInspector::inspect(
+            &fixture.context,
+            &cancellation,
+            ProviderDeadline::from_budget(Duration::from_secs(5)),
+        )
+        .unwrap();
+        let repository = GitRepositoryInspector::new()
+            .inspect_base(
+                &fixture.context,
+                &layout,
+                &cancellation,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+            )
+            .unwrap();
+        let root = repository.repository_root.as_ref().unwrap();
+        let mut continuation = super::ResourceContinuation::default();
+
+        super::BEFORE_WORKING_REVALIDATION.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || {
+                fs::write(file, "<A>appeared</A>\n").unwrap();
+            }));
+        });
+        let appeared = SourceResourcePolicyInspector::new()
+            .inspect_excluding_continued(
+                root,
+                &layout.roots,
+                &repository.entries,
+                &Default::default(),
+                &cancellation,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                Some(&mut continuation),
+            )
+            .unwrap();
+        assert!(appeared.observations.iter().any(|observation| {
+            observation.id == ProjectCheckId::RepositoryWorkingEol
+                && matches!(observation.outcome, ProjectCheckOutcome::NotRun { .. })
+        }));
+        assert!(appeared.facts.iter().any(|fact| matches!(
+            fact,
+            ProjectHealthFact::GitInspectionIncomplete {
+                check: ProjectCheckId::RepositoryWorkingEol,
+                ..
+            }
+        )));
+
+        continuation.progress = Default::default();
+        let late_cancellation = cancellation.clone();
+        super::BEFORE_WORKING_REVALIDATION.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || late_cancellation.cancel()));
+        });
+        let cancelled = SourceResourcePolicyInspector::new().inspect_excluding_continued(
+            root,
+            &layout.roots,
+            &repository.entries,
+            &Default::default(),
+            &cancellation,
+            ProviderDeadline::from_budget(Duration::from_secs(5)),
+            Some(&mut continuation),
+        );
+        assert!(matches!(
+            cancelled,
+            Err(ProjectHealthInspectionError::Cancelled)
+        ));
     }
 
     #[test]

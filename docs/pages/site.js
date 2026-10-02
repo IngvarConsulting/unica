@@ -1,4 +1,4 @@
-// Скрипт страницы: тема и живое число звёзд.
+// Скрипт страницы: тема, выбор агента и живое число звёзд.
 //
 // Он попадает в <head> телом, до разметки: тему надо решить раньше первой
 // отрисовки, иначе тёмная страница мигнёт светлой.
@@ -73,6 +73,29 @@
 
   ready(function () {
     apply(current());
+
+    // Выбор общий для главной и канала next. Явная ссылка имеет приоритет;
+    // без хранилища переключение продолжает работать на радиокнопках и CSS.
+    var hosts = document.querySelectorAll('input[name="host"][data-host]');
+    var asked = window.location.hash.slice(1);
+    function knownHost(value) {
+      return value === "codex" || value === "claude" || value === "zcode";
+    }
+    if (!knownHost(asked)) {
+      try {
+        asked = window.localStorage.getItem("unica-host");
+      } catch (error) { /* хранилище недоступно */ }
+    }
+    Array.prototype.forEach.call(hosts, function (radio) {
+      var host = radio.getAttribute("data-host");
+      if (host === asked) radio.checked = true;
+      radio.addEventListener("change", function () {
+        if (!radio.checked) return;
+        try {
+          window.localStorage.setItem("unica-host", host);
+        } catch (error) { /* выбор доживёт до конца страницы */ }
+      });
+    });
 
     // Навигация на телефоне прокручивается вбок. Тающий край показываем
     // только когда пункты действительно не поместились: класс ставится по

@@ -56,6 +56,22 @@ class ReleaseAssessmentTests(unittest.TestCase):
 
         self.assertEqual(module.unica_version(run_unica), "0.12.0")
 
+    def test_unica_version_names_the_manifest_that_lacks_the_unica_entry(self) -> None:
+        # Манифест есть, записи `unica` нет — так устроен исходный
+        # `plugins/unica/third-party/manifest.json` с пустым `tools`. Отказ
+        # обязан назвать файл, а не абстрактного «кандидата» (#701, п. 5).
+        module = load_assessment_module()
+        runtime = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        manifest = runtime / "third-party" / "manifest.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(json.dumps({"schemaVersion": 2, "tools": []}), encoding="utf-8")
+        run_unica = runtime / "bin" / "linux-x64" / "unica"
+        run_unica.parent.mkdir(parents=True)
+        run_unica.write_bytes(b"unica")
+
+        with self.assertRaisesRegex(SystemExit, r"third-party[/\\]manifest\.json.*unica"):
+            module.unica_version(run_unica)
+
     def test_dry_assessment_declares_separate_p0_lifecycle_outcomes(self) -> None:
         module = load_assessment_module()
 
@@ -478,7 +494,11 @@ for raw in sys.stdin:
             self.assertEqual(len(responses), 1)
             self.assertNotIn("error", responses[0])
 
-    def test_v13_read_replays_one_lost_submit_response_as_at_least_once(self) -> None:
+    def test_v13_read_reports_a_lost_submit_response_instead_of_replaying_it(self) -> None:
+        # Демон v5 сам восстанавливает потерянный submit-response по точному
+        # ключу квитанции; до провода `-32000` доходит только когда не
+        # уложились и в окно восстановления. Оценка обязана показать это как
+        # отказ сценария, а не прятать одним повтором (#698).
         module = load_assessment_module()
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -534,16 +554,102 @@ for raw in sys.stdin:
                 title="view",
                 tool="unica.view",
                 arguments={"at": "main:Configuration"},
-                timeout_seconds=2,
+                timeout_seconds=10,
             )
 
-            self.assertEqual(scenario["status"], "passed", scenario)
-            self.assertEqual(scenario["metrics"]["submitRetries"], 1)
-            self.assertEqual(
-                scenario["metrics"]["submitReplaySemantics"], "at-least-once"
+            self.assertEqual(scenario["status"], "failed", scenario)
+            self.assertTrue(
+                any("-32000" in error and "submit response" in error for error in scenario["errors"]),
+                scenario["errors"],
             )
-            self.assertEqual((root / "cache" / "view-executions").read_text(), "2")
-            self.assertEqual(payload["data"]["kind"], "Configuration")
+            self.assertNotIn("submitRetries", scenario["metrics"])
+            self.assertNotIn("submitReplaySemantics", scenario["metrics"])
+            executions = root / "cache" / "view-executions"
+            self.assertEqual(executions.read_text(encoding="utf-8"), "1")
+            self.assertIsNone(payload)
+
+    def test_v13_scenario_polls_until_the_task_is_terminal(self) -> None:
+        # Снимок задачи несёт статус из словаря продукта
+        # (`project_task_snapshot`): `queued` и `working` ещё не результат и
+        # приходят с `ok=true`, принятый за результат снимок проваливает
+        # блокирующий сценарий на проверке данных. `failed` — уже результат:
+        # опрос на нём заканчивается, и сценарий падает.
+        module = load_assessment_module()
+        task_id = "f741d562-9d42-4a4f-a626-fcd5c3fb9bc4"
+
+        def snapshot(status: str, ok: bool = True) -> dict:
+            return {
+                "ok": ok,
+                "summary": "Task is still working" if ok else "Task failed",
+                "data": {"task": {"taskId": task_id, "status": status, "pollIntervalMs": 1}},
+            }
+
+        view = {
+            "ok": True,
+            "summary": "view completed",
+            "warnings": [],
+            "errors": [],
+            "artifacts": [],
+            "data": {"kind": "Configuration", "branches": []},
+        }
+        cases = {
+            "completed": ([snapshot("queued"), snapshot("working"), view], "passed", 2),
+            "failed": ([snapshot("queued"), snapshot("failed", ok=False)], "failed", 1),
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_mcp = root / ("run-unica.py" if os.name == "nt" else "run-unica")
+            fake_mcp.write_text(
+                """#!/usr/bin/env python3
+import json
+import os
+import sys
+from pathlib import Path
+
+cache = Path(os.environ["UNICA_CACHE_DIR"])
+answers = json.loads((cache / "answers.json").read_text(encoding="utf-8"))
+for raw in sys.stdin:
+    message = json.loads(raw)
+    if "id" not in message:
+        continue
+    response = {"jsonrpc": "2.0", "id": message["id"]}
+    if message["method"] == "initialize":
+        response["result"] = {"serverInfo": {"name": "unica"}}
+    elif message["method"] == "tools/call":
+        calls = cache / "tool-calls"
+        with calls.open("a", encoding="utf-8") as log:
+            log.write(message["params"]["name"] + "\\n")
+        content = answers[len(calls.read_text(encoding="utf-8").splitlines()) - 1]
+        response["result"] = {"content": [], "structuredContent": content, "isError": not content["ok"]}
+    print(json.dumps(response), flush=True)
+""",
+                encoding="utf-8",
+            )
+            fake_mcp.chmod(fake_mcp.stat().st_mode | stat.S_IXUSR)
+
+            for name, (answers, status, polls) in cases.items():
+                with self.subTest(name):
+                    cache = root / name
+                    cache.mkdir()
+                    (cache / "answers.json").write_text(json.dumps(answers), encoding="utf-8")
+
+                    scenario, payload = module.run_v13_tool_scenario(
+                        fake_mcp,
+                        bsp_root=root,
+                        cache_dir=cache,
+                        scenario_id="configuration-view",
+                        title="view",
+                        tool="unica.view",
+                        arguments={"at": "main:Configuration"},
+                        timeout_seconds=10,
+                    )
+
+                    self.assertEqual(scenario["status"], status, scenario)
+                    self.assertEqual(scenario["metrics"]["taskPolls"], polls)
+                    self.assertEqual(payload, answers[-1])
+                    calls = (cache / "tool-calls").read_text(encoding="utf-8").splitlines()
+                    self.assertEqual(calls, ["unica.view"] + ["unica.task.result"] * polls)
 
     def test_mcp_client_surfaces_injected_handshake_error(self) -> None:
         module = load_assessment_module()

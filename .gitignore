@@ -4,7 +4,7 @@
 its/
 .build/
 .worktrees/
-.superpowers/
+.session-temp/
 target/
 dist/
 docs-local/

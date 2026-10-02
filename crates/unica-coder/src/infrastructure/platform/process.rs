@@ -7,12 +7,137 @@ use std::path::PathBuf;
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
+#[cfg(all(test, windows))]
+use std::sync::{Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const TERMINATION_WAIT_LIMIT: Duration = Duration::from_millis(500);
 const READER_WAIT_LIMIT: Duration = Duration::from_millis(500);
+pub(crate) const STREAM_LINE_TOO_LONG_ERROR: &str = "line exceeds configured byte limit";
+
+#[cfg(all(test, windows))]
+struct JobAttachGateState {
+    spawned: bool,
+    released: bool,
+}
+
+#[cfg(all(test, windows))]
+type JobAttachGateSignal = Arc<(Mutex<JobAttachGateState>, Condvar)>;
+
+#[cfg(all(test, windows))]
+fn job_attach_gates() -> &'static Mutex<std::collections::HashMap<PathBuf, JobAttachGateSignal>> {
+    static GATES: OnceLock<Mutex<std::collections::HashMap<PathBuf, JobAttachGateSignal>>> =
+        OnceLock::new();
+    GATES.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
+/// A one-shot test barrier after Windows has spawned the suspended child and
+/// before the production Job Object attachment resumes it.
+#[cfg(all(test, windows))]
+pub(crate) struct JobAttachGateForTest {
+    program: PathBuf,
+    signal: JobAttachGateSignal,
+}
+
+#[cfg(all(test, windows))]
+impl JobAttachGateForTest {
+    pub(crate) const fn supported() -> bool {
+        true
+    }
+
+    pub(crate) fn install(program: PathBuf) -> Self {
+        let signal = Arc::new((
+            Mutex::new(JobAttachGateState {
+                spawned: false,
+                released: false,
+            }),
+            Condvar::new(),
+        ));
+        let previous = job_attach_gates()
+            .lock()
+            .expect("job attach gate registry")
+            .insert(program.clone(), Arc::clone(&signal));
+        assert!(previous.is_none(), "duplicate Job attach test gate");
+        Self { program, signal }
+    }
+
+    pub(crate) fn wait_spawned(&self, timeout: Duration) {
+        let (state, ready) = &*self.signal;
+        let state = state.lock().expect("job attach gate state");
+        let (state, _) = ready
+            .wait_timeout_while(state, timeout, |state| !state.spawned)
+            .expect("job attach gate wait");
+        assert!(state.spawned, "runner did not reach the Job attach gate");
+    }
+
+    pub(crate) fn release(&self) {
+        let (state, ready) = &*self.signal;
+        state.lock().expect("job attach gate state").released = true;
+        ready.notify_all();
+    }
+}
+
+#[cfg(all(test, not(windows)))]
+pub(crate) struct JobAttachGateForTest;
+
+#[cfg(all(test, not(windows)))]
+impl JobAttachGateForTest {
+    pub(crate) const fn supported() -> bool {
+        false
+    }
+
+    pub(crate) fn install(_program: PathBuf) -> Self {
+        unreachable!("Windows Job attachment is unavailable on this host")
+    }
+
+    pub(crate) fn wait_spawned(&self, _timeout: Duration) {
+        unreachable!("Windows Job attachment is unavailable on this host")
+    }
+
+    pub(crate) fn release(&self) {
+        unreachable!("Windows Job attachment is unavailable on this host")
+    }
+}
+
+#[cfg(all(test, windows))]
+impl Drop for JobAttachGateForTest {
+    fn drop(&mut self) {
+        self.release();
+        job_attach_gates()
+            .lock()
+            .expect("job attach gate registry")
+            .remove(&self.program);
+    }
+}
+
+#[cfg(all(test, windows))]
+fn wait_at_job_attach_gate_for_test(process: &Command) {
+    // infobase.create also launches a dry-run preflight on apply. The gate
+    // must stop the protected mutation, not that cancellable preflight.
+    if process
+        .get_args()
+        .any(|arg| arg.to_str() == Some("--dry-run"))
+    {
+        return;
+    }
+    let program = process.get_program();
+    let program = std::fs::canonicalize(program).unwrap_or_else(|_| PathBuf::from(program));
+    let gate = job_attach_gates()
+        .lock()
+        .expect("job attach gate registry")
+        .remove(&program);
+    if let Some(gate) = gate {
+        let (state, ready) = &*gate;
+        let mut state = state.lock().expect("job attach gate state");
+        state.spawned = true;
+        ready.notify_all();
+        while !state.released {
+            state = ready.wait(state).expect("job attach gate release");
+        }
+    }
+}
 pub(crate) const STDOUT_CAPTURE_LIMIT: usize = 1024 * 1024;
 pub(crate) const STDERR_CAPTURE_LIMIT: usize = 256 * 1024;
 
@@ -375,15 +500,34 @@ fn runtime_process_pid_alive_for_test(_process_id: u32) -> io::Result<bool> {
     Ok(false)
 }
 
+/// How long the probe lets the PowerShell leader start, spawn its descendant
+/// and exit. The semantics under test do not depend on this number: the
+/// descendant is a Job Object member that outlives the leader, and the tree
+/// is torn down explicitly at the end. Five seconds was a cold-start budget
+/// for `powershell.exe`, and the nightly `large` tier on `windows-latest`
+/// overran it in two of six nights (runs 34317173405 and 34676550320) while
+/// this probe ran nested inside `daemon_exact_long_work_ownership_contract`
+/// next to the full suite (#750). The descendant lives long enough for the
+/// leader budget to expire with it still alive, so a slow leader is told apart
+/// from a tree that went terminal.
+#[cfg(all(test, windows))]
+const WINDOWS_PROBE_LEADER_EXIT_BUDGET: Duration = Duration::from_secs(30);
+#[cfg(all(test, windows))]
+const WINDOWS_PROBE_DESCENDANT_PINGS: &str = "90";
+
 #[cfg(all(test, windows))]
 pub(crate) fn assert_windows_runtime_process_tree_semantics_for_test() -> io::Result<()> {
     let mut command = Command::new("powershell.exe");
+    let start_descendant = format!(
+        "Start-Process -WindowStyle Hidden ping.exe -ArgumentList @('-n','{}','127.0.0.1') | Out-Null",
+        WINDOWS_PROBE_DESCENDANT_PINGS
+    );
     command
         .args([
             "-NoProfile",
             "-NonInteractive",
             "-Command",
-            "Start-Process -WindowStyle Hidden ping.exe -ArgumentList @('-n','20','127.0.0.1') | Out-Null",
+            start_descendant.as_str(),
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -399,7 +543,9 @@ pub(crate) fn assert_windows_runtime_process_tree_semantics_for_test() -> io::Re
     loop {
         match process_tree.poll(&mut child)? {
             RuntimeProcessTreeState::Running if process_tree.leader_exited() => break,
-            RuntimeProcessTreeState::Running if started.elapsed() < Duration::from_secs(5) => {
+            RuntimeProcessTreeState::Running
+                if started.elapsed() < WINDOWS_PROBE_LEADER_EXIT_BUDGET =>
+            {
                 thread::sleep(PROCESS_POLL_INTERVAL)
             }
             RuntimeProcessTreeState::Running => {
@@ -739,13 +885,20 @@ impl ManagedChild {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let mut process_tree = ProcessTree::prepare(&mut process).map_err(process_error)?;
-        let mut child = process.spawn().map_err(process_error)?;
-        if let Err(error) = process_tree.attach(&mut child) {
-            let _ = process_tree.terminate(&mut child);
-            let _ = child.kill();
-            let _ = child.try_wait();
-            return Err(process_error(error));
-        }
+        // Cancellation and OS launch (including Windows Job attachment) are
+        // serialized. A failed launch never claims the protected phase.
+        let (child, cancellation) = cancellation.spawn_with_gate(|| {
+            let mut child = process.spawn().map_err(process_error)?;
+            #[cfg(all(test, windows))]
+            wait_at_job_attach_gate_for_test(&process);
+            if let Err(error) = process_tree.attach(&mut child) {
+                let _ = process_tree.terminate(&mut child);
+                let _ = child.kill();
+                let _ = child.try_wait();
+                return Err(process_error(error));
+            }
+            Ok(child)
+        })?;
 
         Ok(Self {
             child,
@@ -957,14 +1110,12 @@ impl ManagedChild {
             if let Some(status) = self.try_wait_owned_leader()? {
                 self.process_tree.cleanup_after_leader_exit(&mut self.child);
                 self.state = ChildState::Reaped;
-                drain_line_messages(&stdout, &mut on_line, &mut first_line_error, true);
-                return Ok(finish_line_output(
-                    Some(status),
+                return Ok(finish_completed_line_output(
+                    status,
+                    &stdout,
                     stderr,
-                    false,
-                    false,
-                    false,
-                    first_line_error,
+                    &mut on_line,
+                    &mut first_line_error,
                 ));
             }
             thread::sleep(PROCESS_POLL_INTERVAL);
@@ -1145,7 +1296,17 @@ pub(super) fn detach_std_handles_from_inheritance() {
 pub(super) fn detach_std_handles_from_inheritance() {}
 
 impl ManagedStartupChild {
-    pub(crate) fn spawn_configured(mut process: Command) -> Result<Self, String> {
+    pub(crate) fn spawn_configured(process: Command) -> Result<Self, String> {
+        Self::spawn_configured_before(process, Instant::now() + TERMINATION_WAIT_LIMIT)
+    }
+
+    pub(crate) fn spawn_configured_before(
+        mut process: Command,
+        deadline: Instant,
+    ) -> Result<Self, String> {
+        if Instant::now() >= deadline {
+            return Err("startup deadline expired before process creation".to_string());
+        }
         let process_tree = ProcessTree::prepare_detachable(&mut process).map_err(process_error)?;
         let child = process.spawn().map_err(process_error)?;
         let mut managed = Self {
@@ -1160,7 +1321,11 @@ impl ManagedStartupChild {
             .process_tree
             .attach(managed.child.as_mut().expect("startup child exists"))
         {
-            let cleanup = managed.terminate_bounded(TERMINATION_WAIT_LIMIT);
+            let cleanup = managed.terminate_bounded(
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(TERMINATION_WAIT_LIMIT),
+            );
             return match cleanup {
                 Ok(()) => Err(process_error(error)),
                 Err(cleanup_error) => Err(format!("{}; {cleanup_error}", process_error(error))),
@@ -1281,6 +1446,13 @@ impl ManagedStartupChild {
     }
 
     pub(crate) fn detach(&mut self) -> Result<(), String> {
+        self.detach_before(Instant::now() + TERMINATION_WAIT_LIMIT)
+    }
+
+    pub(crate) fn detach_before(&mut self, deadline: Instant) -> Result<(), String> {
+        if Instant::now() >= deadline {
+            return Err("startup deadline expired before detach".to_string());
+        }
         let child = self.child.as_mut().expect("startup child exists");
         if self
             .process_tree
@@ -1288,7 +1460,11 @@ impl ManagedStartupChild {
             .map_err(process_error)?
             .is_some()
         {
-            self.process_tree.cleanup_after_leader_exit(child);
+            let cleanup_deadline = StartupTerminationDeadline::system(
+                deadline.saturating_duration_since(Instant::now()),
+            );
+            self.process_tree
+                .cleanup_after_leader_exit_until(child, &cleanup_deadline);
             return Err("process_failed: startup process exited before detach".to_string());
         }
         self.process_tree.detach().map_err(process_error)?;
@@ -2235,9 +2411,7 @@ where
                 }
             }
             LineMessage::TooLong(number) => {
-                first_error.get_or_insert_with(|| {
-                    (number, "line exceeds configured byte limit".to_string())
-                });
+                first_error.get_or_insert_with(|| (number, STREAM_LINE_TOO_LONG_ERROR.to_string()));
             }
             LineMessage::ReadError(number, error) => {
                 first_error.get_or_insert_with(|| {
@@ -2309,6 +2483,29 @@ fn decode_captured_text(bytes: &[u8]) -> (String, bool) {
         Ok(text) => (text, false),
         Err(error) => (String::from_utf8_lossy(error.as_bytes()).into_owned(), true),
     }
+}
+
+fn finish_completed_line_output<F>(
+    status: ExitStatus,
+    stdout: &Option<Receiver<LineMessage>>,
+    stderr: Option<Receiver<CapturedOutput>>,
+    on_line: &mut F,
+    first_line_error: &mut Option<(usize, String)>,
+) -> ManagedLineOutput
+where
+    F: FnMut(usize, &[u8]) -> StreamControl,
+{
+    let stopped_by_consumer = drain_line_messages(stdout, on_line, first_line_error, true)
+        == StreamControl::Stop
+        && status.success();
+    finish_line_output(
+        Some(status),
+        stderr,
+        false,
+        false,
+        stopped_by_consumer,
+        first_line_error.take(),
+    )
 }
 
 fn finish_line_output(
@@ -2503,11 +2700,24 @@ mod tests {
                 std::env::var("PATH").unwrap_or_else(|_| "missing".into())
             ),
             "sleep" => thread::sleep(Duration::from_secs(10)),
+            "short_sleep" => thread::sleep(Duration::from_millis(800)),
             "stream_forever" => loop {
                 println!("streamed line");
                 std::io::Write::flush(&mut std::io::stdout()).unwrap();
                 thread::sleep(Duration::from_millis(5));
             },
+            "stream_then_exit" => {
+                for _ in 0..202 {
+                    println!("x");
+                }
+            }
+            "stream_then_fail" => {
+                for _ in 0..202 {
+                    println!("x");
+                }
+                eprintln!("expected child failure");
+                std::process::exit(128);
+            }
             "process_tree_immediate_parent" => {
                 let pid_file = std::env::var_os(HELPER_PID_FILE_ENV).unwrap();
                 let mut child = Command::new(std::env::current_exe().unwrap())
@@ -3746,6 +3956,39 @@ mod tests {
     }
 
     #[test]
+    fn protected_process_finishes_after_cancellation_on_every_host() {
+        let cancellation = CancellationToken::new();
+        let signal = cancellation.clone();
+        let canceller = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !signal.protected_process_started() {
+                assert!(Instant::now() < deadline, "protected process did not start");
+                thread::sleep(Duration::from_millis(1));
+            }
+            signal.cancel();
+        });
+        let output = ManagedChild::run(ManagedCommand {
+            program: std::env::current_exe().unwrap(),
+            args: vec![
+                "--exact".into(),
+                "infrastructure::platform::process::tests::managed_child_test_helper".into(),
+                "--nocapture".into(),
+            ],
+            cwd: std::env::current_dir().unwrap(),
+            env: vec![(OsString::from(HELPER_ENV), OsString::from("short_sleep"))],
+            env_remove: Vec::new(),
+            capture_limits: None,
+            timeout: None,
+            cancellation: cancellation.protect_process_on_spawn(),
+        })
+        .unwrap();
+        canceller.join().unwrap();
+        assert!(cancellation.protected_process_started());
+        assert!(output.status_success, "{output:?}");
+        assert!(!output.cancelled);
+    }
+
+    #[test]
     fn line_consumer_can_stop_and_reap_the_process_before_timeout() {
         let mut managed = ManagedChild::spawn(ManagedCommand {
             program: std::env::current_exe().unwrap(),
@@ -3782,6 +4025,51 @@ mod tests {
         assert!(!output.cancelled);
         assert!(started.elapsed() < Duration::from_secs(2));
         assert_eq!(managed.state, ChildState::Reaped);
+    }
+
+    #[test]
+    fn completed_line_drain_keeps_stop_only_for_successful_children() {
+        for (mode, expected_stop) in [("stream_then_exit", true), ("stream_then_fail", false)] {
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "infrastructure::platform::process::tests::managed_child_test_helper",
+                    "--nocapture",
+                ])
+                .env(HELPER_ENV, mode)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let stdout = super::start_line_reader(child.stdout.take(), 1024);
+            let stderr = super::start_reader(child.stderr.take(), super::STDERR_CAPTURE_LIMIT);
+            let status = child.wait().expect("child finished before output drain");
+            let mut first_error = None;
+            let mut lines = 0;
+            let output = super::finish_completed_line_output(
+                status,
+                &stdout,
+                stderr,
+                &mut |_, _| {
+                    lines += 1;
+                    if lines == 200 {
+                        StreamControl::Stop
+                    } else {
+                        StreamControl::Continue
+                    }
+                },
+                &mut first_error,
+            );
+            assert_eq!(lines, 200, "{mode}");
+            assert_eq!(
+                output.stopped_by_consumer, expected_stop,
+                "{mode}: {output:?}"
+            );
+            assert!(!output.status_success);
+            if !expected_stop {
+                assert!(output.stderr.contains("expected child failure"));
+            }
+        }
     }
 
     #[test]
@@ -3988,6 +4276,15 @@ mod tests {
         assert!(wait_until_dead(pids[0], Duration::from_secs(2)));
         assert!(wait_until_dead(pids[1], Duration::from_secs(2)));
         cleanup.disarm();
+    }
+
+    #[test]
+    fn expired_startup_deadline_refuses_before_spawning() {
+        let command = Command::new("unica-nonexistent-startup-fixture");
+        let result = ManagedStartupChild::spawn_configured_before(command, Instant::now());
+        assert!(
+            matches!(result, Err(message) if message == "startup deadline expired before process creation")
+        );
     }
 
     #[test]
@@ -4216,5 +4513,87 @@ mod tests {
         }
         assert!(marker.exists(), "child did not resume after attachment");
         child.wait();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn slow_job_attach_delays_cancel_without_starting_the_mutation_early() {
+        use std::sync::mpsc;
+
+        let marker = std::env::temp_dir().join(format!(
+            "unica-slow-attach-marker-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _marker_cleanup = FileCleanupGuard(marker.clone());
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "infrastructure::platform::process::tests::managed_child_test_helper",
+                "--nocapture",
+            ])
+            .env(HELPER_ENV, "write_marker")
+            .env(HELPER_PID_FILE_ENV, &marker)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut tree = ProcessTree::prepare(&mut command).unwrap();
+        let cancellation = CancellationToken::new();
+        let protected = cancellation.protect_process_on_spawn();
+        let (spawned_tx, spawned_rx) = mpsc::channel();
+        let (attach_tx, attach_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let (child, detached_cancellation) = protected
+                .spawn_with_gate(|| {
+                    let mut child = ChildCleanupGuard(Some(command.spawn().unwrap()));
+                    spawned_tx.send(()).unwrap();
+                    attach_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+                    tree.attach(child.child_mut()).unwrap();
+                    Ok(child)
+                })
+                .unwrap();
+            assert!(!detached_cancellation.is_cancelled());
+            child.wait();
+        });
+        spawned_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(
+            !marker.exists(),
+            "suspended child ran before Job attachment"
+        );
+
+        let (started_tx, started_rx) = mpsc::channel();
+        let (cancelled_tx, cancelled_rx) = mpsc::channel();
+        let canceller = thread::spawn(move || {
+            let began = Instant::now();
+            started_tx.send(()).unwrap();
+            cancellation.cancel();
+            cancelled_tx.send(began.elapsed()).unwrap();
+            cancellation
+        });
+        started_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(
+            cancelled_rx
+                .recv_timeout(Duration::from_millis(250))
+                .is_err(),
+            "cancel returned while Job attachment was still in flight"
+        );
+        assert!(!marker.exists(), "mutation began before Job attachment");
+        attach_tx.send(()).unwrap();
+        let elapsed = cancelled_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(
+            elapsed >= Duration::from_millis(250),
+            "cancel waited only {elapsed:?}"
+        );
+        let cancellation = canceller.join().unwrap();
+        worker.join().unwrap();
+        assert!(cancellation.protected_process_started());
+        assert!(
+            marker.exists(),
+            "protected child did not finish after late cancel"
+        );
     }
 }

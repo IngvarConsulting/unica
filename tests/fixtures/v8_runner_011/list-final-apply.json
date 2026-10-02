@@ -1,0 +1,23 @@
+{
+  "ok": true,
+  "command": "extensions",
+  "duration_ms": 6893,
+  "data": {
+    "provider": {
+      "selected": "ibcmd",
+      "origin": {
+        "kind": "override",
+        "file": "v8project.yaml"
+      }
+    },
+    "ok": true,
+    "provider_dispatched": true,
+    "requested": {
+      "kind": "all"
+    },
+    "extensions": [],
+    "duration_ms": 6893
+  },
+  "warnings": [],
+  "steps": []
+}

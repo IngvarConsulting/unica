@@ -22,9 +22,12 @@ enum StreamRedactorState {
         exact_key: ExactKeyStatus,
     },
     ConfirmedSecretKey,
-    AfterSecretKey,
+    AfterSecretKey {
+        kind: SecretValueKind,
+    },
     RedactingSecretValue {
         marker: RedactionMarker,
+        kind: SecretValueKind,
     },
 }
 
@@ -38,6 +41,12 @@ enum ExactKeyStatus {
 enum RedactionMarker {
     Pending,
     Written,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SecretValueKind {
+    Connection,
+    Other,
 }
 
 impl Default for StreamRedactor {
@@ -74,7 +83,7 @@ impl StreamRedactor {
             StreamRedactorState::Candidate { pending, .. } => pending.len(),
             StreamRedactorState::Text
             | StreamRedactorState::ConfirmedSecretKey
-            | StreamRedactorState::AfterSecretKey
+            | StreamRedactorState::AfterSecretKey { .. }
             | StreamRedactorState::RedactingSecretValue { .. } => 0,
         }
     }
@@ -103,7 +112,12 @@ impl StreamRedactorState {
                         && is_exact_secret_key(&pending);
                     output.push_str(&pending);
                     if is_secret {
-                        Self::after_secret_key(ch, output)
+                        let kind = if is_connection_key(&pending) {
+                            SecretValueKind::Connection
+                        } else {
+                            SecretValueKind::Other
+                        };
+                        Self::after_secret_key(ch, kind, output)
                     } else {
                         output.push(ch);
                         Self::Text
@@ -115,11 +129,13 @@ impl StreamRedactorState {
                     output.push(ch);
                     Self::ConfirmedSecretKey
                 } else {
-                    Self::after_secret_key(ch, output)
+                    Self::after_secret_key(ch, SecretValueKind::Other, output)
                 }
             }
-            Self::AfterSecretKey => Self::after_secret_key_value(ch, output),
-            Self::RedactingSecretValue { marker } => Self::redact_value(ch, marker, output),
+            Self::AfterSecretKey { kind } => Self::after_secret_key_value(ch, kind, output),
+            Self::RedactingSecretValue { marker, kind } => {
+                Self::redact_value(ch, marker, kind, output)
+            }
         }
     }
 
@@ -142,15 +158,16 @@ impl StreamRedactorState {
         Self::Candidate { pending, exact_key }
     }
 
-    fn after_secret_key(ch: char, output: &mut String) -> Self {
+    fn after_secret_key(ch: char, kind: SecretValueKind, output: &mut String) -> Self {
         if matches!(ch, '=' | ':') {
             output.push(ch);
             Self::RedactingSecretValue {
                 marker: RedactionMarker::Pending,
+                kind,
             }
         } else if ch.is_whitespace() {
             output.push(ch);
-            Self::AfterSecretKey
+            Self::AfterSecretKey { kind }
         } else if secret_key_char(ch) {
             Self::advance_candidate(ch.to_string(), ExactKeyStatus::Possible, output)
         } else {
@@ -159,46 +176,55 @@ impl StreamRedactorState {
         }
     }
 
-    fn after_secret_key_value(ch: char, output: &mut String) -> Self {
+    fn after_secret_key_value(ch: char, kind: SecretValueKind, output: &mut String) -> Self {
         if ch.is_whitespace() {
             output.push(ch);
-            Self::AfterSecretKey
-        } else if secret_value_delimiter(ch) {
+            Self::AfterSecretKey { kind }
+        } else if secret_value_delimiter(ch, kind) {
             output.push(ch);
             Self::Text
         } else {
             output.push_str("<redacted>");
             Self::RedactingSecretValue {
                 marker: RedactionMarker::Written,
+                kind,
             }
         }
     }
 
-    fn redact_value(ch: char, marker: RedactionMarker, output: &mut String) -> Self {
+    fn redact_value(
+        ch: char,
+        marker: RedactionMarker,
+        kind: SecretValueKind,
+        output: &mut String,
+    ) -> Self {
         match marker {
             RedactionMarker::Pending if ch.is_whitespace() => {
                 output.push(ch);
                 Self::RedactingSecretValue {
                     marker: RedactionMarker::Pending,
+                    kind,
                 }
             }
             RedactionMarker::Pending => {
                 output.push_str("<redacted>");
-                if secret_value_delimiter(ch) {
+                if secret_value_delimiter(ch, kind) {
                     output.push(ch);
                     Self::Text
                 } else {
                     Self::RedactingSecretValue {
                         marker: RedactionMarker::Written,
+                        kind,
                     }
                 }
             }
-            RedactionMarker::Written if secret_value_delimiter(ch) => {
+            RedactionMarker::Written if secret_value_delimiter(ch, kind) => {
                 output.push(ch);
                 Self::Text
             }
             RedactionMarker::Written => Self::RedactingSecretValue {
                 marker: RedactionMarker::Written,
+                kind,
             },
         }
     }
@@ -208,12 +234,14 @@ impl StreamRedactorState {
             Self::Candidate { pending, .. } => pending,
             Self::RedactingSecretValue {
                 marker: RedactionMarker::Pending,
+                ..
             } => "<redacted>".to_string(),
             Self::Text
             | Self::ConfirmedSecretKey
-            | Self::AfterSecretKey
+            | Self::AfterSecretKey { .. }
             | Self::RedactingSecretValue {
                 marker: RedactionMarker::Written,
+                ..
             } => String::new(),
         }
     }
@@ -245,7 +273,14 @@ pub(crate) fn production_secret_key_matrix() -> Vec<String> {
         .collect()
 }
 
+fn exact_key_name(key: &str) -> &str {
+    key.strip_prefix("--")
+        .or_else(|| key.strip_prefix('-'))
+        .unwrap_or(key)
+}
+
 fn is_possible_exact_secret_key(key: &str) -> bool {
+    let key = exact_key_name(key);
     EXACT_SECRET_KEYS.iter().any(|secret_key| {
         secret_key
             .get(..key.len())
@@ -254,9 +289,14 @@ fn is_possible_exact_secret_key(key: &str) -> bool {
 }
 
 fn is_exact_secret_key(key: &str) -> bool {
+    let key = exact_key_name(key);
     EXACT_SECRET_KEYS
         .iter()
         .any(|secret_key| secret_key.eq_ignore_ascii_case(key))
+}
+
+fn is_connection_key(key: &str) -> bool {
+    exact_key_name(key).eq_ignore_ascii_case("connection")
 }
 
 fn contains_substring_secret_key(key: &str) -> bool {
@@ -308,8 +348,13 @@ fn secret_key_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-')
 }
 
-fn secret_value_delimiter(ch: char) -> bool {
-    matches!(ch, ';' | '&' | ',' | '\n' | '\r' | '}')
+fn secret_value_delimiter(ch: char, kind: SecretValueKind) -> bool {
+    match kind {
+        // A 1C connection string contains semicolon-delimited fields. Releasing
+        // them as independent text would expose values such as Ref and Usr.
+        SecretValueKind::Connection => matches!(ch, '\n' | '\r'),
+        SecretValueKind::Other => matches!(ch, ';' | '&' | ',' | '\n' | '\r' | '}'),
+    }
 }
 
 #[cfg(test)]
@@ -350,6 +395,34 @@ pub(crate) mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn stream_redactor_hides_complete_connection_strings_at_every_chunk_boundary() {
+        for (input, expected) in [
+            (
+                "prefix\n--connection Srvr=server;Ref=private-ib;Usr=service;Pwd=private-password\nPwd=separate-secret\nsuffix\n",
+                "prefix\n--connection <redacted>\nPwd=<redacted>\nsuffix\n",
+            ),
+            (
+                "connection=File=/private/path;Ref=private-ib&Pwd=private-password,next=private-data\nfinished\n",
+                "connection=<redacted>\nfinished\n",
+            ),
+        ] {
+            for split in 0..=input.len() {
+                let mut stream = StreamRedactor::new();
+                let mut output = stream.push(&input[..split]);
+                output.push_str(&stream.push(&input[split..]));
+                output.push_str(&stream.finish());
+                assert_eq!(output, expected, "split={split}");
+            }
+        }
+
+        // Separators still terminate ordinary key values on the same line.
+        assert_eq!(
+            redactor("token=private-token; stage=done\n"),
+            "token=<redacted>; stage=done\n"
+        );
     }
 
     #[test]

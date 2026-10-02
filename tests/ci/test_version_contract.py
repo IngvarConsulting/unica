@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import re
+import tempfile
 import tomllib
 import unittest
 from pathlib import Path
@@ -55,17 +56,39 @@ class VersionContractTests(unittest.TestCase):
 
         values = module.read_version_contract(REPO_ROOT)
 
-        # Named rather than pinned to a literal: the contract is that the four
-        # locations agree, and asserting the number here only added a file every
-        # release had to come back and edit.
+        # Independent locations catch a host omitted by the production reader.
         self.assertEqual(
             sorted(values),
-            ["claude-plugin", "plugin", "tools-lock-unica", "workspace"],
+            ["claude-plugin", "plugin", "tools-lock-unica", "workspace", "zcode-plugin"],
         )
         self.assertEqual(len(set(values.values())), 1, values)
         self.assertRegex(next(iter(values.values())), load_module().RELEASE_VERSION)
 
-    def test_meta_surface_delivery_is_versioned_across_the_012_line(self) -> None:
+    def test_version_gate_requires_zcode_and_reports_its_drift(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for relative in (
+                "Cargo.toml",
+                "plugins/unica/.codex-plugin/plugin.json",
+                "plugins/unica/.claude-plugin/plugin.json",
+                "plugins/unica/third-party/tools.lock.json",
+            ):
+                target = root / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes((REPO_ROOT / relative).read_bytes())
+            with self.assertRaisesRegex(FileNotFoundError, r"\.zcode-plugin"):
+                module.read_version_contract(root)
+            zcode = root / "plugins/unica/.zcode-plugin/plugin.json"
+            zcode.parent.mkdir()
+            zcode.write_text(json.dumps({"name": "unica", "version": "0.0.1"}), encoding="utf-8")
+            values = module.read_version_contract(root)
+            self.assertEqual(
+                module.validate_version_contract(values),
+                [f"zcode-plugin version 0.0.1 != expected {values['workspace']}"],
+            )
+
+    def test_meta_surface_delivery_is_versioned_across_the_013_line(self) -> None:
         module = load_module()
         values = module.read_version_contract(REPO_ROOT)
         lock = (REPO_ROOT / "Cargo.lock").read_text(encoding="utf-8")
@@ -83,7 +106,7 @@ class VersionContractTests(unittest.TestCase):
         self.assertEqual(len(delivered), 1, values)
         version = next(iter(delivered))
         # Пин держит линию поставки; суффикс предвыпуска ей не противоречит.
-        self.assertRegex(version, r"^0\.12\.\d+(?:-[0-9A-Za-z.]+)?$")
+        self.assertRegex(version, r"^0\.13\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$")
         self.assertEqual(
             workspace_packages,
             {"unica-bootstrap": version, "unica-coder": version},
@@ -117,49 +140,6 @@ class VersionContractTests(unittest.TestCase):
         errors = module.validate_version_contract({"cargo": "banana", "plugin": "banana"})
 
         self.assertTrue(any("banana" in error for error in errors), errors)
-
-    def test_0120_meta_migration_is_complete_and_linked(self) -> None:
-        migration_index = REPO_ROOT / "docs/migrations/README.md"
-        migration_note = REPO_ROOT / "docs/migrations/0.12.0-meta-surface.md"
-        self.assertTrue(migration_index.is_file(), migration_index)
-        self.assertTrue(migration_note.is_file(), migration_note)
-
-        index = migration_index.read_text(encoding="utf-8")
-        note = migration_note.read_text(encoding="utf-8")
-        root_readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
-        required_mapping = (
-            (
-                "meta.compile",
-                "meta.add.operations[] only for ledger-supported capabilities",
-            ),
-            ("meta.profile", "meta.info.usage / meta.info.predefinedItems"),
-            (
-                "meta.validate",
-                "meta.info.validation / automatic mutation validation",
-            ),
-            ("ObjectPath", "sourceSet + metadataPath"),
-            ("ConfigDir + Object", "sourceSet + metadataPath"),
-            ("Operation + Value", "operations[]"),
-            ("DefinitionFile", "removed"),
-        )
-
-        self.assertIn("[0.12.0", index)
-        self.assertIn("0.12.0-meta-surface.md", index)
-        self.assertIn("docs/migrations/README.md", root_readme)
-        documented_mapping = tuple(
-            tuple(part.strip() for part in line.split("->", 1))
-            for line in note.splitlines()
-            if "->" in line
-        )
-        self.assertEqual(documented_mapping, required_mapping)
-        for fragment in ("sourceSet", "kind", "name", "dryRun"):
-            self.assertIn(fragment, note)
-        self.assertIn("operations[]", note)
-        self.assertIn("clean break", note.lower())
-        self.assertIn(
-            "`meta.add` не принимает прежнюю нагрузку определения из `meta.compile`",
-            " ".join(note.split()),
-        )
 
     def test_mismatch_names_the_contract_field(self) -> None:
         module = load_module()

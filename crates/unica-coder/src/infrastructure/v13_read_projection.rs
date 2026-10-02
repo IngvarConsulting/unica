@@ -609,6 +609,26 @@ fn project_configuration(
     payload: &Value,
     suffix: &[AddressSegment],
 ) -> Result<NodeViewData, ViewError> {
+    let mut counts = std::collections::BTreeMap::<String, usize>::new();
+    for item in payload
+        .get("registeredObjects")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if let Some(kind) = item.get("kind").and_then(Value::as_str) {
+            *counts.entry(kind.to_string()).or_default() += 1;
+        }
+    }
+    project_configuration_with_counts(address, payload, suffix, counts)
+}
+
+pub(super) fn project_configuration_with_counts(
+    address: &QualifiedAddress,
+    payload: &Value,
+    suffix: &[AddressSegment],
+    counts: std::collections::BTreeMap<String, usize>,
+) -> Result<NodeViewData, ViewError> {
     if !suffix.is_empty() {
         return Err(ViewError::new(
             RefusalCode::NotFound,
@@ -660,17 +680,6 @@ fn project_configuration(
             _ => {}
         }
     }
-    let mut counts = std::collections::BTreeMap::<String, usize>::new();
-    for item in payload
-        .get("registeredObjects")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        if let Some(kind) = item.get("kind").and_then(Value::as_str) {
-            *counts.entry(kind.to_string()).or_default() += 1;
-        }
-    }
     let branches = counts
         .into_iter()
         .map(|(kind, count)| BranchRef::new(format!("{}:{kind}", address.source_set()), count))
@@ -700,13 +709,34 @@ pub(super) fn project_registered_metadata_branch(
         .last()
         .map(AddressSegment::kind)
         .ok_or_else(|| ViewError::new(RefusalCode::NotFound, "metadata branch kind is missing"))?;
-    let items = payload
+    let names = payload
         .get("registeredObjects")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .filter(|item| item.get("kind").and_then(Value::as_str) == Some(kind.as_str()))
-        .filter_map(|item| item.get("name").and_then(Value::as_str))
+        .filter_map(|item| item.get("name").and_then(Value::as_str));
+    project_registered_metadata_branch_names_inner(address, kind, names)
+}
+
+pub(super) fn project_registered_metadata_branch_names(
+    address: &QualifiedAddress,
+    names: &[String],
+) -> Result<NodeViewData, ViewError> {
+    let kind = address
+        .segments()
+        .last()
+        .map(AddressSegment::kind)
+        .ok_or_else(|| ViewError::new(RefusalCode::NotFound, "metadata branch kind is missing"))?;
+    project_registered_metadata_branch_names_inner(address, kind, names.iter().map(String::as_str))
+}
+
+fn project_registered_metadata_branch_names_inner<'a>(
+    address: &QualifiedAddress,
+    kind: NodeKind,
+    names: impl Iterator<Item = &'a str>,
+) -> Result<NodeViewData, ViewError> {
+    let items = names
         .map(|name| {
             serde_json::to_value(NodeView::new(
                 format!("{}.{name}", address),
@@ -762,6 +792,13 @@ fn validate_reader_payload(reader: LogicalReader, payload: &Value) -> Result<(),
             "relations",
             "collections",
             "predefinedItems",
+            // Заимствование расширением: только в наборе вида `extension`.
+            "belonging",
+            "parentId",
+            "parentStatus",
+            "overridesCount",
+            "overridesComplete",
+            "overrides",
         ],
         LogicalReader::Form => &[
             "name",
@@ -958,7 +995,23 @@ fn project_metadata(
     suffix: &[AddressSegment],
 ) -> Result<NodeViewData, ViewError> {
     if suffix.is_empty() {
-        let mut props = selected_scalar_props(payload, &["kind", "synonym", "support"]);
+        let mut props = selected_scalar_props(
+            payload,
+            &[
+                "kind",
+                "synonym",
+                "support",
+                // Заимствование расширением: ключи есть только в наборе
+                // расширения и только у заимствованного объекта, кроме
+                // `belonging` — он отвечает у всякого объекта расширения.
+                "belonging",
+                "parentId",
+                "parentStatus",
+                "overridesCount",
+                "overridesComplete",
+                "overrides",
+            ],
+        );
         props.extend(metadata_property_props(payload));
         props.extend(metadata_detail_props(payload));
         // Счёт предопределённых элементов берётся из ответа читателя, а не из
@@ -1859,6 +1912,34 @@ fn metadata_property_props(payload: &Value) -> Map<String, Value> {
             Some((key.to_string(), value))
         })
         .collect()
+}
+
+pub(crate) fn borrowing_props(
+    borrowing: &crate::infrastructure::native_operations::meta::MetaBorrowing,
+) -> Map<String, Value> {
+    let mut props = Map::new();
+    props.insert(
+        "belonging".into(),
+        json!(if borrowing.extends.is_some() {
+            "borrowed"
+        } else {
+            "own"
+        }),
+    );
+    if let Some(parent_id) = &borrowing.extends {
+        if safe_prop("parentId", &json!(parent_id)) {
+            props.insert("parentId".into(), json!(parent_id));
+        }
+        props.insert("parentStatus".into(), json!("unavailable"));
+        let overrides = borrowing.overrides.join(", ");
+        let complete = safe_prop("overrides", &json!(overrides));
+        props.insert("overridesCount".into(), json!(borrowing.overrides.len()));
+        props.insert("overridesComplete".into(), json!(complete));
+        if complete && !overrides.is_empty() {
+            props.insert("overrides".into(), json!(overrides));
+        }
+    }
+    props
 }
 
 fn selected_scalar_props(value: &Value, keys: &[&str]) -> Map<String, Value> {

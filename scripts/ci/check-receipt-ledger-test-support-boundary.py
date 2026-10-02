@@ -1,65 +1,93 @@
 #!/usr/bin/env python3
-"""Признак `receipt-ledger-test-support` гейтит только элементы модуля.
+"""Проверка размещения атрибутов `receipt-ledger-test-support` в Rust.
 
-Production-код рантайма v5 и хранилищ не ветвится по признаку тестовой
-поддержки: атрибут `#[cfg(...)]`, упоминающий признак, может стоять только
-перед элементом — `mod`, `use`, `fn`, `struct`, `enum`, `impl`, `trait`,
-`type`, `const`, `static`, — а не перед оператором, выражением, аргументом,
-полем или веткой `match`. Форма `not(feature = ...)` запрещена целиком: у
-production не бывает кода, который есть только без признака.
+`cfg` и `cfg_attr` могут включать целые items, например функцию или модуль,
+но не отдельные операторы, выражения, аргументы, поля или ветви `match`.
+Форма `not` с этой feature запрещена и на целых items.
 
-Страж читает конструкции Cargo и языка, а не наши имена.
+Страж разбирает Rust-синтаксис, включая записанные тела `macro_rules!`.
+Он не раскрывает макросы и не доказывает эквивалентность сборок.
 """
 
 from __future__ import annotations
 
 import argparse
-import re
 import sys
 from pathlib import Path
 
+from tree_sitter import Language, Parser
+import tree_sitter_rust
+
 FEATURE = "receipt-ledger-test-support"
 SOURCE_ROOT = Path("crates/unica-coder/src")
-CFG_ATTRIBUTE = re.compile(r"^\s*#\s*\[\s*cfg(?:_attr)?\s*\(")
-NOT_FEATURE = re.compile(r"not\s*\(\s*feature\s*=\s*\"" + re.escape(FEATURE) + r"\"")
-ATTRIBUTE_LINE = re.compile(r"^\s*#\s*\[")
-ITEM_LINE = re.compile(
-    r"^\s*(?:pub(?:\s*\([^)]*\))?\s+)?"
-    r"(?:unsafe\s+|async\s+|const\s+|extern\s+(?:\"[^\"]*\"\s+)?)*"
-    r"(?:mod|use|fn|struct|enum|impl|trait|type|const|static|macro_rules!)\b"
-)
+RUST_LANGUAGE = Language(tree_sitter_rust.language())
+ITEM_TYPES = {
+    "mod_item", "use_declaration", "function_item", "function_signature_item",
+    "struct_item", "enum_item", "impl_item", "trait_item", "type_item",
+    "const_item", "static_item", "macro_definition",
+}
+COMMENTS = {"line_comment", "block_comment"}
 
 
-def gated_lines(source: str):
-    lines = source.split("\n")
-    for index, line in enumerate(lines):
-        if not CFG_ATTRIBUTE.match(line) or FEATURE not in line:
-            continue
-        yield index, line, lines
+def uses_feature(node) -> bool:
+    children = [child for child in node.children if child.type not in COMMENTS]
+    for name, equals, value in zip(children, children[1:], children[2:]):
+        if name.text == b"feature" and equals.text == b"=":
+            if any(child.type == "string_content" and child.text == FEATURE.encode()
+                   for child in value.named_children):
+                return True
+    return any(uses_feature(child) for child in node.named_children
+               if child.type == "token_tree")
 
 
-def offenders(path: Path, source: str) -> list[str]:
+def negates_feature(node) -> bool:
+    children = [child for child in node.children if child.type not in COMMENTS]
+    for name, arguments in zip(children, children[1:]):
+        if name.text == b"not" and arguments.type == "token_tree" and uses_feature(arguments):
+            return True
+    return any(negates_feature(child) for child in node.named_children
+               if child.type == "token_tree")
+
+
+def offenders(path: Path, source: str, line_offset: int = 0) -> list[str]:
     found = []
-    for index, line, lines in gated_lines(source):
-        if NOT_FEATURE.search(line):
-            found.append(f"{path.as_posix()}:{index + 1}: `not(feature = ...)` is forbidden")
+    tree = Parser(RUST_LANGUAGE).parse(source.encode("utf-8"))
+    pending = [tree.root_node]
+    while pending:
+        node = pending.pop()
+        pending.extend(reversed(node.named_children))
+        if node.type == "macro_rule":
+            body = node.child_by_field_name("right")
+            if body is not None:
+                # Inspect the written expansion body without expanding metavariables.
+                found.extend(offenders(
+                    path, body.text[1:-1].decode("utf-8"),
+                    line_offset + body.start_point.row,
+                ))
+        if node.type not in {"attribute_item", "inner_attribute_item"}:
             continue
-        # The attribute may span lines: skip to its closing bracket.
-        cursor = index
-        depth = line.count("[") - line.count("]")
-        while depth > 0 and cursor + 1 < len(lines):
-            cursor += 1
-            depth += lines[cursor].count("[") - lines[cursor].count("]")
-        # Skip further attributes and doc comments.
-        target = cursor + 1
-        while target < len(lines) and (
-            ATTRIBUTE_LINE.match(lines[target]) or lines[target].strip().startswith("///")
-        ):
-            target += 1
-        gated = lines[target] if target < len(lines) else ""
-        if not ITEM_LINE.match(gated):
+        attribute = node.named_children[0]
+        if not attribute.named_children or attribute.named_children[0].text not in (b"cfg", b"cfg_attr"):
+            continue
+        arguments = attribute.child_by_field_name("arguments")
+        if arguments is None or not uses_feature(arguments):
+            continue
+        line = line_offset + node.start_point.row + 1
+        if negates_feature(arguments):
+            found.append(f"{path.as_posix()}:{line}: `not(feature = ...)` is forbidden")
+            continue
+        if node.type == "inner_attribute_item":
+            target = node.parent
+            if target.type == "declaration_list":
+                target = target.parent
+        else:
+            target = node.next_named_sibling
+            while target is not None and target.type in COMMENTS | {"attribute_item"}:
+                target = target.next_named_sibling
+        if target is None or target.type not in ITEM_TYPES | {"source_file"}:
+            gated = "" if target is None else target.text.decode("utf-8").strip()[:60]
             found.append(
-                f"{path.as_posix()}:{index + 1}: the feature gates `{gated.strip()[:60]}`, not an item"
+                f"{path.as_posix()}:{line}: the feature gates `{gated}`, not an item"
             )
     return found
 

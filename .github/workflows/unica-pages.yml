@@ -31,8 +31,22 @@ on:
 permissions:
   contents: read
 
+# Прогоны идут по одному: сайт публикуется целиком. Прогон, который джоба
+# build всё равно отсечёт (push в main, отменённый источник, чужой
+# репозиторий), в общую группу не входит. Иначе он, закончившись пропуском,
+# вытеснял ожидающий прогон с результатами: так пропущенный 36186414059
+# снял 36186306167 с отчётом #1018. Условие то же, что у build; тест держит
+# их равными.
 concurrency:
-  group: unica-pages
+  group: >-
+    ${{
+      ((github.event.workflow_run.conclusion == 'success' || github.event.workflow_run.conclusion == 'failure') &&
+      (github.event.workflow_run.event == 'merge_group' ||
+       (github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch != 'main') ||
+       github.event.workflow_run.event == 'schedule' || github.event.workflow_run.event == 'workflow_dispatch') &&
+      github.event.workflow_run.head_repository.full_name == github.repository)
+      && 'unica-pages' || format('unica-pages-idle-{0}', github.run_id)
+    }}
   cancel-in-progress: false
 
 jobs:
@@ -73,6 +87,33 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
+
+      # Прогон очереди кончается раньше, чем очередь вливает его дерево, и
+      # сборка из дерева события брала прежний main: сайт отставал на одно
+      # вливание. Коммит самой очереди тоже не годится: очередь пачечная, её
+      # прогоны кончаются не по порядку, а pull request, снятый с очереди, всё
+      # равно даёт успешный прогон. Поэтому сайт ждёт, пока main впитает
+      # проверенное дерево или очередь его отпустит. Скрипт ожидания берётся
+      # из дерева события: код ветки очереди до вливания здесь не исполняется.
+      # Обычно ждать около полуминуты, пачку — до нескольких минут; дольше
+      # десяти сайт не ждёт, а сбой самого скрипта джобу не роняет.
+      - name: Дождаться вливания проверенного очередью дерева
+        if: github.event.workflow_run.event == 'merge_group' && github.event.workflow_run.conclusion == 'success'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          QUEUE_SHA: ${{ github.event.workflow_run.head_sha }}
+          QUEUE_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: python scripts/ci/await-queue-merge.py --repo "$GITHUB_REPOSITORY" --sha "$QUEUE_SHA" --queue-branch "$QUEUE_BRANCH" --timeout 600
+      # Страницы любого источника собираются из main, какой он сейчас, а не
+      # из дерева события. Прогон, отложенный группой, пока соседний ждал
+      # вливания, иначе выложил бы main старше уже опубликованного: сайт
+      # двигается только вперёд.
+      - name: Взять main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: main
 
       # Бинарь зовётся по своему пути: PATH прогона не расширяется.
       - name: Поставить Allure CLI
@@ -147,19 +188,19 @@ jobs:
 
       # Счётчики на странице берутся из сводок собранных отчётов, поэтому
       # документ статуса считается после них, а страницы перерисовываются.
+      # Подвал называет дерево, из которого собраны страницы, и ведёт на этот
+      # коммит, а не на прогон-источник: у тега, релизной линии и очереди они
+      # разные. Прогоны линий подписаны на своих карточках.
       - name: Пересобрать страницы с итоговым статусом
         env:
           GH_TOKEN: ${{ github.token }}
-          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
-          RUN_URL: ${{ github.event.workflow_run.html_url }}
           RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
           set -eu
           python scripts/ci/site-status.py \
             --repo "$GITHUB_REPOSITORY" \
             --branch "$RUN_BRANCH" \
-            --sha "$RUN_SHA" \
-            --run-url "$RUN_URL" \
+            --sha "$(git rev-parse HEAD)" \
             --summaries .build/site/data \
             --out .build/status.json
           python scripts/ci/build-site.py --pages-only --status .build/status.json --out .build/site

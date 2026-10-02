@@ -150,6 +150,14 @@ impl V5ActiveTaskCancellations {
         }
     }
 
+    fn protected_started(&self, task_id: crate::domain::invocation::TaskId) -> bool {
+        self.tokens
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&task_id)
+            .is_some_and(CancellationToken::protected_process_started)
+    }
+
     fn is_empty(&self) -> bool {
         self.tokens
             .lock()
@@ -330,6 +338,18 @@ impl FailStopWatchdogs {
 /// The grace a promised or cancelled attempt gets before the process
 /// fail-stops on it.
 const FAIL_STOP_GRACE: Duration = TASK_RECONCILIATION_BUDGET;
+
+fn task_outcome_after_cancel(
+    candidate: ReceiptTerminalOutcome,
+    cancel_requested: bool,
+    protected_started: bool,
+) -> ReceiptTerminalOutcome {
+    if cancel_requested && !protected_started {
+        ReceiptTerminalOutcome::Cancelled
+    } else {
+        candidate
+    }
+}
 
 /// What the inline worker hands back to the session handler.
 enum InlineWorkerReport {
@@ -2332,7 +2352,14 @@ impl V5ReceiptRuntime {
     /// A cancelled Working Task gets the grace to reach its terminal before
     /// the process fail-stops on it.
     fn arm_cancel_grace(&self, record: &V5StoredInvocationRecord) {
-        if record.task == V5StoredTask::Working {
+        // The ordinary grace protects a cancelled, non-cooperative attempt.
+        // A protected runner has crossed the process launch boundary; killing
+        // the daemon here would discard the database operation's receipt.
+        if record.task == V5StoredTask::Working
+            && !self
+                .active_task_cancellations
+                .protected_started(record.task_id)
+        {
             self.fail_stop_watchdogs.arm(
                 record.receipt_key_digest.clone(),
                 self.invocation_executor.now(),
@@ -2451,11 +2478,18 @@ impl V5ReceiptRuntime {
                         // it the grace before the process fail-stops on it.
                         self.active_task_cancellations
                             .cancel(reserved.key().reserved_task_id());
-                        self.fail_stop_watchdogs.arm(
-                            crate::application::receipt_ledger::receipt_key_digest(reserved.key()),
-                            self.invocation_executor.now(),
-                            FAIL_STOP_GRACE,
-                        );
+                        if !self
+                            .active_task_cancellations
+                            .protected_started(reserved.key().reserved_task_id())
+                        {
+                            self.fail_stop_watchdogs.arm(
+                                crate::application::receipt_ledger::receipt_key_digest(
+                                    reserved.key(),
+                                ),
+                                self.invocation_executor.now(),
+                                FAIL_STOP_GRACE,
+                            );
+                        }
                         return self
                             .reply_for_existing_state(ReceiptState::Reserved(reserved), deadline);
                     }
@@ -3222,7 +3256,8 @@ impl V5ReceiptRuntime {
                 self.hooks
                     .callback_invocation_id(reservation.key().invocation_id());
                 let result = prepared.execute(cancellation.clone());
-                let outcome = if cancellation.is_cancelled() {
+                let protected_started = cancellation.protected_process_started();
+                let outcome = if cancellation.is_cancelled() && !protected_started {
                     ReceiptTerminalOutcome::Cancelled
                 } else {
                     match result {
@@ -3531,7 +3566,8 @@ impl V5ReceiptRuntime {
             .event(V5ReceiptRuntimeEventKind::ExecuteEntered, self.epoch_ms());
         self.hooks.callback_invocation_id(invocation_id);
         let result = prepared.execute(cancellation.clone());
-        if cancellation.is_cancelled() {
+        let protected_started = cancellation.protected_process_started();
+        if cancellation.is_cancelled() && !protected_started {
             ReceiptTerminalOutcome::Cancelled
         } else {
             match result {
@@ -4037,7 +4073,8 @@ impl V5ReceiptRuntime {
                 .event(V5ReceiptRuntimeEventKind::ExecuteEntered, epoch_ms);
             self.hooks.callback_invocation_id(invocation_id);
             let result = prepared.execute(cancellation.clone());
-            let outcome = if cancellation.is_cancelled() {
+            let protected_started = cancellation.protected_process_started();
+            let outcome = if cancellation.is_cancelled() && !protected_started {
                 ReceiptTerminalOutcome::Cancelled
             } else {
                 match result {
@@ -4095,7 +4132,8 @@ impl V5ReceiptRuntime {
             .event(V5ReceiptRuntimeEventKind::ExecuteEntered, epoch_ms);
         self.hooks.callback_invocation_id(invocation_id);
         let result = prepared.execute(cancellation.clone());
-        let outcome = if cancellation.is_cancelled() {
+        let protected_started = cancellation.protected_process_started();
+        let outcome = if cancellation.is_cancelled() && !protected_started {
             ReceiptTerminalOutcome::Cancelled
         } else {
             match result {
@@ -4140,7 +4178,8 @@ impl V5ReceiptRuntime {
                     runtime.epoch_ms(),
                 );
                 let result = prepared.execute(cancellation.clone());
-                let outcome = if cancellation.is_cancelled() {
+                let protected_started = cancellation.protected_process_started();
+                let outcome = if cancellation.is_cancelled() && !protected_started {
                     ReceiptTerminalOutcome::Cancelled
                 } else {
                     match result {
@@ -4224,11 +4263,11 @@ impl V5ReceiptRuntime {
             }
             _ => return Err(ReceiptLedgerError::TaskBoundMismatch),
         };
-        let outcome = if record.cancel_requested {
-            ReceiptTerminalOutcome::Cancelled
-        } else {
-            candidate
-        };
+        let outcome = task_outcome_after_cancel(
+            candidate,
+            record.cancel_requested,
+            self.active_task_cancellations.protected_started(task_id),
+        );
         let terminal = match canonical_v5_terminal(&outcome) {
             Ok(terminal) => terminal,
             Err(CanonicalTerminalError::ResultTooLarge) => {
@@ -5430,6 +5469,26 @@ fn run_daemon_configured_until(
         let _ = state.remove_v5_endpoint_if_owned(&published);
         return Err(error);
     }
+    // A losing startup process never opens or rewrites the observation state.
+    // The writer begins only after the endpoint's second authority check.
+    let authority = Arc::downgrade(&runtime);
+    let observation_authority: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || {
+        authority.upgrade().is_some_and(|runtime| {
+            !runtime.restart_required() && runtime.ensure_named_authority().is_ok()
+        })
+    });
+    let mut capacity_writer =
+        match crate::infrastructure::capacity_observation::start_background_writer(
+            &state,
+            Arc::clone(&config.capacity_observer),
+            observation_authority,
+        ) {
+            Ok(writer) => Some(writer),
+            Err(_) => {
+                eprintln!("local capacity observation disabled: storage unavailable");
+                None
+            }
+        };
     let listener_lease = runtime.hooks.listener_lease();
     let active_leases = Arc::new(V5LeaseRegistry::default());
     let admitted_connections = Arc::new(AtomicUsize::new(0));
@@ -5533,6 +5592,7 @@ fn run_daemon_configured_until(
             // an off-thread continuation would otherwise keep alive.
             join_v5_handlers(sessions);
             runtime.join_task_executions();
+            drop(capacity_writer.take());
             drop(runtime);
         } else {
             drop(sessions);
@@ -5542,6 +5602,7 @@ fn run_daemon_configured_until(
     }
     join_v5_handlers(sessions);
     runtime.join_task_executions();
+    drop(capacity_writer.take());
     state.remove_v5_endpoint_if_owned(&published)?;
     Ok(())
 }
@@ -5662,7 +5723,7 @@ struct V5ConnectionSlot {
 impl V5ConnectionSlot {
     fn acquire(admitted: Arc<AtomicUsize>) -> Option<Self> {
         admitted
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 (current < MAX_HANDSHAKES).then_some(current + 1)
             })
             .ok()

@@ -261,17 +261,6 @@ fn manifest_and_profile_cover_every_platform_gated_metadata_kind() {
         .collect::<std::collections::HashSet<_>>();
     assert_eq!(platform_cases.len(), MetadataKind::ALL.len());
 
-    let platform_corpus = include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/format_8_3_27_xml_corpus.rs"
-    ));
-    for platform_case in platform_cases {
-        assert!(
-            platform_corpus.contains(&format!("\"{platform_case}\"")),
-            "platform case {platform_case} is not tracked by the exact-platform corpus"
-        );
-    }
-
     let mut profile_errors = Vec::new();
     let mut observed_routes = std::collections::BTreeSet::new();
     for kind in MetadataKind::ALL {

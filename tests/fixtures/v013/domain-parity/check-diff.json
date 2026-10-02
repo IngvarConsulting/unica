@@ -146,7 +146,7 @@
       "mode": "validator=cf;dependency=unavailable",
       "fixture": "tests/fixtures/v013/domain-parity/check-diff.json",
       "expected": {
-        "outcome": "dependency_unavailable"
+        "outcome": "provider_unavailable"
       }
     },
     {

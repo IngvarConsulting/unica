@@ -11,7 +11,7 @@ pub(crate) enum MetaObjectRequirement {
 
 /// Запись заводится только под наблюдённое сообщение платформы: условие,
 /// выведенное из рассуждения, проверить нечем, и запретить законный объект оно
-/// способно так же, как пропустить сломанный (ADR-0030).
+/// способно так же, как пропустить сломанный.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct MetaObjectIntegrityRule {
     pub(crate) kinds: &'static [MetadataKind],
@@ -94,7 +94,7 @@ mod tests {
         );
         // Регистр расчёта платформа приняла без ресурса на том же прогоне,
         // поэтому условия у него нет: правило заводится под наблюдённый отказ,
-        // а не по симметрии видов (ADR-0030).
+        // а не по симметрии видов.
         assert_eq!(
             meta_object_integrity_rules(MetadataKind::CalculationRegister).count(),
             0

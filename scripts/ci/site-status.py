@@ -9,11 +9,14 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import importlib.util
 import json
 import os
 import re
 import subprocess
 import sys
+import tempfile
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -22,6 +25,7 @@ from pathlib import Path
 LINE_BRANCH = re.compile(r"\Arelease-v(\d+)\.(\d+)\Z")
 # Линия патчей живёт ещё месяц после того, как вышла следующая minor.
 LINE_GRACE = timedelta(days=30)
+CHANNEL_RULES = Path(__file__).with_name("release-channel.py")
 
 
 def gh(repo: str, path: str) -> list:
@@ -139,17 +143,123 @@ def telegram_members(chat: str) -> str:
     return re.sub(r"[\s \xa0]", "", found.group(1)) if found else "—"
 
 
+def channel_rules():
+    spec = importlib.util.spec_from_file_location("release_channel", CHANNEL_RULES)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def served_release(marketplace: str, branch: str) -> str:
+    """Выпуск, который раздают оба каталога ветки маркетплейса.
+
+    Сверяет их то же правило, что и конвейер публикации: каталоги, которые
+    называют разные выпуски, — отказ, а не выбор одного из них.
+    """
+    rules = channel_rules()
+    with tempfile.TemporaryDirectory(prefix="catalogs-") as tmp:
+        paths = []
+        for host, catalog in (("codex", rules.CODEX_CATALOG), ("claude", rules.CLAUDE_CATALOG)):
+            document = gh(marketplace, f"contents/{catalog.as_posix()}?ref={branch}")[0]
+            path = Path(tmp) / f"{host}.json"
+            path.write_bytes(base64.b64decode(document["content"]))
+            paths.append(path)
+        return rules.catalog_ref(*paths)
+
+
+def channels(repo: str, marketplace: str) -> dict[str, str]:
+    """Что раздают канал кандидатов и стабильный каталог на момент сборки.
+
+    Версии называют каталоги веток маркетплейса, а не список релизов. Релиз
+    выходит до проверок установки: кандидат, который их не прошёл, остаётся
+    релизом, которого канал не раздавал, а стабильный выпуск попадает в
+    каталог только после них. Если каталог не прочитался или каталоги
+    разошлись, остаётся прочерк: называть версию, которую ветка раздаёт не
+    целиком, нельзя, а сайт из-за каталога не должен переставать собираться.
+    Адрес маркетплейса едет в страницу, чтобы скрипт освежал версии из того
+    же места.
+    """
+    releases = f"https://github.com/{repo}/releases"
+    status = {"marketplace": marketplace, "releases_url": releases}
+    for key, branch in (("next", "next"), ("stable", "main")):
+        try:
+            tag = served_release(marketplace, branch)
+        except Exception as error:
+            print(f"выпуск ветки {branch} маркетплейса не определён: {error}", file=sys.stderr)
+            tag = None
+        status[f"{key}_tag"] = tag or "—"
+        status[f"{key}_url"] = f"{releases}/tag/{tag}" if tag else releases
+    # Версию без `v` печатает `plugin list`; страница сверяет установку по ней.
+    status["next_version"] = status["next_tag"].removeprefix("v")
+    return status
+
+
+def release_date(releases: list, tag: str) -> str:
+    """Когда вышел релиз этого тега; прочерк, если такого релиза нет."""
+    for release in releases:
+        if release["tag_name"] == tag:
+            return human(moment(release["published_at"]))
+    return "—"
+
+
+def candidates(status: dict[str, object], releases: list) -> list[dict[str, str]]:
+    """Кандидат для карточки главной: то, что раздаёт канал, пока он впереди.
+
+    Карточка зовёт поставить кандидата, поэтому показывает выпуск из каталога
+    канала, а не свежий пререлиз GitHub: кандидат, не прошедший проверки
+    установки, остаётся пререлизом, которого канал не раздавал. Выпуск
+    показывается, только если он кандидат `-rc.N` и новее и стабильного
+    каталога, и последнего стабильного релиза. Полная версия сначала попадает
+    в `next`, потом в `main`, и её нельзя выдать за кандидата; а стабильная
+    карточка берёт версию из релиза, который выходит раньше, чем конвейер
+    двигает каталоги. Список из нуля или одного элемента: страница не
+    показывает «кандидата нет» вместо пустого места.
+    """
+    rules = channel_rules()
+    tag = str(status["next_tag"])
+    stable = [str(status["version"]), *([str(status["stable_tag"])] if status["stable_tag"] != "—" else [])]
+    try:
+        if rules.channel(tag) != "next":
+            return []
+        ahead = all(rules.precedence(tag) > rules.precedence(other) for other in stable)
+    except rules.TagError:
+        return []
+    if not ahead:
+        return []
+    return [{"candidate_tag": tag, "candidate_url": str(status["next_url"]), "candidate_date": release_date(releases, tag)}]
+
+
+def plural(count: int, one: str, few: str, many: str) -> str:
+    """Форма слова при числе: 1 тест, 2 теста, 5 тестов, 11 тестов, 21 тест."""
+    if count % 10 == 1 and count % 100 != 11:
+        return one
+    if 2 <= count % 10 <= 4 and not 12 <= count % 100 <= 14:
+        return few
+    return many
+
+
 def summary_counts(path: Path | None) -> dict[str, str] | None:
-    """Счётчики берутся из сводки собранного отчёта, а не из воздуха."""
+    """Счётчики берутся из сводки собранного отчёта, а не из воздуха.
+
+    Слово при числе считается здесь же: зашитое в страницу «теста» верно
+    только для чисел на 2–4, а «785 теста» и «1 прошли» читаются как ошибка.
+    """
     if path is None or not path.is_file():
         return None
     statistic = json.loads(path.read_text(encoding="utf-8")).get("statistic", {})
     total = statistic.get("total", 0)
+    passed = statistic.get("passed", 0)
+    failed = statistic.get("failed", 0) + statistic.get("broken", 0)
+    skipped = statistic.get("skipped", 0)
     return {
         "tests_total": f"{total}",
-        "tests_passed": f"{statistic.get('passed', 0)}",
-        "tests_failed": f"{statistic.get('failed', 0) + statistic.get('broken', 0)}",
-        "tests_skipped": f"{statistic.get('skipped', 0)}",
+        "tests_total_word": plural(total, "тест", "теста", "тестов"),
+        "tests_passed": f"{passed}",
+        "tests_passed_word": plural(passed, "прошёл", "прошли", "прошли"),
+        "tests_failed": f"{failed}",
+        "tests_failed_word": plural(failed, "упал", "упали", "упали"),
+        "tests_skipped": f"{skipped}",
+        "tests_skipped_word": plural(skipped, "пропущен", "пропущены", "пропущены"),
     }
 
 
@@ -163,6 +273,11 @@ def main() -> int:
     parser.add_argument("--summaries", type=Path, help="каталог data/ собранного сайта: сводка на линию")
     parser.add_argument("--print-lines", action="store_true", help="напечатать открытые линии и выйти")
     parser.add_argument("--telegram", default="unica_ai", help="публичная группа Telegram")
+    parser.add_argument(
+        "--marketplace",
+        default="IngvarConsulting/unica-marketplace",
+        help="репозиторий маркетплейса: его ветки next и main называют выпуски каналов",
+    )
     parser.add_argument("--report-url", default="allure/main/")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
@@ -177,7 +292,6 @@ def main() -> int:
 
     releases = [r for r in gh(args.repo, "releases?per_page=100") if not r["draft"]]
     published = [r for r in releases if not r["prerelease"]]
-    prereleases = [r for r in releases if r["prerelease"]]
     if not published:
         raise SystemExit("у репозитория нет опубликованных релизов")
     latest = max(published, key=lambda r: moment(r["published_at"]))
@@ -200,21 +314,10 @@ def main() -> int:
         ),
         "github_stars": github_stars(args.repo),
         "telegram_members": telegram_members(args.telegram),
+        **channels(args.repo, args.marketplace),
     }
 
-    # Пререлиз показывается только пока он впереди опубликованной версии:
-    # прошлогодний rc уже ничего не готовит. Список из нуля или одного
-    # элемента: страница не показывает «планируется» вместо пустого места.
-    newest = max(prereleases, key=lambda r: moment(r["published_at"]), default=None)
-    status["prereleases"] = []
-    if newest and moment(newest["published_at"]) > moment(latest["published_at"]):
-        status["prereleases"].append(
-            {
-                "prerelease": newest["tag_name"],
-                "prerelease_date": human(moment(newest["published_at"])),
-                "prerelease_url": newest["html_url"],
-            }
-        )
+    status["candidates"] = candidates(status, releases)
 
     tested, plain = [], []
     for line in site_lines(args.branch, args.repo, now):

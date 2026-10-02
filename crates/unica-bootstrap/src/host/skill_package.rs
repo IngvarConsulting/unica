@@ -70,7 +70,7 @@ mod tests {
     /// Fixtures assert the contract, not the release the crate happens to carry.
     const VERSION: &str = "1.2.3";
 
-    /// A packaged plugin root: both host manifests of one release and the named
+    /// A packaged plugin root: all host manifests of one release and the named
     /// prompt-visible skills.
     struct PackageFixture {
         root: PathBuf,
@@ -94,6 +94,15 @@ mod tests {
                 (
                     ".claude-plugin",
                     serde_json::json!({"name": "unica", "version": VERSION}),
+                ),
+                (
+                    ".zcode-plugin",
+                    serde_json::json!({
+                        "name": "unica",
+                        "version": VERSION,
+                        "skills": "./skills/",
+                        "mcpServers": "./.mcp.json",
+                    }),
                 ),
             ];
             for (dir, body) in manifests {

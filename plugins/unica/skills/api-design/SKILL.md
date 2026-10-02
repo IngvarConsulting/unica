@@ -9,16 +9,14 @@ description: "Проектирование и ревью API 1С: публичн
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.code.search`, `unica.code.definition`, `unica.code.graph`, `unica.code.diagnostics`, `unica.view {}`, `unica.view` on the subsystem node, `unica.meta.info`, `unica.docs`, and `unica.runtime.execute`.
-- По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
-показывает запланированную команду без побочных эффектов, а с `dryRun: false`
-исполняет классифицированную операцию и отвечает её терминальным результатом в
-том же вызове, приложив названную причину риска (`runtime_risk_*`)
-предупреждением; неклассифицированная операция по-прежнему отказывает
-`runtime_operation_unbounded` до обнаружения рабочего пространства. Preview
-исполнением не является. Работу, которую вызов ждать не должен, запускай через
-`unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
-`unica.build.*`.
+- Preferred path: use MCP `unica` tools `unica.search`, `unica.check`, `unica.view {}`, `unica.view` on the subsystem node, `unica.view` on the object node, `unica.docs`, and `unica.run`.
+- Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
+контракт каждой — `argsSchema`, `execution`, `previewRequired`,
+`ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
+при `implemented: true` используй опубликованную `argsSchema`; при
+`support.state: limited` разрешено только подмножество `support.supportedArgs`.
+При `support.state: unavailable` остановись; не выдумывай аргументов при
+`argsSchema: null`. Превью исполнением не является. Не обходи контракт прямым runner-ом.
 - Use v8std through `unica.docs` with `source: "development-standard"` for standards 483, 543, 551, 553, and 644 before making compatibility claims.
 - Use `test-authoring` for unit tests that model API consumer scenarios; use `integration-implement` only when the task is about HTTP/REST/SOAP/gRPC transport implementation.
 - Do not call internal analyzer, standards, runtime, or package adapters directly. They are hidden behind MCP `unica`.
@@ -37,14 +35,14 @@ Classify every exported method before changing or calling it:
 
 ## Workflow
 
-1. Map source-sets with `unica.view {}` and inspect subsystem/object boundaries with `unica.view` on the subsystem node or `unica.meta.info`.
-2. When the API belongs to a concrete metadata object, inspect `unica.meta.info` for related modules, roles, subscriptions, and functional options before classifying the boundary.
-3. Find the candidate API with `unica.code.definition`; inspect the module with `unica.view` on the module node (its `Method` branch lists the methods) before reading broad code.
-4. Use `unica.code.graph` for callers, callees, and impact analysis of exported methods. Use `unica.code.search` for export area comments, module suffixes, deprecated sections, literal contract mentions, and call sites not represented in graph edges.
+1. Map source-sets with `unica.view {}` and inspect subsystem/object boundaries with `unica.view` on the subsystem node or `unica.view` on the object node.
+2. When the API belongs to a concrete metadata object, inspect `unica.view` on the object node for related modules, roles, subscriptions, and functional options before classifying the boundary.
+3. Find the candidate API with `unica.search`; inspect the module with `unica.view` on the module node (its `Method` branch lists the methods) before reading broad code.
+4. Find callers and impact of exported methods with `unica.search` by the method name (a call graph is not on the v0.13 surface); the same search covers export area comments, module suffixes, deprecated sections, and literal contract mentions.
 5. Check standards through `unica.docs` with `source: "development-standard"`: functional subsystems, libraries, overridable modules, version numbering, and backward compatibility.
 6. Classify the change: new method, optional parameter, mandatory parameter, removed/renamed method, changed parameter type, behavior change, deprecated method, or direct data access across a boundary.
 7. Decide the required version impact and migration path.
-8. Verify statically with `unica.code.diagnostics`; use `unica.runtime.execute` to preview the typed syntax/test request and, with `dryRun: false`, to run it, then report syntax and runtime behavior as unverified unless separate evidence is supplied. Keep consumer-style tests for APIs with real callers.
+8. Verify statically with `unica.check` on the module node (test runs are outside the v0.13 surface), then report runtime behavior as unverified unless separate evidence is supplied. Keep consumer-style tests for APIs with real callers.
 
 ## Compatibility rules
 
@@ -103,11 +101,10 @@ For переопределяемые modules:
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.code.search",
+    "name": "unica.search",
     "arguments": {
-      "cwd": "<workspace>",
-      "sourceSet": "<source-set-from-unica-view>",
       "query": "Устаревшие процедуры и функции",
+      "scope": "<source-set-from-unica-view>:Configuration",
       "limit": 20
     }
   }

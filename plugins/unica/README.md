@@ -5,13 +5,15 @@ public stdio MCP server named `unica`. Prompt-visible skills call native
 `unica.*` tools; bundled analyzers, runners, indexes, and the standards adapter
 remain private implementation details.
 
-One plugin directory serves both Codex and Claude Code. Each host reads its own
-manifest, `.codex-plugin/plugin.json` or `.claude-plugin/plugin.json`, and
-ignores the other.
+One plugin directory serves Codex, Claude Code, and ZCode. Their native
+manifests are `.codex-plugin/plugin.json`, `.claude-plugin/plugin.json`, and
+`.zcode-plugin/plugin.json`; all use the same `.mcp.json`, skills, and runtime.
+ZCode prefers its native manifest rather than loading a second plugin.
 
 ## Public installation
 
-Prerequisites are Git and one host: Codex CLI, or Claude Code 2.1.69 or newer.
+Prerequisites are Git and one host: Codex CLI, Claude Code 2.1.69 or newer,
+or ZCode Desktop with native plugin support (the integration contract targets 3.14.4).
 Node.js, Python, download utilities, and archive utilities are not consumer
 dependencies.
 
@@ -39,6 +41,80 @@ claude plugin install unica@unica
 Claude Code 2.1.68 and earlier reject the catalog's `git-subdir` source type and
 cannot load it at all; 2.1.69 is the first release that accepts it.
 
+### ZCode
+
+In **Plugin Marketplace → Add → Add Plugin Marketplace**, add a release
+marketplace containing the native ZCode manifest, or the root of a generated
+local-debug marketplace. Install Unica from **Personal** and manage it in
+**Settings → Plugins**. Keep only one Unica installation enabled. Refresh the
+marketplace and update the whole plugin; do not replace just the runtime binary
+or edit the installed cache.
+
+Start a fresh task using the same model/provider and request `unica.run {}`.
+It must return the current operation dictionary without starting 1C or requiring
+unrelated arguments. An old task can retain the legacy `runtime.execute`
+schema. A successful package build or direct MCP `tools/list` does not prove
+that the model received the schema unchanged; the fresh-task trial is a separate
+acceptance step. The reported optional-field discrepancy is tracked in
+[#1032](https://github.com/IngvarConsulting/unica/issues/1032).
+
+## Release candidates
+
+Release candidates (`X.Y.Z-rc.N`) are served by a separate marketplace,
+`unica-next`, from the `next` branch of the same repository; the stable
+`unica` catalog never serves them. The channel always holds the newest
+published version, so after the full release comes out, the update that
+brought a candidate brings the release, and later candidates follow.
+
+Keep only one of `unica@unica` and `unica@unica-next` installed: both start an
+MCP server named `unica`. On a machine without the stable plugin, skip its
+`remove` or `uninstall` line.
+
+Codex:
+
+```sh
+codex plugin marketplace add IngvarConsulting/unica-marketplace --ref next
+codex plugin remove unica@unica
+codex plugin add unica@unica-next
+```
+
+Update the same way as the stable channel, with the channel's names:
+
+```sh
+codex plugin marketplace upgrade unica-next
+codex plugin remove unica@unica-next
+codex plugin add unica@unica-next
+```
+
+Claude Code:
+
+```sh
+claude plugin marketplace add IngvarConsulting/unica-marketplace#next
+claude plugin uninstall unica@unica
+claude plugin install unica@unica-next
+```
+
+Update with `claude plugin marketplace update unica-next` and
+`claude plugin update unica@unica-next`, or turn on auto-update for
+`unica-next` in `/plugin`: Claude Code leaves it off for third-party
+marketplaces. The channel keeps its own runtime cache there, so its first start
+downloads the core again.
+
+To return to stable releases, swap the plugins back; the stable `unica`
+marketplace from [Public installation](#public-installation) must still be
+added. Until the full release is out, this returns to the previous stable
+version.
+
+```sh
+codex plugin remove unica@unica-next
+codex plugin add unica@unica
+```
+
+```sh
+claude plugin uninstall unica@unica-next
+claude plugin install unica@unica
+```
+
 ## Legacy transition boundary
 
 Unica `v0.7.8` is the immutable migration bridge. A local, duplicated, or
@@ -60,97 +136,28 @@ codex plugin remove unica@unica
 codex plugin marketplace remove unica
 ```
 
-## DCS naming migration
+## Data composition schemas
 
-The release containing [issue #158](https://github.com/IngvarConsulting/unica/issues/158)
-atomically replaces the transliterated `skd` domain with the official
-**Data Composition System (`dcs`)** term. There is no deprecated alias:
+Use [dcs-compile](skills/dcs-compile/SKILL.md) to create a schema and
+[dcs-edit](skills/dcs-edit/SKILL.md) to modify it. Both use `unica.apply`
+with preview and the resulting revision for application. The XML format is
+described in the [DataCompositionSchema specification](references/specs/1c-dcs-spec.md).
 
-| Removed contract | Canonical contract |
-| --- | --- |
-| `unica.skd.compile` | `unica.dcs.compile` |
-| `unica.skd.edit` | `unica.dcs.edit` |
-| `unica.skd.info` | `unica.dcs.info`, itself later retired for `unica.view` |
-| `skd-compile/edit/info` | `dcs-compile/edit` |
+## Reading and changing source objects
 
-The operation arguments and `DataCompositionSchema` XML format are unchanged.
+Find logical addresses with `unica.search` using `corpus: "names"`.
+Use `unica.resolve` when a physical path arrived from outside Unica.
+Addresses have the form `<sourceSet>:<Kind>.<Name>...`; Unica resolves
+physical source files internally.
 
-## Read-only output migration
+Read a node with `unica.view` and validate it with `unica.check`, passing
+its address in `at`. Results are returned in the MCP response. To change
+an object, preview its operations with `unica.apply`, review the result,
+and apply using the returned revision.
 
-The release containing [issue #191](https://github.com/IngvarConsulting/unica/issues/191)
-removes caller-controlled file sinks from read-only MCP tools. The affected
-`info`/`validate` tools no longer accept `OutFile` or `outFile`, and
-`unica.mxl.decompile` no longer accepts `OutputPath` or `outputPath`. There is
-no compatibility alias: these arguments are rejected as contract errors.
-
-Reports, exact raw DCS queries, and the MXL JSON DSL are returned in the MCP
-response. Consumers must read `stdout`/structured response data instead of
-reading a file created by Unica. If a durable artifact is needed, the caller
-must save the returned value explicitly outside the read-only tool contract.
-
-## Logical source target migration
-
-Tools migrate to one logical target, one merge request at a time. There is no
-deprecated alias:
-
-| Tool | Removed selector | Canonical selector |
-| --- | --- | --- |
-| `unica.code.patch` | `path` + `sourceDir` | `sourceSet` + `metadataPath` |
-| `unica.meta.info` | `ObjectPath` / `Path` | `sourceSet` + `metadataPath` |
-
-Calls that still pass a removed field fail with `legacy_target_removed` and
-name the canonical replacement. The logical selector addresses existing
-Platform XML Configuration and Extension targets; Unica resolves the physical
-`*Module.bsl` or descriptor location privately. `unica.meta.info` also stops
-accepting `Detailed`, which it never read.
-
-`unica.search {corpus: "names"}` converts a name or a synonym into a logical
-address. `unica.resolve` converts a path discovered by other means, and is the
-emergency bridge: use it only when the path arrived from outside Unica.
-
-### Readers that accept either selector
-
-Only the two spreadsheet-template readers remain in the transitional state
-ADR-0049 defines: they accept the logical selector **and** still accept their
-existing path. Every other reader that shared this table — the configuration,
-subsystem, role, form and schema readers, and the six `*.validate` tools — is
-retired in favour of `unica.view` and `unica.check`; removing the remaining
-paths is its own later merge request.
-
-| Tool | Logical selector | Path kept for now |
-| --- | --- | --- |
-| `unica.mxl.info`, `unica.mxl.decompile` | `sourceSet` + `metadataPath` | `TemplatePath` |
-
-Exactly one selector per call. Passing both fails with `selector_conflict`,
-because resolving a conflict silently would hide which selector produced the
-answer.
-
-An addressed object whose requested body is missing — a template whose
-`TemplateType` writes `Template.bin` rather than `Template.xml` — fails with
-`resource_absent`, not `target_not_found`: the object exists and is
-addressable, that body does not.
-
-## XDTO operations migration
-
-The release containing [issue #374](https://github.com/IngvarConsulting/unica/issues/374)
-replaced the flat single-operation form of the retired `unica.xdto.edit`
-with a typed ordered `operations` array (ADR-0071); on the canonical surface
-the same operations are `unica.apply` ops of the XDTO family. There is no compatibility alias: a call
-that still passes any retired top-level field fails with
-`legacy_arguments_removed` and names the replacement.
-
-| Removed top-level form | Canonical `operations` element |
-| --- | --- |
-| `operation: "add-value-type"` + `name`, `base` | `{"op": "addValueType", "name": "Amount", "base": "xs:decimal"}` |
-| `operation: "add-object-type"` + `name` | `{"op": "addObjectType", "name": "Order"}` |
-| `operation: "add-property"` + `typeName`, `property` [, `propertyPath`] | `{"op": "addProperty", "typeName": "Order", "property": {"name": "Ref", "type": "tns:Document"}}` — optional `propertyPath` targets a nested `typeDef` |
-| `operation: "remove-type"` + `name` | `{"op": "removeType", "name": "Order"}` |
-| `operation: "remove-property"` + `typeName`, `name` [, `propertyPath`] | `{"op": "removeProperty", "typeName": "Order", "name": "Ref"}` — optional `propertyPath` targets a nested `typeDef` |
-
-Field semantics are unchanged — an element carries exactly the fields the
-package writer has always read. Operations in one call apply in order, see
-each other's results, and publish once; a failed element leaves no partial
-write, and every effect is reported by `operationIndex`.
+See [source-access](skills/source-access/SKILL.md) for navigation,
+[code-patch](skills/code-patch/SKILL.md) for BSL changes, and
+[xdto](skills/xdto/SKILL.md) for typed XDTO operations.
 
 ## Templates, embedded help and validation
 
@@ -175,9 +182,10 @@ runs `bootstrap/launch.sh`, which selects exactly one bootstrap:
 - `win-x64` under Git for Windows.
 
 The alias resolves the plugin root from whichever host it runs under. Claude
-Code rewrites `${CLAUDE_PLUGIN_ROOT}` before the shell sees it; Codex leaves the
-token unset, and the shell falls back to Git's own `$PWD`/`$GIT_PREFIX` pair.
-One launcher therefore serves both hosts without a per-host package.
+Code and ZCode rewrite `${CLAUDE_PLUGIN_ROOT}` before the shell sees it; Codex
+leaves the token unset, and the shell falls back to Git's own `$PWD`/`$GIT_PREFIX`
+pair. ZCode also publishes `ZCODE_PLUGIN_ROOT` as an alias. One launcher serves
+all three hosts without a separate server or schema translator.
 
 The bootstrap downloads only `unica-runtime-<target>.tar.gz` before MCP startup.
 It reads the release-pinned `runtime-manifest.json`, verifies archive and file
@@ -190,7 +198,21 @@ The cache is `$CODEX_HOME/unica/runtimes` under Codex and
 updates. Packaged `.mcp.json` passes the Claude token through
 `UNICA_RUNTIME_CACHE_DIR`; a host that does not substitute it forwards the
 literal token, and the bootstrap discards any value that still contains `${`
-rather than creating a directory named after it.
+rather than creating a directory named after it. ZCode publishes
+`ZCODE_PLUGIN_DATA` and the compatible `CLAUDE_PLUGIN_DATA` with the same value;
+its runtime cache is below that plugin-data directory. The host façade also
+recognizes `ZCODE_PLUGIN_DATA` without the compatible alias. Published data roots
+precede `CODEX_HOME`; explicit `UNICA_RUNTIME_CACHE_DIR` and
+`UNICA_PROVIDER_STATE_DIR` retain priority. Bootstrap-launched provider state
+defaults to `<plugin-data>/unica/provider-state`. The local-debug package starts
+the core directly instead: without `UNICA_PROVIDER_STATE_DIR`, the core uses
+`~/.unica/provider-state`. Neither path is a workspace identity. No prior cache
+is migrated or deleted.
+
+The plugin-data directory is not a workspace identity. ZCode supplies
+`ZCODE_PROJECT_DIR` and the compatible `CLAUDE_PROJECT_DIR`; conflicting project
+paths are rejected. The existing canonical workspace/profile keys continue to
+isolate project state.
 
 Each installed artifact lives below
 `<artifact>/<version>--<asset-sha256>/<target>`. The SHA-256 component prevents
@@ -201,7 +223,10 @@ roots, and internal launches re-check the pinned binary hash.
 The core download happens inside the host's MCP startup budget. Packaged
 `.mcp.json` therefore declares `startup_timeout_sec`, which bounds this
 pre-startup transfer. The host waits for the core to be verified and published
-before it starts MCP; a host that does not know the key ignores it.
+before it starts MCP; a host that does not know the key ignores it. ZCode 3.14.4
+ignores this Codex startup key. Do not substitute a global tool-call timeout:
+startup and operation budgets are distinct. Use the verified bootstrap
+`prefetch` before a cold install when the host startup window is insufficient.
 
 After startup, engine delivery is non-blocking for concurrent callers. The
 first call that needs an absent engine starts one server-owned delivery from the
@@ -271,6 +296,14 @@ claude --plugin-dir ./plugins/unica
 
 To package a current-host Claude debug build instead, pass
 `--local-debug-host claude` to `scripts/ci/package-unica-plugin.py`.
+
+For ZCode, use `--local-debug-host zcode`, an explicit
+`--local-debug-target`, and a separate `--marketplace-name unica-zcode-dev`.
+The packager writes a root `marketplace.json` with a relative plugin source
+and an absolute-root binary launcher. Add the generated `marketplace/`
+directory in the Desktop marketplace UI; do not install the source checkout's
+Cargo launcher as the local binary package. Registration, installation and
+fresh-task acceptance are manual steps. No global ZCode CLI is required.
 
 ## Release pipeline
 
