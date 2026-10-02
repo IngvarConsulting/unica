@@ -553,6 +553,16 @@ pub(crate) fn parse_subsystem_edit_model(
             .unwrap_or_else(|| "false".to_string()),
         explanation: subsystem_edit_ml_text(props, "Explanation"),
         picture: subsystem_edit_picture_text(props),
+        picture_load_transparent: meta_info_child(props, "Picture")
+            .and_then(|picture| {
+                picture
+                    .children()
+                    .find(|child| role_info_element(*child, "LoadTransparent", None))
+            })
+            .and_then(|node| node.text())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned),
         content,
         children,
     })
@@ -594,21 +604,28 @@ pub(crate) fn emit_subsystem_edit_model(model: &SubsystemEditModel) -> String {
         escape_xml(&model.use_one_command)
     ));
     emit_subsystem_edit_ml(&mut lines, "\t\t\t", "Explanation", &model.explanation);
-    if model.picture.is_empty() {
+    if model.picture.is_empty() && model.picture_load_transparent.is_none() {
         lines.push("\t\t\t<Picture/>".to_string());
     } else {
-        lines.push("\t\t\t<Picture>&#13;".to_string());
-        lines.push(format!(
-            "\t\t\t\t<xr:Ref>{}</xr:Ref>&#13;",
-            escape_xml(&model.picture)
-        ));
-        lines.push("\t\t\t\t<xr:LoadTransparent>false</xr:LoadTransparent>&#13;".to_string());
+        lines.push("\t\t\t<Picture>".to_string());
+        if !model.picture.is_empty() {
+            lines.push(format!(
+                "\t\t\t\t<xr:Ref>{}</xr:Ref>",
+                escape_xml(&model.picture)
+            ));
+        }
+        if let Some(load_transparent) = &model.picture_load_transparent {
+            lines.push(format!(
+                "\t\t\t\t<xr:LoadTransparent>{}</xr:LoadTransparent>",
+                escape_xml(load_transparent)
+            ));
+        }
         lines.push("\t\t\t</Picture>".to_string());
     }
     if model.content.is_empty() {
         lines.push("\t\t\t<Content/>".to_string());
     } else {
-        lines.push("\t\t\t<Content>&#13;".to_string());
+        lines.push("\t\t\t<Content>".to_string());
         for item in &model.content {
             lines.push(format!(
                 "\t\t\t\t<xr:Item xsi:type=\"xr:MDObjectRef\">{}</xr:Item>",
@@ -621,7 +638,7 @@ pub(crate) fn emit_subsystem_edit_model(model: &SubsystemEditModel) -> String {
     if model.children.is_empty() {
         lines.push("\t\t<ChildObjects/>".to_string());
     } else {
-        lines.push("\t\t<ChildObjects>&#13;".to_string());
+        lines.push("\t\t<ChildObjects>".to_string());
         for child in &model.children {
             lines.push(format!(
                 "\t\t\t<Subsystem>{}</Subsystem>",
@@ -640,14 +657,14 @@ pub(crate) fn emit_subsystem_edit_ml(lines: &mut Vec<String>, indent: &str, tag:
         lines.push(format!("{indent}<{tag}/>"));
         return;
     }
-    lines.push(format!("{indent}<{tag}>&#13;"));
-    lines.push(format!("{indent}\t<v8:item>&#13;"));
-    lines.push(format!("{indent}\t\t<v8:lang>ru</v8:lang>&#13;"));
+    lines.push(format!("{indent}<{tag}>"));
+    lines.push(format!("{indent}\t<v8:item>"));
+    lines.push(format!("{indent}\t\t<v8:lang>ru</v8:lang>"));
     lines.push(format!(
-        "{indent}\t\t<v8:content>{}</v8:content>&#13;",
+        "{indent}\t\t<v8:content>{}</v8:content>",
         escape_xml(text)
     ));
-    lines.push(format!("{indent}\t</v8:item>&#13;"));
+    lines.push(format!("{indent}\t</v8:item>"));
     lines.push(format!("{indent}</{tag}>"));
 }
 
@@ -1484,6 +1501,7 @@ mod mutation_tests {
             use_one_command: "false".to_string(),
             explanation: String::new(),
             picture: String::new(),
+            picture_load_transparent: None,
             content: Vec::new(),
             children: Vec::new(),
         });
