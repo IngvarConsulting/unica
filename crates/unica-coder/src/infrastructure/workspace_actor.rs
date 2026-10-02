@@ -45,7 +45,6 @@ use std::ffi::{OsStr, OsString};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-#[cfg(test)]
 use std::sync::MutexGuard;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
@@ -2168,7 +2167,8 @@ impl<R> WorkspaceActor<R> {
             .entries.get(token).cloned()
             .ok_or_else(|| SavedApplyExecutionError::Unavailable("executionToken is unavailable in this workspace actor; request a fresh plan with apply(at, ops)".into()))?;
         // One token retains its terminal result across distinct RPC invocations.
-        // The workspace mutation lane is acquired only inside publication.
+        // Both lane waits finish before consuming a pending plan; completed
+        // replay needs only the per-token lane.
         let _execution = entry
             .execution_lane
             .acquire_before(deadline, cancellation, "saved apply execution wait")
@@ -2186,6 +2186,24 @@ impl<R> WorkspaceActor<R> {
         if let SavedApplyState::Completed(result) = &*state {
             return Ok(result.clone());
         }
+        // Waiting for either lane must leave the exact pending plan usable.
+        let publication_lane = self
+            .mutation_lane
+            .acquire_before(
+                deadline,
+                cancellation,
+                "workspace actor prepared apply wait",
+            )
+            .map_err(|error| {
+                SavedApplyExecutionError::Publication(deadline_lock_publication_error(error))
+            })?;
+        apply_publication_checkpoint(deadline, cancellation, "saved apply execution start")
+            .map_err(SavedApplyExecutionError::Publication)?;
+        if entry.expires <= Instant::now() {
+            return Err(SavedApplyExecutionError::Unavailable(
+                "executionToken expired; request a fresh plan with apply(at, ops)".into(),
+            ));
+        }
         let SavedApplyState::Pending { mut batch, preview } =
             std::mem::replace(&mut *state, SavedApplyState::Running)
         else {
@@ -2199,7 +2217,8 @@ impl<R> WorkspaceActor<R> {
         batch
             .transaction
             .rebind_retained_apply_execution_context(deadline, cancellation);
-        let publication = self.publish_prepared_apply(*batch);
+        let publication = self.publish_prepared_apply_under_lane(*batch, &publication_lane);
+        drop(publication_lane);
         let result = finish(preview, publication);
         *state = SavedApplyState::Completed(result.clone());
         Ok(result)
@@ -2331,6 +2350,14 @@ impl<R> WorkspaceActor<R> {
                 "workspace actor prepared apply wait",
             )
             .map_err(deadline_lock_publication_error)?;
+        self.publish_prepared_apply_under_lane(prepared, &_lane)
+    }
+
+    fn publish_prepared_apply_under_lane(
+        &self,
+        prepared: PreparedApplyBatch,
+        _lane: &MutexGuard<'_, ()>,
+    ) -> Result<ApplyPublicationResult, ApplyPublicationError> {
         let binding = self.validate_prepared_apply(&prepared)?;
         if prepared.dry_run || prepared.no_op {
             return self.preview_prepared_apply_result(
@@ -11137,81 +11164,111 @@ pub(crate) mod tests {
 
     #[test]
     fn saved_apply_wait_preserves_cancelled_and_deadline_errors_without_consuming_plan() {
-        let fixture = actor_fixture("saved-plan-wait-stop", &["main"]);
-        write_actor_event_fixture(&fixture.roots[0]);
-        let binding = fixture
-            .actor
-            .bind_provider_root("main", &fixture.roots[0])
-            .unwrap();
-        let batch =
-            prepare_property_effect_batch(&fixture, &binding, true, &CancellationToken::new());
-        let token = fixture
-            .actor
-            .save_prepared_apply(
-                batch,
-                crate::domain::invocation::DomainResult::success("preview"),
-            )
-            .unwrap();
-        let entry = fixture.actor.saved_apply_plans.lock().unwrap().entries[&token].clone();
-        let lane = entry
-            .execution_lane
-            .acquire_before(
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
-                "test saved apply holder",
-            )
-            .unwrap();
-        let before = snapshot_tree(&fixture.roots[0]);
-        let deadline = fixture
-            .actor
-            .execute_saved_apply(
-                &token,
-                ProviderDeadline::from_budget(Duration::ZERO),
-                &CancellationToken::new(),
-                |_, _| panic!("waiting execution may not consume the plan"),
-            )
-            .unwrap_err();
-        assert!(
-            matches!(deadline, super::SavedApplyExecutionError::Publication(error) if error.kind() == super::ApplyPublicationErrorKind::Deadline)
-        );
-        let cancellation = CancellationToken::new();
-        std::thread::scope(|scope| {
-            let (started, waiting) = std::sync::mpsc::channel();
-            let actor = &fixture.actor;
-            let token = &token;
-            let cancellation_for_worker = &cancellation;
-            let worker = scope.spawn(move || {
-                started.send(()).unwrap();
-                actor.execute_saved_apply(
-                    token,
-                    ProviderDeadline::from_budget(Duration::from_secs(5)),
-                    cancellation_for_worker,
-                    |_, _| panic!("cancelled waiting execution may not consume the plan"),
+        for workspace_lane in [false, true] {
+            let fixture = actor_fixture("saved-plan-wait-stop", &["main"]);
+            write_actor_event_fixture(&fixture.roots[0]);
+            let binding = fixture
+                .actor
+                .bind_provider_root("main", &fixture.roots[0])
+                .unwrap();
+            let batch =
+                prepare_property_effect_batch(&fixture, &binding, true, &CancellationToken::new());
+            let token = fixture
+                .actor
+                .save_prepared_apply(
+                    batch,
+                    crate::domain::invocation::DomainResult::success("preview"),
                 )
-            });
-            waiting.recv().unwrap();
-            cancellation.cancel();
-            let cancelled = worker.join().unwrap().unwrap_err();
+                .unwrap();
+            let entry = fixture.actor.saved_apply_plans.lock().unwrap().entries[&token].clone();
+            let lane = if workspace_lane {
+                fixture.actor.mutation_lane.hold_for_test()
+            } else {
+                entry.execution_lane.hold_for_test()
+            };
+            let before = snapshot_tree(&fixture.roots[0]);
+            let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+            let deadline = fixture
+                .actor
+                .execute_saved_apply(
+                    &token,
+                    ProviderDeadline::from_budget(Duration::from_millis(20)),
+                    &CancellationToken::new(),
+                    |_, _| panic!("waiting execution may not consume the plan"),
+                )
+                .unwrap_err();
             assert!(
-                matches!(cancelled, super::SavedApplyExecutionError::Publication(error) if error.kind() == super::ApplyPublicationErrorKind::Cancelled)
+                matches!(deadline, super::SavedApplyExecutionError::Publication(error) if error.kind() == super::ApplyPublicationErrorKind::Deadline)
             );
-        });
-        assert_eq!(snapshot_tree(&fixture.roots[0]), before);
-        drop(lane);
-        let published = fixture
-            .actor
-            .execute_saved_apply(
-                &token,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
-                finish_saved_apply_test,
-            )
-            .unwrap();
-        assert!(
-            published.ok,
-            "waiting stop must leave the pending plan usable"
-        );
-        fixture.cleanup();
+            let cancellation = CancellationToken::new();
+            std::thread::scope(|scope| {
+                let (started, waiting) = std::sync::mpsc::channel();
+                let actor = &fixture.actor;
+                let token = &token;
+                let cancellation_for_worker = &cancellation;
+                let worker = scope.spawn(move || {
+                    started.send(()).unwrap();
+                    actor.execute_saved_apply(
+                        token,
+                        ProviderDeadline::from_budget(Duration::from_secs(5)),
+                        cancellation_for_worker,
+                        |_, _| panic!("cancelled waiting execution may not consume the plan"),
+                    )
+                });
+                waiting.recv().unwrap();
+                if workspace_lane {
+                    // State is held only after the per-token lane has been acquired;
+                    // cancellation therefore stops the workspace-lane wait.
+                    let wait_until = std::time::Instant::now() + Duration::from_secs(5);
+                    loop {
+                        match entry.state.try_lock() {
+                            Err(std::sync::TryLockError::WouldBlock) => break,
+                            Ok(guard) => drop(guard),
+                            Err(error) => panic!("saved execution state poisoned: {error}"),
+                        }
+                        assert!(std::time::Instant::now() < wait_until);
+                        std::thread::yield_now();
+                    }
+                }
+                cancellation.cancel();
+                let cancelled = worker.join().unwrap().unwrap_err();
+                assert!(
+                    matches!(cancelled, super::SavedApplyExecutionError::Publication(error) if error.kind() == super::ApplyPublicationErrorKind::Cancelled)
+                );
+            });
+            assert_eq!(snapshot_tree(&fixture.roots[0]), before);
+            assert_eq!(
+                snapshot_tree(&fixture.root.join(".build/unica")),
+                cache_before
+            );
+            drop(lane);
+            let published = fixture
+                .actor
+                .execute_saved_apply(
+                    &token,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                    finish_saved_apply_test,
+                )
+                .unwrap();
+            assert!(
+                published.ok,
+                "waiting stop must leave the pending plan usable"
+            );
+            let _publication_lane = fixture.actor.mutation_lane.hold_for_test();
+            let replay = fixture
+                .actor
+                .execute_saved_apply(
+                    &token,
+                    ProviderDeadline::from_budget(Duration::from_millis(20)),
+                    &CancellationToken::new(),
+                    |_, _| panic!("completed replay must not wait for workspace publication"),
+                )
+                .unwrap();
+            assert_eq!(replay, published);
+            drop(_publication_lane);
+            fixture.cleanup();
+        }
     }
 
     #[test]
