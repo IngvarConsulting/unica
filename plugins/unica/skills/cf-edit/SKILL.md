@@ -15,8 +15,9 @@ allowed-tools:
 
 - Preferred path: use MCP `unica` tool `unica.apply` по адресу корня набора (`<набор>:Configuration`): свойства правит `props.set`, состав — `object.create`/`object.remove`, командный интерфейс — `commandVisibility.set`, `commandPlacement.set`, `commandOrder.set`.
 - Do not call internal MCP/CLI adapters directly. They are hidden behind `unica` and synchronized by the orchestrator.
-- Всегда сначала `dryRun: true`; `dryRun: false` — только по явной просьбе пользователя и только с `ifRev` из превью.
-- For mutating operations, pass `dryRun: false` only when the user explicitly requested the change; otherwise keep the default dry run.
+- Сначала вызови `unica.apply` с `at` и `ops`: это план без записи.
+  Когда пользователь поручил внести эту правку, вызови `unica.apply` только
+  с `executionToken` из `data.executionToken` успешного плана.
 - Vendor support guard runs inside `unica`; if it blocks a locked/read-only supported object, prefer CFE/release-support or an explicit support-state change plan instead of editing raw support metadata.
 
 Точечное редактирование Configuration.xml: свойства, состав ChildObjects, роли по умолчанию.
@@ -43,14 +44,13 @@ allowed-tools:
       "at": "main:Configuration",
       "ops": [
         {"op": "props.set", "args": {"values": {"version": "1.0.0.1", "vendor": "Фирма"}}}
-      ],
-      "dryRun": true
+      ]
     }
   }
 }
 ```
 
-Применение — тот же вызов с `dryRun: false` и `ifRev` из превью.
+Применение — вызов только с `executionToken` из `data.executionToken` успешного плана.
 
 **Роли по умолчанию, панели и стартовая страница** канонической операции не
 имеют: их правка — пробел контракта Unica MCP, сообщай о нём, а не подменяй

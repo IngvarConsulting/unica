@@ -1593,6 +1593,57 @@ impl CompileTransaction {
                 .all(|registration| !registration.changed())
     }
 
+    /// Saved evidence belongs to the plan; its stop budget belongs to execution.
+    pub(crate) fn rebind_retained_apply_execution_context(
+        &mut self,
+        deadline: crate::domain::code_intelligence::ProviderDeadline,
+        cancellation: &crate::domain::cancellation::CancellationToken,
+    ) {
+        for guard in &mut self.retained_namespaces {
+            guard.rebind_execution_context(deadline, cancellation);
+        }
+    }
+
+    /// Conservative reservation for bytes and observed namespace entries.
+    pub(crate) fn retained_payload_bytes(&self) -> usize {
+        self.creates
+            .iter()
+            .map(|item| item.bytes.len())
+            .chain(
+                self.registrations
+                    .values()
+                    .map(|item| item.original.len().saturating_add(item.updated.len())),
+            )
+            .chain(
+                self.read_guards
+                    .values()
+                    .map(|item| item.expected_preimage.len()),
+            )
+            .chain(self.retained_apply.iter().map(|item| {
+                item.original
+                    .as_ref()
+                    .map_or(0, Vec::len)
+                    .saturating_add(item.current.as_ref().map_or(0, Vec::len))
+            }))
+            .chain(self.retained_apply.iter().map(|item| {
+                std::mem::size_of_val(item)
+                    .saturating_add(item.relative_path.as_os_str().len())
+                    .saturating_add(item.name.len())
+                    .saturating_add(
+                        item.missing_parent_chain
+                            .iter()
+                            .map(|name| name.len())
+                            .sum::<usize>(),
+                    )
+            }))
+            .chain(
+                self.retained_namespaces
+                    .iter()
+                    .map(|guard| guard.retained_payload_bytes()),
+            )
+            .fold(0usize, usize::saturating_add)
+    }
+
     /// Полный план изменений транзакции: созданные, обновлённые и удаляемые
     /// пути — единственный источник для структурной квитанции мутации.
     /// Порядок детерминирован: create, update, remove; внутри —
@@ -2374,15 +2425,18 @@ fn validate_strict_relative_file_path(relative: &Path) -> Result<(), String> {
 fn validate_retained_apply_preimage_typed(
     entry: &PlannedRetainedApplyChange,
 ) -> Result<(), RetainedApplyValidationError> {
+    // Route, child-kind and hard-link checks precede conflict classification.
+    // An ordinary atomic replacement of this file makes a saved plan stale.
+    validate_retained_apply_state_typed(entry, &entry.original, true)?;
     if let Some(file) = &entry.original_file {
         file.validate_named_identity().map_err(|error| {
             RetainedApplyValidationError::new(
-                RetainedApplyValidationErrorKind::ContainmentIdentity,
-                format!("retained apply original file link/reparse route or physical identity changed: {error}"),
+                RetainedApplyValidationErrorKind::ConcurrentRevision,
+                format!("retained apply original file physical identity changed: {error}"),
             )
         })?;
     }
-    validate_retained_apply_state_typed(entry, &entry.original, true)
+    Ok(())
 }
 
 fn validate_retained_apply_state_typed(

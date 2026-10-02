@@ -335,6 +335,27 @@ type NamespaceObservation = (
 );
 
 impl RetainedNamespaceGuard {
+    pub(super) fn rebind_execution_context(
+        &mut self,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) {
+        self.deadline = deadline;
+        self.cancellation = cancellation.clone();
+    }
+
+    pub(super) fn retained_payload_bytes(&self) -> usize {
+        self.children
+            .as_ref()
+            .map_or(0, |children| {
+                children.keys().fold(0usize, |bytes, name| {
+                    bytes.saturating_add(name.len()).saturating_add(64)
+                })
+            })
+            .saturating_add(self.relative.as_os_str().len())
+            .saturating_add(std::mem::size_of::<Self>())
+    }
+
     fn capture(
         root: Arc<RetainedDirectoryCapability>,
         relative: PathBuf,

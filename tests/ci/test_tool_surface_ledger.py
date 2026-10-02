@@ -195,7 +195,7 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
         tools = {tool["name"]: tool for tool in self.tools}
         expected_properties = {
             "unica.view": {"at", "filter", "limit", "cursor"},
-            "unica.apply": {"at", "ops", "dryRun", "ifRev"},
+            "unica.apply": {"at", "ops", "executionToken"},
             # Единственный инструмент, которому путь на входе разрешён:
             # аварийный мост затем и заведён, чтобы путь не просачивался
             # в частые ответы.

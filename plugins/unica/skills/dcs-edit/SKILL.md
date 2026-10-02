@@ -15,8 +15,9 @@ allowed-tools:
 - Preferred path: use MCP `unica` tool `unica.apply` с операциями СКД; адрес
   цели — логический, файлового селектора у поверхности нет.
 - Не зови внутренние адаптеры напрямую: они спрятаны за MCP `unica`.
-- Всегда сначала `dryRun: true`; `dryRun: false` — только по явной просьбе
-  пользователя и только с `ifRev` из превью.
+- Сначала вызови `unica.apply` с `at` и `ops`: это план без записи.
+  Когда пользователь поручил внести эту правку, вызови `unica.apply` только
+  с `executionToken` из `data.executionToken` успешного плана.
 - Словарь операций узла даёт `unica.view {at}` в секции `can`: что не названо
   там, того поверхность не пишет.
 
@@ -45,8 +46,7 @@ allowed-tools:
       "at": "main:Report.Продажи.Template.ОсновнаяСхема",
       "ops": [
         {"op": "field.add", "args": {"items": [{"dataPath": "Номенклатура", "title": "Товар"}]}}
-      ],
-      "dryRun": true
+      ]
     }
   }
 }
@@ -55,7 +55,9 @@ allowed-tools:
 Несколько правок идут одним `ops`: план собирается целиком и применяется
 атомарно — отказ любой операции отменяет весь вызов.
 
-Применение — тот же вызов с `dryRun: false` и `ifRev`, который вернуло превью:
+Применение — вызов только с `executionToken` из `data.executionToken` успешного плана:
+
+Сначала получи план этого изменения:
 
 ```json
 {
@@ -66,10 +68,33 @@ allowed-tools:
     "arguments": {
       "at": "main:Report.Продажи.Template.ОсновнаяСхема",
       "ops": [
-        {"op": "field.add", "args": {"items": [{"dataPath": "Номенклатура", "title": "Товар"}]}}
-      ],
-      "dryRun": false,
-      "ifRev": "<rev из превью>"
+        {
+          "op": "field.add",
+          "args": {
+            "items": [
+              {
+                "dataPath": "Номенклатура",
+                "title": "Товар"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+Для исполнения передай `data.executionToken` из этого успешного плана:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "unica.apply",
+    "arguments": {
+      "executionToken": "<data.executionToken из успешного плана>"
     }
   }
 }

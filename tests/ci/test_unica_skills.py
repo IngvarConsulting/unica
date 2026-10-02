@@ -789,7 +789,6 @@ SCENARIO_REQUIRED_TOKENS = {
     "release-support": ["сравнение/объединение", "Поставка", "поддержка", "совместимость"],
     "source-access": [
         "предметн",
-        "dryRun",
         "unica.apply",
         "unica.resolve",
         "invalid_cursor",
@@ -816,7 +815,7 @@ REPLACED_RUNTIME_SKILLS = {
 }
 
 TASK_EXAMPLE_ARGUMENT_KEYS = {
-    "cfe-borrow": ["at", "ops", "dryRun"],
+    "cfe-borrow": ["at", "ops"],
     "cf-edit": ["at", "ops"],
     "meta-add": ["at", "ops"],
     "meta-edit": ["at", "ops"],
@@ -894,7 +893,6 @@ SCENARIO_PRESERVING_TOKENS = {
         '"name": "НовыйСправочник"',
         '"kind": "EventSubscription"',
         '"relation": "source"',
-        '"dryRun": true',
     ],
     # Режим операции стал её именем: `editRelations` с `mode: "replace"`
     # свёлся к `relation.replace`, а коллекция — к префиксу имени.
@@ -1336,17 +1334,17 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                 arguments = call["params"]["arguments"]
                 self.assertEqual(call["params"]["name"], "unica.apply")
                 self.assertLessEqual(
-                    set(arguments), {"at", "ops", "dryRun", "ifRev"}
+                    set(arguments), {"at", "ops", "executionToken"}
                 )
+                if "executionToken" in arguments:
+                    self.assertEqual(set(arguments), {"executionToken"})
+                    self.assertTrue(arguments["executionToken"])
+                    continue
                 self.assertTrue(arguments["ops"])
                 for operation in arguments["ops"]:
                     self.assertLessEqual(set(operation), {"op", "args"})
                     self.assertTrue(operation["args"]["at"].startswith("main:"))
                     written.append((skill, operation["op"]))
-                # Применение без забора ревизии не бывает: предпросмотр и
-                # применение связывает `ifRev`.
-                if arguments.get("dryRun") is False:
-                    self.assertIn("ifRev", arguments)
 
         names = {op for _skill, op in written}
         self.assertIn("object.create", names)
@@ -1370,7 +1368,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         # Источник подписки остаётся закрытым объединением целей.
         for skill in ("meta-add", "meta-edit"):
             for call in calls[skill]:
-                for operation in call["params"]["arguments"]["ops"]:
+                for operation in call["params"]["arguments"].get("ops", []):
                     values = operation["args"].get("values", {})
                     if values.get("relation") != "source":
                         continue
@@ -1422,15 +1420,17 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             params = call["params"]
             self.assertEqual(params["name"], "unica.apply")
             arguments = params["arguments"]
+            if "executionToken" in arguments:
+                self.assertEqual(set(arguments), {"executionToken"})
+                self.assertTrue(arguments["executionToken"])
+                continue
             # Роль называет адрес; ни набора, ни пути в аргументах нет.
             self.assertRegex(arguments["at"], r"^[^:]+:Role\.[^.]+$")
             self.assertNotIn("sourceSet", arguments)
             self.assertNotIn("metadataPath", arguments)
-            if arguments.get("dryRun") is True:
-                previews += 1
-                self.assertNotIn("ifRev", arguments)
-            else:
-                self.assertTrue(arguments["ifRev"])
+            previews += 1
+            self.assertNotIn("dryRun", arguments)
+            self.assertNotIn("ifRev", arguments)
             self.assertTrue(arguments["ops"])
             for operation in arguments["ops"]:
                 self.assertEqual(operation["op"], "right.set")
@@ -1450,7 +1450,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         # `metadataPath`, `operationIndex`, `validation`) ушёл вместе с
         # инструментом; канонический `apply` отвечает изменениями, эффектами
         # по порядку операций и забором ревизии.
-        for token in ("changed", "effects", "ifRev", "dryRun", "диагностик"):
+        for token in ("changed", "effects", "executionToken", "диагностик"):
             with self.subTest(result_token=token):
                 self.assertIn(token, text)
 
@@ -2310,6 +2310,10 @@ Use `.claude/commands/xdto.md` as the execution route.
         previews = 0
         for arguments in calls:
             with self.subTest(arguments=arguments):
+                if "executionToken" in arguments:
+                    self.assertEqual(set(arguments), {"executionToken"})
+                    self.assertTrue(arguments["executionToken"])
+                    continue
                 # Цель называет адрес, а не пара селекторов и уж точно не путь.
                 self.assertRegex(arguments["at"], r"^[^:]+:.+")
                 self.assertNotIn("path", arguments)
@@ -2320,12 +2324,9 @@ Use `.claude/commands/xdto.md` as the execution route.
                     self.assertIn(operation["op"], {"code.insert", "code.replace"})
                     self.assertRegex(operation["args"]["at"], r"^[^:]+:.+")
                     self.assertTrue(operation["args"]["text"])
-                if arguments.get("dryRun") is True:
-                    previews += 1
-                    self.assertNotIn("ifRev", arguments)
-                else:
-                    # Применение связано с предпросмотром забором ревизии.
-                    self.assertTrue(arguments["ifRev"])
+                previews += 1
+                self.assertNotIn("dryRun", arguments)
+                self.assertNotIn("ifRev", arguments)
         self.assertTrue(previews, "скилл обязан показать предпросмотр")
 
     def test_code_patch_prompt_metadata_covers_every_public_operation(self) -> None:
@@ -2380,9 +2381,9 @@ Use `.claude/commands/xdto.md` as the execution route.
 
         preview = dict(params[2]["arguments"])
         apply = dict(params[3]["arguments"])
-        self.assertIs(preview.pop("dryRun"), True)
-        self.assertIs(apply.pop("dryRun"), False)
-        self.assertEqual(preview, apply)
+        self.assertEqual(set(preview), {"at", "ops"})
+        self.assertEqual(set(apply), {"executionToken"})
+        self.assertTrue(apply["executionToken"])
 
         # Reader and writer address the same node with one canonical `at`.
         self.assertEqual(
@@ -2398,7 +2399,7 @@ Use `.claude/commands/xdto.md` as the execution route.
                 arguments = item["arguments"]
                 self.assertNotIn("path", arguments)
                 self.assertNotIn("Package.bin", json.dumps(arguments, ensure_ascii=False))
-        for item in params[2:]:
+        for item in params[2:3]:
             with self.subTest(tool=item["name"], role="writer"):
                 self.assertTrue(
                     item["arguments"]["at"].startswith(
@@ -2522,6 +2523,31 @@ Use `.claude/commands/xdto.md` as the execution route.
                 if "```" in section:
                     self.assertIn('"method": "tools/call"', section)
 
+
+    def test_apply_examples_separate_planning_from_saved_plan_execution(self) -> None:
+        plans = executions = 0
+        for path in self.skill_root().glob("*/SKILL.md"):
+            for block in re.findall(r"```json\n(.*?)\n```", path.read_text(encoding="utf-8"), flags=re.S):
+                try:
+                    call = json.loads(block)
+                except ValueError:
+                    continue
+                if not isinstance(call, dict) or call.get("params", {}).get("name") != "unica.apply":
+                    continue
+                arguments = call["params"]["arguments"]
+                with self.subTest(skill=path.parent.name, arguments=arguments):
+                    if "executionToken" in arguments:
+                        self.assertEqual(set(arguments), {"executionToken"})
+                        self.assertIsInstance(arguments["executionToken"], str)
+                        self.assertTrue(arguments["executionToken"])
+                        executions += 1
+                    else:
+                        self.assertEqual(set(arguments), {"at", "ops"})
+                        self.assertIsInstance(arguments["at"], str)
+                        self.assertTrue(arguments["ops"])
+                        plans += 1
+        self.assertGreater(plans, 0)
+        self.assertGreater(executions, 0)
 
     def test_migrated_skills_use_task_parameterized_mcp_examples(self) -> None:
         generic_arguments = '"arguments": {\n      "cwd": "<workspace>"\n    }'

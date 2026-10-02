@@ -6,7 +6,7 @@ use crate::domain::cache::CacheAccess;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::events::DomainEvent;
-use crate::domain::invocation::SafeIdentityHash;
+use crate::domain::invocation::{DomainResult, SafeIdentityHash};
 use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind};
 #[cfg(test)]
 use crate::domain::source_revision::SourceRevision;
@@ -1233,7 +1233,7 @@ pub(crate) struct PreparedApplyBatch {
     effects: PreparedApplyEffectReceipt,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct PreparedApplyEffectReceipt {
     events: Vec<DomainEvent>,
     cache: crate::domain::cache::CacheReport,
@@ -1529,6 +1529,68 @@ impl<R> WorkspacePublicationLease<'_, R> {
     }
 }
 
+/// Failures retaining an already prepared plan describe internal service state.
+/// The public request cannot provide or replace a prepared batch's actor identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SavedApplyPlanError {
+    ActorMismatch,
+    Capacity,
+    RegistryUnavailable,
+    Serialization(String),
+}
+
+impl std::fmt::Display for SavedApplyPlanError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ActorMismatch => formatter.write_str("saved apply plan belongs to another workspace actor"),
+            Self::Capacity => formatter.write_str("saved apply plan capacity exceeded; wait for plans to expire and request a fresh plan"),
+            Self::RegistryUnavailable => formatter.write_str("saved apply plans are unavailable"),
+            Self::Serialization(message) => write!(formatter, "saved apply result cannot be retained: {message}"),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum SavedApplyExecutionError {
+    Unavailable(String),
+    Publication(ApplyPublicationError),
+}
+
+impl From<String> for SavedApplyExecutionError {
+    fn from(message: String) -> Self {
+        Self::Unavailable(message)
+    }
+}
+impl From<&str> for SavedApplyExecutionError {
+    fn from(message: &str) -> Self {
+        Self::Unavailable(message.to_owned())
+    }
+}
+
+const SAVED_APPLY_TTL: Duration = Duration::from_secs(300);
+const MAX_SAVED_APPLY_PLANS: usize = 256;
+const MAX_SAVED_APPLY_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
+
+#[derive(Default)]
+struct SavedApplyPlans {
+    entries: HashMap<String, Arc<SavedApplyPlan>>,
+    payload_bytes: usize,
+}
+struct SavedApplyPlan {
+    expires: Instant,
+    payload_bytes: usize,
+    execution_lane: DeadlineLock<FailClosed>,
+    state: Mutex<SavedApplyState>,
+}
+enum SavedApplyState {
+    Pending {
+        batch: Box<PreparedApplyBatch>,
+        preview: DomainResult,
+    },
+    Completed(DomainResult),
+    Running,
+}
+
 /// One daemon-owned coordination boundary for a canonical worktree.
 ///
 /// Reads retain their selected roots and do not take the mutation lane.
@@ -1540,6 +1602,7 @@ pub(crate) struct WorkspaceActor<R = ()> {
     source_roots: HashMap<WorkspaceSourceSetIdentity, Arc<RetainedDirectoryCapability>>,
     state_scope: WorkspaceStateScope,
     mutation_lane: DeadlineLock<FailClosed>,
+    saved_apply_plans: Mutex<SavedApplyPlans>,
     #[cfg(test)]
     source_revisions: Mutex<HashMap<WorkspaceSourceSetIdentity, Arc<SourceRevisionService>>>,
     index_work: SharedWork<(), LongWorkFailure>,
@@ -1647,6 +1710,7 @@ impl<R> WorkspaceActor<R> {
             source_roots,
             state_scope,
             mutation_lane: DeadlineLock::fail_closed("workspace actor mutation lane is poisoned"),
+            saved_apply_plans: Mutex::new(SavedApplyPlans::default()),
             #[cfg(test)]
             source_revisions: Mutex::new(HashMap::new()),
             index_work: SharedWork::new(SharedWorkLifetime::ProducerBound),
@@ -2029,10 +2093,128 @@ impl<R> WorkspaceActor<R> {
         Ok(())
     }
 
-    pub(crate) fn publish_prepared_apply(
+    pub(crate) fn save_prepared_apply(
         &self,
         prepared: PreparedApplyBatch,
-    ) -> Result<ApplyPublicationResult, ApplyPublicationError> {
+        preview: DomainResult,
+    ) -> Result<String, SavedApplyPlanError> {
+        if prepared.actor_identity != self.identity || prepared.actor_instance != self.instance_id {
+            return Err(SavedApplyPlanError::ActorMismatch);
+        }
+        let dependency_bytes =
+            prepared
+                .read_dependencies
+                .iter()
+                .try_fold(0usize, |bytes, dependency| {
+                    let reads = dependency
+                        .reads
+                        .lock()
+                        .map_err(|_| SavedApplyPlanError::RegistryUnavailable)?;
+                    Ok::<_, SavedApplyPlanError>(reads.iter().fold(bytes, |bytes, (path, body)| {
+                        bytes
+                            .saturating_add(path.as_os_str().len())
+                            .saturating_add(body.len())
+                            .saturating_add(64)
+                    }))
+                })?;
+        let payload_bytes = prepared
+            .transaction
+            .retained_payload_bytes()
+            .saturating_add(dependency_bytes)
+            .saturating_add(prepared.source_selection.retained_payload_bytes())
+            .saturating_add(prepared.support_policy.retained_payload_bytes())
+            .saturating_add(
+                serde_json::to_vec(&preview)
+                    .map_err(|error| SavedApplyPlanError::Serialization(error.to_string()))?
+                    .len(),
+            );
+        let now = Instant::now();
+        let mut plans = self
+            .saved_apply_plans
+            .lock()
+            .map_err(|_| SavedApplyPlanError::RegistryUnavailable)?;
+        plans
+            .entries
+            .retain(|_, entry| entry.expires > now || Arc::strong_count(entry) > 1);
+        plans.payload_bytes = plans
+            .entries
+            .values()
+            .map(|entry| entry.payload_bytes)
+            .sum();
+        if plans.entries.len() >= MAX_SAVED_APPLY_PLANS
+            || payload_bytes > MAX_SAVED_APPLY_PAYLOAD_BYTES.saturating_sub(plans.payload_bytes)
+        {
+            return Err(SavedApplyPlanError::Capacity);
+        }
+        let token = uuid::Uuid::new_v4().to_string();
+        plans.payload_bytes += payload_bytes;
+        plans.entries.insert(
+            token.clone(),
+            Arc::new(SavedApplyPlan {
+                expires: now + SAVED_APPLY_TTL,
+                payload_bytes,
+                execution_lane: DeadlineLock::fail_closed("saved apply execution lane is poisoned"),
+                state: Mutex::new(SavedApplyState::Pending {
+                    batch: Box::new(prepared),
+                    preview,
+                }),
+            }),
+        );
+        Ok(token)
+    }
+
+    pub(crate) fn execute_saved_apply(
+        &self,
+        token: &str,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+        finish: impl FnOnce(
+            DomainResult,
+            Result<ApplyPublicationResult, ApplyPublicationError>,
+        ) -> DomainResult,
+    ) -> Result<DomainResult, SavedApplyExecutionError> {
+        let entry = self.saved_apply_plans.lock().map_err(|_| "saved apply plans are unavailable")?
+            .entries.get(token).cloned()
+            .ok_or("executionToken is unavailable in this workspace actor; request a fresh plan with apply(at, ops)")?;
+        // One token retains its terminal result across distinct RPC invocations.
+        // The workspace mutation lane is acquired only inside publication.
+        let _execution = entry
+            .execution_lane
+            .acquire_before(deadline, cancellation, "saved apply execution wait")
+            .map_err(|error| {
+                SavedApplyExecutionError::Publication(deadline_lock_publication_error(error))
+            })?;
+        let mut state = entry
+            .state
+            .lock()
+            .map_err(|_| "saved apply execution is unavailable; request a fresh plan")?;
+        if entry.expires <= Instant::now() {
+            return Err("executionToken expired; request a fresh plan with apply(at, ops)".into());
+        }
+        if let SavedApplyState::Completed(result) = &*state {
+            return Ok(result.clone());
+        }
+        let SavedApplyState::Pending { mut batch, preview } =
+            std::mem::replace(&mut *state, SavedApplyState::Running)
+        else {
+            return Err("saved apply execution is unavailable; request a fresh plan".into());
+        };
+        batch.deadline = deadline;
+        batch.cancellation = cancellation.clone();
+        batch.dry_run = false;
+        batch
+            .transaction
+            .rebind_retained_apply_execution_context(deadline, cancellation);
+        let publication = self.publish_prepared_apply(*batch);
+        let result = finish(preview, publication);
+        *state = SavedApplyState::Completed(result.clone());
+        Ok(result)
+    }
+
+    fn validate_prepared_apply(
+        &self,
+        prepared: &PreparedApplyBatch,
+    ) -> Result<ProviderRootBinding, ApplyPublicationError> {
         if prepared.actor_identity != self.identity
             || prepared.actor_instance != self.instance_id
             || !self.identity.source_sets.contains(&prepared.source_set)
@@ -2047,14 +2229,6 @@ impl<R> WorkspaceActor<R> {
             &prepared.cancellation,
             "prepared apply publication",
         )?;
-        let _lane = self
-            .mutation_lane
-            .acquire_before(
-                prepared.deadline,
-                &prepared.cancellation,
-                "workspace actor prepared apply wait",
-            )
-            .map_err(deadline_lock_publication_error)?;
         let binding = ProviderRootBinding {
             actor_identity: prepared.actor_identity.clone(),
             actor_instance: prepared.actor_instance.clone(),
@@ -2091,44 +2265,89 @@ impl<R> WorkspaceActor<R> {
             prepared.deadline,
             &prepared.cancellation,
         )?;
+        Ok(binding)
+    }
+
+    fn preview_prepared_apply_result(
+        &self,
+        prepared: &PreparedApplyBatch,
+        binding: &ProviderRootBinding,
+        disposition: ApplyEffectDisposition,
+    ) -> Result<ApplyPublicationResult, ApplyPublicationError> {
+        prepared
+            .transaction
+            .validate_retained_for_apply_typed()
+            .map_err(apply_validation_publication_error)?;
+        #[cfg(test)]
+        run_apply_dry_run_after_confirmation_hook();
+        prepared
+            .support_policy
+            .validate(prepared.deadline, &prepared.cancellation)
+            .map_err(support_policy_publication_error)?;
+        prepared
+            .source_selection
+            .validate_dry_result(prepared.deadline, &prepared.cancellation)
+            .map_err(source_selection_publication_error)?;
+        self.validate_binding(binding).map_err(|error| {
+            ApplyPublicationError::new(ApplyPublicationErrorKind::ContainmentIdentity, error)
+        })?;
+        apply_publication_checkpoint(
+            prepared.deadline,
+            &prepared.cancellation,
+            "prepared apply result",
+        )?;
+        self.confirm_apply_dependencies(
+            &prepared.read_dependencies,
+            prepared.deadline,
+            &prepared.cancellation,
+        )?;
+        Ok(ApplyPublicationResult {
+            rev: prepared.plan_identity.clone(),
+            effects: prepared.effects.clone().into_terminal(disposition),
+            commit_count: 0,
+            cleanup_diagnostics: Vec::new(),
+        })
+    }
+
+    pub(crate) fn preview_prepared_apply(
+        &self,
+        prepared: &PreparedApplyBatch,
+    ) -> Result<ApplyPublicationResult, ApplyPublicationError> {
+        let _lane = self
+            .mutation_lane
+            .acquire_before(
+                prepared.deadline,
+                &prepared.cancellation,
+                "workspace actor prepared apply wait",
+            )
+            .map_err(deadline_lock_publication_error)?;
+        let binding = self.validate_prepared_apply(prepared)?;
+        self.preview_prepared_apply_result(prepared, &binding, ApplyEffectDisposition::Projected)
+    }
+
+    pub(crate) fn publish_prepared_apply(
+        &self,
+        prepared: PreparedApplyBatch,
+    ) -> Result<ApplyPublicationResult, ApplyPublicationError> {
+        let _lane = self
+            .mutation_lane
+            .acquire_before(
+                prepared.deadline,
+                &prepared.cancellation,
+                "workspace actor prepared apply wait",
+            )
+            .map_err(deadline_lock_publication_error)?;
+        let binding = self.validate_prepared_apply(&prepared)?;
         if prepared.dry_run || prepared.no_op {
-            prepared
-                .transaction
-                .validate_retained_for_apply_typed()
-                .map_err(apply_validation_publication_error)?;
-            #[cfg(test)]
-            run_apply_dry_run_after_confirmation_hook();
-            prepared
-                .support_policy
-                .validate(prepared.deadline, &prepared.cancellation)
-                .map_err(support_policy_publication_error)?;
-            prepared
-                .source_selection
-                .validate_dry_result(prepared.deadline, &prepared.cancellation)
-                .map_err(source_selection_publication_error)?;
-            self.validate_binding(&binding).map_err(|error| {
-                ApplyPublicationError::new(ApplyPublicationErrorKind::ContainmentIdentity, error)
-            })?;
-            apply_publication_checkpoint(
-                prepared.deadline,
-                &prepared.cancellation,
-                "prepared apply result",
-            )?;
-            self.confirm_apply_dependencies(
-                &prepared.read_dependencies,
-                prepared.deadline,
-                &prepared.cancellation,
-            )?;
-            return Ok(ApplyPublicationResult {
-                rev: prepared.plan_identity,
-                effects: prepared.effects.into_terminal(if prepared.dry_run {
+            return self.preview_prepared_apply_result(
+                &prepared,
+                &binding,
+                if prepared.dry_run {
                     ApplyEffectDisposition::Projected
                 } else {
                     ApplyEffectDisposition::Committed
-                }),
-                commit_count: 0,
-                cleanup_diagnostics: Vec::new(),
-            });
+                },
+            );
         }
 
         let plan_identity = prepared.plan_identity;
@@ -10335,6 +10554,728 @@ pub(crate) mod tests {
         );
         assert_eq!(service.machine_state_for_test(), machine_before);
         fixture.cleanup();
+    }
+
+    fn finish_saved_apply_test(
+        mut result: crate::domain::invocation::DomainResult,
+        publication: Result<super::ApplyPublicationResult, super::ApplyPublicationError>,
+    ) -> crate::domain::invocation::DomainResult {
+        match publication {
+            Ok(publication) => {
+                result.rev = Some(publication.rev().to_owned());
+                result.data = Some(
+                    serde_json::json!({"commits": publication.commit_count_for_test(), "mode": "published"}),
+                );
+            }
+            Err(error) => {
+                result.ok = false;
+                result.summary = error.to_string();
+            }
+        }
+        result
+    }
+
+    #[test]
+    fn saved_apply_executes_exact_preview_after_old_invocation_stops_and_replays_once() {
+        let fixture = actor_fixture("saved-plan-delayed-execution", &["main"]);
+        write_actor_event_fixture(&fixture.roots[0]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("main", &fixture.roots[0])
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        let mut batch = prepare_property_effect_batch(&fixture, &binding, true, &cancellation);
+        let before = snapshot_tree(&fixture.roots[0]);
+        let preview = fixture.actor.preview_prepared_apply(&batch).unwrap();
+        assert_eq!(
+            preview.effects().disposition(),
+            super::ApplyEffectDisposition::Projected
+        );
+        assert_eq!(snapshot_tree(&fixture.roots[0]), before);
+        // Retained bytes and capabilities survive completion/cancellation of the
+        // planning invocation; only the executing invocation owns its time budget.
+        cancellation.cancel();
+        batch.deadline = ProviderDeadline::from_budget(Duration::ZERO);
+        let token = fixture
+            .actor
+            .save_prepared_apply(
+                batch,
+                crate::domain::invocation::DomainResult::success("preview"),
+            )
+            .unwrap();
+        let executions = std::sync::atomic::AtomicUsize::new(0);
+        let result = fixture
+            .actor
+            .execute_saved_apply(
+                &token,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+                |result, publication| {
+                    executions.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    finish_saved_apply_test(result, publication)
+                },
+            )
+            .unwrap();
+        assert!(result.ok, "{}", result.summary);
+        assert_eq!(result.data.as_ref().unwrap()["commits"], 1);
+        let published = snapshot_tree(&fixture.roots[0]);
+        assert_ne!(published, before);
+        let replay = fixture
+            .actor
+            .execute_saved_apply(
+                &token,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+                |_, _| panic!("a token may not publish twice"),
+            )
+            .unwrap();
+        assert_eq!(replay, result);
+        assert_eq!(snapshot_tree(&fixture.roots[0]), published);
+        assert_eq!(executions.load(std::sync::atomic::Ordering::SeqCst), 1);
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn saved_apply_rebinds_nested_namespace_guards_to_the_execution_budget() {
+        let fixture = actor_fixture("saved-plan-nested-namespace-budget", &["main"]);
+        let source = &fixture.roots[0];
+        std::fs::create_dir_all(source.join("Nested")).unwrap();
+        std::fs::write(source.join("Module.bsl"), b"before").unwrap();
+        std::fs::write(source.join("Nested/Keep.bsl"), b"unchanged").unwrap();
+        let binding = fixture.actor.bind_provider_root("main", source).unwrap();
+        let planning_cancellation = CancellationToken::new();
+        let admission = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                true,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &planning_cancellation,
+            )
+            .unwrap();
+        let mut state = admission.staged_state().unwrap();
+        let files = state.enumerate_tree(Path::new("")).unwrap();
+        assert!(files.contains(&PathBuf::from("Nested/Keep.bsl")));
+        state
+            .replace("Module.bsl", b"before", b"after".to_vec())
+            .unwrap();
+        let mut batch = admission.prepare(state).unwrap();
+        fixture.actor.preview_prepared_apply(&batch).unwrap();
+        planning_cancellation.cancel();
+        batch.deadline = ProviderDeadline::from_budget(Duration::ZERO);
+        let token = fixture
+            .actor
+            .save_prepared_apply(
+                batch,
+                crate::domain::invocation::DomainResult::success("preview"),
+            )
+            .unwrap();
+
+        let result = fixture
+            .actor
+            .execute_saved_apply(
+                &token,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+                finish_saved_apply_test,
+            )
+            .unwrap();
+        assert!(result.ok, "{}", result.summary);
+        assert_eq!(result.data.as_ref().unwrap()["commits"], 1);
+        assert_eq!(std::fs::read(source.join("Module.bsl")).unwrap(), b"after");
+        assert_eq!(
+            std::fs::read(source.join("Nested/Keep.bsl")).unwrap(),
+            b"unchanged"
+        );
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn saved_apply_quota_counts_enumerated_namespace_names_without_large_file_bytes() {
+        let fixture = actor_fixture("saved-plan-namespace-quota", &["main"]);
+        let source = &fixture.roots[0];
+        std::fs::create_dir_all(source.join("Nested")).unwrap();
+        for index in 0..12 {
+            std::fs::write(source.join(format!("Nested/Empty{index:02}.bsl")), b"").unwrap();
+        }
+        let binding = fixture.actor.bind_provider_root("main", source).unwrap();
+        let prepare = |enumerate: bool| {
+            let admission = fixture
+                .actor
+                .admit_apply(
+                    &binding,
+                    None,
+                    true,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            let mut state = admission.staged_state().unwrap();
+            if enumerate {
+                assert_eq!(state.enumerate_tree(Path::new("")).unwrap().len(), 12);
+            }
+            admission.prepare(state).unwrap()
+        };
+        let preview = crate::domain::invocation::DomainResult::success("preview");
+        let baseline = prepare(false);
+        let baseline_transaction_bytes = baseline.transaction.retained_payload_bytes();
+        let baseline_token = fixture
+            .actor
+            .save_prepared_apply(baseline, preview.clone())
+            .unwrap();
+        let baseline_payload =
+            fixture.actor.saved_apply_plans.lock().unwrap().entries[&baseline_token].payload_bytes;
+        let enumerated = prepare(true);
+        assert!(
+            enumerated.transaction.retained_payload_bytes() > baseline_transaction_bytes + 12 * 64,
+            "twelve empty names and their nested path must consume retained quota"
+        );
+        let enumerated_payload = enumerated
+            .transaction
+            .retained_payload_bytes()
+            .saturating_add(enumerated.source_selection.retained_payload_bytes())
+            .saturating_add(enumerated.support_policy.retained_payload_bytes())
+            .saturating_add(serde_json::to_vec(&preview).unwrap().len());
+        assert!(enumerated_payload > baseline_payload);
+        let allowed = baseline_payload + (enumerated_payload - baseline_payload) / 2;
+        {
+            let mut plans = fixture.actor.saved_apply_plans.lock().unwrap();
+            let entry =
+                std::sync::Arc::get_mut(plans.entries.get_mut(&baseline_token).unwrap()).unwrap();
+            entry.payload_bytes = super::MAX_SAVED_APPLY_PAYLOAD_BYTES - allowed;
+        }
+        let source_before = snapshot_tree(source);
+        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+        assert_eq!(
+            fixture
+                .actor
+                .save_prepared_apply(enumerated, preview)
+                .unwrap_err(),
+            super::SavedApplyPlanError::Capacity
+        );
+        assert_eq!(snapshot_tree(source), source_before);
+        assert_eq!(
+            snapshot_tree(&fixture.root.join(".build/unica")),
+            cache_before
+        );
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn saved_apply_quota_counts_parent_read_bytes_without_large_allocations() {
+        let fixture = actor_fixture("saved-plan-parent-read-quota", &["dst", "parent"]);
+        let parent_body = vec![b'p'; 4 * 1024];
+        std::fs::write(fixture.roots[1].join("Module.bsl"), &parent_body).unwrap();
+        let destination = fixture
+            .actor
+            .bind_provider_root("dst", &fixture.roots[0])
+            .unwrap();
+        let parent = fixture
+            .actor
+            .bind_provider_root("parent", &fixture.roots[1])
+            .unwrap();
+        let prepare = |read_parent: bool| {
+            let admission = fixture
+                .actor
+                .admit_apply_with_dependencies(
+                    &destination,
+                    std::slice::from_ref(&parent),
+                    None,
+                    true,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            if read_parent {
+                assert_eq!(
+                    admission
+                        .read_apply_dependency("parent", Path::new("Module.bsl"))
+                        .unwrap(),
+                    parent_body
+                );
+            }
+            let state = admission.staged_state().unwrap();
+            admission.prepare(state).unwrap()
+        };
+        let preview = crate::domain::invocation::DomainResult::success("preview");
+        let baseline_token = fixture
+            .actor
+            .save_prepared_apply(prepare(false), preview.clone())
+            .unwrap();
+        let read_token = fixture
+            .actor
+            .save_prepared_apply(prepare(true), preview.clone())
+            .unwrap();
+        let (baseline_payload, read_payload) = {
+            let plans = fixture.actor.saved_apply_plans.lock().unwrap();
+            (
+                plans.entries[&baseline_token].payload_bytes,
+                plans.entries[&read_token].payload_bytes,
+            )
+        };
+        assert!(
+            read_payload >= baseline_payload + parent_body.len(),
+            "parent bytes must consume saved-plan quota"
+        );
+        let allowed = baseline_payload + (read_payload - baseline_payload) / 2;
+        {
+            let mut plans = fixture.actor.saved_apply_plans.lock().unwrap();
+            plans.entries.remove(&baseline_token);
+            let entry =
+                std::sync::Arc::get_mut(plans.entries.get_mut(&read_token).unwrap()).unwrap();
+            entry.payload_bytes = super::MAX_SAVED_APPLY_PAYLOAD_BYTES - allowed;
+        }
+        let source_before = snapshot_tree(&fixture.roots[0]);
+        let parent_before = snapshot_tree(&fixture.roots[1]);
+        assert_eq!(
+            fixture
+                .actor
+                .save_prepared_apply(prepare(true), preview)
+                .unwrap_err(),
+            super::SavedApplyPlanError::Capacity
+        );
+        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
+        assert_eq!(snapshot_tree(&fixture.roots[1]), parent_before);
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn saved_apply_shared_cache_preimage_refuses_second_token_without_overwriting_either_source() {
+        let fixture = actor_fixture("saved-plan-shared-cache-overlap", &["main"]);
+        let source = &fixture.roots[0];
+        let module_a = source.join("ModuleA.bsl");
+        let module_b = source.join("ModuleB.bsl");
+        std::fs::write(&module_a, b"A before").unwrap();
+        std::fs::write(&module_b, b"B before").unwrap();
+        // Start from an existing valid state with fresh cache entries absent.
+        // A changes this exact preimage; B must then see a cache-byte conflict.
+        let cache_state = fixture.root.join(".build/unica/state.json");
+        std::fs::create_dir_all(cache_state.parent().unwrap()).unwrap();
+        std::fs::write(
+            &cache_state,
+            serde_json::to_vec(&serde_json::json!({
+                "workspace_root": fixture.root.display().to_string(),
+                "workspace_epoch": 1,
+                "caches": {}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let binding = fixture.actor.bind_provider_root("main", source).unwrap();
+        let prepare = |name: &str, before: &[u8], after: &[u8]| {
+            let admission = fixture
+                .actor
+                .admit_apply(
+                    &binding,
+                    None,
+                    true,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            let mut state = admission.staged_state().unwrap();
+            state.replace(name, before, after.to_vec()).unwrap();
+            let mut effects = PlannedApplyEffects::default();
+            effects.append(crate::domain::events::DomainEvent::new(
+                DomainEventKind::ModuleChanged,
+                format!("main:{name}"),
+            ));
+            let batch = admission.prepare_with_effects(state, effects).unwrap();
+            fixture.actor.preview_prepared_apply(&batch).unwrap();
+            batch
+        };
+        let preview = crate::domain::invocation::DomainResult::success("preview");
+        let token_a = fixture
+            .actor
+            .save_prepared_apply(
+                prepare("ModuleA.bsl", b"A before", b"A after"),
+                preview.clone(),
+            )
+            .unwrap();
+        let token_b = fixture
+            .actor
+            .save_prepared_apply(
+                prepare("ModuleB.bsl", b"B before", b"B after"),
+                preview.clone(),
+            )
+            .unwrap();
+        assert_eq!(std::fs::read(&module_a).unwrap(), b"A before");
+        assert_eq!(std::fs::read(&module_b).unwrap(), b"B before");
+
+        let first = fixture
+            .actor
+            .execute_saved_apply(
+                &token_a,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+                finish_saved_apply_test,
+            )
+            .unwrap();
+        assert!(first.ok, "{}", first.summary);
+        assert_eq!(std::fs::read(&module_a).unwrap(), b"A after");
+        assert_eq!(std::fs::read(&module_b).unwrap(), b"B before");
+        let cache_after_a = snapshot_tree(&fixture.root.join(".build/unica"));
+        let second_kind = std::cell::Cell::new(None);
+        let second = fixture
+            .actor
+            .execute_saved_apply(
+                &token_b,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+                |result, publication| {
+                    second_kind.set(publication.as_ref().err().map(|error| error.kind()));
+                    finish_saved_apply_test(result, publication)
+                },
+            )
+            .unwrap();
+        assert!(
+            !second.ok,
+            "the shared cache preimage must reject the old B plan"
+        );
+        assert_eq!(
+            second_kind.get(),
+            Some(super::ApplyPublicationErrorKind::ConcurrentRevision)
+        );
+        assert_eq!(std::fs::read(&module_a).unwrap(), b"A after");
+        assert_eq!(std::fs::read(&module_b).unwrap(), b"B before");
+        assert_eq!(
+            snapshot_tree(&fixture.root.join(".build/unica")),
+            cache_after_a
+        );
+
+        let fresh_b = fixture
+            .actor
+            .save_prepared_apply(prepare("ModuleB.bsl", b"B before", b"B after"), preview)
+            .unwrap();
+        let fresh_result = fixture
+            .actor
+            .execute_saved_apply(
+                &fresh_b,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+                finish_saved_apply_test,
+            )
+            .unwrap();
+        assert!(fresh_result.ok, "{}", fresh_result.summary);
+        assert_eq!(std::fs::read(&module_a).unwrap(), b"A after");
+        assert_eq!(std::fs::read(&module_b).unwrap(), b"B after");
+        let refusal_replay = fixture
+            .actor
+            .execute_saved_apply(
+                &token_b,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+                |_, _| panic!("refused saved plan must replay its terminal result"),
+            )
+            .unwrap();
+        assert_eq!(refusal_replay, second);
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn saved_apply_stale_sources_refuse_without_replanning_and_replay_refusal() {
+        let fixture = actor_fixture("saved-plan-stale-sources", &["main"]);
+        write_actor_event_fixture(&fixture.roots[0]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("main", &fixture.roots[0])
+            .unwrap();
+        let batch =
+            prepare_property_effect_batch(&fixture, &binding, true, &CancellationToken::new());
+        fixture.actor.preview_prepared_apply(&batch).unwrap();
+        let token = fixture
+            .actor
+            .save_prepared_apply(
+                batch,
+                crate::domain::invocation::DomainResult::success("preview"),
+            )
+            .unwrap();
+        let form = fixture.roots[0].join("Catalogs/Products/Forms/Main/Ext/Form.xml");
+        let mut changed = std::fs::read(&form).unwrap();
+        changed.extend_from_slice(b"\n");
+        std::fs::write(&form, changed).unwrap();
+        let before = snapshot_tree(&fixture.roots[0]);
+        let result = fixture
+            .actor
+            .execute_saved_apply(
+                &token,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+                finish_saved_apply_test,
+            )
+            .unwrap();
+        assert!(!result.ok, "changed sources must invalidate saved bytes");
+        assert_eq!(snapshot_tree(&fixture.roots[0]), before);
+        let replay = fixture
+            .actor
+            .execute_saved_apply(
+                &token,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+                |_, _| panic!("a refused plan must not be replanned"),
+            )
+            .unwrap();
+        assert_eq!(replay, result);
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn saved_apply_wait_preserves_cancelled_and_deadline_errors_without_consuming_plan() {
+        let fixture = actor_fixture("saved-plan-wait-stop", &["main"]);
+        write_actor_event_fixture(&fixture.roots[0]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("main", &fixture.roots[0])
+            .unwrap();
+        let batch =
+            prepare_property_effect_batch(&fixture, &binding, true, &CancellationToken::new());
+        let token = fixture
+            .actor
+            .save_prepared_apply(
+                batch,
+                crate::domain::invocation::DomainResult::success("preview"),
+            )
+            .unwrap();
+        let entry = fixture.actor.saved_apply_plans.lock().unwrap().entries[&token].clone();
+        let lane = entry
+            .execution_lane
+            .acquire_before(
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+                "test saved apply holder",
+            )
+            .unwrap();
+        let before = snapshot_tree(&fixture.roots[0]);
+        let deadline = fixture
+            .actor
+            .execute_saved_apply(
+                &token,
+                ProviderDeadline::from_budget(Duration::ZERO),
+                &CancellationToken::new(),
+                |_, _| panic!("waiting execution may not consume the plan"),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(deadline, super::SavedApplyExecutionError::Publication(error) if error.kind() == super::ApplyPublicationErrorKind::Deadline)
+        );
+        let cancellation = CancellationToken::new();
+        std::thread::scope(|scope| {
+            let (started, waiting) = std::sync::mpsc::channel();
+            let actor = &fixture.actor;
+            let token = &token;
+            let cancellation_for_worker = &cancellation;
+            let worker = scope.spawn(move || {
+                started.send(()).unwrap();
+                actor.execute_saved_apply(
+                    token,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    cancellation_for_worker,
+                    |_, _| panic!("cancelled waiting execution may not consume the plan"),
+                )
+            });
+            waiting.recv().unwrap();
+            cancellation.cancel();
+            let cancelled = worker.join().unwrap().unwrap_err();
+            assert!(
+                matches!(cancelled, super::SavedApplyExecutionError::Publication(error) if error.kind() == super::ApplyPublicationErrorKind::Cancelled)
+            );
+        });
+        assert_eq!(snapshot_tree(&fixture.roots[0]), before);
+        drop(lane);
+        let published = fixture
+            .actor
+            .execute_saved_apply(
+                &token,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+                finish_saved_apply_test,
+            )
+            .unwrap();
+        assert!(
+            published.ok,
+            "waiting stop must leave the pending plan usable"
+        );
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn saved_apply_plan_poison_is_registry_state_failure_and_writes_nothing() {
+        let fixture = actor_fixture("saved-plan-registry-poison", &["main"]);
+        write_actor_event_fixture(&fixture.roots[0]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("main", &fixture.roots[0])
+            .unwrap();
+        let batch =
+            prepare_property_effect_batch(&fixture, &binding, true, &CancellationToken::new());
+        fixture.actor.preview_prepared_apply(&batch).unwrap();
+        let source_before = snapshot_tree(&fixture.roots[0]);
+        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _registry = fixture.actor.saved_apply_plans.lock().unwrap();
+            panic!("poison saved apply registry for fail-closed check");
+        }))
+        .is_err());
+        let error = fixture
+            .actor
+            .save_prepared_apply(
+                batch,
+                crate::domain::invocation::DomainResult::success("preview"),
+            )
+            .unwrap_err();
+        assert_eq!(error, super::SavedApplyPlanError::RegistryUnavailable);
+        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
+        assert_eq!(
+            snapshot_tree(&fixture.root.join(".build/unica")),
+            cache_before
+        );
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn saved_apply_plan_actor_mismatch_is_distinct_from_registry_capacity() {
+        let fixture = actor_fixture("saved-plan-save-bound", &["main"]);
+        let other = actor_fixture("saved-plan-save-foreign", &["main"]);
+        write_actor_event_fixture(&fixture.roots[0]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("main", &fixture.roots[0])
+            .unwrap();
+        let batch =
+            prepare_property_effect_batch(&fixture, &binding, true, &CancellationToken::new());
+        let source_before = snapshot_tree(&fixture.roots[0]);
+        let error = other
+            .actor
+            .save_prepared_apply(
+                batch,
+                crate::domain::invocation::DomainResult::success("preview"),
+            )
+            .unwrap_err();
+        assert_eq!(error, super::SavedApplyPlanError::ActorMismatch);
+        assert!(other
+            .actor
+            .saved_apply_plans
+            .lock()
+            .unwrap()
+            .entries
+            .is_empty());
+        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
+        fixture.cleanup();
+        other.cleanup();
+    }
+
+    #[test]
+    fn saved_apply_expired_inflight_reservation_keeps_byte_quota_until_released() {
+        let fixture = actor_fixture("saved-plan-inflight-capacity", &["main"]);
+        write_actor_event_fixture(&fixture.roots[0]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("main", &fixture.roots[0])
+            .unwrap();
+        let prepare =
+            || prepare_property_effect_batch(&fixture, &binding, true, &CancellationToken::new());
+        let token = fixture
+            .actor
+            .save_prepared_apply(
+                prepare(),
+                crate::domain::invocation::DomainResult::success("preview"),
+            )
+            .unwrap();
+        let retained = {
+            let mut plans = fixture.actor.saved_apply_plans.lock().unwrap();
+            let plan = std::sync::Arc::get_mut(plans.entries.get_mut(&token).unwrap()).unwrap();
+            plan.expires = Instant::now();
+            // Reserve the full payload quota without allocating a giant fixture.
+            // A live executor owns this Arc even after its token expires.
+            plan.payload_bytes = super::MAX_SAVED_APPLY_PAYLOAD_BYTES;
+            plans.entries[&token].clone()
+        };
+        let before = snapshot_tree(&fixture.roots[0]);
+        assert_eq!(
+            fixture
+                .actor
+                .save_prepared_apply(
+                    prepare(),
+                    crate::domain::invocation::DomainResult::success("preview")
+                )
+                .unwrap_err(),
+            super::SavedApplyPlanError::Capacity
+        );
+        assert_eq!(
+            fixture
+                .actor
+                .saved_apply_plans
+                .lock()
+                .unwrap()
+                .payload_bytes,
+            super::MAX_SAVED_APPLY_PAYLOAD_BYTES
+        );
+        assert_eq!(snapshot_tree(&fixture.roots[0]), before);
+        drop(retained);
+        assert!(fixture
+            .actor
+            .save_prepared_apply(
+                prepare(),
+                crate::domain::invocation::DomainResult::success("preview")
+            )
+            .is_ok());
+        assert!(!fixture
+            .actor
+            .saved_apply_plans
+            .lock()
+            .unwrap()
+            .entries
+            .contains_key(&token));
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn saved_apply_token_is_actor_bound_and_expired_plan_has_no_effect() {
+        let fixture = actor_fixture("saved-plan-bound-token", &["main"]);
+        let other = actor_fixture("saved-plan-other-workspace", &["main"]);
+        write_actor_event_fixture(&fixture.roots[0]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("main", &fixture.roots[0])
+            .unwrap();
+        let batch =
+            prepare_property_effect_batch(&fixture, &binding, true, &CancellationToken::new());
+        fixture.actor.preview_prepared_apply(&batch).unwrap();
+        let token = fixture
+            .actor
+            .save_prepared_apply(
+                batch,
+                crate::domain::invocation::DomainResult::success("preview"),
+            )
+            .unwrap();
+        assert!(other
+            .actor
+            .execute_saved_apply(
+                &token,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+                |_, _| panic!("foreign token cannot execute")
+            )
+            .is_err());
+        {
+            let mut plans = fixture.actor.saved_apply_plans.lock().unwrap();
+            let plan = std::sync::Arc::get_mut(plans.entries.get_mut(&token).unwrap()).unwrap();
+            plan.expires = Instant::now();
+        }
+        let before = snapshot_tree(&fixture.roots[0]);
+        assert!(fixture
+            .actor
+            .execute_saved_apply(
+                &token,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+                |_, _| panic!("expired token cannot execute")
+            )
+            .is_err());
+        assert_eq!(snapshot_tree(&fixture.roots[0]), before);
+        fixture.cleanup();
+        other.cleanup();
     }
 
     #[test]

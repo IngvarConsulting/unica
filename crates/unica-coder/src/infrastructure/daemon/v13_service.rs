@@ -44,6 +44,7 @@ use crate::infrastructure::v13_find::{
 };
 use crate::infrastructure::workspace_actor::{
     ApplyAdmissionError, ApplyEffectDisposition, ApplyPublicationErrorKind,
+    SavedApplyExecutionError,
 };
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -171,8 +172,48 @@ impl CanonicalV13ReadService {
         invocation: &ActorBoundExecution,
         cancellation: &CancellationToken,
     ) -> DomainResult {
+        if let Some(token) = invocation.arguments().get("executionToken") {
+            if invocation.arguments().len() != 1 || token.as_str().is_none_or(str::is_empty) {
+                return error_result(
+                    None,
+                    RefusalCode::BadValue,
+                    "execution requires only a nonempty executionToken",
+                );
+            }
+            return invocation.execute_saved_apply(token.as_str().unwrap(), cancellation, |mut result, publication| {
+                match publication {
+                    Ok(publication) => {
+                        result.summary = "metadata apply published atomically".into();
+                        result.rev = Some(publication.rev().to_owned());
+                        if let Some(data) = result.data.as_mut() {
+                            data["mode"] = json!("published");
+                        }
+                        result.next.clear();
+                        if !publication.cleanup_diagnostics().is_empty() {
+                            result.warnings.push(json!({"code": "retained_cleanup_incomplete", "count": publication.cleanup_diagnostics().len(), "message": "published apply left bounded internal recovery cleanup diagnostics"}));
+                        }
+                        result
+                    }
+                    Err(error) => error_result(result.at.clone(), apply_publication_error_code(error.kind()), format!("{error}; request a fresh plan with apply(at, ops)")),
+                }
+            }).unwrap_or_else(|error| match error {
+                    SavedApplyExecutionError::Unavailable(message) => error_result(None, RefusalCode::BadValue, message),
+                    SavedApplyExecutionError::Publication(error) => error_result(None, apply_publication_error_code(error.kind()), error.to_string()),
+                });
+        }
+        if invocation.arguments().contains_key("dryRun")
+            || invocation.arguments().contains_key("ifRev")
+        {
+            return error_result(
+                None,
+                RefusalCode::BadValue,
+                "apply accepts at and ops to prepare a plan, or only executionToken to execute it",
+            );
+        }
         let source_sets = invocation.admitted_source_set_names();
-        let request = match parse_apply_request(invocation.arguments(), &source_sets) {
+        let mut planning_arguments = invocation.arguments().clone();
+        planning_arguments.insert("dryRun".into(), json!(true));
+        let request = match parse_apply_request(&planning_arguments, &source_sets) {
             Ok(request) => request,
             Err(error) => {
                 return error_result(
@@ -297,7 +338,7 @@ impl CanonicalV13ReadService {
                 )
             }
         };
-        let publication = match invocation.publish_prepared_apply(prepared) {
+        let publication = match invocation.preview_prepared_apply(&prepared) {
             Ok(publication) => publication,
             Err(error) => {
                 return error_result(
@@ -341,7 +382,21 @@ impl CanonicalV13ReadService {
             }));
         }
         result.rev = Some(publication.rev().to_string());
-        result
+        match invocation.save_prepared_apply(prepared, result.clone()) {
+            Ok(token) => {
+                result.data.as_mut().expect("apply plan data exists")["executionToken"] =
+                    json!(token);
+                result
+                    .next
+                    .push(json!({"tool": "unica.apply", "arguments": {"executionToken": token}}));
+                result
+            }
+            Err(error) => error_result(
+                result.at.clone(),
+                RefusalCode::InvalidState,
+                error.to_string(),
+            ),
+        }
     }
 
     fn execute_view(

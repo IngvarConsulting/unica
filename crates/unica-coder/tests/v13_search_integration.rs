@@ -371,7 +371,10 @@ fn canonical_view_reads_configuration_past_eight_mebibytes_with_many_registratio
         json!({"at": "main:CommonModule", "limit": 50}),
     ));
     assert_eq!(changed_collection["ok"], true, "{changed_collection:#}");
-    assert_eq!(changed_collection["rev"], changed["rev"]);
+    assert!(
+        changed_collection.get("rev").is_none(),
+        "view collection must not expose a source revision: {changed_collection:#}"
+    );
     assert_eq!(
         changed_collection["data"]["items"].as_array().map(Vec::len),
         Some(33)
