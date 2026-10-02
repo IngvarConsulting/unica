@@ -1876,6 +1876,25 @@ fn persist_revision_record(
     fs::create_dir_all(parent)
         .map_err(|error| format!("source revision record directory cannot be created: {error}"))?;
     let bytes = revision_record_bytes(workspace_root, source_root, state_scope, revision)?;
+    // Reconciliation after a read preserves the file authority held by saved
+    // apply plans when the persisted revision bytes have not changed.
+    if let Some(name) = path.file_name() {
+        if let Ok((resolved, existing)) = fs::canonicalize(parent).and_then(|resolved| {
+            RetainedDirectoryCapability::open(&resolved)
+                .and_then(|directory| directory.retain_regular_child(name))
+                .map(|existing| (resolved, existing))
+        }) {
+            if existing.hard_link_count().is_ok_and(|links| links == 1)
+                && existing
+                    .read_bounded(bytes.len())
+                    .is_ok_and(|current| current == bytes)
+                && existing.validate_named_identity().is_ok()
+                && fs::canonicalize(parent).is_ok_and(|current| current == resolved)
+            {
+                return Ok(());
+            }
+        }
+    }
     let temporary = path.with_extension(format!("tmp-{}", uuid::Uuid::new_v4()));
     fs::write(&temporary, bytes)
         .and_then(|_| fs::rename(&temporary, path))
@@ -4839,6 +4858,69 @@ pub(crate) mod tests {
             .expect_err("an actor revision service cannot accept another retained source root");
 
         assert!(error.contains("identity"), "{error}");
+    }
+
+    #[test]
+    fn unsupported_retained_snapshot_preserves_identical_record_and_publishes_changes() {
+        let workspace = tempdir().unwrap();
+        let workspace_root = fs::canonicalize(workspace.path()).unwrap();
+        let source = workspace_root.join("src");
+        fs::create_dir_all(&source).unwrap();
+        let descriptor = source.join("Configuration.xml");
+        fs::write(&descriptor, "<Configuration>A</Configuration>").unwrap();
+        let context = WorkspaceContext {
+            cwd: workspace_root.clone(),
+            cache_root: workspace_root.join("cache"),
+            workspace_root,
+            workspace_epoch: 0,
+        };
+        let service = SourceRevisionService::new_with_fence_for_test(
+            &context,
+            &source,
+            WorkspaceStateScope::LegacyPhysical,
+            Arc::new(UnsupportedFence),
+        )
+        .unwrap();
+        let retained = RetainedDirectoryCapability::open(&service.source_root).unwrap();
+        let snapshot = || {
+            service
+                .snapshot_retained(
+                    &retained,
+                    ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .unwrap()
+        };
+        let first = snapshot();
+        let record_parent =
+            RetainedDirectoryCapability::open(service.record_path.parent().unwrap()).unwrap();
+        let record_name = service.record_path.file_name().unwrap();
+        let original = record_parent.retain_regular_child(record_name).unwrap();
+        let before = fs::read(&service.record_path).unwrap();
+        let scans = service.retained_scans.load(Ordering::Acquire);
+        assert_eq!(snapshot(), first);
+        assert_eq!(service.retained_scans.load(Ordering::Acquire), scans + 2);
+        assert_eq!(fs::read(&service.record_path).unwrap(), before);
+        original
+            .validate_named_identity()
+            .expect("unchanged read must preserve saved record authority");
+
+        fs::write(&descriptor, "<Configuration>B</Configuration>").unwrap();
+        let changed = snapshot();
+        assert_ne!(changed.digest, first.digest);
+        assert!(changed.generation > first.generation);
+        let published = record_parent.retain_regular_child(record_name).unwrap();
+        assert_ne!(published.identity(), original.identity());
+        assert_ne!(fs::read(&service.record_path).unwrap(), before);
+        assert_eq!(
+            load_revision_record(
+                &service.record_path,
+                &service.workspace_root,
+                &service.source_root,
+                service.state_scope.record_value()
+            ),
+            Some(changed)
+        );
     }
 
     #[test]

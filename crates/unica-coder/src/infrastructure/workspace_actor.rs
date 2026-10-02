@@ -10820,6 +10820,129 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn saved_apply_survives_unchanged_read_with_unsupported_platform_fence() {
+        let fixture = actor_fixture("saved-plan-read-fallback", &["main"]);
+        write_actor_event_fixture(&fixture.roots[0]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("main", &fixture.roots[0])
+            .unwrap();
+        let service = Arc::new(
+            SourceRevisionService::new_with_fence_for_test(
+                fixture.actor.context(),
+                &fixture.roots[0],
+                fixture.actor.state_scope.clone(),
+                Arc::new(UnsupportedActorFence {
+                    flush_calls: Arc::new(AtomicUsize::new(0)),
+                }),
+            )
+            .unwrap(),
+        );
+        fixture
+            .actor
+            .install_source_revision_service_for_test(&binding, service)
+            .unwrap();
+        let capture = || {
+            fixture
+                .actor
+                .capture_revision(
+                    &binding,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .unwrap()
+        };
+        capture();
+        let batch =
+            prepare_property_effect_batch(&fixture, &binding, true, &CancellationToken::new());
+        let record_path = batch.revision_reconciliation.record_path().to_path_buf();
+        let record_before = std::fs::read(&record_path).unwrap();
+        fixture.actor.preview_prepared_apply(&batch).unwrap();
+        let token = fixture
+            .actor
+            .save_prepared_apply(
+                batch,
+                crate::domain::invocation::DomainResult::success("preview"),
+            )
+            .unwrap();
+        let source_before = snapshot_tree(&fixture.roots[0]);
+        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+        capture();
+        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
+        assert_eq!(
+            snapshot_tree(&fixture.root.join(".build/unica")),
+            cache_before
+        );
+        let result = fixture
+            .actor
+            .execute_saved_apply(
+                &token,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+                finish_saved_apply_test,
+            )
+            .unwrap();
+        assert!(result.ok, "{}", result.summary);
+        assert_eq!(result.data.as_ref().unwrap()["commits"], 1);
+        assert_ne!(snapshot_tree(&fixture.roots[0]), source_before);
+        assert_ne!(std::fs::read(&record_path).unwrap(), record_before);
+
+        // A same-byte replacement by another writer must still invalidate the
+        // saved authority; a later read must not adopt it into the old plan.
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                true,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let (state, effects) = plan_actor_events(
+            &admitted,
+            &[event_operation(
+                "main:Catalog.Products.Form.Main.Event.OnClose",
+            )],
+        )
+        .unwrap();
+        let batch = admitted.prepare_with_effects(state, effects).unwrap();
+        fixture.actor.preview_prepared_apply(&batch).unwrap();
+        let foreign_token = fixture
+            .actor
+            .save_prepared_apply(
+                batch,
+                crate::domain::invocation::DomainResult::success("preview"),
+            )
+            .unwrap();
+        let replacement = record_path.with_extension("replacement");
+        std::fs::write(&replacement, std::fs::read(&record_path).unwrap()).unwrap();
+        std::fs::rename(&replacement, &record_path).unwrap();
+        let source_before = snapshot_tree(&fixture.roots[0]);
+        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+        capture();
+        let refused = fixture
+            .actor
+            .execute_saved_apply(
+                &foreign_token,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+                finish_saved_apply_test,
+            )
+            .unwrap();
+        assert!(
+            !refused.ok,
+            "a read must not replace a saved file authority"
+        );
+        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
+        assert_eq!(
+            snapshot_tree(&fixture.root.join(".build/unica")),
+            cache_before
+        );
+        fixture.cleanup();
+    }
+
+    #[test]
     fn saved_apply_executes_exact_preview_after_old_invocation_stops_and_replays_once() {
         let fixture = actor_fixture("saved-plan-delayed-execution", &["main"]);
         write_actor_event_fixture(&fixture.roots[0]);
