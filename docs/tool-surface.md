@@ -22,23 +22,22 @@
 
 ### `unica.apply`
 
-Preview or atomically apply typed edits to one logically addressed 1C node.
+Plan typed edits with at and ops without writing; execute that saved plan with executionToken alone. Use data.executionToken from the successful plan response.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `at` | string | да | Qualified logical address: <sourceSet>:<Kind>[.<Name>...]. Omit only for workspace bootstrap where allowed. |
-| `dryRun` | boolean | нет | Validate and return the plan without publishing when true. |
-| `ifRev` | string | по условию | Revision returned by a prior dryRun preview; required when dryRun is false. |
-| `ops` | array | да | Ordered operations advertised by the target node's can data. |
+| `at` | string | по ветви | Qualified logical address: <sourceSet>:<Kind>[.<Name>...]. Omit only for workspace bootstrap where allowed. |
+| `executionToken` | string | по ветви | data.executionToken returned by a successful plan; executes that saved plan without resending at or ops. |
+| `ops` | array | по ветви | Ordered operations advertised by the target node's can data. |
 
-**Результат сейчас:** Для `props.set` и `attribute.add/set/remove` доказаны общий ordered staged planner, одинаковый postimage/effect plan hash в dry-run/real и атомарная retained-публикация (отвечают типизированным `data`)
+**Результат сейчас:** `at` и `ops` возвращают план без записи и `data.executionToken`; вызов только с `executionToken` исполняет сохранённый план с проверкой ревизии. Для `props.set` и `attribute.add/set/remove` доказаны общий ordered staged planner и атомарная retained-публикация (отвечают типизированным `data`)
 
 **Целевой контракт:** Спроектировать недостающие object/relation contracts, затем переносить остальные типизированные семейства операций
 
 **Сценарии:**
 
 - Изменить свойство через доказанную retained-публикацию `props.set`
-- Добавить, изменить и удалить атрибут с одинаковым доказуемым dry-run/real планом
+- Добавить, изменить и удалить атрибут через сохранённый план и token-only исполнение
 - Записать true и false в ClientOrdinaryApplication общего модуля; preview сохраняет файл и ревизию, неверный тип значения и Document получают bad_value без записи
 
 ## check

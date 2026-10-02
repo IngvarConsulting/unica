@@ -867,6 +867,55 @@ impl ActorBoundExecution {
         Ok((binding, admission))
     }
 
+    pub(in crate::infrastructure::daemon) fn preview_prepared_apply(
+        &self,
+        prepared: &crate::infrastructure::workspace_actor::PreparedApplyBatch,
+    ) -> Result<
+        crate::infrastructure::workspace_actor::ApplyPublicationResult,
+        crate::infrastructure::workspace_actor::ApplyPublicationError,
+    > {
+        let result = self.invocation.actor.preview_prepared_apply(prepared)?;
+        if let ActorExecutionRevision::UnpublishedApply(confirmed) = &self.revision {
+            confirmed.store(true, std::sync::atomic::Ordering::Release);
+        }
+        Ok(result)
+    }
+
+    pub(in crate::infrastructure::daemon) fn save_prepared_apply(
+        &self,
+        prepared: crate::infrastructure::workspace_actor::PreparedApplyBatch,
+        preview: DomainResult,
+    ) -> Result<String, String> {
+        self.invocation.actor.save_prepared_apply(prepared, preview)
+    }
+
+    pub(in crate::infrastructure::daemon) fn execute_saved_apply(
+        &self,
+        token: &str,
+        cancellation: &CancellationToken,
+        finish: impl FnOnce(
+            DomainResult,
+            Result<
+                crate::infrastructure::workspace_actor::ApplyPublicationResult,
+                crate::infrastructure::workspace_actor::ApplyPublicationError,
+            >,
+        ) -> DomainResult,
+    ) -> Result<DomainResult, crate::infrastructure::workspace_actor::SavedApplyExecutionError>
+    {
+        let ActorExecutionRevision::UnpublishedApply(confirmed) = &self.revision else {
+            return Err("saved apply execution belongs to a non-apply invocation".into());
+        };
+        let result = self.invocation.actor.execute_saved_apply(
+            token,
+            ProviderDeadline::from_budget(ACTOR_OPERATION_BUDGET),
+            cancellation,
+            finish,
+        )?;
+        confirmed.store(true, std::sync::atomic::Ordering::Release);
+        Ok(result)
+    }
+
+    #[cfg(test)]
     pub(in crate::infrastructure::daemon) fn publish_prepared_apply(
         &self,
         prepared: crate::infrastructure::workspace_actor::PreparedApplyBatch,

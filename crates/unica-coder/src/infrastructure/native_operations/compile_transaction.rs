@@ -1547,6 +1547,29 @@ impl CompileTransaction {
     /// пути — единственный источник для структурной квитанции мутации.
     /// Порядок детерминирован: create, update, remove; внутри —
     /// по пути.
+    pub(crate) fn retained_payload_bytes(&self) -> usize {
+        self.creates
+            .iter()
+            .map(|item| item.bytes.len())
+            .chain(
+                self.registrations
+                    .values()
+                    .map(|item| item.original.len().saturating_add(item.updated.len())),
+            )
+            .chain(
+                self.read_guards
+                    .values()
+                    .map(|item| item.expected_preimage.len()),
+            )
+            .chain(self.retained_apply.iter().map(|item| {
+                item.original
+                    .as_ref()
+                    .map_or(0, Vec::len)
+                    .saturating_add(item.current.as_ref().map_or(0, Vec::len))
+            }))
+            .fold(0usize, usize::saturating_add)
+    }
+
     pub(crate) fn planned_changes(&self) -> Vec<(PlannedChangeKind, PathBuf)> {
         let mut changes = Vec::new();
         let mut creates = self.planned_created_paths();

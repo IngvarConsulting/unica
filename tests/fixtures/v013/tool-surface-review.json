@@ -17,12 +17,12 @@
   "unica.apply": {
     "result": {
       "contract": "typed",
-      "now": "Для `props.set` и `attribute.add/set/remove` доказаны общий ordered staged planner, одинаковый postimage/effect plan hash в dry-run/real и атомарная retained-публикация",
+      "now": "`at` и `ops` возвращают план без записи и `data.executionToken`; вызов только с `executionToken` исполняет сохранённый план с проверкой ревизии. Для `props.set` и `attribute.add/set/remove` доказаны общий ordered staged planner и атомарная retained-публикация",
       "target": "Спроектировать недостающие object/relation contracts, затем переносить остальные типизированные семейства операций"
     },
     "scenarios": [
       "Изменить свойство через доказанную retained-публикацию `props.set`",
-      "Добавить, изменить и удалить атрибут с одинаковым доказуемым dry-run/real планом",
+      "Добавить, изменить и удалить атрибут через сохранённый план и token-only исполнение",
       "Записать true и false в ClientOrdinaryApplication общего модуля; preview сохраняет файл и ревизию, неверный тип значения и Document получают bad_value без записи"
     ],
     "scope": "in"

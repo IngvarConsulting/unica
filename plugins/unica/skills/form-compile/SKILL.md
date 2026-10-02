@@ -16,8 +16,9 @@ allowed-tools:
   операцией `form.create`, наполняется `element.add`, `formAttribute.add`,
   `formCommand.add`, `event.bind`.
 - Не зови внутренние адаптеры напрямую: они спрятаны за MCP `unica`.
-- Всегда сначала `dryRun: true`; `dryRun: false` — только по явной просьбе
-  пользователя и только с `ifRev` из превью.
+- Сначала вызови `unica.apply` с `at` и `ops`: это план без записи.
+  Когда пользователь поручил внести эту правку, вызови `unica.apply` только
+  с `executionToken` из `data.executionToken` успешного плана.
 - Словарь операций узла даёт `unica.view {at}` в секции `can`.
 
 ## Шаг 1 — завести форму
@@ -35,8 +36,7 @@ allowed-tools:
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
         {"op": "form.create", "args": {"values": {"name": "ФормаЭлемента", "type": "ObjectForm"}}}
-      ],
-      "dryRun": true
+      ]
     }
   }
 }
@@ -46,7 +46,7 @@ allowed-tools:
 
 Применение первого шага публикует форму; после него её адрес принимает
 элементы, реквизиты и команды. Порядок тот же, что у всякой операции:
-превью → применение с `ifRev` → превью следующего шага → применение.
+превью → применение с `executionToken` → превью следующего шага → применение.
 
 ```json
 {
@@ -59,8 +59,7 @@ allowed-tools:
       "ops": [
         {"op": "formAttribute.add", "args": {"items": [{"name": "Объект", "type": "CatalogObject.Валюты", "main": true}]}},
         {"op": "element.add", "args": {"items": [{"input": "Наименование", "path": "Объект.Наименование"}]}}
-      ],
-      "dryRun": true
+      ]
     }
   }
 }

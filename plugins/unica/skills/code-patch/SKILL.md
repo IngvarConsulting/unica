@@ -15,9 +15,9 @@ allowed-tools:
   `code.insert` и `code.replace`.
 - Do not call internal MCP/CLI adapters directly. They are hidden behind
   `unica` and synchronized by the orchestrator.
-- Всегда сначала `dryRun: true`. Применяй `dryRun: false` только после того,
-  как пользователь явно попросил внести именно эту правку, и только с `ifRev`
-  из предпросмотра.
+- Сначала вызови `unica.apply` с `at` и `ops`: это план без записи.
+  Когда пользователь поручил внести эту правку, вызови `unica.apply` только
+  с `executionToken` из `data.executionToken` успешного плана.
 
 **Селектор — это адрес.** Отдельного `selector` с `method` или `anchor` нет:
 что править, называет `args.at`. У объекта с несколькими модулями роль входит в
@@ -61,10 +61,10 @@ allowed-tools:
    `unica.view {at}` вниз по ветвям `Module` и `Method`.
 2. Прочти предмет: `unica.view {at}` на узле метода даёт подпись, контекст
    компиляции и собственные строки.
-3. Предпросмотр: `unica.apply` с `dryRun: true`. Ответ несёт план правки и
-   `next` с готовым `ifRev`.
-4. Применение: тот же вызов с `dryRun: false` и этим `ifRev`. Без него правка
-   отказывает — забор ревизии связывает предпросмотр с применением.
+3. Предпросмотр: `unica.apply` с `at` и `ops`. Ответ несёт план правки и
+   токен `data.executionToken`.
+4. Применение: вызов только с `executionToken` из `data.executionToken` успешного плана. Без него правка
+   отказывает. Токен связывает исполнение с сохранённым планом и ревизией исходников.
 5. Проверка: `unica.check {at}` на модуле. Новые находки важности `error`
    блокируют.
 
@@ -88,14 +88,15 @@ allowed-tools:
             "text": "    Возврат Истина;"
           }
         }
-      ],
-      "dryRun": true
+      ]
     }
   }
 }
 ```
 
-### Применение с забором ревизии
+### Исполнение сохранённого плана
+
+Сначала получи план этого изменения:
 
 ```json
 {
@@ -113,9 +114,22 @@ allowed-tools:
             "text": "Процедура Выполнить() Экспорт\nКонецПроцедуры"
           }
         }
-      ],
-      "dryRun": false,
-      "ifRev": "<rev из предпросмотра>"
+      ]
+    }
+  }
+}
+```
+
+Для исполнения передай `data.executionToken` из этого успешного плана:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "unica.apply",
+    "arguments": {
+      "executionToken": "<data.executionToken из успешного плана>"
     }
   }
 }

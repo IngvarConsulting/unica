@@ -416,6 +416,17 @@ pub(crate) struct ActiveRevisionReconciliation<'a> {
 }
 
 impl PreparedRevisionReconciliation {
+    pub(crate) fn retained_payload_bytes(&self) -> usize {
+        self.projected_manifest
+            .iter()
+            .fold(self.record_bytes.len(), |bytes, (path, _)| {
+                bytes
+                    .saturating_add(path.as_os_str().len())
+                    .saturating_add(std::mem::size_of::<SourceEntryDigest>())
+                    .saturating_add(64)
+            })
+    }
+
     pub(crate) fn record_path(&self) -> &Path {
         &self.record_path
     }

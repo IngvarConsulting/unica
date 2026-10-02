@@ -203,6 +203,28 @@ fn reject_workspace_admission(
 }
 
 fn validate_hidden_v13_request(request: &InvocationRequest) -> Result<(), String> {
+    if request.tool() == crate::application::invocation_store::ToolIdentity::Apply {
+        let arguments = request.arguments();
+        if arguments.contains_key("dryRun") || arguments.contains_key("ifRev") {
+            return Err("unica.apply no longer accepts dryRun or ifRev. Call with at and ops to get a saved plan and data.executionToken, then call with executionToken only to execute that plan".to_string());
+        }
+        if arguments.contains_key("executionToken") {
+            if arguments.len() != 1 {
+                return Err("executionToken must be the only apply argument; at and ops belong to the planning call".to_string());
+            }
+            if !arguments["executionToken"]
+                .as_str()
+                .is_some_and(|token| !token.is_empty())
+            {
+                return Err(
+                    "executionToken must be non-empty text returned by a successful apply plan"
+                        .to_string(),
+                );
+            }
+        } else if !arguments.contains_key("at") || !arguments.contains_key("ops") {
+            return Err("call unica.apply with at and ops to prepare a plan, or with executionToken only to execute a saved plan".to_string());
+        }
+    }
     let catalog = crate::application::v13::tool_catalog::catalog_for(SurfaceRelease::V13)
         .ok_or_else(|| "canonical v0.13 catalog is unavailable".to_string())?;
     let contract = catalog
@@ -5208,7 +5230,6 @@ struct ActorLogicalReadLease {"#,
                 serde_json::json!({
                     "at": "main:Catalog.Items",
                     "ops": [{"op": "props.set", "args": {"values": {"Comment": "Preview"}}}],
-                    "dryRun": true
                 }),
                 "validated",
             ),
@@ -5329,24 +5350,12 @@ struct ActorLogicalReadLease {"#,
                     "op": "props.set",
                     "args": {"values": {"Comment": "Published through v0.13"}}
                 }],
-                "dryRun": true
             }),
         );
         assert!(previewed_apply.ok, "{previewed_apply:?}");
         let published_apply = call(
             ToolIdentity::Apply,
-            serde_json::json!({
-                "at": "main:Catalog.Items",
-                "ops": [{
-                    "op": "props.set",
-                    "args": {"values": {"Comment": "Published through v0.13"}}
-                }],
-                "dryRun": false,
-                "ifRev": previewed_apply
-                    .rev
-                    .as_deref()
-                    .expect("preview carries the fence")
-            }),
+            serde_json::json!({"executionToken": previewed_apply.data.as_ref().unwrap()["executionToken"]}),
         );
         assert!(
             published_apply.ok,
@@ -5374,7 +5383,6 @@ struct ActorLogicalReadLease {"#,
                     },
                     {"op": "object.create", "args": {"values": {"kind": "Catalog", "name": "Ghost"}}}
                 ],
-                "dryRun": false
             }),
         );
         // `object.create` addresses the configuration root, so naming it on
@@ -5566,19 +5574,15 @@ struct ActorLogicalReadLease {"#,
                 serde_json::json!({
                     "at": "main:Catalog.Bare",
                     "ops": [{"op": "frobnicate"}],
-                    "dryRun": true
                 }),
                 "unsupported_operation",
             ),
             (
                 ToolIdentity::Apply,
                 serde_json::json!({
-                    "at": "main:Catalog.Bare",
-                    "ops": [{"op": "props.set", "args": {"values": {"Comment": "x"}}}],
-                    "dryRun": true,
-                    "ifRev": "unica-source-sha256-v1:0:stale"
+                    "executionToken": "unknown-plan"
                 }),
-                "stale_revision",
+                "bad_value",
             ),
             (
                 ToolIdentity::Run,
@@ -5607,7 +5611,6 @@ struct ActorLogicalReadLease {"#,
                 serde_json::json!({
                     "at": "main:Catalog.Bare",
                     "ops": [{"op": "props.set", "args": {"props": {"Comment": "x"}}}],
-                    "dryRun": true
                 }),
                 "bad_value",
             ),
@@ -5657,21 +5660,37 @@ struct ActorLogicalReadLease {"#,
             serde_json::json!({"at": "main:Catalog.Bare"}),
         );
         assert!(current.ok, "{current:?}");
-        let admitted_revision = current.rev.expect("view carries the admitted revision");
-        let expected_revision = "unica-source-sha256-v1:0:stale";
-        let stale = call(
+        let admitted_revision = current.rev.clone().unwrap();
+        let planned = call(
             ToolIdentity::Apply,
             serde_json::json!({
                 "at": "main:Catalog.Bare",
-                "ops": [{"op": "props.set", "args": {"values": {"Comment": "x"}}}],
-                "dryRun": true,
-                "ifRev": expected_revision
+                "ops": [{"op": "props.set", "args": {"values": {"Comment": "x"}}}]
             }),
         );
+        assert!(planned.ok, "{planned:?}");
+        let bare_path = source.join("Catalogs/Bare.xml");
+        let previous = std::fs::read_to_string(&bare_path).unwrap();
+        std::fs::write(
+            &bare_path,
+            previous.replace("<Comment/>", "<Comment>external change</Comment>"),
+        )
+        .unwrap();
+        let updated = call(
+            ToolIdentity::View,
+            serde_json::json!({"at": "main:Catalog.Bare"}),
+        );
+        let stale = call(
+            ToolIdentity::Apply,
+            serde_json::json!({"executionToken": planned.data.as_ref().unwrap()["executionToken"]}),
+        );
+        assert!(!stale.ok, "{stale:?}");
+        assert_eq!(stale.diagnostics[0]["code"], "stale_revision");
         let stale_message = stale.diagnostics[0]["message"].as_str().unwrap();
         assert!(
-            stale_message.contains(expected_revision) && stale_message.contains(&admitted_revision),
-            "the conflict names both revisions for recovery: {stale_message}"
+            stale_message.contains(&admitted_revision)
+                && stale_message.contains(updated.rev.as_ref().unwrap()),
+            "{stale_message}"
         );
 
         let bare_scope = call(
@@ -5748,7 +5767,6 @@ struct ActorLogicalReadLease {"#,
             serde_json::json!({
                 "at": "main:Catalog.Bare",
                 "ops": [{"op": "props.set", "args": {"props": {"Comment": "x"}}}],
-                "dryRun": true
             }),
         );
         assert!(
@@ -5777,7 +5795,6 @@ struct ActorLogicalReadLease {"#,
             serde_json::json!({
                 "at": "main:Catalog.Bare",
                 "ops": [{"op": "object.levitate", "args": {"values": {}}}],
-                "dryRun": true
             }),
         );
         assert_eq!(
@@ -5801,7 +5818,6 @@ struct ActorLogicalReadLease {"#,
             serde_json::json!({
                 "at": "main:Catalog.Bare",
                 "ops": [{"op": "enumValue.add", "args": {"items": []}}],
-                "dryRun": true
             }),
         );
         assert!(
@@ -6094,9 +6110,8 @@ struct ActorLogicalReadLease {"#,
         );
         assert!(preview.ok, "{preview:?}");
         assert!(!workspace.path().join("ext/Catalogs/Items.xml").exists());
-        let mut apply_args = preview_args.clone();
-        apply_args["dryRun"] = serde_json::json!(false);
-        apply_args["ifRev"] = serde_json::json!(preview.rev);
+        let mut apply_args =
+            serde_json::json!({"executionToken": preview.data.as_ref().unwrap()["executionToken"]});
         let parent = workspace.path().join("src/Catalogs/Items.xml");
         let text = std::fs::read_to_string(&parent).unwrap();
         std::fs::write(
@@ -6129,7 +6144,7 @@ struct ActorLogicalReadLease {"#,
             preview_args.clone(),
         );
         assert!(preview.ok, "{preview:?}");
-        apply_args["ifRev"] = serde_json::json!(preview.rev);
+        apply_args["executionToken"] = preview.data.as_ref().unwrap()["executionToken"].clone();
         let applied = submit_canonical(&runtime, workspace.path(), ToolIdentity::Apply, apply_args);
         assert!(applied.ok, "{applied:?}");
         let read = submit_canonical(
@@ -6374,7 +6389,6 @@ struct ActorLogicalReadLease {"#,
             serde_json::json!({
                 "at": "main:Configuration",
                 "ops": [{"op": "object.create", "args": {}}],
-                "dryRun": false,
             }),
             std::fs::canonicalize(workspace.path())
                 .unwrap()
@@ -6532,18 +6546,13 @@ struct ActorLogicalReadLease {"#,
             Arc::new(TokioClock),
         );
         let workspace_hint = std::fs::canonicalize(workspace.path()).unwrap();
-        let call = |if_rev: Option<&str>| {
-            // Применение забором связано с предпросмотром, поэтому оба режима
-            // строятся из одного места: предпросмотр без забора, применение с
-            // тем, что предпросмотр вернул.
-            let mut arguments = serde_json::json!({
-                "at": "main:Document.Order",
-                "ops": [{"op": "object.remove", "args": {}}],
-                "dryRun": if_rev.is_none(),
-            });
-            if let Some(if_rev) = if_rev {
-                arguments["ifRev"] = serde_json::Value::String(if_rev.to_string());
-            }
+        let call = |token: Option<&str>| {
+            let arguments = match token {
+                None => {
+                    serde_json::json!({"at": "main:Document.Order", "ops": [{"op": "object.remove", "args": {}}]})
+                }
+                Some(token) => serde_json::json!({"executionToken": token}),
+            };
             let request = InvocationRequest::new(
                 ToolIdentity::Apply,
                 arguments,
@@ -6578,7 +6587,9 @@ struct ActorLogicalReadLease {"#,
         );
         assert_cache_impact(&preview, "preview");
         let published = call(Some(
-            preview.rev.as_deref().expect("preview carries the fence"),
+            preview.data.as_ref().unwrap()["executionToken"]
+                .as_str()
+                .unwrap(),
         ));
         assert!(!descriptor.exists(), "publication removes the descriptor");
         assert_cache_impact(&published, "published");
@@ -6635,28 +6646,27 @@ struct ActorLogicalReadLease {"#,
             })
         };
         let preview = |comment: &str| {
-            let mut arguments = plan(comment);
-            arguments["dryRun"] = serde_json::Value::Bool(true);
-            let result = call(arguments);
+            let result = call(plan(comment));
             assert!(result.ok, "{result:?}");
-            result.rev.expect("preview carries the revision fence")
+            (
+                result.rev.unwrap(),
+                result.data.as_ref().unwrap()["executionToken"]
+                    .as_str()
+                    .unwrap()
+                    .to_string(),
+            )
         };
-        let publish = |comment: &str, if_rev: &str| {
-            let mut arguments = plan(comment);
-            arguments["dryRun"] = serde_json::Value::Bool(false);
-            arguments["ifRev"] = serde_json::Value::String(if_rev.to_string());
-            call(arguments)
-        };
+        let publish = |token: &str| call(serde_json::json!({"executionToken": token}));
 
         // Оба агента планируют по одному и тому же состоянию исходников.
         let first_fence = preview("от первого");
         let second_fence = preview("от второго");
         assert_eq!(
-            first_fence, second_fence,
+            first_fence.0, second_fence.0,
             "планы построены на одной ревизии"
         );
 
-        let first = publish("от первого", &first_fence);
+        let first = publish(&first_fence.1);
         assert!(first.ok, "{first:?}");
         assert!(std::fs::read_to_string(&descriptor)
             .unwrap()
@@ -6664,7 +6674,7 @@ struct ActorLogicalReadLease {"#,
 
         // Второй план опоздал. До правки он публиковался и уничтожал первую
         // запись; теперь он назван устаревшим, и правка первого цела.
-        let second = publish("от второго", &second_fence);
+        let second = publish(&second_fence.1);
         assert!(!second.ok, "{second:?}");
         assert_eq!(second.diagnostics[0]["code"], "stale_revision");
         let published = std::fs::read_to_string(&descriptor).unwrap();
@@ -6678,18 +6688,69 @@ struct ActorLogicalReadLease {"#,
         let refused = call(unfenced);
         assert!(!refused.ok, "{refused:?}");
         assert_eq!(refused.diagnostics[0]["code"], "bad_value");
-        assert_eq!(refused.at.as_deref(), Some("ifRev"));
+        assert!(refused.diagnostics[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("dryRun"));
         assert_eq!(std::fs::read_to_string(&descriptor).unwrap(), published);
 
         // Второй агент перечитывает ревизию и повторяет план — это и есть
         // названный путь восстановления.
         let retry_fence = preview("от второго");
         assert_ne!(retry_fence, second_fence);
-        let retry = publish("от второго", &retry_fence);
+        let retry = publish(&retry_fence.1);
         assert!(retry.ok, "{retry:?}");
         assert!(std::fs::read_to_string(&descriptor)
             .unwrap()
             .contains("от второго"));
+
+        let committed = crate::test_support::tree_snapshot(&source);
+        let replay = publish(&retry_fence.1);
+        assert_eq!(
+            serde_json::to_value(&retry).unwrap(),
+            serde_json::to_value(&replay).unwrap()
+        );
+        assert_eq!(crate::test_support::tree_snapshot(&source), committed);
+
+        let pending = preview("после перезапуска");
+        let restarted = V5CanonicalInvocationRuntime::new(
+            Arc::new(
+                crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
+            ),
+            Arc::new(TokioClock),
+        );
+        let unavailable = submit_canonical(
+            &restarted,
+            workspace.path(),
+            ToolIdentity::Apply,
+            serde_json::json!({"executionToken": pending.1}),
+        );
+        assert!(
+            !unavailable.ok,
+            "another actor must not reconstruct a lost plan"
+        );
+        assert_eq!(crate::test_support::tree_snapshot(&source), committed);
+        let fresh = submit_canonical(
+            &restarted,
+            workspace.path(),
+            ToolIdentity::Apply,
+            plan("после перезапуска"),
+        );
+        assert!(fresh.ok, "{fresh:?}");
+        assert_ne!(
+            fresh.data.as_ref().unwrap()["executionToken"],
+            serde_json::json!(pending.1)
+        );
+        let executed = submit_canonical(
+            &restarted,
+            workspace.path(),
+            ToolIdentity::Apply,
+            serde_json::json!({"executionToken": fresh.data.as_ref().unwrap()["executionToken"]}),
+        );
+        assert!(executed.ok, "{executed:?}");
+        assert!(std::fs::read_to_string(&descriptor)
+            .unwrap()
+            .contains("после перезапуска"));
     }
 
     #[test]
@@ -6744,7 +6805,6 @@ struct ActorLogicalReadLease {"#,
             serde_json::json!({
                 "at": at,
                 "ops": [{"op": "props.set", "args": {"values": {"ClientOrdinaryApplication": value}}}],
-                "dryRun": true,
             })
         };
         assert_eq!(
@@ -6761,8 +6821,7 @@ struct ActorLogicalReadLease {"#,
             let after_preview = view(at);
             assert_eq!(after_preview.rev, observed.rev);
             assert_eq!(after_preview.data, observed.data);
-            args["dryRun"] = serde_json::json!(false);
-            args["ifRev"] = serde_json::json!(preview.rev.expect("preview carries the fence"));
+            args = serde_json::json!({"executionToken": preview.data.as_ref().unwrap()["executionToken"]});
             let applied = call(ToolIdentity::Apply, args);
             assert!(applied.ok, "props.set apply failed: {applied:?}");
             assert_eq!(
@@ -6797,10 +6856,8 @@ struct ActorLogicalReadLease {"#,
             let before_module = std::fs::read(&descriptor).unwrap();
             let before_document = std::fs::read(&document).unwrap();
             let before_view = view(target);
-            for dry_run in [true, false] {
-                let mut args = plan(target, value.clone());
-                args["dryRun"] = serde_json::json!(dry_run);
-                args["ifRev"] = serde_json::json!(before_view.rev);
+            {
+                let args = plan(target, value.clone());
                 let refused = call(ToolIdentity::Apply, args);
                 assert!(!refused.ok, "{refused:?}");
                 assert_eq!(refused.diagnostics[0]["code"], "bad_value", "{refused:?}");
@@ -6861,26 +6918,21 @@ struct ActorLogicalReadLease {"#,
             let dry = call(serde_json::json!({
                 "at": "main:Document.Order",
                 "ops": [operation.clone()],
-                "dryRun": true,
             }));
             assert!(dry.ok, "dry-run failed: {dry:?}");
             assert_eq!(std::fs::read(&descriptor).unwrap(), before);
             let repeated_dry = call(serde_json::json!({
                 "at": "main:Document.Order",
                 "ops": [operation.clone()],
-                "dryRun": true,
             }));
             assert_eq!(
                 dry.data.as_ref().unwrap()["planHash"],
                 repeated_dry.data.as_ref().unwrap()["planHash"],
                 "dry-run planning must be deterministic"
             );
-            let real = call(serde_json::json!({
-                "at": "main:Document.Order",
-                "ops": [operation],
-                "dryRun": false,
-                "ifRev": dry.rev.clone().expect("preview carries the revision fence"),
-            }));
+            let real = call(
+                serde_json::json!({"executionToken": dry.data.as_ref().unwrap()["executionToken"]}),
+            );
             assert!(real.ok, "real apply failed: {real:?}");
             assert_ne!(std::fs::read(&descriptor).unwrap(), before);
             assert_eq!(
@@ -6925,7 +6977,6 @@ struct ActorLogicalReadLease {"#,
                 {"op": "props.set", "args": {"values": {"Comment": "must not publish"}}},
                 {"op": "object.create", "args": {"values": {"kind": "Catalog", "name": "Ghost"}}}
             ],
-            "dryRun": false,
         }));
         assert!(!rejected.ok);
         assert_eq!(rejected.diagnostics[0]["code"], "bad_value");
@@ -6938,18 +6989,11 @@ struct ActorLogicalReadLease {"#,
                 {"op": "props.set", "args": {"values": {"Comment": "transient"}}},
                 {"op": "props.set", "args": {"values": {"Comment": "planned"}}}
             ],
-            "dryRun": true,
         }));
         assert!(net_zero_preview.ok, "{net_zero_preview:?}");
-        let reverted = call(serde_json::json!({
-            "at": "main:Document.Order",
-            "ops": [
-                {"op": "props.set", "args": {"values": {"Comment": "transient"}}},
-                {"op": "props.set", "args": {"values": {"Comment": "planned"}}}
-            ],
-            "dryRun": false,
-            "ifRev": net_zero_preview.rev.clone().expect("preview carries the fence"),
-        }));
+        let reverted = call(
+            serde_json::json!({"executionToken": net_zero_preview.data.as_ref().unwrap()["executionToken"]}),
+        );
         assert!(reverted.ok, "net-zero apply failed: {reverted:?}");
         assert!(reverted.changed.is_empty());
         assert_eq!(reverted.data.as_ref().unwrap()["effects"], 0);

@@ -274,8 +274,8 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                 },
                 V13ToolContract {
                     name: "apply",
-                    description: "Preview or atomically apply typed edits to one logically addressed 1C node.",
-                    input_schema: schema_requiring_the_fence(
+                    description: "Plan typed edits with at and ops without writing; execute that saved plan with executionToken alone. Use data.executionToken from the successful plan response.",
+                    input_schema: schema_for_saved_apply_plan(
                         json!({
                             "at": logical_address(),
                             "ops": {
@@ -292,8 +292,6 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                                     "required": ["op"],
                                 },
                             },
-                            "dryRun": {"type": "boolean", "description": "Validate and return the plan without publishing when true.", "default": false},
-                            "ifRev": {"type": "string", "description": "Revision returned by a prior dryRun preview; required when dryRun is false."},
                         }),
                         json!(["at", "ops"]),
                     ),
@@ -401,23 +399,22 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
     }
 }
 
-/// Схема `apply`: забор обязателен, когда это применение, а не предпросмотр.
-///
-/// Условие объявлено структурно, а не только словами в описании поля: иначе
-/// хост, собирающий вызов по схеме, сгенерирует применение без забора, которое
-/// разборщик затем отвергнет. Опущенный `dryRun` равен `false`, и отсутствие
-/// поля условие покрывает тем же `const`: пустая ветвь `if` проходит.
-fn schema_requiring_the_fence(properties: Value, required: Value) -> Value {
-    let mut schema = schema(properties, required);
-    let object = schema
-        .as_object_mut()
-        .expect("the schema builder returns an object");
-    object.insert(
-        "if".to_string(),
-        json!({"properties": {"dryRun": {"const": false}}}),
+/// Planning and execution are disjoint shapes: execution carries only the saved token.
+fn schema_for_saved_apply_plan(properties: Value, required: Value) -> Value {
+    let plan = schema(properties.clone(), required);
+    let token = json!({"type": "string", "minLength": 1, "description": "data.executionToken returned by a successful plan; executes that saved plan without resending at or ops."});
+    let execute = schema(
+        json!({"executionToken": token.clone()}),
+        json!(["executionToken"]),
     );
-    object.insert("then".to_string(), json!({"required": ["ifRev"]}));
-    schema
+    let mut properties = properties;
+    properties
+        .as_object_mut()
+        .unwrap()
+        .insert("executionToken".into(), token);
+    let mut result = schema(properties, json!([]));
+    result["oneOf"] = json!([plan, execute]);
+    result
 }
 
 fn schema(properties: Value, required: Value) -> Value {
@@ -731,8 +728,8 @@ mod tests {
         assert_schema(
             &catalog.tools,
             "apply",
-            json!(["at", "ops"]),
-            &["at", "ops", "dryRun", "ifRev"],
+            json!([]),
+            &["at", "ops", "executionToken"],
         );
         assert_schema(&catalog.tools, "resolve", json!([]), &["at", "path"]);
         assert_schema(
@@ -783,7 +780,7 @@ mod tests {
         for (tool, field) in [
             ("view", "at"),
             ("apply", "at"),
-            ("apply", "ifRev"),
+            ("apply", "executionToken"),
             ("resolve", "at"),
             ("resolve", "path"),
             ("search", "query"),
@@ -844,14 +841,6 @@ mod tests {
             "boolean"
         );
         assert_eq!(
-            input_field(&catalog.tools, "apply", "dryRun")["type"],
-            "boolean"
-        );
-        assert_eq!(
-            input_field(&catalog.tools, "apply", "dryRun")["default"],
-            false
-        );
-        assert_eq!(
             input_field(&catalog.tools, "search", "regex")["type"],
             "boolean"
         );
@@ -863,7 +852,14 @@ mod tests {
         let apply = contract(&catalog.tools, "apply");
         assert_eq!(apply.input_schema["properties"]["ops"]["type"], "array");
         assert_eq!(apply.input_schema["properties"]["ops"]["minItems"], 1);
-        assert_eq!(apply.input_schema["properties"]["dryRun"]["default"], false);
+        assert_eq!(
+            apply.input_schema["oneOf"][0]["required"],
+            json!(["at", "ops"])
+        );
+        assert_eq!(
+            apply.input_schema["oneOf"][1]["required"],
+            json!(["executionToken"])
+        );
         assert_eq!(
             apply.input_schema["properties"]["ops"]["items"]["type"],
             "object"

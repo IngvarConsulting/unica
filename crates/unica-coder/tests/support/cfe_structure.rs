@@ -174,7 +174,7 @@ fn canonical_stdio_borrow_refresh_preserves_module_and_identity() {
             .join(directory)
             .join("PriceList/Ext/ObjectModule.bsl");
         let owner_before = fs::read(extension.join("Configuration.xml")).unwrap();
-        let mut borrow_args = json!({"at":"ext:Configuration","dryRun":true,"ops":[{"op":"object.borrow","args":{"at":"ext:Configuration","from":format!("parent:{kind}.PriceList")}}]});
+        let borrow_args = json!({"at":"ext:Configuration","ops":[{"op":"object.borrow","args":{"at":"ext:Configuration","from":format!("parent:{kind}.PriceList")}}]});
         let preview = call(&mut mcp, "unica.apply", borrow_args.clone());
         assert!(!descriptor.exists());
         assert!(!module.exists());
@@ -182,9 +182,11 @@ fn canonical_stdio_borrow_refresh_preserves_module_and_identity() {
             fs::read(extension.join("Configuration.xml")).unwrap(),
             owner_before
         );
-        borrow_args["dryRun"] = json!(false);
-        borrow_args["ifRev"] = preview["rev"].clone();
-        call(&mut mcp, "unica.apply", borrow_args.clone());
+        call(
+            &mut mcp,
+            "unica.apply",
+            json!({"executionToken": preview["data"]["executionToken"]}),
+        );
         let borrowed = fs::read_to_string(&descriptor).unwrap();
         let doc = roxmltree::Document::parse(&borrowed).unwrap();
         let object = doc
@@ -213,13 +215,15 @@ fn canonical_stdio_borrow_refresh_preserves_module_and_identity() {
         // does not own source-tree topology (staged_code_rejects_absent_leaf_below_missing_parent_topology).
         fs::create_dir_all(module.parent().unwrap()).unwrap();
         let at = format!("ext:{kind}.PriceList.Module.Object");
-        let mut code_args = json!({"at":at,"dryRun":true,"ops":[{"op":"code.insert","args":{"at":at,"text":"Procedure Added() Export\nEndProcedure"}}]});
+        let code_args = json!({"at":at,"ops":[{"op":"code.insert","args":{"at":at,"text":"Procedure Added() Export\nEndProcedure"}}]});
         let preview = call(&mut mcp, "unica.apply", code_args.clone());
         assert_eq!(fs::read_to_string(&descriptor).unwrap(), borrowed);
         assert!(!module.exists());
-        code_args["dryRun"] = json!(false);
-        code_args["ifRev"] = preview["rev"].clone();
-        call(&mut mcp, "unica.apply", code_args);
+        call(
+            &mut mcp,
+            "unica.apply",
+            json!({"executionToken": preview["data"]["executionToken"]}),
+        );
         let connected = fs::read_to_string(&descriptor).unwrap();
         let doc = roxmltree::Document::parse(&connected).unwrap();
         let states: Vec<_> = doc
@@ -254,14 +258,14 @@ fn canonical_stdio_borrow_refresh_preserves_module_and_identity() {
             parent_xml.replace("<Comment/>", "<Comment>parent-only change</Comment>")
         };
         fs::write(&parent_path, changed_parent).unwrap();
-        borrow_args["dryRun"] = json!(true);
-        borrow_args.as_object_mut().unwrap().remove("ifRev");
         let repeated_preview = call(&mut mcp, "unica.apply", borrow_args.clone());
         assert_eq!(fs::read_to_string(&descriptor).unwrap(), connected);
         assert_eq!(fs::read(&module).unwrap(), bsl);
-        borrow_args["dryRun"] = json!(false);
-        borrow_args["ifRev"] = repeated_preview["rev"].clone();
-        let refreshed = call(&mut mcp, "unica.apply", borrow_args.clone());
+        let refreshed = call(
+            &mut mcp,
+            "unica.apply",
+            json!({"executionToken": repeated_preview["data"]["executionToken"]}),
+        );
         if kind == "Catalog" {
             assert_ne!(refreshed["rev"], repeated_preview["rev"]);
         } else {
@@ -275,15 +279,15 @@ fn canonical_stdio_borrow_refresh_preserves_module_and_identity() {
         assert_eq!(fs::read(&module).unwrap(), bsl);
         // After applying the parent change, a true repeat has no new revision
         // and leaves both metadata and module bytes identical.
-        borrow_args["dryRun"] = json!(true);
-        borrow_args["ifRev"] = refreshed["rev"].clone();
         let noop_preview = call(&mut mcp, "unica.apply", borrow_args.clone());
         assert_eq!(noop_preview["rev"], refreshed["rev"]);
         assert_eq!(fs::read_to_string(&descriptor).unwrap(), expected_refresh);
         assert_eq!(fs::read(&module).unwrap(), bsl);
-        borrow_args["dryRun"] = json!(false);
-        borrow_args["ifRev"] = noop_preview["rev"].clone();
-        let noop = call(&mut mcp, "unica.apply", borrow_args);
+        let noop = call(
+            &mut mcp,
+            "unica.apply",
+            json!({"executionToken": noop_preview["data"]["executionToken"]}),
+        );
         assert_eq!(noop["rev"], refreshed["rev"]);
         assert_eq!(fs::read_to_string(&descriptor).unwrap(), expected_refresh);
         assert_eq!(fs::read(&module).unwrap(), bsl);

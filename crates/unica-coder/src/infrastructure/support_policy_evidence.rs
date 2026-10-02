@@ -316,6 +316,17 @@ enum RetainedWrongKind {
 }
 
 impl RetainedSupportPolicyEvidence {
+    pub(crate) fn retained_payload_bytes(&self) -> usize {
+        self.candidates.iter().fold(0usize, |bytes, candidate| {
+            bytes
+                .saturating_add(std::mem::size_of::<RetainedPolicyCandidate>())
+                .saturating_add(match candidate {
+                    RetainedPolicyCandidate::Exact { bytes, .. } => bytes.len(),
+                    _ => 0,
+                })
+        })
+    }
+
     pub(crate) fn capture(
         workspace_root: &Path,
         source_root: &Path,

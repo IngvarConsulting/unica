@@ -91,7 +91,8 @@ exactly matches the command, accounting for the XML namespace. Traverse the whol
 `ContextMenu`, table command bars, and nested groups, rather than only the root
 `ChildItems`: the `Item` projection does not expose all these containers.
 Record the element names and bindings. This is read-only inspection; source
-changes still go through `unica.apply` with preview and `ifRev`.
+changes still go through `unica.apply`: plan with `at` and `ops`, then execute
+with only `executionToken` from the successful plan's `data.executionToken`.
 
 Also inspect command-bar autofill and element creation in the form module:
 static XML does not prove the contents of a dynamic UI. If the file cannot be

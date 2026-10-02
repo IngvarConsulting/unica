@@ -30,14 +30,13 @@ fn canonical_stdio_code_insert_publishes_borrowed_module_and_state() {
     let mut mcp = McpProcess::start(&workspace, &state);
     mcp.exchange(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"module-state-test","version":"1"}}}));
     mcp.notify(json!({"jsonrpc":"2.0","method":"notifications/initialized"}));
-    let mut args = json!({"at":"ext:CommonModule.Fix","ops":[{"op":"code.insert","args":{"at":"ext:CommonModule.Fix","text":"Procedure Added() Export\nEndProcedure"}}],"dryRun":true});
+    let args = json!({"at":"ext:CommonModule.Fix","ops":[{"op":"code.insert","args":{"at":"ext:CommonModule.Fix","text":"Procedure Added() Export\nEndProcedure"}}]});
     let preview = call(&mut mcp, 2, args.clone());
     assert_eq!(fs::read_to_string(&descriptor).unwrap(), before);
     let module = source.join("CommonModules/Fix/Ext/Module.bsl");
     assert!(!module.exists());
-    args["dryRun"] = json!(false);
-    args["ifRev"] = preview["rev"].clone();
-    let applied = call(&mut mcp, 3, args.clone());
+    let execute = json!({"executionToken":preview["data"]["executionToken"]});
+    let applied = call(&mut mcp, 3, execute.clone());
     let after = fs::read_to_string(&descriptor).unwrap();
     assert!(
         after.contains("<xr:Property>Module</xr:Property>"),
@@ -48,8 +47,7 @@ fn canonical_stdio_code_insert_publishes_borrowed_module_and_state() {
         .unwrap()
         .contains("Procedure Added()"));
     assert_ne!(preview["rev"], applied["rev"]);
-    args["ifRev"] = applied["rev"].clone();
-    let repeated = call(&mut mcp, 4, args);
+    let repeated = call(&mut mcp, 4, execute);
     assert_eq!(applied["rev"], repeated["rev"]);
     assert_eq!(fs::read_to_string(&descriptor).unwrap(), after);
     mcp.finish();
@@ -84,15 +82,14 @@ fn canonical_stdio_root_modules_publish_configuration_state_and_repeat() {
     {
         let before = fs::read_to_string(&descriptor).unwrap();
         let at = format!("ext:Module.{role}");
-        let mut args = json!({"at":at,"ops":[{"op":"code.insert","args":{"at":at,"text":"Procedure Added() Export\nEndProcedure"}}],"dryRun":true});
+        let args = json!({"at":at,"ops":[{"op":"code.insert","args":{"at":at,"text":"Procedure Added() Export\nEndProcedure"}}]});
         let id = 2 + index as u64 * 3;
         let preview = call(&mut mcp, id, args.clone());
         assert_eq!(fs::read_to_string(&descriptor).unwrap(), before);
         let module = source.join(format!("Ext/{role}Module.bsl"));
         assert!(!module.exists());
-        args["dryRun"] = json!(false);
-        args["ifRev"] = preview["rev"].clone();
-        let applied = call(&mut mcp, id + 1, args.clone());
+        let execute = json!({"executionToken":preview["data"]["executionToken"]});
+        let applied = call(&mut mcp, id + 1, execute.clone());
         assert_ne!(preview["rev"], applied["rev"]);
         let after = fs::read_to_string(&descriptor).unwrap();
         let document = roxmltree::Document::parse(&after).unwrap();
@@ -117,8 +114,7 @@ fn canonical_stdio_root_modules_publish_configuration_state_and_repeat() {
             && child.text() == Some("Extended")));
         let bsl = fs::read(&module).unwrap();
         assert!(String::from_utf8_lossy(&bsl).contains("Procedure Added()"));
-        args["ifRev"] = applied["rev"].clone();
-        let repeated = call(&mut mcp, id + 2, args);
+        let repeated = call(&mut mcp, id + 2, execute);
         assert_eq!(repeated["rev"], applied["rev"]);
         assert_eq!(fs::read_to_string(&descriptor).unwrap(), after);
         assert_eq!(fs::read(&module).unwrap(), bsl);
