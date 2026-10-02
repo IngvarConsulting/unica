@@ -2903,13 +2903,50 @@ fn bounded_usize(value: &Value) -> Option<usize> {
 fn run_bsl_diagnostics(
     ports: &crate::infrastructure::application_ports::InfrastructureApplicationPorts,
     address: &QualifiedAddress,
-    context: &crate::domain::workspace::WorkspaceContext,
+    invocation: &ActorBoundExecution,
     cancellation: &CancellationToken,
 ) -> Result<(bool, Vec<Value>), Box<DomainResult>> {
     use crate::application::diagnostics::DiagnosticCoordinator;
     use crate::application::ports::ApplicationPorts;
     use crate::domain::diagnostics::{DiagnosticAction, DiagnosticFilter, DiagnosticRequest};
 
+    let context = invocation.workspace_context();
+    let sources = invocation.read_sources().map_err(|error| {
+        Box::new(error_result_detailed(
+            Some(address.to_string()),
+            RefusalDetail::SourceUnreadable,
+            error,
+        ))
+    })?;
+    let source = sources
+        .into_iter()
+        .find(|source| source.source_set_name() == address.source_set())
+        .ok_or_else(|| {
+            Box::new(error_result(
+                Some(address.to_string()),
+                RefusalCode::NotFound,
+                "diagnostic source set was not admitted by the workspace actor",
+            ))
+        })?;
+    let authority = source
+        .logical_view_read_authority(cancellation)
+        .map_err(|error| {
+            Box::new(error_result_detailed(
+                Some(address.to_string()),
+                RefusalDetail::SourceUnreadable,
+                error,
+            ))
+        })?;
+    let scope = authority
+        .diagnostic_module_scope(address)
+        .map_err(|error| {
+            Box::new(match error.detail() {
+                Some(detail) => {
+                    error_result_detailed(Some(address.to_string()), detail, error.to_string())
+                }
+                None => error_result(Some(address.to_string()), error.code(), error.to_string()),
+            })
+        })?;
     let registry = match ports.diagnostic_provider_registry() {
         Ok(registry) => registry,
         Err(error) => {
@@ -2975,7 +3012,12 @@ fn run_bsl_diagnostics(
             },
         ),
     };
-    match DiagnosticCoordinator::new(registry, ports).execute(&request, context, cancellation) {
+    match DiagnosticCoordinator::new(registry, ports).execute_scoped(
+        &request,
+        context,
+        cancellation,
+        Some((scope, source.deadline())),
+    ) {
         Ok(result) => {
             // Провайдер, который не отработал, не доказывает чистоту кода.
             // Пустой список находок при незавершённом прогоне выглядел бы как
@@ -3093,7 +3135,7 @@ fn run_node_checks(
                 run_native_validator(&address, kind, validator, context)
             }
             CheckStep::Meta => run_meta_validator(&address, at, context, cancellation),
-            CheckStep::Bsl => run_bsl_diagnostics(ports, &address, context, cancellation),
+            CheckStep::Bsl => run_bsl_diagnostics(ports, &address, invocation, cancellation),
         };
         match verdict {
             Err(refusal) => return *refusal,

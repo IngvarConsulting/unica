@@ -158,6 +158,41 @@ struct OwnerEdgeCacheKey {
 }
 
 impl<'a> LogicalViewReadAuthority<'a> {
+    pub(crate) fn diagnostic_module_scope(
+        &self,
+        at: &QualifiedAddress,
+    ) -> Result<crate::domain::diagnostics::DiagnosticModuleScope, ViewError> {
+        self.read_checkpoint()?;
+        if at.source_set() != self.read.source_set() {
+            return Err(ViewError::new(
+                RefusalCode::NotFound,
+                "diagnostic module belongs to another source set",
+            ));
+        }
+        let route = route_logical_address(at, self.profile)
+            .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
+        let capability = route.module().ok_or_else(|| {
+            ViewError::new(
+                RefusalCode::BadValue,
+                "diagnostics requires one concrete module",
+            )
+        })?;
+        let (module_at, _) = module_prefix(at, self.profile, capability)?;
+        let admitted = self.snapshot(&module_at)?;
+        self.verify_module_owner(&module_at, capability, &admitted)?;
+        let target = module_source_address(&module_at, capability)?;
+        let relative = self.read.module_export_path(&target)?;
+        // Read through the retained capability before handing the provider a
+        // path. A lexical filename alone does not prove membership or readability.
+        self.read.module_source(&target)?;
+        self.read_checkpoint()?;
+        Ok(crate::domain::diagnostics::DiagnosticModuleScope {
+            source_set: self.read.source_set().to_string(),
+            source_root: self.read.root_path().to_path_buf(),
+            module_path: self.read.root_path().join(relative),
+        })
+    }
+
     pub(crate) fn new(
         cancellation: &'a CancellationToken,
         source_set: impl Into<String>,

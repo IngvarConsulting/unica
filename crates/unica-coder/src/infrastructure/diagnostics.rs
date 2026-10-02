@@ -115,6 +115,7 @@ pub(crate) fn resolve_diagnostic_context(
 enum BslDiagnosticBackendRequest {
     Analyze {
         source_root: PathBuf,
+        module: Option<PathBuf>,
     },
     Resident {
         source_root: PathBuf,
@@ -167,8 +168,17 @@ impl BslDiagnosticBackend for WorkspaceBslDiagnosticBackend {
         cancellation: &CancellationToken,
     ) -> Result<BslDiagnosticBackendReply, String> {
         match request {
-            BslDiagnosticBackendRequest::Analyze { source_root } => BslAnalyzerMcpAdapter::new()
-                .analyze_diagnostic_batch(&context.workspace, &source_root, timeout, cancellation)
+            BslDiagnosticBackendRequest::Analyze {
+                source_root,
+                module,
+            } => BslAnalyzerMcpAdapter::new()
+                .analyze_diagnostic_batch(
+                    &context.workspace,
+                    &source_root,
+                    module.as_deref(),
+                    timeout,
+                    cancellation,
+                )
                 .map(BslDiagnosticBackendReply::Analyze),
             BslDiagnosticBackendRequest::Resident {
                 source_root,
@@ -238,6 +248,10 @@ impl<'a> BslAnalyzerDiagnosticProvider<'a> {
         let backend_request = match request.action {
             DiagnosticAction::Analyze => BslDiagnosticBackendRequest::Analyze {
                 source_root: context.source_root.path.clone(),
+                module: request
+                    .module_scope
+                    .as_ref()
+                    .map(|scope| scope.module_path.clone()),
             },
             DiagnosticAction::Findings => {
                 let module = findings_module_path(request, context)?;
@@ -763,6 +777,7 @@ mod bsl_diagnostics_provider_tests {
 
         fn request(&self, action: DiagnosticAction) -> DiagnosticProviderRequest {
             DiagnosticProviderRequest {
+                module_scope: None,
                 action,
                 source_set: "main".to_string(),
                 metadata_path: (action == DiagnosticAction::Findings)
@@ -863,6 +878,32 @@ mod bsl_diagnostics_provider_tests {
     }
 
     #[test]
+    fn addressed_analyze_preserves_project_root_and_passes_exact_module() {
+        let fixture = ProviderFixture::new();
+        let backend = FakeBackend::new(vec![empty_analyze()]);
+        let provider = BslAnalyzerDiagnosticProvider::with_backend(&backend);
+        let mut request = fixture.request(DiagnosticAction::Analyze);
+        request.module_scope = Some(crate::domain::diagnostics::DiagnosticModuleScope {
+            source_set: "main".into(),
+            source_root: fixture.context.source_root.path.clone(),
+            module_path: fixture.module.clone(),
+        });
+        provider.execute(
+            &request,
+            &fixture.context,
+            ProviderDeadline::from_budget(Duration::from_secs(30)),
+            &CancellationToken::new(),
+        );
+        assert_eq!(
+            backend.calls.lock().unwrap().as_slice(),
+            &[BslDiagnosticBackendRequest::Analyze {
+                source_root: fixture.context.source_root.path.clone(),
+                module: Some(fixture.module),
+            }]
+        );
+    }
+
+    #[test]
     fn bsl_diagnostics_provider_request_maps_all_actions_without_public_filters() {
         let fixture = ProviderFixture::new();
         let backend = FakeBackend::new(vec![
@@ -898,7 +939,8 @@ mod bsl_diagnostics_provider_tests {
         assert_eq!(
             calls[0],
             BslDiagnosticBackendRequest::Analyze {
-                source_root: fixture.context.source_root.path.clone()
+                source_root: fixture.context.source_root.path.clone(),
+                module: None,
             }
         );
         assert_eq!(

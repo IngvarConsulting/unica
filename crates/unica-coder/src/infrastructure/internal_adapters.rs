@@ -1481,6 +1481,7 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         &self,
         context: &WorkspaceContext,
         source_root: &Path,
+        module: Option<&Path>,
         timeout: Duration,
         cancellation: &CancellationToken,
     ) -> Result<AnalyzerDiagnosticsBatch, String> {
@@ -1492,13 +1493,14 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         if let Some(timeout_seconds) = analyzer_analyze_timeout_seconds(timeout) {
             args.insert("timeoutSeconds".to_string(), json!(timeout_seconds));
         }
-        let result = self.invoke_diagnostics_analyze(
+        let result = self.invoke_diagnostics_analyze_scoped(
             "unica.code.diagnostics",
             &args,
             context,
             false,
             None,
             cancellation,
+            module,
         )?;
         result.diagnostics.ok_or_else(|| {
             result
@@ -1655,7 +1657,8 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         })
     }
 
-    fn invoke_diagnostics_analyze(
+    #[allow(clippy::too_many_arguments)]
+    fn invoke_diagnostics_analyze_scoped(
         &self,
         tool_name: &str,
         args: &Map<String, Value>,
@@ -1663,12 +1666,49 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         dry_run: bool,
         operational_config: Option<&OperationalConfig>,
         cancellation: &CancellationToken,
+        module: Option<&Path>,
     ) -> Result<BslAnalyzerOutcome, String> {
         let plugin_root = find_plugin_root(&context.cwd).ok_or_else(|| {
             "could not locate Unica plugin root for diagnostics adapter lookup".to_string()
         })?;
         let source_dir = resolve_source_dir(context, args)?;
-        let normalized_args = diagnostics_analyze_args(args);
+        let mut normalized_args = diagnostics_analyze_args(args);
+        // Keep the full configuration root for metadata and cross-module facts.
+        // A JSON file preserves commas and spaces in physical module paths.
+        let _scope_file = if let Some(module) = module {
+            if !module.is_absolute() {
+                return Err("diagnostics module path must be absolute".to_string());
+            }
+            let module = module
+                .to_str()
+                .ok_or_else(|| "diagnostics module path must be UTF-8".to_string())?;
+            let scratch_root = normalize_path_identity(&std::env::temp_dir())?;
+            if scratch_root.starts_with(normalize_path_identity(&source_dir)?) {
+                return Err("diagnostics scope file would be inside source root".to_string());
+            }
+            let mut scope = tempfile::NamedTempFile::new_in(scratch_root)
+                .map_err(|_| "cannot create diagnostics scope file".to_string())?;
+            serde_json::to_writer(
+                scope.as_file_mut(),
+                &json!({
+                    "base_ref": "unica-check",
+                    "head_ref": "current",
+                    "files": {module: {"hunks": null}},
+                }),
+            )
+            .map_err(|_| "cannot write diagnostics scope file".to_string())?;
+            let filter_path = scope
+                .path()
+                .to_str()
+                .ok_or_else(|| "diagnostics scope path must be UTF-8".to_string())?;
+            normalized_args.insert(
+                "diffFilter".to_string(),
+                Value::String(filter_path.to_string()),
+            );
+            Some(scope)
+        } else {
+            None
+        };
         let process_timeout = diagnostics_analyze_timeout(args, operational_config)?;
         let bundled_tool = resolve_bundled_tool(&plugin_root, "bsl-analyzer", !dry_run)?;
         let reported_args = cli_args(&normalized_args, true)?;
@@ -1691,7 +1731,10 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
 
         let mut process_args = vec!["analyze".to_string()];
         process_args.extend(execution_args);
-        let mut parser = DiagnosticsJsonlParser::new(&source_dir)?;
+        let mut parser = match module {
+            Some(module) => DiagnosticsJsonlParser::for_module(&source_dir, module)?,
+            None => DiagnosticsJsonlParser::new(&source_dir)?,
+        };
         let mut consume = |line_number, bytes: &[u8]| {
             parser.push_line(line_number, bytes);
             StreamControl::Continue
@@ -4877,13 +4920,14 @@ source-set:
             .unwrap();
 
         let outcome = BslAnalyzerMcpAdapter::with_process_runner(&runner)
-            .invoke_diagnostics_analyze(
+            .invoke_diagnostics_analyze_scoped(
                 "unica.code.diagnostics",
                 &Map::new(),
                 &context,
                 false,
                 Some(&operational_config),
                 &CancellationToken::new(),
+                None,
             )
             .unwrap()
             .outcome;
@@ -4917,13 +4961,14 @@ analyze_timeout_seconds = 900
             .unwrap();
 
         let outcome = BslAnalyzerMcpAdapter::with_process_runner(&runner)
-            .invoke_diagnostics_analyze(
+            .invoke_diagnostics_analyze_scoped(
                 "unica.code.diagnostics",
                 &Map::new(),
                 &context,
                 false,
                 Some(&operational_config),
                 &CancellationToken::new(),
+                None,
             )
             .unwrap()
             .outcome;
@@ -5383,13 +5428,14 @@ analyze_timeout_seconds = 900
         dry_run: bool,
     ) -> BslAnalyzerOutcome {
         adapter
-            .invoke_diagnostics_analyze(
+            .invoke_diagnostics_analyze_scoped(
                 "bsl-analyzer diagnostics provider",
                 args,
                 context,
                 dry_run,
                 None,
                 &CancellationToken::new(),
+                None,
             )
             .unwrap()
     }
@@ -5566,6 +5612,110 @@ analyze_timeout_seconds = 900
             assert!(batch.outcome.observations.is_empty());
             assert!(batch.outcome.error.unwrap().message.starts_with(expected));
         }
+    }
+
+    #[test]
+    fn scoped_analysis_keeps_source_root_and_cleans_full_file_filter_on_every_exit() {
+        struct ScopedRunner {
+            root: PathBuf,
+            module: PathBuf,
+            filter: RefCell<Option<PathBuf>>,
+            exit: &'static str,
+        }
+        impl ProcessRunner for ScopedRunner {
+            fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
+                let argument = |flag: &str| {
+                    command
+                        .args
+                        .windows(2)
+                        .find(|pair| pair[0] == flag)
+                        .map(|pair| pair[1].clone())
+                        .unwrap()
+                };
+                assert_eq!(command.args[0], "analyze");
+                assert_eq!(
+                    normalize_path_identity(Path::new(&argument("--source-dir"))).unwrap(),
+                    self.root
+                );
+                assert_eq!(argument("--format"), "jsonl");
+                assert!(!command.args.iter().any(|arg| arg == "--changed-files"));
+                let filter = PathBuf::from(argument("--diff-filter"));
+                assert!(!normalize_path_identity(&filter)
+                    .unwrap()
+                    .starts_with(&self.root));
+                let document: Value = serde_json::from_slice(&fs::read(&filter).unwrap()).unwrap();
+                assert_eq!(
+                    document,
+                    json!({"base_ref":"unica-check", "head_ref":"current", "files":{self.module.to_str().unwrap():{"hunks":null}}})
+                );
+                *self.filter.borrow_mut() = Some(filter);
+                if self.exit == "transport_failure" {
+                    return Err("test process failure".into());
+                }
+                let paths = if self.exit == "missing_target" {
+                    Vec::new()
+                } else {
+                    vec![self.module.clone()]
+                };
+                let mut lines = vec![
+                    json!({"type":"start", "total_files":paths.len(), "version":"test"})
+                        .to_string(),
+                ];
+                lines.extend(
+                    paths.iter().map(|path| {
+                        json!({"type":"file", "path":path, "diagnostics":[]}).to_string()
+                    }),
+                );
+                lines.push(json!({"type":"done", "elapsed_secs":0.1, "total_files":paths.len(), "total_diagnostics":0, "failed_files":0}).to_string());
+                let mut output = analyze_process_output(&lines.join("\n"));
+                output.cancelled = self.exit == "cancelled";
+                Ok(output)
+            }
+        }
+        let context = temp_context("scoped, анализ test");
+        let root = normalize_path_identity(&context.cwd).unwrap();
+        let module = root.join("CommonModules/Обмен/Ext/Module.bsl");
+        fs::create_dir_all(module.parent().unwrap()).unwrap();
+        let source = "Процедура Выполнить() Экспорт\nКонецПроцедуры\n";
+        fs::write(&module, source).unwrap();
+        for exit in [
+            "success",
+            "missing_target",
+            "transport_failure",
+            "cancelled",
+        ] {
+            let runner = ScopedRunner {
+                root: root.clone(),
+                module: module.clone(),
+                filter: RefCell::new(None),
+                exit,
+            };
+            let result = BslAnalyzerMcpAdapter::with_process_runner(&runner)
+                .analyze_diagnostic_batch(
+                    &context,
+                    &root,
+                    Some(&module),
+                    Duration::from_secs(30),
+                    &CancellationToken::new(),
+                );
+            let filter = runner
+                .filter
+                .borrow()
+                .clone()
+                .expect("runner must read filter while it exists");
+            assert!(!filter.exists(), "filter leaked on {exit}");
+            assert_eq!(fs::read_to_string(&module).unwrap(), source);
+            match exit {
+                "success" => assert!(result.unwrap().outcome.complete),
+                "missing_target" => {
+                    let outcome = result.unwrap().outcome;
+                    assert!(!outcome.complete);
+                    assert_eq!(outcome.error.unwrap().code, "diagnostics_incomplete");
+                }
+                _ => assert!(result.is_err(), "{exit}: {result:?}"),
+            }
+        }
+        cleanup_context(&context);
     }
 
     #[test]
