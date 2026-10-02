@@ -1553,18 +1553,9 @@ impl std::fmt::Display for SavedApplyPlanError {
 #[derive(Debug)]
 pub(crate) enum SavedApplyExecutionError {
     Unavailable(String),
+    RegistryUnavailable,
+    StateUnavailable(&'static str),
     Publication(ApplyPublicationError),
-}
-
-impl From<String> for SavedApplyExecutionError {
-    fn from(message: String) -> Self {
-        Self::Unavailable(message)
-    }
-}
-impl From<&str> for SavedApplyExecutionError {
-    fn from(message: &str) -> Self {
-        Self::Unavailable(message.to_owned())
-    }
 }
 
 const SAVED_APPLY_TTL: Duration = Duration::from_secs(300);
@@ -2173,9 +2164,9 @@ impl<R> WorkspaceActor<R> {
             Result<ApplyPublicationResult, ApplyPublicationError>,
         ) -> DomainResult,
     ) -> Result<DomainResult, SavedApplyExecutionError> {
-        let entry = self.saved_apply_plans.lock().map_err(|_| "saved apply plans are unavailable")?
+        let entry = self.saved_apply_plans.lock().map_err(|_| SavedApplyExecutionError::RegistryUnavailable)?
             .entries.get(token).cloned()
-            .ok_or("executionToken is unavailable in this workspace actor; request a fresh plan with apply(at, ops)")?;
+            .ok_or_else(|| SavedApplyExecutionError::Unavailable("executionToken is unavailable in this workspace actor; request a fresh plan with apply(at, ops)".into()))?;
         // One token retains its terminal result across distinct RPC invocations.
         // The workspace mutation lane is acquired only inside publication.
         let _execution = entry
@@ -2184,12 +2175,13 @@ impl<R> WorkspaceActor<R> {
             .map_err(|error| {
                 SavedApplyExecutionError::Publication(deadline_lock_publication_error(error))
             })?;
-        let mut state = entry
-            .state
-            .lock()
-            .map_err(|_| "saved apply execution is unavailable; request a fresh plan")?;
+        let mut state = entry.state.lock().map_err(|_| {
+            SavedApplyExecutionError::StateUnavailable("saved apply execution state is unavailable")
+        })?;
         if entry.expires <= Instant::now() {
-            return Err("executionToken expired; request a fresh plan with apply(at, ops)".into());
+            return Err(SavedApplyExecutionError::Unavailable(
+                "executionToken expired; request a fresh plan with apply(at, ops)".into(),
+            ));
         }
         if let SavedApplyState::Completed(result) = &*state {
             return Ok(result.clone());
@@ -2197,7 +2189,9 @@ impl<R> WorkspaceActor<R> {
         let SavedApplyState::Pending { mut batch, preview } =
             std::mem::replace(&mut *state, SavedApplyState::Running)
         else {
-            return Err("saved apply execution is unavailable; request a fresh plan".into());
+            return Err(SavedApplyExecutionError::StateUnavailable(
+                "saved apply execution state is unavailable",
+            ));
         };
         batch.deadline = deadline;
         batch.cancellation = cancellation.clone();
@@ -11097,6 +11091,61 @@ pub(crate) mod tests {
             "waiting stop must leave the pending plan usable"
         );
         fixture.cleanup();
+    }
+
+    #[test]
+    fn saved_apply_execution_poison_is_internal_failure_and_writes_nothing() {
+        for poison_registry in [true, false] {
+            let fixture = actor_fixture("saved-plan-execute-poison", &["main"]);
+            write_actor_event_fixture(&fixture.roots[0]);
+            let binding = fixture
+                .actor
+                .bind_provider_root("main", &fixture.roots[0])
+                .unwrap();
+            let batch =
+                prepare_property_effect_batch(&fixture, &binding, true, &CancellationToken::new());
+            fixture.actor.preview_prepared_apply(&batch).unwrap();
+            let token = fixture
+                .actor
+                .save_prepared_apply(
+                    batch,
+                    crate::domain::invocation::DomainResult::success("preview"),
+                )
+                .unwrap();
+            let entry = fixture.actor.saved_apply_plans.lock().unwrap().entries[&token].clone();
+            let source_before = snapshot_tree(&fixture.roots[0]);
+            let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+            assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if poison_registry {
+                    let _registry = fixture.actor.saved_apply_plans.lock().unwrap();
+                    panic!("poison saved apply registry");
+                } else {
+                    let _state = entry.state.lock().unwrap();
+                    panic!("poison saved apply state");
+                }
+            }))
+            .is_err());
+            let error = fixture
+                .actor
+                .execute_saved_apply(
+                    &token,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                    |_, _| panic!("poisoned saved plan must not reach publication"),
+                )
+                .unwrap_err();
+            assert!(matches!(
+                (poison_registry, error),
+                (true, super::SavedApplyExecutionError::RegistryUnavailable)
+                    | (false, super::SavedApplyExecutionError::StateUnavailable(_))
+            ));
+            assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
+            assert_eq!(
+                snapshot_tree(&fixture.root.join(".build/unica")),
+                cache_before
+            );
+            fixture.cleanup();
+        }
     }
 
     #[test]

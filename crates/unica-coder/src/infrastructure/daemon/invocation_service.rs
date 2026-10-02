@@ -895,7 +895,11 @@ impl ActorBoundExecution {
     ) -> Result<DomainResult, crate::infrastructure::workspace_actor::SavedApplyExecutionError>
     {
         let ActorExecutionRevision::UnpublishedApply(confirmed) = &self.revision else {
-            return Err("saved apply execution belongs to a non-apply invocation".into());
+            return Err(
+                crate::infrastructure::workspace_actor::SavedApplyExecutionError::StateUnavailable(
+                    "saved apply execution belongs to a non-apply invocation",
+                ),
+            );
         };
         let result = self.invocation.actor.execute_saved_apply(
             token,

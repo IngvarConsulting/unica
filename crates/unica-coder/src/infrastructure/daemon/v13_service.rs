@@ -196,10 +196,7 @@ impl CanonicalV13ReadService {
                     }
                     Err(error) => error_result(result.at.clone(), apply_publication_error_code(error.kind()), format!("{error}; request a fresh plan with apply(at, ops)")),
                 }
-            }).unwrap_or_else(|error| match error {
-                    SavedApplyExecutionError::Unavailable(message) => error_result(None, RefusalCode::BadValue, message),
-                    SavedApplyExecutionError::Publication(error) => error_result(None, apply_publication_error_code(error.kind()), error.to_string()),
-                });
+            }).unwrap_or_else(saved_apply_execution_error_result);
         }
         if invocation.arguments().contains_key("dryRun")
             || invocation.arguments().contains_key("ifRev")
@@ -2909,6 +2906,27 @@ fn apply_plan_error_code(kind: ApplyPlanErrorKind) -> RefusalCode {
     }
 }
 
+fn saved_apply_execution_error_result(error: SavedApplyExecutionError) -> DomainResult {
+    match error {
+        SavedApplyExecutionError::Unavailable(message) => {
+            error_result(None, RefusalCode::BadValue, message)
+        }
+        SavedApplyExecutionError::RegistryUnavailable => error_result(
+            None,
+            RefusalCode::InvalidState,
+            "saved apply plans are unavailable",
+        ),
+        SavedApplyExecutionError::StateUnavailable(message) => {
+            error_result(None, RefusalCode::InvalidState, message)
+        }
+        SavedApplyExecutionError::Publication(error) => error_result(
+            None,
+            apply_publication_error_code(error.kind()),
+            error.to_string(),
+        ),
+    }
+}
+
 fn apply_publication_error_code(kind: ApplyPublicationErrorKind) -> RefusalCode {
     match kind {
         ApplyPublicationErrorKind::Cancelled => RefusalCode::Cancelled,
@@ -3522,6 +3540,50 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
+
+    #[test]
+    fn saved_apply_execution_refusal_distinguishes_token_from_internal_state() {
+        use super::SavedApplyExecutionError;
+        use crate::infrastructure::workspace_actor::ApplyPublicationError;
+        for (error, code, outcome) in [
+            (
+                SavedApplyExecutionError::RegistryUnavailable,
+                "invalid_state",
+                "needsHuman",
+            ),
+            (
+                SavedApplyExecutionError::StateUnavailable("saved apply state is unavailable"),
+                "invalid_state",
+                "needsHuman",
+            ),
+            (
+                SavedApplyExecutionError::Unavailable("request a fresh plan".into()),
+                "bad_value",
+                "fixCall",
+            ),
+            (
+                SavedApplyExecutionError::Publication(ApplyPublicationError::new(
+                    super::ApplyPublicationErrorKind::Deadline,
+                    "execution wait expired",
+                )),
+                "deadline_exceeded",
+                "retry",
+            ),
+            (
+                SavedApplyExecutionError::Publication(ApplyPublicationError::new(
+                    super::ApplyPublicationErrorKind::Cancelled,
+                    "execution wait cancelled",
+                )),
+                "cancelled",
+                "deadEnd",
+            ),
+        ] {
+            let result = super::saved_apply_execution_error_result(error);
+            assert!(!result.ok);
+            assert_eq!(result.diagnostics[0]["code"], code);
+            assert_eq!(result.diagnostics[0]["outcome"], outcome);
+        }
+    }
 
     fn provider_search_test_binding(role: ProviderRole, limit: usize) -> SearchCursorBinding {
         SearchCursorBinding {
