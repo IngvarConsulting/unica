@@ -39,6 +39,7 @@ impl ApplyRequest {
         }
 
         let mut operations = Vec::with_capacity(raw_ops.len());
+        let mut created_objects = Vec::<QualifiedAddress>::new();
         for (index, raw_operation) in raw_ops.iter().enumerate() {
             let operation_location = format!("ops[{index}]");
             let object = raw_operation.as_object().ok_or_else(|| {
@@ -77,10 +78,11 @@ impl ApplyRequest {
                 None => at.clone(),
                 Some(value) => parse_address(Some(value), &target_location, available_source_sets)?,
             };
-            if operation_at.source_set() != at.source_set()
-                || operation_at.segments().len() < at.segments().len()
-                || operation_at.segments()[..at.segments().len()] != *at.segments()
-            {
+            let within = |root: &QualifiedAddress| {
+                operation_at.source_set() == root.source_set()
+                    && operation_at.segments().starts_with(root.segments())
+            };
+            if !within(&at) && !created_objects.iter().any(within) {
                 return Err(ApplyValidationError::bad_value(
                     &target_location,
                     "operation target must be the same logical node or its descendant in the top-level source set",
@@ -103,6 +105,29 @@ impl ApplyRequest {
                     || parent.segments()[0].name().is_none()
                 {
                     return Err(ApplyValidationError::bad_value(&location, "from must name a top-level object in a distinct admitted parent source set"));
+                }
+            }
+            // Configuration owns newly created metadata although its address is
+            // not their textual prefix. Only earlier declarations extend this
+            // request's scope; the staged planner still proves creation itself.
+            if name == "object.create"
+                && matches!(operation_at.segments(), [root] if root.kind() == NodeKind::Configuration)
+            {
+                let created = args.get("values").and_then(|value| {
+                    let kind = value.get("kind")?.as_str()?;
+                    MetadataKind::parse(kind).ok()?;
+                    let object_name = value.get("name")?.as_str()?;
+                    if !crate::domain::metadata::metadata_identifier_is_valid(object_name) {
+                        return None;
+                    }
+                    QualifiedAddress::parse(&format!(
+                        "{}:{kind}.{object_name}",
+                        operation_at.source_set()
+                    ))
+                    .ok()
+                });
+                if let Some(created) = created {
+                    created_objects.push(created);
                 }
             }
             args.insert("at".to_string(), Value::String(operation_at.to_string()));
@@ -862,6 +887,35 @@ mod tests {
         }))
         .unwrap_err();
         assert_eq!(sibling.location(), "ops[1].args.at");
+    }
+
+    #[test]
+    fn create_then_configure_scope_only_accepts_earlier_created_object() {
+        let create = json!({"op": "object.create", "args": {"values": {"kind": "Constant", "name": "Enabled"}}});
+        let configure = |target: &str| json!({"op": "props.set", "args": {"at": target, "values": {"Comment": "x"}}});
+        for target in [
+            "main:Constant.Enabled",
+            "main:Constant.Enabled.Module.ValueManager",
+        ] {
+            assert!(parse(json!({"at": "main:Configuration", "ops": [create.clone(), configure(target)], "dryRun": true})).is_ok());
+        }
+        for target in [
+            "main:Constant.Other",
+            "extension:Constant.Enabled",
+            "main:Catalog.Enabled",
+        ] {
+            let error = parse(json!({"at": "main:Configuration", "ops": [create.clone(), configure(target)], "dryRun": true})).unwrap_err();
+            assert_eq!(error.location(), "ops[1].args.at");
+        }
+        let error = parse(json!({"at": "main:Configuration", "ops": [configure("main:Constant.Enabled"), create.clone()], "dryRun": true})).unwrap_err();
+        assert_eq!(error.location(), "ops[0].args.at");
+        for malformed in [
+            json!({"kind": "Unknown", "name": "Enabled"}),
+            json!({"kind": "Constant", "name": "Enabled.Form.Main"}),
+        ] {
+            let error = parse(json!({"at": "main:Configuration", "ops": [{"op": "object.create", "args": {"values": malformed}}, configure("main:Constant.Enabled")], "dryRun": true})).unwrap_err();
+            assert_eq!(error.location(), "ops[1].args.at");
+        }
     }
 
     #[test]
