@@ -918,7 +918,7 @@
   },
   {
    "area": "Свойства объектов",
-   "task": "Проверить ревизию и записать комментарий с оптимистичной блокировкой",
+   "task": "Прочитать объект и записать комментарий по сохранённому плану",
    "wire": [
     {
      "tool": "unica.view",
@@ -938,11 +938,20 @@
         "op": "props.set",
         "args": {
          "values": {
-          "Comment": "с ifRev"
+          "Comment": "по executionToken"
          }
         }
        }
       ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
      },
      "expect": [
       "ok"

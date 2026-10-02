@@ -384,7 +384,11 @@ impl CanonicalV13ReadService {
                     .push(json!({"tool": "unica.apply", "arguments": {"executionToken": token}}));
                 result
             }
-            Err(error) => error_result(result.at.clone(), RefusalCode::BadValue, error),
+            Err(error) => error_result(
+                result.at.clone(),
+                RefusalCode::InvalidState,
+                error.to_string(),
+            ),
         }
     }
 

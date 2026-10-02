@@ -342,11 +342,9 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
     def test_corpus_holds_the_run_free_scenario_set_uniquely_numbered(self) -> None:
         scenarios = self.corpus["scenarios"]
         self.assertEqual(len(scenarios), 311)
-        # Тринадцать применений стали двухшаговыми: забор ревизии у `apply`
-        # обязателен, и предпросмотр теперь часть сценария, а не дисциплина
-        # читателя (DEC.2026-09-10.APPLY-FENCE-IS-A-CONTRACT).
-        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 360,
-            "a wire step went missing: the corpus freezes 360 steps",
+        # Исполнение apply следует за планированием с сохранением токена.
+        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 361,
+            "a wire step went missing: the corpus freezes 361 steps",
         )
         identifiers = [scenario["id"] for scenario in scenarios]
         self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 312)])
@@ -454,6 +452,42 @@ class AcceptanceCorpusRunTests(unittest.TestCase):
             check=True,
         )
         cls.corpus = json.loads(CORPUS.read_text(encoding="utf-8"))
+
+    def test_s047_publishes_the_planned_comment_after_reading_the_object(self) -> None:
+        scenario = next(s for s in self.corpus["scenarios"] if s["id"] == "S047")
+        self.assertTrue(scenario_publishes(scenario), "the comment-writing task must execute its plan")
+        planning = next(s["args"] for s in scenario["wire"] if "ops" in s["args"])
+        expected = planning["ops"][0]["args"]["values"]["Comment"]
+        with tempfile.TemporaryDirectory(prefix="unica-s047-") as raw:
+            root = Path(raw).resolve()
+            workspace = root / "workspace"
+            shutil.copytree(REPO_ROOT / self.corpus["workspace"], workspace)
+            state = root / "state"
+            state.mkdir()
+
+            def snapshot():
+                return {p.relative_to(workspace / "src"): p.read_bytes()
+                        for p in (workspace / "src").rglob("*") if p.is_file()}
+
+            before = snapshot()
+            context = {}
+            server = AcceptanceServer(workspace, state, self.corpus["protocolVersion"])
+            try:
+                for step in scenario["wire"]:
+                    arguments = substitute(step["args"], context)
+                    response = server.call(step["tool"], arguments)
+                    actual, note = classify(response, context)
+                    self.assertTrue(matches(step["expect"], actual), note)
+                    if "ops" in arguments:
+                        self.assertEqual(snapshot(), before, "planning must not publish the comment")
+                self.assertNotEqual(snapshot(), before, "the scenario must write its comment")
+                response = server.call("unica.view", {"at": planning["at"]})
+                result = response["result"]["structuredContent"]
+                self.assertTrue(result["ok"], result)
+                self.assertEqual(result["data"]["props"]["Comment"], expected)
+            finally:
+                server.close()
+                server.process.stdout.close()
 
     def test_every_wire_answers_its_frozen_classes(self) -> None:
         corpus = self.corpus

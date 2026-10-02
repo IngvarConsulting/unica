@@ -1473,11 +1473,27 @@ impl<R> WorkspacePublicationLease<'_, R> {
     }
 }
 
-/// One daemon-owned coordination boundary for a canonical worktree.
-///
-/// Reads do not take the mutation lane. Read-only staged-result confirmation
-/// is exclusive and rechecks the actor-owned source revision immediately
-/// before that result is returned. Task 15 adds the writer boundary.
+/// Failures retaining an already prepared plan describe internal service state.
+/// The public request cannot provide or replace a prepared batch's actor identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SavedApplyPlanError {
+    ActorMismatch,
+    Capacity,
+    RegistryUnavailable,
+    Serialization(String),
+}
+
+impl std::fmt::Display for SavedApplyPlanError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ActorMismatch => formatter.write_str("saved apply plan belongs to another workspace actor"),
+            Self::Capacity => formatter.write_str("saved apply plan capacity exceeded; wait for plans to expire and request a fresh plan"),
+            Self::RegistryUnavailable => formatter.write_str("saved apply plans are unavailable"),
+            Self::Serialization(message) => write!(formatter, "saved apply result cannot be retained: {message}"),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) enum SavedApplyExecutionError {
     Unavailable(String),
@@ -1519,6 +1535,11 @@ enum SavedApplyState {
     Running,
 }
 
+/// One daemon-owned coordination boundary for a canonical worktree.
+///
+/// Reads do not take the mutation lane. Read-only staged-result confirmation
+/// is exclusive and rechecks the actor-owned source revision immediately
+/// before that result is returned.
 pub(crate) struct WorkspaceActor<R = ()> {
     identity: WorkspaceIdentity,
     instance_id: ActorInstanceId,
@@ -1998,9 +2019,9 @@ impl<R> WorkspaceActor<R> {
         &self,
         prepared: PreparedApplyBatch,
         preview: DomainResult,
-    ) -> Result<String, String> {
+    ) -> Result<String, SavedApplyPlanError> {
         if prepared.actor_identity != self.identity || prepared.actor_instance != self.instance_id {
-            return Err("saved apply plan belongs to another workspace actor".into());
+            return Err(SavedApplyPlanError::ActorMismatch);
         }
         let payload_bytes = prepared
             .transaction
@@ -2010,14 +2031,14 @@ impl<R> WorkspaceActor<R> {
             .saturating_add(prepared.support_policy.retained_payload_bytes())
             .saturating_add(
                 serde_json::to_vec(&preview)
-                    .map_err(|error| error.to_string())?
+                    .map_err(|error| SavedApplyPlanError::Serialization(error.to_string()))?
                     .len(),
             );
         let now = Instant::now();
         let mut plans = self
             .saved_apply_plans
             .lock()
-            .map_err(|_| "saved apply plans are unavailable")?;
+            .map_err(|_| SavedApplyPlanError::RegistryUnavailable)?;
         plans
             .entries
             .retain(|_, entry| entry.expires > now || Arc::strong_count(entry) > 1);
@@ -2029,7 +2050,7 @@ impl<R> WorkspaceActor<R> {
         if plans.entries.len() >= MAX_SAVED_APPLY_PLANS
             || payload_bytes > MAX_SAVED_APPLY_PAYLOAD_BYTES.saturating_sub(plans.payload_bytes)
         {
-            return Err("saved apply plan capacity exceeded; wait for plans to expire and request a fresh plan".into());
+            return Err(SavedApplyPlanError::Capacity);
         }
         let token = uuid::Uuid::new_v4().to_string();
         plans.payload_bytes += payload_bytes;
@@ -10991,6 +11012,72 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn saved_apply_plan_poison_is_registry_state_failure_and_writes_nothing() {
+        let fixture = actor_fixture("saved-plan-registry-poison", &["main"]);
+        write_actor_event_fixture(&fixture.roots[0]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("main", &fixture.roots[0])
+            .unwrap();
+        let batch =
+            prepare_property_effect_batch(&fixture, &binding, true, &CancellationToken::new());
+        fixture.actor.preview_prepared_apply(&batch).unwrap();
+        let source_before = snapshot_tree(&fixture.roots[0]);
+        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _registry = fixture.actor.saved_apply_plans.lock().unwrap();
+            panic!("poison saved apply registry for fail-closed check");
+        }))
+        .is_err());
+        let error = fixture
+            .actor
+            .save_prepared_apply(
+                batch,
+                crate::domain::invocation::DomainResult::success("preview"),
+            )
+            .unwrap_err();
+        assert_eq!(error, super::SavedApplyPlanError::RegistryUnavailable);
+        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
+        assert_eq!(
+            snapshot_tree(&fixture.root.join(".build/unica")),
+            cache_before
+        );
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn saved_apply_plan_actor_mismatch_is_distinct_from_registry_capacity() {
+        let fixture = actor_fixture("saved-plan-save-bound", &["main"]);
+        let other = actor_fixture("saved-plan-save-foreign", &["main"]);
+        write_actor_event_fixture(&fixture.roots[0]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("main", &fixture.roots[0])
+            .unwrap();
+        let batch =
+            prepare_property_effect_batch(&fixture, &binding, true, &CancellationToken::new());
+        let source_before = snapshot_tree(&fixture.roots[0]);
+        let error = other
+            .actor
+            .save_prepared_apply(
+                batch,
+                crate::domain::invocation::DomainResult::success("preview"),
+            )
+            .unwrap_err();
+        assert_eq!(error, super::SavedApplyPlanError::ActorMismatch);
+        assert!(other
+            .actor
+            .saved_apply_plans
+            .lock()
+            .unwrap()
+            .entries
+            .is_empty());
+        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
+        fixture.cleanup();
+        other.cleanup();
+    }
+
+    #[test]
     fn saved_apply_expired_inflight_reservation_keeps_byte_quota_until_released() {
         let fixture = actor_fixture("saved-plan-inflight-capacity", &["main"]);
         write_actor_event_fixture(&fixture.roots[0]);
@@ -11017,13 +11104,16 @@ pub(crate) mod tests {
             plans.entries[&token].clone()
         };
         let before = snapshot_tree(&fixture.roots[0]);
-        assert!(fixture
-            .actor
-            .save_prepared_apply(
-                prepare(),
-                crate::domain::invocation::DomainResult::success("preview")
-            )
-            .is_err());
+        assert_eq!(
+            fixture
+                .actor
+                .save_prepared_apply(
+                    prepare(),
+                    crate::domain::invocation::DomainResult::success("preview")
+                )
+                .unwrap_err(),
+            super::SavedApplyPlanError::Capacity
+        );
         assert_eq!(
             fixture
                 .actor

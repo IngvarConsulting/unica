@@ -6844,6 +6844,56 @@ struct ActorLogicalReadLease {"#,
         assert_cache_impact(&published, "published");
     }
 
+    #[test]
+    fn saved_apply_capacity_refuses_service_state_without_writes_and_keeps_saved_plans() {
+        let workspace = subsystem_picture_workspace("", true);
+        let source = workspace.path().join("src");
+        let before = crate::test_support::tree_snapshot(&source);
+        let runtime = bootstrap_runtime();
+        let arguments = serde_json::json!({
+            "at": "main:Subsystem.Sales",
+            "ops": [{"op": "props.set", "args": {"values": {"Comment": "capacity probe"}}}]
+        });
+        let mut first_token = None;
+        for _ in 0..256 {
+            let plan = submit_canonical(
+                &runtime,
+                workspace.path(),
+                ToolIdentity::Apply,
+                arguments.clone(),
+            );
+            assert!(plan.ok, "{plan:?}");
+            first_token
+                .get_or_insert_with(|| plan.data.as_ref().unwrap()["executionToken"].clone());
+        }
+        let refused = submit_canonical(&runtime, workspace.path(), ToolIdentity::Apply, arguments);
+        assert!(!refused.ok, "{refused:?}");
+        assert_eq!(
+            refused.diagnostics[0]["code"], "invalid_state",
+            "{refused:?}"
+        );
+        assert_eq!(
+            refused.diagnostics[0]["outcome"], "needsHuman",
+            "{refused:?}"
+        );
+        assert!(refused
+            .data
+            .as_ref()
+            .and_then(|data| data.get("executionToken"))
+            .is_none());
+        assert_eq!(crate::test_support::tree_snapshot(&source), before);
+        let executed = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::Apply,
+            serde_json::json!({"executionToken": first_token.unwrap()}),
+        );
+        assert!(executed.ok, "{executed:?}");
+        assert!(std::fs::read_to_string(source.join("Subsystems/Sales.xml"))
+            .unwrap()
+            .contains("capacity probe"));
+    }
+
     /// Два плана на одной ревизии: второй не должен уничтожить первый.
     ///
     /// Это единственное место контракта, где ошибка невидима. Замер до правки:

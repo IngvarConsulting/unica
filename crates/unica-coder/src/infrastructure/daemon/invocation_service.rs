@@ -885,7 +885,7 @@ impl ActorBoundExecution {
         &self,
         prepared: crate::infrastructure::workspace_actor::PreparedApplyBatch,
         preview: DomainResult,
-    ) -> Result<String, String> {
+    ) -> Result<String, crate::infrastructure::workspace_actor::SavedApplyPlanError> {
         self.invocation.actor.save_prepared_apply(prepared, preview)
     }
 
