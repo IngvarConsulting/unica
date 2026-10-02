@@ -1465,7 +1465,7 @@ pub(crate) fn cfe_borrow_object_xml(
         }
     }
     lines.push("\t\t</Properties>".to_string());
-    if cfe_borrow_type_has_child_objects(type_name) {
+    if cfe_borrow_type_has_child_objects(type_name)? {
         lines.push("\t\t<ChildObjects/>".to_string());
     }
     lines.push(format!("\t</{type_name}>"));
@@ -1516,9 +1516,9 @@ pub(crate) fn cfe_borrow_generated_types(
     metadata_generated_types_8_3_27(type_name)
 }
 
-pub(crate) fn cfe_borrow_type_has_child_objects(type_name: &str) -> bool {
+pub(crate) fn cfe_borrow_type_has_child_objects(type_name: &str) -> Result<bool, String> {
     crate::infrastructure::metadata_kinds::metadata_kind_requires_child_objects_8_3_27(type_name)
-        .expect("every supported physical metadata kind has a ChildObjects profile")
+        .ok_or_else(|| format!("Type '{type_name}' has no 8.3.27 ChildObjects profile"))
 }
 
 #[derive(Clone, Debug)]
@@ -4655,12 +4655,21 @@ pub(crate) fn cfe_validate_borrowed_objects(
             continue;
         };
         let context = format!("{type_name}.{child_name}");
-        if cfe_borrow_type_has_child_objects(type_name) {
-            if !cfe_validate_has_exact_md_child(obj_el, "ChildObjects") {
-                report.error(format!("9. {context}: ChildObjects is required"));
-                check9_ok = false;
-            } else if !cfe_validate_md_child_follows(obj_el, "ChildObjects", "Properties") {
-                report.error(format!("9. {context}: ChildObjects must follow Properties"));
+        match crate::infrastructure::metadata_kinds::metadata_kind_requires_child_objects_8_3_27(
+            type_name,
+        ) {
+            Some(true) => {
+                if !cfe_validate_has_exact_md_child(obj_el, "ChildObjects") {
+                    report.error(format!("9. {context}: ChildObjects is required"));
+                    check9_ok = false;
+                } else if !cfe_validate_md_child_follows(obj_el, "ChildObjects", "Properties") {
+                    report.error(format!("9. {context}: ChildObjects must follow Properties"));
+                    check9_ok = false;
+                }
+            }
+            Some(false) => {}
+            None => {
+                report.error(format!("9. {context}: no ChildObjects profile"));
                 check9_ok = false;
             }
         }
@@ -7182,7 +7191,7 @@ pub(crate) mod tests {
                 &context,
                 type_name,
                 "Evidence",
-                if cfe_borrow_type_has_child_objects(type_name) {
+                if cfe_borrow_type_has_child_objects(type_name).unwrap() {
                     "<ChildObjects/>"
                 } else {
                     ""
