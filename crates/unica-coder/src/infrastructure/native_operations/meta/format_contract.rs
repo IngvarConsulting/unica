@@ -20,15 +20,11 @@ fn format_contract_object_node<'a>(document: &'a Document<'a>) -> Result<Node<'a
 /// The exact platform corpus proves a total split: a supported kind either
 /// always carries this container or rejects it even when the container is
 /// empty.
-pub(crate) const fn meta_8_3_27_kind_declares_child_objects(kind: MetadataKind) -> bool {
-    !matches!(
-        kind,
-        MetadataKind::CommonModule
-            | MetadataKind::Constant
-            | MetadataKind::DefinedType
-            | MetadataKind::EventSubscription
-            | MetadataKind::ScheduledJob
+pub(crate) fn meta_8_3_27_kind_declares_child_objects(kind: MetadataKind) -> bool {
+    crate::infrastructure::metadata_kinds::metadata_kind_requires_child_objects_8_3_27(
+        kind.as_str(),
     )
+    .expect("every typed metadata kind has a physical ChildObjects profile")
 }
 
 pub(crate) fn meta_8_3_27_boolean_properties(object_type: &str) -> &'static [&'static str] {

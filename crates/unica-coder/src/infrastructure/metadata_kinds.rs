@@ -103,6 +103,63 @@ pub(crate) fn metadata_kind_index(tag: &str) -> Option<usize> {
     METADATA_KINDS.iter().position(|kind| kind.tag == tag)
 }
 
+/// Whether platform 8.3.27 requires a root `ChildObjects` container for this
+/// physical metadata kind, including when the collection is empty.
+///
+/// `None` keeps an unknown future kind from being silently treated as
+/// childless. This profile covers the complete physical registry used by
+/// `cfe.borrow`, which is wider than the typed [`MetadataKind`] surface.
+pub(crate) fn metadata_kind_requires_child_objects_8_3_27(tag: &str) -> Option<bool> {
+    match tag {
+        "Subsystem"
+        | "FilterCriterion"
+        | "ExchangePlan"
+        | "WebService"
+        | "HTTPService"
+        | "SettingsStorage"
+        | "Catalog"
+        | "Document"
+        | "Sequence"
+        | "DocumentJournal"
+        | "Enum"
+        | "Report"
+        | "DataProcessor"
+        | "InformationRegister"
+        | "AccumulationRegister"
+        | "ChartOfCharacteristicTypes"
+        | "ChartOfAccounts"
+        | "AccountingRegister"
+        | "ChartOfCalculationTypes"
+        | "CalculationRegister"
+        | "BusinessProcess"
+        | "Task"
+        | "IntegrationService" => Some(true),
+        "Language"
+        | "StyleItem"
+        | "Style"
+        | "CommonPicture"
+        | "SessionParameter"
+        | "Role"
+        | "CommonTemplate"
+        | "CommonModule"
+        | "Bot"
+        | "CommonAttribute"
+        | "XDTOPackage"
+        | "WSReference"
+        | "EventSubscription"
+        | "ScheduledJob"
+        | "FunctionalOption"
+        | "FunctionalOptionsParameter"
+        | "DefinedType"
+        | "CommonCommand"
+        | "CommandGroup"
+        | "Constant"
+        | "CommonForm"
+        | "DocumentNumerator" => Some(false),
+        _ => None,
+    }
+}
+
 pub(crate) fn supports_direct_module_role(tag: &str, role: &str) -> bool {
     metadata_kind(tag)
         .and_then(|layout| NodeKind::parse(layout.tag).ok())
@@ -278,6 +335,17 @@ mod tests {
                 .len(),
             METADATA_KINDS.len()
         );
+    }
+
+    #[test]
+    fn every_physical_kind_has_a_child_objects_profile() {
+        for kind in METADATA_KINDS {
+            assert!(
+                metadata_kind_requires_child_objects_8_3_27(kind.tag).is_some(),
+                "{} has no 8.3.27 ChildObjects profile",
+                kind.tag
+            );
+        }
     }
 
     #[test]

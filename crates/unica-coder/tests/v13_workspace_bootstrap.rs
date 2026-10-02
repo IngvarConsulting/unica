@@ -1,5 +1,7 @@
 use serde_json::{json, Value};
 
+#[path = "support/cfe_structure.rs"]
+mod cfe_structure;
 #[path = "support/code_module_state.rs"]
 mod code_module_state;
 use std::io::{BufRead, BufReader, Write};

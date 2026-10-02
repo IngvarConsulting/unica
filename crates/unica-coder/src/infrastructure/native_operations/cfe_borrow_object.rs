@@ -370,29 +370,13 @@ fn validate_identity(object: Node<'_, '_>, kind: &str, name: &str) -> Result<(),
 }
 
 fn property_states(internal: Node<'_, '_>) -> Result<BTreeSet<String>, String> {
-    let mut result = BTreeSet::new();
-    for state in internal
-        .children()
-        .filter(|n| n.is_element() && n.tag_name().name() == "PropertyState")
-    {
-        if !state.has_tag_name((XR, "PropertyState")) {
-            return Err("Invalid PropertyState namespace".into());
-        }
-        let name = required(state, XR, "Property")?
-            .text()
-            .filter(|s| !s.is_empty())
-            .ok_or("Empty PropertyState property")?;
-        if !matches!(
-            required(state, XR, "State")?.text(),
-            Some("Extended" | "Notify" | "MultiState")
-        ) {
+    let states = super::cfe_property_states::read_property_states(internal)?;
+    for (name, state) in &states {
+        if !matches!(*state, "Extended" | "Notify" | "MultiState") {
             return Err(format!("Unsupported PropertyState for {name}"));
         }
-        if !result.insert(name.into()) {
-            return Err(format!("Duplicate PropertyState for {name}"));
-        }
     }
-    Ok(result)
+    Ok(states.keys().map(|name| (*name).to_string()).collect())
 }
 
 fn validate_properties(properties: Node<'_, '_>) -> Result<(), String> {

@@ -6,6 +6,7 @@ pub(crate) mod apply_families;
 pub(crate) mod cf;
 pub(crate) mod cfe;
 pub(crate) mod cfe_borrow_object;
+mod cfe_property_states;
 // The pure C1 code planner is intentionally not actor-routed until C13/15D.
 #[allow(dead_code)]
 pub(crate) mod code;
