@@ -370,6 +370,63 @@ impl<'a> LogicalViewReadAuthority<'a> {
         self.deadline
     }
 
+    pub(crate) fn diagnostic_mapping(
+        &self,
+        at: &QualifiedAddress,
+        workspace: &crate::domain::workspace::WorkspaceContext,
+    ) -> Result<crate::infrastructure::diagnostics::CanonicalModuleDiagnosticMapping, ViewError>
+    {
+        use crate::domain::diagnostics::DiagnosticContext;
+        use crate::domain::project_sources::{ProjectSourceSet, SourceFormat, SourceSetState};
+        use crate::domain::source_roots::ResolvedSourceRoot;
+        use crate::domain::source_target::{ResolvedTarget, TargetKind};
+        let admitted = self.snapshot(at)?;
+        let canonical = self.canonical_address(at, &admitted)?;
+        let capability = self
+            .profile
+            .module_prefix_capability(&canonical)
+            .ok_or_else(|| {
+                ViewError::new(
+                    RefusalCode::BadValue,
+                    "BSL diagnostics requires a module or its body",
+                )
+            })?;
+        let (module_at, _) = shared_module_prefix(&canonical, self.profile, capability)
+            .map_err(|error| ViewError::new(RefusalCode::BadValue, error))?;
+        // Registration, owner identity, format and module containment are proved
+        // by the same reader as view, using this invocation's retained root.
+        self.read_exact(&module_at, &ViewFilter::default(), &admitted)?;
+        let target = module_source_address(&module_at, capability)?;
+        let relative = self.read.module_export_path(&target)?;
+        let source_set = self.read.source_set().to_owned();
+        let context = DiagnosticContext::new(
+            workspace.clone(),
+            ProjectSourceSet {
+                name: source_set.clone(),
+                kind: self.read.source_set_kind(),
+                path: self.read.root_path().to_string_lossy().into_owned(),
+                source_format: SourceFormat::PlatformXml,
+                source_state: SourceSetState::Supported,
+                format_evidence: Vec::new(),
+                format_probe_error: None,
+            },
+            ResolvedSourceRoot {
+                source_set: Some(source_set.clone()),
+                path: self.read.root_path().to_path_buf(),
+            },
+            ResolvedTarget {
+                source_set,
+                metadata_path: Some(target),
+                target_kind: TargetKind::Module,
+            },
+        );
+        crate::infrastructure::diagnostics::CanonicalModuleDiagnosticMapping::from_proven_module(
+            context,
+            relative.into(),
+        )
+        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
+    }
+
     fn typed_payload(&self, route: &LogicalTreeRoute) -> Result<Value, ViewError> {
         let admitted = ViewSourceSnapshot {
             source_set_identity: self.read.source_set_identity().to_string(),

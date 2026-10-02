@@ -5068,3 +5068,308 @@ fn review_production_read_port_has_no_nocancel_inventory_entrypoint() {
         "production-compiled read port retains a no-op cancellation bypass"
     );
 }
+
+mod canonical_module_diagnostics {
+    use super::*;
+    use crate::application::diagnostics::{DiagnosticCoordinator, DiagnosticMapping};
+    use crate::domain::diagnostics::*;
+    use crate::domain::source_location::SourceLocation;
+    use crate::domain::source_target::TargetKind;
+    use crate::infrastructure::diagnostics::CanonicalModuleDiagnosticMapping;
+    use std::time::Duration;
+
+    fn request(mapping: &CanonicalModuleDiagnosticMapping) -> DiagnosticRequest {
+        DiagnosticRequest {
+            action: DiagnosticAction::Analyze,
+            source_set: mapping.target().source_set.clone(),
+            metadata_path: mapping.target().metadata_path.clone(),
+            filter: DiagnosticFilter::default(),
+            range: None,
+            limit: 200,
+            timeout: Some(Duration::from_secs(5)),
+        }
+    }
+
+    fn finding(path: &Path, code: &str) -> DiagnosticObservation {
+        DiagnosticObservation::Diagnostic {
+            provider: BSL_ANALYZER_PROVIDER,
+            location: DiagnosticObservationLocation::Resource {
+                handle: path.to_string_lossy().into_owned(),
+            },
+            focus: DiagnosticObservationFocus::Target,
+            code: code.into(),
+            severity: DiagnosticSeverity::Error,
+            message: "fixture finding".into(),
+            tags: Vec::new(),
+        }
+    }
+
+    fn assert_mapping(
+        authority: &LogicalViewReadAuthority<'_>,
+        workspace: &WorkspaceContext,
+        at: &str,
+        expected: &str,
+        physical: &Path,
+    ) {
+        let mapping = authority
+            .diagnostic_mapping(&QualifiedAddress::parse(at).unwrap(), workspace)
+            .unwrap_or_else(|error| panic!("{at}: {error:?}"));
+        let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, expected).unwrap();
+        assert_eq!(mapping.target().metadata_path.as_ref(), Some(&target));
+        assert_eq!(mapping.target().target_kind, TargetKind::Module);
+        let cancellation = CancellationToken::new();
+        let context = mapping
+            .resolve_context(&request(&mapping), workspace, &cancellation)
+            .unwrap();
+        let item = mapping
+            .map_observation(finding(physical, "Requested"), &context, &cancellation)
+            .unwrap();
+        assert!(
+            matches!(item, DiagnosticItem::Diagnostic {
+            location: SourceLocation::Addressed { metadata_path: Some(path), target_kind: TargetKind::Module, .. }, ..
+        } if path == target),
+            "{at}: provider resource must map to proved module"
+        );
+    }
+
+    #[test]
+    fn external_object_form_and_body_use_proven_canonical_modules() {
+        let fixture = RealExternalReaderFixture::new();
+        for (set, kind, class, name, root) in [
+            (
+                "artifact_processor",
+                SourceSetKind::ExternalProcessor,
+                "ExternalDataProcessor",
+                "Import",
+                &fixture.processor,
+            ),
+            (
+                "artifact_report",
+                SourceSetKind::ExternalReport,
+                "ExternalReport",
+                "Sales",
+                &fixture.report,
+            ),
+        ] {
+            let form = root.join(format!("{name}/Forms/Main/Ext/Form/Module.bsl"));
+            write(&form, "Procedure OnOpen()\nEndProcedure\n");
+            let authority = fixture.operation_read_authority(set, kind);
+            for tail in ["", ".Body"] {
+                assert_mapping(
+                    &authority,
+                    &fixture.context,
+                    &format!("{set}:{class}.{name}.Module.Object{tail}"),
+                    &format!("{class}.{name}.ObjectModule"),
+                    &root.join(format!("{name}/Ext/ObjectModule.bsl")),
+                );
+                assert_mapping(
+                    &authority,
+                    &fixture.context,
+                    &format!("{set}:{class}.{name}.Form.Main.Module.Form{tail}"),
+                    &format!("{class}.{name}.Form.Main.FormModule"),
+                    &form,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn configuration_common_object_and_form_modules_keep_exact_diagnostic_targets() {
+        let fixture = RealReaderFixture::new();
+        write(
+            &fixture.source.join("Catalogs/Items/Ext/ObjectModule.bsl"),
+            "Procedure Run()\nEndProcedure\n",
+        );
+        let authority = fixture.operation_read_authority();
+        for (at, expected, relative) in [
+            (
+                "CommonModule.РеактивныйСервер",
+                "CommonModule.РеактивныйСервер.Module",
+                "CommonModules/РеактивныйСервер/Ext/Module.bsl",
+            ),
+            (
+                "Catalog.Items.Module.Object",
+                "Catalog.Items.ObjectModule",
+                "Catalogs/Items/Ext/ObjectModule.bsl",
+            ),
+            (
+                "Report.ParityReport.Form.MainForm.Module.Form",
+                "Report.ParityReport.Form.MainForm.FormModule",
+                "Reports/ParityReport/Forms/MainForm/Ext/Form/Module.bsl",
+            ),
+        ] {
+            for tail in ["", ".Body"] {
+                assert_mapping(
+                    &authority,
+                    &fixture.context,
+                    &format!("main:{at}{tail}"),
+                    expected,
+                    &fixture.source.join(relative),
+                );
+            }
+        }
+    }
+
+    struct AnalysisFixture(DiagnosticProviderOutcome);
+
+    impl DiagnosticProvider for AnalysisFixture {
+        fn descriptor(&self) -> &'static DiagnosticProviderDescriptor {
+            static DESCRIPTOR: DiagnosticProviderDescriptor = DiagnosticProviderDescriptor {
+                id: BSL_ANALYZER_PROVIDER,
+                actions: &[DiagnosticAction::Analyze],
+                findings_target_kinds: &[TargetKind::Module],
+                emits_focus_kinds: &[DiagnosticFocusKind::Target],
+            };
+            &DESCRIPTOR
+        }
+        fn execute(
+            &self,
+            request: &DiagnosticProviderRequest,
+            context: &DiagnosticContext,
+            _deadline: ProviderDeadline,
+            _cancellation: &CancellationToken,
+        ) -> DiagnosticProviderOutcome {
+            assert_eq!(request.action, DiagnosticAction::Analyze);
+            assert_eq!(context.target.target_kind, TargetKind::Module);
+            self.0.clone()
+        }
+    }
+
+    #[test]
+    fn analyze_filters_neighbors_after_mapping_but_keeps_outside_and_incomplete_failures() {
+        let fixture = RealExternalReaderFixture::new();
+        let authority = fixture
+            .operation_read_authority("artifact_processor", SourceSetKind::ExternalProcessor);
+        let mapping = authority
+            .diagnostic_mapping(
+                &QualifiedAddress::parse(
+                    "artifact_processor:ExternalDataProcessor.Import.Module.Object",
+                )
+                .unwrap(),
+                &fixture.context,
+            )
+            .unwrap();
+        let selected = fixture.processor.join("Import/Ext/ObjectModule.bsl");
+        let neighbor = fixture.processor.join("Импорт/Ext/ObjectModule.bsl");
+        for scenario in [
+            "neighbor",
+            "outside",
+            "incomplete",
+            "neighbor_only",
+            "incomplete_empty",
+        ] {
+            let mut observations = vec![
+                finding(&selected, "Selected"),
+                finding(&neighbor, "Neighbor"),
+            ];
+            if scenario == "neighbor_only" {
+                observations = vec![finding(&neighbor, "Neighbor")];
+            } else if scenario == "incomplete_empty" {
+                observations.clear();
+            }
+            let complete = !matches!(scenario, "incomplete" | "incomplete_empty");
+            if scenario == "outside" {
+                observations.push(finding(
+                    &fixture.report.join("Sales/Ext/ObjectModule.bsl"),
+                    "Outside",
+                ));
+            }
+            let outcome = DiagnosticProviderOutcome {
+                status: DiagnosticProviderStatus::Completed,
+                complete,
+                version: None,
+                observations,
+                rules: Vec::new(),
+                readiness: None,
+                error: None,
+            };
+            let registry =
+                DiagnosticProviderRegistry::new(vec![Arc::new(AnalysisFixture(outcome))]).unwrap();
+            let result = DiagnosticCoordinator::new(registry, &mapping)
+                .execute(&request(&mapping), &fixture.context, &fixture.cancellation)
+                .unwrap();
+            if scenario == "outside" {
+                assert!(!result.ok);
+                assert!(!result.complete);
+                assert_eq!(result.providers[0].status, DiagnosticProviderStatus::Failed);
+                assert!(
+                    result.items.is_empty(),
+                    "outside resource must poison the whole provider before filtering"
+                );
+            } else {
+                let has_selected = !matches!(scenario, "neighbor_only" | "incomplete_empty");
+                assert_eq!(
+                    result.items.len(),
+                    usize::from(has_selected),
+                    "{scenario}: only selected module findings may remain"
+                );
+                if has_selected {
+                    assert!(
+                        matches!(&result.items[0], DiagnosticItem::Diagnostic { code, .. } if code == "Selected")
+                    );
+                }
+                assert_eq!(result.complete, complete);
+                assert_eq!(
+                    result.state,
+                    if !complete {
+                        DiagnosticResultState::Partial
+                    } else {
+                        DiagnosticResultState::Completed
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn diagnostic_mapping_refuses_an_unregistered_form_even_with_a_module_file() {
+        let fixture = RealExternalReaderFixture::new();
+        write(
+            &fixture.processor.join("Import/Forms/Orphan.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form><Properties><Name>Orphan</Name></Properties></Form></MetaDataObject>"#,
+        );
+        write(
+            &fixture
+                .processor
+                .join("Import/Forms/Orphan/Ext/Form/Module.bsl"),
+            "Procedure Run()\nEndProcedure\n",
+        );
+        let authority = fixture
+            .operation_read_authority("artifact_processor", SourceSetKind::ExternalProcessor);
+        let error = authority
+            .diagnostic_mapping(
+                &QualifiedAddress::parse(
+                    "artifact_processor:ExternalDataProcessor.Import.Form.Orphan.Module.Form",
+                )
+                .unwrap(),
+                &fixture.context,
+            )
+            .err()
+            .expect("orphan form must not acquire diagnostic authority");
+        assert_eq!(error.code(), RefusalCode::NotFound);
+    }
+    #[test]
+    fn diagnostic_mapping_refuses_replacement_of_its_retained_source_root() {
+        if !supports_retained_root_replacement_test() {
+            return;
+        }
+        let fixture = RealReaderFixture::new();
+        let authority = fixture.operation_read_authority();
+        let saved = fixture.root.path().join("retained-a");
+        fs::rename(&fixture.source, &saved).unwrap();
+        fs::create_dir_all(&fixture.source).unwrap();
+        fs::copy(
+            saved.join("Configuration.xml"),
+            fixture.source.join("Configuration.xml"),
+        )
+        .unwrap();
+        let error = authority
+            .diagnostic_mapping(
+                &QualifiedAddress::parse("main:CommonModule.РеактивныйСервер").unwrap(),
+                &fixture.context,
+            )
+            .err()
+            .expect("changed named root must not acquire diagnostic authority");
+        assert_eq!(error.code(), RefusalCode::ProviderUnavailable);
+    }
+}

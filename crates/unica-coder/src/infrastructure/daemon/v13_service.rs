@@ -2903,13 +2903,49 @@ fn bounded_usize(value: &Value) -> Option<usize> {
 fn run_bsl_diagnostics(
     ports: &crate::infrastructure::application_ports::InfrastructureApplicationPorts,
     address: &QualifiedAddress,
-    context: &crate::domain::workspace::WorkspaceContext,
+    invocation: &ActorBoundExecution,
     cancellation: &CancellationToken,
 ) -> Result<(bool, Vec<Value>), Box<DomainResult>> {
     use crate::application::diagnostics::DiagnosticCoordinator;
     use crate::application::ports::ApplicationPorts;
     use crate::domain::diagnostics::{DiagnosticAction, DiagnosticFilter, DiagnosticRequest};
 
+    let context = invocation.workspace_context();
+    let sources = invocation.read_sources().map_err(|error| {
+        Box::new(error_result_detailed(
+            Some(address.to_string()),
+            RefusalDetail::SourceUnreadable,
+            error,
+        ))
+    })?;
+    let source = sources
+        .into_iter()
+        .find(|source| source.source_set_name() == address.source_set())
+        .ok_or_else(|| {
+            Box::new(error_result_detailed(
+                Some(address.to_string()),
+                RefusalDetail::SourceUnreadable,
+                "diagnostics source was not admitted",
+            ))
+        })?;
+    let authority = source
+        .logical_view_read_authority(cancellation)
+        .map_err(|error| {
+            Box::new(error_result_detailed(
+                Some(address.to_string()),
+                RefusalDetail::SourceUnreadable,
+                error,
+            ))
+        })?;
+    let mapping = authority
+        .diagnostic_mapping(address, context)
+        .map_err(|error| {
+            Box::new(error_result(
+                Some(address.to_string()),
+                error.code(),
+                error.to_string(),
+            ))
+        })?;
     let registry = match ports.diagnostic_provider_registry() {
         Ok(registry) => registry,
         Err(error) => {
@@ -2920,33 +2956,7 @@ fn run_bsl_diagnostics(
             )))
         }
     };
-    // Сужение обязательно: `metadata_path: None` означает анализ всего набора
-    // исходников, и на боевой конфигурации это минуты работы и диагностики
-    // чужих файлов, приписанные спрошенному узлу. Неразобранный адрес — отказ,
-    // а не молчаливое расширение области.
-    let owner = address
-        .segments()
-        .iter()
-        .take_while(|segment| segment.name().is_some())
-        .map(|segment| {
-            let name = segment.name().unwrap_or_default();
-            format!("{}.{name}", segment.kind().as_str())
-        })
-        .collect::<Vec<_>>()
-        .join(".");
-    let metadata_path = match crate::domain::source_target::MetadataAddress::parse(
-        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &owner,
-    ) {
-        Ok(path) => Some(path),
-        Err(error) => {
-            return Err(Box::new(error_result(
-                Some(address.to_string()),
-                RefusalCode::BadValue,
-                format!("BSL diagnostics cannot narrow to `{owner}`: {error}"),
-            )))
-        }
-    };
+    let metadata_path = mapping.target().metadata_path.clone();
     let request = DiagnosticRequest {
         action: DiagnosticAction::Analyze,
         source_set: address.source_set().to_string(),
@@ -2975,7 +2985,7 @@ fn run_bsl_diagnostics(
             },
         ),
     };
-    match DiagnosticCoordinator::new(registry, ports).execute(&request, context, cancellation) {
+    match DiagnosticCoordinator::new(registry, &mapping).execute(&request, context, cancellation) {
         Ok(result) => {
             // Провайдер, который не отработал, не доказывает чистоту кода.
             // Пустой список находок при незавершённом прогоне выглядел бы как
@@ -3093,7 +3103,7 @@ fn run_node_checks(
                 run_native_validator(&address, kind, validator, context)
             }
             CheckStep::Meta => run_meta_validator(&address, at, context, cancellation),
-            CheckStep::Bsl => run_bsl_diagnostics(ports, &address, context, cancellation),
+            CheckStep::Bsl => run_bsl_diagnostics(ports, &address, invocation, cancellation),
         };
         match verdict {
             Err(refusal) => return *refusal,

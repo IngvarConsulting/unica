@@ -1031,7 +1031,9 @@ fn item_matches_request(
             return false;
         }
     }
-    if request.action == DiagnosticAction::Findings
+    if (request.action == DiagnosticAction::Findings
+        || (request.action == DiagnosticAction::Analyze
+            && context.target.target_kind == TargetKind::Module))
         && !item_location(item)
             .is_some_and(|location| location_within_findings_target(location, &context.target))
     {

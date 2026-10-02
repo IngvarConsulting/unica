@@ -53,6 +53,180 @@ static BSL_ANALYZER_DIAGNOSTIC_DESCRIPTOR: DiagnosticProviderDescriptor =
         emits_focus_kinds: &[DiagnosticFocusKind::SourceRange],
     };
 
+/// Mapping for one module already proved by the actor-owned logical reader.
+/// Provider analysis can cover the source set; only this module acquires an
+/// addressed identity. Other contained resources remain explicitly unproved.
+pub(crate) struct CanonicalModuleDiagnosticMapping {
+    context: DiagnosticContext,
+    module_relative: PathBuf,
+}
+
+impl CanonicalModuleDiagnosticMapping {
+    pub(crate) fn from_proven_module(
+        context: DiagnosticContext,
+        module_relative: PathBuf,
+    ) -> Result<Self, String> {
+        let module_relative = source_set_relative_path(
+            &context.workspace,
+            &context.source_root.path,
+            &context.source_root.path.join(module_relative),
+        )
+        .ok_or_else(|| {
+            "proved diagnostic module no longer belongs to its source root".to_owned()
+        })?;
+        Ok(Self {
+            context,
+            module_relative,
+        })
+    }
+
+    pub(crate) fn target(&self) -> &crate::domain::source_target::ResolvedTarget {
+        &self.context.target
+    }
+
+    fn map_location(
+        &self,
+        location: DiagnosticObservationLocation,
+    ) -> Result<MappedDiagnosticLocation, DiagnosticMapError> {
+        let addressed = || MappedDiagnosticLocation {
+            location: SourceLocation::Addressed {
+                source_set: self.context.target.source_set.clone(),
+                metadata_path: self.context.target.metadata_path.clone(),
+                target_kind: TargetKind::Module,
+            },
+            reason: None,
+        };
+        match location {
+            DiagnosticObservationLocation::Logical { metadata_path } => {
+                if metadata_path == self.context.target.metadata_path {
+                    Ok(addressed())
+                } else {
+                    Err(map_error(
+                        "location_mapping_failed",
+                        "provider logical target was not proved by this module read",
+                    ))
+                }
+            }
+            DiagnosticObservationLocation::Resource { handle } => {
+                let path = provider_resource_path(&handle)?;
+                let relative = source_set_relative_path(
+                    &self.context.workspace,
+                    &self.context.source_root.path,
+                    &path,
+                )
+                .ok_or_else(|| {
+                    map_error(
+                        "location_outside_source_set",
+                        "provider resource is outside the selected sourceSet",
+                    )
+                })?;
+                if relative == self.module_relative {
+                    Ok(addressed())
+                } else {
+                    Ok(MappedDiagnosticLocation {
+                        location: SourceLocation::Unaddressable {
+                            source_set: self.context.target.source_set.clone(),
+                            owner_metadata_path: None,
+                            path: portable_relative(&relative),
+                        },
+                        reason: Some(UnaddressableReason::OwnerUnproven),
+                    })
+                }
+            }
+        }
+    }
+}
+
+impl crate::application::diagnostics::DiagnosticMapping for CanonicalModuleDiagnosticMapping {
+    fn resolve_context(
+        &self,
+        request: &DiagnosticRequest,
+        _workspace: &WorkspaceContext,
+        cancellation: &CancellationToken,
+    ) -> Result<DiagnosticContext, DiagnosticRequestError> {
+        if cancellation.is_cancelled() {
+            return Err(request_error(
+                "cancelled",
+                None,
+                "module diagnostics was cancelled",
+            ));
+        }
+        if request.source_set != self.context.target.source_set
+            || request.metadata_path != self.context.target.metadata_path
+        {
+            return Err(request_error(
+                "target_kind_mismatch",
+                None,
+                "diagnostics request differs from the proved module",
+            ));
+        }
+        Ok(self.context.clone())
+    }
+
+    fn map_observation(
+        &self,
+        observation: DiagnosticObservation,
+        context: &DiagnosticContext,
+        cancellation: &CancellationToken,
+    ) -> Result<DiagnosticItem, DiagnosticMapError> {
+        self.map_cached(
+            observation,
+            context,
+            cancellation,
+            &mut DiagnosticMappingCache::default(),
+        )
+    }
+
+    fn map_observations(
+        &self,
+        observations: Vec<DiagnosticObservation>,
+        context: &DiagnosticContext,
+        cancellation: &CancellationToken,
+    ) -> Vec<Result<DiagnosticItem, DiagnosticMapError>> {
+        let mut cache = DiagnosticMappingCache::default();
+        observations
+            .into_iter()
+            .map(|observation| self.map_cached(observation, context, cancellation, &mut cache))
+            .collect()
+    }
+}
+
+impl CanonicalModuleDiagnosticMapping {
+    fn map_cached(
+        &self,
+        observation: DiagnosticObservation,
+        context: &DiagnosticContext,
+        cancellation: &CancellationToken,
+        cache: &mut DiagnosticMappingCache,
+    ) -> Result<DiagnosticItem, DiagnosticMapError> {
+        if cancellation.is_cancelled() {
+            return Err(map_error(
+                "cancelled",
+                "diagnostic observation mapping was cancelled",
+            ));
+        }
+        let location = match &observation {
+            DiagnosticObservation::Diagnostic { location, .. }
+            | DiagnosticObservation::ResourceFailure { location, .. } => location.clone(),
+        };
+        let mapped = match location {
+            DiagnosticObservationLocation::Resource { ref handle } => cache
+                .resource_locations
+                .entry(handle.clone())
+                .or_insert_with(|| self.map_location(location))
+                .clone()?,
+            logical => self.map_location(logical)?,
+        };
+        Ok(assemble_diagnostic_observation(
+            observation,
+            mapped,
+            context,
+            cancellation,
+            cache,
+        ))
+    }
+}
+
 pub(crate) fn resolve_diagnostic_context(
     request: &DiagnosticRequest,
     workspace: &WorkspaceContext,
@@ -1125,19 +1299,39 @@ fn map_diagnostic_observation_cached(
             "diagnostic observation mapping was cancelled",
         ));
     }
+    let location = match &observation {
+        DiagnosticObservation::Diagnostic { location, .. }
+        | DiagnosticObservation::ResourceFailure { location, .. } => location.clone(),
+    };
+    let mapped = map_location_cached(location, context, cancellation, cache)?;
+    Ok(assemble_diagnostic_observation(
+        observation,
+        mapped,
+        context,
+        cancellation,
+        cache,
+    ))
+}
+
+fn assemble_diagnostic_observation(
+    observation: DiagnosticObservation,
+    mapped: MappedDiagnosticLocation,
+    context: &DiagnosticContext,
+    cancellation: &CancellationToken,
+    cache: &mut DiagnosticMappingCache,
+) -> DiagnosticItem {
     match observation {
         DiagnosticObservation::Diagnostic {
             provider,
-            location,
+            location: _,
             focus,
             code,
             severity,
             message,
             tags,
         } => {
-            let mapped = map_location_cached(location, context, cancellation, cache)?;
             let focus = map_focus(focus, &mapped.location, context, cancellation, cache);
-            Ok(DiagnosticItem::Diagnostic {
+            DiagnosticItem::Diagnostic {
                 provider: provider.as_str(),
                 location: mapped.location,
                 location_reason: mapped.reason,
@@ -1146,21 +1340,18 @@ fn map_diagnostic_observation_cached(
                 severity,
                 message,
                 tags,
-            })
+            }
         }
         DiagnosticObservation::ResourceFailure {
             provider,
-            location,
+            location: _,
             error,
-        } => {
-            let mapped = map_location_cached(location, context, cancellation, cache)?;
-            Ok(DiagnosticItem::ResourceFailure {
-                provider: provider.as_str(),
-                location: mapped.location,
-                location_reason: mapped.reason,
-                error,
-            })
-        }
+        } => DiagnosticItem::ResourceFailure {
+            provider: provider.as_str(),
+            location: mapped.location,
+            location_reason: mapped.reason,
+            error,
+        },
     }
 }
 
