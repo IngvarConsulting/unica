@@ -122,6 +122,8 @@ pub(crate) enum MetadataAuxiliaryXmlKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MetadataChildResourceKind {
     FormContent,
+    /// Ordinary form storage is opaque; validation proves its footprint only.
+    OrdinaryFormContent,
     TemplateContent {
         template_type: MetadataTemplateType,
         part: MetadataTemplateResourcePart,
@@ -189,6 +191,7 @@ pub(crate) enum MetadataTemplateResourcePart {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MetadataChildProfile {
     Form,
+    OrdinaryForm,
     Command,
     Template(MetadataTemplateType),
 }

@@ -2836,6 +2836,216 @@ pub(crate) mod tests {
             .exists());
     }
 
+    fn ordinary_form_read_fixture() -> Fixture {
+        let fixture = Fixture::new("ordinary-form-read");
+        fixture.publish_form_add("Ordinary");
+        fixture.publish_form_add("ManagedSibling");
+        let forms = fixture.root.join("src/Catalogs/Editable/Forms");
+        let descriptor = forms.join("Ordinary.xml");
+        let text = fs::read_to_string(&descriptor).unwrap();
+        let changed = text.replace(
+            "<FormType>Managed</FormType>",
+            "<FormType>Ordinary</FormType>",
+        );
+        assert_ne!(
+            text, changed,
+            "fixture starts from a managed form descriptor"
+        );
+        fs::write(descriptor, changed).unwrap();
+        fs::remove_file(forms.join("Ordinary/Ext/Form.xml")).unwrap();
+        fs::write(
+            forms.join("Ordinary/Ext/Form.bin"),
+            [0xff, 0x00, 0xfe, 0x80],
+        )
+        .unwrap();
+        fixture
+    }
+
+    fn validate_form_read(fixture: &Fixture) -> MetadataValidationResult {
+        let cancellation = CancellationToken::new();
+        let read = MetadataOperations::read_local(
+            &MetaInfoRequest {
+                source_set: "main".into(),
+                metadata_path: fixture.target.clone(),
+                sections: vec![
+                    MetaInfoSection::Subscriptions,
+                    MetaInfoSection::FunctionalOptions,
+                ],
+                limit: 20,
+            },
+            &fixture.context,
+            &cancellation,
+            &crate::infrastructure::support_state::WorkspaceSupportStateReader::new(
+                &fixture.context,
+            ),
+        )
+        .expect("ordinary binary must not hide the parent metadata");
+        MetadataOperations::validate_read(&read.validation_subject, &fixture.context, &cancellation)
+    }
+
+    #[test]
+    fn ordinary_form_binary_is_valid_opaque_parent_read_evidence() {
+        let fixture = ordinary_form_read_fixture();
+        let before = crate::test_support::tree_snapshot(&fixture.root.join("src"));
+        let validation = validate_form_read(&fixture);
+        assert_eq!(
+            validation.status,
+            MetaValidationStatus::Passed,
+            "{:?}",
+            validation.diagnostics
+        );
+        assert_eq!(
+            crate::test_support::tree_snapshot(&fixture.root.join("src")),
+            before,
+            "reading the ordinary form must preserve binary and managed sibling bytes"
+        );
+    }
+
+    #[test]
+    fn ordinary_and_managed_form_read_require_their_exact_payload_kind() {
+        for (form_type, payload, expected) in [
+            ("Ordinary", "binary", MetaValidationStatus::Passed),
+            ("Ordinary", "missing", MetaValidationStatus::Failed),
+            ("Ordinary", "xml", MetaValidationStatus::Failed),
+            ("Ordinary", "mixed", MetaValidationStatus::Failed),
+            ("Ordinary", "extra", MetaValidationStatus::Failed),
+            ("Managed", "xml", MetaValidationStatus::Passed),
+            ("Managed", "binary", MetaValidationStatus::Failed),
+            ("Managed", "missing", MetaValidationStatus::Failed),
+            ("Managed", "mixed", MetaValidationStatus::Failed),
+        ] {
+            let fixture = ordinary_form_read_fixture();
+            let forms = fixture.root.join("src/Catalogs/Editable/Forms");
+            let descriptor = forms.join("Ordinary.xml");
+            let original = fs::read_to_string(&descriptor).unwrap();
+            fs::write(
+                &descriptor,
+                original.replace(
+                    "<FormType>Ordinary</FormType>",
+                    &format!("<FormType>{form_type}</FormType>"),
+                ),
+            )
+            .unwrap();
+            let ext = forms.join("Ordinary/Ext");
+            if matches!(payload, "missing" | "xml") {
+                fs::remove_file(ext.join("Form.bin")).unwrap();
+            }
+            if matches!(payload, "xml" | "mixed") {
+                fs::copy(
+                    forms.join("ManagedSibling/Ext/Form.xml"),
+                    ext.join("Form.xml"),
+                )
+                .unwrap();
+            }
+            if payload == "extra" {
+                fs::write(ext.join("unexpected.dat"), b"unexpected").unwrap();
+            }
+            let before = crate::test_support::tree_snapshot(&fixture.root.join("src"));
+            let validation = validate_form_read(&fixture);
+            assert_eq!(
+                validation.status, expected,
+                "{form_type}/{payload}: {:?}",
+                validation.diagnostics
+            );
+            assert_eq!(
+                crate::test_support::tree_snapshot(&fixture.root.join("src")),
+                before,
+                "{form_type}/{payload}: validation must not repair the source tree"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_form_read_rejects_ambiguous_or_non_platform_form_type() {
+        for (case, form_type_xml) in [
+            ("missing", ""),
+            (
+                "duplicate",
+                "<FormType>Ordinary</FormType><FormType>Ordinary</FormType>",
+            ),
+            (
+                "conflicting",
+                "<FormType>Ordinary</FormType><FormType>Managed</FormType>",
+            ),
+            (
+                "foreign",
+                "<FormType xmlns=\"urn:not-platform\">Ordinary</FormType>",
+            ),
+            ("unknown", "<FormType>Automatic</FormType>"),
+            ("non-scalar", "<FormType><Value>Ordinary</Value></FormType>"),
+            (
+                "nested",
+                "<Unexpected><FormType>Ordinary</FormType></Unexpected>",
+            ),
+        ] {
+            let fixture = ordinary_form_read_fixture();
+            let descriptor = fixture
+                .root
+                .join("src/Catalogs/Editable/Forms/Ordinary.xml");
+            let original = fs::read_to_string(&descriptor).unwrap();
+            fs::write(
+                &descriptor,
+                original.replace("<FormType>Ordinary</FormType>", form_type_xml),
+            )
+            .unwrap();
+            let before = crate::test_support::tree_snapshot(&fixture.root.join("src"));
+            let validation = validate_form_read(&fixture);
+            assert_eq!(
+                validation.status,
+                MetaValidationStatus::Failed,
+                "{case}: {:?}",
+                validation.diagnostics
+            );
+            assert_eq!(
+                crate::test_support::tree_snapshot(&fixture.root.join("src")),
+                before,
+                "{case}"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_form_read_support_does_not_enable_parent_edit_or_form_rename() {
+        let fixture = ordinary_form_read_fixture();
+        let cancellation = CancellationToken::new();
+        let requests = [
+            (
+                "parent edit",
+                fixture.edit(
+                    "Comment",
+                    MetaPropertyValue::String("must not publish".into()),
+                ),
+            ),
+            (
+                "form rename",
+                fixture.typed_edit(vec![MetaEditOperation::update(
+                    MetaCollection::Forms,
+                    None,
+                    vec![MetaElementUpdateInput {
+                        name: "Ordinary".into(),
+                        new_name: Some("Renamed".into()),
+                        ..MetaElementUpdateInput::default()
+                    }],
+                )
+                .unwrap()]),
+            ),
+        ];
+        for (case, request) in requests {
+            let before = crate::test_support::tree_snapshot(&fixture.root.join("src"));
+            let prepared =
+                MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation);
+            assert!(
+                prepared.is_err(),
+                "{case}: opaque read evidence must not grant writer support"
+            );
+            assert_eq!(
+                crate::test_support::tree_snapshot(&fixture.root.join("src")),
+                before,
+                "{case}: refused writer must preserve ordinary binary and managed sibling"
+            );
+        }
+    }
+
     #[test]
     fn typed_form_add_validation_covers_content_and_publish_writes_exact_footprint() {
         let fixture = Fixture::new("form-resource-publish-add");
