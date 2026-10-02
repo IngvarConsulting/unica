@@ -887,6 +887,13 @@ fn legacy_element_definition(
     op_index: usize,
     location: &str,
 ) -> Result<(Value, Option<String>, Option<String>), ApplyPlanError> {
+    if item.contains_key("html") {
+        return Err(bad(
+            op_index,
+            &format!("{location}.html"),
+            "html is an internal discriminator; use name and type: HTMLDocumentField in element.add",
+        ));
+    }
     reject_nested_typed_html(item, op_index, location)?;
     let name = required_string(item, "name", op_index, location)?.to_string();
     let kind = item

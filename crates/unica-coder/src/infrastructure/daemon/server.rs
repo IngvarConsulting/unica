@@ -7031,6 +7031,11 @@ struct ActorLogicalReadLease {"#,
             assert_eq!(crate::test_support::tree_snapshot(&source), before);
         }
         for invalid_item in [
+            serde_json::json!({"name": "MixedInput", "type": "InputField", "html": "MixedInput", "path": "HtmlSource"}),
+            serde_json::json!({"name": "MixedGroup", "type": "Group", "html": "MixedGroup"}),
+            serde_json::json!({"name": "MixedBar", "type": "CommandBar", "html": "MixedBar"}),
+            serde_json::json!({"name": "LegacyHtml", "html": "LegacyHtml", "path": "HtmlSource"}),
+            serde_json::json!({"name": "RepeatedHtml", "type": "HTMLDocumentField", "html": "RepeatedHtml"}),
             serde_json::json!({"name": "InvalidHtml", "type": "HTMLDocumentField", "on": ["OnChange"]}),
             serde_json::json!({"name": "InvalidHtml", "type": "HTMLDocumentField", "width": -1}),
             serde_json::json!({"name": "InvalidGroup", "type": "Group", "children": [
