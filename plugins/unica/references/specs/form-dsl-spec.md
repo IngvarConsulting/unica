@@ -2,7 +2,13 @@
 
 > Активный контракт Unica: платформа `8.3.27`, формат выгрузки `2.20`.
 
-Спецификация JSON-формата для `unica.form.compile` — компактного описания управляемых форм 1С:Предприятия 8.3.
+Справочник внутреннего JSON-описания общего писателя управляемых форм 1С.
+Публичный путь — `unica.apply`: создание через `form.create`, наполнение через
+`element.add`, `formAttribute.add`, `formCommand.add` и `event.bind`.
+`element.add` принимает типизированные `items[]` с `name` и `type`;
+ключи DSL ниже не заменяют этот контракт. Поддержанные виды и примеры вызовов —
+в [form-edit](../../skills/form-edit/SKILL.md). Не все возможности справочника
+реализованы публичными операциями.
 
 ---
 
@@ -815,7 +821,7 @@ flags/layout/оформление/companions/события общий), плю�
 | Ключ типа | XML-элемент | Тип реквизита | Спец. скаляры |
 |-----------|-------------|---------------|----------------|
 | `spreadsheet` | SpreadSheetDocumentField | `mxl:SpreadsheetDocument` | `output` (Disable/Enable), `protection`, `verticalScrollBar`/`horizontalScrollBar`, `viewScalingMode`, `selectionShowMode`, `pointerType`, `showGrid`/`showGroups`/`showHeaders`/`showRowAndColumnNames`/`showCellNames`, `edit`, `enableDrag`/`enableStartDrag` (фактическое значение) |
-| `html` | HTMLDocumentField | `string` | `output`, `warningOnEditRepresentation` |
+| `html` | HTMLDocumentField | `string` | Нативная поддержка: `path`, `title`, `tooltip`, `titleLocation`, `width`/`height`, `autoMaxWidth`/`autoMaxHeight`, `skipOnInput`, общие флаги видимости/доступности/чтения и `on`/`handlers` |
 | `textDoc` | TextDocumentField | `d5p1:TextDocument` | `editMode` |
 | `formattedDoc` | FormattedDocumentField | `fd:FormattedDocument` | `editMode` |
 | `progressBar` | ProgressBarField | число | `showPercent`, `minValue`/`maxValue` (без `xsi:type`, ≠ типизированных у `input`) |
@@ -835,6 +841,12 @@ flags/layout/оформление/companions/события общий), плю�
 
 Forgiving-синонимы типа: XML-имя (`SpreadSheetDocumentField`) и рус. (`ПолеТабличногоДокумента`, `ПолеИндикатора`, `ПолеДиаграммы`, `ПолеДиаграммыГанта`, …).
 Скаляры `output`/`protection`/… — generic pass-through; bool как `true`/`false`, enum verbatim.
+
+Для HTML-поля публичный вызов — `unica.apply` → `element.add` с
+`items: [{"name": "ПолеHTML", "type": "HTMLDocumentField", "path": "АдресHTML"}]`.
+Ключ `html` — внутреннее описание, не имя MCP-инструмента. `output` и
+`warningOnEditRepresentation` для HTML-поля нативный писатель не выпускает.
+События проверяются общим каталогом: `OnClick` и `DocumentComplete`.
 
 > **Design-time конфигурация диаграмм/планировщика.** Реквизит chart-типа может нести
 > `<Settings xsi:type="d4p1:GanttChart"/"pl:Planner"/…>` — встроенный конфиг (серии/оси/цвета/планировщик).

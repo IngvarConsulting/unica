@@ -55,7 +55,7 @@ allowed-tools:
           "op": "element.add",
           "args": {
             "items": [
-              {"input": "Артикул", "path": "Объект.Артикул", "into": "ГруппаШапка"}
+              {"name": "Артикул", "type": "InputField", "path": "Объект.Артикул", "into": "ГруппаШапка"}
             ]
           }
         }
@@ -162,11 +162,14 @@ Preview и apply возвращают одинаковую типизирова�
 
 ### Типы элементов
 
-Словарь пишет десять видов:
+В `element.add` каждый `items[]` задаёт `name` и `type` (платформенный XML-тег
+из таблицы). Короткие ключи ниже относятся к внутреннему описанию элементов.
+Словарь создаёт одиннадцать видов:
 
 | Ключ | XML тег | Companions |
 |------|---------|------------|
 | `input` | InputField | ContextMenu, ExtendedTooltip |
+| `html` | HTMLDocumentField | ContextMenu, ExtendedTooltip |
 | `check` | CheckBoxField | ContextMenu, ExtendedTooltip |
 | `label` | LabelDecoration | ContextMenu, ExtendedTooltip |
 | `labelField` | LabelField | ContextMenu, ExtendedTooltip |
@@ -179,10 +182,45 @@ Preview и apply возвращают одинаковую типизирова�
 
 Группы и таблицы поддерживают `children`/`columns` для вложенных элементов.
 
+### Поле HTML-документа
+
+HTML-поле привязывается через `path` к строковому реквизиту формы.
+Публичный `items[]` задаёт `name` и `type: "HTMLDocumentField"`;
+внутренний ключ `html` здесь отклоняется, в том числе вместе с `type`.
+Сначала создайте его через `formAttribute.add`, если реквизита ещё нет.
+Затем выполните preview и apply с `ifRev`:
+
+```json
+{
+  "at": "main:Catalog.ТехническиеПроекты.Form.ФормаЭлемента",
+  "ops": [{"op": "element.add", "args": {"items": [{
+    "name": "ПолеОписания", "type": "HTMLDocumentField",
+    "path": "СтраницаРедактораОписания", "titleLocation": "none",
+    "width": 1, "height": 1, "autoMaxWidth": false, "skipOnInput": true,
+    "on": ["OnClick", "DocumentComplete"]
+  }]}}],
+  "dryRun": true
+}
+```
+
+Поддержаны `path`, `title`, `tooltip`, `titleLocation`, `width`/`height`
+(целые `0..4294967295`), `autoMaxWidth`/`autoMaxHeight`, `skipOnInput`,
+`visible`, `userVisible`, `enabled`, `readOnly` и синонимы `hidden`/`disabled`.
+Булевы параметры принимают JSON boolean. События — только `OnClick` и
+`DocumentComplete`; имена обработчиков можно задать в `handlers` вместе с `on`.
+Для существующего поля используйте `event.bind` по адресу `…Form.ФормаЭлемента.Item.ПолеОписания`.
+DOM-свойство `Document` относится к выполнению 1С и не записывается в XML.
+
+Для помещения HTML-поля в группу задайте `into` в отдельном `items[]`;
+`after` задаёт соседний элемент. Вложенный typed-объект с
+`type: "HTMLDocumentField"` в `children`/`columns` отклоняется с подсказкой
+использовать отдельный item. Полученную форму прочитайте через `unica.view`
+и проверьте через `unica.check`.
+
 ### Чего словарь не пишет
 
 Остальные виды платформенных полей и декораций **поверхность не создаёт**:
-поля картинки, текстового, табличного, HTML и форматированного документа,
+поля картинки, текстового, табличного и форматированного документа,
 диаграммы и сводной диаграммы, диаграммы Ганта, календаря, периода,
 индикатора, ползунка, географической схемы, дендрограммы, планировщика,
 радиокнопки, а также декоративную картинку и поле поиска.

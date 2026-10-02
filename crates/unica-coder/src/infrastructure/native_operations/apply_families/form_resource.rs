@@ -887,6 +887,14 @@ fn legacy_element_definition(
     op_index: usize,
     location: &str,
 ) -> Result<(Value, Option<String>, Option<String>), ApplyPlanError> {
+    if item.contains_key("html") {
+        return Err(bad(
+            op_index,
+            &format!("{location}.html"),
+            "html is an internal discriminator; use name and type: HTMLDocumentField in element.add",
+        ));
+    }
+    reject_nested_typed_html(item, op_index, location)?;
     let name = required_string(item, "name", op_index, location)?.to_string();
     let kind = item
         .get("type")
@@ -896,6 +904,9 @@ fn legacy_element_definition(
     definition.insert("name".to_string(), Value::String(name.clone()));
     match kind {
         "InputField" | "Input" | "Field" => {}
+        "HTMLDocumentField" => {
+            definition.insert("html".to_string(), Value::String(name.clone()));
+        }
         "Group" | "UsualGroup" => {
             let orientation = item
                 .get("orientation")
@@ -932,7 +943,7 @@ fn legacy_element_definition(
                 op_index,
                 &format!("{location}.type"),
                 format!(
-                    "unknown form element type `{other}`; use InputField, Group, Table, Button, Label, LabelField, CheckBox, Pages, Page or CommandBar"
+                    "unknown form element type `{other}`; use InputField, Group, Table, Button, Label, LabelField, CheckBox, Pages, Page, CommandBar or HTMLDocumentField"
                 ),
             ))
         }
@@ -950,6 +961,31 @@ fn legacy_element_definition(
         }
     }
     Ok((Value::Object(definition), into, after))
+}
+
+// Nested children still use the internal element description. Refuse a typed
+// HTML child before its `name` could make that description default to InputField.
+fn reject_nested_typed_html(
+    item: &Map<String, Value>,
+    op_index: usize,
+    location: &str,
+) -> Result<(), ApplyPlanError> {
+    for key in ["children", "columns"] {
+        if let Some(children) = item.get(key).and_then(Value::as_array) {
+            for (index, child) in children.iter().enumerate() {
+                let Some(child) = child.as_object() else {
+                    continue;
+                };
+                let location = format!("{location}.{key}[{index}]");
+                if child.get("type").and_then(Value::as_str) == Some("HTMLDocumentField") {
+                    return Err(bad(op_index, &format!("{location}.type"),
+                        "add HTMLDocumentField as a separate element.add item with into naming its parent"));
+                }
+                reject_nested_typed_html(child, op_index, &location)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The registry spells form events in English; Russian names travel in from
@@ -2577,6 +2613,32 @@ mod tests {
             panic!("`{relative}` keeps bytes");
         };
         String::from_utf8(bytes).unwrap()
+    }
+
+    #[test]
+    fn typed_html_nested_in_a_container_refuses_instead_of_becoming_input() {
+        let fixture = ApplySeamFixture::new();
+        for key in ["children", "columns"] {
+            let mut item = json!({"name": "Parent", "type": "Group"});
+            item[key] = json!([{"name": "Html", "type": "HTMLDocumentField"}]);
+            let error = parse_form_resource_plan_operation(
+                "element.add",
+                &json!({
+                    "at": "main:Document.First.Form.ФормаДокумента", "items": [item]
+                }),
+                0,
+                &fixture.binding,
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
+            assert!(
+                error
+                    .path()
+                    .unwrap()
+                    .contains(&format!("items[0].{key}[0].type")),
+                "{error:?}"
+            );
+        }
     }
 
     #[test]

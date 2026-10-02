@@ -2782,6 +2782,14 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
                     "table": "Rows",
                     "path": "Rows",
                     "rowPictureDataPath": "Rows.Picture"
+                }, {
+                    "html": "HtmlDescription",
+                    "path": "Value",
+                    "titleLocation": "None",
+                    "skipOnInput": true,
+                    "width": 40,
+                    "height": 10,
+                    "autoMaxWidth": false
                 }]
             }),
         )?;
