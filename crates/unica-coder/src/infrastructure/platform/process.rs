@@ -3040,6 +3040,55 @@ mod tests {
                 thread::sleep(Duration::from_secs(10));
             }
             "process_tree_child" => thread::sleep(Duration::from_secs(10)),
+            #[cfg(windows)]
+            "windows_parked_handoff_client" => loop {
+                thread::park();
+            },
+            #[cfg(windows)]
+            "windows_exit_leaving_parked_client" => {
+                super::detach_std_handles_from_inheritance();
+                let pid_file = PathBuf::from(std::env::var_os(HELPER_PID_FILE_ENV).unwrap());
+                let mut client = ChildCleanupGuard(Some(
+                    Command::new(std::env::current_exe().unwrap())
+                        .args([
+                            "--exact",
+                            "infrastructure::platform::process::tests::managed_child_test_helper",
+                            "--nocapture",
+                        ])
+                        .env(HELPER_ENV, "windows_parked_handoff_client")
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .spawn()
+                        .unwrap(),
+                ));
+                publish_handoff_probe_file(&pid_file, &client.child_mut().id().to_string());
+                // The owner above this launcher retains the Job authority.
+                drop(client.0.take());
+                print!("grandchild-detached");
+                std::io::stdout().flush().unwrap();
+            }
+            #[cfg(windows)]
+            "windows_pending_handoff_owner" | "windows_released_handoff_owner" => {
+                let pid_file = PathBuf::from(std::env::var_os(HELPER_PID_FILE_ENV).unwrap());
+                let (output, mut pending) =
+                    ManagedChild::run_pending_handoff(pending_handoff_command(
+                        "windows_exit_leaving_parked_client",
+                        &pid_file,
+                        CancellationToken::new(),
+                    ))
+                    .unwrap();
+                assert!(output.status_success, "{output:?}");
+                assert!(output.stdout.contains("grandchild-detached"));
+                if mode == "windows_released_handoff_owner" {
+                    pending.release().unwrap();
+                }
+                publish_handoff_probe_file(&pid_file.with_extension("ready"), "ready");
+                // The outer test terminates this process without running Drop.
+                // EOF on an abandoned test instead lets the armed guard clean up.
+                let _ = std::io::stdin().read_exact(&mut [0_u8]);
+                drop(pending);
+            }
             "exit_leaving_detached_grandchild" => {
                 super::detach_std_handles_from_inheritance();
                 let pid_file = std::env::var_os(HELPER_PID_FILE_ENV).unwrap();
@@ -3164,11 +3213,60 @@ mod tests {
 
     #[cfg(windows)]
     mod process_test_support {
-        use windows_sys::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
+        use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0, WAIT_TIMEOUT};
         use windows_sys::Win32::System::Threading::{
             OpenProcess, TerminateProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
             PROCESS_TERMINATE,
         };
+
+        pub(super) struct RetainedProcess(super::super::ScopedWindowsHandle);
+
+        impl RetainedProcess {
+            pub(super) fn open(pid: u32) -> Self {
+                // SAFETY: the live fixture publishes this PID before its owner can exit;
+                // the resulting non-inheritable handle pins the exact process object.
+                let handle =
+                    unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, 0, pid) };
+                assert!(
+                    !handle.is_null(),
+                    "open fixture process: {}",
+                    std::io::Error::last_os_error()
+                );
+                Self(super::super::ScopedWindowsHandle(handle))
+            }
+
+            pub(super) fn exited_within(&self, milliseconds: u32) -> bool {
+                // SAFETY: the retained handle has SYNCHRONIZE access and remains live.
+                let result = unsafe { WaitForSingleObject(self.0 .0, milliseconds) };
+                match result {
+                    WAIT_OBJECT_0 => true,
+                    WAIT_TIMEOUT => false,
+                    _ => panic!(
+                        "wait for fixture process: {}",
+                        std::io::Error::last_os_error()
+                    ),
+                }
+            }
+
+            pub(super) fn terminate_and_wait(&self) {
+                // SAFETY: this handle retains PROCESS_TERMINATE access to our fixture.
+                assert_ne!(unsafe { TerminateProcess(self.0 .0, 1) }, 0);
+                assert!(self.exited_within(5_000), "fixture cleanup did not finish");
+            }
+        }
+
+        impl Drop for RetainedProcess {
+            fn drop(&mut self) {
+                // SAFETY: cleanup uses only this retained process handle, never a
+                // freshly reopened PID. Termination and waiting are bounded on failure.
+                unsafe {
+                    if WaitForSingleObject(self.0 .0, 0) == WAIT_TIMEOUT {
+                        TerminateProcess(self.0 .0, 1);
+                        WaitForSingleObject(self.0 .0, 5_000);
+                    }
+                }
+            }
+        }
 
         pub fn is_alive(pid: u32) -> bool {
             unsafe {
@@ -4551,6 +4649,98 @@ mod tests {
         drop(pending);
         assert!(wait_until_dead(descendant, Duration::from_secs(2)));
         cleanup.disarm();
+    }
+
+    #[cfg(windows)]
+    fn publish_handoff_probe_file(path: &Path, contents: &str) {
+        let pending = path.with_extension("publishing");
+        let mut file = std::fs::File::create(&pending).unwrap();
+        file.write_all(contents.as_bytes()).unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        std::fs::rename(pending, path).unwrap();
+    }
+
+    #[cfg(windows)]
+    fn assert_pending_handoff_owner_crash(released: bool) {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+        use windows_sys::Win32::System::Threading::WaitForSingleObject;
+
+        let directory = tempfile::tempdir().unwrap();
+        let pid_file = directory.path().join("client.pid");
+        let ready_file = pid_file.with_extension("ready");
+        // A plain child is essential: an outer managed Job would hide whether
+        // the pending handoff's own Job kills the client when its owner crashes.
+        let mut owner = ChildCleanupGuard(Some(
+            Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "infrastructure::platform::process::tests::managed_child_test_helper",
+                    "--nocapture",
+                ])
+                .env(
+                    HELPER_ENV,
+                    if released {
+                        "windows_released_handoff_owner"
+                    } else {
+                        "windows_pending_handoff_owner"
+                    },
+                )
+                .env(HELPER_PID_FILE_ENV, &pid_file)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::inherit())
+                .spawn()
+                .unwrap(),
+        ));
+        let pid = read_helper_pid(&pid_file, Duration::from_secs(10));
+        let client = process_test_support::RetainedProcess::open(pid);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !ready_file.exists() {
+            assert!(
+                owner.child_mut().try_wait().unwrap().is_none(),
+                "owner exited before its barrier"
+            );
+            assert!(
+                Instant::now() < deadline,
+                "owner did not publish its handoff barrier"
+            );
+            thread::yield_now();
+        }
+        assert_eq!(std::fs::read_to_string(ready_file).unwrap(), "ready");
+        assert!(
+            !client.exited_within(0),
+            "client must be alive before owner termination"
+        );
+        owner.child_mut().kill().unwrap();
+        // SAFETY: Child owns a live process handle with synchronization access.
+        assert_eq!(
+            unsafe { WaitForSingleObject(owner.child_mut().as_raw_handle() as _, 5_000) },
+            WAIT_OBJECT_0,
+            "terminated owner did not exit within the cleanup bound"
+        );
+        owner.wait();
+        assert_eq!(
+            client.exited_within(2_000),
+            !released,
+            "client lifetime must follow whether the owner released its pending handoff"
+        );
+        if released {
+            client.terminate_and_wait();
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn pending_launch_owner_crash_kills_unreleased_client() {
+        assert_pending_handoff_owner_crash(false);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn released_launch_survives_owner_crash() {
+        assert_pending_handoff_owner_crash(true);
     }
 
     #[cfg(unix)]
