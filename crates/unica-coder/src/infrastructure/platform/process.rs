@@ -933,37 +933,16 @@ impl ManagedChild {
     }
 
     fn spawn_process_with_limits(
-        process: Command,
-        timeout: Option<Duration>,
-        cancellation: CancellationToken,
-        capture_limits: Option<(usize, usize)>,
-    ) -> Result<Self, String> {
-        Self::spawn_process_with_limits_and_policy(
-            process,
-            timeout,
-            cancellation,
-            capture_limits,
-            false,
-        )
-    }
-
-    fn spawn_process_with_limits_and_policy(
         mut process: Command,
         timeout: Option<Duration>,
         cancellation: CancellationToken,
         capture_limits: Option<(usize, usize)>,
-        detachable: bool,
     ) -> Result<Self, String> {
         process
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let mut process_tree = if detachable {
-            ProcessTree::prepare_detachable(&mut process)
-        } else {
-            ProcessTree::prepare(&mut process)
-        }
-        .map_err(process_error)?;
+        let mut process_tree = ProcessTree::prepare(&mut process).map_err(process_error)?;
         // Cancellation and OS launch (including Windows Job attachment) are
         // serialized. A failed launch never claims the protected phase.
         let (child, cancellation) = cancellation.spawn_with_gate(|| {
@@ -1006,12 +985,11 @@ impl ManagedChild {
             process.env_remove(name);
         }
         process.envs(command.env);
-        let mut child = Self::spawn_process_with_limits_and_policy(
+        let mut child = Self::spawn_process_with_limits(
             process,
             command.timeout,
             command.cancellation,
             command.capture_limits,
-            true,
         )?;
         let output = child.wait_for_pending_handoff_output()?;
         Ok((
@@ -2368,6 +2346,48 @@ impl ProcessTree {
     }
 
     fn release_handoff(&mut self, _child: &mut Child) -> io::Result<()> {
+        use std::mem::{size_of, zeroed};
+        use windows_sys::Win32::System::JobObjects::{
+            JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        };
+
+        // Keep crash cleanup armed on the same owned Job until the caller has
+        // verified the receipt. Preserve all other limits when releasing it.
+        // SAFETY: this Windows POD structure is valid when zero-initialized.
+        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
+        // SAFETY: the Job is still owned and the class, pointer and size agree.
+        if unsafe {
+            QueryInformationJobObject(
+                self.job,
+                JobObjectExtendedLimitInformation,
+                &mut limits as *mut _ as *mut _,
+                size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                std::ptr::null_mut(),
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        if limits.BasicLimitInformation.LimitFlags & JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE == 0 {
+            return Err(io::Error::other(
+                "pending launch Job has no crash cleanup policy",
+            ));
+        }
+        limits.BasicLimitInformation.LimitFlags &= !JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        // SAFETY: this updates the live owned Job with its queried limits.
+        // An error retains the handle and armed guard for explicit cleanup.
+        if unsafe {
+            SetInformationJobObject(
+                self.job,
+                JobObjectExtendedLimitInformation,
+                &limits as *const _ as *const _,
+                size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
         self.detach()
     }
 
@@ -2413,8 +2433,8 @@ impl ProcessTree {
         if self.job.is_null() {
             return Ok(());
         }
-        // The detachable startup Job Object has no KILL_ON_JOB_CLOSE policy. Closing
-        // its last handle releases ownership without terminating the ready service.
+        // The startup Job was created without KILL_ON_JOB_CLOSE; a verified
+        // client handoff clears it above. Closing releases either ready process.
         // SAFETY: `self.job` is owned here and nulled only after a successful close.
         if unsafe { windows_sys::Win32::Foundation::CloseHandle(self.job) } == 0 {
             return Err(io::Error::last_os_error());

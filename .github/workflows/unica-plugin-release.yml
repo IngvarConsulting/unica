@@ -134,8 +134,11 @@ jobs:
           print(json.dumps(record, indent=2))
           if source.is_file():
               expected = {'infrastructure::platform::process::tests::pending_launch_owner_crash_kills_unreleased_client', 'infrastructure::platform::process::tests::released_launch_survives_owner_crash'}
-              assert len(cases) == 2 and {c.get('name') for c in cases} == expected, record
-              assert not any(c.find('skipped') is not None for c in cases), record
+              selected = [c for c in cases if c.get('name') in expected]
+              assert len(selected) == 2 and {c.get('name') for c in selected} == expected, record
+              assert not any(c.find('skipped') is not None for c in selected), record
+              # nextest also reports globally ignored helpers outside the filter.
+              assert not any(c.get('name') not in expected and c.find('skipped') is None for c in cases), record
           else:
               raise SystemExit('Missing JUnit: targeted execution is unproved')
           '@ | python -
