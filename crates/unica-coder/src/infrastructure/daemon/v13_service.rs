@@ -65,6 +65,9 @@ pub(crate) struct CanonicalV13ReadService {
     /// вызов означали бы стол на каждый вызов — и доставки перестали бы
     /// делиться.
     ports: Arc<crate::infrastructure::application_ports::InfrastructureApplicationPorts>,
+    #[cfg(test)]
+    search_providers:
+        Option<Vec<Arc<dyn crate::domain::code_intelligence::CodeIntelligenceProvider>>>,
 }
 
 impl Default for CanonicalV13ReadService {
@@ -76,6 +79,8 @@ impl Default for CanonicalV13ReadService {
             ports: Arc::new(
                 crate::infrastructure::application_ports::InfrastructureApplicationPorts::new(),
             ),
+            #[cfg(test)]
+            search_providers: None,
         }
     }
 }
@@ -1442,6 +1447,14 @@ impl CanonicalV13ReadService {
             Ok(registry) => registry,
             Err(error) => return error_result(None, RefusalCode::ProviderUnavailable, error),
         };
+        #[cfg(test)]
+        let registry = self
+            .search_providers
+            .as_ref()
+            .map_or(registry, |providers| {
+                CodeIntelligenceRegistry::new(providers.clone())
+                    .expect("valid test search providers")
+            });
         // Срок берётся из настройки пользователя, а не подменяется умолчанием:
         // человек настроил срок и должен узнать, что настройка не читается.
         let operational = match crate::infrastructure::operational_config::load_operational_config(
@@ -1483,7 +1496,10 @@ impl CanonicalV13ReadService {
         // An explicit provider role has no neighboring provider to fall back
         // to. Acquire only the selected engine after validating the request,
         // before starting the provider. Lexical and role-free search stay local.
-        if let Some(engine) = selected_role_engine(role) {
+        let engine = selected_role_engine(role);
+        #[cfg(test)]
+        let engine = engine.filter(|_| self.search_providers.is_none());
+        if let Some(engine) = engine {
             if let Some(plugin_root) =
                 crate::infrastructure::plugin_runtime::find_plugin_root(&context.cwd)
             {
@@ -1575,15 +1591,6 @@ impl CanonicalV13ReadService {
                 return error_result(None, code, error);
             }
         };
-        // Провайдер, который не отработал, ничего не доказывает: пустой ответ
-        // при неудачном прогоне выглядел бы как «искали и не нашли».
-        if !execution.ok {
-            return error_result(
-                None,
-                RefusalCode::ProviderUnavailable,
-                format!("`{}` search did not complete", role.as_str()),
-            );
-        }
         let binding = SearchCursorBinding {
             workspace_identity: invocation.workspace_identity_hash().as_str().to_owned(),
             query: query.to_owned(),
@@ -2526,6 +2533,78 @@ fn search_unscoped_lexical(
     })
 }
 
+/// Ошибка движка может содержать stderr и физические пути. Причину берём
+/// только из типизированной остановки, а данные отказа собираем явно.
+fn provider_search_failure(
+    section: crate::domain::code_intelligence::ProviderSearchSection,
+) -> DomainResult {
+    use crate::domain::code_intelligence::SearchTerminationCode;
+
+    let mut result = match section.termination.as_ref().map(|reason| reason.code) {
+        Some(SearchTerminationCode::DeadlineExceeded) => error_result(
+            None,
+            RefusalCode::DeadlineExceeded,
+            "search provider deadline exceeded",
+        ),
+        Some(SearchTerminationCode::DependencyPending) => error_result_detailed(
+            None,
+            RefusalDetail::DependencyPending,
+            "search provider dependency is not ready",
+        ),
+        Some(SearchTerminationCode::UnsupportedScope) => error_result(
+            None,
+            RefusalCode::UnsupportedScope,
+            "search provider does not support this scope",
+        ),
+        Some(SearchTerminationCode::CapacityExhausted) => error_result_detailed(
+            None,
+            RefusalDetail::BackendBusy,
+            "search provider execution capacity is busy",
+        ),
+        Some(SearchTerminationCode::ProviderUnavailable) => error_result(
+            None,
+            RefusalCode::ProviderUnavailable,
+            "search provider is unavailable",
+        ),
+        Some(SearchTerminationCode::ProviderFailed) => {
+            error_result(None, RefusalCode::ProviderFailed, "search provider failed")
+        }
+        Some(SearchTerminationCode::LimitReached) => error_result(
+            None,
+            RefusalCode::ProviderLimitExceeded,
+            "search provider reached its result limit",
+        ),
+        None => error_result(
+            None,
+            RefusalCode::ProviderFailed,
+            "search provider returned no terminal reason",
+        ),
+    };
+    let mut termination = section.termination;
+    if let Some(reason) = &mut termination {
+        reason.detail_code = reason.detail_code.take().filter(|detail| {
+            reason.code == SearchTerminationCode::DependencyPending
+                && matches!(detail.as_str(), "buildingIndex" | "updatingIndex")
+        });
+    }
+    let mut evidence = json!({
+        "role": section.identity.role,
+        "provider": section.identity.provider,
+        "status": section.status,
+        "searchComplete": section.search_complete,
+        "matches": section.matches,
+        "indexFreshness": "unknown",
+    });
+    if let Some(termination) = termination {
+        evidence["termination"] = json!(termination);
+    }
+    if let Some(build_id) = section.index_build_id {
+        evidence["indexBuildId"] = json!(build_id);
+    }
+    result.data = Some(json!({"mode": section.identity.role, "matches": [evidence]}));
+    result
+}
+
 fn provider_search_page(
     cursors: &SearchCursorStore,
     role: ProviderRole,
@@ -2553,6 +2632,17 @@ fn provider_search_page(
         );
     }
     let section = sections.remove(0);
+    if section.identity.role != role {
+        return error_result(
+            None,
+            RefusalCode::ProviderFailed,
+            "selected search provider returned a section for another role",
+        );
+    }
+    if !execution.ok {
+        // Пустой неуспешный ответ не доказывает отсутствие совпадений.
+        return provider_search_failure(section);
+    }
     let mut warnings = execution.warnings;
     if section.hits.len() >= PROVIDER_SEARCH_FETCH_LIMIT {
         let scope_hint = if role == ProviderRole::Lexical {
@@ -3885,6 +3975,333 @@ mod tests {
         assert!(super::bsl_findings_passed(&items));
         items.push(finding(DiagnosticSeverity::Error));
         assert!(!super::bsl_findings_passed(&items));
+    }
+
+    struct SectionSearchProvider {
+        section: ProviderSearchSection,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl CodeIntelligenceProvider for SectionSearchProvider {
+        fn identity(&self) -> ProviderIdentity {
+            self.section.identity.clone()
+        }
+
+        fn capabilities(&self) -> &[ProviderCapability] {
+            &[ProviderCapability::Search]
+        }
+
+        fn search(
+            &self,
+            request: &SearchRequest,
+            _context: &CodeIntelligenceContext,
+            _deadline: ProviderDeadline,
+            _cancellation: &CancellationToken,
+        ) -> ProviderSearchSection {
+            assert_eq!(request.query, "Needle");
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.section.clone()
+        }
+    }
+
+    fn role_search_workspace() -> tempfile::TempDir {
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::create_dir(workspace.path().join("src")).unwrap();
+        std::fs::write(workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n").unwrap();
+        std::fs::write(workspace.path().join("src/Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#).unwrap();
+        workspace
+    }
+
+    #[test]
+    fn canonical_role_search_preserves_typed_failure_without_private_provider_text() {
+        use crate::application::invocation_store::ToolIdentity;
+        use crate::application::ports::TokioClock;
+        use crate::infrastructure::daemon::protocol::InvocationRequest;
+        use crate::infrastructure::daemon::server::V5CanonicalInvocationRuntime;
+
+        let workspace = role_search_workspace();
+        let private = "/private/provider/cache/index.db: engine stderr contains secret";
+        let identity = ProviderIdentity::new(ProviderRole::Symbol, "replacement-symbol");
+        let timed_out = ProviderSearchSection::timed_out(
+            identity.clone(),
+            SearchRanking::Provider,
+            SearchOrdering::Provider,
+            vec![],
+            vec![],
+        )
+        .unwrap();
+        let pending = |detail| {
+            ProviderSearchSection::dependency_pending(
+                identity.clone(),
+                SearchRanking::Provider,
+                SearchOrdering::Provider,
+                vec![],
+                vec![private.into()],
+                detail,
+            )
+            .unwrap()
+        };
+        for (mut section, code, outcome, detail) in [
+            (timed_out, "deadline_exceeded", "retry", None),
+            (
+                pending("buildingIndex"),
+                "provider_unavailable",
+                "retry",
+                Some("dependency_pending"),
+            ),
+            (
+                pending("updatingIndex"),
+                "provider_unavailable",
+                "retry",
+                Some("dependency_pending"),
+            ),
+            (
+                pending(private),
+                "provider_unavailable",
+                "retry",
+                Some("dependency_pending"),
+            ),
+            (
+                ProviderSearchSection::failed(identity.clone(), private.into()),
+                "provider_failed",
+                "deadEnd",
+                None,
+            ),
+            (
+                ProviderSearchSection::unavailable(identity.clone(), private.into()),
+                "provider_unavailable",
+                "needsHuman",
+                None,
+            ),
+            (
+                ProviderSearchSection::unsupported_scope(identity.clone(), private.into()),
+                "unsupported_scope",
+                "fixCall",
+                None,
+            ),
+            (
+                ProviderSearchSection::capacity_exhausted(identity.clone(), private.into()),
+                "task_backend_failed",
+                "retry",
+                Some("backend_busy"),
+            ),
+        ] {
+            section.index_freshness = Some("fresh".into());
+            section.index_build_id = Some("known-build".into());
+            section.artifacts.push(private.into());
+            let expected = serde_json::to_value(&section).unwrap();
+            let calls = Arc::new(AtomicUsize::new(0));
+            let neighbor_calls = Arc::new(AtomicUsize::new(0));
+            let service = super::CanonicalV13ReadService {
+                search_providers: Some(vec![
+                    Arc::new(SectionSearchProvider {
+                        section,
+                        calls: calls.clone(),
+                    }),
+                    Arc::new(SectionSearchProvider {
+                        section: ProviderSearchSection::complete(
+                            ProviderIdentity::new(ProviderRole::Semantic, "neighbor"),
+                            SearchRanking::Provider,
+                            SearchOrdering::Provider,
+                            vec![],
+                            vec![],
+                        )
+                        .unwrap(),
+                        calls: neighbor_calls.clone(),
+                    }),
+                ]),
+                ..Default::default()
+            };
+            let runtime =
+                V5CanonicalInvocationRuntime::new(Arc::new(service), Arc::new(TokioClock));
+            let request = InvocationRequest::new(
+                ToolIdentity::Search,
+                json!({"query":"Needle", "corpus":"text", "role":"symbol", "limit":10}),
+                std::fs::canonicalize(workspace.path())
+                    .unwrap()
+                    .to_string_lossy(),
+                7_000,
+            )
+            .unwrap();
+            let result = runtime
+                .bind(request)
+                .unwrap()
+                .prepare()
+                .unwrap()
+                .execute(CancellationToken::new())
+                .unwrap();
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            assert_eq!(neighbor_calls.load(Ordering::SeqCst), 0);
+            assert!(!result.ok);
+            assert_eq!(result.diagnostics[0]["code"], code);
+            assert_eq!(result.diagnostics[0]["outcome"], outcome);
+            assert_eq!(
+                result.diagnostics[0]
+                    .get("detailCode")
+                    .and_then(|v| v.as_str()),
+                detail
+            );
+            let data = &result.data.as_ref().unwrap()["matches"][0];
+            for field in [
+                "role",
+                "provider",
+                "status",
+                "searchComplete",
+                "matches",
+                "indexBuildId",
+            ] {
+                assert_eq!(data[field], expected[field], "{field}");
+            }
+            assert_eq!(data["indexFreshness"], "unknown");
+            assert_eq!(data["termination"]["code"], expected["termination"]["code"]);
+            assert_eq!(
+                data["termination"]["retryable"],
+                expected["termination"]["retryable"]
+            );
+            let expected_detail = expected["termination"]["detailCode"]
+                .as_str()
+                .filter(|detail| matches!(*detail, "buildingIndex" | "updatingIndex"));
+            assert_eq!(
+                data["termination"]
+                    .get("detailCode")
+                    .and_then(|v| v.as_str()),
+                expected_detail
+            );
+            assert!(data.get("diagnostics").is_none());
+            assert!(data.get("artifacts").is_none());
+            assert!(result.rev.is_none());
+            assert!(!serde_json::to_string(&result).unwrap().contains(private));
+        }
+    }
+
+    #[test]
+    fn canonical_role_search_preserves_partial_hits_and_their_cursor() {
+        use crate::application::invocation_store::ToolIdentity;
+        use crate::application::ports::TokioClock;
+        use crate::infrastructure::daemon::protocol::InvocationRequest;
+        use crate::infrastructure::daemon::server::V5CanonicalInvocationRuntime;
+
+        let workspace = role_search_workspace();
+        let complete = provider_search_test_execution(2, 10, false)
+            .result
+            .sections
+            .remove(0);
+        let section = ProviderSearchSection::partial(
+            ProviderIdentity::new(ProviderRole::Symbol, "replacement-symbol"),
+            complete.ranking,
+            complete.ordering,
+            complete.hits,
+            vec!["one result was malformed".into()],
+        )
+        .unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let runtime = V5CanonicalInvocationRuntime::new(
+            Arc::new(super::CanonicalV13ReadService {
+                search_providers: Some(vec![Arc::new(SectionSearchProvider {
+                    section,
+                    calls: calls.clone(),
+                })]),
+                ..Default::default()
+            }),
+            Arc::new(TokioClock),
+        );
+        let mut arguments = json!({"query":"Needle", "corpus":"text", "role":"symbol", "limit":1});
+        for line in [1, 2] {
+            let request = InvocationRequest::new(
+                ToolIdentity::Search,
+                arguments.clone(),
+                std::fs::canonicalize(workspace.path())
+                    .unwrap()
+                    .to_string_lossy(),
+                7_000,
+            )
+            .unwrap();
+            let result = runtime
+                .bind(request)
+                .unwrap()
+                .prepare()
+                .unwrap()
+                .execute(CancellationToken::new())
+                .unwrap();
+            assert!(result.ok, "{result:?}");
+            let section = &result.data.as_ref().unwrap()["matches"][0];
+            assert_eq!(section["status"], "partial");
+            assert_eq!(section["searchComplete"], false);
+            assert_eq!(section["termination"]["code"], "providerFailed");
+            assert_eq!(section["hits"][0]["line"], line);
+            assert_eq!(section["hits"].as_array().unwrap().len(), 1);
+            assert!(!result.warnings.is_empty());
+            assert!(result.rev.is_none());
+            if line == 1 {
+                arguments["cursor"] = json!(result
+                    .cursor
+                    .expect("partial first page has a continuation"));
+            } else {
+                assert!(result.cursor.is_none());
+            }
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn provider_search_failure_requires_one_selected_section_and_yields_to_cancellation() {
+        let selected = ProviderSearchSection::failed(
+            ProviderIdentity::new(ProviderRole::Symbol, "registered-symbol"),
+            "/private/index.db".into(),
+        );
+        let neighbor = ProviderSearchSection::failed(
+            ProviderIdentity::new(ProviderRole::Semantic, "neighbor"),
+            "/private/neighbor.db".into(),
+        );
+        for (sections, valid) in [
+            (vec![selected.clone()], true),
+            (vec![], false),
+            (vec![neighbor], false),
+            (vec![selected.clone(), selected], false),
+        ] {
+            for cancel in [false, true] {
+                let mut execution = provider_search_test_execution(0, 0, false);
+                execution.ok = false;
+                execution.result.sections = sections.clone();
+                execution.warnings.push("/private/warning.db".into());
+                execution.errors.push("/private/stderr.db".into());
+                let cancellation = CancellationToken::new();
+                if cancel {
+                    cancellation.cancel();
+                }
+                let result = super::provider_search_page(
+                    &Default::default(),
+                    ProviderRole::Symbol,
+                    execution,
+                    provider_search_test_binding(ProviderRole::Symbol, 10),
+                    Some("unused-cursor"),
+                    &cancellation,
+                );
+                assert!(!result.ok);
+                assert_eq!(
+                    result.diagnostics[0]["code"],
+                    if cancel {
+                        "cancelled"
+                    } else {
+                        "provider_failed"
+                    }
+                );
+                if valid && !cancel {
+                    let section = &result.data.as_ref().unwrap()["matches"][0];
+                    assert_eq!(section["provider"], "registered-symbol");
+                    assert!(section.get("indexBuildId").is_none());
+                } else {
+                    assert!(result.data.is_none());
+                }
+                assert!(result.page.is_none());
+                assert!(result.warnings.is_empty());
+                assert!(!serde_json::to_string(&result)
+                    .unwrap()
+                    .contains("/private/"));
+            }
+        }
     }
 
     struct CountingSearchProvider {
