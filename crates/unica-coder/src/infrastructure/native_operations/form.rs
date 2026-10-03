@@ -4863,18 +4863,7 @@ pub(crate) fn form_edit_apply_definition(
     form_edit_apply_planned_removals(xml_text, &planned_removals);
     let form_name = form_edit_form_name(form_path);
     let mut elem_ids = FormIdAllocator {
-        next: form_edit_next_id(
-            xml_text,
-            &[
-                "InputField",
-                "ContextMenu",
-                "ExtendedTooltip",
-                "UsualGroup",
-                "Table",
-                "Button",
-                "CommandBar",
-            ],
-        ),
+        next: form_edit_max_ui_id(xml_text),
     };
     let mut attr_ids = FormIdAllocator {
         next: form_edit_next_id(xml_text, &["Attribute", "Column"]),
@@ -6356,6 +6345,24 @@ pub(crate) fn form_edit_form_name(path: &Path) -> String {
         .and_then(|value| value.to_str())
         .unwrap_or("Form")
         .to_string()
+}
+
+fn form_edit_max_ui_id(xml_text: &str) -> usize {
+    let Ok(doc) = Document::parse(xml_text) else {
+        return 0;
+    };
+    // Elements and their companions share IDs, unlike attributes and commands.
+    // Walk the UI subtrees so imported element kinds need no allocator whitelist.
+    doc.descendants()
+        .filter(|node| {
+            node.ancestors().any(|ancestor| {
+                ancestor.has_tag_name("ChildItems") || ancestor.has_tag_name("AutoCommandBar")
+            })
+        })
+        .filter_map(|node| node.attribute("id"))
+        .filter_map(|value| value.parse::<usize>().ok())
+        .max()
+        .unwrap_or(0)
 }
 
 pub(crate) fn form_edit_next_id(xml_text: &str, tags: &[&str]) -> usize {
@@ -13687,6 +13694,135 @@ pub(crate) mod tests {
 
         assert!(preview.ok, "{preview:?}");
         assert_eq!(fs::read(&form_path).unwrap(), original);
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_form_allocates_ids_above_all_existing_ui_nodes() {
+        let context = temp_context("edit-imported-ui-ids");
+        let form_path = context.cwd.join("Form.xml");
+        // Imported forms need not number the element before its companions.
+        for kind in ["HTMLDocumentField", "CheckBoxField", "PictureField"] {
+            for extension in [false, true] {
+                let highest = if extension { 1_000_000 } else { 5 };
+                let element = format!(
+                    r#"<UsualGroup name="Container" id="1"><ExtendedTooltip name="ContainerTooltip" id="2"/><ChildItems><{kind} name="Imported" id="{highest}"><ContextMenu name="ImportedMenu" id="3"/><ExtendedTooltip name="ImportedTooltip" id="4"/></{kind}></ChildItems></UsualGroup>"#
+                );
+                let original = editable_form_xml(extension).replace(
+                    "\t<ChildItems>\n\t</ChildItems>",
+                    &format!("<ChildItems>{element}</ChildItems>"),
+                );
+                fs::write(&form_path, &original).unwrap();
+                let args = Map::from_iter([
+                    (
+                        "FormPath".to_string(),
+                        json!(form_path.display().to_string()),
+                    ),
+                    (
+                        "definition".to_string(),
+                        json!({"elements": [{"input": "Added"}]}),
+                    ),
+                ]);
+                let preview = preview_form_edit(&args, &context);
+                assert!(preview.ok, "{kind}, extension={extension}: {preview:?}");
+                assert_eq!(fs::read_to_string(&form_path).unwrap(), original);
+                let applied = edit_form(&args, &context);
+                assert!(applied.ok, "{kind}, extension={extension}: {applied:?}");
+                let updated = fs::read_to_string(&form_path).unwrap();
+                let doc = Document::parse(&updated).unwrap();
+                let added = doc
+                    .descendants()
+                    .find(|n| n.attribute("name") == Some("Added"))
+                    .unwrap();
+                assert_eq!(added.attribute("id").unwrap(), (highest + 1).to_string());
+                let ids: Vec<_> = doc
+                    .descendants()
+                    .filter(|n| n.ancestors().any(|a| a.has_tag_name("ChildItems")))
+                    .filter_map(|n| n.attribute("id"))
+                    .collect();
+                assert_eq!(
+                    ids.len(),
+                    ids.iter().collect::<HashSet<_>>().len(),
+                    "{updated}"
+                );
+                assert!(
+                    updated.contains(&element),
+                    "existing subtree changed: {updated}"
+                );
+            }
+        }
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_form_reserves_companion_ids_without_mixing_attribute_and_command_ids() {
+        let context = temp_context("edit-companion-ids");
+        let form_path = context.cwd.join("Form.xml");
+        let table = r#"<Table name="Rows" id="1"><ContextMenu name="RowsMenu" id="2"/><AutoCommandBar name="RowsBar" id="3"/><SearchStringAddition name="RowsSearch" id="4"/><ViewStatusAddition name="RowsStatus" id="5"/><SearchControlAddition name="RowsSearchControl" id="6"/></Table>"#;
+        for highest_node in [
+            "RowsBar",
+            "RowsSearch",
+            "RowsStatus",
+            "RowsSearchControl",
+            "RootTooltip",
+        ] {
+            let original = form_edit_remove_test_xml(table)
+                .replace("<AutoCommandBar name=\"FormCommandBar\" id=\"-1\"/>",
+                    "<AutoCommandBar name=\"FormCommandBar\" id=\"-1\"><ExtendedTooltip name=\"RootTooltip\" id=\"7\"/></AutoCommandBar>")
+                .replace("<Attributes/>", "<Attributes><Attribute name=\"ExistingAttribute\" id=\"100\"/></Attributes>")
+                .replace("<Commands/>", "<Commands><Command name=\"ExistingCommand\" id=\"200\"><Action>ExistingCommand</Action></Command></Commands>");
+            let doc = Document::parse(&original).unwrap();
+            let highest = doc
+                .descendants()
+                .find(|n| n.attribute("name") == Some(highest_node))
+                .unwrap();
+            let old_id = highest.attribute("id").unwrap();
+            let original = original.replace(
+                &format!("name=\"{highest_node}\" id=\"{old_id}\""),
+                &format!("name=\"{highest_node}\" id=\"10\""),
+            );
+            fs::write(&form_path, &original).unwrap();
+            let args = Map::from_iter([
+                (
+                    "FormPath".to_string(),
+                    json!(form_path.display().to_string()),
+                ),
+                (
+                    "definition".to_string(),
+                    json!({"elements": [{"input": "Added"}]}),
+                ),
+            ]);
+            let preview = preview_form_edit(&args, &context);
+            assert!(preview.ok, "{highest_node}: {preview:?}");
+            assert_eq!(fs::read_to_string(&form_path).unwrap(), original);
+            let applied = edit_form(&args, &context);
+            assert!(applied.ok, "{highest_node}: {applied:?}");
+            let updated = fs::read_to_string(&form_path).unwrap();
+            let doc = Document::parse(&updated).unwrap();
+            let added = doc
+                .descendants()
+                .find(|n| n.attribute("name") == Some("Added"))
+                .unwrap();
+            assert_eq!(
+                added.attribute("id"),
+                Some("11"),
+                "{highest_node}: {updated}"
+            );
+            assert_eq!(
+                doc.descendants()
+                    .find(|n| n.attribute("name") == Some("ExistingAttribute"))
+                    .unwrap()
+                    .attribute("id"),
+                Some("100")
+            );
+            assert_eq!(
+                doc.descendants()
+                    .find(|n| n.attribute("name") == Some("ExistingCommand"))
+                    .unwrap()
+                    .attribute("id"),
+                Some("200")
+            );
+        }
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
