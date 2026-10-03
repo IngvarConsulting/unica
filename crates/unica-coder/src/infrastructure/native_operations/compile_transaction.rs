@@ -931,7 +931,7 @@ impl CompileTransaction {
             let published_replacements = self.retained_apply[..cache_start]
                 .iter()
                 .filter_map(|entry| match (&entry.original, &entry.current) {
-                    (Some(_), Some(current)) => Some((
+                    (Some(original), Some(current)) if original != current => Some((
                         entry.root.path().join(&entry.relative_path),
                         current.clone(),
                     )),

@@ -7273,6 +7273,95 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn unchanged_selection_input_replaced_after_writes_refuses_and_rolls_back() {
+        use crate::infrastructure::native_operations::compile_transaction::RetainedApplyObservedEvent;
+        use crate::infrastructure::platform::filesystem::file_identity;
+
+        let fixture = actor_fixture("unchanged-selection-late-identity", &["src"]);
+        let source = &fixture.roots[0];
+        write_actor_event_fixture(source);
+        let configuration = source.join("Configuration.xml");
+        let original = std::fs::read(&configuration).unwrap();
+        let original_identity =
+            file_identity(&std::fs::File::open(&configuration).unwrap()).unwrap();
+        let target = source.join("Module.bsl");
+        std::fs::write(&target, b"before").unwrap();
+        let binding = fixture.actor.bind_provider_root("src", source).unwrap();
+        let admission = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(10)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admission.staged_state().unwrap();
+        assert_eq!(
+            state.read(Path::new("Configuration.xml")).unwrap(),
+            Some(original.clone())
+        );
+        state
+            .replace("Module.bsl", b"before", b"after".to_vec())
+            .unwrap();
+        let prepared = admission
+            .prepare_with_cache_effects(
+                state,
+                &[crate::domain::events::DomainEvent::new(
+                    DomainEventKind::MetadataChanged,
+                    "Catalog.Products",
+                )],
+            )
+            .unwrap();
+        let source_before = snapshot_tree(source);
+        let cache = fixture.root.join(".build/unica");
+        let cache_before = snapshot_tree(&cache);
+        let replacement_identity = Arc::new(std::sync::Mutex::new(None));
+        let hook_identity = Arc::clone(&replacement_identity);
+        let hook_configuration = configuration.clone();
+        let hook_target = target.clone();
+        let hook_cache_before = cache_before.clone();
+        let _ = crate::infrastructure::native_operations::compile_transaction::take_retained_apply_observed_events();
+        crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_post_validation_hook(move || {
+            assert_eq!(std::fs::read(&hook_target).unwrap(), b"after");
+            assert_ne!(snapshot_tree(&cache), hook_cache_before, "cache publication must precede the race");
+            let replacement = hook_configuration.with_extension("replacement");
+            std::fs::write(&replacement, &original).unwrap();
+            let identity = file_identity(&std::fs::File::open(&replacement).unwrap()).unwrap();
+            assert_ne!(identity, original_identity);
+            std::fs::rename(&replacement, &hook_configuration).unwrap();
+            *hook_identity.lock().unwrap() = Some(identity);
+        });
+
+        let error = fixture.actor.publish_prepared_apply(prepared).expect_err(
+            "an unchanged input is not an owned replacement and must retain its original identity",
+        );
+        assert_eq!(
+            error.kind(),
+            super::ApplyPublicationErrorKind::SourceSelectionChanged
+        );
+        assert_eq!(snapshot_tree(source), source_before);
+        assert_eq!(
+            snapshot_tree(&fixture.root.join(".build/unica")),
+            cache_before
+        );
+        let external_identity = replacement_identity.lock().unwrap().expect("late hook ran");
+        assert_eq!(
+            file_identity(&std::fs::File::open(&configuration).unwrap()).unwrap(),
+            external_identity
+        );
+        let observed = crate::infrastructure::native_operations::compile_transaction::take_retained_apply_observed_events();
+        assert!(observed
+            .iter()
+            .any(|event| matches!(event, RetainedApplyObservedEvent::StateMarker(_))));
+        assert!(observed
+            .iter()
+            .any(|event| matches!(event, RetainedApplyObservedEvent::Rollback(_))));
+        fixture.cleanup();
+    }
+
+    #[test]
     fn retained_apply_final_cancellation_gate_rolls_back_all_participants() {
         let fixture = actor_fixture("retained-final-cancellation", &["src"]);
         std::fs::write(fixture.roots[0].join("Module.bsl"), b"before").unwrap();
