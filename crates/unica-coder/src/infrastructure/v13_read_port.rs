@@ -24,8 +24,7 @@ use crate::infrastructure::native_operations::cf::{
     parse_cf_info_xml, CfHomePageData, CfInterfaceData,
 };
 use crate::infrastructure::native_operations::common::{
-    parse_subsystem_info_xml, parse_support_state_strict_bytes, support_root_uuid_from_bytes,
-    SupportState,
+    parse_subsystem_info_xml, support_root_uuid_from_bytes, SupportState, SupportStateStreamParser,
 };
 use crate::infrastructure::native_operations::dcs::parse_dcs_info_xml;
 use crate::infrastructure::native_operations::form::parse_form_info_xml;
@@ -352,7 +351,7 @@ impl ProviderReadAuthority {
         })?;
         let parsed = parse_cf_info_xml(
             text,
-            self.configuration_support()?,
+            self.configuration_support(checkpoint)?,
             self.home_page()?,
             self.command_interface()?,
         )
@@ -416,9 +415,10 @@ impl ProviderReadAuthority {
                 ));
             }
         };
-        let support = serde_json::to_value(self.configuration_support()?).map_err(|error| {
-            ViewError::detailed(RefusalDetail::BackendBroken, error.to_string())
-        })?;
+        let support = serde_json::to_value(self.configuration_support(&mut || checkpoint())?)
+            .map_err(|error| {
+                ViewError::detailed(RefusalDetail::BackendBroken, error.to_string())
+            })?;
         let home_page = serde_json::to_value(self.home_page()?).map_err(|error| {
             ViewError::detailed(RefusalDetail::BackendBroken, error.to_string())
         })?;
@@ -582,12 +582,20 @@ impl ProviderReadAuthority {
         }))
     }
 
-    pub(crate) fn form_payload(&self, target: &MetadataAddress) -> Result<Value, ViewError> {
-        serde_json::to_value(self.form_data(target)?)
+    pub(crate) fn form_payload(
+        &self,
+        target: &MetadataAddress,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<Value, ViewError> {
+        serde_json::to_value(self.form_data(target, checkpoint)?)
             .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
     }
 
-    pub(crate) fn form_data(&self, target: &MetadataAddress) -> Result<FormInfoData, ViewError> {
+    pub(crate) fn form_data(
+        &self,
+        target: &MetadataAddress,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<FormInfoData, ViewError> {
         self.metadata_descriptor(target)?;
         let relative = self.attached_resource_relative(target, "Form.xml")?;
         let bytes = self.read_relative(&relative, MAX_CONFIGURATION_BYTES)?;
@@ -605,12 +613,16 @@ impl ProviderReadAuthority {
             text,
             form_name,
             object_context,
-            self.object_support(target)?,
+            self.object_support(target, checkpoint)?,
         )
         .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
     }
 
-    pub(crate) fn dcs_payload(&self, target: &MetadataAddress) -> Result<Value, ViewError> {
+    pub(crate) fn dcs_payload(
+        &self,
+        target: &MetadataAddress,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<Value, ViewError> {
         self.metadata_descriptor(target)?;
         let relative = self.attached_resource_relative(target, "Template.xml")?;
         let bytes = self.read_relative(&relative, MAX_CONFIGURATION_BYTES)?;
@@ -620,13 +632,17 @@ impl ProviderReadAuthority {
                 "DCS Template.xml is not UTF-8",
             )
         })?;
-        let data = parse_dcs_info_xml(text, self.object_support(target)?)
+        let data = parse_dcs_info_xml(text, self.object_support(target, checkpoint)?)
             .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
         serde_json::to_value(data)
             .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
     }
 
-    pub(crate) fn role_payload(&self, target: &MetadataAddress) -> Result<Value, ViewError> {
+    pub(crate) fn role_payload(
+        &self,
+        target: &MetadataAddress,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<Value, ViewError> {
         let rights = self.read_relative(
             &self.attached_resource_relative(target, "Rights.xml")?,
             MAX_CONFIGURATION_BYTES,
@@ -646,7 +662,7 @@ impl ProviderReadAuthority {
             rights,
             Some(descriptor),
             fallback_name,
-            self.object_support(target)?,
+            self.object_support(target, checkpoint)?,
         )
         .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
         serde_json::to_value(data)
@@ -663,11 +679,14 @@ impl ProviderReadAuthority {
     pub(crate) fn metadata_local(
         &self,
         target: &MetadataAddress,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<MetadataLocalRead, ViewError> {
         let descriptor = self.metadata_descriptor(target)?;
-        let support = metadata_support_status(
-            self.object_support_with_descriptor(target, Some(&descriptor))?,
-        );
+        let support = metadata_support_status(self.object_support_with_descriptor(
+            target,
+            Some(&descriptor),
+            checkpoint,
+        )?);
         // Заимствование отвечает только в наборе вида `extension`: в
         // конфигурации его не бывает, и разбирать дескриптор ради `own` у
         // каждого объекта незачем.
@@ -809,6 +828,7 @@ impl ProviderReadAuthority {
         &self,
         target: &MetadataAddress,
         with_content: bool,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<Value, ViewError> {
         self.metadata_descriptor(target)?;
         let bytes = self.read_relative(
@@ -816,8 +836,13 @@ impl ProviderReadAuthority {
             MAX_CONFIGURATION_BYTES,
         )?;
         let name = target.as_str().rsplit('.').next().unwrap_or("Template");
-        let data = parse_mxl_info_xml(&bytes, name, self.object_support(target)?, with_content)
-            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
+        let data = parse_mxl_info_xml(
+            &bytes,
+            name,
+            self.object_support(target, checkpoint)?,
+            with_content,
+        )
+        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
         serde_json::to_value(data)
             .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
     }
@@ -839,7 +864,11 @@ impl ProviderReadAuthority {
             .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
     }
 
-    pub(crate) fn subsystem_payload(&self, target: &MetadataAddress) -> Result<Value, ViewError> {
+    pub(crate) fn subsystem_payload(
+        &self,
+        target: &MetadataAddress,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<Value, ViewError> {
         let descriptor = self.metadata_descriptor(target)?;
         let descriptor = std::str::from_utf8(&descriptor).map_err(|_| {
             ViewError::detailed(
@@ -871,7 +900,7 @@ impl ProviderReadAuthority {
             data,
             None,
             command_interface,
-            self.object_support(target)?,
+            self.object_support(target, checkpoint)?,
         );
         serde_json::to_value(result)
             .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
@@ -1094,8 +1123,9 @@ impl ProviderReadAuthority {
     pub(crate) fn object_support(
         &self,
         target: &MetadataAddress,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<ObjectSupportData, ViewError> {
-        self.object_support_with_descriptor(target, None)
+        self.object_support_with_descriptor(target, None, checkpoint)
     }
 
     /// A caller that already holds the descriptor bytes passes them in so the
@@ -1104,8 +1134,9 @@ impl ProviderReadAuthority {
         &self,
         target: &MetadataAddress,
         descriptor: Option<&[u8]>,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<ObjectSupportData, ViewError> {
-        let Some(state) = self.support_state()? else {
+        let Some(state) = self.support_state(checkpoint)? else {
             return Ok(unsupported_object());
         };
         let data = |state, direct_edit_safe| ObjectSupportData {
@@ -1140,8 +1171,11 @@ impl ProviderReadAuthority {
         })
     }
 
-    fn configuration_support(&self) -> Result<ConfigurationSupportData, ViewError> {
-        let Some(state) = self.support_state()? else {
+    fn configuration_support(
+        &self,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<ConfigurationSupportData, ViewError> {
+        let Some(state) = self.support_state(checkpoint)? else {
             return Ok(ConfigurationSupportData {
                 state: if self.source_set_kind == SourceSetKind::Extension {
                     ConfigurationSupportState::Extension
@@ -1171,7 +1205,11 @@ impl ProviderReadAuthority {
         })
     }
 
-    fn support_state(&self) -> Result<Option<Arc<SupportState>>, ViewError> {
+    fn support_state(
+        &self,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<Option<Arc<SupportState>>, ViewError> {
+        checkpoint()?;
         let mut memo = self.support_state.lock().map_err(|_| {
             ViewError::detailed(
                 RefusalDetail::CachePoisoned,
@@ -1179,20 +1217,40 @@ impl ProviderReadAuthority {
             )
         })?;
         if let Some(state) = memo.as_ref() {
+            checkpoint()?;
             return Ok(state.clone());
         }
         #[cfg(test)]
         self.support_state_reads
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let bytes = self.read_optional_relative(
+        let mut parser = SupportStateStreamParser::default();
+        let mut interrupted = None;
+        let result = self.root.visit_relative_regular_chunks(
             Path::new("Ext/ParentConfigurations.bin"),
-            MAX_CONFIGURATION_BYTES,
-        )?;
-        let state = parse_support_state_strict_bytes(bytes.as_deref())
-            .map_err(|error| {
+            || {
+                checkpoint().map_err(|error| {
+                    interrupted = Some(error);
+                    std::io::Error::other("support-state read interrupted")
+                })
+            },
+            |chunk| {
+                parser
+                    .feed(chunk)
+                    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+            },
+        );
+        let state = match result {
+            Ok(_) => Some(Arc::new(parser.finish().map_err(|error| {
                 ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
-            })?
-            .map(Arc::new);
+            })?)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                return Err(interrupted.unwrap_or_else(|| {
+                    ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+                }))
+            }
+        };
+        checkpoint()?;
         *memo = Some(state.clone());
         Ok(state)
     }
