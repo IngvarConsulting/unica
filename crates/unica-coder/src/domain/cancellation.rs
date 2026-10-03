@@ -91,6 +91,24 @@ impl CancellationToken {
         Ok((child, Self::new()))
     }
 
+    /// Transfer an already validated external effect under the same gate as
+    /// cancellation. A failed release leaves ownership with the caller.
+    pub(crate) fn handoff_with_gate(
+        &self,
+        release: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), String> {
+        let _gate = self
+            .dispatch_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.is_cancelled() {
+            return Err(cancelled_error("cancelled before process handoff"));
+        }
+        release()?;
+        self.protected_started.store(true, Ordering::Release);
+        Ok(())
+    }
+
     pub(crate) fn protected_process_started(&self) -> bool {
         self.protected_started.load(Ordering::Acquire)
     }
@@ -178,6 +196,25 @@ mod tests {
         assert!(token.protected_process_started());
         assert!(token.is_cancelled());
         assert!(!child.is_cancelled());
+    }
+
+    #[test]
+    fn verified_handoff_keeps_ownership_on_cancel_or_release_failure() {
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        assert!(cancelled
+            .handoff_with_gate(|| panic!("cancelled handoff must not release"))
+            .is_err());
+        assert!(!cancelled.protected_process_started());
+        let failed = CancellationToken::new();
+        assert!(failed
+            .handoff_with_gate(|| Err("release failed".into()))
+            .is_err());
+        assert!(!failed.protected_process_started());
+        let released = CancellationToken::new();
+        released.handoff_with_gate(|| Ok(())).unwrap();
+        released.cancel();
+        assert!(released.protected_process_started());
     }
 
     #[test]

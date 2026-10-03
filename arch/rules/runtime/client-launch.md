@@ -6,6 +6,11 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/v13_client_run.rs::arguments_are_closed_and_each_refusal_names_the_fix
   - crates/unica-coder/src/infrastructure/daemon/v13_client_run.rs::preview_names_the_platform_without_dispatching_or_exposing_the_command
   - crates/unica-coder/src/infrastructure/daemon/v13_client_run.rs::launch_reports_the_session_the_provider_attests
+  - crates/unica-coder/src/infrastructure/daemon/v13_client_run.rs::unverified_launch_receipts_discard_owned_processes
+  - crates/unica-coder/src/infrastructure/daemon/v13_client_run.rs::cancellation_before_verified_handoff_discards_the_client
+  - crates/unica-coder/src/infrastructure/platform/process.rs::pending_launch_release_preserves_detached_descendant
+  - crates/unica-coder/src/infrastructure/platform/process.rs::pending_launch_rejection_drops_owned_descendant
+  - crates/unica-coder/src/infrastructure/platform/process.rs::pending_launch_complete_json_without_eof_remains_cancelable
   - crates/unica-coder/src/infrastructure/daemon/v13_client_run.rs::waited_launch_reports_the_exit_code_and_the_timeout
   - crates/unica-coder/src/infrastructure/daemon/v13_client_run.rs::a_preview_that_dispatched_a_client_is_refused_as_a_broken_contract
 ---
@@ -27,3 +32,11 @@ check:
 
 Сведения о сеансе подтверждает провайдер. Проверки исполняют адаптер
 с управляемыми ответами раннера, без запуска настоящей платформы 1С.
+
+При запуске без ожидания Unica владеет деревом процессов до полного чтения
+и проверки квитанции раннера. Отказ или отмена до передачи владения завершают
+принадлежащие запуску процессы. Проверенная квитанция разрешает отделить
+клиент от Unica; эта передача упорядочена с отменой. После неё отмена
+не завершает подтверждённый сеанс и не заменяет результат запуска отказом.
+Аварийное завершение между внешним эффектом и сохранением результата
+обрабатывается по [правилу квитанций](invocation-at-most-once.md).

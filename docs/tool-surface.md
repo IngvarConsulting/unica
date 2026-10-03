@@ -142,7 +142,7 @@ List canonical runtime operations and their invocation contract, or preview/exec
 | `infobase` | string | нет | Named infobase; defaults to origin. The runner 0.11 adapter supports only origin. |
 | `op` | string | нет | Runner 1.0 operation name; omit to list the target dictionary and adapter support. |
 
-**Результат сейчас:** Все 13 операций целевого словаря исполнимы через закреплённый адаптер 0.11.2. Плановые операции требуют явный boolean dryRun: true показывает план, false исполняет без предварительного preview. run не принимает ifRev и не выдаёт rev. push исходников и pull требуют force; upload загружает без применения БД; apply/reset разделены, reset требует force. infobase.create создаёт пустую базу. Шесть операций ограничены и публикуют поддержанную схему и отсутствующие гарантии. (отвечают типизированным `data`)
+**Результат сейчас:** Все 13 операций целевого словаря исполнимы через закреплённый адаптер 0.11.3. Плановые операции требуют явный boolean dryRun: true показывает план, false исполняет без предварительного preview. run не принимает ifRev и не выдаёт rev. push исходников и pull требуют force; upload загружает без применения БД; apply/reset разделены, reset требует force. infobase.create создаёт пустую базу. Шесть операций ограничены и публикуют поддержанную схему и отсутствующие гарантии. (отвечают типизированным `data`)
 
 **Целевой контракт:** Ограничены шесть операций разработки. Адаптер 1.0 расширяет те же имена контролем поколений и синхронизацией; текущий dryRun не фиксирует состояние базы или исходников между вызовами.
 
