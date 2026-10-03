@@ -79,6 +79,14 @@ pub(crate) fn review_clear_revision_identity_hooks() {
     REVIEW_AFTER_REVISION_IDENTITY.with(|slot| *slot.borrow_mut() = None);
 }
 
+/// One captured DCS body and its read-only format verdict. Validation consumes
+/// this value and does not use display paths as filesystem authority.
+pub(crate) struct DcsValidationInput {
+    pub(crate) artifact: PathBuf,
+    pub(crate) text: String,
+    pub(crate) format_guard: crate::application::ports::FormatGuardCheck,
+}
+
 const MAX_CONFIGURATION_BYTES: usize = 8 * 1024 * 1024;
 const MAX_EXTERNAL_OWNER_ENTRIES: usize = 256;
 const MAX_EXTERNAL_INVENTORY_BYTES: usize = 32 * 1024 * 1024;
@@ -288,11 +296,44 @@ impl ProviderReadAuthority {
         relative: &Path,
         max_bytes: usize,
     ) -> Result<Vec<u8>, ViewError> {
+        self.read_relative_with_checkpoint(relative, max_bytes, &mut || Ok(()))
+    }
+
+    fn read_relative_with_checkpoint(
+        &self,
+        relative: &Path,
+        max_bytes: usize,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<Vec<u8>, ViewError> {
+        let mut bytes = Vec::new();
+        let mut interrupted = None;
         self.root
-            .read_relative_regular_bounded(relative, max_bytes)
+            .visit_relative_regular_chunks(
+                relative,
+                || {
+                    checkpoint().map_err(|error| {
+                        interrupted = Some(error);
+                        std::io::Error::other("source read interrupted")
+                    })
+                },
+                |chunk| {
+                    if chunk.len() > max_bytes.saturating_sub(bytes.len()) {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!("relative file exceeds the {max_bytes}-byte read limit"),
+                        ));
+                    }
+                    bytes.extend_from_slice(chunk);
+                    Ok(())
+                },
+            )
             .map_err(|error| {
-                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
-            })
+                interrupted.unwrap_or_else(|| {
+                    ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+                })
+            })?;
+        checkpoint()?;
+        Ok(bytes)
     }
 
     pub(crate) fn read_optional_relative(
@@ -623,19 +664,72 @@ impl ProviderReadAuthority {
         target: &MetadataAddress,
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<Value, ViewError> {
+        let (_, text) = self.dcs_input(target)?;
+        let data = parse_dcs_info_xml(&text, self.object_support(target, checkpoint)?)
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
+        serde_json::to_value(data)
+            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
+    }
+
+    /// The retained source reader owns both DCS view and validation input.
+    pub(crate) fn dcs_input(
+        &self,
+        target: &MetadataAddress,
+    ) -> Result<(PathBuf, String), ViewError> {
         self.metadata_descriptor(target)?;
         let relative = self.attached_resource_relative(target, "Template.xml")?;
         let bytes = self.read_relative(&relative, MAX_CONFIGURATION_BYTES)?;
-        let text = std::str::from_utf8(&bytes).map_err(|_| {
+        let text = String::from_utf8(bytes).map_err(|_| {
             ViewError::detailed(
                 RefusalDetail::SourceUnreadable,
                 "DCS Template.xml is not UTF-8",
             )
         })?;
-        let data = parse_dcs_info_xml(text, self.object_support(target, checkpoint)?)
-            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
-        serde_json::to_value(data)
-            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
+        Ok((self.root_path().join(relative), text))
+    }
+
+    pub(crate) fn dcs_validation_input(
+        &self,
+        target: &MetadataAddress,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<DcsValidationInput, ViewError> {
+        let (artifact, text) = self.dcs_input(target)?;
+        let wrapper_relative = self.metadata_descriptor_relative(target)?;
+        let wrapper = self.metadata_descriptor(target)?;
+        let source_relative = if self.is_external_source_set() {
+            let owner = target
+                .as_str()
+                .split('.')
+                .take(2)
+                .collect::<Vec<_>>()
+                .join(".");
+            let owner = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &owner).map_err(
+                |error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()),
+            )?;
+            self.metadata_descriptor_relative(&owner)?
+        } else {
+            PathBuf::from("Configuration.xml")
+        };
+        // The previous format guard read the complete owner without a size cap.
+        // Retaining its authority must not add an 8 MiB rejection for large roots.
+        let source_bytes =
+            self.read_relative_with_checkpoint(&source_relative, usize::MAX, checkpoint)?;
+        let format_guard = crate::infrastructure::format_guard::evaluate_retained_dcs_format_guard(
+            &artifact,
+            &text,
+            (self.root_path().join(wrapper_relative), wrapper),
+            (
+                self.root_path().join(source_relative),
+                source_bytes,
+                self.source_set_kind,
+            ),
+        )
+        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))?;
+        Ok(DcsValidationInput {
+            artifact,
+            text,
+            format_guard,
+        })
     }
 
     pub(crate) fn role_payload(
