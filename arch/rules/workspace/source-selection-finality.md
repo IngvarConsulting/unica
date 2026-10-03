@@ -16,6 +16,7 @@ check:
   - crates/unica-coder/src/infrastructure/workspace_actor.rs::apply_selection_dry_run_rejects_late_map_change_without_receipt
   - crates/unica-coder/src/infrastructure/workspace_actor.rs::apply_selection_late_change_rolls_back_source_cache_revision_and_receipt
   - crates/unica-coder/src/infrastructure/source_selection_evidence.rs::published_replacement_of_a_retained_source_map_file_passes_the_final_gate
+  - crates/unica-coder/src/infrastructure/workspace_actor.rs::unchanged_selection_input_replaced_after_writes_refuses_and_rolls_back
 gap: https://github.com/IngvarConsulting/unica/issues/987
 ---
 
