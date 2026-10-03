@@ -203,6 +203,29 @@ impl ExactFileInput {
         }
     }
 
+    pub(crate) fn bind_to_staged(
+        &self,
+        root: &Path,
+        staged: &mut crate::infrastructure::native_operations::apply::ApplyStagedState,
+    ) -> Result<(), crate::infrastructure::native_operations::apply::ApplyStagingError> {
+        use crate::infrastructure::native_operations::apply::{
+            ApplyStagingError, ApplyStagingErrorKind,
+        };
+        let relative = self.path.strip_prefix(root).map_err(|_| {
+            ApplyStagingError::new(
+                ApplyStagingErrorKind::ContainmentIdentity,
+                "apply input is outside the admitted source root",
+            )
+        })?;
+        if staged.read(relative)?.as_deref() != Some(self.raw.as_slice()) {
+            return Err(ApplyStagingError::new(
+                ApplyStagingErrorKind::ConcurrentRevision,
+                "file-backed apply input changed during planning",
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn bind_to(&self, transaction: &mut CompileTransaction) -> Result<(), String> {
         transaction.guard_or_verify_exact_preimage(&self.path, &self.raw)
     }

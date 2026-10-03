@@ -19,9 +19,9 @@ allowed-tools:
 - Подсистему называет адрес: `args.at` вида `<набор>:Subsystem.<Имя>`.
   Дочерняя — продолжением того же адреса. Путь к XML наружу не выходит; из
   диффа или лога его переводит аварийный `unica.resolve`.
-- Всегда сначала `dryRun: true`. Применяй `dryRun: false` только когда
-  пользователь явно попросил внести именно эту правку, и только с `ifRev` из
-  предпросмотра.
+- Сначала вызови `unica.apply` с `at` и `ops`: это план без записи.
+  Когда пользователь поручил внести эту правку, вызови `unica.apply` только
+  с `executionToken` из `data.executionToken` успешного плана.
 - Проверка поддержки поставщика работает внутри `unica`. Если она блокирует
   заблокированный объект на поддержке, предпочитай расширение или явный план
   смены состояния поддержки, а не правку метаданных поддержки напрямую.
@@ -55,8 +55,8 @@ allowed-tools:
 
 1. Найди подсистему: `unica.search {corpus: "names", kind: "Subsystem"}`.
 2. Прочти её: `unica.view {at}` — состав и дочерние лежат в ветвях.
-3. Предпросмотр: `unica.apply` с `dryRun: true`; ответ несёт план и `ifRev`.
-4. Применение: тот же вызов с `dryRun: false` и этим `ifRev`.
+3. Предпросмотр: `unica.apply` с `at` и `ops`; ответ несёт план и `data.executionToken`.
+4. Применение: вызов только с `executionToken` из `data.executionToken` успешного плана.
 5. Проверка: `unica.check {at}`.
 
 ## Примеры
@@ -86,14 +86,15 @@ allowed-tools:
             "items": [{"object": "Report.Старый"}]
           }
         }
-      ],
-      "dryRun": true
+      ]
     }
   }
 }
 ```
 
 ### Дочерняя подсистема и свойство
+
+Сначала получи план этого изменения:
 
 ```json
 {
@@ -108,19 +109,38 @@ allowed-tools:
           "op": "childSubsystem.add",
           "args": {
             "at": "main:Subsystem.Продажи",
-            "items": [{"name": "Заказы"}]
+            "items": [
+              {
+                "name": "Заказы"
+              }
+            ]
           }
         },
         {
           "op": "props.set",
           "args": {
             "at": "main:Subsystem.Продажи",
-            "values": {"IncludeInCommandInterface": false}
+            "values": {
+              "IncludeInCommandInterface": false
+            }
           }
         }
-      ],
-      "dryRun": false,
-      "ifRev": "<rev из предпросмотра>"
+      ]
+    }
+  }
+}
+```
+
+Для исполнения передай `data.executionToken` из этого успешного плана:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "unica.apply",
+    "arguments": {
+      "executionToken": "<data.executionToken из успешного плана>"
     }
   }
 }

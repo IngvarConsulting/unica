@@ -195,7 +195,7 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
         tools = {tool["name"]: tool for tool in self.tools}
         expected_properties = {
             "unica.view": {"at", "filter", "limit", "cursor"},
-            "unica.apply": {"at", "ops", "dryRun", "ifRev"},
+            "unica.apply": {"at", "ops", "executionToken"},
             # Единственный инструмент, которому путь на входе разрешён:
             # аварийный мост затем и заведён, чтобы путь не просачивался
             # в частые ответы.
@@ -206,7 +206,7 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
             "unica.search": {"query", "corpus", "kind", "role", "scope", "regex", "limit", "cursor"},
             "unica.check": {"at", "limit", "cursor"},
             "unica.diff": {"left", "right", "filter", "limit", "cursor"},
-            "unica.run": {"op", "args", "dryRun", "ifRev", "infobase"},
+            "unica.run": {"op", "args", "dryRun", "infobase"},
             "unica.docs": {"query", "source", "limit", "cursor"},
         }
         for name, properties in expected_properties.items():
@@ -273,7 +273,13 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
         self.assertIsNotNone(response)
         result = response["result"]["structuredContent"]
         self.assertTrue(result["ok"], result)
+        self.assertNotIn("rev", result)
         operations = {operation["op"]: operation for operation in result["data"]["operations"]}
+        for name, contract in operations.items():
+            with self.subTest(operation=name, contract="execution mode"):
+                self.assertIs(contract["previewRequired"], False)
+                self.assertIs(contract["dryRunRequired"], name != "launch")
+                self.assertNotIn("ifRevRequiredOnApply", contract)
         for document, arguments in examples:
             operation = arguments.get("op")
             with self.subTest(path=document.relative_to(REPO_ROOT), operation=operation):

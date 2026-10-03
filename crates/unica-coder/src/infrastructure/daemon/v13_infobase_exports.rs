@@ -142,7 +142,6 @@ pub(super) struct PreparedInfobaseExport {
     operation: ExportOperation,
     arguments: ExportArguments,
     dry_run: bool,
-    if_rev: Option<String>,
     context: WorkspaceContext,
 }
 
@@ -192,42 +191,11 @@ impl PreparedInfobaseExport {
                     operation,
                     RefusalCode::BadValue,
                     format!(
-                        "{} requires dryRun: true to preview or dryRun: false with ifRev to apply",
+                        "{} requires dryRun: true to preview or dryRun: false to execute",
                         operation.name()
                     ),
                 )
             })?;
-        let if_rev = match arguments.get("ifRev") {
-            None => None,
-            Some(Value::String(value)) if !value.trim().is_empty() => Some(value.clone()),
-            Some(_) => {
-                return Err(reject(
-                    operation,
-                    RefusalCode::BadValue,
-                    format!("{} ifRev must be non-empty text", operation.name()),
-                ))
-            }
-        };
-        if dry_run && if_rev.is_some() {
-            return Err(reject(
-                operation,
-                RefusalCode::BadValue,
-                format!(
-                    "{} preview does not accept ifRev; apply the revision returned by this preview",
-                    operation.name()
-                ),
-            ));
-        }
-        if !dry_run && if_rev.is_none() {
-            return Err(reject(
-                operation,
-                RefusalCode::BadValue,
-                format!(
-                    "{} apply requires ifRev from a prior dryRun preview",
-                    operation.name()
-                ),
-            ));
-        }
 
         let context =
             discover_workspace(Some(PathBuf::from(request.workspace_hint()))).map_err(|error| {
@@ -242,7 +210,6 @@ impl PreparedInfobaseExport {
             operation,
             arguments,
             dry_run,
-            if_rev,
             context,
         })
     }
@@ -554,7 +521,7 @@ fn execute_with_resolved_runner(
     runner: &dyn ProcessRunner,
     cancellation: CancellationToken,
     tool: &BundledTool,
-    runner_version: &str,
+    _runner_version: &str,
 ) -> DomainResult {
     if cancellation.is_cancelled() {
         return reject(
@@ -589,7 +556,7 @@ fn execute_with_resolved_runner(
             ),
         );
     }
-    let revision = plan_revision(prepared, &before, runner_version, &plan);
+
     if prepared.dry_run {
         let mut result = DomainResult::success(format!(
             "{} planned without changing the infobase or workspace files",
@@ -601,29 +568,17 @@ fn execute_with_resolved_runner(
             "plan": public_plan(prepared, &plan),
             "requiresPlatform": true,
         }));
-        result.rev = Some(revision.clone());
+
         result.next.push(json!({
             "tool": "unica.run",
             "args": {
                 "op": prepared.operation.name(),
                 "args": public_arguments(prepared),
                 "dryRun": false,
-                "ifRev": revision,
             },
-            "reason": "apply exactly this previewed export plan"
+            "reason": "execute with the current arguments plan"
         }));
         return result;
-    }
-    if prepared.if_rev.as_deref() != Some(revision.as_str()) {
-        return reject(
-            prepared.operation,
-            RefusalCode::StaleRevision,
-            format!(
-                "{} plan or environment changed after preview: expected rev {revision}, ifRev {}; run dryRun: true again",
-                prepared.operation.name(),
-                prepared.if_rev.as_deref().unwrap_or("absent")
-            ),
-        );
     }
     if cancellation.is_cancelled() {
         return reject(
@@ -714,7 +669,7 @@ fn execute_with_resolved_runner(
             "infobase": true,
             "kind": applied["data"]["target_state"],
         }));
-        result.rev = Some(revision);
+
         return result;
     }
     let mut result = DomainResult::success(format!(
@@ -743,7 +698,7 @@ fn execute_with_resolved_runner(
         "size": size,
         "sha256": sha256,
     }));
-    result.rev = Some(revision);
+
     result
 }
 
@@ -1115,7 +1070,7 @@ fn validate_preview(
 }
 
 /// Validate the pinned runner's structured receipt. Prose and absolute override paths
-/// stay private; the whole receipt participates in the revision fence.
+/// stay private; the public receipt exposes only the validated provider facts.
 pub(super) fn validate_provider_receipt(value: &Value) -> Result<Value, &'static str> {
     let object = value
         .as_object()
@@ -1258,34 +1213,6 @@ fn runner_subject_matches(prepared: &PreparedInfobaseExport, data: &Value) -> bo
                     == prepared.arguments.restore_mode.map(RestoreMode::as_str)
         }
     }
-}
-
-fn plan_revision(
-    prepared: &PreparedInfobaseExport,
-    inputs: &StableInputs,
-    runner_version: &str,
-    plan: &PreviewPlan,
-) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(b"unica-v13-infobase-export-plan-v1\0");
-    hasher.update(
-        serde_json::to_vec(&json!({
-            "op": prepared.operation.name(),
-            "args": public_arguments(prepared),
-            "inputs": {
-                "config": inputs.config_sha256,
-                "localConfig": inputs.local_config_sha256,
-                "namedFile": inputs.named_file_sha256,
-                "namedFileSize": inputs.named_file_size,
-            },
-            "runnerVersion": runner_version,
-            "provider": plan.provider,
-            "providerReceipt": plan.receipt,
-            "runnerOutput": plan.output,
-        }))
-        .expect("plan revision data serializes"),
-    );
-    format!("unica-infobase-export-sha256-v1:{:x}", hasher.finalize())
 }
 
 fn public_plan(prepared: &PreparedInfobaseExport, plan: &PreviewPlan) -> Value {
@@ -1513,7 +1440,7 @@ mod tests {
         }
     }
 
-    fn prepared(root: &Path, dry_run: bool, if_rev: Option<String>) -> PreparedInfobaseExport {
+    fn prepared(root: &Path, dry_run: bool) -> PreparedInfobaseExport {
         let context = WorkspaceContext {
             cwd: root.to_path_buf(),
             workspace_root: root.to_path_buf(),
@@ -1530,17 +1457,11 @@ mod tests {
                 restore_mode: None,
             },
             dry_run,
-            if_rev,
             context,
         }
     }
 
-    fn prepared_restore(
-        root: &Path,
-        dry_run: bool,
-        if_rev: Option<String>,
-        mode: RestoreMode,
-    ) -> PreparedInfobaseExport {
+    fn prepared_restore(root: &Path, dry_run: bool, mode: RestoreMode) -> PreparedInfobaseExport {
         let context = WorkspaceContext {
             cwd: root.to_path_buf(),
             workspace_root: root.to_path_buf(),
@@ -1557,7 +1478,6 @@ mod tests {
                 restore_mode: Some(mode),
             },
             dry_run,
-            if_rev,
             context,
         }
     }
@@ -1642,7 +1562,7 @@ mod tests {
             ExportOperation::Infobase,
             ExportOperation::Restore,
         ] {
-            let mut prepared = prepared(root.path(), true, None);
+            let mut prepared = prepared(root.path(), true);
             prepared.operation = operation;
             if operation == ExportOperation::Restore {
                 prepared.arguments.restore_mode = Some(RestoreMode::Create);
@@ -1708,7 +1628,7 @@ mod tests {
         fs::write(root.path().join(CONFIG_NAME), "format: DESIGNER\n").unwrap();
         fs::create_dir_all(root.path().join("transfer")).unwrap();
         fs::write(root.path().join("transfer/base.dt"), b"transfer bytes").unwrap();
-        let prepared = prepared_restore(root.path(), true, None, RestoreMode::Replace);
+        let prepared = prepared_restore(root.path(), true, RestoreMode::Replace);
         let input = normalize_path_identity(&prepared.arguments.named_file).unwrap();
         let runner =
             SequenceRunner::new(vec![process(restore_preview_envelope(&input, "replace"))]);
@@ -1739,7 +1659,9 @@ mod tests {
         let next = &result.next[0]["args"];
         assert_eq!(next["args"]["input"], "transfer/base.dt");
         assert_eq!(next["args"]["mode"], "replace");
-        assert_eq!(next["ifRev"], json!(result.rev.clone().unwrap()));
+        assert!(next.get("ifRev").is_none());
+        assert_eq!(next["dryRun"], false);
+        assert!(result.rev.is_none());
         let call = &runner.calls.lock().unwrap()[0];
         assert!(call.args.contains(&"restore".to_string()));
         assert!(call.args.contains(&"--input".to_string()));
@@ -1758,7 +1680,7 @@ mod tests {
             warnings: Vec::new(),
             missing: None,
         };
-        let preview = prepared_restore(root.path(), true, None, RestoreMode::Replace);
+        let preview = prepared_restore(root.path(), true, RestoreMode::Replace);
         let input = normalize_path_identity(&preview.arguments.named_file).unwrap();
         let preview_runner =
             SequenceRunner::new(vec![process(restore_preview_envelope(&input, "replace"))]);
@@ -1769,9 +1691,10 @@ mod tests {
             &tool,
             "0.8.1",
         );
-        let revision = preview_result.rev.clone().unwrap();
+        assert!(preview_result.ok);
+        assert!(preview_result.rev.is_none());
 
-        let apply = prepared_restore(root.path(), false, Some(revision), RestoreMode::Replace);
+        let apply = prepared_restore(root.path(), false, RestoreMode::Replace);
         let runner = SequenceRunner::new(vec![
             process(restore_preview_envelope(&input, "replace")),
             process(restore_apply_envelope(&input, "replace", "replaced")),
@@ -1817,9 +1740,9 @@ mod tests {
             (ExportOperation::Configuration, false, false),
         ] {
             let prepared = if operation == ExportOperation::Restore {
-                prepared_restore(root.path(), dry_run, None, RestoreMode::Replace)
+                prepared_restore(root.path(), dry_run, RestoreMode::Replace)
             } else {
-                prepared(root.path(), dry_run, None)
+                prepared(root.path(), dry_run)
             };
             let envelope = if operation == ExportOperation::Restore {
                 restore_apply_envelope(&input, "replace", "restored")
@@ -1850,7 +1773,7 @@ mod tests {
             warnings: Vec::new(),
             missing: None,
         };
-        let prepared = prepared_restore(root.path(), true, None, RestoreMode::Replace);
+        let prepared = prepared_restore(root.path(), true, RestoreMode::Replace);
         let input = normalize_path_identity(&prepared.arguments.named_file).unwrap();
         // Раннер отвечает про создание, хотя одобряли замену.
         let runner = SequenceRunner::new(vec![process(restore_preview_envelope(&input, "create"))]);
@@ -1881,7 +1804,7 @@ mod tests {
             warnings: Vec::new(),
             missing: None,
         };
-        let prepared = prepared_restore(root.path(), true, None, RestoreMode::Create);
+        let prepared = prepared_restore(root.path(), true, RestoreMode::Create);
         let input = normalize_path_identity(&prepared.arguments.named_file).unwrap();
         let mut envelope = restore_preview_envelope(&input, "create");
         envelope["data"]["restored"] = json!(true);
@@ -1931,10 +1854,10 @@ mod tests {
     }
 
     #[test]
-    fn preview_is_non_mutating_and_returns_an_apply_revision_without_raw_command() {
+    fn preview_is_non_mutating_and_returns_no_revision_or_raw_command() {
         let root = tempfile::tempdir().unwrap();
         fs::write(root.path().join(CONFIG_NAME), "format: DESIGNER\n").unwrap();
-        let prepared = prepared(root.path(), true, None);
+        let prepared = prepared(root.path(), true);
         let output = normalize_path_identity(&prepared.arguments.named_file).unwrap();
         let mut envelope = preview_envelope(&output);
         envelope["data"]["provider"]["skipped"] = json!([{"provider":"ibcmd", "reason": format!("platform resolved at {}", root.path().display())}]);
@@ -1954,10 +1877,8 @@ mod tests {
         );
 
         assert!(result.ok, "{result:?}");
-        assert!(result
-            .rev
-            .as_deref()
-            .is_some_and(|rev| rev.starts_with("unica-infobase-export-sha256-v1:")));
+        assert!(result.rev.is_none());
+        assert!(result.next[0]["args"].get("ifRev").is_none());
         assert_eq!(
             result.data.as_ref().unwrap()["plan"]["provider"],
             "designer"
@@ -1977,7 +1898,7 @@ mod tests {
         for published in [Some(&b"verified cf"[..]), None, Some(&b""[..])] {
             let root = tempfile::tempdir().unwrap();
             fs::write(root.path().join(CONFIG_NAME), "format: DESIGNER\n").unwrap();
-            let preview = prepared(root.path(), true, None);
+            let preview = prepared(root.path(), true);
             let output = normalize_path_identity(&preview.arguments.named_file).unwrap();
             let tool = BundledTool {
                 program: root.path().join("v8-runner"),
@@ -1992,7 +1913,9 @@ mod tests {
                 &tool,
                 "0.7.0",
             );
-            let apply = prepared(root.path(), false, preview_result.rev.clone());
+            assert!(preview_result.ok);
+            assert!(preview_result.rev.is_none());
+            let apply = prepared(root.path(), false);
             let responses = vec![
                 process(preview_envelope(&output)),
                 process(apply_envelope(&output)),
@@ -2047,31 +1970,40 @@ mod tests {
     }
 
     #[test]
-    fn stale_apply_stops_after_non_executing_preflight() {
+    fn direct_export_executes_without_a_previous_preview_or_revision() {
         let root = tempfile::tempdir().unwrap();
         fs::write(root.path().join(CONFIG_NAME), "format: DESIGNER\n").unwrap();
-        let apply = prepared(root.path(), false, Some("stale".to_string()));
+        let apply = prepared(root.path(), false);
         let output = normalize_path_identity(&apply.arguments.named_file).unwrap();
         let tool = BundledTool {
             program: root.path().join("v8-runner"),
-            warnings: Vec::new(),
+            warnings: vec![],
             missing: None,
         };
-        let runner = SequenceRunner::new(vec![process(preview_envelope(&output))]);
-
+        let runner = SequenceRunner::publishing(
+            vec![
+                process(preview_envelope(&output)),
+                process(apply_envelope(&output)),
+            ],
+            b"verified cf",
+        );
+        assert!(!apply.arguments.named_file.exists());
         let result =
             execute_with_resolved_runner(&apply, &runner, CancellationToken::new(), &tool, "0.7.0");
-
-        assert!(!result.ok);
-        assert_eq!(result.diagnostics[0]["code"], "stale_revision");
-        assert_eq!(runner.calls.lock().unwrap().len(), 1);
-        assert!(!apply.arguments.named_file.exists());
+        assert!(result.ok, "{result:?}");
+        assert!(result.rev.is_none());
+        assert_eq!(runner.calls.lock().unwrap().len(), 2);
+        assert_eq!(
+            fs::read(&apply.arguments.named_file).unwrap(),
+            b"verified cf"
+        );
+        assert_eq!(result.data.as_ref().unwrap()["artifact"]["size"], 11);
     }
 
     #[test]
     fn apply_rejects_a_runner_receipt_for_a_different_output() {
         let root = tempfile::tempdir().unwrap();
-        let prepared = prepared(root.path(), false, Some("rev".to_string()));
+        let prepared = prepared(root.path(), false);
         let output = normalize_path_identity(&prepared.arguments.named_file).unwrap();
         let plan = validate_preview(&prepared, &preview_envelope(&output)).unwrap();
         let mut applied = apply_envelope(&output);
@@ -2106,7 +2038,7 @@ mod tests {
     #[test]
     fn preview_accepts_a_new_bounded_runner_provider_without_mcp_change() {
         let root = tempfile::tempdir().unwrap();
-        let prepared = prepared(root.path(), true, None);
+        let prepared = prepared(root.path(), true);
         let output = normalize_path_identity(&prepared.arguments.named_file).unwrap();
         let mut envelope = preview_envelope(&output);
         envelope["data"]["plan"]["provider"] = json!("ibcmd-rs");
@@ -2142,7 +2074,6 @@ mod tests {
             arguments: parse_export_arguments(ExportOperation::Configuration, &cfe_args, &context)
                 .unwrap(),
             dry_run: true,
-            if_rev: None,
             context: context.clone(),
         };
         let cfe_output = normalize_path_identity(&cfe.arguments.named_file).unwrap();
@@ -2180,7 +2111,6 @@ mod tests {
             arguments: parse_export_arguments(ExportOperation::Infobase, &dt_args, &context)
                 .unwrap(),
             dry_run: true,
-            if_rev: None,
             context,
         };
         let dt_output = normalize_path_identity(&dt.arguments.named_file).unwrap();
@@ -2216,7 +2146,7 @@ mod tests {
     fn unavailable_preview_returns_one_provider_diagnostic_without_mutation() {
         let root = tempfile::tempdir().unwrap();
         fs::write(root.path().join(CONFIG_NAME), "format: DESIGNER\n").unwrap();
-        let prepared = prepared(root.path(), true, None);
+        let prepared = prepared(root.path(), true);
         let runner = SequenceRunner::new(vec![failed_process(json!({
             "command": "infobase.configuration.export",
             "data": {

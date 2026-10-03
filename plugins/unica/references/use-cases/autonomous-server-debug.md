@@ -13,16 +13,18 @@ server deployment skill surface; runtime setup must stay behind MCP `unica`.
 
 Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
-`ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
+`dryRunRequired`. Контракт вызова бери оттуда, а не из этого текста;
 при `implemented: true` используй опубликованную `argsSchema`; при
 `support.state: limited` разрешено только подмножество `support.supportedArgs`.
 При `support.state: unavailable` остановись; не выдумывай аргументов при
-`argsSchema: null`. Превью исполнением не является. Не обходи контракт прямым runner-ом.
+`argsSchema: null`. Для плановой операции сначала проверь результат `dryRun: true`,
+затем исполняй запрос с `dryRun: false`. Preview не фиксирует входы между
+вызовами. Не обходи контракт прямым runner-ом.
 
 - `autonomous-server` prepares and analyzes the isolated runtime contour.
 - `unica.run` prepares the contour step by step: `infobase.create`,
   `push` with `force:true`, then `launch`; provider support depends on the target. Each supported previewApply step is previewed first
-  and applied with its `ifRev`. Web publication and an MCP client mode are not
+  with `dryRun: true`, then executed with `dryRun: false`. Web publication and an MCP client mode are not
   on the v0.13 surface.
 - A concrete web-client URL supplied independently by the user is the hand-off
   point for an external browser-testing tool. Preview cannot produce one.

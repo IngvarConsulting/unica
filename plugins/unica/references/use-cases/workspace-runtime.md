@@ -19,11 +19,13 @@ Use the package-selected MCP runtime surface directly. In v0.13, call
 
 Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
-`ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
+`dryRunRequired`. Контракт вызова бери оттуда, а не из этого текста;
 при `implemented: true` используй опубликованную `argsSchema`; при
 `support.state: limited` разрешено только подмножество `support.supportedArgs`.
 При `support.state: unavailable` остановись; не выдумывай аргументов при
-`argsSchema: null`. Превью исполнением не является. Не обходи контракт прямым runner-ом.
+`argsSchema: null`. Для плановой операции сначала проверь результат `dryRun: true`,
+затем исполняй запрос с `dryRun: false`. Preview не фиксирует входы между
+вызовами. Не обходи контракт прямым runner-ом.
 
 With runner 0.11.2, source sending and full pulling require explicit `force:true`.
 They provide no generation or local-work protection; inspect the preview before execution.
@@ -116,9 +118,10 @@ source-set path itself has no stronger structural evidence.
 | Change installed extension activity | `extensions.set`, `name`, boolean `active`; other properties are unavailable |
 | Apply or discard pending configuration changes | `apply`, optional `extension`; `reset`, `force:true`, optional `extension`; Designer only |
 
-A previewApply operation is applied with the `ifRev` its preview returned; a
-changed workspace or plan answers `stale_revision` or `concurrent_change`
-instead of applying. Syntax checks are `unica.check`; test runs, Designer/EDT
+A previewApply operation requires explicit boolean `dryRun`: `true` shows the
+plan without execution, and `false` executes using the current inputs. The API
+does not require a previous preview and accepts no `ifRev`; results contain no
+`rev`. In this workflow, inspect a preview before executing an external operation. Syntax checks are `unica.check`; test runs, Designer/EDT
 conversion, Designer `rawKeys` and extension property sync are not on the v0.13
 surface. Keep a
 platform-generated CDFI sidecar out of Git; a legitimate metadata descriptor

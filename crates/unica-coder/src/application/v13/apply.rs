@@ -29,52 +29,67 @@ mod tests {
     use crate::application::v13::tool_catalog::catalog_for;
     use crate::domain::address::NodeKind;
     use crate::domain::apply::OperationFamily;
-    use serde_json::{json, Value};
+    use serde_json::json;
 
-    /// Три входа режима: опущенный, `false` и `true`.
-    ///
-    /// Опущенный равен `false`, поэтому забора требуют два входа из трёх, и
-    /// опубликованная схема объявляет это условием `if`/`then`, а не только
-    /// словами в описании поля.
     #[test]
-    fn the_fence_is_required_by_the_mode_and_the_schema_says_so() {
-        let request = |mode: Option<bool>, fence: bool| {
-            let mut arguments = json!({
-                "at": "main:Document.Order",
-                "ops": [{"op": "props.set", "args": {"values": {"Comment": "x"}}}],
-            });
-            if let Some(mode) = mode {
-                arguments["dryRun"] = Value::Bool(mode);
-            }
-            if fence {
-                arguments["ifRev"] = Value::String(
-                    "unica-source-sha256-v1:1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                        .to_string(),
-                );
-            }
-            parse_request(arguments.as_object().unwrap(), &["main"])
-        };
-
-        assert!(
-            request(Some(true), false).is_ok(),
-            "предпросмотр без забора"
-        );
-        assert!(request(Some(true), true).is_ok(), "предпросмотр с забором");
-        assert!(request(Some(false), true).is_ok(), "применение с забором");
-        for mode in [None, Some(false)] {
-            let error = request(mode, false).expect_err("применение без забора");
-            assert_eq!(error.location(), "ifRev", "{mode:?}");
-        }
-
+    fn planning_and_saved_plan_execution_have_disjoint_public_shapes() {
         let catalog = catalog_for(SurfaceRelease::V13).expect("v0.13 catalog");
-        let fence = &catalog
+        let schema = &catalog
             .tools
             .iter()
             .find(|tool| tool.name == "apply")
-            .expect("apply is published")
+            .unwrap()
             .input_schema;
-        assert_eq!(fence["if"]["properties"]["dryRun"]["const"], json!(false));
-        assert_eq!(fence["then"]["required"], json!(["ifRev"]));
+        let validator = jsonschema::validator_for(schema).unwrap();
+        let plan = json!({"at": "main:Document.Order", "ops": [{"op": "props.set", "args": {"synonym": "Order"}}]});
+        assert!(validator.is_valid(&plan));
+        assert!(validator.is_valid(&json!({"executionToken": "saved-plan"})));
+        for invalid in [
+            json!({}),
+            json!({"executionToken": ""}),
+            json!({"executionToken": null}),
+            json!({"executionToken": "saved-plan", "at": "main:Document.Order"}),
+            json!({"executionToken": "saved-plan", "ops": [{"op": "props.set"}]}),
+            json!({"at": "main:Document.Order"}),
+            json!({"ops": [{"op": "props.set"}]}),
+            json!({"at": "main:Document.Order", "ops": []}),
+        ] {
+            assert!(
+                !validator.is_valid(&invalid),
+                "invalid public request: {invalid}"
+            );
+        }
+        for (key, value) in [
+            ("dryRun", json!(true)),
+            ("dryRun", json!(false)),
+            ("ifRev", json!("revision")),
+            ("executionToken", json!("saved-plan")),
+        ] {
+            let mut mixed = plan.clone();
+            mixed[key] = value;
+            assert!(
+                !validator.is_valid(&mixed),
+                "invalid mixed request: {mixed}"
+            );
+        }
+        let alternatives = schema["oneOf"].as_array().unwrap();
+        assert_eq!(alternatives.len(), 2);
+        assert_eq!(alternatives[0]["required"], json!(["at", "ops"]));
+        assert_eq!(alternatives[1]["required"], json!(["executionToken"]));
+        assert_eq!(
+            alternatives[1]["properties"]["executionToken"]["minLength"],
+            1
+        );
+        for alternative in alternatives {
+            assert_eq!(alternative["additionalProperties"], false);
+            assert!(alternative["properties"].get("dryRun").is_none());
+            assert!(alternative["properties"].get("ifRev").is_none());
+        }
+        assert!(alternatives[0]["properties"]
+            .get("executionToken")
+            .is_none());
+        assert!(alternatives[1]["properties"].get("at").is_none());
+        assert!(alternatives[1]["properties"].get("ops").is_none());
     }
 
     #[test]
