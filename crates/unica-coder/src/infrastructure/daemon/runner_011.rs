@@ -4,10 +4,11 @@ use super::v13_workspace_bootstrap::read_yaml_config;
 use crate::infrastructure::internal_adapters::{
     ProcessCommand, ProcessOutput, ProcessRunner, SystemProcessRunner,
 };
+use crate::infrastructure::platform::PendingProcessHandoff;
 use serde_yaml::Value;
 use std::path::{Path, PathBuf};
 
-pub(super) const VERSION: &str = "0.11.2";
+pub(super) const VERSION: &str = "0.11.3";
 pub(super) fn check_version(version: &str) -> Result<(), String> {
     if version == VERSION {
         Ok(())
@@ -23,12 +24,28 @@ impl ProcessRunner for Runner011ProcessRunner {
     fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
         run_projected(&SystemProcessRunner, command)
     }
+
+    fn run_pending_handoff(
+        &self,
+        command: &ProcessCommand,
+    ) -> Result<(ProcessOutput, PendingProcessHandoff), String> {
+        with_projected_config(command, |projected| {
+            SystemProcessRunner.run_pending_handoff(projected)
+        })
+    }
 }
 
 fn run_projected(
     runner: &dyn ProcessRunner,
     command: &ProcessCommand,
 ) -> Result<ProcessOutput, String> {
+    with_projected_config(command, |projected| runner.run(projected))
+}
+
+fn with_projected_config<T>(
+    command: &ProcessCommand,
+    execute: impl FnOnce(&ProcessCommand) -> Result<T, String>,
+) -> Result<T, String> {
     let position = command
         .args
         .iter()
@@ -45,7 +62,7 @@ fn run_projected(
     let base = read_yaml_config(root, "v8project.yaml")?.ok_or("project config is absent")?;
     let local = read_yaml_config(root, "v8project.local.yaml")?;
     if !needs_projection(&base) && !local.as_ref().is_some_and(needs_projection) {
-        return runner.run(command);
+        return execute(command);
     }
     let has =
         |key: &str| base.get(key).is_some() || local.as_ref().is_some_and(|v| v.get(key).is_some());
@@ -67,7 +84,7 @@ fn run_projected(
     let mut projected = command.clone();
     projected.args[position] = config.display().to_string();
     // Keep cwd and every invocation argument: only the config is a compatibility projection.
-    runner.run(&projected)
+    execute(&projected)
 }
 fn write_config(path: &Path, value: &Value) -> Result<(), String> {
     let bytes =
