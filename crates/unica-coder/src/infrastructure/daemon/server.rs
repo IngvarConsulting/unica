@@ -5757,7 +5757,7 @@ struct ActorLogicalReadLease {"#,
 
     /// INV.WIRE.V13-REFUSAL-CHANNEL: every canonical refusal answers through
     /// `diagnostics[0]` with a code from the closed set and a message; a stale
-    /// `ifRev` has its own conflict code instead of `provider_unavailable`;
+    /// saved apply plan has its own conflict code instead of `provider_unavailable`;
     /// and an admitted logical scope without a source subtree is an empty
     /// result rather than a refusal or a raw OS error.
     #[test]
