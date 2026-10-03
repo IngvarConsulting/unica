@@ -81,7 +81,6 @@ struct BuildArguments {
 pub(super) struct PreparedArtifactBuild {
     arguments: BuildArguments,
     dry_run: bool,
-    if_rev: Option<String>,
     context: WorkspaceContext,
 }
 
@@ -116,31 +115,9 @@ impl PreparedArtifactBuild {
             .ok_or_else(|| {
                 reject(
                     RefusalCode::BadValue,
-                    "make requires dryRun: true to preview or dryRun: false with ifRev to apply",
+                    "make requires dryRun: true to preview or dryRun: false to execute",
                 )
             })?;
-        let if_rev = match arguments.get("ifRev") {
-            None => None,
-            Some(Value::String(value)) if !value.trim().is_empty() => Some(value.clone()),
-            Some(_) => {
-                return Err(reject(
-                    RefusalCode::BadValue,
-                    "make ifRev must be non-empty text",
-                ))
-            }
-        };
-        if dry_run && if_rev.is_some() {
-            return Err(reject(
-                RefusalCode::BadValue,
-                "make preview does not accept ifRev; apply the revision returned by this preview",
-            ));
-        }
-        if !dry_run && if_rev.is_none() {
-            return Err(reject(
-                RefusalCode::BadValue,
-                "make apply requires ifRev from a prior dryRun preview",
-            ));
-        }
         let context =
             discover_workspace(Some(PathBuf::from(request.workspace_hint()))).map_err(|error| {
                 reject(
@@ -152,7 +129,6 @@ impl PreparedArtifactBuild {
         Ok(Self {
             arguments,
             dry_run,
-            if_rev,
             context,
         })
     }
@@ -368,7 +344,7 @@ fn execute_with_resolved_runner(
     runner: &dyn ProcessRunner,
     cancellation: CancellationToken,
     tool: &BundledTool,
-    runner_version: &str,
+    _runner_version: &str,
 ) -> DomainResult {
     if cancellation.is_cancelled() {
         return reject(RefusalCode::Cancelled, "make cancelled before preflight");
@@ -395,7 +371,7 @@ fn execute_with_resolved_runner(
             "make inputs changed during preview; run dryRun: true again",
         );
     }
-    let revision = plan_revision(prepared, &before, runner_version, &source_set);
+
     if prepared.dry_run {
         let mut result = DomainResult::success(format!(
             "make planned building the {} from source set `{source_set}` without publishing anything",
@@ -416,30 +392,17 @@ fn execute_with_resolved_runner(
             "providerDispatched": false,
             "requiresPlatform": true,
         }));
-        result.rev = Some(revision.clone());
+
         result.next.push(json!({
             "tool": "unica.run",
             "args": {
                 "op": OPERATION,
                 "args": public_arguments(prepared),
                 "dryRun": false,
-                "ifRev": revision,
             },
-            "reason": "apply exactly this previewed build"
+            "reason": "execute with the current arguments"
         }));
         return result;
-    }
-    if prepared.if_rev.as_deref() != Some(revision.as_str()) {
-        // A stale `ifRev` is the caller's conflict with a known recovery, so it
-        // answers `stale_revision` and names both revisions
-        // (INV.WIRE.V13-REFUSAL-CHANNEL).
-        return reject(
-            RefusalCode::StaleRevision,
-            format!(
-                "make plan or environment changed after preview: expected rev {revision}, ifRev {}; run dryRun: true again",
-                prepared.if_rev.as_deref().unwrap_or("absent")
-            ),
-        );
     }
     if cancellation.is_cancelled() {
         return reject(
@@ -509,7 +472,7 @@ fn execute_with_resolved_runner(
         "kind": state,
     }));
     result.artifacts.push(artifact);
-    result.rev = Some(revision);
+
     result
 }
 
@@ -684,33 +647,6 @@ fn parse_runner_output(output: ProcessOutput) -> Result<Value, DomainResult> {
     Ok(envelope)
 }
 
-fn plan_revision(
-    prepared: &PreparedArtifactBuild,
-    inputs: &StableInputs,
-    runner_version: &str,
-    source_set: &str,
-) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(b"unica-v13-artifact-build-plan-v1\0");
-    hasher.update(
-        serde_json::to_vec(&json!({
-            "op": OPERATION,
-            "args": public_arguments(prepared),
-            "inputs": {
-                "config": inputs.config_sha256,
-                "localConfig": inputs.local_config_sha256,
-                "declared": inputs.declared,
-                "output": inputs.output_sha256,
-            },
-            "runnerVersion": runner_version,
-            "sourceSet": source_set,
-            "artifactType": prepared.arguments.kind.runner_mode(),
-        }))
-        .expect("plan revision data serializes"),
-    );
-    format!("unica-artifact-build-sha256-v1:{:x}", hasher.finalize())
-}
-
 fn public_arguments(prepared: &PreparedArtifactBuild) -> Value {
     let mut args = Map::new();
     args.insert(
@@ -844,7 +780,6 @@ mod tests {
         source_set: Option<&str>,
         extension: Option<&str>,
         dry_run: bool,
-        if_rev: Option<String>,
     ) -> PreparedArtifactBuild {
         let mut args = Map::new();
         args.insert("output".to_string(), json!(output));
@@ -857,7 +792,6 @@ mod tests {
         PreparedArtifactBuild {
             arguments: parse_build_arguments(&args, &context(root)).expect("valid arguments"),
             dry_run,
-            if_rev,
             context: context(root),
         }
     }
@@ -1000,7 +934,6 @@ mod tests {
                 Some("ext-purchases"),
                 None,
                 true,
-                None,
             ),
             &runner,
         );
@@ -1015,7 +948,7 @@ mod tests {
     #[test]
     fn preview_names_the_artifact_and_the_set_without_publishing() {
         let root = workspace();
-        let prepared = build_of(root.path(), "dist/main.cf", None, None, true, None);
+        let prepared = build_of(root.path(), "dist/main.cf", None, None, true);
         let runner = SequenceRunner::new(vec![process(
             envelope(
                 &prepared.arguments.output,
@@ -1035,9 +968,9 @@ mod tests {
         assert_eq!(data["plan"]["artifact"]["path"], "dist/main.cf");
         assert_eq!(data["plan"]["sourceSet"], "main");
         assert_eq!(data["plan"]["outputExists"], false);
-        let revision = result.rev.clone().expect("preview returns a revision");
-        assert!(revision.starts_with("unica-artifact-build-sha256-v1:"));
-        assert_eq!(result.next[0]["args"]["ifRev"], revision);
+        assert!(result.rev.is_none());
+        assert_eq!(result.next[0]["args"]["dryRun"], false);
+        assert!(result.next[0]["args"].get("ifRev").is_none());
         assert_eq!(
             result.next[0]["args"]["args"],
             json!({"output": "dist/main.cf"})
@@ -1070,7 +1003,6 @@ mod tests {
             Some("ext-sales"),
             Some("Sales"),
             true,
-            None,
         );
         let runner = SequenceRunner::new(vec![process(
             envelope(
@@ -1140,7 +1072,7 @@ mod tests {
     #[test]
     fn preview_refuses_another_output_kind_or_set_and_a_published_preview() {
         let root = workspace();
-        let prepared = build_of(root.path(), "dist/main.cf", None, None, true, None);
+        let prepared = build_of(root.path(), "dist/main.cf", None, None, true);
 
         let mut other = envelope(
             &prepared.arguments.output,
@@ -1215,33 +1147,10 @@ mod tests {
     }
 
     #[test]
-    fn apply_repeats_the_preview_and_returns_an_independent_file_receipt() {
+    fn apply_without_prior_preview_returns_an_independent_file_receipt() {
         let root = workspace();
-        let preview = build_of(root.path(), "dist/main.cf", None, None, true, None);
-        let revision = run(
-            root.path(),
-            &preview,
-            &SequenceRunner::new(vec![process(
-                envelope(
-                    &preview.arguments.output,
-                    ArtifactKind::Cf,
-                    "main",
-                    None,
-                    false,
-                ),
-                true,
-            )]),
-        )
-        .rev
-        .unwrap();
-        let prepared = build_of(
-            root.path(),
-            "dist/main.cf",
-            None,
-            None,
-            false,
-            Some(revision.clone()),
-        );
+
+        let prepared = build_of(root.path(), "dist/main.cf", None, None, false);
         let runner = SequenceRunner::publishing(
             vec![
                 process(
@@ -1286,65 +1195,18 @@ mod tests {
         assert_eq!(result.changed[0]["kind"], "created");
         assert_eq!(result.artifacts[0]["kind"], "cf");
         assert_eq!(result.artifacts[0]["size"], 8);
-        assert_eq!(result.rev, Some(revision));
+        assert!(result.rev.is_none());
         let encoded = serde_json::to_string(&result).unwrap();
         assert!(!encoded.contains("1cv8"), "platform path leaked: {encoded}");
         assert!(!encoded.contains("--config"));
     }
 
     #[test]
-    fn apply_refuses_a_stale_revision_and_a_missing_artifact() {
-        let root = workspace();
-        let prepared = build_of(
-            root.path(),
-            "dist/main.cf",
-            None,
-            None,
-            false,
-            Some("stale".to_string()),
-        );
-        let runner = SequenceRunner::new(vec![process(
-            envelope(
-                &prepared.arguments.output,
-                ArtifactKind::Cf,
-                "main",
-                None,
-                false,
-            ),
-            true,
-        )]);
-        let result = run(root.path(), &prepared, &runner);
-        assert_eq!(result.diagnostics[0]["code"], "stale_revision");
-        assert_eq!(runner.call_count(), 1);
-        assert!(!prepared.arguments.output.exists());
-
+    fn apply_refuses_a_missing_or_empty_artifact() {
         for published in [None, Some(&b""[..])] {
             let root = workspace();
-            let preview = build_of(root.path(), "dist/main.cf", None, None, true, None);
-            let revision = run(
-                root.path(),
-                &preview,
-                &SequenceRunner::new(vec![process(
-                    envelope(
-                        &preview.arguments.output,
-                        ArtifactKind::Cf,
-                        "main",
-                        None,
-                        false,
-                    ),
-                    true,
-                )]),
-            )
-            .rev
-            .unwrap();
-            let prepared = build_of(
-                root.path(),
-                "dist/main.cf",
-                None,
-                None,
-                false,
-                Some(revision),
-            );
+
+            let prepared = build_of(root.path(), "dist/main.cf", None, None, false);
             let outputs = vec![
                 process(
                     envelope(
@@ -1395,7 +1257,6 @@ mod tests {
             Some("ext-sales"),
             Some("Sales"),
             true,
-            None,
         );
         let failure = |code: &str| {
             json!({

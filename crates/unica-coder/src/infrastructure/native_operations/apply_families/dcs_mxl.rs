@@ -967,6 +967,11 @@ pub(crate) fn plan_dcs_mxl_batch(
                 }
             }
         }
+        for input in &query_inputs {
+            input
+                .bind_to_staged(root, &mut staged)
+                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
+        }
         if !force_save && xml_text == original {
             continue;
         }

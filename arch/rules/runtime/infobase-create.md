@@ -4,8 +4,8 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/v13_infobase_create.rs::preview_plans_the_infobase_without_creating_anything_or_naming_its_path
   - crates/unica-coder/src/infrastructure/daemon/v13_infobase_create.rs::an_existing_infobase_is_refused_at_preview_and_points_to_import
   - crates/unica-coder/src/infrastructure/daemon/v13_infobase_create.rs::a_project_that_needs_an_edt_workspace_is_refused
-  - crates/unica-coder/src/infrastructure/daemon/v13_infobase_create.rs::apply_creates_and_takes_its_receipt_from_a_repeated_preview
-  - crates/unica-coder/src/infrastructure/daemon/v13_infobase_create.rs::apply_refuses_a_stale_revision_and_an_infobase_created_elsewhere
+  - crates/unica-coder/src/infrastructure/daemon/v13_infobase_create.rs::apply_without_prior_preview_creates_and_confirms_the_provider_receipt
+  - crates/unica-coder/src/infrastructure/daemon/v13_infobase_create.rs::apply_refuses_an_infobase_created_elsewhere
   - crates/unica-coder/src/infrastructure/daemon/v13_infobase_create.rs::apply_refuses_a_receipt_that_still_plans_to_create
 gap: https://github.com/IngvarConsulting/unica/issues/950
 ---
@@ -17,15 +17,18 @@ gap: https://github.com/IngvarConsulting/unica/issues/950
 `initializesSources: false` и `generationProtection: false`.
 
 `infobase.create` берёт соединение из проектного файла и не принимает
-аргументов соединения. Операция доступна без исходников, требует preview
-и его `ifRev` для применения. Preview допускает только запланированное
+аргументов соединения. Операция доступна без исходников и требует явный
+boolean `dryRun`: `true` возвращает preview, `false` создаёт базу без
+предварительного вызова preview. Preview допускает только запланированное
 создание отсутствующей базы (`planned`), без запуска платформы. Существующая
 база получает отказ с указанием на `infobase.import`; запланированное
 EDT-пространство также отклоняется.
 
-Ревизия preview связывает проектный файл, его локальное дополнение
-и версию раннера. Если любой из этих входов изменился, прежний `ifRev`
-не разрешает создание: нужен новый preview.
+`run` не принимает `ifRev` и не выдаёт `rev`. Исполнение использует
+текущую конфигурацию проекта; отдельный preview не фиксирует её состояние.
+Проектный файл и его локальное дополнение сверяются до и после внутреннего
+preview раннера в текущем вызове. Их изменение даёт `concurrent_change`
+до создания базы.
 
 Если при применении раннер сообщает, что база уже появилась и создание
 пропущено, ответ — `concurrent_change`. Успех требует повторного preview,

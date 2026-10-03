@@ -24,15 +24,17 @@ Runtime export or loading of `.cfe` artifacts goes through `unica.run`:
 with `extension` loads the working configuration without applying it to the database;
 `apply` with that extension applies it, and `reset` with `force:true` discards
 pending changes. `make` builds an artifact from sources; each operation is
-previewed first and applied with the `ifRev` the preview returned.
+previewed first with `dryRun: true` and executed with `dryRun: false`.
 
 Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
-`ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
+`dryRunRequired`. Контракт вызова бери оттуда, а не из этого текста;
 при `implemented: true` используй опубликованную `argsSchema`; при
 `support.state: limited` разрешено только подмножество `support.supportedArgs`.
 При `support.state: unavailable` остановись; не выдумывай аргументов при
-`argsSchema: null`. Превью исполнением не является. Не обходи контракт прямым runner-ом.
+`argsSchema: null`. Для плановой операции сначала проверь результат `dryRun: true`,
+затем исполняй запрос с `dryRun: false`. Preview не фиксирует входы между
+вызовами. Не обходи контракт прямым runner-ом.
 
 ## Related references
 

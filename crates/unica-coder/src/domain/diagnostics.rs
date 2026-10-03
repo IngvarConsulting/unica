@@ -115,7 +115,7 @@ impl std::error::Error for DiagnosticMapError {}
 /// One module admitted by the logical reader. This is an execution scope,
 /// not a filter on findings and not a replacement source root.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DiagnosticModuleScope {
+pub(crate) struct DiagnosticModuleScope {
     pub(crate) source_set: String,
     pub(crate) source_root: std::path::PathBuf,
     pub(crate) module_path: std::path::PathBuf,

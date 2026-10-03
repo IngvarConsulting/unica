@@ -15,8 +15,9 @@ allowed-tools:
 - Preferred path: use MCP `unica` tool `unica.apply`; макет табличного
   документа заводится операцией `template.add`, области правятся `mxl.set`.
 - Не зови внутренние адаптеры напрямую: они спрятаны за MCP `unica`.
-- Всегда сначала `dryRun: true`; `dryRun: false` — только по явной просьбе
-  пользователя и только с `ifRev` из превью.
+- Сначала вызови `unica.apply` с `at` и `ops`: это план без записи.
+  Когда пользователь поручил внести эту правку, вызови `unica.apply` только
+  с `executionToken` из `data.executionToken` успешного плана.
 
 ## Шаг 1 — завести макет
 
@@ -30,8 +31,7 @@ allowed-tools:
       "at": "main:Report.Продажи",
       "ops": [
         {"op": "template.add", "args": {"items": [{"name": "ПФ_MXL_Продажи", "templateType": "SpreadsheetDocument"}]}}
-      ],
-      "dryRun": true
+      ]
     }
   }
 }
@@ -41,10 +41,10 @@ allowed-tools:
 **Порядок важен.** Превью ничего не публикует, поэтому дочерний узел появится
 только после применения первого шага:
 
-1. превью `template.add` (`dryRun: true`) — план и `rev`;
-2. применение `template.add` (`dryRun: false` с `ifRev` из превью) — макет создан;
+1. превью `template.add` (`at` и `ops`) — план и `data.executionToken`;
+2. применение `template.add` (только `executionToken` из `data.executionToken` успешного плана) — макет создан;
 3. превью операций наполнения по адресу макета;
-4. применение их плана со своим `ifRev`.
+4. применение их плана только с токеном из `data.executionToken` этого плана.
 
 Обратиться к адресу макета до шага 2 нельзя: план отказывает, потому что цели
 ещё нет.
@@ -64,8 +64,7 @@ allowed-tools:
       "at": "main:Report.Продажи.Template.ПФ_MXL_Продажи",
       "ops": [
         {"op": "mxl.set", "args": {"values": {"area": "Шапка", "columns": 4, "cells": [{"col": 1, "text": "Номенклатура"}, {"col": 2, "text": "Сумма"}]}}}
-      ],
-      "dryRun": true
+      ]
     }
   }
 }

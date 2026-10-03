@@ -201,7 +201,7 @@ mod tests {
         assert!(view.ok, "{} {:?}", view.summary, view.diagnostics);
         assert_eq!(view.at.as_deref(), Some("main:Catalog.Items"));
         assert_eq!(view.data.as_ref().unwrap()["kind"], "Catalog");
-        assert!(view.rev.is_some());
+        assert!(view.rev.is_none());
 
         let find = daemon.submit(
             &owner,
@@ -694,13 +694,18 @@ mod tests {
         }
         release.send(()).unwrap();
         let terminal = daemon.wait_terminal(&owner, task_id, INTEGRATION_TASK_WAIT);
-        assert_eq!(terminal.status(), InvocationStatus::Failed);
-        assert!(terminal.completed_result().is_none());
-        assert_eq!(
-            terminal.failure_reason(),
-            Some(V5SafeFailureReason::InvocationFailed)
-        );
-        assert!(!serde_json::to_string(&terminal).unwrap().contains(staged));
+        if replace_root {
+            assert_eq!(terminal.status(), InvocationStatus::Failed);
+            assert!(terminal.completed_result().is_none());
+            assert_eq!(
+                terminal.failure_reason(),
+                Some(V5SafeFailureReason::InvocationFailed)
+            );
+            assert!(!serde_json::to_string(&terminal).unwrap().contains(staged));
+        } else {
+            assert_eq!(terminal.status(), InvocationStatus::Completed);
+            assert_eq!(terminal.completed_result().unwrap().summary, staged);
+        }
 
         daemon.finish(owner);
     }
@@ -709,7 +714,7 @@ mod tests {
         run_actor_swap_case(true);
     }
 
-    fn actor_bound_publication_rejects_revision_swap_and_hides_staged_bytes() {
+    fn actor_bound_read_publication_allows_source_content_change() {
         run_actor_swap_case(false);
     }
 
@@ -934,12 +939,12 @@ mod tests {
     }
 
     #[test]
-    fn canonical_invocation_authority_is_actor_bound_and_revision_fenced() {
+    fn canonical_invocation_authority_keeps_root_capabilities_without_source_revision() {
         canonical_service_boundary_exposes_no_raw_request_or_workspace_hint();
         canonical_service_reads_only_actor_bound_roots_and_persists_the_same_identity();
         actor_bound_publication_rejects_root_replacement_and_hides_staged_bytes();
-        actor_bound_publication_rejects_revision_swap_and_hides_staged_bytes();
-        super::server::actor_capacity_tests::hidden_v13_logical_lease_survives_the_handoff_window_and_confirms_once();
+        actor_bound_read_publication_allows_source_content_change();
+        super::server::actor_capacity_tests::logical_reads_preserve_deadline_without_source_scans_or_mutation_lane_wait();
     }
 
     #[test]

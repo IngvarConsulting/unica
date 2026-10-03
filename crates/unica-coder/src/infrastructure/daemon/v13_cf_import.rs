@@ -90,7 +90,6 @@ struct ImportArguments {
 pub(super) struct PreparedCfImport {
     arguments: ImportArguments,
     dry_run: bool,
-    if_rev: Option<String>,
     context: WorkspaceContext,
 }
 
@@ -125,31 +124,9 @@ impl PreparedCfImport {
             .ok_or_else(|| {
                 reject(
                     RefusalCode::BadValue,
-                    "upload requires dryRun: true to preview or dryRun: false with ifRev to apply",
+                    "upload requires dryRun: true to preview or dryRun: false to execute",
                 )
             })?;
-        let if_rev = match arguments.get("ifRev") {
-            None => None,
-            Some(Value::String(value)) if !value.trim().is_empty() => Some(value.clone()),
-            Some(_) => {
-                return Err(reject(
-                    RefusalCode::BadValue,
-                    "upload ifRev must be non-empty text",
-                ))
-            }
-        };
-        if dry_run && if_rev.is_some() {
-            return Err(reject(
-                RefusalCode::BadValue,
-                "upload preview does not accept ifRev; apply the revision returned by this preview",
-            ));
-        }
-        if !dry_run && if_rev.is_none() {
-            return Err(reject(
-                RefusalCode::BadValue,
-                "upload apply requires ifRev from a prior dryRun preview",
-            ));
-        }
         let context =
             discover_workspace(Some(PathBuf::from(request.workspace_hint()))).map_err(|error| {
                 reject(
@@ -161,7 +138,6 @@ impl PreparedCfImport {
         Ok(Self {
             arguments,
             dry_run,
-            if_rev,
             context,
         })
     }
@@ -336,7 +312,7 @@ fn execute_with_resolved_runner(
     runner: &dyn ProcessRunner,
     cancellation: CancellationToken,
     tool: &BundledTool,
-    runner_version: &str,
+    _runner_version: &str,
 ) -> DomainResult {
     if cancellation.is_cancelled() {
         return reject(RefusalCode::Cancelled, "upload cancelled before preflight");
@@ -362,7 +338,7 @@ fn execute_with_resolved_runner(
             "upload inputs changed during preview; run dryRun: true again",
         );
     }
-    let revision = plan_revision(prepared, &before, runner_version);
+
     if prepared.dry_run {
         let mut result = DomainResult::success(format!(
             "upload planned loading the {} without touching the infobase",
@@ -375,30 +351,17 @@ fn execute_with_resolved_runner(
             "providerDispatched": false,
             "requiresPlatform": true,
         }));
-        result.rev = Some(revision.clone());
+
         result.next.push(json!({
             "tool": "unica.run",
             "args": {
                 "op": OPERATION,
                 "args": public_arguments(prepared),
                 "dryRun": false,
-                "ifRev": revision,
             },
-            "reason": "apply exactly this previewed load"
+            "reason": "execute load"
         }));
         return result;
-    }
-    if prepared.if_rev.as_deref() != Some(revision.as_str()) {
-        // A stale `ifRev` is the caller's conflict with a known recovery, so it
-        // answers `stale_revision` and names both revisions
-        // (INV.WIRE.V13-REFUSAL-CHANNEL).
-        return reject(
-            RefusalCode::StaleRevision,
-            format!(
-                "upload plan or environment changed after preview: expected rev {revision}, ifRev {}; run dryRun: true again",
-                prepared.if_rev.as_deref().unwrap_or("absent")
-            ),
-        );
     }
     if cancellation.is_cancelled() {
         return reject(
@@ -464,7 +427,7 @@ fn execute_with_resolved_runner(
         "kind": prepared.arguments.kind.target_kind(),
         "extension": prepared.arguments.extension,
     }));
-    result.rev = Some(revision);
+
     result
 }
 
@@ -646,32 +609,6 @@ fn validate_envelope(
     Ok(())
 }
 
-fn plan_revision(
-    prepared: &PreparedCfImport,
-    inputs: &StableInputs,
-    runner_version: &str,
-) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(b"unica-v13-cf-import-plan-v1\0");
-    hasher.update(
-        serde_json::to_vec(&json!({
-            "op": OPERATION,
-            "args": public_arguments(prepared),
-            "inputs": {
-                "config": inputs.config_sha256,
-                "localConfig": inputs.local_config_sha256,
-                "input": inputs.input_sha256,
-                "inputSize": inputs.input_size,
-            },
-            "runnerVersion": runner_version,
-            "artifactType": prepared.arguments.kind.runner_artifact_type(),
-            "mode": RUNNER_MODE,
-        }))
-        .expect("plan revision data serializes"),
-    );
-    format!("unica-cf-import-sha256-v1:{:x}", hasher.finalize())
-}
-
 fn public_plan(prepared: &PreparedCfImport, inputs: &StableInputs) -> Value {
     json!({
         "source": {
@@ -823,7 +760,6 @@ mod tests {
         input: &str,
         extension: Option<&str>,
         dry_run: bool,
-        if_rev: Option<String>,
     ) -> PreparedCfImport {
         PreparedCfImport {
             arguments: parse_import_arguments(
@@ -842,7 +778,6 @@ mod tests {
             )
             .expect("valid arguments"),
             dry_run,
-            if_rev,
             context: context(root),
         }
     }
@@ -901,30 +836,10 @@ mod tests {
         })
     }
 
-    fn preview(root: &Path, input: &str, extension: Option<&str>) -> DomainResult {
-        let prepared = import_of(root, input, extension, true, None);
-        let runner = SequenceRunner::new(vec![process(
-            envelope(
-                &prepared.arguments.input,
-                prepared.arguments.kind,
-                extension,
-                false,
-            ),
-            true,
-        )]);
-        execute_with_resolved_runner(
-            &prepared,
-            &runner,
-            CancellationToken::new(),
-            &tool(root),
-            "0.9.0",
-        )
-    }
-
     #[test]
     fn upload_refuses_a_receipt_that_implicitly_applied_the_database() {
         let root = workspace();
-        let prepared = import_of(root.path(), "dist/main.cf", None, true, None);
+        let prepared = import_of(root.path(), "dist/main.cf", None, true);
         let mut legacy = envelope(&prepared.arguments.input, ArtifactKind::Cf, None, true);
         legacy["data"]["execution"]["payload"]["update_db_cfg_ran"] = json!(true);
         assert!(validate_envelope(&prepared, &legacy, true).is_err());
@@ -991,7 +906,7 @@ mod tests {
         fs::write(root.path().join("dist/main.cf"), b"cf").unwrap();
         let runner = SequenceRunner::new(Vec::new());
         let result = execute_with_resolved_runner(
-            &import_of(root.path(), "dist/main.cf", None, true, None),
+            &import_of(root.path(), "dist/main.cf", None, true),
             &runner,
             CancellationToken::new(),
             &tool(root.path()),
@@ -1005,7 +920,7 @@ mod tests {
     #[test]
     fn preview_names_the_source_and_the_target_without_touching_the_infobase() {
         let root = workspace();
-        let prepared = import_of(root.path(), "dist/sales.cfe", Some("Sales"), true, None);
+        let prepared = import_of(root.path(), "dist/sales.cfe", Some("Sales"), true);
         let runner = SequenceRunner::new(vec![process(
             envelope(
                 &prepared.arguments.input,
@@ -1034,9 +949,9 @@ mod tests {
         assert_eq!(data["plan"]["targetKind"], "extension");
         assert_eq!(data["plan"]["mode"], "load");
         assert_eq!(data["plan"]["compatibilityKnownBeforeApply"], false);
-        let revision = result.rev.clone().expect("preview returns a revision");
-        assert!(revision.starts_with("unica-cf-import-sha256-v1:"));
-        assert_eq!(result.next[0]["args"]["ifRev"], revision);
+        assert!(result.rev.is_none());
+        assert_eq!(result.next[0]["args"]["dryRun"], false);
+        assert!(result.next[0]["args"].get("ifRev").is_none());
         assert_eq!(
             result.next[0]["args"]["args"],
             json!({"input": "dist/sales.cfe", "extension": "Sales"})
@@ -1064,7 +979,7 @@ mod tests {
     #[test]
     fn preview_refuses_a_plan_for_another_artifact_or_one_that_applied() {
         let root = workspace();
-        let prepared = import_of(root.path(), "dist/main.cf", None, true, None);
+        let prepared = import_of(root.path(), "dist/main.cf", None, true);
 
         let mut other = envelope(&prepared.arguments.input, ArtifactKind::Cf, None, false);
         other["data"]["artifact_path"] = json!(root.path().join("dist/other.cf"));
@@ -1106,16 +1021,9 @@ mod tests {
     }
 
     #[test]
-    fn apply_repeats_the_preview_and_attributes_the_infobase_state_to_the_provider() {
+    fn apply_without_prior_preview_attributes_the_infobase_state_to_the_provider() {
         let root = workspace();
-        let revision = preview(root.path(), "dist/main.cf", None).rev.unwrap();
-        let prepared = import_of(
-            root.path(),
-            "dist/main.cf",
-            None,
-            false,
-            Some(revision.clone()),
-        );
+        let prepared = import_of(root.path(), "dist/main.cf", None, false);
         let runner = SequenceRunner::new(vec![
             process(
                 envelope(&prepared.arguments.input, ArtifactKind::Cf, None, false),
@@ -1151,7 +1059,7 @@ mod tests {
         assert_eq!(result.changed[0]["kind"], "configuration");
         assert!(result.changed[0].get("path").is_none());
         assert!(result.artifacts.is_empty());
-        assert_eq!(result.rev, Some(revision));
+        assert!(result.rev.is_none());
         let encoded = serde_json::to_string(&result).unwrap();
         assert!(
             !encoded.contains("build/logs"),
@@ -1161,19 +1069,28 @@ mod tests {
     }
 
     #[test]
-    fn stale_apply_stops_after_the_non_executing_preflight() {
+    fn input_changed_during_preflight_stops_before_mutating_dispatch() {
+        struct ChangingInputDuringProbe {
+            inner: SequenceRunner,
+            input: PathBuf,
+        }
+        impl ProcessRunner for ChangingInputDuringProbe {
+            fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
+                assert!(command.args.iter().any(|argument| argument == "--dry-run"));
+                let output = self.inner.run(command)?;
+                fs::write(&self.input, b"changed during preflight").unwrap();
+                Ok(output)
+            }
+        }
         let root = workspace();
-        let prepared = import_of(
-            root.path(),
-            "dist/main.cf",
-            None,
-            false,
-            Some("stale".to_string()),
-        );
-        let runner = SequenceRunner::new(vec![process(
-            envelope(&prepared.arguments.input, ArtifactKind::Cf, None, false),
-            true,
-        )]);
+        let prepared = import_of(root.path(), "dist/main.cf", None, false);
+        let runner = ChangingInputDuringProbe {
+            inner: SequenceRunner::new(vec![process(
+                envelope(&prepared.arguments.input, ArtifactKind::Cf, None, false),
+                true,
+            )]),
+            input: prepared.arguments.input.clone(),
+        };
         let result = execute_with_resolved_runner(
             &prepared,
             &runner,
@@ -1181,21 +1098,19 @@ mod tests {
             &tool(root.path()),
             "0.9.0",
         );
-        assert_eq!(result.diagnostics[0]["code"], "stale_revision");
-        assert_eq!(runner.call_count(), 1);
+        assert_eq!(
+            result.diagnostics[0]["code"], "concurrent_change",
+            "{result:?}"
+        );
+        assert_eq!(runner.inner.call_count(), 1);
+        assert!(result.changed.is_empty());
+        assert!(result.rev.is_none());
     }
 
     #[test]
     fn apply_refuses_a_provider_that_touched_the_source_or_reported_nothing_applied() {
         let root = workspace();
-        let revision = preview(root.path(), "dist/main.cf", None).rev.unwrap();
-        let prepared = import_of(
-            root.path(),
-            "dist/main.cf",
-            None,
-            false,
-            Some(revision.clone()),
-        );
+        let prepared = import_of(root.path(), "dist/main.cf", None, false);
         let runner = SequenceRunner::tampering(
             vec![
                 process(
@@ -1226,8 +1141,7 @@ mod tests {
             .contains("must stay intact"));
 
         let root = workspace();
-        let revision = preview(root.path(), "dist/main.cf", None).rev.unwrap();
-        let prepared = import_of(root.path(), "dist/main.cf", None, false, Some(revision));
+        let prepared = import_of(root.path(), "dist/main.cf", None, false);
         let runner = SequenceRunner::new(vec![
             process(
                 envelope(&prepared.arguments.input, ArtifactKind::Cf, None, false),
@@ -1258,8 +1172,7 @@ mod tests {
     #[test]
     fn apply_refuses_an_envelope_without_the_state_it_attests() {
         let root = workspace();
-        let revision = preview(root.path(), "dist/main.cf", None).rev.unwrap();
-        let prepared = import_of(root.path(), "dist/main.cf", None, false, Some(revision));
+        let prepared = import_of(root.path(), "dist/main.cf", None, false);
         let mut applied = envelope(&prepared.arguments.input, ArtifactKind::Cf, None, true);
         applied["data"]["compatibility_state"] = json!("maybe");
         let runner = SequenceRunner::new(vec![
@@ -1286,8 +1199,7 @@ mod tests {
             .contains("compatibility state"));
 
         let root = workspace();
-        let revision = preview(root.path(), "dist/main.cf", None).rev.unwrap();
-        let prepared = import_of(root.path(), "dist/main.cf", None, false, Some(revision));
+        let prepared = import_of(root.path(), "dist/main.cf", None, false);
         let mut applied = envelope(&prepared.arguments.input, ArtifactKind::Cf, None, true);
         applied["data"]["execution"]["payload"]
             .as_object_mut()
@@ -1316,7 +1228,7 @@ mod tests {
     #[test]
     fn runner_refusals_keep_their_outcome() {
         let root = workspace();
-        let prepared = import_of(root.path(), "dist/main.cf", None, true, None);
+        let prepared = import_of(root.path(), "dist/main.cf", None, true);
         let failure = |code: &str, message: &str| {
             json!({
                 "ok": false,
@@ -1352,7 +1264,7 @@ mod tests {
     #[test]
     fn upload_detaches_only_its_executing_runner_call() {
         let root = workspace();
-        let prepared = import_of(root.path(), "dist/main.cf", None, false, None);
+        let prepared = import_of(root.path(), "dist/main.cf", None, false);
         let already_cancelled = CancellationToken::new();
         already_cancelled.cancel();
         let never_called = SequenceRunner::new(vec![]);

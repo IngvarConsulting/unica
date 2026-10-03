@@ -11,7 +11,9 @@ autonomous server debug use case for that.
 
 ## Primary path
 
-Use native MCP tools through `unica`:
+Use native MCP tools through `unica`. For source edits, call `unica.apply`
+with `at` and `ops` to obtain a non-writing plan. Execute it by passing only
+`executionToken` from the successful plan's `data.executionToken`.
 
 - `unica.apply` with `form.add` scaffolds forms from the owner node and `items`:
   metadata XML, `Form.xml`, `Module.bsl` and the owner's `<Form>` registration.

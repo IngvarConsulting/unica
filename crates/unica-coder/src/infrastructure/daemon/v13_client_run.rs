@@ -812,13 +812,15 @@ fn main() {
     assert_ne!(output, stderr);
     assert_eq!(output.parent(), stderr.parent());
     assert!(output.parent().unwrap().is_dir());
-    fs::write(output, "PRIVATE-CLIENT-OUTPUT").unwrap();
-    fs::write(stderr, "PRIVATE-CLIENT-STDERR").unwrap();
+    let scenario = fs::read_to_string("scenario").unwrap();
+    if scenario != "runner-timeout" {
+        fs::write(output, "PRIVATE-CLIENT-OUTPUT").unwrap();
+        fs::write(stderr, "PRIVATE-CLIENT-STDERR").unwrap();
+    }
     assert_eq!(fs::read_to_string(output).unwrap(), "PRIVATE-CLIENT-OUTPUT");
     assert_eq!(fs::read_to_string(stderr).unwrap(), "PRIVATE-CLIENT-STDERR");
     fs::write("observed-paths", format!("{}\n{}", output.display(), stderr.display())).unwrap();
     eprintln!("PRIVATE-RUNNER-STDERR {} {}", output.display(), stderr.display());
-    let scenario = fs::read_to_string("scenario").unwrap();
     if scenario == "runner-timeout" || scenario == "runner-cancel" {
         loop { thread::park(); }
     }
@@ -899,6 +901,14 @@ fn main() {
                 .push((output.clone(), stderr.clone()));
             let mut command = command.clone();
             if self.timeout {
+                // Timeout can precede the fixture's first instruction. Seed
+                // private bytes here; that scenario never truncates them.
+                assert_eq!(
+                    fs::read_to_string(command.cwd.join("scenario")).unwrap(),
+                    "runner-timeout"
+                );
+                fs::write(&output, "PRIVATE-CLIENT-OUTPUT").unwrap();
+                fs::write(&stderr, "PRIVATE-CLIENT-STDERR").unwrap();
                 command.timeout = Some(std::time::Duration::from_secs(1));
             }
             let result = std::thread::scope(|scope| {

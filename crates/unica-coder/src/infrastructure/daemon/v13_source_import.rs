@@ -53,7 +53,6 @@ struct ImportArguments {
 pub(super) struct PreparedSourceImport {
     arguments: ImportArguments,
     dry_run: bool,
-    if_rev: Option<String>,
     context: WorkspaceContext,
 }
 
@@ -88,31 +87,9 @@ impl PreparedSourceImport {
             .ok_or_else(|| {
                 reject(
                     RefusalCode::BadValue,
-                    "push requires dryRun: true to preview or dryRun: false with ifRev to apply",
+                    "push requires dryRun: true to preview or dryRun: false to execute",
                 )
             })?;
-        let if_rev = match arguments.get("ifRev") {
-            None => None,
-            Some(Value::String(value)) if !value.trim().is_empty() => Some(value.clone()),
-            Some(_) => {
-                return Err(reject(
-                    RefusalCode::BadValue,
-                    "push ifRev must be non-empty text",
-                ))
-            }
-        };
-        if dry_run && if_rev.is_some() {
-            return Err(reject(
-                RefusalCode::BadValue,
-                "push preview does not accept ifRev; apply the revision returned by this preview",
-            ));
-        }
-        if !dry_run && if_rev.is_none() {
-            return Err(reject(
-                RefusalCode::BadValue,
-                "push apply requires ifRev from a prior dryRun preview",
-            ));
-        }
         let context =
             discover_workspace(Some(PathBuf::from(request.workspace_hint()))).map_err(|error| {
                 reject(
@@ -145,7 +122,6 @@ impl PreparedSourceImport {
         Ok(Self {
             arguments,
             dry_run,
-            if_rev,
             context,
         })
     }
@@ -396,7 +372,7 @@ fn execute_with_resolved_runner(
     runner: &dyn ProcessRunner,
     cancellation: CancellationToken,
     tool: &BundledTool,
-    runner_version: &str,
+    _runner_version: &str,
 ) -> DomainResult {
     if cancellation.is_cancelled() {
         return reject(RefusalCode::Cancelled, "push cancelled before preflight");
@@ -423,7 +399,7 @@ fn execute_with_resolved_runner(
             "push inputs changed during preview; run dryRun: true again",
         );
     }
-    let revision = plan_revision(prepared, &before, runner_version, &plan);
+
     if prepared.dry_run {
         let mut result = DomainResult::success(format!(
             "push planned importing {} without touching the infobase",
@@ -436,30 +412,17 @@ fn execute_with_resolved_runner(
             "providerDispatched": false,
             "requiresPlatform": true,
         }));
-        result.rev = Some(revision.clone());
+
         result.next.push(json!({
             "tool": "unica.run",
             "args": {
                 "op": OPERATION,
                 "args": public_arguments(prepared),
                 "dryRun": false,
-                "ifRev": revision,
             },
-            "reason": "apply exactly this previewed import"
+            "reason": "execute with the current arguments"
         }));
         return result;
-    }
-    if prepared.if_rev.as_deref() != Some(revision.as_str()) {
-        // A stale `ifRev` is the caller's conflict with a known recovery, so it
-        // answers `stale_revision` and names both revisions
-        // (INV.WIRE.V13-REFUSAL-CHANNEL).
-        return reject(
-            RefusalCode::StaleRevision,
-            format!(
-                "push plan or environment changed after preview: expected rev {revision}, ifRev {}; run dryRun: true again",
-                prepared.if_rev.as_deref().unwrap_or("absent")
-            ),
-        );
     }
     if cancellation.is_cancelled() {
         return reject(
@@ -520,7 +483,7 @@ fn execute_with_resolved_runner(
             "mode": step.mode.as_str(),
         }));
     }
-    result.rev = Some(revision);
+
     result
 }
 
@@ -666,34 +629,6 @@ fn subject_summary(plan: &[PlannedStep]) -> String {
     }
 }
 
-fn plan_revision(
-    prepared: &PreparedSourceImport,
-    inputs: &StableInputs,
-    runner_version: &str,
-    plan: &[PlannedStep],
-) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(b"unica-v13-source-import-plan-v1\0");
-    hasher.update(
-        serde_json::to_vec(&json!({
-            "op": OPERATION,
-            "args": public_arguments(prepared),
-            "inputs": {
-                "config": inputs.config_sha256,
-                "localConfig": inputs.local_config_sha256,
-                "declared": inputs.declared,
-            },
-            "runnerVersion": runner_version,
-            "steps": plan.iter().map(|step| json!({
-                "sourceSet": step.source_set,
-                "mode": step.mode.public(),
-            })).collect::<Vec<_>>(),
-        }))
-        .expect("plan revision data serializes"),
-    );
-    format!("unica-source-import-sha256-v1:{:x}", hasher.finalize())
-}
-
 fn public_plan(prepared: &PreparedSourceImport, plan: &[PlannedStep]) -> Value {
     json!({
         "full": prepared.arguments.full_rebuild,
@@ -804,7 +739,6 @@ mod tests {
         source_set: Option<&str>,
         full_rebuild: bool,
         dry_run: bool,
-        if_rev: Option<String>,
     ) -> PreparedSourceImport {
         PreparedSourceImport {
             arguments: ImportArguments {
@@ -812,7 +746,6 @@ mod tests {
                 full_rebuild,
             },
             dry_run,
-            if_rev,
             context: WorkspaceContext {
                 cwd: root.to_path_buf(),
                 workspace_root: root.to_path_buf(),
@@ -933,7 +866,7 @@ mod tests {
         let runner = SequenceRunner::new(Vec::new());
         let result = run(
             root.path(),
-            &prepared(root.path(), Some("ext-purchases"), false, true, None),
+            &prepared(root.path(), Some("ext-purchases"), false, true),
             &runner,
         );
         assert_eq!(result.diagnostics[0]["code"], "bad_value", "{result:?}");
@@ -953,7 +886,7 @@ mod tests {
         )]);
         let result = run(
             root.path(),
-            &prepared(root.path(), None, false, true, None),
+            &prepared(root.path(), None, false, true),
             &runner,
         );
 
@@ -967,9 +900,9 @@ mod tests {
         assert_eq!(data["plan"]["steps"][1]["mode"], "partial");
         assert_eq!(data["plan"]["steps"][1]["files"], 3);
         assert_eq!(data["plan"]["targetStateKnownBeforeApply"], false);
-        let revision = result.rev.clone().expect("preview returns a revision");
-        assert!(revision.starts_with("unica-source-import-sha256-v1:"));
-        assert_eq!(result.next[0]["args"]["ifRev"], revision);
+        assert!(result.rev.is_none());
+        assert!(result.next[0]["args"].get("ifRev").is_none());
+        assert_eq!(result.next[0]["args"]["dryRun"], false);
         assert_eq!(result.next[0]["args"]["args"], json!({"force":true}));
         assert!(result.changed.is_empty());
         let encoded = serde_json::to_string(&result).unwrap();
@@ -989,7 +922,7 @@ mod tests {
         )]);
         let result = run(
             root.path(),
-            &prepared(root.path(), Some("ext-sales"), true, true, None),
+            &prepared(root.path(), Some("ext-sales"), true, true),
             &runner,
         );
 
@@ -1010,7 +943,7 @@ mod tests {
         )]);
         let result = run(
             root.path(),
-            &prepared(root.path(), Some("ext-sales"), true, true, None),
+            &prepared(root.path(), Some("ext-sales"), true, true),
             &runner,
         );
         assert_eq!(
@@ -1086,7 +1019,7 @@ mod tests {
         let runner = SequenceRunner::new(vec![process(envelope(&[("main", full())], false), true)]);
         let result = run(
             root.path(),
-            &prepared(root.path(), None, false, true, None),
+            &prepared(root.path(), None, false, true),
             &runner,
         );
         assert_eq!(
@@ -1100,7 +1033,7 @@ mod tests {
         )]);
         let result = run(
             root.path(),
-            &prepared(root.path(), None, false, true, None),
+            &prepared(root.path(), None, false, true),
             &runner,
         );
         assert_eq!(
@@ -1121,7 +1054,7 @@ mod tests {
         )]);
         let result = run(
             root.path(),
-            &prepared(root.path(), None, false, true, None),
+            &prepared(root.path(), None, false, true),
             &runner,
         );
         assert_eq!(result.diagnostics[0]["code"], "invalid_state", "{result:?}");
@@ -1132,16 +1065,9 @@ mod tests {
     }
 
     #[test]
-    fn apply_repeats_the_preview_and_attributes_the_infobase_state_to_the_provider() {
+    fn direct_apply_checks_its_plan_and_attributes_the_infobase_state_to_the_provider() {
         let root = workspace();
         let plan = [("main", full()), ("ext-sales", partial(3))];
-        let revision = run(
-            root.path(),
-            &prepared(root.path(), None, false, true, None),
-            &SequenceRunner::new(vec![process(envelope(&plan, false), true)]),
-        )
-        .rev
-        .unwrap();
         let runner = SequenceRunner::new(vec![
             process(envelope(&plan, false), true),
             process(envelope(&plan, true), true),
@@ -1149,7 +1075,7 @@ mod tests {
 
         let result = run(
             root.path(),
-            &prepared(root.path(), None, false, false, Some(revision.clone())),
+            &prepared(root.path(), None, false, false),
             &runner,
         );
 
@@ -1168,32 +1094,16 @@ mod tests {
         assert_eq!(result.changed[1]["mode"], "partial");
         assert!(result.changed[0].get("path").is_none());
         assert!(result.artifacts.is_empty());
-        assert_eq!(result.rev, Some(revision));
+        assert!(result.rev.is_none());
         let encoded = serde_json::to_string(&result).unwrap();
         assert!(!encoded.contains("1cv8"), "platform path leaked: {encoded}");
     }
 
     #[test]
-    fn apply_refuses_a_stale_revision_and_a_plan_that_changed_underneath() {
+    fn apply_refuses_a_plan_that_changed_during_execution() {
         let root = workspace();
         let plan = [("main", full()), ("ext-sales", partial(3))];
-        let runner = SequenceRunner::new(vec![process(envelope(&plan, false), true)]);
-        let result = run(
-            root.path(),
-            &prepared(root.path(), None, false, false, Some("stale".to_string())),
-            &runner,
-        );
-        assert_eq!(result.diagnostics[0]["code"], "stale_revision");
-        assert_eq!(runner.call_count(), 1);
-
-        let revision = run(
-            root.path(),
-            &prepared(root.path(), None, false, true, None),
-            &SequenceRunner::new(vec![process(envelope(&plan, false), true)]),
-        )
-        .rev
-        .unwrap();
-        // Между превью и применением исходники изменились: раннер выбрал
+        // После внутреннего preview этого вызова раннер выбрал
         // полный режим там, где план был частичным.
         let runner = SequenceRunner::new(vec![
             process(envelope(&plan, false), true),
@@ -1204,7 +1114,7 @@ mod tests {
         ]);
         let result = run(
             root.path(),
-            &prepared(root.path(), None, false, false, Some(revision)),
+            &prepared(root.path(), None, false, false),
             &runner,
         );
         assert_eq!(
@@ -1245,7 +1155,7 @@ mod tests {
             let runner = SequenceRunner::new(vec![process(failure(code), false)]);
             let result = run(
                 root.path(),
-                &prepared(root.path(), None, false, true, None),
+                &prepared(root.path(), None, false, true),
                 &runner,
             );
             assert_eq!(result.diagnostics[0]["code"], expected, "{code}");
@@ -1256,7 +1166,7 @@ mod tests {
     #[test]
     fn push_detaches_only_its_executing_runner_call() {
         let root = workspace();
-        let prepared = prepared(root.path(), None, false, false, None);
+        let prepared = prepared(root.path(), None, false, false);
         let plan = [("main", full()), ("ext-sales", partial(3))];
         let runner = SequenceRunner::new(vec![process(envelope(&plan, true), true)]);
         let cancellation = CancellationToken::new();

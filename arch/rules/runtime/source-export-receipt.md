@@ -5,8 +5,8 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::preview_of_an_extension_set_passes_the_extension_and_the_set
   - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::preview_names_the_target_inside_the_workspace_without_writing
   - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::preview_refuses_a_target_outside_the_workspace_an_undeclared_set_or_a_write
-  - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::apply_repeats_the_preview_and_counts_the_exported_files_itself
-  - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::apply_refuses_a_stale_revision_another_target_and_an_empty_target
+  - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::apply_without_prior_preview_counts_the_exported_files_itself
+  - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::apply_refuses_another_target_and_an_empty_target
 gap: https://github.com/IngvarConsulting/unica/issues/950
 ---
 
@@ -21,13 +21,17 @@ gap: https://github.com/IngvarConsulting/unica/issues/950
 
 Preview `pull` принимает только объявленный набор и цель внутри
 рабочего пространства, показывает относительный путь и не допускает
-ответа о выполненной записи. Применение требует `ifRev` preview. Ответ
+ответа о выполненной записи. Явный `dryRun: true` выбирает preview,
+`dryRun: false` — исполнение без предварительного запроса preview. Ответ
 раннера о другом наборе или другой цели не признаётся успехом.
 Режим и имя расширения в ответе должны совпасть с аргументами вызова.
 
-Ревизия preview связывает проектный файл, объявленный состав наборов,
-аргументы, версию раннера и цель выгрузки. Изменение этих входов требует
-нового preview; прежний `ifRev` отклоняется до исполняющего вызова.
+`run` не принимает `ifRev` и не выдаёт `rev`. Исполнение проверяет
+объявленный состав наборов и цель выгрузки по текущему проекту.
+Отдельный preview не фиксирует их между вызовами.
+Внутри вызова проектный файл, его локальное дополнение и объявленный
+состав наборов сверяются до и после внутреннего preview раннера.
+Их изменение даёт `concurrent_change` до исполнения.
 
 После выгрузки Unica сама считает обычные файлы в целевом каталоге,
 не переходя по символическим ссылкам. Отсутствующая

@@ -4,6 +4,7 @@ pub(crate) mod full_dump_publication;
 mod process;
 mod process_metrics;
 pub(crate) mod secure_read;
+#[cfg(test)]
 pub(crate) mod source_revision_fence;
 mod target;
 #[cfg(test)]

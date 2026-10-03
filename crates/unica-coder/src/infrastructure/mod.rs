@@ -50,6 +50,7 @@ pub(crate) mod rlm_navigation;
 pub(crate) mod runtime_build_fallback;
 pub(crate) mod runtime_build_preflight;
 pub(crate) mod runtime_jobs;
+#[cfg(test)]
 pub(crate) mod source_revision;
 pub(crate) mod source_roots;
 mod source_selection_evidence;
@@ -86,6 +87,7 @@ pub(crate) mod workspace_config;
 pub mod workspace_index;
 pub mod workspace_services;
 pub mod workspace_state;
+pub(crate) mod workspace_state_scope;
 
 #[cfg(test)]
 pub(crate) static V8TR_CONFIG_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

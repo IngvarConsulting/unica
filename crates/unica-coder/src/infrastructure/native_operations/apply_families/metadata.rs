@@ -19,7 +19,7 @@ use crate::infrastructure::native_operations::meta::{
 use crate::infrastructure::workspace_actor::{MetadataApplyAuthority, ProviderRootBinding};
 use serde_json::{json, Map, Value};
 use sha2::Digest;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 enum MetadataPlanKind {
@@ -1403,8 +1403,8 @@ fn stage_object_remove(
     provisional: &mut Vec<ProvisionalApplyEffect>,
 ) -> Result<(), ApplyPlanError> {
     use crate::infrastructure::native_operations::meta::remove::{
-        metadata_files_recursive, plan_meta_remove_subsystem_replacements,
-        typed_remove_reference_files,
+        meta_remove_search_patterns, meta_remove_should_skip_file,
+        plan_meta_remove_subsystem_replacements, META_REMOVE_REFERENCE_FILE_MAX_BYTES,
     };
     let at_path = format!("ops[{op_index}].args.at");
     require_untouched_staged_state(staged, "object.remove", &at_path)?;
@@ -1423,20 +1423,52 @@ fn stage_object_remove(
         })?;
     let descriptor_absolute = root.join(&descriptor_relative);
     let object_dir = root.join(layout.directory).join(name);
-    let has_dir = object_dir.is_dir();
-    let references = typed_remove_reference_files(
-        root,
-        kind.as_str(),
-        name,
-        layout.directory,
-        &descriptor_absolute,
-        &object_dir,
-        true,
-        has_dir,
-    )
-    .map_err(|error| {
-        ApplyPlanError::new(ApplyPlanErrorKind::ProviderUnavailable, error).at_path(at_path.clone())
-    })?;
+    let files = staged
+        .enumerate_tree(Path::new(""))
+        .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
+    let patterns = meta_remove_search_patterns(kind.as_str(), name, layout.directory);
+    let type_name_ref = format!("{}.{name}", kind.as_str());
+    let mut references = Vec::new();
+    for relative in &files {
+        let extension = relative
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("");
+        if !extension.eq_ignore_ascii_case("xml") && !extension.eq_ignore_ascii_case("bsl") {
+            continue;
+        }
+        let absolute = root.join(relative);
+        if meta_remove_should_skip_file(
+            &absolute,
+            root,
+            &descriptor_absolute,
+            &object_dir,
+            true,
+            true,
+        ) {
+            continue;
+        }
+        let bytes = staged
+            .read_guarded_bounded(relative, META_REMOVE_REFERENCE_FILE_MAX_BYTES)
+            .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+            .ok_or_else(|| {
+                ApplyPlanError::new(
+                    ApplyPlanErrorKind::InvalidState,
+                    "reference input disappeared",
+                )
+            })?;
+        let text = std::str::from_utf8(&bytes).map_err(|error| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidSource,
+                format!("reference input is not UTF-8: {error}"),
+            )
+        })?;
+        if patterns.iter().any(|pattern| text.contains(pattern))
+            || (extension.eq_ignore_ascii_case("xml") && text.contains(&type_name_ref))
+        {
+            references.push(relative.to_string_lossy().replace('\\', "/"));
+        }
+    }
     let mut kept_references = None;
     if !references.is_empty() {
         let shown = references
@@ -1472,31 +1504,23 @@ fn stage_object_remove(
         }));
     }
     let mut touched = Vec::new();
-    if has_dir {
-        let traversal = metadata_files_recursive(&object_dir).map_err(|error| {
-            ApplyPlanError::new(ApplyPlanErrorKind::ProviderUnavailable, error)
-                .at_path(at_path.clone())
-        })?;
-        for file in &traversal.files {
-            let relative = staged_relative(root, file, op_index)?;
-            let preimage = staged
-                .read(&relative)
-                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
-                .ok_or_else(|| {
-                    ApplyPlanError::new(
-                        ApplyPlanErrorKind::ProviderUnavailable,
-                        format!(
-                            "payload file vanished while planning: {}",
-                            relative.display()
-                        ),
-                    )
-                    .at_path(at_path.clone())
-                })?;
-            staged
-                .remove(&relative, &preimage)
-                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
-            touched.push(relative);
-        }
+    for relative in files
+        .iter()
+        .filter(|path| root.join(path).starts_with(&object_dir))
+    {
+        let preimage = staged
+            .read(relative)
+            .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+            .ok_or_else(|| {
+                ApplyPlanError::new(
+                    ApplyPlanErrorKind::InvalidState,
+                    "payload input disappeared",
+                )
+            })?;
+        staged
+            .remove(relative, &preimage)
+            .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
+        touched.push(relative.clone());
     }
     let subsystems_dir = root.join("Subsystems");
     if subsystems_dir.is_dir() {
@@ -1512,6 +1536,18 @@ fn stage_object_remove(
             ApplyPlanError::new(ApplyPlanErrorKind::ProviderUnavailable, error)
                 .at_path(at_path.clone())
         })?;
+        for read in reads {
+            let relative = staged_relative(root, &read.path, op_index)?;
+            let observed = staged
+                .read(&relative)
+                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
+            if observed.as_deref() != Some(read.raw.as_slice()) {
+                return Err(ApplyPlanError::new(
+                    ApplyPlanErrorKind::InvalidState,
+                    "subsystem input changed while planning",
+                ));
+            }
+        }
         for replacement in replacements {
             let relative = staged_relative(root, &replacement.path, op_index)?;
             staged
@@ -2193,28 +2229,19 @@ fn stage_template_remove(
             .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
         touched.push(descriptor_relative);
     }
-    let root = authority.source_root();
-    let payload_dir = root.join(&templates_dir).join(name);
-    if payload_dir.is_dir() {
-        let traversal =
-            crate::infrastructure::native_operations::meta::remove::metadata_files_recursive(
-                &payload_dir,
-            )
-            .map_err(|error| {
-                ApplyPlanError::new(ApplyPlanErrorKind::ProviderUnavailable, error)
-                    .at_path(at_path.clone())
-            })?;
-        for file in &traversal.files {
-            let relative = staged_relative(root, file, op_index)?;
-            if let Some(preimage) = staged
-                .read(&relative)
-                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
-            {
-                staged
-                    .remove(&relative, &preimage)
-                    .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
-                touched.push(relative);
-            }
+    let payload_relative = templates_dir.join(name);
+    let files = staged
+        .enumerate_tree(&payload_relative)
+        .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
+    for relative in files {
+        if let Some(preimage) = staged
+            .read(&relative)
+            .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+        {
+            staged
+                .remove(&relative, &preimage)
+                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
+            touched.push(relative);
         }
     }
     staged
@@ -2602,6 +2629,44 @@ mod tests {
             !owner_text.contains("<Document>Order</Document>"),
             "{owner_text}"
         );
+    }
+
+    #[test]
+    fn object_remove_retains_unchanged_reference_and_subsystem_inputs() {
+        for subsystem in [false, true] {
+            let fixture = MetadataFixture::new();
+            let root = fixture.descriptor.parent().unwrap().parent().unwrap();
+            let input = if subsystem {
+                root.join("Subsystems/Main.xml")
+            } else {
+                root.join("CommonModules/Helper/Ext/Module.bsl")
+            };
+            std::fs::create_dir_all(input.parent().unwrap()).unwrap();
+            let original = if subsystem {
+                b"<Subsystem><Content/></Subsystem>".as_slice()
+            } else {
+                b"Procedure Helper()\nEndProcedure".as_slice()
+            };
+            std::fs::write(&input, original).unwrap();
+            let admission = fixture.admission();
+            let authority = admission
+                .metadata_planning_authority(&fixture.binding)
+                .unwrap();
+            let operation = fixture.parse("object.remove", json!({"at": "main:Document.Order"}), 0);
+            let (staged, _) =
+                plan_metadata_batch(admission.staged_state().unwrap(), authority, &[operation])
+                    .unwrap();
+            let prepared = admission.prepare(staged).unwrap();
+            let changed = if subsystem {
+                b"<Subsystem><Content><Item>Document.Order</Item></Content></Subsystem>".as_slice()
+            } else {
+                b"Procedure Helper()\n x = Documents.Order;\nEndProcedure".as_slice()
+            };
+            std::fs::write(&input, changed).unwrap();
+            assert!(fixture.actor.publish_prepared_apply(prepared).is_err());
+            assert_eq!(fixture.disk_bytes(), ORDER_XML.as_bytes());
+            assert_eq!(std::fs::read(&input).unwrap(), changed);
+        }
     }
 
     #[test]

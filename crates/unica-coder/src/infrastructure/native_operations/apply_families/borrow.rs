@@ -212,10 +212,38 @@ pub(super) fn plan(
             "extension object registration and descriptor disagree",
         ));
     }
-    let borrowed = crate::infrastructure::native_operations::cfe_borrow_object::plan_borrow_object(
+    use sha2::{Digest, Sha256};
+    let mut seed = Sha256::new();
+    seed.update(b"unica-canonical-borrow-plan-v1\0");
+    staged
+        .fingerprint_inputs(&mut seed)
+        .map_err(|error| ApplyPlanError::staging(error, parent.to_string()))?;
+    let overrides =
+        serde_json::to_vec(&operation.overrides).expect("parsed borrow overrides are serializable");
+    for bytes in [
+        binding.source_set_name().as_bytes(),
+        at.as_bytes(),
+        &parent_owner,
+        &parent_bytes,
+        &overrides,
+    ] {
+        seed.update((bytes.len() as u64).to_be_bytes());
+        for chunk in bytes.chunks(64 * 1024) {
+            staged
+                .checkpoint("borrow identity inputs")
+                .map_err(|error| ApplyPlanError::staging(error, parent.to_string()))?;
+            seed.update(chunk);
+        }
+    }
+    seed.update((index as u64).to_be_bytes());
+    let identity = crate::infrastructure::native_operations::cfe::CfeBorrowIdentity::for_plan(
+        seed.finalize().into(),
+    );
+    let borrowed = crate::infrastructure::native_operations::cfe_borrow_object::plan_borrow_object_with_identity(
         &parent_bytes,
         existing.as_deref(),
         operation.overrides.as_deref(),
+        &identity,
     )
     .map_err(|error| {
         let kind = match error.kind {
@@ -468,9 +496,7 @@ mod tests {
             .attribute("uuid")
             .unwrap()
             .to_string();
-        assert!(committed
-            .rev()
-            .starts_with("unica-apply-sources-sha256-v1:"));
+        assert_eq!(committed.rev(), preview.rev());
         let description = before_doc
             .descendants()
             .find(|node| node.has_tag_name(("http://v8.1c.ru/8.3/MDClasses", "DescriptionLength")))
@@ -499,6 +525,7 @@ mod tests {
         let refresh = fixture.run(true, None, None).unwrap();
         assert!(!refresh.effects().events().is_empty());
         let refreshed = fixture.run(false, Some(refresh.rev()), None).unwrap();
+        assert_eq!(refreshed.rev(), refresh.rev());
         let after = std::fs::read_to_string(&descriptor).unwrap();
         let after_doc = roxmltree::Document::parse(&after).unwrap();
         let property = |name| {
@@ -514,7 +541,10 @@ mod tests {
         assert!(!after.contains("new parent comment"));
         let file_identity =
             crate::infrastructure::platform::testing::file_identity_for_test(&descriptor).unwrap();
-        let noop = fixture.run(false, Some(refreshed.rev()), None).unwrap();
+        let noop_preview = fixture.run(true, None, None).unwrap();
+        assert!(noop_preview.effects().events().is_empty());
+        let noop = fixture.run(false, Some(noop_preview.rev()), None).unwrap();
+        assert_eq!(noop.rev(), noop_preview.rev());
         assert!(noop.effects().events().is_empty());
         assert_eq!(std::fs::read_to_string(&descriptor).unwrap(), after);
         assert_eq!(

@@ -44,6 +44,7 @@ use crate::infrastructure::v13_find::{
 };
 use crate::infrastructure::workspace_actor::{
     ApplyAdmissionError, ApplyEffectDisposition, ApplyPublicationErrorKind,
+    SavedApplyExecutionError,
 };
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -95,7 +96,7 @@ impl CanonicalInvocationService for CanonicalV13ReadService {
         if let Some(rejection) = invocation.rejected_logical_read_result() {
             return Ok(rejection);
         }
-        match invocation.tool() {
+        let mut result = match invocation.tool() {
             ToolIdentity::View => Ok(self.execute_view(invocation, &cancellation)),
             ToolIdentity::Apply => Ok(self.execute_apply(invocation, &cancellation)),
             ToolIdentity::Resolve => Ok(self.execute_resolve(invocation, &cancellation)),
@@ -112,7 +113,18 @@ impl CanonicalInvocationService for CanonicalV13ReadService {
                 RefusalCode::InvalidState,
                 "docs is answered before workspace admission and does not reach the actor-bound read service",
             )),
+        }?;
+        if matches!(
+            invocation.tool(),
+            ToolIdentity::View
+                | ToolIdentity::Resolve
+                | ToolIdentity::Search
+                | ToolIdentity::Check
+                | ToolIdentity::Diff
+        ) {
+            result.rev = None;
         }
+        Ok(result)
     }
 }
 
@@ -160,8 +172,45 @@ impl CanonicalV13ReadService {
         invocation: &ActorBoundExecution,
         cancellation: &CancellationToken,
     ) -> DomainResult {
+        if let Some(token) = invocation.arguments().get("executionToken") {
+            if invocation.arguments().len() != 1 || token.as_str().is_none_or(str::is_empty) {
+                return error_result(
+                    None,
+                    RefusalCode::BadValue,
+                    "execution requires only a nonempty executionToken",
+                );
+            }
+            return invocation.execute_saved_apply(token.as_str().unwrap(), cancellation, |mut result, publication| {
+                match publication {
+                    Ok(publication) => {
+                        result.summary = "metadata apply published atomically".into();
+                        result.rev = Some(publication.rev().to_owned());
+                        if let Some(data) = result.data.as_mut() {
+                            data["mode"] = json!("published");
+                        }
+                        result.next.clear();
+                        if !publication.cleanup_diagnostics().is_empty() {
+                            result.warnings.push(json!({"code": "retained_cleanup_incomplete", "count": publication.cleanup_diagnostics().len(), "message": "published apply left bounded internal recovery cleanup diagnostics"}));
+                        }
+                        result
+                    }
+                    Err(error) => error_result(result.at.clone(), apply_publication_error_code(error.kind()), format!("{error}; request a fresh plan with apply(at, ops)")),
+                }
+            }).unwrap_or_else(saved_apply_execution_error_result);
+        }
+        if invocation.arguments().contains_key("dryRun")
+            || invocation.arguments().contains_key("ifRev")
+        {
+            return error_result(
+                None,
+                RefusalCode::BadValue,
+                "apply accepts at and ops to prepare a plan, or only executionToken to execute it",
+            );
+        }
         let source_sets = invocation.admitted_source_set_names();
-        let request = match parse_apply_request(invocation.arguments(), &source_sets) {
+        let mut planning_arguments = invocation.arguments().clone();
+        planning_arguments.insert("dryRun".into(), json!(true));
+        let request = match parse_apply_request(&planning_arguments, &source_sets) {
             Ok(request) => request,
             Err(error) => {
                 return error_result(
@@ -171,18 +220,8 @@ impl CanonicalV13ReadService {
                 )
             }
         };
-        let (binding, admission) = match invocation.admit_apply(&request, cancellation) {
+        let (binding, mut admission) = match invocation.admit_apply(&request, cancellation) {
             Ok(admitted) => admitted,
-            // A stale `ifRev` is a caller conflict with a known recovery —
-            // re-read the revision and retry — so it answers with its own
-            // code instead of masquerading as an unavailable provider.
-            Err(error @ ApplyAdmissionError::StaleRevision { .. }) => {
-                return error_result(
-                    Some(request.at().to_string()),
-                    RefusalCode::StaleRevision,
-                    error.to_string(),
-                )
-            }
             Err(ApplyAdmissionError::Other(error)) => {
                 return error_result(
                     Some(request.at().to_string()),
@@ -226,6 +265,7 @@ impl CanonicalV13ReadService {
                 );
             }
         }
+        admission.bind_request(&request);
         let operations = request
             .ops()
             .iter()
@@ -285,12 +325,17 @@ impl CanonicalV13ReadService {
             Err(error) => {
                 return error_result(
                     Some("ops".to_string()),
-                    RefusalCode::ProviderUnavailable,
+                    match error.kind() {
+                        crate::infrastructure::native_operations::apply::ApplyStagingErrorKind::ConcurrentRevision => RefusalCode::StaleRevision,
+                        crate::infrastructure::native_operations::apply::ApplyStagingErrorKind::Cancelled => RefusalCode::Cancelled,
+                        crate::infrastructure::native_operations::apply::ApplyStagingErrorKind::Deadline => RefusalCode::DeadlineExceeded,
+                        _ => RefusalCode::ProviderUnavailable,
+                    },
                     error.to_string(),
                 )
             }
         };
-        let publication = match invocation.publish_prepared_apply(prepared) {
+        let publication = match invocation.preview_prepared_apply(&prepared) {
             Ok(publication) => publication,
             Err(error) => {
                 return error_result(
@@ -334,7 +379,21 @@ impl CanonicalV13ReadService {
             }));
         }
         result.rev = Some(publication.rev().to_string());
-        result
+        match invocation.save_prepared_apply(prepared, result.clone()) {
+            Ok(token) => {
+                result.data.as_mut().expect("apply plan data exists")["executionToken"] =
+                    json!(token);
+                result
+                    .next
+                    .push(json!({"tool": "unica.apply", "arguments": {"executionToken": token}}));
+                result
+            }
+            Err(error) => error_result(
+                result.at.clone(),
+                RefusalCode::InvalidState,
+                error.to_string(),
+            ),
+        }
     }
 
     fn execute_view(
@@ -1071,10 +1130,6 @@ impl CanonicalV13ReadService {
             .iter()
             .map(|source| source.source_set_name().to_owned())
             .collect();
-        let revisions = selected
-            .iter()
-            .map(|source| source.revision_identity())
-            .collect::<Vec<_>>();
         let binding = SearchCursorBinding {
             workspace_identity: invocation.workspace_identity_hash().as_str().to_owned(),
             query: query.to_owned(),
@@ -1082,7 +1137,6 @@ impl CanonicalV13ReadService {
             mode: mode.to_owned(),
             kind: None,
             source_sets,
-            revisions,
             result_fingerprint: None,
             page_limit: limit,
         };
@@ -1177,6 +1231,8 @@ impl CanonicalV13ReadService {
         };
         let summary = format!("{} BSL search {state}", binding.mode);
         let mut extra_data = Map::new();
+        extra_data.insert("dataFreshness".into(), json!("unknown"));
+        extra_data.insert("pageConsistency".into(), json!("live"));
         extra_data.insert(
             "fileCoverage".to_owned(),
             json!({
@@ -1205,7 +1261,7 @@ impl CanonicalV13ReadService {
         let mode = binding.mode.as_str();
         let limit = binding.page_limit;
         let offset = cursor.as_ref().map_or(0, |(_, cursor)| cursor.offset);
-        let revision = combined_revision(&binding.revisions);
+        let revision: Option<String> = None;
         let mut page_matches = Vec::new();
         let mut byte_stop = false;
         let measured_bytes = |items: &[Value]| {
@@ -1538,7 +1594,6 @@ impl CanonicalV13ReadService {
             mode: role.as_str().to_owned(),
             kind: None,
             source_sets: selected_sources,
-            revisions: Vec::new(),
             result_fingerprint: None,
             page_limit: limit,
         };
@@ -1749,7 +1804,6 @@ impl CanonicalV13ReadService {
                 .iter()
                 .map(|source| source.name().to_owned())
                 .collect(),
-            revisions: Vec::new(),
             result_fingerprint: Some(format!("names-sha256-v1:{:x}", hasher.finalize())),
             page_limit: limit,
         };
@@ -1836,6 +1890,26 @@ impl CanonicalV13ReadService {
                     )
                 }
             };
+            if let Some(cursor) = cursor {
+                let binding = ViewCursorBinding {
+                    canonical_at: at.to_string(),
+                    projection: "check".into(),
+                    normalized_filter: String::new(),
+                    source_set_identity: format!(
+                        "{}:{}",
+                        invocation.workspace_identity_hash().as_str(),
+                        at.split_once(':').map_or("", |(name, _)| name)
+                    ),
+                    snapshot_id: String::new(),
+                    page_limit: limit,
+                };
+                return crate::application::v13::check::page_diagnostics(
+                    &self.cursors,
+                    binding,
+                    None,
+                    Some(cursor),
+                );
+            }
             let view_arguments =
                 Map::from_iter([("at".to_string(), Value::String(at.to_string()))]);
             let viewed = self.execute_view_arguments(invocation, &view_arguments, cancellation);
@@ -1849,7 +1923,7 @@ impl CanonicalV13ReadService {
                 return error_result(
                     Some(at.to_string()),
                     RefusalCode::InvalidState,
-                    "check could not establish the source revision",
+                    "check could not establish its result snapshot",
                 );
             };
             let binding = ViewCursorBinding {
@@ -1861,17 +1935,9 @@ impl CanonicalV13ReadService {
                     invocation.workspace_identity_hash().as_str(),
                     at.split_once(':').map_or("", |(source_set, _)| source_set)
                 ),
-                source_revision: revision.to_string(),
+                snapshot_id: revision.to_string(),
                 page_limit: limit,
             };
-            if let Some(cursor) = cursor {
-                return crate::application::v13::check::page_diagnostics(
-                    &self.cursors,
-                    binding,
-                    None,
-                    Some(cursor),
-                );
-            }
             let kind = viewed
                 .data
                 .as_ref()
@@ -1893,18 +1959,6 @@ impl CanonicalV13ReadService {
                         Some(at.to_string()),
                         RefusalCode::Cancelled,
                         "check was cancelled before publishing its result",
-                    );
-                }
-                let current =
-                    self.execute_view_arguments(invocation, &view_arguments, cancellation);
-                if !current.ok {
-                    return current;
-                }
-                if current.rev.as_deref() != Some(revision) {
-                    return error_result(
-                        Some(at.to_string()),
-                        RefusalCode::ConcurrentChange,
-                        "source changed while check ran; retry the question",
                     );
                 }
                 result.rev = Some(revision.to_string());
@@ -2016,17 +2070,13 @@ impl CanonicalV13ReadService {
         let truncated = changes.len() > limit;
         changes.truncate(limit);
         let equal = changes.is_empty() && !truncated;
-        let revisions = [left_result.rev, right_result.rev]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>();
         let mut result = DomainResult::success("logical nodes compared");
         result.data = Some(serde_json::json!({
             "equal": equal,
             "changes": changes,
             "truncated": truncated,
         }));
-        result.rev = combined_revision(&revisions);
+
         result
     }
 
@@ -2844,19 +2894,6 @@ fn name_search_interruption(
     None
 }
 
-fn combined_revision(revisions: &[String]) -> Option<String> {
-    if revisions.is_empty() {
-        return None;
-    }
-    let mut hasher = Sha256::new();
-    hasher.update(b"unica-v13-read-set-v1\0");
-    for revision in revisions {
-        hasher.update(revision.as_bytes());
-        hasher.update([0]);
-    }
-    Some(format!("unica-read-set-sha256-v1:{:x}", hasher.finalize()))
-}
-
 fn apply_plan_error_code(kind: ApplyPlanErrorKind) -> RefusalCode {
     match kind {
         ApplyPlanErrorKind::BadValue => RefusalCode::BadValue,
@@ -2866,6 +2903,27 @@ fn apply_plan_error_code(kind: ApplyPlanErrorKind) -> RefusalCode {
         ApplyPlanErrorKind::InvalidSource => RefusalCode::InvalidSource,
         ApplyPlanErrorKind::Staging(_) => RefusalCode::ProviderUnavailable,
         ApplyPlanErrorKind::Postcondition => RefusalCode::PostconditionFailed,
+    }
+}
+
+fn saved_apply_execution_error_result(error: SavedApplyExecutionError) -> DomainResult {
+    match error {
+        SavedApplyExecutionError::Unavailable(message) => {
+            error_result(None, RefusalCode::BadValue, message)
+        }
+        SavedApplyExecutionError::RegistryUnavailable => error_result(
+            None,
+            RefusalCode::InvalidState,
+            "saved apply plans are unavailable",
+        ),
+        SavedApplyExecutionError::StateUnavailable(message) => {
+            error_result(None, RefusalCode::InvalidState, message)
+        }
+        SavedApplyExecutionError::Publication(error) => error_result(
+            None,
+            apply_publication_error_code(error.kind()),
+            error.to_string(),
+        ),
     }
 }
 
@@ -2922,10 +2980,10 @@ fn run_bsl_diagnostics(
         .into_iter()
         .find(|source| source.source_set_name() == address.source_set())
         .ok_or_else(|| {
-            Box::new(error_result(
+            Box::new(error_result_detailed(
                 Some(address.to_string()),
-                RefusalCode::NotFound,
-                "diagnostic source set was not admitted by the workspace actor",
+                RefusalDetail::SourceUnreadable,
+                "diagnostics source was not admitted",
             ))
         })?;
     let authority = source
@@ -2937,16 +2995,9 @@ fn run_bsl_diagnostics(
                 error,
             ))
         })?;
-    let scope = authority
-        .diagnostic_module_scope(address)
-        .map_err(|error| {
-            Box::new(match error.detail() {
-                Some(detail) => {
-                    error_result_detailed(Some(address.to_string()), detail, error.to_string())
-                }
-                None => error_result(Some(address.to_string()), error.code(), error.to_string()),
-            })
-        })?;
+    let mapping = authority
+        .diagnostic_mapping(address, context)
+        .map_err(|error| Box::new(view_error_result(Some(address.to_string()), error)))?;
     let registry = match ports.diagnostic_provider_registry() {
         Ok(registry) => registry,
         Err(error) => {
@@ -2957,33 +3008,7 @@ fn run_bsl_diagnostics(
             )))
         }
     };
-    // Сужение обязательно: `metadata_path: None` означает анализ всего набора
-    // исходников, и на боевой конфигурации это минуты работы и диагностики
-    // чужих файлов, приписанные спрошенному узлу. Неразобранный адрес — отказ,
-    // а не молчаливое расширение области.
-    let owner = address
-        .segments()
-        .iter()
-        .take_while(|segment| segment.name().is_some())
-        .map(|segment| {
-            let name = segment.name().unwrap_or_default();
-            format!("{}.{name}", segment.kind().as_str())
-        })
-        .collect::<Vec<_>>()
-        .join(".");
-    let metadata_path = match crate::domain::source_target::MetadataAddress::parse(
-        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &owner,
-    ) {
-        Ok(path) => Some(path),
-        Err(error) => {
-            return Err(Box::new(error_result(
-                Some(address.to_string()),
-                RefusalCode::BadValue,
-                format!("BSL diagnostics cannot narrow to `{owner}`: {error}"),
-            )))
-        }
-    };
+    let metadata_path = mapping.target().metadata_path.clone();
     let request = DiagnosticRequest {
         action: DiagnosticAction::Analyze,
         source_set: address.source_set().to_string(),
@@ -3012,11 +3037,11 @@ fn run_bsl_diagnostics(
             },
         ),
     };
-    match DiagnosticCoordinator::new(registry, ports).execute_scoped(
+    match DiagnosticCoordinator::new(registry, &mapping).execute_scoped(
         &request,
         context,
         cancellation,
-        Some((scope, source.deadline())),
+        Some((mapping.module_scope(), source.deadline())),
     ) {
         Ok(result) => {
             // Провайдер, который не отработал, не доказывает чистоту кода.
@@ -3525,6 +3550,50 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
+    #[test]
+    fn saved_apply_execution_refusal_distinguishes_token_from_internal_state() {
+        use super::SavedApplyExecutionError;
+        use crate::infrastructure::workspace_actor::ApplyPublicationError;
+        for (error, code, outcome) in [
+            (
+                SavedApplyExecutionError::RegistryUnavailable,
+                "invalid_state",
+                "needsHuman",
+            ),
+            (
+                SavedApplyExecutionError::StateUnavailable("saved apply state is unavailable"),
+                "invalid_state",
+                "needsHuman",
+            ),
+            (
+                SavedApplyExecutionError::Unavailable("request a fresh plan".into()),
+                "bad_value",
+                "fixCall",
+            ),
+            (
+                SavedApplyExecutionError::Publication(ApplyPublicationError::new(
+                    super::ApplyPublicationErrorKind::Deadline,
+                    "execution wait expired",
+                )),
+                "deadline_exceeded",
+                "retry",
+            ),
+            (
+                SavedApplyExecutionError::Publication(ApplyPublicationError::new(
+                    super::ApplyPublicationErrorKind::Cancelled,
+                    "execution wait cancelled",
+                )),
+                "cancelled",
+                "deadEnd",
+            ),
+        ] {
+            let result = super::saved_apply_execution_error_result(error);
+            assert!(!result.ok);
+            assert_eq!(result.diagnostics[0]["code"], code);
+            assert_eq!(result.diagnostics[0]["outcome"], outcome);
+        }
+    }
+
     fn provider_search_test_binding(role: ProviderRole, limit: usize) -> SearchCursorBinding {
         SearchCursorBinding {
             workspace_identity: "workspace".into(),
@@ -3533,7 +3602,6 @@ mod tests {
             mode: role.as_str().into(),
             kind: None,
             source_sets: vec!["main".into()],
-            revisions: Vec::new(),
             result_fingerprint: None,
             page_limit: limit,
         }

@@ -1,6 +1,7 @@
 use crate::application::ports::{MetadataChildProfile, MetadataTemplateType};
 use crate::application::v13::body_snapshot::BodySnapshot;
 use crate::application::v13::view::{ViewError, ViewFilter, ViewReadAuthority, ViewSourceSnapshot};
+#[cfg(test)]
 use crate::application::v13::LOGICAL_READ_OPERATION_BUDGET;
 use crate::domain::address::{AddressSegment, NodeKind, QualifiedAddress};
 use crate::domain::cancellation::CancellationToken;
@@ -32,12 +33,14 @@ use crate::infrastructure::logical_event_source::{
 use crate::infrastructure::logical_event_source::{resolve_event_source, LogicalEventSource};
 use crate::infrastructure::logical_tree::{route_logical_address, LogicalReader, LogicalTreeRoute};
 use crate::infrastructure::native_operations::form::{FormEventEvidence, FormInfoData};
+#[cfg(test)]
 use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
 use crate::infrastructure::platform_xml_owner::PlatformXmlSourceSetOwnerEvidence;
 #[cfg(test)]
 use crate::infrastructure::platform_xml_source_targets::{
     resolve_platform_xml_target, TargetKindPolicy,
 };
+#[cfg(test)]
 use crate::infrastructure::source_revision::SourceRevisionService;
 use crate::infrastructure::v13_large_configuration::{RegistrationCache, RegistrationIndex};
 use crate::infrastructure::v13_read_port::ProviderReadAuthority;
@@ -158,41 +161,7 @@ struct OwnerEdgeCacheKey {
 }
 
 impl<'a> LogicalViewReadAuthority<'a> {
-    pub(crate) fn diagnostic_module_scope(
-        &self,
-        at: &QualifiedAddress,
-    ) -> Result<crate::domain::diagnostics::DiagnosticModuleScope, ViewError> {
-        self.read_checkpoint()?;
-        if at.source_set() != self.read.source_set() {
-            return Err(ViewError::new(
-                RefusalCode::NotFound,
-                "diagnostic module belongs to another source set",
-            ));
-        }
-        let route = route_logical_address(at, self.profile)
-            .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
-        let capability = route.module().ok_or_else(|| {
-            ViewError::new(
-                RefusalCode::BadValue,
-                "diagnostics requires one concrete module",
-            )
-        })?;
-        let (module_at, _) = module_prefix(at, self.profile, capability)?;
-        let admitted = self.snapshot(&module_at)?;
-        self.verify_module_owner(&module_at, capability, &admitted)?;
-        let target = module_source_address(&module_at, capability)?;
-        let relative = self.read.module_export_path(&target)?;
-        // Read through the retained capability before handing the provider a
-        // path. A lexical filename alone does not prove membership or readability.
-        self.read.module_source(&target)?;
-        self.read_checkpoint()?;
-        Ok(crate::domain::diagnostics::DiagnosticModuleScope {
-            source_set: self.read.source_set().to_string(),
-            source_root: self.read.root_path().to_path_buf(),
-            module_path: self.read.root_path().join(relative),
-        })
-    }
-
+    #[cfg(test)]
     pub(crate) fn new(
         cancellation: &'a CancellationToken,
         source_set: impl Into<String>,
@@ -403,6 +372,63 @@ impl<'a> LogicalViewReadAuthority<'a> {
     #[cfg(test)]
     pub(crate) const fn deadline_for_test(&self) -> ProviderDeadline {
         self.deadline
+    }
+
+    pub(crate) fn diagnostic_mapping(
+        &self,
+        at: &QualifiedAddress,
+        workspace: &crate::domain::workspace::WorkspaceContext,
+    ) -> Result<crate::infrastructure::diagnostics::CanonicalModuleDiagnosticMapping, ViewError>
+    {
+        use crate::domain::diagnostics::DiagnosticContext;
+        use crate::domain::project_sources::{ProjectSourceSet, SourceFormat, SourceSetState};
+        use crate::domain::source_roots::ResolvedSourceRoot;
+        use crate::domain::source_target::{ResolvedTarget, TargetKind};
+        let admitted = self.snapshot(at)?;
+        let canonical = self.canonical_address(at, &admitted)?;
+        let capability = self
+            .profile
+            .module_prefix_capability(&canonical)
+            .ok_or_else(|| {
+                ViewError::new(
+                    RefusalCode::BadValue,
+                    "BSL diagnostics requires a module or its body",
+                )
+            })?;
+        let (module_at, _) = shared_module_prefix(&canonical, self.profile, capability)
+            .map_err(|error| ViewError::new(RefusalCode::BadValue, error))?;
+        // Registration, owner identity, format and module containment are proved
+        // by the same reader as view, using this invocation's retained root.
+        self.read_exact(&module_at, &ViewFilter::default(), &admitted)?;
+        let target = module_source_address(&module_at, capability)?;
+        let relative = self.read.module_export_path(&target)?;
+        let source_set = self.read.source_set().to_owned();
+        let context = DiagnosticContext::new(
+            workspace.clone(),
+            ProjectSourceSet {
+                name: source_set.clone(),
+                kind: self.read.source_set_kind(),
+                path: self.read.root_path().to_string_lossy().into_owned(),
+                source_format: SourceFormat::PlatformXml,
+                source_state: SourceSetState::Supported,
+                format_evidence: Vec::new(),
+                format_probe_error: None,
+            },
+            ResolvedSourceRoot {
+                source_set: Some(source_set.clone()),
+                path: self.read.root_path().to_path_buf(),
+            },
+            ResolvedTarget {
+                source_set,
+                metadata_path: Some(target),
+                target_kind: TargetKind::Module,
+            },
+        );
+        crate::infrastructure::diagnostics::CanonicalModuleDiagnosticMapping::from_proven_module(
+            context,
+            relative.into(),
+        )
+        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
     }
 
     fn typed_payload(&self, route: &LogicalTreeRoute) -> Result<Value, ViewError> {

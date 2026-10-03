@@ -6,11 +6,13 @@ there is no argument that points a call at another file.
 
 Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
-`ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
+`dryRunRequired`. Контракт вызова бери оттуда, а не из этого текста;
 при `implemented: true` используй опубликованную `argsSchema`; при
 `support.state: limited` разрешено только подмножество `support.supportedArgs`.
 При `support.state: unavailable` остановись; не выдумывай аргументов при
-`argsSchema: null`. Превью исполнением не является. Не обходи контракт прямым runner-ом.
+`argsSchema: null`. Для плановой операции сначала проверь результат `dryRun: true`,
+затем исполняй запрос с `dryRun: false`. Preview не фиксирует входы между
+вызовами. Не обходи контракт прямым runner-ом.
 
 For a new repository with no workspace, call `unica.view {}` first. Оно
 работает и без проектного файла: отвечает `config.state: "autodetected"`,
@@ -174,10 +176,11 @@ directory named `main` keeps it.
 | Apply or discard pending configuration changes | `apply`, optional `extension`; `reset`, `force:true`, optional `extension`; Designer only |
 
 Syntax checks are `unica.check`; test runs and Designer/EDT conversion are not
-operations of the dictionary. A previewApply operation is applied with the
-`ifRev` its preview returned; a changed workspace or plan answers
-`stale_revision` or `concurrent_change` instead of applying. The remaining gap in binding preview to its inputs is tracked in
-[issue #950](https://github.com/IngvarConsulting/unica/issues/950).
+operations of the dictionary. A previewApply operation requires explicit boolean
+`dryRun`: `true` returns a non-mutating plan; `false` executes using the current
+inputs, without requiring a previous preview. `unica.run` accepts no `ifRev`
+and returns no `rev`. In this workflow, inspect the preview before execution.
+Preview does not freeze the workspace or the database between calls.
 
 The runner 0.11.2 adapter supports source `push` and `pull` with explicit
 `force:true`, without local-work protection or generation checks. Source
@@ -196,7 +199,7 @@ changes to the database configuration, optionally for one named extension.
 - Treat a platform-generated CDFI sidecar `ConfigDumpInfo.xml` whose root is `ConfigDumpInfo` as local per-infobase runtime state: keep it out of Git and never use it as source-format evidence. A legitimate metadata descriptor (including an external EPF/ERF descriptor) for an object actually named `ConfigDumpInfo` remains source and belongs in Git.
 - `execution_timeout` in `v8project.yaml` is the runner budget for `unica.run`
   operations; Unica exposes no `timeoutMs` argument.
-- `upload` with adapter 0.11.2 loads a CF/CFE without applying the database configuration. Use the separate `apply` operation to apply it; both operations require preview and its `ifRev`.
+- `upload` with adapter 0.11.2 loads a CF/CFE without applying the database configuration. Use the separate `apply` operation to apply it; preview each operation with `dryRun: true`, then execute it with `dryRun: false`.
 - Designer/EDT conversion is not on the surface: Unica reads platform XML only.
 - Designer `rawKeys` are not on the surface; source `push` and `pull` require explicit `force:true` with the 0.11.2 adapter and do not protect generations or local work.
 - When credentials are absent, do not initiate a runtime probe to discover them. Ask the user; classify only authentication evidence already supplied by a verified boundary.

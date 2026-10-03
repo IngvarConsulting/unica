@@ -1563,25 +1563,16 @@ fn stage_form_remove(
         &at_path,
     )?;
     let mut touched = Vec::new();
-    let root = authority.source_root();
-    let payload_dir = root.join(&forms_dir).join(form);
-    if payload_dir.is_dir() {
-        let traversal =
-            crate::infrastructure::native_operations::meta::remove::metadata_files_recursive(
-                &payload_dir,
-            )
-            .map_err(|error| {
-                ApplyPlanError::new(ApplyPlanErrorKind::ProviderUnavailable, error)
-                    .at_path(at_path.clone())
-            })?;
-        for file in &traversal.files {
-            let relative = super::metadata::staged_relative(root, file, op_index)?;
-            let preimage = read_required(staged, &relative, "a form payload file", &at_path)?;
-            staged
-                .remove(&relative, &preimage)
-                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
-            touched.push(relative);
-        }
+    let payload_relative = forms_dir.join(form);
+    let files = staged
+        .enumerate_tree(&payload_relative)
+        .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
+    for relative in files {
+        let preimage = read_required(staged, &relative, "a form payload file", &at_path)?;
+        staged
+            .remove(&relative, &preimage)
+            .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
+        touched.push(relative);
     }
     staged
         .remove(&descriptor_relative, &descriptor_preimage)
