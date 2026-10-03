@@ -3,6 +3,7 @@ id: INV.SOURCE.LARGE-CONFIGURATION-ROOT-VIEW
 check:
   - crates/unica-coder/tests/v13_search_integration.rs::canonical_view_reads_configuration_past_eight_mebibytes_with_many_registrations
   - crates/unica-coder/src/infrastructure/v13_large_configuration.rs::registration_cache_reuses_only_the_same_source_revision
+  - crates/unica-coder/src/infrastructure/daemon/invocation_service.rs::logical_read_reuses_registration_cache_and_isolates_sources_and_invocations
 gap: https://github.com/IngvarConsulting/unica/issues/1119
 ---
 

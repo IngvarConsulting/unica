@@ -59,6 +59,9 @@ pub(crate) enum RetainedApplyFailpoint {
 }
 
 #[cfg(test)]
+type RetainedApplyAfterReferenceStreamHook = (usize, Box<dyn FnOnce()>);
+
+#[cfg(test)]
 thread_local! {
     static RETAINED_APPLY_OBSERVED_EVENTS: RefCell<Vec<RetainedApplyObservedEvent>> = const { RefCell::new(Vec::new()) };
     static RETAINED_APPLY_FAILPOINT: RefCell<Option<RetainedApplyFailpoint>> = const { RefCell::new(None) };
@@ -503,6 +506,7 @@ pub(crate) struct CompileTransaction {
     removals: Vec<PlannedRemoval>,
     planned_path_identities: BTreeMap<PathBuf, PlannedPathKind>,
     retained_apply: Vec<PlannedRetainedApplyChange>,
+    retained_apply_read_guards: Vec<RetainedApplyReadGuardBinding>,
     retained_namespaces: Vec<super::apply::RetainedNamespaceGuard>,
     retained_apply_authority: Option<ApplyWriterAuthority>,
     retained_apply_root: Option<Arc<RetainedDirectoryCapability>>,
@@ -533,6 +537,22 @@ pub(super) struct RetainedApplyChangeBinding {
     pub(super) current: Option<Vec<u8>>,
     pub(super) original_file:
         Option<crate::infrastructure::platform::filesystem::RetainedRegularFileCapability>,
+}
+
+/// An unchanged input inspected by a retained apply planner. It keeps the
+/// physical route and a content fingerprint, but never keeps the file body.
+#[derive(Debug)]
+pub(super) struct RetainedApplyReadGuardBinding {
+    pub(super) root: Arc<RetainedDirectoryCapability>,
+    pub(super) relative_path: PathBuf,
+    pub(super) ancestor: RetainedDirectoryCapability,
+    pub(super) name: OsString,
+    pub(super) original_file:
+        crate::infrastructure::platform::filesystem::RetainedRegularFileCapability,
+    pub(super) expected_len: u64,
+    pub(super) expected_sha256: [u8; 32],
+    pub(super) deadline: crate::domain::code_intelligence::ProviderDeadline,
+    pub(super) cancellation: crate::domain::cancellation::CancellationToken,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -588,6 +608,13 @@ impl CompileTransaction {
         self.retained_namespaces = guards;
     }
 
+    pub(super) fn bind_retained_apply_read_guards(
+        &mut self,
+        guards: Vec<RetainedApplyReadGuardBinding>,
+    ) {
+        self.retained_apply_read_guards = guards;
+    }
+
     fn validate_retained_namespaces(
         &self,
         deltas: &[(PathBuf, Option<u8>)],
@@ -636,8 +663,8 @@ impl CompileTransaction {
             }
         }
         for directory in created {
-            if let Ok(relative) = directory.logical_path.strip_prefix(root.path()) {
-                deltas.push((relative.to_path_buf(), Some(1)));
+            if directory.source_participant {
+                deltas.push((directory.logical_path.clone(), Some(1)));
             }
         }
         for change in published {
@@ -760,6 +787,8 @@ impl CompileTransaction {
         }
         let cache_start = self.retained_apply.len();
         self.retained_apply.extend(cache.retained_apply);
+        self.retained_apply_read_guards
+            .extend(cache.retained_apply_read_guards);
         self.retained_apply_cache_root = cache.retained_apply_root;
         self.retained_apply_cache_start = Some(cache_start);
         Ok(self)
@@ -782,6 +811,7 @@ impl CompileTransaction {
             ));
         }
         self.validate_retained_namespaces(&[])?;
+        self.validate_retained_apply_read_guards()?;
         if self.retained_apply.is_empty() {
             return Ok(());
         }
@@ -818,6 +848,13 @@ impl CompileTransaction {
         Ok(())
     }
 
+    fn validate_retained_apply_read_guards(&self) -> Result<(), RetainedApplyValidationError> {
+        for guard in &self.retained_apply_read_guards {
+            validate_retained_apply_read_guard(guard)?;
+        }
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(in crate::infrastructure) fn commit_retained_apply_with<T>(
         self,
@@ -835,8 +872,14 @@ impl CompileTransaction {
         let operation = (|| {
             for (_index, entry) in self.retained_apply.iter().enumerate() {
                 checkpoint()?;
-                publish_retained_apply_change(entry, &mut published, &mut created_directories)
-                    .map_err(|error| error.to_string())?;
+                publish_retained_apply_change(
+                    entry,
+                    &mut published,
+                    &mut created_directories,
+                    self.retained_apply_cache_start
+                        .is_none_or(|start| _index < start),
+                )
+                .map_err(|error| error.to_string())?;
                 #[cfg(test)]
                 RETAINED_APPLY_OBSERVED_EVENTS.with(|events| {
                     let event = if self
@@ -862,6 +905,8 @@ impl CompileTransaction {
             #[cfg(test)]
             run_retained_apply_before_post_validation_hook();
             self.validate_published_namespaces(&published, &created_directories)
+                .map_err(|error| error.to_string())?;
+            self.validate_retained_apply_read_guards()
                 .map_err(|error| error.to_string())?;
             let validated = post_validation()?;
             let mut report = CommitReport::default();
@@ -921,8 +966,13 @@ impl CompileTransaction {
         let operation = (|| {
             for entry in &self.retained_apply[..cache_start] {
                 final_gate.checkpoint("prepared apply source publication")?;
-                publish_retained_apply_change(entry, &mut published, &mut created_directories)
-                    .map_err(retained_apply_publish_publication_error)?;
+                publish_retained_apply_change(
+                    entry,
+                    &mut published,
+                    &mut created_directories,
+                    true,
+                )
+                .map_err(retained_apply_publish_publication_error)?;
                 #[cfg(test)]
                 {
                     let event = RetainedApplyObservedEvent::Source(entry.relative_path.clone());
@@ -947,8 +997,13 @@ impl CompileTransaction {
             validate_journal_recoveries(root, &published)?;
             for entry in &self.retained_apply[cache_start..] {
                 final_gate.checkpoint("prepared apply cache publication")?;
-                publish_retained_apply_change(entry, &mut published, &mut created_directories)
-                    .map_err(retained_apply_publish_publication_error)?;
+                publish_retained_apply_change(
+                    entry,
+                    &mut published,
+                    &mut created_directories,
+                    false,
+                )
+                .map_err(retained_apply_publish_publication_error)?;
                 #[cfg(test)]
                 {
                     let event = if entry.relative_path.ends_with("state.json") {
@@ -990,6 +1045,8 @@ impl CompileTransaction {
                 })
                 .collect::<Vec<_>>();
             self.validate_published_namespaces(&published, &created_directories)
+                .map_err(retained_apply_validation_publication_error)?;
+            self.validate_retained_apply_read_guards()
                 .map_err(retained_apply_validation_publication_error)?;
             final_gate.validate_after_publication(&published_replacements)?;
             let mut report = CommitReport::default();
@@ -1582,6 +1639,7 @@ impl CompileTransaction {
     #[allow(dead_code)]
     pub(crate) fn is_empty(&self) -> bool {
         self.retained_apply.is_empty()
+            && self.retained_apply_read_guards.is_empty()
             && self.creates.is_empty()
             && self.read_guards.is_empty()
             && self.absence_guards.is_empty()
@@ -1601,6 +1659,10 @@ impl CompileTransaction {
     ) {
         for guard in &mut self.retained_namespaces {
             guard.rebind_execution_context(deadline, cancellation);
+        }
+        for guard in &mut self.retained_apply_read_guards {
+            guard.deadline = deadline;
+            guard.cancellation = cancellation.clone();
         }
     }
 
@@ -2399,6 +2461,137 @@ fn validate_retained_apply_preimage_typed(
     Ok(())
 }
 
+fn validate_retained_apply_read_guard(
+    guard: &RetainedApplyReadGuardBinding,
+) -> Result<(), RetainedApplyValidationError> {
+    let checkpoint = || {
+        if guard.cancellation.is_cancelled() {
+            return Err(RetainedApplyValidationError::new(
+                RetainedApplyValidationErrorKind::Cancelled,
+                "retained apply reference check cancelled",
+            ));
+        }
+        if guard.deadline.remaining().is_zero() {
+            return Err(RetainedApplyValidationError::new(
+                RetainedApplyValidationErrorKind::Deadline,
+                "retained apply reference check deadline elapsed",
+            ));
+        }
+        Ok(())
+    };
+    checkpoint()?;
+    guard.root.validate_named_identity().map_err(|error| {
+        RetainedApplyValidationError::new(
+            RetainedApplyValidationErrorKind::ContainmentIdentity,
+            format!("reference input root changed: {error}"),
+        )
+    })?;
+    guard.ancestor.validate_named_identity().map_err(|error| {
+        RetainedApplyValidationError::new(
+            RetainedApplyValidationErrorKind::ContainmentIdentity,
+            format!("reference input parent changed: {error}"),
+        )
+    })?;
+    let observed = match guard.ancestor.retain_immediate_child_nofollow(&guard.name) {
+        Ok(RetainedChildCapability::RegularFile(file)) => file,
+        _ => {
+            return Err(RetainedApplyValidationError::new(
+                RetainedApplyValidationErrorKind::ContainmentIdentity,
+                format!(
+                    "reference input is no longer a regular file: {}",
+                    guard.relative_path.display()
+                ),
+            ));
+        }
+    };
+    if observed.hard_link_count().map_err(|error| {
+        RetainedApplyValidationError::new(
+            RetainedApplyValidationErrorKind::UnsupportedProvider,
+            format!("reference input hard-link count failed: {error}"),
+        )
+    })? != 1
+    {
+        return Err(RetainedApplyValidationError::new(
+            RetainedApplyValidationErrorKind::ContainmentIdentity,
+            format!(
+                "reference input has a hard-link alias: {}",
+                guard.relative_path.display()
+            ),
+        ));
+    }
+    if observed.identity() != guard.original_file.identity() {
+        return Err(RetainedApplyValidationError::new(
+            RetainedApplyValidationErrorKind::ConcurrentRevision,
+            format!(
+                "reference input identity changed: {}",
+                guard.relative_path.display()
+            ),
+        ));
+    }
+    let mut file = guard
+        .original_file
+        .open_named_identity_for_read()
+        .map_err(|error| {
+            RetainedApplyValidationError::new(
+                RetainedApplyValidationErrorKind::ConcurrentRevision,
+                format!("reference input cannot be reopened: {error}"),
+            )
+        })?;
+    let mut hash = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    let mut length = 0_u64;
+    loop {
+        checkpoint()?;
+        let count = match file.read(&mut buffer) {
+            Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+            result => result.map_err(|error| {
+                RetainedApplyValidationError::new(
+                    RetainedApplyValidationErrorKind::UnsupportedProvider,
+                    format!("reference input cannot be rechecked: {error}"),
+                )
+            })?,
+        };
+        if count == 0 {
+            break;
+        }
+        length = length.checked_add(count as u64).ok_or_else(|| {
+            RetainedApplyValidationError::new(
+                RetainedApplyValidationErrorKind::UnsupportedProvider,
+                "reference input length overflow",
+            )
+        })?;
+        if length > guard.expected_len {
+            return Err(RetainedApplyValidationError::new(
+                RetainedApplyValidationErrorKind::ConcurrentRevision,
+                format!("reference input grew: {}", guard.relative_path.display()),
+            ));
+        }
+        hash.update(&buffer[..count]);
+    }
+    checkpoint()?;
+    if length != guard.expected_len || <[u8; 32]>::from(hash.finalize()) != guard.expected_sha256 {
+        return Err(RetainedApplyValidationError::new(
+            RetainedApplyValidationErrorKind::ConcurrentRevision,
+            format!(
+                "reference input bytes changed: {}",
+                guard.relative_path.display()
+            ),
+        ));
+    }
+    #[cfg(test)]
+    run_retained_apply_after_reference_stream_hook();
+    guard
+        .original_file
+        .validate_named_identity()
+        .map_err(|error| {
+            RetainedApplyValidationError::new(
+                RetainedApplyValidationErrorKind::ConcurrentRevision,
+                format!("reference input identity changed during content check: {error}"),
+            )
+        })?;
+    Ok(())
+}
+
 fn validate_retained_apply_state_typed(
     entry: &PlannedRetainedApplyChange,
     expected: &Option<Vec<u8>>,
@@ -2624,6 +2817,7 @@ fn validate_journal_recoveries(
 
 #[derive(Debug)]
 struct CreatedRetainedApplyDirectory {
+    source_participant: bool,
     parent: RetainedDirectoryCapability,
     name: OsString,
     directory: RetainedDirectoryCapability,
@@ -2646,6 +2840,7 @@ fn retained_apply_directory_cleanup_name() -> OsString {
 fn create_retained_apply_parent_chain(
     entry: &PlannedRetainedApplyChange,
     created: &mut Vec<CreatedRetainedApplyDirectory>,
+    source_participant: bool,
 ) -> Result<RetainedDirectoryCapability, RetainedApplyPublishError> {
     entry.root.validate_named_identity().map_err(|error| {
         RetainedApplyPublishError::containment(format!(
@@ -2710,6 +2905,7 @@ fn create_retained_apply_parent_chain(
                 let (error, artifact) = error.into_parts();
                 if let Some((directory, artifact_name, published)) = artifact {
                     created.push(CreatedRetainedApplyDirectory {
+                        source_participant,
                         parent: parent.clone(),
                         name: artifact_name,
                         directory,
@@ -2734,6 +2930,7 @@ fn create_retained_apply_parent_chain(
             }
         };
         created.push(CreatedRetainedApplyDirectory {
+            source_participant,
             parent: parent.clone(),
             name: name.clone(),
             directory: directory.clone(),
@@ -2828,6 +3025,7 @@ fn publish_retained_apply_change(
     entry: &PlannedRetainedApplyChange,
     journal: &mut Vec<PublishedRetainedApplyChange>,
     created_directories: &mut Vec<CreatedRetainedApplyDirectory>,
+    source_participant: bool,
 ) -> Result<(), RetainedApplyPublishError> {
     if entry.original == entry.current {
         return Ok(());
@@ -2837,7 +3035,8 @@ fn publish_retained_apply_change(
             .map_err(RetainedApplyPublishError::from)?;
         entry.ancestor.clone()
     } else {
-        let parent = create_retained_apply_parent_chain(entry, created_directories)?;
+        let parent =
+            create_retained_apply_parent_chain(entry, created_directories, source_participant)?;
         validate_retained_apply_state_at_parent_typed(entry, &parent, &entry.original)
             .map_err(RetainedApplyPublishError::from)?;
         parent
@@ -5668,6 +5867,7 @@ thread_local! {
     static TEST_RETAINED_APPLY_BEFORE_ROLLBACK_HOOK: RefCell<Option<RetainedApplyBeforeRollbackHook>> = const { RefCell::new(None) };
     static TEST_RETAINED_APPLY_BEFORE_PROVIDER_IO_HOOK: RefCell<Option<RetainedApplyBeforeProviderIoHook>> = const { RefCell::new(None) };
     static TEST_RETAINED_APPLY_BEFORE_REVISION_VALIDATION_HOOK: RefCell<Option<RetainedApplyBeforeRevisionValidationHook>> = const { RefCell::new(None) };
+    static TEST_RETAINED_APPLY_AFTER_REFERENCE_STREAM_HOOK: RefCell<Option<RetainedApplyAfterReferenceStreamHook>> = const { RefCell::new(None) };
     static TEST_RETAINED_APPLY_VALIDATION_PROVIDER_FAILURE: Cell<bool> = const { Cell::new(false) };
 }
 
@@ -5681,6 +5881,32 @@ pub(crate) fn set_retained_apply_before_post_validation_hook(hook: impl FnOnce()
     TEST_RETAINED_APPLY_BEFORE_POST_VALIDATION_HOOK.with(|slot| {
         slot.replace(Some(Box::new(hook)));
     });
+}
+
+#[cfg(test)]
+pub(crate) fn set_retained_apply_after_reference_stream_hook(
+    skip_checks: usize,
+    hook: impl FnOnce() + 'static,
+) {
+    TEST_RETAINED_APPLY_AFTER_REFERENCE_STREAM_HOOK.with(|slot| {
+        slot.replace(Some((skip_checks, Box::new(hook))));
+    });
+}
+
+#[cfg(test)]
+fn run_retained_apply_after_reference_stream_hook() {
+    let hook = TEST_RETAINED_APPLY_AFTER_REFERENCE_STREAM_HOOK.with(|slot| {
+        let mut pending = slot.borrow_mut();
+        let (remaining, _) = pending.as_mut()?;
+        if *remaining > 0 {
+            *remaining -= 1;
+            return None;
+        }
+        pending.take().map(|(_, hook)| hook)
+    });
+    if let Some(hook) = hook {
+        hook();
+    }
 }
 
 #[cfg(test)]

@@ -469,6 +469,7 @@ pub(super) fn actor_read_source_metadata_for_test(
 struct ActorLogicalReadSourceLease {
     binding: ProviderRootBinding,
     read_identity: String,
+    registration_cache: Arc<RegistrationCache>,
 }
 
 struct ActorLogicalReadLease {
@@ -686,6 +687,7 @@ impl ActorBoundInvocation {
                     .map(|source| ActorLogicalReadSourceLease {
                         binding: source.binding.clone(),
                         read_identity: uuid::Uuid::new_v4().to_string(),
+                        registration_cache: Arc::new(RegistrationCache::default()),
                     })
                     .collect();
                 ActorExecutionRevision::LogicalRead(ActorLogicalReadLease {
@@ -958,7 +960,7 @@ impl ActorBoundExecution {
                     ),
                     read_identity: source.read_identity.clone(),
                     deadline: lease.deadline,
-                    registration_cache: Arc::new(RegistrationCache::default()),
+                    registration_cache: Arc::clone(&source.registration_cache),
                 })
             })
             .collect()
@@ -977,6 +979,10 @@ impl ActorBoundExecution {
             .parent_source_selection
             .validate(lease.deadline, cancellation)
             .map_err(|error| error.to_string())?;
+        let mut parents = lease
+            .parent_sources
+            .lock()
+            .map_err(|_| "parent read leases are poisoned")?;
         let mut fences = Vec::new();
         for name in &self.invocation.parent_source_names {
             let source = self
@@ -991,16 +997,23 @@ impl ActorBoundExecution {
                 .iter()
                 .any(|selected| selected.binding.source_set_name() == name)
             {
+                let existing = parents.iter().find(|parent| {
+                    parent.binding.source_set_name() == source.binding.source_set_name()
+                });
                 fences.push(ActorLogicalReadSourceLease {
                     binding: source.binding.clone(),
-                    read_identity: uuid::Uuid::new_v4().to_string(),
+                    read_identity: existing.map_or_else(
+                        || uuid::Uuid::new_v4().to_string(),
+                        |parent| parent.read_identity.clone(),
+                    ),
+                    registration_cache: existing.map_or_else(
+                        || Arc::new(RegistrationCache::default()),
+                        |parent| Arc::clone(&parent.registration_cache),
+                    ),
                 });
             }
         }
-        *lease
-            .parent_sources
-            .lock()
-            .map_err(|_| "parent read leases are poisoned")? = fences;
+        *parents = fences;
         Ok(())
     }
 
@@ -1575,6 +1588,132 @@ pub(super) enum UnadmittedCause {
     },
     /// Наборы отобраны, но актор их не связал.
     ActorBindingFailed { stage: &'static str },
+}
+
+#[cfg(test)]
+mod registration_cache_tests {
+    use super::*;
+    use crate::application::invocation_store::ToolIdentity;
+    use crate::application::ports::TokioClock;
+    use crate::infrastructure::v13_large_configuration::{
+        read_configuration_registration_index, RegistrationIndex,
+    };
+    use std::cell::Cell;
+    use std::path::Path;
+
+    fn registrations(
+        source: &ActorReadSourceCapability,
+        path: &Path,
+        builds: &Cell<usize>,
+    ) -> Arc<RegistrationIndex> {
+        source
+            .registration_cache
+            .get_or_build(&source.identity, &source.read_identity, &|| Ok(()), || {
+                builds.set(builds.get() + 1);
+                read_configuration_registration_index(
+                    std::fs::File::open(path).unwrap(),
+                    &|| Ok(()),
+                )
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn logical_read_reuses_registration_cache_and_isolates_sources_and_invocations() {
+        let workspace = tempfile::tempdir().unwrap();
+        let xml = |name: &str| {
+            format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects><Catalog>{name}</Catalog></ChildObjects></Configuration></MetaDataObject>"#
+            )
+        };
+        for name in ["parent", "ext"] {
+            std::fs::create_dir(workspace.path().join(name)).unwrap();
+            std::fs::write(
+                workspace.path().join(name).join("Configuration.xml"),
+                xml("First"),
+            )
+            .unwrap();
+        }
+        std::fs::write(workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: parent\n    type: CONFIGURATION\n    path: parent\n  - name: ext\n    type: EXTENSION\n    path: ext\n").unwrap();
+        let request = InvocationRequest::new(
+            ToolIdentity::View,
+            serde_json::json!({"at": "ext:Configuration"}),
+            std::fs::canonicalize(workspace.path())
+                .unwrap()
+                .to_string_lossy(),
+            7_000,
+        )
+        .unwrap();
+        let actors = WorkspaceActorRegistry::default();
+        let bind = || {
+            bind_workspace_invocation(
+                &request,
+                &actors,
+                Arc::default(),
+                Arc::default(),
+                Arc::default(),
+                None,
+                InvocationResponseDeadline::capture(Arc::new(TokioClock)),
+            )
+            .unwrap()
+        };
+        let cancellation = CancellationToken::new();
+        let execution = bind().begin_execution(&cancellation).unwrap();
+        let first = execution.read_sources().unwrap().remove(0);
+        let again = execution.read_sources().unwrap().remove(0);
+        assert!(
+            Arc::ptr_eq(&first.registration_cache, &again.registration_cache),
+            "reacquiring capabilities must retain the source lease's registration index"
+        );
+        let builds = Cell::new(0);
+        let path = workspace.path().join("ext/Configuration.xml");
+        let index = registrations(&first, &path, &builds);
+        let reused = registrations(&again, &path, &builds);
+        assert!(Arc::ptr_eq(&index, &reused));
+        assert_eq!(builds.get(), 1, "one lease parses Configuration.xml once");
+
+        execution
+            .admit_borrowing_parent_sources(&cancellation)
+            .unwrap();
+        let parent = execution
+            .read_sources()
+            .unwrap()
+            .into_iter()
+            .find(|source| source.source_set_name() == "parent")
+            .unwrap();
+        assert!(!Arc::ptr_eq(
+            &first.registration_cache,
+            &parent.registration_cache
+        ));
+        execution
+            .admit_borrowing_parent_sources(&cancellation)
+            .unwrap();
+        let parent_again = execution
+            .read_sources()
+            .unwrap()
+            .into_iter()
+            .find(|source| source.source_set_name() == "parent")
+            .unwrap();
+        assert!(
+            Arc::ptr_eq(&parent.registration_cache, &parent_again.registration_cache),
+            "repeated parent admission must preserve its existing read lease"
+        );
+        assert_eq!(parent.read_identity, parent_again.read_identity);
+
+        std::fs::write(&path, xml("Later")).unwrap();
+        let next_execution = bind().begin_execution(&cancellation).unwrap();
+        let next = next_execution.read_sources().unwrap().remove(0);
+        assert!(!Arc::ptr_eq(
+            &first.registration_cache,
+            &next.registration_cache
+        ));
+        assert_ne!(first.read_identity, next.read_identity);
+        let fresh = registrations(&next, &path, &builds);
+        assert_eq!(builds.get(), 2);
+        assert!(fresh.contains("Catalog", "Later", &|| Ok(())).unwrap());
+        assert!(!fresh.contains("Catalog", "First", &|| Ok(())).unwrap());
+    }
 }
 
 #[cfg(test)]

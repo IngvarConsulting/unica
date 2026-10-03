@@ -2,13 +2,14 @@ use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::events::DomainEvent;
 use crate::infrastructure::native_operations::compile_transaction::{
-    CompileTransaction, RetainedApplyChangeBinding, RetainedApplyValidationError,
-    RetainedApplyValidationErrorKind,
+    CompileTransaction, RetainedApplyChangeBinding, RetainedApplyReadGuardBinding,
+    RetainedApplyValidationError, RetainedApplyValidationErrorKind,
 };
 use crate::infrastructure::platform::filesystem::{
     FileIdentity, RetainedChildCapability, RetainedChildNameComparator, RetainedDirectoryCapability,
 };
 use crate::infrastructure::source_roots::GENERATED_DIR_NAME;
+use sha2::Digest;
 use std::ffi::{OsStr, OsString};
 use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
@@ -542,6 +543,7 @@ impl RetainedNamespaceGuard {
 pub(crate) struct ApplyStagedState {
     root: Arc<RetainedDirectoryCapability>,
     entries: Vec<StagedEntry>,
+    read_guards: std::collections::BTreeMap<FileIdentity, RetainedApplyReadGuardBinding>,
     namespaces: std::collections::BTreeMap<PathBuf, RetainedNamespaceGuard>,
     deadline: ProviderDeadline,
     cancellation: CancellationToken,
@@ -561,6 +563,7 @@ impl ApplyStagedState {
         Self {
             root,
             entries: Vec::new(),
+            read_guards: Default::default(),
             namespaces: Default::default(),
             deadline,
             cancellation,
@@ -658,6 +661,136 @@ impl ApplyStagedState {
             ));
         }
         Ok(self.entries[index].current.as_option())
+    }
+
+    /// Read one reference input without retaining its complete body in the
+    /// saved plan. The caller owns the temporary bytes only for this scan.
+    pub(crate) fn read_guarded_bounded(
+        &mut self,
+        relative: &Path,
+        limit: usize,
+    ) -> Result<Option<Vec<u8>>, ApplyStagingError> {
+        let relative = strict_relative(relative)?;
+        self.checkpoint("apply reference input")?;
+        let components = relative
+            .components()
+            .map(|part| match part {
+                Component::Normal(name) => Ok(name.to_os_string()),
+                _ => Err(ApplyStagingError::new(
+                    ApplyStagingErrorKind::ContainmentIdentity,
+                    "reference input path is not relative",
+                )),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut parent = self.root.as_ref().clone();
+        for component in &components[..components.len() - 1] {
+            self.checkpoint("apply reference input route")?;
+            if self.generated_subtree_forbidden {
+                let policy = parent
+                    .child_name_comparator()
+                    .map_err(generated_component_identity_error)?;
+                reject_generated_component(Some(&policy), component)?;
+            }
+            parent = match parent.retain_immediate_child_nofollow(component) {
+                Ok(RetainedChildCapability::Directory(child)) => child,
+                Err(error) if error.kind() == ErrorKind::NotFound => {
+                    return self.read_bounded(&relative, limit);
+                }
+                _ => {
+                    return Err(ApplyStagingError::new(
+                        ApplyStagingErrorKind::ContainmentIdentity,
+                        format!("reference input parent changed: {}", relative.display()),
+                    ))
+                }
+            };
+        }
+        let name = components.last().expect("strict path has a name").clone();
+        if self.generated_subtree_forbidden {
+            let policy = parent
+                .child_name_comparator()
+                .map_err(generated_component_identity_error)?;
+            reject_generated_component(Some(&policy), &name)?;
+        }
+        let file = match parent.retain_immediate_child_nofollow(&name) {
+            Ok(RetainedChildCapability::RegularFile(file)) => file,
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                return self.read_bounded(&relative, limit);
+            }
+            _ => {
+                return Err(ApplyStagingError::new(
+                    ApplyStagingErrorKind::ContainmentIdentity,
+                    format!(
+                        "reference input is not a regular file: {}",
+                        relative.display()
+                    ),
+                ))
+            }
+        };
+        if file.hard_link_count().map_err(|error| {
+            ApplyStagingError::new(
+                ApplyStagingErrorKind::UnsupportedProvider,
+                format!("reference input hard-link count failed: {error}"),
+            )
+        })? != 1
+        {
+            return Err(ApplyStagingError::new(
+                ApplyStagingErrorKind::ContainmentIdentity,
+                format!(
+                    "reference input has a hard-link alias: {}",
+                    relative.display()
+                ),
+            ));
+        }
+        let id = file.identity();
+        if let Some(entry) = self.entries.iter().find(|entry| {
+            matches!(&entry.target_identity, StagedTargetIdentity::Existing(existing) if *existing == id)
+        }) {
+            let current = entry.current.as_option();
+            if current.as_ref().is_some_and(|bytes| bytes.len() > limit) {
+                return Err(ApplyStagingError::new(
+                    ApplyStagingErrorKind::UnsupportedProvider,
+                    format!("staged input exceeds read bound: {}", relative.display()),
+                ));
+            }
+            return Ok(current);
+        }
+        let bytes = file
+            .read_bounded(limit.min(MAX_APPLY_FILE_BYTES))
+            .map_err(|error| {
+                ApplyStagingError::new(
+                    ApplyStagingErrorKind::UnsupportedProvider,
+                    format!("reference input fixed read bound failed: {error}"),
+                )
+            })?;
+        self.checkpoint("apply reference input result")?;
+        let digest: [u8; 32] = sha2::Sha256::digest(&bytes).into();
+        if let Some(guard) = self.read_guards.get(&id) {
+            if guard.expected_len != bytes.len() as u64 || guard.expected_sha256 != digest {
+                return Err(ApplyStagingError::new(
+                    ApplyStagingErrorKind::ConcurrentRevision,
+                    format!(
+                        "reference input changed while planning: {}",
+                        relative.display()
+                    ),
+                ));
+            }
+        } else {
+            self.read_guards.insert(
+                id,
+                RetainedApplyReadGuardBinding {
+                    root: Arc::clone(&self.root),
+                    relative_path: relative,
+                    ancestor: parent,
+                    name,
+                    original_file: file,
+                    expected_len: bytes.len() as u64,
+                    expected_sha256: digest,
+                    deadline: self.deadline,
+                    cancellation: self.cancellation.clone(),
+                },
+            );
+        }
+        Ok(Some(bytes))
     }
 
     pub(crate) fn create(
@@ -783,6 +916,22 @@ impl ApplyStagedState {
                 }
             }
         }
+        hash.update((self.read_guards.len() as u64).to_be_bytes());
+        let mut guards = self.read_guards.values().collect::<Vec<_>>();
+        guards.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+        for guard in guards {
+            self.checkpoint("apply plan reference guard")?;
+            let path = crate::infrastructure::platform::filesystem::stable_path_identity_bytes(
+                &guard.relative_path,
+            )
+            .map_err(|error| {
+                ApplyStagingError::new(ApplyStagingErrorKind::ContainmentIdentity, error)
+            })?;
+            hash.update((path.len() as u64).to_be_bytes());
+            hash.update(path);
+            hash.update(guard.expected_len.to_be_bytes());
+            hash.update(guard.expected_sha256);
+        }
         hash.update((self.namespaces.len() as u64).to_be_bytes());
         for guard in self.namespaces.values() {
             guard.fingerprint(hash)?;
@@ -824,6 +973,7 @@ impl ApplyStagedState {
             .bind_retained_apply_root(Arc::clone(&self.root), &self.writer_authority)
             .map_err(|error| ApplyStagingError::new(ApplyStagingErrorKind::Invariant, error))?;
         transaction.bind_retained_namespaces(self.namespaces.into_values().collect());
+        transaction.bind_retained_apply_read_guards(self.read_guards.into_values().collect());
         let mut entries = self.entries;
         entries.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
         for entry in entries {
@@ -1068,6 +1218,36 @@ impl ApplyStagedState {
                 ))
             }
         };
+        if let StagedTargetIdentity::Existing(identity) = target_identity
+            .as_ref()
+            .expect("regular or absent target has an identity")
+        {
+            if let Some(guard) = self.read_guards.get(identity) {
+                guard
+                    .original_file
+                    .validate_named_identity()
+                    .map_err(|error| {
+                        ApplyStagingError::new(
+                            ApplyStagingErrorKind::ConcurrentRevision,
+                            format!("reference input changed before write staging: {error}"),
+                        )
+                    })?;
+                let StagedFileState::Bytes(bytes) = &original else {
+                    unreachable!("guarded target was a regular file")
+                };
+                let digest: [u8; 32] = sha2::Sha256::digest(bytes).into();
+                if guard.expected_len != bytes.len() as u64 || guard.expected_sha256 != digest {
+                    return Err(ApplyStagingError::new(
+                        ApplyStagingErrorKind::ConcurrentRevision,
+                        format!(
+                            "reference input changed before write staging: {}",
+                            relative.display()
+                        ),
+                    ));
+                }
+                self.read_guards.remove(identity);
+            }
+        }
         self.entries.push(StagedEntry {
             relative_path: relative.to_path_buf(),
             ancestor,
@@ -1468,7 +1648,7 @@ pub(crate) mod tests {
             .unwrap();
         let mut state = staged(&root);
         let error = state
-            .read_bounded(Path::new("Huge.xml"), META_REMOVE_REFERENCE_FILE_MAX_BYTES)
+            .read_guarded_bounded(Path::new("Huge.xml"), META_REMOVE_REFERENCE_FILE_MAX_BYTES)
             .unwrap_err();
         assert!(error.to_string().contains("bound"), "{error}");
         assert!(
@@ -1478,10 +1658,272 @@ pub(crate) mod tests {
         std::fs::write(root.join("Small.xml"), "\u{feff}<Root/>".as_bytes()).unwrap();
         assert_eq!(
             state
-                .read_bounded(Path::new("Small.xml"), META_REMOVE_REFERENCE_FILE_MAX_BYTES)
+                .read_guarded_bounded(Path::new("Small.xml"), META_REMOVE_REFERENCE_FILE_MAX_BYTES)
                 .unwrap(),
             Some("\u{feff}<Root/>".as_bytes().to_vec())
         );
+        assert!(state.entries.is_empty());
+        assert_eq!(state.read_guards.len(), 1);
+    }
+
+    #[test]
+    fn reference_scan_keeps_content_guard_without_retaining_every_body() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        for name in ["A.xml", "B.xml", "C.bsl"] {
+            std::fs::write(root.join(name), b"<Reference/>\n").unwrap();
+        }
+        let mut state = staged(root);
+        for name in ["A.xml", "B.xml", "C.bsl"] {
+            assert_eq!(
+                state.read_guarded_bounded(Path::new(name), 1024).unwrap(),
+                Some(b"<Reference/>\n".to_vec())
+            );
+        }
+        assert!(
+            state.entries.is_empty(),
+            "read-only bodies must not be retained"
+        );
+        assert_eq!(state.read_guards.len(), 3);
+
+        // A later edit of an already scanned file takes ownership of its
+        // preimage. Its old read guard must not reject the plan's own write.
+        state
+            .replace("B.xml", b"<Reference/>\n", b"<Changed/>\n".to_vec())
+            .unwrap();
+        assert_eq!(state.entries.len(), 1);
+        assert_eq!(state.read_guards.len(), 2);
+    }
+
+    #[test]
+    fn guarded_read_keeps_absence_and_guard_only_plan_closed_to_generic_commit() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::write(root.join("Reference.bsl"), b"before").unwrap();
+        let mut state = staged(root);
+        assert_eq!(
+            state
+                .read_guarded_bounded(Path::new("Missing/Absent.xml"), 16)
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            state.entries.len(),
+            1,
+            "an absent input still needs its read guard"
+        );
+        let mut guarded = staged(root);
+        assert_eq!(
+            guarded
+                .read_guarded_bounded(Path::new("Reference.bsl"), 16)
+                .unwrap(),
+            Some(b"before".to_vec())
+        );
+        assert!(guarded.entries.is_empty());
+        let transaction = guarded.finalize().unwrap();
+        assert!(!transaction.is_empty());
+        assert!(
+            transaction.commit().is_err(),
+            "retained plan cannot use generic commit"
+        );
+    }
+
+    #[test]
+    fn reference_guard_rejects_same_inode_same_size_mutation_without_writing() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::write(root.join("Reference.bsl"), b"abcdef").unwrap();
+        std::fs::write(root.join("Owner.bsl"), b"before").unwrap();
+        let authority = crate::infrastructure::workspace_actor::apply_writer_authority_for_test();
+        let mut state = staged_with_authority(root, authority.clone());
+        assert_eq!(
+            state
+                .read_guarded_bounded(Path::new("Reference.bsl"), 16)
+                .unwrap(),
+            Some(b"abcdef".to_vec())
+        );
+        state
+            .replace("Owner.bsl", b"before", b"after!".to_vec())
+            .unwrap();
+        let transaction = state.finalize().unwrap();
+        std::fs::write(root.join("Reference.bsl"), b"abcdeg").unwrap();
+        let result = transaction.commit_retained_apply_with(authority, || Ok(()), || Ok(()));
+        assert!(
+            result.is_err(),
+            "same-size content edit must stale the plan"
+        );
+        assert_eq!(std::fs::read(root.join("Owner.bsl")).unwrap(), b"before");
+        assert_eq!(
+            std::fs::read(root.join("Reference.bsl")).unwrap(),
+            b"abcdeg"
+        );
+    }
+
+    #[test]
+    fn reference_guard_rejects_late_change_and_rolls_back_own_write() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::write(root.join("Reference.bsl"), b"abcdef").unwrap();
+        std::fs::write(root.join("Owner.bsl"), b"before").unwrap();
+        let authority = crate::infrastructure::workspace_actor::apply_writer_authority_for_test();
+        let mut state = staged_with_authority(root, authority.clone());
+        state
+            .read_guarded_bounded(Path::new("Reference.bsl"), 16)
+            .unwrap();
+        state
+            .replace("Owner.bsl", b"before", b"after!".to_vec())
+            .unwrap();
+        let transaction = state.finalize().unwrap();
+        let reference = root.join("Reference.bsl");
+        let owner = root.join("Owner.bsl");
+        crate::infrastructure::native_operations::compile_transaction::
+            set_retained_apply_before_post_validation_hook(move || {
+                assert_eq!(std::fs::read(&owner).unwrap(), b"after!");
+                std::fs::write(&reference, b"abcdeg").unwrap();
+            });
+        let result = transaction.commit_retained_apply_with(authority, || Ok(()), || Ok(()));
+        assert!(result.is_err(), "late reference edit must fail publication");
+        assert_eq!(std::fs::read(root.join("Owner.bsl")).unwrap(), b"before");
+        assert_eq!(
+            std::fs::read(root.join("Reference.bsl")).unwrap(),
+            b"abcdeg"
+        );
+    }
+
+    #[test]
+    fn scanned_file_promoted_to_writer_accepts_its_own_postimage() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::write(root.join("Reference.bsl"), b"before").unwrap();
+        let authority = crate::infrastructure::workspace_actor::apply_writer_authority_for_test();
+        let mut state = staged_with_authority(root, authority.clone());
+        state
+            .read_guarded_bounded(Path::new("Reference.bsl"), 16)
+            .unwrap();
+        state
+            .replace("Reference.bsl", b"before", b"after!".to_vec())
+            .unwrap();
+        assert!(state.read_guards.is_empty());
+        let transaction = state.finalize().unwrap();
+        transaction
+            .commit_retained_apply_with(authority, || Ok(()), || Ok(()))
+            .unwrap();
+        assert_eq!(
+            std::fs::read(root.join("Reference.bsl")).unwrap(),
+            b"after!"
+        );
+    }
+
+    #[test]
+    fn reference_guard_rejects_same_bytes_at_replaced_file_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::write(root.join("Reference.bsl"), b"abcdef").unwrap();
+        std::fs::write(root.join("Owner.bsl"), b"before").unwrap();
+        let authority = crate::infrastructure::workspace_actor::apply_writer_authority_for_test();
+        let mut state = staged_with_authority(root, authority.clone());
+        state
+            .read_guarded_bounded(Path::new("Reference.bsl"), 16)
+            .unwrap();
+        state
+            .replace("Owner.bsl", b"before", b"after!".to_vec())
+            .unwrap();
+        let transaction = state.finalize().unwrap();
+        std::fs::rename(root.join("Reference.bsl"), root.join("Displaced.bsl")).unwrap();
+        std::fs::write(root.join("Reference.bsl"), b"abcdef").unwrap();
+        assert!(transaction
+            .commit_retained_apply_with(authority, || Ok(()), || Ok(()))
+            .is_err());
+        assert_eq!(std::fs::read(root.join("Owner.bsl")).unwrap(), b"before");
+    }
+
+    #[test]
+    fn reference_guard_rechecks_identity_after_stream_and_rolls_back() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::write(root.join("Reference.bsl"), b"abcdef").unwrap();
+        std::fs::write(root.join("Owner.bsl"), b"before").unwrap();
+        let authority = crate::infrastructure::workspace_actor::apply_writer_authority_for_test();
+        let mut state = staged_with_authority(root, authority.clone());
+        state
+            .read_guarded_bounded(Path::new("Reference.bsl"), 16)
+            .unwrap();
+        state
+            .replace("Owner.bsl", b"before", b"after!".to_vec())
+            .unwrap();
+        let transaction = state.finalize().unwrap();
+        let reference = root.join("Reference.bsl");
+        let displaced = root.join("Displaced.bsl");
+        let owner = root.join("Owner.bsl");
+        crate::infrastructure::native_operations::compile_transaction::
+            set_retained_apply_after_reference_stream_hook(1, move || {
+                assert_eq!(std::fs::read(&owner).unwrap(), b"after!");
+                std::fs::rename(&reference, &displaced).unwrap();
+                std::fs::write(&reference, b"abcdef").unwrap();
+            });
+        let result = transaction.commit_retained_apply_with(authority, || Ok(()), || Ok(()));
+        assert!(
+            result.is_err(),
+            "the old file descriptor must not certify a replaced name"
+        );
+        assert_eq!(std::fs::read(root.join("Owner.bsl")).unwrap(), b"before");
+        assert_eq!(
+            std::fs::read(root.join("Reference.bsl")).unwrap(),
+            b"abcdef"
+        );
+    }
+
+    #[test]
+    fn reference_guard_uses_execution_cancellation_context() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::write(root.join("Reference.bsl"), b"abcdef").unwrap();
+        std::fs::write(root.join("Owner.bsl"), b"before").unwrap();
+        let authority = crate::infrastructure::workspace_actor::apply_writer_authority_for_test();
+        let old_cancellation = CancellationToken::new();
+        let canonical = std::fs::canonicalize(root).unwrap();
+        let retained = Arc::new(RetainedDirectoryCapability::open(&canonical).unwrap());
+        let mut state = ApplyStagedState::from_retained_root(
+            retained,
+            ProviderDeadline::from_budget(Duration::from_secs(5)),
+            old_cancellation.clone(),
+            authority.clone(),
+        );
+        state
+            .read_guarded_bounded(Path::new("Reference.bsl"), 16)
+            .unwrap();
+        state
+            .replace("Owner.bsl", b"before", b"after!".to_vec())
+            .unwrap();
+        let mut transaction = state.finalize().unwrap();
+        old_cancellation.cancel();
+        assert_eq!(
+            transaction
+                .validate_retained_for_apply_typed()
+                .unwrap_err()
+                .kind(),
+            super::RetainedApplyValidationErrorKind::Cancelled
+        );
+        let execution_cancellation = CancellationToken::new();
+        transaction.rebind_retained_apply_execution_context(
+            ProviderDeadline::from_budget(Duration::ZERO),
+            &execution_cancellation,
+        );
+        assert_eq!(
+            transaction
+                .validate_retained_for_apply_typed()
+                .unwrap_err()
+                .kind(),
+            super::RetainedApplyValidationErrorKind::Deadline
+        );
+        transaction.rebind_retained_apply_execution_context(
+            ProviderDeadline::from_budget(Duration::from_secs(5)),
+            &execution_cancellation,
+        );
+        transaction
+            .commit_retained_apply_with(authority, || Ok(()), || Ok(()))
+            .unwrap();
+        assert_eq!(std::fs::read(root.join("Owner.bsl")).unwrap(), b"after!");
     }
 
     #[test]
@@ -2175,6 +2617,49 @@ pub(crate) mod tests {
         assert!(report.cleanup_warnings.is_empty(), "{report:?}");
         assert_eq!(apply_directory_artifacts(&root.join("Ext")), 0);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn enumerated_source_accepts_its_new_directories_without_cache_namespace_deltas() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let cache = temp.path().join("cache");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&cache).unwrap();
+        let authority = crate::infrastructure::workspace_actor::apply_writer_authority_for_test();
+        let cache_authority = cache_participant_authority(&cache, authority.clone());
+        let mut source_state = staged_with_authority(&source, authority.clone());
+        source_state.enumerate_tree(Path::new("")).unwrap();
+        source_state
+            .create("SourceOnly/Ext/Module.bsl", b"source".to_vec())
+            .unwrap();
+        let mut cache_state = staged_with_authority(&cache, authority.clone());
+        cache_state
+            .create("CacheOnly/Ext/state.json", b"cache".to_vec())
+            .unwrap();
+        let transaction = source_state
+            .finalize()
+            .unwrap()
+            .close_with_workspace_cache_participant(
+                cache_state.finalize().unwrap(),
+                &cache_authority,
+            )
+            .unwrap();
+        let (report, ()) = transaction
+            .commit_retained_apply_with(authority, || Ok(()), || Ok(()))
+            .expect("own source directory creation must satisfy captured namespace inputs");
+        assert_eq!(
+            std::fs::read(source.join("SourceOnly/Ext/Module.bsl")).unwrap(),
+            b"source"
+        );
+        assert_eq!(
+            std::fs::read(cache.join("CacheOnly/Ext/state.json")).unwrap(),
+            b"cache"
+        );
+        assert!(!source.join("CacheOnly").exists());
+        assert!(!cache.join("SourceOnly").exists());
+        assert_eq!(report.created.len(), 2);
+        assert!(report.cleanup_warnings.is_empty());
     }
 
     #[test]

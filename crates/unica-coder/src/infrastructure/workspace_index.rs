@@ -168,10 +168,12 @@ pub(crate) fn usable_index_build(
     {
         return Ok(None);
     }
-    let directory = match status.build_id.as_deref() {
-        Some(build_id) => rlm_build_root(context, source_root, build_id)?,
-        None => rlm_generation_root(context, source_root)?,
+    // Legacy markers point to a mutable generation directory. They cannot
+    // pin a build for readers; an isolated build must replace the marker.
+    let Some(build_id) = status.build_id else {
+        return Ok(None);
     };
+    let directory = rlm_build_root(context, source_root, &build_id)?;
     let Some(db_path) = status.db_path.map(PathBuf::from) else {
         return Ok(None);
     };
@@ -179,9 +181,7 @@ pub(crate) fn usable_index_build(
         return Ok(None);
     }
     Ok(Some(UsableIndexBuild {
-        id: status
-            .build_id
-            .unwrap_or_else(|| "legacy-index-v15".to_string()),
+        id: build_id,
         directory,
         db_path,
     }))
@@ -6044,6 +6044,69 @@ source-set:
         assert_eq!(marker.build_id.as_deref(), Some(candidate_id.as_str()));
         assert_eq!(marker.source_generation, None);
         assert_eq!(marker.indexed_revision, None);
+        cleanup(&context);
+    }
+
+    #[test]
+    fn legacy_ready_marker_requires_an_isolated_build_before_becoming_active() {
+        let context = test_context("legacy-ready-isolated-migration");
+        let source_root = default_source_root(&context);
+        fs::create_dir_all(&source_root).unwrap();
+        let legacy_directory = rlm_generation_root(&context, &source_root).unwrap();
+        let legacy_db = legacy_directory.join("bsl_index.db");
+        fs::create_dir_all(&legacy_directory).unwrap();
+        fs::write(&legacy_db, b"legacy mutable database").unwrap();
+        // Older ready markers have no build_id and point into the shared
+        // generation directory, which an older builder may still overwrite.
+        write_status(&context, BslIndexStatus::ready(&source_root, &legacy_db)).unwrap();
+        let legacy_marker = fs::read(status_path(&context)).unwrap();
+        let runner = RecordingIndexRunner::default();
+        let service = WorkspaceIndexService::with_runner(&runner);
+        assert_eq!(service.active_build(&context, &source_root).unwrap(), None);
+
+        let report =
+            service.start_isolated_build(&context, &source_root, &CancellationToken::new());
+        assert_eq!(report.warnings, vec!["rlm index build started"]);
+        let job = runner.backgrounds.borrow_mut().pop().unwrap();
+        let candidate_directory = PathBuf::from(index_command_env(&job.info, "RLM_INDEX_DIR"));
+        let candidate_id = isolated_build_id(&job.info).unwrap();
+        assert_eq!(
+            candidate_directory,
+            legacy_directory.join("builds").join(&candidate_id)
+        );
+        assert_eq!(
+            PathBuf::from(index_command_env(&job.primary, "RLM_INDEX_DIR")),
+            candidate_directory
+        );
+        assert_eq!(fs::read(status_path(&context)).unwrap(), legacy_marker);
+        assert_eq!(service.active_build(&context, &source_root).unwrap(), None);
+        let candidate_db = candidate_directory.join("bsl_index.db");
+        run_background_job_with(job, |command, _lease| {
+            if command.args.get(1).is_some_and(|verb| verb == "build") {
+                fs::create_dir_all(&candidate_directory).unwrap();
+                fs::write(&candidate_db, b"isolated database").unwrap();
+                Ok(IndexOutput::success("Index built"))
+            } else {
+                Ok(IndexOutput::success(format!(
+                    "Index: {}\n  Status: fresh\n",
+                    candidate_db.display()
+                )))
+            }
+        });
+        let active = service
+            .active_build(&context, &source_root)
+            .unwrap()
+            .unwrap();
+        assert_eq!(active.id, candidate_id);
+        assert_eq!(active.directory, candidate_directory);
+        assert_eq!(active.db_path, candidate_db);
+        assert_eq!(fs::read(&legacy_db).unwrap(), b"legacy mutable database");
+        fs::write(&legacy_db, b"rewritten by legacy builder").unwrap();
+        assert_eq!(fs::read(&active.db_path).unwrap(), b"isolated database");
+        assert_eq!(
+            service.active_build(&context, &source_root).unwrap(),
+            Some(active)
+        );
         cleanup(&context);
     }
 

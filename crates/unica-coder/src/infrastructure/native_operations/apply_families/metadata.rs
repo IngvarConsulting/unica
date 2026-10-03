@@ -1449,7 +1449,7 @@ fn stage_object_remove(
             continue;
         }
         let bytes = staged
-            .read_bounded(relative, META_REMOVE_REFERENCE_FILE_MAX_BYTES)
+            .read_guarded_bounded(relative, META_REMOVE_REFERENCE_FILE_MAX_BYTES)
             .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
             .ok_or_else(|| {
                 ApplyPlanError::new(

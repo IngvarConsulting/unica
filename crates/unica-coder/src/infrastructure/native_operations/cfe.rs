@@ -1366,9 +1366,9 @@ impl CfeBorrowIdentity {
         let digest = hash.finalize();
         let mut bytes = [0_u8; 16];
         bytes.copy_from_slice(&digest[..16]);
-        bytes[6] = (bytes[6] & 0x0f) | 0x40;
-        bytes[8] = (bytes[8] & 0x3f) | 0x80;
-        uuid::Uuid::from_bytes(bytes).to_string()
+        uuid::Builder::from_custom_bytes(bytes)
+            .into_uuid()
+            .to_string()
     }
 
     fn read(text: &str, child_name: &str) -> Result<Self, String> {
@@ -8845,6 +8845,21 @@ pub(crate) mod tests {
         assert_eq!(fs::read(&owner).unwrap(), before);
 
         let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn seeded_borrow_uuid_is_custom_and_separates_seed_role_and_name() {
+        let identity = super::CfeBorrowIdentity::for_plan([1; 32]);
+        let value = identity.new_uuid("wrapper", "Demo");
+        let parsed = uuid::Uuid::parse_str(&value).unwrap();
+        assert_eq!(parsed.get_version_num(), 8);
+        assert_eq!(value, identity.new_uuid("wrapper", "Demo"));
+        assert_ne!(value, identity.new_uuid("node", "Demo"));
+        assert_ne!(value, identity.new_uuid("wrapper", "Other"));
+        assert_ne!(
+            value,
+            super::CfeBorrowIdentity::for_plan([2; 32]).new_uuid("wrapper", "Demo")
+        );
     }
 
     /// With an unchanged parent, a descriptor keeps its identity, so

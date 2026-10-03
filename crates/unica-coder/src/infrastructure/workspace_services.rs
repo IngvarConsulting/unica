@@ -7356,9 +7356,14 @@ fn main() {
         source_root: &Path,
         revision: &SourceRevision,
     ) {
+        // Sessions pin one immutable build, not the legacy mutable generation
+        // directory; source changes and maintenance must keep this DB usable.
+        let build_id = uuid::Uuid::new_v4().simple().to_string();
         let db_path = rlm_generation_root(context, source_root)
             .unwrap()
-            .join("test/bsl_index.db");
+            .join("builds")
+            .join(&build_id)
+            .join("bsl_index.db");
         fs::create_dir_all(db_path.parent().unwrap()).unwrap();
         fs::write(&db_path, "ready index").unwrap();
         let status = crate::infrastructure::workspace_index::BslIndexStatus {
@@ -7370,7 +7375,7 @@ fn main() {
             source_generation: Some(revision.generation),
             indexed_revision: Some(revision.clone()),
             observed_revision: None,
-            build_id: None,
+            build_id: Some(build_id.clone()),
             next_action: None,
             updated_at: now_secs_for_test(),
             last_run: None,
@@ -7383,6 +7388,12 @@ fn main() {
             serde_json::to_string_pretty(&status).unwrap() + "\n",
         )
         .unwrap();
+        let active =
+            crate::infrastructure::workspace_index::usable_index_build(context, source_root)
+                .unwrap()
+                .expect("the session fixture must publish a usable isolated build");
+        assert_eq!(active.id, build_id);
+        assert_eq!(active.db_path, db_path);
     }
 
     fn write_active_rlm_index_lock(context: &WorkspaceContext, source_root: &Path) {

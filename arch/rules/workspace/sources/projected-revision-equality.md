@@ -1,6 +1,9 @@
 ---
 id: INV.SOURCE.REVISION-PROJECTION-CAPTURE-EQUALITY
 check:
+  - crates/unica-coder/src/infrastructure/native_operations/apply.rs::reference_scan_keeps_content_guard_without_retaining_every_body
+  - crates/unica-coder/src/infrastructure/native_operations/apply.rs::reference_guard_rejects_same_inode_same_size_mutation_without_writing
+  - crates/unica-coder/src/infrastructure/native_operations/apply.rs::reference_guard_rechecks_identity_after_stream_and_rolls_back
   - crates/unica-coder/src/infrastructure/workspace_actor.rs::apply_plan_fence_is_targeted_and_binds_read_only_inputs
   - crates/unica-coder/src/infrastructure/workspace_actor.rs::disjoint_apply_plans_publish_without_a_global_revision_conflict
   - crates/unica-coder/src/infrastructure/native_operations/apply.rs::read_only_absence_below_missing_parent_is_guarded_without_creating_it
@@ -10,7 +13,7 @@ check:
 
 # Предпросмотр связывает применение с прочитанными входами плана
 
-`apply` связывает `ifRev` с конкретным планом предпросмотра: операциями и их
+`apply` связывает `executionToken` с конкретным планом предпросмотра: операциями и их
 аргументами, прочитанными входами, доказанным отсутствием файлов и ожидаемыми
 результатами записи. Вход, который план только читает, защищается так же,
 как изменяемый файл. Изменение любого из этих условий требует нового

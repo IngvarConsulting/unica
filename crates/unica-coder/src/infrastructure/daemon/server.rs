@@ -3881,7 +3881,7 @@ fn main() {
             ("read_identity", "source.read_identity.clone()"),
             (
                 "registration_cache",
-                "Arc::new(RegistrationCache::default())",
+                "Arc::clone(&source.registration_cache)",
             ),
             (
                 "identity",
@@ -5057,6 +5057,10 @@ struct ActorLogicalReadLease {"#,
             (
                 "deadline: lease.deadline,",
                 "deadline: ProviderDeadline::from_budget(LOGICAL_READ_OPERATION_BUDGET),",
+            ),
+            (
+                "registration_cache: Arc::clone(&source.registration_cache),",
+                "registration_cache: Arc::new(RegistrationCache::default()),",
             ),
         ];
         let mut accepted = Vec::new();
