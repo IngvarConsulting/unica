@@ -5735,6 +5735,73 @@ fn canonical_dcs_validation_keeps_captured_owner_format_warnings() {
             );
         }
     }
+
+    let fixture = RealExternalReaderFixture::new();
+    let template_owner = fixture_text(
+        "unica_mcp_script_parity/template-remove/ParityReport/Templates/MainSchema.xml",
+    );
+    let dcs = fixture_text("unica_mcp_script_parity/dcs-validate/BadPrefix.xml").replace(
+        "xmlns:bad=\"http://example.com\">bad:CatalogRef.X",
+        ">xs:string",
+    );
+    for (source_set, kind, object_kind, name, source) in [
+        (
+            "artifact_report",
+            SourceSetKind::ExternalReport,
+            "ExternalReport",
+            "Sales",
+            &fixture.report,
+        ),
+        (
+            "artifact_processor",
+            SourceSetKind::ExternalProcessor,
+            "ExternalDataProcessor",
+            "Import",
+            &fixture.processor,
+        ),
+    ] {
+        let owner = source.join(format!("{name}.xml"));
+        let original = fs::read_to_string(&owner).unwrap().replace(
+            "</ChildObjects>",
+            "<Template>MainSchema</Template></ChildObjects>",
+        );
+        write(
+            &source.join(format!("{name}/Templates/MainSchema.xml")),
+            &template_owner,
+        );
+        write(
+            &source.join(format!("{name}/Templates/MainSchema/Ext/Template.xml")),
+            &dcs,
+        );
+        // Only the external root has the older format; its Template stays 2.20.
+        fs::write(
+            &owner,
+            original.replace("version=\"2.20\"", "version=\"2.19\""),
+        )
+        .unwrap();
+        let address = QualifiedAddress::parse(&format!(
+            "{source_set}:{object_kind}.{name}.Template.MainSchema"
+        ))
+        .unwrap();
+        let input = fixture
+            .read_authority(source_set, kind)
+            .dcs_validation_input(&address)
+            .unwrap();
+        fs::write(&owner, &original).unwrap();
+        let checked = crate::application::v13::check::normalize_native_outcome(
+            &address,
+            "Template",
+            crate::application::v13::check::CheckValidator::Dcs,
+            crate::infrastructure::native_operations::v13_analysis::validate_dcs_input(input),
+        )
+        .unwrap();
+        assert_eq!(
+            checked.diagnostics()[0].code(),
+            "formatMigrationAvailable",
+            "{source_set}: restored owner bytes must not replace captured format evidence"
+        );
+        assert_eq!(fs::read_to_string(&owner).unwrap(), original);
+    }
 }
 
 #[test]
