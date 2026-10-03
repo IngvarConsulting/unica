@@ -359,8 +359,7 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                             "op": {"type": "string", "description": "Runner 1.0 operation name; omit to list the target dictionary and adapter support."},
                             "infobase": {"type":"string", "description":"Named infobase; defaults to origin. The runner 0.11 adapter supports only origin."},
                             "args": data_object("Typed arguments for the selected operation."),
-                            "dryRun": {"type": "boolean", "description": "Required by previewApply operations: true returns a non-mutating plan and revision; false requires ifRev and applies that plan."},
-                            "ifRev": {"type": "string", "description": "Revision returned by a prior preview of the same previewApply operation; required when dryRun is false."},
+                            "dryRun": {"type": "boolean", "description": "Required by previewApply operations: true returns a non-mutating preview; false executes with the current arguments without requiring a prior preview."},
                         }),
                         json!([]),
                     ),
@@ -768,7 +767,7 @@ mod tests {
             &catalog.tools,
             "run",
             json!([]),
-            &["op", "infobase", "args", "dryRun", "ifRev"],
+            &["op", "infobase", "args", "dryRun"],
         );
         assert_schema(
             &catalog.tools,
@@ -789,7 +788,6 @@ mod tests {
             ("diff", "right"),
             ("diff", "cursor"),
             ("run", "op"),
-            ("run", "ifRev"),
             ("docs", "query"),
             ("docs", "source"),
             ("docs", "cursor"),
@@ -1304,22 +1302,22 @@ mod tests {
     }
 
     #[test]
-    fn run_preview_apply_fields_describe_the_execution_protocol() {
+    fn run_schema_accepts_direct_execution_and_rejects_revision_arguments() {
         let catalog =
             catalog_for(SurfaceRelease::V13).expect("v0.13 catalog must be test-loadable");
-        for field in ["dryRun", "ifRev"] {
-            let description = input_field(&catalog.tools, "run", field)["description"]
-                .as_str()
-                .expect("run protocol field description");
-            assert!(
-                description.contains("previewApply"),
-                "unica.run.{field} must describe the previewApply execution protocol: {description}"
-            );
-            assert!(
-                !description.contains("workspace-mutating"),
-                "unica.run.{field} must also cover infobase and artifact effects: {description}"
-            );
+        let contract = catalog
+            .tools
+            .iter()
+            .find(|tool| tool.name == "run")
+            .unwrap();
+        let validator = jsonschema::validator_for(&contract.input_schema).unwrap();
+        for dry_run in [true, false] {
+            let mut arguments = json!({"op":"infobase.create", "args":{}, "dryRun":dry_run});
+            assert!(validator.is_valid(&arguments));
+            arguments["ifRev"] = json!("old-preview");
+            assert!(!validator.is_valid(&arguments));
         }
+        assert!(!validator.is_valid(&json!({"op":"infobase.create", "args":{}, "dryRun":"false"})));
     }
 
     #[test]

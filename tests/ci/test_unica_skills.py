@@ -59,7 +59,6 @@ LIST_ITEM_PREFIX = re.compile(
     r"^[ \t]*(?:[-+*]|[0-9]{1,9}[.)])[ \t]+"
 )
 INDENTED_CODE_LINE = re.compile(r"^(?: {4}|\t)(?P<content>.*)$")
-DRY_RUN_FALSE = re.compile(r'"dryRun"\s*:\s*false\b')
 
 
 def markdown_container_content(line: str) -> str:
@@ -71,7 +70,8 @@ def markdown_container_content(line: str) -> str:
         line = content
 
 
-def fenced_json_blocks(text: str) -> list[str]:
+def markdown_fenced_blocks(text: str) -> list[tuple[int, int, str, str]]:
+    """Return each fence's line range, language and body once for both guards."""
     lines = text.splitlines()
     blocks = []
     line_number = 0
@@ -83,6 +83,7 @@ def fenced_json_blocks(text: str) -> list[str]:
             line_number += 1
             continue
 
+        start = line_number
         fence = opening.group("fence")
         closing = re.compile(
             rf"^[ \t]*{re.escape(fence[0])}{{{len(fence)},}}[ \t]*$"
@@ -101,11 +102,18 @@ def fenced_json_blocks(text: str) -> list[str]:
             body.append(markdown_container_content(lines[line_number]))
             line_number += 1
         block = "\n".join(body)
-        if language == "json" or block_mentions_runtime_tool(block):
-            blocks.append(block)
         if line_number < len(lines):
             line_number += 1
+        blocks.append((start, line_number, language, block))
     return blocks
+
+
+def fenced_json_blocks(text: str) -> list[str]:
+    return [
+        block
+        for _, _, language, block in markdown_fenced_blocks(text)
+        if language == "json" or block_mentions_runtime_tool(block)
+    ]
 
 
 def decode_active_json_unicode_escapes(text: str) -> str:
@@ -145,7 +153,16 @@ def block_mentions_runtime_tool(block: str) -> bool:
 def indented_code_blocks(text: str) -> list[str]:
     blocks = []
     current = []
-    for line in text.splitlines():
+    fence_ends = {start: end for start, end, _, _ in markdown_fenced_blocks(text)}
+    fenced_until = 0
+    for line_number, line in enumerate(text.splitlines()):
+        if line_number in fence_ends:
+            if current:
+                blocks.append("\n".join(current))
+                current = []
+            fenced_until = fence_ends[line_number]
+        if line_number < fenced_until:
+            continue
         indented = INDENTED_CODE_LINE.match(line)
         if indented is not None:
             current.append(indented.group("content"))
@@ -161,37 +178,36 @@ def indented_code_blocks(text: str) -> list[str]:
     return blocks
 
 
-def runtime_arguments_have_if_rev(block: str) -> bool:
-    """`ifRev` counts only inside `params.arguments`; a malformed block is
-    judged by its text, because it cannot be judged by its shape."""
-    try:
-        payload = json.loads(decode_active_json_unicode_escapes(block))
-    except json.JSONDecodeError:
-        return '"ifRev"' in block
-    candidates = payload if isinstance(payload, list) else [payload]
-    for candidate in candidates:
-        if not isinstance(candidate, dict):
-            continue
-        arguments = candidate.get("params", {}).get("arguments", {})
-        if not isinstance(arguments, dict):
-            return False
-        if arguments.get("dryRun") is False and not (
-            isinstance(arguments.get("ifRev"), str) and arguments["ifRev"]
-        ):
-            return False
+def validate_runtime_example(candidate: object, label: str) -> bool:
+    """Check only unica.run arguments, including decoded JSON field names."""
+    if not isinstance(candidate, dict):
+        return False
+    params = candidate.get("params")
+    if not isinstance(params, dict) or params.get("name") != "unica.run":
+        return False
+    arguments = params.get("arguments", {})
+    if not isinstance(arguments, dict):
+        raise ValueError(f"{label} requires an arguments object")
+    if "ifRev" in arguments:
+        raise ValueError(f"{label} uses retired unica.run argument ifRev")
+    needs_dry_run = arguments.get("op") not in (None, "launch")
+    if (needs_dry_run or "dryRun" in arguments) and type(arguments.get("dryRun")) is not bool:
+        raise ValueError(f"{label} requires explicit boolean dryRun inside arguments")
     return True
 
 
-def reject_indented_applied_runtime_examples(text: str) -> None:
+def validate_indented_runtime_examples(text: str) -> None:
     for block_number, block in enumerate(indented_code_blocks(text), start=1):
-        if (
-            block_mentions_runtime_tool(block)
-            and DRY_RUN_FALSE.search(block)
-            and not runtime_arguments_have_if_rev(block)
-        ):
-            raise ValueError(
-                f"indented runtime JSON example #{block_number} applies without ifRev"
-            )
+        if not block_mentions_runtime_tool(block):
+            continue
+        label = f"indented runtime JSON example #{block_number}"
+        try:
+            payload = json.loads(block)
+        except json.JSONDecodeError as error:
+            raise ValueError(f"invalid {label}: {error}") from error
+        candidates = payload if isinstance(payload, list) else [payload]
+        for candidate in candidates:
+            validate_runtime_example(candidate, label)
 
 
 def runtime_execute_json_examples(text: str) -> list[dict]:
@@ -207,19 +223,13 @@ def runtime_execute_json_examples(text: str) -> list[dict]:
             continue
         candidates = payload if isinstance(payload, list) else [payload]
         for candidate in candidates:
-            if not isinstance(candidate, dict):
-                continue
-            params = candidate.get("params")
-            if not isinstance(params, dict):
-                continue
-            if params.get("name") != "unica.run":
-                continue
-            examples.append(candidate)
+            if validate_runtime_example(candidate, f"fenced runtime JSON example #{block_number}"):
+                examples.append(candidate)
     return examples
 
 
 def runtime_guidance_document(text: str) -> tuple[bool, list[dict]]:
-    reject_indented_applied_runtime_examples(text)
+    validate_indented_runtime_examples(text)
     examples = runtime_execute_json_examples(text)
     return (
         bool(examples) or "`unica.run`" in text or "v8-runner" in text,
@@ -1801,7 +1811,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertTrue(is_runtime_document)
         self.assertEqual(len(payloads), 1)
 
-    def test_runtime_guidance_document_rejects_indented_applied_runtime_example(
+    def test_runtime_guidance_document_accepts_indented_applied_runtime_example(
         self,
     ) -> None:
         example = """
@@ -1814,21 +1824,74 @@ class UnicaSkillRoutingTests(unittest.TestCase):
     }
 """
 
-        with self.assertRaisesRegex(ValueError, "indented runtime JSON example"):
-            runtime_guidance_document(example)
+        runtime_guidance_document(example)
 
-    def test_indented_runtime_example_needs_if_rev_inside_arguments(self) -> None:
+    def test_runtime_example_requires_explicit_boolean_inside_arguments(self) -> None:
         outside = (
-            '    {"ifRev": "note", "params": {"name": "unica.run", '
-            '"arguments": {"op": "upload", "dryRun": false}}}\n'
+            '    {"dryRun": false, "params": {"name": "unica.run", '
+            '"arguments": {"op": "upload"}}}\n'
         )
-        with self.assertRaisesRegex(ValueError, "applies without ifRev"):
-            reject_indented_applied_runtime_examples(outside)
+        with self.assertRaisesRegex(ValueError, "explicit boolean dryRun"):
+            validate_indented_runtime_examples(outside)
         inside = (
             '    {"params": {"name": "unica.run", "arguments": '
-            '{"op": "upload", "dryRun": false, "ifRev": "unica-cf-import-sha256-v1:abc"}}}\n'
+            '{"op": "upload", "dryRun": false}}}\n'
         )
-        reject_indented_applied_runtime_examples(inside)
+        validate_indented_runtime_examples(inside)
+
+    def test_runtime_example_guard_rejects_revisions_and_non_boolean_modes(self) -> None:
+        for arguments in [
+            {"op": "upload"},
+            *({"op": "upload", "dryRun": value} for value in [None, 0, 1, "false"]),
+            {"op": "upload", "dryRun": False, "ifRev": "old"},
+            {"op": "upload", "dryRun": True, "ifRev": None},
+            {"op": "launch", "ifRev": "old"},
+        ]:
+            payload = {"params": {"name": "unica.run", "arguments": arguments}}
+            text = json.dumps(payload).replace('"ifRev"', '"if\\u0052ev"')
+            for document in [f"```json\n{text}\n```", f"    {text}\n"]:
+                with self.subTest(arguments=arguments, document=document):
+                    with self.assertRaises(ValueError):
+                        runtime_guidance_document(document)
+
+    def test_runtime_example_guard_preserves_dictionary_launch_and_other_tools(self) -> None:
+        for arguments in [{}, {"op": "launch"}, {"op": "launch", "dryRun": True},
+                          {"op": "upload", "dryRun": True}, {"op": "upload", "dryRun": False}]:
+            payload = {"params": {"name": "unica.run", "arguments": arguments}}
+            self.assertEqual(runtime_execute_json_examples(f"```json\n{json.dumps(payload)}\n```"), [payload])
+        mixed = [
+            {"params": {"name": "unica.apply", "arguments": {"executionToken": "saved"}}},
+            {"params": {"name": "another.tool", "arguments": {"ifRev": "unrelated"}}},
+            {"params": {"name": "unica.run", "arguments": {"op": "make", "dryRun": False}}},
+        ]
+        self.assertEqual(runtime_execute_json_examples(f"```json\n{json.dumps(mixed)}\n```"), [mixed[2]])
+
+    def test_runtime_guard_does_not_parse_fenced_json_indentation_twice(self) -> None:
+        payload = {"params": {"name": "unica.run", "arguments": {"op": "make", "dryRun": True}}}
+        body = json.dumps(payload, indent=4)
+        for opening, closing, prefix in [
+            ("```json", "```", ""),
+            ("~~~~JSON", "~~~~", ""),
+            ("```json title=request", "```", "> "),
+        ]:
+            document = "\n".join(prefix + line for line in [opening, *body.splitlines(), closing])
+            with self.subTest(opening=opening, prefix=prefix):
+                self.assertEqual(runtime_guidance_document(document), (True, [payload]))
+                self.assertEqual(indented_code_blocks(document), [])
+                for arguments, reason in [
+                    ({"op": "make", "dryRun": False, "ifRev": "retired"}, "retired unica.run argument ifRev"),
+                    ({"op": "make"}, "explicit boolean dryRun"),
+                ]:
+                    invalid = {"params": {"name": "unica.run", "arguments": arguments}}
+                    invalid_lines = json.dumps(invalid, indent=4).splitlines()
+                    # The fence guard must still inspect deeply indented JSON;
+                    # the indented guard must resume after the closing fence.
+                    fenced = "\n".join(prefix + line for line in [opening, *invalid_lines, closing])
+                    indented = "\n".join("    " + line for line in invalid_lines)
+                    for invalid_document in [fenced, indented, document + "\n\n" + indented]:
+                        with self.subTest(arguments=arguments, document=invalid_document):
+                            with self.assertRaisesRegex(ValueError, reason):
+                                runtime_guidance_document(invalid_document)
 
     def test_runtime_guidance_collection_skips_parse_failures_without_stale_payloads(
         self,
@@ -1913,14 +1976,12 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                 path=doc.relative_to(self.repo_root()),
                 operation=arguments.get("op"),
             ):
-                # An apply carries the revision its preview returned.
-                if arguments.get("op") != "launch":
-                    self.assertIn("dryRun", arguments)
-                if arguments.get("dryRun") is False:
-                    self.assertIn("ifRev", arguments)
+                if arguments.get("op") not in (None, "launch"):
+                    self.assertIs(type(arguments.get("dryRun")), bool)
+                self.assertNotIn("ifRev", arguments)
 
         # The dictionary owns the contract: guidance points at `unica.run` and
-        # does not restate per-operation risk codes or dryRun/ifRev rules.
+        # does not restate per-operation risk codes.
         contract_tokens = ("`unica.run`",)
         forbidden_applied_claims = (
             r"запускай следующую необходимую операцию",

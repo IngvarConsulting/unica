@@ -8495,14 +8495,58 @@ struct ActorLogicalReadLease {"#,
             );
             assert_eq!(entry["implemented"], operation.implemented, "{name}");
             let preview_apply = operation.execution() == "previewApply";
-            assert_eq!(entry["previewRequired"], preview_apply, "{name}");
-            assert_eq!(entry["ifRevRequiredOnApply"], preview_apply, "{name}");
+            assert_eq!(entry["dryRunRequired"], preview_apply, "{name}");
+            assert_eq!(entry["previewRequired"], false, "{name}");
+            assert!(entry.get("ifRevRequiredOnApply").is_none(), "{name}");
         }
         assert_eq!(preparations.load(Ordering::SeqCst), 0);
     }
 
     #[test]
-    fn v5_infobase_exports_prepare_before_source_admission_and_keep_the_revision_gate() {
+    fn v5_run_rejects_if_rev_before_workspace_or_provider_admission() {
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::write(workspace.path().join("v8project.yaml"), "not: [valid yaml").unwrap();
+        let preparations = Arc::new(AtomicUsize::new(0));
+        let runtime = V5CanonicalInvocationRuntime::new(
+            Arc::new(CountingPrepareService {
+                preparations: Arc::clone(&preparations),
+            }),
+            Arc::new(TokioClock),
+        );
+        let catalog =
+            crate::application::v13::tool_catalog::catalog_for(SurfaceRelease::V13).unwrap();
+        let contract = catalog
+            .tools
+            .iter()
+            .find(|tool| tool.name == "run")
+            .unwrap();
+        assert!(contract.input_schema["properties"].get("ifRev").is_none());
+        assert_eq!(contract.input_schema["additionalProperties"], false);
+        for operation in &catalog.run_dictionary {
+            let request = InvocationRequest::new(
+                ToolIdentity::Run,
+                serde_json::json!({
+                    "op": operation.name(), "args": {}, "dryRun": false, "ifRev": "old-preview"
+                }),
+                workspace.path().display().to_string(),
+                7_000,
+            )
+            .unwrap();
+            let result = match runtime.bind(request) {
+                Err(V5CanonicalPrepareError::Rejected(result)) => result,
+                Ok(_) => panic!("{} accepted the removed ifRev argument", operation.name()),
+                Err(other) => panic!("request reached workspace admission: {other:?}"),
+            };
+            assert_eq!(result.diagnostics[0]["code"], "bad_value", "{result:?}");
+            assert!(result.rev.is_none());
+        }
+        assert_eq!(preparations.load(Ordering::SeqCst), 0);
+        assert_eq!(runtime.workspace_actors.entry_len_for_test().unwrap(), 0);
+        assert!(!workspace.path().join(".build").exists());
+    }
+
+    #[test]
+    fn v5_infobase_exports_prepare_before_source_admission_and_run_without_a_revision_gate() {
         let workspace = tempfile::tempdir().expect("temporary infobase workspace");
         std::fs::write(
             workspace.path().join("v8project.yaml"),
@@ -8522,15 +8566,12 @@ struct ActorLogicalReadLease {"#,
             }),
             Arc::new(TokioClock),
         );
-        let request = |op: &str, args: serde_json::Value, dry_run: bool, if_rev: Option<&str>| {
-            let mut arguments = serde_json::json!({
+        let request = |op: &str, args: serde_json::Value, dry_run: bool| {
+            let arguments = serde_json::json!({
                 "op": op,
                 "args": args,
                 "dryRun": dry_run,
             });
-            if let Some(if_rev) = if_rev {
-                arguments["ifRev"] = serde_json::json!(if_rev);
-            }
             InvocationRequest::new(
                 ToolIdentity::Run,
                 arguments,
@@ -8553,7 +8594,7 @@ struct ActorLogicalReadLease {"#,
             ),
         ] {
             let preview = runtime
-                .bind(request(op, args.clone(), true, None))
+                .bind(request(op, args.clone(), true))
                 .expect("preview binds without a PlatformXml source set")
                 .prepare()
                 .expect("preview preparation");
@@ -8563,13 +8604,8 @@ struct ActorLogicalReadLease {"#,
             );
 
             let apply = runtime
-                .bind(request(
-                    op,
-                    args,
-                    false,
-                    Some("unica-infobase-export-sha256-v1:test"),
-                ))
-                .expect("revision-bound apply binds without a PlatformXml source set")
+                .bind(request(op, args, false))
+                .expect("execution binds without a prior preview or revision")
                 .prepare()
                 .expect("apply preparation");
             assert_eq!(
@@ -8578,21 +8614,6 @@ struct ActorLogicalReadLease {"#,
             );
         }
 
-        let missing_revision = match runtime.bind(request(
-            "download",
-            serde_json::json!({"state": "working", "output": "dist/main.cf"}),
-            false,
-            None,
-        )) {
-            Err(V5CanonicalPrepareError::Rejected(result)) => result,
-            Ok(_) => panic!("apply without ifRev passed the revision gate"),
-            Err(other) => panic!("apply revision gate returned infrastructure failure: {other:?}"),
-        };
-        assert_eq!(missing_revision.diagnostics[0]["code"], "bad_value");
-        assert!(missing_revision.diagnostics[0]["message"]
-            .as_str()
-            .unwrap()
-            .contains("requires ifRev"));
         assert_eq!(
             preparations.load(Ordering::SeqCst),
             0,
@@ -8657,10 +8678,7 @@ struct ActorLogicalReadLease {"#,
             Err(other) => panic!("ifRev on launch returned infrastructure failure: {other:?}"),
         };
         assert_eq!(fenced.diagnostics[0]["code"], "bad_value");
-        assert!(fenced.diagnostics[0]["message"]
-            .as_str()
-            .unwrap()
-            .contains("takes no ifRev"));
+        assert!(runtime.workspace_actors.entry_len_for_test().unwrap() == 0);
         assert_eq!(
             preparations.load(Ordering::SeqCst),
             0,
@@ -8692,11 +8710,8 @@ struct ActorLogicalReadLease {"#,
             if op != selected {
                 continue;
             }
-            for dry_run in [true, false] {
-                let mut arguments = serde_json::json!({"op":op,"args":args,"dryRun":dry_run});
-                if !dry_run {
-                    arguments["ifRev"] = serde_json::json!("preview-revision");
-                }
+            for dry_run in [false, true] {
+                let arguments = serde_json::json!({"op":op,"args":args,"dryRun":dry_run});
                 let request = InvocationRequest::new(
                     ToolIdentity::Run,
                     arguments,
@@ -8713,54 +8728,38 @@ struct ActorLogicalReadLease {"#,
                     &ExecutionClass::KnownLong(KnownLongReason::ExternalProcess)
                 );
             }
-            let request = InvocationRequest::new(
-                ToolIdentity::Run,
-                serde_json::json!({"op":op,"args":args,"dryRun":false}),
-                workspace.path().display().to_string(),
-                7000,
-            )
-            .unwrap();
-            match runtime.bind(request) {
-                Err(V5CanonicalPrepareError::Rejected(result)) => {
-                    assert_eq!(result.diagnostics[0]["code"], "bad_value", "{op}")
-                }
-                _ => panic!("{op} accepted a mutation without its revision"),
-            }
         }
         assert_eq!(preparations.load(Ordering::SeqCst), 0);
     }
 
     #[test]
-    fn v5_cf_import_prepares_before_source_admission_and_keeps_the_revision_gate() {
+    fn v5_cf_import_prepares_before_source_admission_and_runs_without_a_revision_gate() {
         assert_development_cycle_admission("upload");
     }
 
     #[test]
-    fn v5_infobase_create_prepares_before_source_admission_and_keeps_the_revision_gate() {
+    fn v5_infobase_create_prepares_before_source_admission_and_runs_without_a_revision_gate() {
         assert_development_cycle_admission("infobase.create");
     }
 
     #[test]
-    fn v5_source_import_prepares_before_source_admission_and_keeps_the_revision_gate() {
+    fn v5_source_import_prepares_before_source_admission_and_runs_without_a_revision_gate() {
         assert_development_cycle_admission("push");
     }
 
     #[test]
-    fn v5_source_export_prepares_before_source_admission_and_keeps_the_revision_gate() {
+    fn v5_source_export_prepares_before_source_admission_and_runs_without_a_revision_gate() {
         assert_development_cycle_admission("pull");
     }
 
     #[test]
-    fn v5_development_cycle_prepares_before_source_admission_and_keeps_revision_gate() {
+    fn v5_development_cycle_prepares_before_source_admission_and_runs_without_a_revision_gate() {
         assert_development_cycle_admission("apply");
         assert_development_cycle_admission("reset");
     }
 
     #[test]
-    fn v5_artifact_build_prepares_before_source_admission_and_keeps_the_revision_gate() {
-        // A-7 зонтика #871: сборка CF/CFE из исходников — previewApply с
-        // забором, готовится до admission PlatformXml и известна длинной по
-        // внешнему процессу; применение без `ifRev` отказывает `bad_value`.
+    fn v5_artifact_build_prepares_before_source_admission_and_runs_without_a_revision_gate() {
         let workspace = tempfile::tempdir().expect("temporary make workspace");
         std::fs::write(
             workspace.path().join("v8project.yaml"),
@@ -8788,7 +8787,7 @@ struct ActorLogicalReadLease {"#,
 
         for arguments in [
             serde_json::json!({"op": "make", "args": {"output": "dist/main.cf"}, "dryRun": true}),
-            serde_json::json!({"op": "make", "args": {"output": "dist/main.cf", "sourceSet": "main"}, "dryRun": false, "ifRev": "unica-artifact-build-sha256-v1:test"}),
+            serde_json::json!({"op": "make", "args": {"output": "dist/main.cf", "sourceSet": "main"}, "dryRun": false}),
         ] {
             let bound = runtime
                 .bind(request(arguments))
@@ -8804,20 +8803,6 @@ struct ActorLogicalReadLease {"#,
             );
         }
 
-        let unfenced = match runtime.bind(request(serde_json::json!({
-            "op": "make",
-            "args": {"output": "dist/main.cf"},
-            "dryRun": false,
-        }))) {
-            Err(V5CanonicalPrepareError::Rejected(result)) => result,
-            Ok(_) => panic!("an apply without ifRev was accepted"),
-            Err(other) => panic!("apply without ifRev returned infrastructure failure: {other:?}"),
-        };
-        assert_eq!(unfenced.diagnostics[0]["code"], "bad_value");
-        assert!(unfenced.diagnostics[0]["message"]
-            .as_str()
-            .unwrap()
-            .contains("requires ifRev"));
         let external = match runtime.bind(request(serde_json::json!({
             "op": "make",
             "args": {"output": "dist/report.epf"},
@@ -9180,24 +9165,62 @@ fn main() {
         let workspace = std::fs::canonicalize(workspace).unwrap();
         let daemon = LiveV5Daemon::start(canonical_v13_service());
         let owner = daemon.owner();
-        let request = |dry_run: bool, if_rev: Option<&str>| {
-            let mut args = serde_json::json!({"op":"infobase.create","args":{},"dryRun":dry_run});
-            if let Some(rev) = if_rev {
-                args["ifRev"] = serde_json::json!(rev);
+        // A separate workspace executes its first public call directly. The
+        // provider's internal preflight and factual receipt remain required.
+        let direct_workspace = root.path().join("direct-workspace");
+        std::fs::create_dir(&direct_workspace).unwrap();
+        std::fs::copy(
+            workspace.join("v8project.yaml"),
+            direct_workspace.join("v8project.yaml"),
+        )
+        .unwrap();
+        std::fs::write(
+            direct_workspace.join("release.marker"),
+            "allow direct execution",
+        )
+        .unwrap();
+        let direct_request = InvocationRequest::new(
+            ToolIdentity::Run,
+            serde_json::json!({"op":"infobase.create", "args":{}, "dryRun":false}),
+            std::fs::canonicalize(&direct_workspace)
+                .unwrap()
+                .to_string_lossy(),
+            7_000,
+        )
+        .unwrap();
+        let direct_task = daemon.task_id(&owner, &direct_request);
+        match daemon.wait_terminal(&owner, direct_task, Duration::from_secs(20)) {
+            V5DaemonTaskSnapshot::Completed { result, .. } => {
+                assert!(result.ok, "{result:?}");
+                assert!(result.rev.is_none());
+                assert_eq!(result.data.as_ref().unwrap()["state"], "created");
             }
+            other => panic!("execution without a prior preview did not complete: {other:?}"),
+        }
+        assert!(direct_workspace.join("created.marker").exists());
+        let request = |dry_run: bool| {
+            let args = serde_json::json!({"op":"infobase.create","args":{},"dryRun":dry_run});
             InvocationRequest::new(ToolIdentity::Run, args, workspace.to_string_lossy(), 7_000)
                 .unwrap()
         };
-        let preview = daemon.task_id(&owner, &request(true, None));
-        let revision = match daemon.wait_terminal(&owner, preview, Duration::from_secs(20)) {
+        let preview = daemon.task_id(&owner, &request(true));
+        match daemon.wait_terminal(&owner, preview, Duration::from_secs(20)) {
             V5DaemonTaskSnapshot::Completed { result, .. } => {
                 assert!(result.ok, "{result:?}");
-                result.rev.unwrap()
+                assert!(result.rev.is_none());
+                let next = result
+                    .next
+                    .iter()
+                    .find(|next| next["tool"] == "unica.run")
+                    .unwrap();
+                assert_eq!(next["args"]["dryRun"], false);
+                assert!(next["args"].get("ifRev").is_none());
             }
             other => panic!("preview did not complete: {other:?}"),
         };
 
-        let task_id = daemon.task_id(&owner, &request(false, Some(&revision)));
+        assert!(!workspace.join("entered.marker").exists());
+        let task_id = daemon.task_id(&owner, &request(false));
         let entered = workspace.join("entered.marker");
         let deadline = Instant::now() + Duration::from_secs(20);
         while !entered.exists() {

@@ -10,11 +10,13 @@ description: "Безопасная аутентификация и крипто�
 - Preferred path: use MCP `unica` tools `unica.view {}`, `unica.search`, `unica.view` on the object node, `unica.view` on the role node, `unica.check`, `unica.docs`, and `unica.run`.
 - Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
-`ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
+`dryRunRequired`. Контракт вызова бери оттуда, а не из этого текста;
 при `implemented: true` используй опубликованную `argsSchema`; при
 `support.state: limited` разрешено только подмножество `support.supportedArgs`.
 При `support.state: unavailable` остановись; не выдумывай аргументов при
-`argsSchema: null`. Превью исполнением не является. Не обходи контракт прямым runner-ом.
+`argsSchema: null`. Для плановой операции сначала проверь результат `dryRun: true`,
+затем исполняй запрос с `dryRun: false`. Preview не фиксирует входы между
+вызовами. Не обходи контракт прямым runner-ом.
 - Use integration and autonomous-server skills when auth behavior must be verified through HTTP service or web-client runtime.
 - Do not call internal analyzer, standards, runtime, or package adapters directly. They are hidden behind MCP `unica`.
 

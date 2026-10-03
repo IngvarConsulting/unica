@@ -3603,13 +3603,21 @@ mod tests {
             Instant::now() + Duration::from_secs(20),
         )
         .await;
-        let rev = preview_result["result"]["structuredContent"]["rev"]
-            .as_str()
-            .unwrap_or_else(|| panic!("preview has no revision: {preview_result}"));
+        assert_eq!(
+            preview_result["result"]["structuredContent"]["ok"], true,
+            "{preview_result}"
+        );
+        assert!(
+            preview_result["result"]["structuredContent"]
+                .get("rev")
+                .is_none(),
+            "{preview_result}"
+        );
+        assert!(!workspace.join("entered.marker").exists());
         client
             .send(json!({
                 "jsonrpc":"2.0", "id":3, "method":"tools/call",
-                "params":{"name":"unica.run", "arguments":{"op":"infobase.create","args":{},"dryRun":false,"ifRev":rev}, "_meta":modern_meta()}
+                "params":{"name":"unica.run", "arguments":{"op":"infobase.create","args":{},"dryRun":false}, "_meta":modern_meta()}
             }))
             .await;
         let apply = client.receive().await;
@@ -3651,6 +3659,10 @@ mod tests {
         );
         assert_eq!(
             result["result"]["structuredContent"]["data"]["state"], "created",
+            "{result}"
+        );
+        assert!(
+            result["result"]["structuredContent"].get("rev").is_none(),
             "{result}"
         );
         assert_eq!(
@@ -3700,31 +3712,6 @@ mod tests {
             workspace.to_string_lossy().into_owned(),
         ));
 
-        client
-            .send(json!({
-                "jsonrpc":"2.0", "id":1, "method":"tools/call",
-                "params":{"name":"unica.run", "arguments":{"op":"infobase.create","args":{},"dryRun":true}, "_meta":modern_meta()}
-            }))
-            .await;
-        let preview = client.receive().await;
-        let preview_id = preview["result"]["structuredContent"]["data"]["task"]["taskId"]
-            .as_str()
-            .unwrap_or_else(|| panic!("preview did not return a task: {preview}"));
-        let preview_deadline = Instant::now() + Duration::from_secs(20);
-        let rev = loop {
-            assert!(Instant::now() < preview_deadline, "preview did not settle");
-            client
-                .send(json!({
-                    "jsonrpc":"2.0", "id":2, "method":"tools/call",
-                    "params":{"name":"unica.task.result", "arguments":{"taskId":preview_id,"waitMs":1000}, "_meta":modern_meta()}
-                }))
-                .await;
-            let response = client.receive().await;
-            if let Some(rev) = response["result"]["structuredContent"]["rev"].as_str() {
-                break rev.to_owned();
-            }
-        };
-
         let target = crate::infrastructure::platform::current_target_id().unwrap();
         let runner = root
             .path()
@@ -3735,7 +3722,7 @@ mod tests {
         client
             .send(json!({
                 "jsonrpc":"2.0", "id":3, "method":"tools/call",
-                "params":{"name":"unica.run", "arguments":{"op":"infobase.create","args":{},"dryRun":false,"ifRev":rev}, "_meta":modern_meta()}
+                "params":{"name":"unica.run", "arguments":{"op":"infobase.create","args":{},"dryRun":false}, "_meta":modern_meta()}
             }))
             .await;
         let apply = client.receive().await;
