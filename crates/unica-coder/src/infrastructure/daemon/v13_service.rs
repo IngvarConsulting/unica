@@ -2997,13 +2997,7 @@ fn run_bsl_diagnostics(
         })?;
     let mapping = authority
         .diagnostic_mapping(address, context)
-        .map_err(|error| {
-            Box::new(error_result(
-                Some(address.to_string()),
-                error.code(),
-                error.to_string(),
-            ))
-        })?;
+        .map_err(|error| Box::new(view_error_result(Some(address.to_string()), error)))?;
     let registry = match ports.diagnostic_provider_registry() {
         Ok(registry) => registry,
         Err(error) => {
