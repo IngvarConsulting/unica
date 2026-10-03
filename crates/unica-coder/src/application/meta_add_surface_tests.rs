@@ -652,6 +652,163 @@ fn meta_add_preview_rejects_platform_xml_outside_supported_format_profile() {
     assert_eq!(tree_snapshot(&workspace.path().join("src")), before);
 }
 
+fn assert_scheduled_job_creation_for_handler(source: &str, method: &str) {
+    assert_scheduled_job_creation_in_workspace(
+        create_configuration_workspace("scheduled-callable-handler"),
+        source,
+        method,
+    );
+}
+
+fn create_extension_handler_workspace() -> TempWorkspace {
+    let workspace = TempWorkspace::new("scheduled-extension-handler");
+    let initialized = UnicaApplication::new()
+        .call_tool(
+            "unica.cfe.init",
+            &Map::from_iter([
+                ("cwd".into(), json!(workspace.path().display().to_string())),
+                ("Name".into(), json!("MetaAdd")),
+                ("NamePrefix".into(), json!("")),
+                ("OutputDir".into(), json!("src")),
+                ("NoRole".into(), json!(true)),
+                ("dryRun".into(), json!(false)),
+            ]),
+        )
+        .expect("extension fixture scaffold");
+    assert!(
+        initialized.ok,
+        "extension fixture: {:?}",
+        initialized.errors
+    );
+    std::fs::write(
+        workspace.path().join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: EXTENSION\n    path: src\n",
+    )
+    .unwrap();
+    let module = call_add(workspace.path(), "CommonModule", "MetaAddHandlers", false);
+    assert!(
+        module.ok,
+        "extension CommonModule fixture: {:?}",
+        module.errors
+    );
+    workspace
+}
+
+fn assert_scheduled_job_creation_in_workspace(
+    workspace: TempWorkspace,
+    source: &str,
+    method: &str,
+) {
+    let source_root = workspace.path().join("src");
+    let module = source_root.join("CommonModules/MetaAddHandlers/Ext/Module.bsl");
+    std::fs::write(&module, source).unwrap();
+    let before = tree_snapshot(&source_root);
+    let preview = call_add(workspace.path(), "ScheduledJob", "Nightly", true);
+    assert!(
+        preview.ok,
+        "{method}: preview refused callable handler: {:?}",
+        preview.errors
+    );
+    assert_eq!(
+        tree_snapshot(&source_root),
+        before,
+        "preview must not mutate sources"
+    );
+    let applied = call_add(workspace.path(), "ScheduledJob", "Nightly", false);
+    assert!(
+        applied.ok,
+        "{method}: apply refused callable handler: {:?}",
+        applied.errors
+    );
+    let descriptor =
+        std::fs::read_to_string(source_root.join("ScheduledJobs/Nightly.xml")).unwrap();
+    let xml = roxmltree::Document::parse(&descriptor).unwrap();
+    let method_name = xml
+        .descendants()
+        .find(|node| node.has_tag_name(("http://v8.1c.ru/8.3/MDClasses", "MethodName")))
+        .and_then(|node| node.text())
+        .expect("scheduled job MethodName");
+    assert_eq!(
+        method_name,
+        format!("CommonModule.MetaAddHandlers.{method}")
+    );
+    let owner = std::fs::read_to_string(source_root.join("Configuration.xml")).unwrap();
+    let owner_xml = roxmltree::Document::parse(&owner).unwrap();
+    assert!(
+        owner_xml.descendants().any(|node| node
+            .has_tag_name(("http://v8.1c.ru/8.3/MDClasses", "ScheduledJob"))
+            && node.text() == Some("Nightly")),
+        "created job must be registered in Configuration"
+    );
+    assert_eq!(
+        std::fs::read_to_string(module).unwrap(),
+        source,
+        "creation must not rewrite handler defaults"
+    );
+}
+
+#[test]
+fn scheduled_job_creation_accepts_exported_procedures_with_all_default_parameters() {
+    for (source, method) in [
+        ("Procedure Run(Enabled = True, Limit = 10) Export\nEndProcedure\n", "Run"),
+        ("Процедура Выполнить(Включено = Истина, Лимит = 10) Экспорт\nКонецПроцедуры\n", "Выполнить"),
+        ("Procedure Run(\n    Enabled = True,\n    Caption = \"a,b=c\"\n) Export\nEndProcedure\n", "Run"),
+    ] {
+        assert_scheduled_job_creation_for_handler(source, method);
+    }
+}
+
+#[test]
+fn scheduled_job_creation_in_extension_accepts_all_default_exported_procedure() {
+    assert_scheduled_job_creation_in_workspace(
+        create_extension_handler_workspace(),
+        "Процедура Выполнить(Включено = Истина, Лимит = 10) Экспорт\nКонецПроцедуры\n",
+        "Выполнить",
+    );
+}
+
+#[test]
+fn scheduled_job_creation_still_accepts_zero_argument_exported_procedure() {
+    assert_scheduled_job_creation_for_handler("Procedure Run() Export\nEndProcedure\n", "Run");
+}
+
+#[test]
+fn scheduled_job_creation_rejects_required_parameters_functions_and_private_procedures() {
+    for (case, source) in [
+        (
+            "mixed-required",
+            "Procedure Run(Required, Optional = True) Export\nEndProcedure\n",
+        ),
+        (
+            "function",
+            "Function Run(Optional = True) Export\n    Return True;\nEndFunction\n",
+        ),
+        ("private", "Procedure Run(Optional = True)\nEndProcedure\n"),
+    ] {
+        let workspace = create_configuration_workspace(case);
+        let source_root = workspace.path().join("src");
+        std::fs::write(
+            source_root.join("CommonModules/MetaAddHandlers/Ext/Module.bsl"),
+            source,
+        )
+        .unwrap();
+        for dry_run in [true, false] {
+            let before = tree_snapshot(&source_root);
+            let result = call_add(workspace.path(), "ScheduledJob", "Rejected", dry_run);
+            assert!(
+                !result.ok,
+                "{case}/{dry_run}: unsuitable handler was accepted"
+            );
+            assert_eq!(
+                tree_snapshot(&source_root),
+                before,
+                "{case}/{dry_run}: refused call changed sources"
+            );
+            assert!(!source_root.join("ScheduledJobs/Rejected.xml").exists());
+        }
+    }
+}
+
 #[test]
 fn meta_add_preview_rejects_dangling_common_module_method_dependency() {
     let workspace = create_configuration_workspace("missing-handler-method");
