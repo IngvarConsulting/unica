@@ -347,7 +347,10 @@ fn canonical_view_reads_configuration_past_eight_mebibytes_with_many_registratio
         json!({"at": "main:CommonModule.Module31"}),
     ));
     assert_eq!(other["ok"], true, "{other:#}");
-    let old_revision = other["rev"].clone();
+    assert!(
+        other.get("rev").is_none(),
+        "view must not expose a source revision"
+    );
     let source = std::fs::read_to_string(&path).expect("read large root for revision change");
     let source = source.replacen(
         "<CommonModule>Module31</CommonModule>",
@@ -361,14 +364,17 @@ fn canonical_view_reads_configuration_past_eight_mebibytes_with_many_registratio
         json!({"at": "main:CommonModule.ModuleNew"}),
     ));
     assert_eq!(changed["ok"], true, "{changed:#}");
-    assert_ne!(changed["rev"], old_revision, "source revision must change");
+    assert!(changed.get("rev").is_none());
     let changed_collection = mcp.completed_tool_call(call_tool(
         7,
         "unica.view",
         json!({"at": "main:CommonModule", "limit": 50}),
     ));
     assert_eq!(changed_collection["ok"], true, "{changed_collection:#}");
-    assert_eq!(changed_collection["rev"], changed["rev"]);
+    assert!(
+        changed_collection.get("rev").is_none(),
+        "view collection must not expose a source revision: {changed_collection:#}"
+    );
     assert_eq!(
         changed_collection["data"]["items"].as_array().map(Vec::len),
         Some(33)
@@ -469,6 +475,8 @@ fn public_view_pages_large_bsl_body_and_replays_disk_cursor() {
         .as_str()
         .expect("disk continuation")
         .to_string();
+    // The issued Body is immutable and does not read the live source again.
+    std::fs::remove_file(root.path().join("CommonModules/Main/Ext/Module.bsl")).unwrap();
     let second = mcp.completed_tool_call(call_tool(
         3,
         "unica.view",
@@ -512,8 +520,10 @@ fn public_view_pages_large_bsl_body_and_replays_disk_cursor() {
         "unica.view",
         json!({"at":at,"limit":2,"cursor":first["cursor"]}),
     ));
-    assert_eq!(stale["ok"], false, "{stale:#}");
-    assert_eq!(stale["diagnostics"][0]["code"], "stale_cursor");
+    assert_eq!(
+        stale, second,
+        "issued Body must replay its saved page after replacement"
+    );
     mcp.finish();
 }
 
@@ -671,6 +681,12 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
         json!({"query": "MainNeedle", "scope": "main:Configuration"}),
     ));
     assert_eq!(main["ok"], true, "{main:#}");
+    assert!(
+        main.get("rev").is_none(),
+        "search must not expose a source revision"
+    );
+    assert_eq!(main["data"]["dataFreshness"], "unknown");
+    assert_eq!(main["data"]["pageConsistency"], "live");
     assert_eq!(main["data"]["matches"].as_array().map(Vec::len), Some(20));
     assert_eq!(main["data"]["matches"][0]["scope"], "main:Configuration");
     assert!(main["data"]["matches"][0].get("file").is_none());
@@ -877,7 +893,9 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
         "unica.search",
         json!({"query": "Needle", "cursor": broad_cursor}),
     ));
-    assert_eq!(stale["diagnostics"][0]["code"], "stale_cursor");
+    assert_eq!(stale["ok"], true, "{stale:#}");
+    assert_eq!(stale["data"]["dataFreshness"], "unknown");
+    assert_eq!(stale["data"]["pageConsistency"], "live");
 
     let cross_corpus = mcp.completed_tool_call(call_tool(
         10,

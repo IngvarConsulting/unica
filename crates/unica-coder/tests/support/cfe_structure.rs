@@ -259,6 +259,9 @@ fn canonical_stdio_borrow_refresh_preserves_module_and_identity() {
         };
         fs::write(&parent_path, changed_parent).unwrap();
         let repeated_preview = call(&mut mcp, "unica.apply", borrow_args.clone());
+        assert!(repeated_preview["data"]["planHash"]
+            .as_str()
+            .is_some_and(|hash| !hash.is_empty()));
         assert_eq!(fs::read_to_string(&descriptor).unwrap(), connected);
         assert_eq!(fs::read(&module).unwrap(), bsl);
         let refreshed = call(
@@ -266,21 +269,23 @@ fn canonical_stdio_borrow_refresh_preserves_module_and_identity() {
             "unica.apply",
             json!({"executionToken": repeated_preview["data"]["executionToken"]}),
         );
-        if kind == "Catalog" {
-            assert_ne!(refreshed["rev"], repeated_preview["rev"]);
-        } else {
-            assert_eq!(refreshed["rev"], repeated_preview["rev"]);
-        }
+        assert_eq!(
+            refreshed["data"]["planHash"],
+            repeated_preview["data"]["planHash"]
+        );
         assert_eq!(
             fs::read_to_string(&descriptor).unwrap(),
             expected_refresh,
             "refresh must change only the transferred property, keeping UUID, generated type IDs and module state bytes"
         );
         assert_eq!(fs::read(&module).unwrap(), bsl);
-        // After applying the parent change, a true repeat has no new revision
-        // and leaves both metadata and module bytes identical.
+        // A fresh no-op plan leaves metadata and module bytes identical
+        // through preparation and execution.
         let noop_preview = call(&mut mcp, "unica.apply", borrow_args.clone());
-        assert_eq!(noop_preview["rev"], refreshed["rev"]);
+        assert!(noop_preview["data"]["planHash"]
+            .as_str()
+            .is_some_and(|hash| !hash.is_empty()));
+        assert!(noop_preview["changed"].as_array().is_none_or(Vec::is_empty));
         assert_eq!(fs::read_to_string(&descriptor).unwrap(), expected_refresh);
         assert_eq!(fs::read(&module).unwrap(), bsl);
         let noop = call(
@@ -288,7 +293,8 @@ fn canonical_stdio_borrow_refresh_preserves_module_and_identity() {
             "unica.apply",
             json!({"executionToken": noop_preview["data"]["executionToken"]}),
         );
-        assert_eq!(noop["rev"], refreshed["rev"]);
+        assert_eq!(noop["data"]["planHash"], noop_preview["data"]["planHash"]);
+        assert!(noop["changed"].as_array().is_none_or(Vec::is_empty));
         assert_eq!(fs::read_to_string(&descriptor).unwrap(), expected_refresh);
         assert_eq!(fs::read(&module).unwrap(), bsl);
         let checked = call(&mut mcp, "unica.check", json!({"at":"ext:Configuration"}));

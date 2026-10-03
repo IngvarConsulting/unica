@@ -96,7 +96,7 @@ impl CanonicalInvocationService for CanonicalV13ReadService {
         if let Some(rejection) = invocation.rejected_logical_read_result() {
             return Ok(rejection);
         }
-        match invocation.tool() {
+        let mut result = match invocation.tool() {
             ToolIdentity::View => Ok(self.execute_view(invocation, &cancellation)),
             ToolIdentity::Apply => Ok(self.execute_apply(invocation, &cancellation)),
             ToolIdentity::Resolve => Ok(self.execute_resolve(invocation, &cancellation)),
@@ -113,7 +113,18 @@ impl CanonicalInvocationService for CanonicalV13ReadService {
                 RefusalCode::InvalidState,
                 "docs is answered before workspace admission and does not reach the actor-bound read service",
             )),
+        }?;
+        if matches!(
+            invocation.tool(),
+            ToolIdentity::View
+                | ToolIdentity::Resolve
+                | ToolIdentity::Search
+                | ToolIdentity::Check
+                | ToolIdentity::Diff
+        ) {
+            result.rev = None;
         }
+        Ok(result)
     }
 }
 
@@ -209,18 +220,8 @@ impl CanonicalV13ReadService {
                 )
             }
         };
-        let (binding, admission) = match invocation.admit_apply(&request, cancellation) {
+        let (binding, mut admission) = match invocation.admit_apply(&request, cancellation) {
             Ok(admitted) => admitted,
-            // A stale `ifRev` is a caller conflict with a known recovery —
-            // re-read the revision and retry — so it answers with its own
-            // code instead of masquerading as an unavailable provider.
-            Err(error @ ApplyAdmissionError::StaleRevision { .. }) => {
-                return error_result(
-                    Some(request.at().to_string()),
-                    RefusalCode::StaleRevision,
-                    error.to_string(),
-                )
-            }
             Err(ApplyAdmissionError::Other(error)) => {
                 return error_result(
                     Some(request.at().to_string()),
@@ -264,6 +265,7 @@ impl CanonicalV13ReadService {
                 );
             }
         }
+        admission.bind_request(&request);
         let operations = request
             .ops()
             .iter()
@@ -323,7 +325,12 @@ impl CanonicalV13ReadService {
             Err(error) => {
                 return error_result(
                     Some("ops".to_string()),
-                    RefusalCode::ProviderUnavailable,
+                    match error.kind() {
+                        crate::infrastructure::native_operations::apply::ApplyStagingErrorKind::ConcurrentRevision => RefusalCode::StaleRevision,
+                        crate::infrastructure::native_operations::apply::ApplyStagingErrorKind::Cancelled => RefusalCode::Cancelled,
+                        crate::infrastructure::native_operations::apply::ApplyStagingErrorKind::Deadline => RefusalCode::DeadlineExceeded,
+                        _ => RefusalCode::ProviderUnavailable,
+                    },
                     error.to_string(),
                 )
             }
@@ -1123,10 +1130,6 @@ impl CanonicalV13ReadService {
             .iter()
             .map(|source| source.source_set_name().to_owned())
             .collect();
-        let revisions = selected
-            .iter()
-            .map(|source| source.revision_identity())
-            .collect::<Vec<_>>();
         let binding = SearchCursorBinding {
             workspace_identity: invocation.workspace_identity_hash().as_str().to_owned(),
             query: query.to_owned(),
@@ -1134,7 +1137,6 @@ impl CanonicalV13ReadService {
             mode: mode.to_owned(),
             kind: None,
             source_sets,
-            revisions,
             result_fingerprint: None,
             page_limit: limit,
         };
@@ -1229,6 +1231,8 @@ impl CanonicalV13ReadService {
         };
         let summary = format!("{} BSL search {state}", binding.mode);
         let mut extra_data = Map::new();
+        extra_data.insert("dataFreshness".into(), json!("unknown"));
+        extra_data.insert("pageConsistency".into(), json!("live"));
         extra_data.insert(
             "fileCoverage".to_owned(),
             json!({
@@ -1257,7 +1261,7 @@ impl CanonicalV13ReadService {
         let mode = binding.mode.as_str();
         let limit = binding.page_limit;
         let offset = cursor.as_ref().map_or(0, |(_, cursor)| cursor.offset);
-        let revision = combined_revision(&binding.revisions);
+        let revision: Option<String> = None;
         let mut page_matches = Vec::new();
         let mut byte_stop = false;
         let measured_bytes = |items: &[Value]| {
@@ -1590,7 +1594,6 @@ impl CanonicalV13ReadService {
             mode: role.as_str().to_owned(),
             kind: None,
             source_sets: selected_sources,
-            revisions: Vec::new(),
             result_fingerprint: None,
             page_limit: limit,
         };
@@ -1801,7 +1804,6 @@ impl CanonicalV13ReadService {
                 .iter()
                 .map(|source| source.name().to_owned())
                 .collect(),
-            revisions: Vec::new(),
             result_fingerprint: Some(format!("names-sha256-v1:{:x}", hasher.finalize())),
             page_limit: limit,
         };
@@ -1888,6 +1890,26 @@ impl CanonicalV13ReadService {
                     )
                 }
             };
+            if let Some(cursor) = cursor {
+                let binding = ViewCursorBinding {
+                    canonical_at: at.to_string(),
+                    projection: "check".into(),
+                    normalized_filter: String::new(),
+                    source_set_identity: format!(
+                        "{}:{}",
+                        invocation.workspace_identity_hash().as_str(),
+                        at.split_once(':').map_or("", |(name, _)| name)
+                    ),
+                    snapshot_id: String::new(),
+                    page_limit: limit,
+                };
+                return crate::application::v13::check::page_diagnostics(
+                    &self.cursors,
+                    binding,
+                    None,
+                    Some(cursor),
+                );
+            }
             let view_arguments =
                 Map::from_iter([("at".to_string(), Value::String(at.to_string()))]);
             let viewed = self.execute_view_arguments(invocation, &view_arguments, cancellation);
@@ -1901,7 +1923,7 @@ impl CanonicalV13ReadService {
                 return error_result(
                     Some(at.to_string()),
                     RefusalCode::InvalidState,
-                    "check could not establish the source revision",
+                    "check could not establish its result snapshot",
                 );
             };
             let binding = ViewCursorBinding {
@@ -1913,17 +1935,9 @@ impl CanonicalV13ReadService {
                     invocation.workspace_identity_hash().as_str(),
                     at.split_once(':').map_or("", |(source_set, _)| source_set)
                 ),
-                source_revision: revision.to_string(),
+                snapshot_id: revision.to_string(),
                 page_limit: limit,
             };
-            if let Some(cursor) = cursor {
-                return crate::application::v13::check::page_diagnostics(
-                    &self.cursors,
-                    binding,
-                    None,
-                    Some(cursor),
-                );
-            }
             let kind = viewed
                 .data
                 .as_ref()
@@ -1945,18 +1959,6 @@ impl CanonicalV13ReadService {
                         Some(at.to_string()),
                         RefusalCode::Cancelled,
                         "check was cancelled before publishing its result",
-                    );
-                }
-                let current =
-                    self.execute_view_arguments(invocation, &view_arguments, cancellation);
-                if !current.ok {
-                    return current;
-                }
-                if current.rev.as_deref() != Some(revision) {
-                    return error_result(
-                        Some(at.to_string()),
-                        RefusalCode::ConcurrentChange,
-                        "source changed while check ran; retry the question",
                     );
                 }
                 result.rev = Some(revision.to_string());
@@ -2068,17 +2070,13 @@ impl CanonicalV13ReadService {
         let truncated = changes.len() > limit;
         changes.truncate(limit);
         let equal = changes.is_empty() && !truncated;
-        let revisions = [left_result.rev, right_result.rev]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>();
         let mut result = DomainResult::success("logical nodes compared");
         result.data = Some(serde_json::json!({
             "equal": equal,
             "changes": changes,
             "truncated": truncated,
         }));
-        result.rev = combined_revision(&revisions);
+
         result
     }
 
@@ -2896,19 +2894,6 @@ fn name_search_interruption(
     None
 }
 
-fn combined_revision(revisions: &[String]) -> Option<String> {
-    if revisions.is_empty() {
-        return None;
-    }
-    let mut hasher = Sha256::new();
-    hasher.update(b"unica-v13-read-set-v1\0");
-    for revision in revisions {
-        hasher.update(revision.as_bytes());
-        hasher.update([0]);
-    }
-    Some(format!("unica-read-set-sha256-v1:{:x}", hasher.finalize()))
-}
-
 fn apply_plan_error_code(kind: ApplyPlanErrorKind) -> RefusalCode {
     match kind {
         ApplyPlanErrorKind::BadValue => RefusalCode::BadValue,
@@ -3608,7 +3593,6 @@ mod tests {
             mode: role.as_str().into(),
             kind: None,
             source_sets: vec!["main".into()],
-            revisions: Vec::new(),
             result_fingerprint: None,
             page_limit: limit,
         }

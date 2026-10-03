@@ -3,14 +3,20 @@ use crate::domain::source_roots::{select_default_source_set, ResolvedSourceRoot}
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::platform::filesystem::strip_windows_extended_length_prefix;
 use crate::infrastructure::project_sources::discover_project_source_map;
+#[cfg(test)]
 use std::collections::hash_map::DefaultHasher;
+#[cfg(test)]
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fs;
+#[cfg(test)]
 use std::hash::{Hash, Hasher};
+#[cfg(test)]
 use std::num::NonZeroUsize;
 use std::path::{Component, Path, PathBuf};
+#[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(test)]
 use std::thread;
 
 #[derive(Debug, Clone)]
@@ -241,18 +247,21 @@ pub(crate) fn normalize_path_identity(path: &Path) -> Result<PathBuf, String> {
 /// so the limit does not fire in practice. It must stay far above any real
 /// layout: a walk that stops early reports an unchanged generation for edits
 /// below the cut, which is exactly the stale read this fingerprint prevents.
+#[cfg(test)]
 const MAX_SOURCE_DEPTH: usize = 64;
 
 /// Directory frames keep `A/` + `B` from hashing like a sibling pair `A`, `B`.
+#[cfg(test)]
 const ENTER_DIRECTORY: u8 = 1;
+#[cfg(test)]
 const LEAVE_DIRECTORY: u8 = 2;
 /// Emitted where the walk knows something exists but cannot read it, so losing
 /// access changes the generation instead of reading as "nothing changed".
+#[cfg(test)]
 const UNREADABLE_ENTRY: u8 = 3;
 
 /// The generated cache. It sits inside the source root but is not source, so
-/// the recursive walks skip it by name — this one and the source revision
-/// manifest — and the lexical search corpus excludes it. Anything else that
+/// source planning and lexical search exclude it. Anything else that
 /// descends the whole tree owes the same skip and reads the name from here
 /// rather than spelling it again.
 pub(crate) const GENERATED_DIR_NAME: &str = ".build";
@@ -261,17 +270,21 @@ pub(crate) const GENERATED_DIR_NAME: &str = ".build";
 /// on a 43k-file 8.3.27 configuration (APFS, 14 cores) one worker takes 883 ms,
 /// four take 438 ms, and sixteen fall back to 610 ms on filesystem contention.
 /// Four keeps the win without paying for the regression.
+#[cfg(test)]
 const MAX_SOURCE_WALK_WORKERS: usize = 4;
 
 /// The walk is `stat`-bound — one call per source file, tens of thousands on a
 /// vendor-class configuration — and every RLM-backed read pays for it. Each
-/// top-level child is fingerprinted independently, so the children fan out
+/// Historical source-generation fixtures retain this algorithm only in tests.
+/// Each top-level child is fingerprinted independently, so the children fan out
 /// across worker threads and fold back in sorted order for a stable result.
+#[cfg(test)]
 pub(crate) fn source_generation(source_root: &Path) -> u64 {
     source_generation_until(source_root, &|| false)
         .expect("uncontrolled source generation must not be interrupted")
 }
 
+#[cfg(test)]
 pub(crate) fn source_generation_until(
     source_root: &Path,
     should_stop: &(dyn Fn() -> bool + Sync),
@@ -300,6 +313,7 @@ pub(crate) fn source_generation_until(
     Some(hasher.finish())
 }
 
+#[cfg(test)]
 struct SourceChild {
     name: OsString,
     entry: fs::DirEntry,
@@ -308,6 +322,7 @@ struct SourceChild {
 
 /// Lists the entries of one directory that take part in the fingerprint, in a
 /// stable order. `None` means the directory itself could not be read.
+#[cfg(test)]
 fn read_source_children(
     directory: &Path,
     should_stop: &(dyn Fn() -> bool + Sync),
@@ -357,6 +372,7 @@ fn read_source_children(
     Ok(Some(children))
 }
 
+#[cfg(test)]
 fn child_digests(
     children: &[SourceChild],
     should_stop: &(dyn Fn() -> bool + Sync),
@@ -411,6 +427,7 @@ fn child_digests(
 
 /// Fingerprints one child on its own hasher so subtrees stay independent of the
 /// order their workers happen to finish in.
+#[cfg(test)]
 fn child_digest(child: &SourceChild, should_stop: &(dyn Fn() -> bool + Sync)) -> Option<u64> {
     if should_stop() {
         return None;
@@ -429,6 +446,7 @@ fn child_digest(child: &SourceChild, should_stop: &(dyn Fn() -> bool + Sync)) ->
 /// Hashes names relative to the walked directory rather than absolute paths:
 /// the fingerprint answers "did these sources change", and the marker that
 /// stores it is pinned to its source root separately.
+#[cfg(test)]
 fn hash_source_tree(
     hasher: &mut DefaultHasher,
     directory: &Path,
@@ -462,6 +480,7 @@ fn hash_source_tree(
     Some(())
 }
 
+#[cfg(test)]
 fn is_source_file_name(name: &OsStr) -> bool {
     Path::new(name)
         .extension()
@@ -469,6 +488,7 @@ fn is_source_file_name(name: &OsStr) -> bool {
         .is_some_and(|extension| matches!(extension, "bsl" | "xml" | "yaml" | "yml"))
 }
 
+#[cfg(test)]
 fn hash_source_file(hasher: &mut DefaultHasher, entry: &fs::DirEntry) {
     let Ok(metadata) = entry.metadata() else {
         UNREADABLE_ENTRY.hash(hasher);

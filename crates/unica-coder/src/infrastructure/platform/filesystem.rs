@@ -216,6 +216,7 @@ pub(crate) fn create_test_directory_link(target: &Path, link: &Path) -> io::Resu
 /// Classifies the platform error produced when a no-follow open encounters a
 /// symbolic link. Keeping the OS errno inside this facade lets retained-tree
 /// callers preserve one portable fail-closed policy.
+#[cfg(test)]
 pub(crate) fn is_nofollow_link_error(error: &io::Error) -> bool {
     #[cfg(unix)]
     {
@@ -1117,9 +1118,8 @@ impl RetainedDirectoryCapability {
 
     /// Visits the opened, no-follow regular file without retaining its total
     /// contents. Each callback sees at most one 64 KiB chunk, and a checkpoint
-    /// runs before every read. The caller confirms its source revision before
-    /// publishing a logical answer; a same-content replacement may be valid
-    /// after that confirmation.
+    /// runs before every read. The caller chooses whether to retain bytes or
+    /// compare a concrete plan input; this primitive does not scan a source tree.
     pub(crate) fn visit_relative_regular_chunks(
         &self,
         relative: &Path,
@@ -4950,6 +4950,7 @@ pub(crate) fn host_directory_child_names_equal(
 /// Compares two path-component names using the lookup semantics of one
 /// existing host directory. This is the ambient-path counterpart of
 /// `RetainedDirectoryCapability::child_names_equivalent`.
+#[cfg(test)]
 pub(crate) fn host_directory_component_names_equivalent(
     parent_path: &Path,
     left: &std::ffi::OsStr,

@@ -2,7 +2,7 @@
 id: INV.SOURCE.BORROWED-OBJECT-PARENT-ADDRESS
 check:
   - crates/unica-coder/src/infrastructure/daemon/server.rs::borrowing_view_resolves_registered_parent_and_preserves_unresolved_extension_facts
-  - crates/unica-coder/src/infrastructure/daemon/server.rs::borrowing_view_rejects_parent_changes_before_final_publication
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::borrowing_view_publishes_saved_parent_facts_and_new_read_rechecks_parent
   - crates/unica-coder/src/infrastructure/daemon/server.rs::borrowing_view_bounds_override_props_for_metadata_and_specialized_readers
 ---
 
@@ -14,4 +14,6 @@ check:
 
 Если исходники родителя недоступны или соответствие неоднозначно, Unica
 сообщает причину и не угадывает адрес. Недоказанная связь не скрывает
-остальные сведения об исправном объекте расширения.
+остальные сведения об исправном объекте расширения. Проверка связи относится
+к прочитанным данным: выдача готового ответа не переснимает исходники родителя,
+а новый запрос проверяет связь по текущим доступным данным.

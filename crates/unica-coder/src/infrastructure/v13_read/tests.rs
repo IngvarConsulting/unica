@@ -1,7 +1,7 @@
 use super::{
     project_known_suffix, project_typed_payload, resolve_platform_xml_target,
-    review_set_after_canonical_role_read, review_set_before_owner_proof, LogicalViewReadAuthority,
-    MetadataAddress, SourceTarget, TargetKindPolicy, PLATFORM_XML_8_3_27_FORMAT_2_20,
+    review_set_before_owner_proof, LogicalViewReadAuthority, MetadataAddress, SourceTarget,
+    TargetKindPolicy, PLATFORM_XML_8_3_27_FORMAT_2_20,
 };
 use crate::application::result_store::ViewCursorStore;
 use crate::application::v13::find::{FindRequest, FindResult};
@@ -4533,7 +4533,7 @@ fn review_rejects_revision_change_during_post_fence_owner_proof() {
 }
 
 #[test]
-fn cursor_retry_rejects_revision_change_during_role_canonicalization() {
+fn cursor_retry_uses_saved_role_results_without_recanonicalizing() {
     let fixture = RealReaderFixture::new();
     let rights_path = fixture.source.join("Roles/SalesReader/Ext/Rights.xml");
     let rights = fs::read_to_string(&rights_path).unwrap().replacen(
@@ -4551,13 +4551,7 @@ fn cursor_retry_rejects_revision_change_during_role_canonicalization() {
     );
     assert!(first.ok, "{:?}", first.diagnostics);
     let cursor = first.cursor.expect("two role objects require a cursor");
-    let changed_path = rights_path.clone();
-    review_set_after_canonical_role_read(move || {
-        let mut changed = fs::read_to_string(&changed_path).unwrap();
-        changed.push('\n');
-        fs::write(&changed_path, changed).unwrap();
-    });
-
+    fs::write(&rights_path, b"changed source is no longer valid XML").unwrap();
     let replay = service.view(
         ViewRequest::new("main:Role.SalesReader.Right")
             .unwrap()
@@ -4566,11 +4560,7 @@ fn cursor_retry_rejects_revision_change_during_role_canonicalization() {
             .with_cursor(cursor),
     );
 
-    assert!(
-        !replay.ok,
-        "cursor page crossed a post-canonical read mutation"
-    );
-    assert_eq!(replay.diagnostics[0]["code"], "stale_cursor");
+    assert!(replay.ok, "saved cursor must remain usable: {replay:?}");
 }
 
 #[test]

@@ -22,7 +22,7 @@ pub(crate) fn page_diagnostics(
 ) -> DomainResult {
     let at = Some(binding.canonical_at.clone());
     if let Some(cursor) = cursor {
-        let stored = match cursors.read(cursor, &binding, &binding.source_revision) {
+        let stored = match cursors.read(cursor, &binding, &binding.snapshot_id) {
             Ok(stored) => stored,
             Err(error) => {
                 return DomainResult::canonical_rejection(
@@ -553,7 +553,7 @@ mod tests {
             projection: "check".to_string(),
             normalized_filter: String::new(),
             source_set_identity: "workspace:main".to_string(),
-            source_revision: revision.to_string(),
+            snapshot_id: revision.to_string(),
             page_limit: limit,
         }
     }
@@ -615,7 +615,7 @@ mod tests {
     }
 
     #[test]
-    fn check_cursor_rejects_other_node_and_stale_source() {
+    fn check_cursor_rejects_other_node_and_replays_saved_diagnostics_after_source_change() {
         let store = ViewCursorStore::default();
         let binding = check_binding("main:CommonModule.Example.Module", "revision-1", 20);
         let first = page_diagnostics(&store, binding.clone(), Some(check_result(21)), None);
@@ -633,7 +633,8 @@ mod tests {
             None,
             Some(cursor),
         );
-        assert_eq!(stale.diagnostics[0]["code"], "stale_cursor");
+        assert!(stale.ok);
+        assert_eq!(stale, page_diagnostics(&store, binding, None, Some(cursor)));
     }
 
     #[test]
