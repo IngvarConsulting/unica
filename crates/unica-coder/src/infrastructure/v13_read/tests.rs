@@ -5170,32 +5170,45 @@ mod canonical_module_diagnostics {
             &fixture.source.join("Catalogs/Items/Ext/ObjectModule.bsl"),
             "Procedure Run()\nEndProcedure\n",
         );
-        let authority = fixture.operation_read_authority();
-        for (at, expected, relative) in [
-            (
-                "CommonModule.РеактивныйСервер",
-                "CommonModule.РеактивныйСервер.Module",
-                "CommonModules/РеактивныйСервер/Ext/Module.bsl",
-            ),
-            (
-                "Catalog.Items.Module.Object",
-                "Catalog.Items.ObjectModule",
-                "Catalogs/Items/Ext/ObjectModule.bsl",
-            ),
-            (
-                "Report.ParityReport.Form.MainForm.Module.Form",
-                "Report.ParityReport.Form.MainForm.FormModule",
-                "Reports/ParityReport/Forms/MainForm/Ext/Form/Module.bsl",
-            ),
+        write(
+            &fixture.source.join("Catalogs/Items/Ext/ManagerModule.bsl"),
+            "Procedure Manage()\nEndProcedure\n",
+        );
+        for authority in [
+            fixture.operation_read_authority(),
+            fixture.extension_read_authority(),
         ] {
-            for tail in ["", ".Body"] {
-                assert_mapping(
-                    &authority,
-                    &fixture.context,
-                    &format!("main:{at}{tail}"),
-                    expected,
-                    &fixture.source.join(relative),
-                );
+            for (at, expected, relative) in [
+                (
+                    "CommonModule.РеактивныйСервер",
+                    "CommonModule.РеактивныйСервер.Module",
+                    "CommonModules/РеактивныйСервер/Ext/Module.bsl",
+                ),
+                (
+                    "Catalog.Items.Module.Object",
+                    "Catalog.Items.ObjectModule",
+                    "Catalogs/Items/Ext/ObjectModule.bsl",
+                ),
+                (
+                    "Catalog.Items.Module.Manager",
+                    "Catalog.Items.ManagerModule",
+                    "Catalogs/Items/Ext/ManagerModule.bsl",
+                ),
+                (
+                    "Report.ParityReport.Form.MainForm.Module.Form",
+                    "Report.ParityReport.Form.MainForm.FormModule",
+                    "Reports/ParityReport/Forms/MainForm/Ext/Form/Module.bsl",
+                ),
+            ] {
+                for tail in ["", ".Body"] {
+                    assert_mapping(
+                        &authority,
+                        &fixture.context,
+                        &format!("main:{at}{tail}"),
+                        expected,
+                        &fixture.source.join(relative),
+                    );
+                }
             }
         }
     }
