@@ -431,6 +431,37 @@ impl<'a> LogicalViewReadAuthority<'a> {
         .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
     }
 
+    /// Proves a DCS template through the same registration and descriptor
+    /// authority as view, then reads its body through the retained source root.
+    pub(crate) fn dcs_validation_input(
+        &self,
+        at: &QualifiedAddress,
+    ) -> Result<crate::infrastructure::v13_read_port::DcsValidationInput, ViewError> {
+        let admitted = self.snapshot(at)?;
+        let canonical = self.canonical_address(at, &admitted)?;
+        let target =
+            crate::infrastructure::native_operations::dcs::typed_dcs_reader_target(&canonical)
+                .ok_or_else(|| {
+                    ViewError::new(RefusalCode::BadValue, "DCS validation requires a template")
+                })?;
+        self.verify_registered_owner(&target, &admitted)?;
+        if !matches!(
+            self.read.metadata_child_profile(&target)?,
+            MetadataChildProfile::Template(MetadataTemplateType::DataCompositionSchema)
+        ) {
+            return Err(ViewError::new(
+                RefusalCode::BadValue,
+                "template is not a data composition schema",
+            ));
+        }
+        self.read_checkpoint()?;
+        let input = self
+            .read
+            .dcs_validation_input(&target, &mut || self.read_checkpoint())?;
+        self.read_checkpoint()?;
+        Ok(input)
+    }
+
     fn typed_payload(&self, route: &LogicalTreeRoute) -> Result<Value, ViewError> {
         let admitted = ViewSourceSnapshot {
             source_set_identity: self.read.source_set_identity().to_string(),

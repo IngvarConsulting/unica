@@ -5,13 +5,15 @@ use super::{
 };
 use crate::application::result_store::ViewCursorStore;
 use crate::application::v13::find::{FindRequest, FindResult};
-use crate::application::v13::view::{ViewFilter, ViewReadAuthority, ViewRequest, ViewService};
+use crate::application::v13::view::{
+    ViewError, ViewFilter, ViewReadAuthority, ViewRequest, ViewService,
+};
 use crate::domain::address::QualifiedAddress;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::platform_profile::PlatformProfile;
 use crate::domain::project_sources::SourceSetKind;
-use crate::domain::refusal::RefusalCode;
+use crate::domain::refusal::{RefusalCode, RefusalDetail};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::logical_tree::route_logical_address;
 use crate::infrastructure::platform::filesystem::{
@@ -5644,5 +5646,298 @@ mod canonical_module_diagnostics {
             .err()
             .expect("changed named root must not acquire diagnostic authority");
         assert_eq!(error.code(), RefusalCode::ProviderUnavailable);
+    }
+}
+
+#[test]
+fn dcs_validation_input_keeps_the_authority_cancellation_and_deadline() {
+    let fixture = RealReaderFixture::new();
+    let address = QualifiedAddress::parse("main:Report.ParityReport.Template.MainSchema").unwrap();
+    let mut authority = fixture.read_authority();
+    authority.deadline = ProviderDeadline::from_budget(std::time::Duration::ZERO);
+    assert_eq!(
+        authority
+            .dcs_validation_input(&address)
+            .err()
+            .unwrap()
+            .code(),
+        RefusalCode::DeadlineExceeded
+    );
+    let authority = fixture.read_authority();
+    fixture.cancellation.cancel();
+    assert_eq!(
+        authority
+            .dcs_validation_input(&address)
+            .err()
+            .unwrap()
+            .code(),
+        RefusalCode::Cancelled
+    );
+}
+
+#[test]
+fn canonical_dcs_validation_keeps_captured_format_evidence_after_replacement() {
+    let fixture = RealReaderFixture::new();
+    let address = QualifiedAddress::parse("main:Report.ParityReport.Template.MainSchema").unwrap();
+    let authority = fixture.read_authority();
+    let input = authority.dcs_validation_input(&address).unwrap();
+    let wrapper = fixture
+        .source
+        .join("Reports/ParityReport/Templates/MainSchema.xml");
+    let original = fs::read_to_string(&wrapper).unwrap();
+    fs::write(&wrapper, original.replace("2.20", "2.21")).unwrap();
+    fs::write(&input.artifact, "not XML: a later writer owns these bytes").unwrap();
+    let checked = crate::application::v13::check::normalize_native_outcome(
+        &address,
+        "Template",
+        crate::application::v13::check::CheckValidator::Dcs,
+        crate::infrastructure::native_operations::v13_analysis::validate_dcs_input(input),
+    )
+    .unwrap();
+    assert!(
+        checked.diagnostics().iter().all(|diagnostic| !matches!(
+            diagnostic.code(),
+            "formatVersionInvalid" | "platformVersionUnsupported"
+        )),
+        "format diagnostics must describe the captured input: {:?}",
+        checked.diagnostics()
+    );
+}
+
+#[test]
+fn canonical_dcs_validation_keeps_captured_owner_format_warnings() {
+    for relative in ["Configuration.xml"] {
+        for (version, expected) in [
+            ("2.21", "platformVersionUnsupported"),
+            ("2.19", "formatMigrationAvailable"),
+            ("2.&#50;0", "formatVersionInvalid"),
+        ] {
+            let fixture = RealReaderFixture::new();
+            let owner = fixture.source.join(relative);
+            let original = fs::read_to_string(&owner).unwrap();
+            fs::write(&owner, original.replace("2.20", version)).unwrap();
+            let address =
+                QualifiedAddress::parse("main:Report.ParityReport.Template.MainSchema").unwrap();
+            let captured = fixture.read_authority().dcs_validation_input(&address);
+            let input = captured.unwrap();
+            fs::write(&owner, original).unwrap();
+            let checked = crate::application::v13::check::normalize_native_outcome(
+                &address,
+                "Template",
+                crate::application::v13::check::CheckValidator::Dcs,
+                crate::infrastructure::native_operations::v13_analysis::validate_dcs_input(input),
+            )
+            .unwrap();
+            assert_eq!(
+                checked.diagnostics()[0].code(),
+                expected,
+                "{relative}: {version}"
+            );
+        }
+    }
+}
+
+#[test]
+fn canonical_dcs_validation_does_not_follow_links_after_input_capture() {
+    use crate::infrastructure::platform::testing::{
+        create_file_link_fixture_for_test, FileLinkFixtureOutcome,
+    };
+
+    let fixture = RealReaderFixture::new();
+    let address = QualifiedAddress::parse("main:Report.ParityReport.Template.MainSchema").unwrap();
+    let input = fixture
+        .read_authority()
+        .dcs_validation_input(&address)
+        .unwrap();
+    let outside = fixture.root.path().join("foreign.xml");
+    fs::write(&outside, "not XML: foreign input must never participate").unwrap();
+    for path in [
+        input.artifact.clone(),
+        fixture.source.join("Configuration.xml"),
+        fixture
+            .source
+            .join("Reports/ParityReport/Templates/MainSchema.xml"),
+    ] {
+        fs::remove_file(&path).unwrap();
+        let outcome = create_file_link_fixture_for_test(&outside, &path)
+            .expect("unexpected file-link creation error must fail the fixture test");
+        if outcome != FileLinkFixtureOutcome::Created {
+            eprintln!("[SKIPPED FIXTURE] file-link fixture unavailable: {outcome:?}");
+            return;
+        }
+    }
+    let checked = crate::application::v13::check::normalize_native_outcome(
+        &address,
+        "Template",
+        crate::application::v13::check::CheckValidator::Dcs,
+        crate::infrastructure::native_operations::v13_analysis::validate_dcs_input(input),
+    )
+    .unwrap();
+    assert!(checked
+        .diagnostics()
+        .iter()
+        .all(|diagnostic| diagnostic.code() != "formatVersionInvalid"));
+    assert_eq!(
+        fs::read_to_string(outside).unwrap(),
+        "not XML: foreign input must never participate"
+    );
+}
+
+#[test]
+fn canonical_dcs_validation_refuses_linked_format_owners_before_capture() {
+    use crate::infrastructure::platform::testing::{
+        create_file_link_fixture_for_test, FileLinkFixtureOutcome,
+    };
+
+    for relative in [
+        "Configuration.xml",
+        "Reports/ParityReport/Templates/MainSchema.xml",
+    ] {
+        let fixture = RealReaderFixture::new();
+        let owner = fixture.source.join(relative);
+        let outside = fixture.root.path().join("foreign.xml");
+        fs::rename(&owner, &outside).unwrap();
+        let outcome = create_file_link_fixture_for_test(&outside, &owner)
+            .expect("unexpected file-link creation error must fail the fixture test");
+        if outcome != FileLinkFixtureOutcome::Created {
+            eprintln!("[SKIPPED FIXTURE] file-link fixture unavailable: {outcome:?}");
+            return;
+        }
+        let address =
+            QualifiedAddress::parse("main:Report.ParityReport.Template.MainSchema").unwrap();
+        assert!(
+            fixture
+                .read_authority()
+                .dcs_validation_input(&address)
+                .is_err(),
+            "{relative}"
+        );
+    }
+}
+
+#[test]
+fn canonical_dcs_validation_keeps_large_configuration_owner_format_warning() {
+    let fixture = RealReaderFixture::new();
+    let path = fixture.source.join("Configuration.xml");
+    let xml = fs::read_to_string(&path).unwrap().replace("2.20", "2.21");
+    fs::write(
+        &path,
+        xml.replace(
+            "</MetaDataObject>",
+            &format!("<!--{}--></MetaDataObject>", "x".repeat(8 * 1024 * 1024)),
+        ),
+    )
+    .unwrap();
+    let address = QualifiedAddress::parse("main:Report.ParityReport.Template.MainSchema").unwrap();
+    let input = fixture
+        .read_authority()
+        .dcs_validation_input(&address)
+        .unwrap();
+    let checked = crate::application::v13::check::normalize_native_outcome(
+        &address,
+        "Template",
+        crate::application::v13::check::CheckValidator::Dcs,
+        crate::infrastructure::native_operations::v13_analysis::validate_dcs_input(input),
+    )
+    .unwrap();
+    assert_eq!(
+        checked.diagnostics()[0].code(),
+        "platformVersionUnsupported"
+    );
+}
+
+#[test]
+fn canonical_dcs_validation_keeps_exact_versionless_dcs_root_guard() {
+    let fixture = RealReaderFixture::new();
+    let artifact = fixture
+        .source
+        .join("Reports/ParityReport/Templates/MainSchema/Ext/Template.xml");
+    fs::write(&artifact, r#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" version="2.20"/>"#).unwrap();
+    let address = QualifiedAddress::parse("main:Report.ParityReport.Template.MainSchema").unwrap();
+    let input = fixture
+        .read_authority()
+        .dcs_validation_input(&address)
+        .unwrap();
+    let checked = crate::application::v13::check::normalize_native_outcome(
+        &address,
+        "Template",
+        crate::application::v13::check::CheckValidator::Dcs,
+        crate::infrastructure::native_operations::v13_analysis::validate_dcs_input(input),
+    )
+    .unwrap();
+    assert!(
+        checked
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.code() == "formatVersionInvalid"),
+        "versionless DCS publication policy must survive the retained-input bridge"
+    );
+}
+
+#[test]
+fn canonical_dcs_validation_preserves_typed_template_profile_refusal() {
+    for version in ["2.19", "2.21"] {
+        let fixture = RealReaderFixture::new();
+        let owner = fixture
+            .source
+            .join("Reports/ParityReport/Templates/MainSchema.xml");
+        let original = fs::read_to_string(&owner).unwrap();
+        fs::write(&owner, original.replace("2.20", version)).unwrap();
+        let address =
+            QualifiedAddress::parse("main:Report.ParityReport.Template.MainSchema").unwrap();
+        let error = fixture
+            .read_authority()
+            .dcs_validation_input(&address)
+            .err()
+            .unwrap();
+        assert_eq!(error.detail(), Some(RefusalDetail::SourceUnreadable));
+    }
+}
+
+#[test]
+fn canonical_dcs_format_owner_read_stops_at_typed_midstream_checkpoint() {
+    for code in [RefusalCode::Cancelled, RefusalCode::DeadlineExceeded] {
+        let fixture = RealReaderFixture::new();
+        let owner = fixture.source.join("Configuration.xml");
+        let original = fs::read_to_string(&owner).unwrap();
+        fs::write(
+            &owner,
+            original.replace(
+                "</MetaDataObject>",
+                &format!("<!--{}--></MetaDataObject>", "x".repeat(256 * 1024)),
+            ),
+        )
+        .unwrap();
+        let authority = fixture.read_authority();
+        let target = crate::domain::source_target::MetadataAddress::parse(
+            crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+            "Report.ParityReport.Template.MainSchema",
+        )
+        .unwrap();
+        let mut checkpoints = 0;
+        let error = authority
+            .read
+            .dcs_validation_input(&target, &mut || {
+                checkpoints += 1;
+                if checkpoints == 2 {
+                    Err(ViewError::new(
+                        code,
+                        "interrupted after the first owner chunk",
+                    ))
+                } else {
+                    Ok(())
+                }
+            })
+            .err()
+            .unwrap();
+        assert_eq!(error.code(), code);
+        assert_eq!(checkpoints, 2, "read must stop at the rejecting checkpoint");
+        assert!(
+            authority
+                .read
+                .dcs_validation_input(&target, &mut || Ok(()))
+                .is_ok(),
+            "partial capture must not be published or cached"
+        );
     }
 }

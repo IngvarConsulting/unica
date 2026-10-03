@@ -1489,6 +1489,261 @@ pub(crate) mod actor_capacity_tests {
         }
     }
 
+    fn dcs_check_workspace(kind: &str) -> (tempfile::TempDir, String, std::path::PathBuf) {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("src");
+        let external = kind != "Report";
+        let source_type = match kind {
+            "ExternalReport" => "EXTERNAL_REPORTS",
+            "ExternalDataProcessor" => "EXTERNAL_DATA_PROCESSORS",
+            "Report" => "CONFIGURATION",
+            _ => unreachable!(),
+        };
+        let owner = if external {
+            source.join("Sales")
+        } else {
+            source.join("Reports/Sales")
+        };
+        std::fs::create_dir_all(owner.join("Templates/Dcs/Ext")).unwrap();
+        std::fs::write(workspace.path().join("v8project.yaml"), format!(
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: {source_type}\n    path: src\n"
+        )).unwrap();
+        let descriptor = |body: String| {
+            format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">{body}</MetaDataObject>"#
+            )
+        };
+        if !external {
+            std::fs::write(source.join("Configuration.xml"), descriptor(
+                "<Configuration uuid=\"10000000-0000-4000-8000-000000000001\"><Properties><Name>Control</Name></Properties><ChildObjects><Report>Sales</Report></ChildObjects></Configuration>".into()
+            )).unwrap();
+        }
+        std::fs::write(owner.with_extension("xml"), descriptor(format!(
+            "<{kind} uuid=\"10000000-0000-4000-8000-000000000010\"><Properties><Name>Sales</Name></Properties><ChildObjects><Template>Dcs</Template></ChildObjects></{kind}>"
+        ))).unwrap();
+        std::fs::write(owner.join("Templates/Dcs.xml"), descriptor(
+            "<Template uuid=\"10000000-0000-4000-8000-000000000013\"><Properties><Name>Dcs</Name><TemplateType>DataCompositionSchema</TemplateType></Properties></Template>".into()
+        )).unwrap();
+        let body = owner.join("Templates/Dcs/Ext/Template.xml");
+        std::fs::write(
+            &body,
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema"
+		xmlns:dcscom="http://v8.1c.ru/8.1/data-composition-system/common"
+		xmlns:dcscor="http://v8.1c.ru/8.1/data-composition-system/core"
+		xmlns:dcsset="http://v8.1c.ru/8.1/data-composition-system/settings"
+		xmlns:v8="http://v8.1c.ru/8.1/data/core"
+		xmlns:v8ui="http://v8.1c.ru/8.1/data/ui"
+		xmlns:xs="http://www.w3.org/2001/XMLSchema"
+		xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+	<dataSource>
+		<name>ИсточникДанных1</name>
+		<dataSourceType>Local</dataSourceType>
+	</dataSource>
+	<dataSet xsi:type="DataSetQuery">
+		<name>НаборДанных1</name>
+		<field xsi:type="DataSetFieldField">
+			<dataPath>Amount</dataPath>
+			<field>Amount</field>
+		</field>
+		<dataSource>ИсточникДанных1</dataSource>
+		<query>ВЫБРАТЬ Amount КАК Amount</query>
+	</dataSet>
+	<settingsVariant>
+		<dcsset:name>Основной</dcsset:name>
+		<dcsset:settings>
+			<dcsset:selection>
+			</dcsset:selection>
+			<dcsset:filter>
+			</dcsset:filter>
+			<dcsset:order>
+			</dcsset:order>
+			<dcsset:item xsi:type="dcsset:StructureItemGroup">
+				<dcsset:selection>
+					<dcsset:item xsi:type="dcsset:SelectedItemAuto"/>
+				</dcsset:selection>
+			</dcsset:item>
+		</dcsset:settings>
+	</settingsVariant>
+</DataCompositionSchema>
+"#,
+        )
+        .unwrap();
+        (workspace, format!("main:{kind}.Sales.Template.Dcs"), body)
+    }
+
+    fn call_dcs_check(workspace: &std::path::Path, tool: ToolIdentity, at: &str) -> DomainResult {
+        direct_v5(
+            &bootstrap_runtime(),
+            InvocationRequest::new(
+                tool,
+                serde_json::json!({"at": at}),
+                std::fs::canonicalize(workspace).unwrap().to_string_lossy(),
+                7_000,
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn canonical_dcs_check_accepts_external_report_processor_and_configuration() {
+        for kind in ["ExternalReport", "ExternalDataProcessor", "Report"] {
+            let (workspace, at, _) = dcs_check_workspace(kind);
+            let before = crate::test_support::tree_snapshot(&workspace.path().join("src"));
+            let viewed = call_dcs_check(workspace.path(), ToolIdentity::View, &at);
+            assert!(viewed.ok, "{kind}: {viewed:?}");
+            let checked = call_dcs_check(workspace.path(), ToolIdentity::Check, &at);
+            assert!(checked.ok, "{kind}: {checked:?}");
+            let data = checked.data.as_ref().unwrap();
+            assert_eq!(data["status"], "passed", "{kind}: {checked:?}");
+            assert_eq!(data["validators"], serde_json::json!(["dcs"]));
+            assert_eq!(data["diagnosticCount"], 0);
+            assert_eq!(
+                before,
+                crate::test_support::tree_snapshot(&workspace.path().join("src"))
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_dcs_check_external_semantics_and_owner_isolation() {
+        for kind in ["ExternalReport", "ExternalDataProcessor"] {
+            let (workspace, at, body) = dcs_check_workspace(kind);
+            let valid = std::fs::read_to_string(&body).unwrap();
+            let invalid = valid.replace("<dcsset:order>",
+                "<dcsset:dataParameters><dcscor:item xsi:type=\"dcsset:SettingsParameterValue\"><dcscor:parameter/></dcscor:item></dcsset:dataParameters><dcsset:order>");
+            assert_ne!(valid, invalid);
+            std::fs::write(&body, invalid).unwrap();
+            // A second owner has the same template name and valid content.
+            let source = workspace.path().join("src");
+            std::fs::create_dir_all(source.join("Other/Templates/Dcs/Ext")).unwrap();
+            std::fs::write(
+                source.join("Other.xml"),
+                std::fs::read_to_string(source.join("Sales.xml"))
+                    .unwrap()
+                    .replace("Sales", "Other"),
+            )
+            .unwrap();
+            std::fs::copy(
+                source.join("Sales/Templates/Dcs.xml"),
+                source.join("Other/Templates/Dcs.xml"),
+            )
+            .unwrap();
+            std::fs::write(source.join("Other/Templates/Dcs/Ext/Template.xml"), valid).unwrap();
+            let before = crate::test_support::tree_snapshot(&source);
+            assert!(call_dcs_check(workspace.path(), ToolIdentity::View, &at).ok);
+            let checked = call_dcs_check(workspace.path(), ToolIdentity::Check, &at);
+            assert!(checked.ok, "{checked:?}");
+            let data = checked.data.as_ref().unwrap();
+            assert_eq!(data["status"], "failed", "{checked:?}");
+            assert!(
+                data["diagnostics"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|item| item["validator"] == "dcs"
+                        && item["message"]
+                            .as_str()
+                            .is_some_and(|text| text
+                                .contains("SettingsParameterValue has empty parameter name"))),
+                "{checked:?}"
+            );
+            let sibling = call_dcs_check(
+                workspace.path(),
+                ToolIdentity::Check,
+                &at.replace(".Sales.", ".Other."),
+            );
+            assert_eq!(
+                sibling.data.as_ref().unwrap()["status"],
+                "passed",
+                "{sibling:?}"
+            );
+            assert_eq!(before, crate::test_support::tree_snapshot(&source));
+        }
+    }
+
+    #[test]
+    fn canonical_dcs_check_refuses_unregistered_or_mismatched_external_template() {
+        for case in ["unregistered", "wrong-name", "wrong-kind", "missing"] {
+            let (workspace, at, body) = dcs_check_workspace("ExternalReport");
+            let source = workspace.path().join("src");
+            let descriptor = source.join("Sales/Templates/Dcs.xml");
+            match case {
+                "unregistered" => {
+                    let owner = source.join("Sales.xml");
+                    std::fs::write(
+                        &owner,
+                        std::fs::read_to_string(&owner)
+                            .unwrap()
+                            .replace("<Template>Dcs</Template>", ""),
+                    )
+                    .unwrap();
+                }
+                "wrong-name" => std::fs::write(
+                    &descriptor,
+                    std::fs::read_to_string(&descriptor)
+                        .unwrap()
+                        .replace("<Name>Dcs</Name>", "<Name>Other</Name>"),
+                )
+                .unwrap(),
+                "wrong-kind" => std::fs::write(
+                    &descriptor,
+                    std::fs::read_to_string(&descriptor)
+                        .unwrap()
+                        .replace("<Template ", "<Form ")
+                        .replace("</Template>", "</Form>"),
+                )
+                .unwrap(),
+                "missing" => std::fs::remove_file(body).unwrap(),
+                _ => unreachable!(),
+            }
+            let before = crate::test_support::tree_snapshot(&source);
+            let checked = call_dcs_check(workspace.path(), ToolIdentity::Check, &at);
+            assert!(!checked.ok, "{case}: {checked:?}");
+            assert_eq!(
+                checked.diagnostics[0]["code"],
+                if case == "unregistered" {
+                    "not_found"
+                } else {
+                    "provider_unavailable"
+                },
+                "{case}: {checked:?}"
+            );
+            assert_eq!(before, crate::test_support::tree_snapshot(&source));
+        }
+    }
+
+    #[test]
+    fn canonical_dcs_check_refuses_linked_external_payload() {
+        use crate::infrastructure::platform::testing::{
+            create_file_link_fixture_for_test, FileLinkFixtureOutcome,
+        };
+
+        let (workspace, at, body) = dcs_check_workspace("ExternalReport");
+        let outside = tempfile::tempdir().unwrap();
+        let external_body = outside.path().join("Template.xml");
+        std::fs::rename(&body, &external_body).unwrap();
+        let outcome = create_file_link_fixture_for_test(&external_body, &body)
+            .expect("unexpected file-link creation error must fail the fixture test");
+        if outcome != FileLinkFixtureOutcome::Created {
+            eprintln!("[SKIPPED FIXTURE] file-link fixture unavailable: {outcome:?}");
+            return;
+        }
+        let before = std::fs::read(&external_body).unwrap();
+        let checked = call_dcs_check(workspace.path(), ToolIdentity::Check, &at);
+        assert!(!checked.ok, "{checked:?}");
+        assert_eq!(
+            checked.diagnostics[0]["code"], "provider_unavailable",
+            "{checked:?}"
+        );
+        assert_eq!(before, std::fs::read(&external_body).unwrap());
+        assert!(std::fs::symlink_metadata(body)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+
     fn bootstrap_runtime() -> V5CanonicalInvocationRuntime {
         V5CanonicalInvocationRuntime::new(canonical_v13_service(), Arc::new(TokioClock))
     }

@@ -3157,7 +3157,7 @@ fn run_node_checks(
     for step in plan {
         let verdict = match step {
             CheckStep::Native(validator) => {
-                run_native_validator(&address, kind, validator, context)
+                run_native_validator(&address, kind, validator, invocation, cancellation)
             }
             CheckStep::Meta => run_meta_validator(&address, at, context, cancellation),
             CheckStep::Bsl => run_bsl_diagnostics(ports, &address, invocation, cancellation),
@@ -3196,15 +3196,51 @@ fn run_native_validator(
     address: &QualifiedAddress,
     kind: &str,
     validator: crate::application::v13::check::CheckValidator,
-    context: &crate::domain::workspace::WorkspaceContext,
+    invocation: &ActorBoundExecution,
+    cancellation: &CancellationToken,
 ) -> Result<(bool, Vec<Value>), Box<DomainResult>> {
     use crate::application::v13::check::normalize_native_outcome;
     use crate::infrastructure::native_operations::v13_analysis::{validate, validator_selector};
 
+    let context = invocation.workspace_context();
     let at = address.to_string();
-    let selector = validator_selector(validator, address, context)
-        .map_err(|error| Box::new(error_result(Some(at.clone()), RefusalCode::BadValue, error)))?;
-    let native = validate(validator, &selector, context);
+    let native = if validator == crate::application::v13::check::CheckValidator::Dcs {
+        let sources = invocation.read_sources().map_err(|error| {
+            Box::new(error_result_detailed(
+                Some(at.clone()),
+                RefusalDetail::SourceUnreadable,
+                error,
+            ))
+        })?;
+        let source = sources
+            .into_iter()
+            .find(|source| source.source_set_name() == address.source_set())
+            .ok_or_else(|| {
+                Box::new(error_result_detailed(
+                    Some(at.clone()),
+                    RefusalDetail::SourceUnreadable,
+                    "DCS source was not admitted",
+                ))
+            })?;
+        let authority = source
+            .logical_view_read_authority(cancellation)
+            .map_err(|error| {
+                Box::new(error_result_detailed(
+                    Some(at.clone()),
+                    RefusalDetail::SourceUnreadable,
+                    error,
+                ))
+            })?;
+        let input = authority
+            .dcs_validation_input(address)
+            .map_err(|error| Box::new(view_error_result(Some(at.clone()), error)))?;
+        crate::infrastructure::native_operations::v13_analysis::validate_dcs_input(input)
+    } else {
+        let selector = validator_selector(validator, address, context).map_err(|error| {
+            Box::new(error_result(Some(at.clone()), RefusalCode::BadValue, error))
+        })?;
+        validate(validator, &selector, context)
+    };
     match normalize_native_outcome(address, kind, validator, native) {
         Ok(checked) => Ok((
             checked.ok(),
