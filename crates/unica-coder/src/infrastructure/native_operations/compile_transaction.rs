@@ -1604,46 +1604,6 @@ impl CompileTransaction {
         }
     }
 
-    /// Conservative reservation for bytes and observed namespace entries.
-    pub(crate) fn retained_payload_bytes(&self) -> usize {
-        self.creates
-            .iter()
-            .map(|item| item.bytes.len())
-            .chain(
-                self.registrations
-                    .values()
-                    .map(|item| item.original.len().saturating_add(item.updated.len())),
-            )
-            .chain(
-                self.read_guards
-                    .values()
-                    .map(|item| item.expected_preimage.len()),
-            )
-            .chain(self.retained_apply.iter().map(|item| {
-                item.original
-                    .as_ref()
-                    .map_or(0, Vec::len)
-                    .saturating_add(item.current.as_ref().map_or(0, Vec::len))
-            }))
-            .chain(self.retained_apply.iter().map(|item| {
-                std::mem::size_of_val(item)
-                    .saturating_add(item.relative_path.as_os_str().len())
-                    .saturating_add(item.name.len())
-                    .saturating_add(
-                        item.missing_parent_chain
-                            .iter()
-                            .map(|name| name.len())
-                            .sum::<usize>(),
-                    )
-            }))
-            .chain(
-                self.retained_namespaces
-                    .iter()
-                    .map(|guard| guard.retained_payload_bytes()),
-            )
-            .fold(0usize, usize::saturating_add)
-    }
-
     /// Полный план изменений транзакции: созданные, обновлённые и удаляемые
     /// пути — единственный источник для структурной квитанции мутации.
     /// Порядок детерминирован: create, update, remove; внутри —

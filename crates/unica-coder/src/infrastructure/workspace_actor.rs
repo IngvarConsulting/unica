@@ -1533,18 +1533,16 @@ impl<R> WorkspacePublicationLease<'_, R> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SavedApplyPlanError {
     ActorMismatch,
-    Capacity,
     RegistryUnavailable,
-    Serialization(String),
 }
 
 impl std::fmt::Display for SavedApplyPlanError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::ActorMismatch => formatter.write_str("saved apply plan belongs to another workspace actor"),
-            Self::Capacity => formatter.write_str("saved apply plan capacity exceeded; wait for plans to expire and request a fresh plan"),
+            Self::ActorMismatch => {
+                formatter.write_str("saved apply plan belongs to another workspace actor")
+            }
             Self::RegistryUnavailable => formatter.write_str("saved apply plans are unavailable"),
-            Self::Serialization(message) => write!(formatter, "saved apply result cannot be retained: {message}"),
         }
     }
 }
@@ -1558,17 +1556,13 @@ pub(crate) enum SavedApplyExecutionError {
 }
 
 const SAVED_APPLY_TTL: Duration = Duration::from_secs(300);
-const MAX_SAVED_APPLY_PLANS: usize = 256;
-const MAX_SAVED_APPLY_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Default)]
 struct SavedApplyPlans {
     entries: HashMap<String, Arc<SavedApplyPlan>>,
-    payload_bytes: usize,
 }
 struct SavedApplyPlan {
     expires: Instant,
-    payload_bytes: usize,
     execution_lane: DeadlineLock<FailClosed>,
     state: Mutex<SavedApplyState>,
 }
@@ -2091,33 +2085,6 @@ impl<R> WorkspaceActor<R> {
         if prepared.actor_identity != self.identity || prepared.actor_instance != self.instance_id {
             return Err(SavedApplyPlanError::ActorMismatch);
         }
-        let dependency_bytes =
-            prepared
-                .read_dependencies
-                .iter()
-                .try_fold(0usize, |bytes, dependency| {
-                    let reads = dependency
-                        .reads
-                        .lock()
-                        .map_err(|_| SavedApplyPlanError::RegistryUnavailable)?;
-                    Ok::<_, SavedApplyPlanError>(reads.iter().fold(bytes, |bytes, (path, body)| {
-                        bytes
-                            .saturating_add(path.as_os_str().len())
-                            .saturating_add(body.len())
-                            .saturating_add(64)
-                    }))
-                })?;
-        let payload_bytes = prepared
-            .transaction
-            .retained_payload_bytes()
-            .saturating_add(dependency_bytes)
-            .saturating_add(prepared.source_selection.retained_payload_bytes())
-            .saturating_add(prepared.support_policy.retained_payload_bytes())
-            .saturating_add(
-                serde_json::to_vec(&preview)
-                    .map_err(|error| SavedApplyPlanError::Serialization(error.to_string()))?
-                    .len(),
-            );
         let now = Instant::now();
         let mut plans = self
             .saved_apply_plans
@@ -2126,23 +2093,11 @@ impl<R> WorkspaceActor<R> {
         plans
             .entries
             .retain(|_, entry| entry.expires > now || Arc::strong_count(entry) > 1);
-        plans.payload_bytes = plans
-            .entries
-            .values()
-            .map(|entry| entry.payload_bytes)
-            .sum();
-        if plans.entries.len() >= MAX_SAVED_APPLY_PLANS
-            || payload_bytes > MAX_SAVED_APPLY_PAYLOAD_BYTES.saturating_sub(plans.payload_bytes)
-        {
-            return Err(SavedApplyPlanError::Capacity);
-        }
         let token = uuid::Uuid::new_v4().to_string();
-        plans.payload_bytes += payload_bytes;
         plans.entries.insert(
             token.clone(),
             Arc::new(SavedApplyPlan {
                 expires: now + SAVED_APPLY_TTL,
-                payload_bytes,
                 execution_lane: DeadlineLock::fail_closed("saved apply execution lane is poisoned"),
                 state: Mutex::new(SavedApplyState::Pending {
                     batch: Box::new(prepared),
@@ -10834,151 +10789,67 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn saved_apply_quota_counts_enumerated_namespace_names_without_large_file_bytes() {
-        let fixture = actor_fixture("saved-plan-namespace-quota", &["main"]);
+    fn saved_apply_large_retained_inputs_can_be_saved_and_executed() {
+        let fixture = actor_fixture("saved-plan-large-inputs", &["main"]);
         let source = &fixture.roots[0];
-        std::fs::create_dir_all(source.join("Nested")).unwrap();
-        for index in 0..12 {
-            std::fs::write(source.join(format!("Nested/Empty{index:02}.bsl")), b"").unwrap();
+        let body = vec![b'x'; 11 * 1024 * 1024];
+        for index in 0..3 {
+            std::fs::write(source.join(format!("Input{index}.bsl")), &body).unwrap();
         }
+        std::fs::write(source.join("Module.bsl"), b"before").unwrap();
         let binding = fixture.actor.bind_provider_root("main", source).unwrap();
-        let prepare = |enumerate: bool| {
-            let admission = fixture
-                .actor
-                .admit_apply(
-                    &binding,
-                    None,
-                    true,
-                    ProviderDeadline::from_budget(Duration::from_secs(5)),
-                    &CancellationToken::new(),
-                )
-                .unwrap();
-            let mut state = admission.staged_state().unwrap();
-            if enumerate {
-                assert_eq!(state.enumerate_tree(Path::new("")).unwrap().len(), 12);
-            }
-            admission.prepare(state).unwrap()
-        };
-        let preview = crate::domain::invocation::DomainResult::success("preview");
-        let baseline = prepare(false);
-        let baseline_transaction_bytes = baseline.transaction.retained_payload_bytes();
-        let baseline_token = fixture
+        let admission = fixture
             .actor
-            .save_prepared_apply(baseline, preview.clone())
-            .unwrap();
-        let baseline_payload =
-            fixture.actor.saved_apply_plans.lock().unwrap().entries[&baseline_token].payload_bytes;
-        let enumerated = prepare(true);
-        assert!(
-            enumerated.transaction.retained_payload_bytes() > baseline_transaction_bytes + 12 * 64,
-            "twelve empty names and their nested path must consume retained quota"
-        );
-        let enumerated_payload = enumerated
-            .transaction
-            .retained_payload_bytes()
-            .saturating_add(enumerated.source_selection.retained_payload_bytes())
-            .saturating_add(enumerated.support_policy.retained_payload_bytes())
-            .saturating_add(serde_json::to_vec(&preview).unwrap().len());
-        assert!(enumerated_payload > baseline_payload);
-        let allowed = baseline_payload + (enumerated_payload - baseline_payload) / 2;
-        {
-            let mut plans = fixture.actor.saved_apply_plans.lock().unwrap();
-            let entry =
-                std::sync::Arc::get_mut(plans.entries.get_mut(&baseline_token).unwrap()).unwrap();
-            entry.payload_bytes = super::MAX_SAVED_APPLY_PAYLOAD_BYTES - allowed;
-        }
-        let source_before = snapshot_tree(source);
-        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
-        assert_eq!(
-            fixture
-                .actor
-                .save_prepared_apply(enumerated, preview)
-                .unwrap_err(),
-            super::SavedApplyPlanError::Capacity
-        );
-        assert_eq!(snapshot_tree(source), source_before);
-        assert_eq!(
-            snapshot_tree(&fixture.root.join(".build/unica")),
-            cache_before
-        );
-        fixture.cleanup();
-    }
-
-    #[test]
-    fn saved_apply_quota_counts_parent_read_bytes_without_large_allocations() {
-        let fixture = actor_fixture("saved-plan-parent-read-quota", &["dst", "parent"]);
-        let parent_body = vec![b'p'; 4 * 1024];
-        std::fs::write(fixture.roots[1].join("Module.bsl"), &parent_body).unwrap();
-        let destination = fixture
-            .actor
-            .bind_provider_root("dst", &fixture.roots[0])
-            .unwrap();
-        let parent = fixture
-            .actor
-            .bind_provider_root("parent", &fixture.roots[1])
-            .unwrap();
-        let prepare = |read_parent: bool| {
-            let admission = fixture
-                .actor
-                .admit_apply_with_dependencies(
-                    &destination,
-                    std::slice::from_ref(&parent),
-                    None,
-                    true,
-                    ProviderDeadline::from_budget(Duration::from_secs(5)),
-                    &CancellationToken::new(),
-                )
-                .unwrap();
-            if read_parent {
-                assert_eq!(
-                    admission
-                        .read_apply_dependency("parent", Path::new("Module.bsl"))
-                        .unwrap(),
-                    parent_body
-                );
-            }
-            let state = admission.staged_state().unwrap();
-            admission.prepare(state).unwrap()
-        };
-        let preview = crate::domain::invocation::DomainResult::success("preview");
-        let baseline_token = fixture
-            .actor
-            .save_prepared_apply(prepare(false), preview.clone())
-            .unwrap();
-        let read_token = fixture
-            .actor
-            .save_prepared_apply(prepare(true), preview.clone())
-            .unwrap();
-        let (baseline_payload, read_payload) = {
-            let plans = fixture.actor.saved_apply_plans.lock().unwrap();
-            (
-                plans.entries[&baseline_token].payload_bytes,
-                plans.entries[&read_token].payload_bytes,
+            .admit_apply(
+                &binding,
+                None,
+                true,
+                ProviderDeadline::from_budget(Duration::from_secs(10)),
+                &CancellationToken::new(),
             )
-        };
-        assert!(
-            read_payload >= baseline_payload + parent_body.len(),
-            "parent bytes must consume saved-plan quota"
-        );
-        let allowed = baseline_payload + (read_payload - baseline_payload) / 2;
-        {
-            let mut plans = fixture.actor.saved_apply_plans.lock().unwrap();
-            plans.entries.remove(&baseline_token);
-            let entry =
-                std::sync::Arc::get_mut(plans.entries.get_mut(&read_token).unwrap()).unwrap();
-            entry.payload_bytes = super::MAX_SAVED_APPLY_PAYLOAD_BYTES - allowed;
+            .unwrap();
+        let mut state = admission.staged_state().unwrap();
+        // Three actual read-only inputs retain more than the former 64 MiB
+        // ceiling once their original/current states are captured.
+        for index in 0..3 {
+            assert_eq!(
+                state
+                    .read(Path::new(&format!("Input{index}.bsl")))
+                    .unwrap()
+                    .unwrap(),
+                body
+            );
         }
-        let source_before = snapshot_tree(&fixture.roots[0]);
-        let parent_before = snapshot_tree(&fixture.roots[1]);
-        assert_eq!(
-            fixture
-                .actor
-                .save_prepared_apply(prepare(true), preview)
-                .unwrap_err(),
-            super::SavedApplyPlanError::Capacity
-        );
-        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
-        assert_eq!(snapshot_tree(&fixture.roots[1]), parent_before);
+        state
+            .replace("Module.bsl", b"before", b"after".to_vec())
+            .unwrap();
+        let batch = admission.prepare(state).unwrap();
+        fixture.actor.preview_prepared_apply(&batch).unwrap();
+        let token = fixture
+            .actor
+            .save_prepared_apply(
+                batch,
+                crate::domain::invocation::DomainResult::success("preview"),
+            )
+            .expect("a valid plan must not be refused by an unmeasured byte quota");
+        assert_eq!(std::fs::read(source.join("Module.bsl")).unwrap(), b"before");
+        let published = fixture
+            .actor
+            .execute_saved_apply(
+                &token,
+                ProviderDeadline::from_budget(Duration::from_secs(10)),
+                &CancellationToken::new(),
+                finish_saved_apply_test,
+            )
+            .unwrap();
+        assert!(published.ok, "{}", published.summary);
+        assert_eq!(std::fs::read(source.join("Module.bsl")).unwrap(), b"after");
+        for index in 0..3 {
+            assert_eq!(
+                std::fs::read(source.join(format!("Input{index}.bsl"))).unwrap(),
+                body
+            );
+        }
         fixture.cleanup();
     }
 
@@ -11361,7 +11232,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn saved_apply_plan_actor_mismatch_is_distinct_from_registry_capacity() {
+    fn saved_apply_plan_actor_mismatch_refuses_without_writes() {
         let fixture = actor_fixture("saved-plan-save-bound", &["main"]);
         let other = actor_fixture("saved-plan-save-foreign", &["main"]);
         write_actor_event_fixture(&fixture.roots[0]);
@@ -11393,8 +11264,8 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn saved_apply_expired_inflight_reservation_keeps_byte_quota_until_released() {
-        let fixture = actor_fixture("saved-plan-inflight-capacity", &["main"]);
+    fn saved_apply_expired_inflight_entry_survives_until_executor_releases_it() {
+        let fixture = actor_fixture("saved-plan-inflight-expiry", &["main"]);
         write_actor_event_fixture(&fixture.roots[0]);
         let binding = fixture
             .actor
@@ -11402,58 +11273,45 @@ pub(crate) mod tests {
             .unwrap();
         let prepare =
             || prepare_property_effect_batch(&fixture, &binding, true, &CancellationToken::new());
+        let preview = crate::domain::invocation::DomainResult::success("preview");
         let token = fixture
             .actor
-            .save_prepared_apply(
-                prepare(),
-                crate::domain::invocation::DomainResult::success("preview"),
-            )
+            .save_prepared_apply(prepare(), preview.clone())
             .unwrap();
         let retained = {
             let mut plans = fixture.actor.saved_apply_plans.lock().unwrap();
-            let plan = std::sync::Arc::get_mut(plans.entries.get_mut(&token).unwrap()).unwrap();
-            plan.expires = Instant::now();
-            // Reserve the full payload quota without allocating a giant fixture.
-            // A live executor owns this Arc even after its token expires.
-            plan.payload_bytes = super::MAX_SAVED_APPLY_PAYLOAD_BYTES;
+            std::sync::Arc::get_mut(plans.entries.get_mut(&token).unwrap())
+                .unwrap()
+                .expires = Instant::now();
             plans.entries[&token].clone()
         };
-        let before = snapshot_tree(&fixture.roots[0]);
-        assert_eq!(
-            fixture
-                .actor
-                .save_prepared_apply(
-                    prepare(),
-                    crate::domain::invocation::DomainResult::success("preview")
-                )
-                .unwrap_err(),
-            super::SavedApplyPlanError::Capacity
-        );
-        assert_eq!(
-            fixture
-                .actor
-                .saved_apply_plans
-                .lock()
-                .unwrap()
-                .payload_bytes,
-            super::MAX_SAVED_APPLY_PAYLOAD_BYTES
-        );
-        assert_eq!(snapshot_tree(&fixture.roots[0]), before);
+        let source_before = snapshot_tree(&fixture.roots[0]);
+        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+        let next = fixture
+            .actor
+            .save_prepared_apply(prepare(), preview.clone())
+            .unwrap();
+        {
+            let plans = fixture.actor.saved_apply_plans.lock().unwrap();
+            assert!(plans.entries.contains_key(&token));
+            assert!(plans.entries.contains_key(&next));
+        }
         drop(retained);
-        assert!(fixture
+        let newest = fixture
             .actor
-            .save_prepared_apply(
-                prepare(),
-                crate::domain::invocation::DomainResult::success("preview")
-            )
-            .is_ok());
-        assert!(!fixture
-            .actor
-            .saved_apply_plans
-            .lock()
-            .unwrap()
-            .entries
-            .contains_key(&token));
+            .save_prepared_apply(prepare(), preview)
+            .unwrap();
+        {
+            let plans = fixture.actor.saved_apply_plans.lock().unwrap();
+            assert!(!plans.entries.contains_key(&token));
+            assert!(plans.entries.contains_key(&next));
+            assert!(plans.entries.contains_key(&newest));
+        }
+        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
+        assert_eq!(
+            snapshot_tree(&fixture.root.join(".build/unica")),
+            cache_before
+        );
         fixture.cleanup();
     }
 

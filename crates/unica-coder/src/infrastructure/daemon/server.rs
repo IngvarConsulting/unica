@@ -6868,7 +6868,7 @@ struct ActorLogicalReadLease {"#,
     }
 
     #[test]
-    fn saved_apply_capacity_refuses_service_state_without_writes_and_keeps_saved_plans() {
+    fn saved_apply_more_than_256_plans_keep_earlier_tokens_without_writes() {
         let workspace = subsystem_picture_workspace("", true);
         let source = workspace.path().join("src");
         let before = crate::test_support::tree_snapshot(&source);
@@ -6889,21 +6889,14 @@ struct ActorLogicalReadLease {"#,
             first_token
                 .get_or_insert_with(|| plan.data.as_ref().unwrap()["executionToken"].clone());
         }
-        let refused = submit_canonical(&runtime, workspace.path(), ToolIdentity::Apply, arguments);
-        assert!(!refused.ok, "{refused:?}");
-        assert_eq!(
-            refused.diagnostics[0]["code"], "invalid_state",
-            "{refused:?}"
-        );
-        assert_eq!(
-            refused.diagnostics[0]["outcome"], "needsHuman",
-            "{refused:?}"
-        );
-        assert!(refused
+        let additional =
+            submit_canonical(&runtime, workspace.path(), ToolIdentity::Apply, arguments);
+        assert!(additional.ok, "{additional:?}");
+        assert!(additional
             .data
             .as_ref()
             .and_then(|data| data.get("executionToken"))
-            .is_none());
+            .is_some());
         assert_eq!(crate::test_support::tree_snapshot(&source), before);
         let executed = submit_canonical(
             &runtime,
