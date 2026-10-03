@@ -7206,6 +7206,190 @@ struct ActorLogicalReadLease {"#,
     }
 
     #[test]
+    fn canonical_apply_constant_type_create_edit_view_and_atomic_refusal() {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("src");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        ).unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+        ).unwrap();
+        let runtime = V5CanonicalInvocationRuntime::new(
+            Arc::new(
+                crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
+            ),
+            Arc::new(TokioClock),
+        );
+        let workspace_hint = std::fs::canonicalize(workspace.path()).unwrap();
+        let call = |tool, arguments| {
+            let request =
+                InvocationRequest::new(tool, arguments, workspace_hint.to_string_lossy(), 7_000)
+                    .unwrap();
+            direct_v5(&runtime, request).unwrap()
+        };
+        let publish = |ops: serde_json::Value| {
+            let before = crate::test_support::tree_snapshot(&source);
+            let creates_object = ops[0]["op"] == "object.create";
+            let at = if creates_object {
+                "main:Configuration"
+            } else {
+                ops[0]["args"]["at"].as_str().expect("edit target")
+            };
+            let mut args = serde_json::json!({"at": at, "ops": ops, "dryRun": true});
+            let preview = call(ToolIdentity::Apply, args.clone());
+            assert!(preview.ok, "{preview:?}");
+            assert_eq!(
+                crate::test_support::tree_snapshot(&source),
+                before,
+                "preview writes nothing"
+            );
+            args["dryRun"] = serde_json::json!(false);
+            args["ifRev"] = serde_json::json!(preview.rev.as_ref().expect("preview revision"));
+            let applied = call(ToolIdentity::Apply, args);
+            assert!(applied.ok, "{applied:?}");
+            let preview_data = preview.data.as_ref().unwrap();
+            let applied_data = applied.data.as_ref().unwrap();
+            assert_eq!(preview_data["operations"], applied_data["operations"]);
+            assert_eq!(preview_data["effects"], applied_data["effects"]);
+            assert_eq!(preview.changed, applied.changed);
+            // Object templates already generate fresh UUIDs on each planning
+            // pass. Existing-object edits retain byte-identical plan hashes.
+            if !creates_object {
+                assert_eq!(preview_data["planHash"], applied_data["planHash"]);
+            }
+            applied
+        };
+        let view_type = || {
+            let viewed = call(
+                ToolIdentity::View,
+                serde_json::json!({"at": "main:Constant.Enabled"}),
+            );
+            assert!(viewed.ok, "{viewed:?}");
+            let props = &viewed.data.as_ref().unwrap()["props"];
+            assert!(
+                props.get("Type").is_none(),
+                "type has one public projection: {props}"
+            );
+            serde_json::from_str::<serde_json::Value>(props["type"].as_str().expect("compact type"))
+                .unwrap()
+        };
+        let assert_xml_type = |expected: &str| {
+            let xml = std::fs::read_to_string(source.join("Constants/Enabled.xml")).unwrap();
+            let document = roxmltree::Document::parse(xml.trim_start_matches('\u{feff}')).unwrap();
+            let types: Vec<_> = document
+                .descendants()
+                .filter(|node| node.has_tag_name(("http://v8.1c.ru/8.1/data/core", "Type")))
+                .collect();
+            assert_eq!(types.len(), 1, "{xml}");
+            let (prefix, local) = types[0].text().unwrap().split_once(':').unwrap();
+            assert_eq!(local, expected);
+            assert_eq!(
+                types[0].lookup_namespace_uri(Some(prefix)),
+                Some(if expected == "boolean" {
+                    "http://www.w3.org/2001/XMLSchema"
+                } else {
+                    "http://v8.1c.ru/8.1/data/enterprise/current-config"
+                })
+            );
+            assert!(
+                !document
+                    .descendants()
+                    .any(|node| node
+                        .has_tag_name(("http://v8.1c.ru/8.1/data/core", "StringQualifiers"))),
+                "old string qualifiers survived: {xml}"
+            );
+        };
+        publish(serde_json::json!([
+            {"op": "object.create", "args": {"values": {"kind": "Constant", "name": "Enabled"}}},
+            {"op": "props.set", "args": {"at": "main:Constant.Enabled", "values": {"Type": {"variants": [{"kind": "boolean"}]}}}}
+        ]));
+        assert_xml_type("boolean");
+        assert_eq!(view_type()["variants"][0]["kind"], "boolean");
+        publish(serde_json::json!([
+            {"op": "object.create", "args": {"values": {"kind": "Catalog", "name": "Products"}}}
+        ]));
+        let reference = serde_json::json!([
+            {"op": "props.set", "args": {"at": "main:Constant.Enabled", "values": {"Type": {"variants": [{"kind": "reference", "metadataPath": "Catalog.Products"}]}}}}
+        ]);
+        publish(reference.clone());
+        assert_xml_type("CatalogRef.Products");
+        let observed = view_type();
+        assert_eq!(observed["variants"][0]["kind"], "reference");
+        assert_eq!(observed["variants"][0]["metadataPath"], "Catalog.Products");
+        let before_noop = crate::test_support::tree_snapshot(&source);
+        let noop = publish(reference);
+        assert_eq!(noop.data.as_ref().unwrap()["effects"], 0);
+        assert_eq!(crate::test_support::tree_snapshot(&source), before_noop);
+
+        for (name, invalid_arguments) in [("Enabled", false), ("NewInvalidConst", true)] {
+            let before = crate::test_support::tree_snapshot(&source);
+            let root = call(
+                ToolIdentity::View,
+                serde_json::json!({"at": "main:Configuration"}),
+            );
+            assert!(root.ok, "{root:?}");
+            for dry_run in [true, false] {
+                let mut create_args =
+                    serde_json::json!({"values": {"kind": "Constant", "name": name}});
+                if invalid_arguments {
+                    create_args["bogus"] = serde_json::json!(true);
+                }
+                let refused = call(
+                    ToolIdentity::Apply,
+                    serde_json::json!({
+                        "at": "main:Configuration", "dryRun": dry_run, "ifRev": root.rev,
+                        "ops": [
+                            {"op": "object.create", "args": create_args},
+                            {"op": "props.set", "args": {"at": format!("main:Constant.{name}"), "values": {"Comment": "must not publish"}}}
+                        ]
+                    }),
+                );
+                assert!(
+                    !refused.ok,
+                    "a failed creation cannot authorize configuration: {refused:?}"
+                );
+                assert_eq!(
+                    crate::test_support::tree_snapshot(&source),
+                    before,
+                    "{name}: failed create batch must not publish"
+                );
+            }
+        }
+
+        // A valid first operation must not leak when a later type is invalid.
+        let before = crate::test_support::tree_snapshot(&source);
+        let revision = call(
+            ToolIdentity::View,
+            serde_json::json!({"at": "main:Constant.Enabled"}),
+        )
+        .rev
+        .unwrap();
+        for dry_run in [true, false] {
+            let refused = call(
+                ToolIdentity::Apply,
+                serde_json::json!({
+                "at": "main:Constant.Enabled", "dryRun": dry_run, "ifRev": revision,
+                    "ops": [
+                        {"op": "props.set", "args": {"at": "main:Constant.Enabled", "values": {"Comment": "must not publish"}}},
+                        {"op": "props.set", "args": {"at": "main:Constant.Enabled", "values": {"Type": {"variants": [{"kind": "boolean", "unknownQualifier": true}]}}}}
+                    ]
+                }),
+            );
+            assert!(!refused.ok, "{refused:?}");
+            assert_eq!(refused.diagnostics[0]["code"], "bad_value", "{refused:?}");
+            assert_eq!(
+                crate::test_support::tree_snapshot(&source),
+                before,
+                "invalid batch must be atomic"
+            );
+        }
+    }
+
+    #[test]
     fn public_metadata_apply_keeps_dry_run_and_real_plans_identical_for_four_supported_ops() {
         let workspace = tempfile::tempdir().unwrap();
         let source = workspace.path().join("src");

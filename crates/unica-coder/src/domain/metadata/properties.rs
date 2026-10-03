@@ -1,10 +1,13 @@
-use super::{metadata_identifier_is_valid, MetaDiagnostic, MetaDiagnosticCode, MetadataKind};
+use super::{
+    metadata_identifier_is_valid, MetaDiagnostic, MetaDiagnosticCode, MetadataKind, MetadataType,
+};
 use serde::Serialize;
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub(crate) enum MetaPropertyKey {
+    Type,
     Synonym,
     Comment,
     ActionPeriod,
@@ -72,6 +75,7 @@ pub(crate) enum MetaPropertyKey {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MetaPropertyValueKind {
+    Type,
     String,
     Boolean,
     UnsignedInteger,
@@ -80,6 +84,7 @@ pub(crate) enum MetaPropertyValueKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub(crate) enum MetaPropertyValue {
+    Type(MetadataType),
     String(String),
     Boolean(bool),
     UnsignedInteger(u32),
@@ -88,6 +93,7 @@ pub(crate) enum MetaPropertyValue {
 impl MetaPropertyValue {
     fn kind(&self) -> MetaPropertyValueKind {
         match self {
+            Self::Type(_) => MetaPropertyValueKind::Type,
             Self::String(_) => MetaPropertyValueKind::String,
             Self::Boolean(_) => MetaPropertyValueKind::Boolean,
             Self::UnsignedInteger(_) => MetaPropertyValueKind::UnsignedInteger,
@@ -304,6 +310,12 @@ const SUBORDINATION_USE_VALUES: &[&str] = &["ToFolders", "ToFoldersAndItems", "T
 const WRITE_MODE_VALUES: &[&str] = &["Independent", "RecorderSubordinate"];
 
 pub(crate) const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
+    property(
+        "Type",
+        MetaPropertyKey::Type,
+        MetaPropertyValueKind::Type,
+        &[MetadataKind::Constant],
+    ),
     property(
         "Synonym",
         MetaPropertyKey::Synonym,
