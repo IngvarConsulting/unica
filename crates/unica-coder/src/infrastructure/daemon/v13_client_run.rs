@@ -1122,7 +1122,7 @@ fn main() {
                     "message": "OUTPUT_PATH STDERR_PATH PRIVATE-CLIENT-OUTPUT PRIVATE-CLIENT-STDERR",
                 });
             }
-            // v8-runner 0.11.2 reports an EPF wait timeout as runtime_failure,
+            // v8-runner 0.11.3 reports an EPF wait timeout as runtime_failure,
             // with a nonzero process status, rather than a successful receipt.
             if scenario == "timeout" {
                 envelope["ok"] = json!(false);

@@ -1199,6 +1199,7 @@ pub(crate) mod actor_capacity_tests {
     use super::super::protocol_v5::{
         V5DaemonTaskSnapshot, V5InvocationRequest, V5InvocationResponse, V5ServerResponse,
     };
+    use super::super::runner_011::VERSION as RUNNER_VERSION;
     use super::*;
     use crate::application::invocation::INVOCATION_HANDOFF_WINDOW;
     use crate::application::invocation_store::ToolIdentity;
@@ -1898,7 +1899,7 @@ pub(crate) mod actor_capacity_tests {
                 "tools": [
                     {
                         "name": "v8-runner",
-                        "version": "0.11.2",
+                        "version": RUNNER_VERSION,
                         "binaryPath": format!("bin/{target}/v8-runner{exe}"),
                         "sha256": "0".repeat(64),
                     },
@@ -2098,7 +2099,7 @@ fn main() {
                         "v8-runner",
                         &mut runner_targets,
                         "https://github.com/IngvarConsulting/v8-runner-rust/releases/download",
-                        "0.11.2",
+                        RUNNER_VERSION,
                     ),
                     (
                         "bsl-analyzer",
@@ -2122,7 +2123,7 @@ fn main() {
                 "release": {"repository": "https://github.com/IngvarConsulting/unica", "tag": format!("v{}", env!("CARGO_PKG_VERSION"))},
                 "artifacts": {
                     "unica": {"version": env!("CARGO_PKG_VERSION"), "role": "core", "targets": core_targets},
-                    "v8-runner": {"version": "0.11.2", "role": "engine", "targets": runner_targets},
+                    "v8-runner": {"version": RUNNER_VERSION, "role": "engine", "targets": runner_targets},
                     "bsl-analyzer": {"version": "0.2.67", "role": "engine", "targets": analyzer_targets},
                     "rlm-tools-bsl": {"version": "1.33.0", "role": "engine", "targets": rlm_targets},
                 }
@@ -2141,7 +2142,7 @@ fn main() {
                     "rlm-tools-bsl": {"sha256": rlm_digest},
                 },
                 "tools": [
-                    {"name": "v8-runner", "version": "0.11.2", "binaryPath": format!("bin/{target}/v8-runner{suffix}"), "deliveredPath": format!("bin/{target}/v8-runner{suffix}"), "sha256": digest},
+                    {"name": "v8-runner", "version": RUNNER_VERSION, "binaryPath": format!("bin/{target}/v8-runner{suffix}"), "deliveredPath": format!("bin/{target}/v8-runner{suffix}"), "sha256": digest},
                     {"name": "bsl-analyzer", "version": "0.2.67", "binaryPath": format!("bin/{target}/bsl-analyzer{suffix}"), "deliveredPath": format!("bin/{target}/bsl-analyzer{suffix}"), "sha256": digest},
                     {"name": "rlm-bsl-mcp", "artifact": "rlm-tools-bsl", "version": "1.33.0", "binaryPath": format!("bin/{target}/rlm-bsl-mcp{suffix}"), "deliveredPath": format!("rlm-bsl-mcp{suffix}"), "sha256": digest},
                     {"name": "rlm-bsl-index", "artifact": "rlm-tools-bsl", "version": "1.33.0", "binaryPath": format!("bin/{target}/rlm-bsl-index{suffix}"), "deliveredPath": format!("rlm-bsl-index{suffix}"), "sha256": digest},
@@ -2289,7 +2290,7 @@ fn main() {
                 semantic.data.as_ref().unwrap()["matches"][0]["provider"],
                 "rlm"
             );
-            for (name, version) in [("v8-runner", "0.11.2"), ("bsl-analyzer", "0.2.67")] {
+            for (name, version) in [("v8-runner", RUNNER_VERSION), ("bsl-analyzer", "0.2.67")] {
                 assert!(cache
                     .join(name)
                     .join(format!("{version}--{digest}"))
@@ -9257,7 +9258,7 @@ fn main() {
                 "sourceManifest": true,
                 "tools": [{
                     "name": "v8-runner",
-                    "version": "0.11.2",
+                    "version": RUNNER_VERSION,
                     "binaries": {target: {"binaryPath": relative, "sha256": digest}}
                 }]
             })
