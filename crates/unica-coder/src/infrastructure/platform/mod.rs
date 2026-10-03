@@ -14,8 +14,8 @@ pub use entrypoint::run_platform_main;
 pub(crate) use filesystem::short_private_runtime_dir;
 pub(crate) use process::{
     ensure_truncation_diagnostics, ManagedChild, ManagedCommand, ManagedLineOutput, ManagedOutput,
-    ManagedStartupChild, RuntimeProcessTreeHandle, RuntimeProcessTreeState, StreamControl,
-    STDERR_CAPTURE_LIMIT, STDOUT_CAPTURE_LIMIT, STREAM_LINE_TOO_LONG_ERROR,
+    ManagedStartupChild, PendingProcessHandoff, RuntimeProcessTreeHandle, RuntimeProcessTreeState,
+    StreamControl, STDERR_CAPTURE_LIMIT, STDOUT_CAPTURE_LIMIT, STREAM_LINE_TOO_LONG_ERROR,
 };
 #[cfg(test)]
 pub(crate) use process::{

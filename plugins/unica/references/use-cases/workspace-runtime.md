@@ -27,7 +27,7 @@ Runtime идёт через `unica.run`: вызов без `op` отдаёт с�
 затем исполняй запрос с `dryRun: false`. Preview не фиксирует входы между
 вызовами. Не обходи контракт прямым runner-ом.
 
-With runner 0.11.2, source sending and full pulling require explicit `force:true`.
+With runner 0.11.3, source sending and full pulling require explicit `force:true`.
 They provide no generation or local-work protection; inspect the preview before execution.
 For source readiness independently of runtime availability, first
 call `unica.check {}`. It returns `status`, `ready`, `repositoryReady`,

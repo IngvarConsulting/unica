@@ -13,7 +13,7 @@ use crate::infrastructure::diagnostics_jsonl::{
 use crate::infrastructure::platform::filesystem::path_lock_identity;
 use crate::infrastructure::platform::{
     ensure_truncation_diagnostics, ManagedChild, ManagedCommand, ManagedLineOutput, ManagedOutput,
-    StreamControl, STREAM_LINE_TOO_LONG_ERROR,
+    PendingProcessHandoff, StreamControl, STREAM_LINE_TOO_LONG_ERROR,
 };
 use crate::infrastructure::plugin_runtime::{find_plugin_root, value_to_cli_string};
 use crate::infrastructure::redaction::{is_secret_key, redactor};
@@ -73,6 +73,13 @@ pub struct ProcessStreamOutput {
 
 pub trait ProcessRunner {
     fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String>;
+
+    fn run_pending_handoff(
+        &self,
+        _command: &ProcessCommand,
+    ) -> Result<(ProcessOutput, PendingProcessHandoff), String> {
+        Err("process_failed: process runner does not support ownership handoff".to_string())
+    }
 
     fn run_with_input(
         &self,
@@ -2063,6 +2070,23 @@ impl ProcessRunner for SystemProcessRunner {
             cancellation: command.cancellation.clone(),
         })?;
         Ok(map_managed_process_output(output))
+    }
+
+    fn run_pending_handoff(
+        &self,
+        command: &ProcessCommand,
+    ) -> Result<(ProcessOutput, PendingProcessHandoff), String> {
+        let (output, handoff) = ManagedChild::run_pending_handoff(ManagedCommand {
+            program: command.program.clone(),
+            args: command.args.iter().map(Into::into).collect(),
+            cwd: command.cwd.clone(),
+            env: command.env.clone(),
+            env_remove: command.env_remove.clone(),
+            capture_limits: command.capture_limits,
+            timeout: command.timeout,
+            cancellation: command.cancellation.clone(),
+        })?;
+        Ok((map_managed_process_output(output), handoff))
     }
 
     fn run_with_input(
