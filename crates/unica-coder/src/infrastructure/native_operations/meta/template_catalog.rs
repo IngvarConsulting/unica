@@ -13,7 +13,7 @@ use crate::domain::source_target::{
     MetadataAddress, SourceTarget, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
 };
 use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::bsl_outline::first_exported_bsl_procedure;
+use crate::infrastructure::bsl_outline::{first_exported_bsl_procedure, BslProcedureRequirement};
 use crate::infrastructure::metadata_kinds::metadata_layout;
 use crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point;
 use crate::infrastructure::platform_xml_source_targets::{
@@ -169,8 +169,13 @@ impl MinimalTemplateContext {
                 )?);
             }
             MetadataKind::ScheduledJob => {
-                let (module, method, module_guard) =
-                    required_common_module_method(source, source_set, workspace, kind, 0)?;
+                let (module, method, module_guard) = required_common_module_method(
+                    source,
+                    source_set,
+                    workspace,
+                    kind,
+                    BslProcedureRequirement::CallableWithoutArguments,
+                )?;
                 context.method_name = Some(format!("CommonModule.{module}.{method}"));
                 context.dependencies.push(read_dependency(
                     source,
@@ -183,8 +188,13 @@ impl MinimalTemplateContext {
             }
             MetadataKind::EventSubscription => {
                 if !overrides.handler {
-                    let (module, method, module_guard) =
-                        required_common_module_method(source, source_set, workspace, kind, 2)?;
+                    let (module, method, module_guard) = required_common_module_method(
+                        source,
+                        source_set,
+                        workspace,
+                        kind,
+                        BslProcedureRequirement::ExactArity(2),
+                    )?;
                     context.event_handler = Some(format!("CommonModule.{module}.{method}"));
                     context.dependencies.push(read_dependency(
                         source,
@@ -218,7 +228,7 @@ fn required_common_module_method(
     source_set: &str,
     workspace: &WorkspaceContext,
     requested: MetadataKind,
-    arity: usize,
+    requirement: BslProcedureRequirement,
 ) -> Result<(String, String, MetadataTemplateFile), MetaFailure> {
     for module in registered_names(&source.owner_preimage, "CommonModule") {
         let relative_path = PathBuf::from("CommonModules")
@@ -258,7 +268,7 @@ fn required_common_module_method(
             continue;
         };
         let Ok(Some(method)) =
-            first_exported_bsl_procedure(text.trim_start_matches('\u{feff}'), arity)
+            first_exported_bsl_procedure(text.trim_start_matches('\u{feff}'), requirement)
         else {
             continue;
         };
@@ -280,10 +290,16 @@ fn required_common_module_method(
             },
         ));
     }
+    let signature = match requirement {
+        BslProcedureRequirement::ExactArity(count) => format!("with exactly {count} parameters"),
+        BslProcedureRequirement::CallableWithoutArguments => {
+            "callable without arguments (every parameter must have a default value)".to_string()
+        }
+    };
     Err(MetaDiagnostic::error(
         MetaDiagnosticCode::CapabilityUnavailable,
         format!(
-            "sourceSet does not contain an exported {arity}-argument common-module procedure required by {}",
+            "sourceSet does not contain an exported common-module procedure {signature} required by {}",
             requested.as_str()
         ),
     )
@@ -3153,6 +3169,17 @@ mod typed_template_tests {
     }
 
     #[test]
+    fn scheduled_job_selects_procedure_callable_without_arguments() {
+        let module = "Процедура Синхронизировать(Профиль = Неопределено, РучнойЗапуск = Ложь) Экспорт\nКонецПроцедуры\n";
+        assert_eq!(
+            first_exported_bsl_procedure(module, BslProcedureRequirement::CallableWithoutArguments)
+                .unwrap()
+                .as_deref(),
+            Some("Синхронизировать")
+        );
+    }
+
+    #[test]
     fn typed_minimal_catalog_selects_only_exported_procedures_with_required_arity() {
         let module = concat!(
             "// Procedure Shadow() Export\n",
@@ -3163,13 +3190,20 @@ mod typed_template_tests {
         );
 
         assert_eq!(
-            first_exported_bsl_procedure(module, 0).unwrap().as_deref(),
+            first_exported_bsl_procedure(module, BslProcedureRequirement::ExactArity(0))
+                .unwrap()
+                .as_deref(),
             Some("Run")
         );
         assert_eq!(
-            first_exported_bsl_procedure(module, 2).unwrap().as_deref(),
+            first_exported_bsl_procedure(module, BslProcedureRequirement::ExactArity(2))
+                .unwrap()
+                .as_deref(),
             Some("Обработать")
         );
-        assert_eq!(first_exported_bsl_procedure(module, 1).unwrap(), None);
+        assert_eq!(
+            first_exported_bsl_procedure(module, BslProcedureRequirement::ExactArity(1)).unwrap(),
+            None
+        );
     }
 }
