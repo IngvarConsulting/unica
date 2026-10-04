@@ -1335,12 +1335,42 @@ pub(crate) fn cfe_borrow_object_shell(
 /// gets — mints fresh.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct CfeBorrowIdentity {
+    plan_seed: Option<[u8; 32]>,
     wrapper_uuid: Option<String>,
     this_node: Option<String>,
     generated_types: BTreeMap<String, (Option<String>, Option<String>)>,
 }
 
 impl CfeBorrowIdentity {
+    /// Canonical preview and apply regenerate the same identities from their
+    /// input plan. Legacy callers without a seed continue issuing fresh IDs.
+    pub(crate) fn for_plan(seed: [u8; 32]) -> Self {
+        Self {
+            plan_seed: Some(seed),
+            ..Self::default()
+        }
+    }
+
+    fn new_uuid(&self, role: &str, name: &str) -> String {
+        let Some(seed) = self.plan_seed else {
+            return fresh_uuid();
+        };
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        hash.update(b"unica-canonical-borrow-uuid-v1\0");
+        hash.update(seed);
+        for value in [role, name] {
+            hash.update((value.len() as u64).to_be_bytes());
+            hash.update(value.as_bytes());
+        }
+        let digest = hash.finalize();
+        let mut bytes = [0_u8; 16];
+        bytes.copy_from_slice(&digest[..16]);
+        uuid::Builder::from_custom_bytes(bytes)
+            .into_uuid()
+            .to_string()
+    }
+
     fn read(text: &str, child_name: &str) -> Result<Self, String> {
         let document = Document::parse(text.trim_start_matches('\u{feff}'))
             .map_err(|error| error.to_string())?;
@@ -1378,11 +1408,15 @@ impl CfeBorrowIdentity {
     }
 
     fn wrapper_uuid(&self) -> String {
-        self.wrapper_uuid.clone().unwrap_or_else(fresh_uuid)
+        self.wrapper_uuid
+            .clone()
+            .unwrap_or_else(|| self.new_uuid("wrapper", ""))
     }
 
     fn this_node(&self) -> String {
-        self.this_node.clone().unwrap_or_else(fresh_uuid)
+        self.this_node
+            .clone()
+            .unwrap_or_else(|| self.new_uuid("this-node", ""))
     }
 
     fn generated_type(&self, name: &str) -> (String, String) {
@@ -1392,8 +1426,8 @@ impl CfeBorrowIdentity {
             .cloned()
             .unwrap_or((None, None));
         (
-            type_id.unwrap_or_else(fresh_uuid),
-            value_id.unwrap_or_else(fresh_uuid),
+            type_id.unwrap_or_else(|| self.new_uuid("type", name)),
+            value_id.unwrap_or_else(|| self.new_uuid("value", name)),
         )
     }
 }
@@ -8811,6 +8845,21 @@ pub(crate) mod tests {
         assert_eq!(fs::read(&owner).unwrap(), before);
 
         let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn seeded_borrow_uuid_is_custom_and_separates_seed_role_and_name() {
+        let identity = super::CfeBorrowIdentity::for_plan([1; 32]);
+        let value = identity.new_uuid("wrapper", "Demo");
+        let parsed = uuid::Uuid::parse_str(&value).unwrap();
+        assert_eq!(parsed.get_version_num(), 8);
+        assert_eq!(value, identity.new_uuid("wrapper", "Demo"));
+        assert_ne!(value, identity.new_uuid("node", "Demo"));
+        assert_ne!(value, identity.new_uuid("wrapper", "Other"));
+        assert_ne!(
+            value,
+            super::CfeBorrowIdentity::for_plan([2; 32]).new_uuid("wrapper", "Demo")
+        );
     }
 
     /// With an unchanged parent, a descriptor keeps its identity, so

@@ -15,6 +15,13 @@ pub(super) fn execute_run_dictionary(request: &InvocationRequest) -> Option<Doma
     if request.tool() != ToolIdentity::Run {
         return None;
     }
+    if request.arguments().contains_key("ifRev") {
+        return Some(DomainResult::canonical_rejection(
+            None,
+            RefusalCode::BadValue,
+            "unica.run does not accept ifRev; use dryRun: true to preview or dryRun: false to execute",
+        ));
+    }
     match request.arguments().get("op") {
         None if request.arguments().is_empty() => Some(run_dictionary_result()),
         None => Some(DomainResult::canonical_rejection(
@@ -113,7 +120,7 @@ pub(super) fn run_dictionary_result() -> DomainResult {
         .run_dictionary
         .iter()
         .map(|operation| {
-            let preview_required = matches!(
+            let dry_run_required = matches!(
                 operation.intent,
                 RunIntent::InfobaseCreate
                     | RunIntent::SourceImport
@@ -138,8 +145,8 @@ pub(super) fn run_dictionary_result() -> DomainResult {
                 "support": {"adapter":format!("v8-runner/{}", super::runner_011::VERSION), "state": if !operation.implemented {"unavailable"} else if operation.support_reason().is_some() {"limited"} else {"supported"}, "reason":operation.support_reason(), "supportedInfobases":["origin"], "supportedArgs": operation.args_schema()},
                 "terminal": operation.terminal,
                 "rejectsSessions": operation.rejects_sessions,
-                "previewRequired": preview_required,
-                "ifRevRequiredOnApply": preview_required,
+                "previewRequired": false,
+                "dryRunRequired": dry_run_required,
             })
         })
         .collect::<Vec<_>>();

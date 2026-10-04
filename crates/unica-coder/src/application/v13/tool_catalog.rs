@@ -27,7 +27,7 @@ pub(crate) struct CatalogSemantics {
     pub(crate) check_reads_persisted_state: bool,
     pub(crate) apply_dry_run_uses_validator_registry: bool,
     pub(crate) diff_is_read_only: bool,
-    pub(crate) diff_cursor_carries_both_source_revisions: bool,
+    pub(crate) diff_cursor_keeps_the_saved_comparison: bool,
     pub(crate) diff_rejects_incomparable_node_kinds: bool,
     pub(crate) search_scope_is_logical_subtree_address: bool,
     pub(crate) docs_filters_source_kinds_not_provider_identities: bool,
@@ -233,7 +233,7 @@ impl RunOperation {
                 "properties": {
                     "clientMode": {"type": "string", "enum": ["designer", "thin", "thick", "ordinary"], "description": "1C client to launch."},
                     "execute": {"type": "string", "description": "Workspace-relative .epf or .erf external processor to run with /Execute; enterprise clients only."},
-                    "waitForExit": {"type": "boolean", "default": false, "description": "Wait for the external processor session to exit; requires execute and waitTimeoutMs."},
+                    "waitForExit": {"type": "boolean", "default": false, "description": "Wait for a thin-client .epf session to exit; requires execute and waitTimeoutMs."},
                     "waitTimeoutMs": {"type": "integer", "minimum": 1, "maximum": 86400000, "description": "Bound for waitForExit in milliseconds."}
                 },
                 "required": ["clientMode"]
@@ -274,8 +274,8 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                 },
                 V13ToolContract {
                     name: "apply",
-                    description: "Preview or atomically apply typed edits to one logically addressed 1C node.",
-                    input_schema: schema_requiring_the_fence(
+                    description: "Plan typed edits with at and ops without writing; execute that saved plan with executionToken alone. Use data.executionToken from the successful plan response.",
+                    input_schema: schema_for_saved_apply_plan(
                         json!({
                             "at": logical_address(),
                             "ops": {
@@ -292,8 +292,6 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                                     "required": ["op"],
                                 },
                             },
-                            "dryRun": {"type": "boolean", "description": "Validate and return the plan without publishing when true.", "default": false},
-                            "ifRev": {"type": "string", "description": "Revision returned by a prior dryRun preview; required when dryRun is false."},
                         }),
                         json!(["at", "ops"]),
                     ),
@@ -322,7 +320,7 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                             "regex": {"type": "boolean", "description": "Use a regular expression for local text search.", "default": false},
                             "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20,
                                 "description": "Maximum matches per page, from 1 to 50. Provider roles may stop after their first 200 retrieved matches and mark the search incomplete."},
-                            "cursor": cursor("Continue a previous search page. Bound to the question, source sets, page limit and the relevant revision or complete retrieved result."),
+                            "cursor": cursor("Continue a previous search page. Bound to the question, source sets and page limit. Text search reads live sources; indexed providers report freshness and the build generation when known."),
                         }),
                         json!(["query"]),
                     ),
@@ -361,8 +359,7 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                             "op": {"type": "string", "description": "Runner 1.0 operation name; omit to list the target dictionary and adapter support."},
                             "infobase": {"type":"string", "description":"Named infobase; defaults to origin. The runner 0.11 adapter supports only origin."},
                             "args": data_object("Typed arguments for the selected operation."),
-                            "dryRun": {"type": "boolean", "description": "Required by previewApply operations: true returns a non-mutating plan and revision; false requires ifRev and applies that plan."},
-                            "ifRev": {"type": "string", "description": "Revision returned by a prior preview of the same previewApply operation; required when dryRun is false."},
+                            "dryRun": {"type": "boolean", "description": "Required by previewApply operations: true returns a non-mutating preview; false executes with the current arguments without requiring a prior preview."},
                         }),
                         json!([]),
                     ),
@@ -387,7 +384,7 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                 check_reads_persisted_state: true,
                 apply_dry_run_uses_validator_registry: true,
                 diff_is_read_only: true,
-                diff_cursor_carries_both_source_revisions: true,
+                diff_cursor_keeps_the_saved_comparison: true,
                 diff_rejects_incomparable_node_kinds: true,
                 search_scope_is_logical_subtree_address: true,
                 docs_filters_source_kinds_not_provider_identities: true,
@@ -401,23 +398,22 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
     }
 }
 
-/// Схема `apply`: забор обязателен, когда это применение, а не предпросмотр.
-///
-/// Условие объявлено структурно, а не только словами в описании поля: иначе
-/// хост, собирающий вызов по схеме, сгенерирует применение без забора, которое
-/// разборщик затем отвергнет. Опущенный `dryRun` равен `false`, и отсутствие
-/// поля условие покрывает тем же `const`: пустая ветвь `if` проходит.
-fn schema_requiring_the_fence(properties: Value, required: Value) -> Value {
-    let mut schema = schema(properties, required);
-    let object = schema
-        .as_object_mut()
-        .expect("the schema builder returns an object");
-    object.insert(
-        "if".to_string(),
-        json!({"properties": {"dryRun": {"const": false}}}),
+/// Planning and execution are disjoint shapes: execution carries only the saved token.
+fn schema_for_saved_apply_plan(properties: Value, required: Value) -> Value {
+    let plan = schema(properties.clone(), required);
+    let token = json!({"type": "string", "minLength": 1, "description": "data.executionToken returned by a successful plan; executes that saved plan without resending at or ops."});
+    let execute = schema(
+        json!({"executionToken": token.clone()}),
+        json!(["executionToken"]),
     );
-    object.insert("then".to_string(), json!({"required": ["ifRev"]}));
-    schema
+    let mut properties = properties;
+    properties
+        .as_object_mut()
+        .unwrap()
+        .insert("executionToken".into(), token);
+    let mut result = schema(properties, json!([]));
+    result["oneOf"] = json!([plan, execute]);
+    result
 }
 
 fn schema(properties: Value, required: Value) -> Value {
@@ -731,8 +727,8 @@ mod tests {
         assert_schema(
             &catalog.tools,
             "apply",
-            json!(["at", "ops"]),
-            &["at", "ops", "dryRun", "ifRev"],
+            json!([]),
+            &["at", "ops", "executionToken"],
         );
         assert_schema(&catalog.tools, "resolve", json!([]), &["at", "path"]);
         assert_schema(
@@ -771,7 +767,7 @@ mod tests {
             &catalog.tools,
             "run",
             json!([]),
-            &["op", "infobase", "args", "dryRun", "ifRev"],
+            &["op", "infobase", "args", "dryRun"],
         );
         assert_schema(
             &catalog.tools,
@@ -783,7 +779,7 @@ mod tests {
         for (tool, field) in [
             ("view", "at"),
             ("apply", "at"),
-            ("apply", "ifRev"),
+            ("apply", "executionToken"),
             ("resolve", "at"),
             ("resolve", "path"),
             ("search", "query"),
@@ -792,7 +788,6 @@ mod tests {
             ("diff", "right"),
             ("diff", "cursor"),
             ("run", "op"),
-            ("run", "ifRev"),
             ("docs", "query"),
             ("docs", "source"),
             ("docs", "cursor"),
@@ -844,14 +839,6 @@ mod tests {
             "boolean"
         );
         assert_eq!(
-            input_field(&catalog.tools, "apply", "dryRun")["type"],
-            "boolean"
-        );
-        assert_eq!(
-            input_field(&catalog.tools, "apply", "dryRun")["default"],
-            false
-        );
-        assert_eq!(
             input_field(&catalog.tools, "search", "regex")["type"],
             "boolean"
         );
@@ -863,7 +850,14 @@ mod tests {
         let apply = contract(&catalog.tools, "apply");
         assert_eq!(apply.input_schema["properties"]["ops"]["type"], "array");
         assert_eq!(apply.input_schema["properties"]["ops"]["minItems"], 1);
-        assert_eq!(apply.input_schema["properties"]["dryRun"]["default"], false);
+        assert_eq!(
+            apply.input_schema["oneOf"][0]["required"],
+            json!(["at", "ops"])
+        );
+        assert_eq!(
+            apply.input_schema["oneOf"][1]["required"],
+            json!(["executionToken"])
+        );
         assert_eq!(
             apply.input_schema["properties"]["ops"]["items"]["type"],
             "object"
@@ -919,7 +913,7 @@ mod tests {
         assert!(catalog.semantics.check_reads_persisted_state);
         assert!(catalog.semantics.apply_dry_run_uses_validator_registry);
         assert!(catalog.semantics.diff_is_read_only);
-        assert!(catalog.semantics.diff_cursor_carries_both_source_revisions);
+        assert!(catalog.semantics.diff_cursor_keeps_the_saved_comparison);
         assert!(catalog.semantics.diff_rejects_incomparable_node_kinds);
         assert!(
             catalog
@@ -1308,22 +1302,22 @@ mod tests {
     }
 
     #[test]
-    fn run_preview_apply_fields_describe_the_execution_protocol() {
+    fn run_schema_accepts_direct_execution_and_rejects_revision_arguments() {
         let catalog =
             catalog_for(SurfaceRelease::V13).expect("v0.13 catalog must be test-loadable");
-        for field in ["dryRun", "ifRev"] {
-            let description = input_field(&catalog.tools, "run", field)["description"]
-                .as_str()
-                .expect("run protocol field description");
-            assert!(
-                description.contains("previewApply"),
-                "unica.run.{field} must describe the previewApply execution protocol: {description}"
-            );
-            assert!(
-                !description.contains("workspace-mutating"),
-                "unica.run.{field} must also cover infobase and artifact effects: {description}"
-            );
+        let contract = catalog
+            .tools
+            .iter()
+            .find(|tool| tool.name == "run")
+            .unwrap();
+        let validator = jsonschema::validator_for(&contract.input_schema).unwrap();
+        for dry_run in [true, false] {
+            let mut arguments = json!({"op":"infobase.create", "args":{}, "dryRun":dry_run});
+            assert!(validator.is_valid(&arguments));
+            arguments["ifRev"] = json!("old-preview");
+            assert!(!validator.is_valid(&arguments));
         }
+        assert!(!validator.is_valid(&json!({"op":"infobase.create", "args":{}, "dryRun":"false"})));
     }
 
     #[test]

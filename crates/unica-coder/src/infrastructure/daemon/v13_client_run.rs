@@ -20,13 +20,13 @@ use super::v13_infobase_exports::{
     RUNNER_OUTPUT_LIMIT,
 };
 use crate::application::invocation_store::ToolIdentity;
-use crate::domain::cancellation::CancellationToken;
+use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
 use crate::domain::invocation::{DomainResult, SafeIdentityHash};
 use crate::domain::refusal::RefusalCode;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::BundledTool;
 use crate::infrastructure::internal_adapters::{ProcessCommand, ProcessOutput, ProcessRunner};
-use crate::infrastructure::redaction::redactor;
+use crate::infrastructure::platform::PendingProcessHandoff;
 use crate::infrastructure::workspace::discover_workspace;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -39,6 +39,7 @@ pub(super) const OPERATION: &str = "launch";
 const RUNNER_COMMAND: &str = "launch";
 const WAIT_TIMEOUT_MAX_MS: u64 = 86_400_000;
 const PROCESSOR_EXTENSIONS: [&str; 2] = ["epf", "erf"];
+const CLIENT_OWNER_ENV: &str = "V8_RUNNER_CLIENT_OWNER";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ClientMode {
@@ -278,6 +279,25 @@ fn parse_launch_arguments(
         }
         _ => {}
     }
+    if wait_for_exit {
+        if mode != ClientMode::Thin {
+            return Err(reject(
+                RefusalCode::BadValue,
+                "launch waitForExit is supported only for clientMode thin",
+            ));
+        }
+        let is_epf = execute
+            .as_ref()
+            .and_then(|(relative, _)| relative.extension())
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("epf"));
+        if !is_epf {
+            return Err(reject(
+                RefusalCode::BadValue,
+                "launch waitForExit requires execute to name an .epf file",
+            ));
+        }
+    }
     Ok(LaunchArguments {
         mode,
         execute,
@@ -317,28 +337,33 @@ fn execute_with_resolved_runner(
     if cancellation.is_cancelled() {
         return reject(RefusalCode::Cancelled, "launch cancelled before launch");
     }
-    let envelope = match invoke_runner(prepared, tool, runner, &cancellation) {
-        Ok(envelope) => envelope,
+    let RunnerInvocation {
+        envelope,
+        outcome,
+        mut handoff,
+    } = match invoke_runner(prepared, tool, runner, &cancellation) {
+        Ok(invocation) => invocation,
         Err(result) => return result,
     };
     let data = &envelope["data"];
-    if data["mode"] != prepared.arguments.mode.as_str() {
-        return reject(
-            RefusalCode::InvalidResult,
-            "v8-runner answered for a different client mode",
-        );
-    }
-    let platform = match platform_of(data) {
-        Some(platform) => platform,
-        None => {
+    if prepared.dry_run {
+        if data["mode"] != prepared.arguments.mode.as_str() {
             return reject(
                 RefusalCode::InvalidResult,
-                "v8-runner did not name the platform installation it selected",
-            )
+                "v8-runner answered for a different client mode",
+            );
         }
-    };
-    if prepared.dry_run {
-        if data["provider_dispatched"] != false
+        let platform = match platform_of(data) {
+            Some(platform) => platform,
+            None => {
+                return reject(
+                    RefusalCode::InvalidResult,
+                    "v8-runner did not name the platform installation it selected",
+                )
+            }
+        };
+        if data["ok"] != true
+            || data["provider_dispatched"] != false
             || !data["pid"].is_null()
             || data["plan"]["program"].as_str().is_none_or(str::is_empty)
         {
@@ -372,44 +397,15 @@ fn execute_with_resolved_runner(
         }));
         return result;
     }
-    if data["provider_dispatched"] != true {
-        return reject(
-            RefusalCode::InvalidResult,
-            "v8-runner reported success without dispatching the client",
-        );
-    }
-    let wait = &data["external_epf_wait"];
-    let pid = if prepared.arguments.wait_timeout_ms.is_some() {
-        wait["pid"].as_u64()
-    } else {
-        data["pid"].as_u64()
-    };
-    let Some(pid) = pid.filter(|pid| *pid > 0) else {
-        return reject(
-            RefusalCode::InvalidResult,
-            "v8-runner dispatched the client without reporting its process",
-        );
-    };
-    let waited = if prepared.arguments.wait_timeout_ms.is_some() {
-        let Some(timed_out) = wait["timed_out"].as_bool() else {
-            return reject(
-                RefusalCode::InvalidResult,
-                "v8-runner waited for the processor without reporting the outcome",
-            );
-        };
-        Some(json!({
-            "exitCode": wait["exit_code"],
-            "timedOut": timed_out,
-        }))
-    } else {
-        None
+    let ValidatedLaunchReceipt {
+        pid,
+        platform,
+        waited,
+    } = match ValidatedLaunchReceipt::parse(prepared, data, outcome) {
+        Ok(receipt) => receipt,
+        Err(result) => return result,
     };
     let summary = match &waited {
-        Some(waited) if waited["timedOut"] == true => format!(
-            "launch ran the processor in a {} session and gave up waiting after {} ms",
-            prepared.arguments.mode.as_str(),
-            prepared.arguments.wait_timeout_ms.unwrap_or_default()
-        ),
         Some(waited) => format!(
             "launch ran the processor in a {} session; it exited with code {}",
             prepared.arguments.mode.as_str(),
@@ -420,7 +416,16 @@ fn execute_with_resolved_runner(
             prepared.arguments.mode.as_str()
         ),
     };
-    let mut result = DomainResult::success(summary);
+    let mut result = match outcome {
+        RunnerOutcome::Completed => DomainResult::success(summary),
+        RunnerOutcome::StructuralWaitTimeout => reject(
+            RefusalCode::ProviderFailed,
+            format!(
+                "launch exceeded the {} ms processor wait; v8-runner terminated the client (pid {pid})",
+                prepared.arguments.wait_timeout_ms.unwrap_or_default()
+            ),
+        ),
+    };
     result.data = Some(json!({
         "op": OPERATION,
         "dryRun": false,
@@ -431,6 +436,9 @@ fn execute_with_resolved_runner(
         "providerDispatched": true,
         "wait": waited,
     }));
+    if outcome == RunnerOutcome::StructuralWaitTimeout {
+        return result;
+    }
     // Сеанс — внешний эффект, не файл рабочего пространства: путь сюда не
     // кладётся, иначе запись читалась бы как правка исходников.
     result.changed.push(json!({
@@ -438,7 +446,148 @@ fn execute_with_resolved_runner(
         "mode": prepared.arguments.mode.as_str(),
         "pid": pid,
     }));
+    if let Some(handoff) = &mut handoff {
+        if let Err(error) = cancellation.handoff_with_gate(|| handoff.release()) {
+            return if error.starts_with(CANCELLED_PREFIX) {
+                reject(
+                    RefusalCode::Cancelled,
+                    "launch cancelled before process handoff",
+                )
+            } else {
+                reject(
+                    RefusalCode::ProviderFailed,
+                    "cannot transfer ownership of the launched client",
+                )
+            };
+        }
+    }
     result
+}
+
+struct ValidatedLaunchReceipt {
+    pid: u32,
+    platform: Value,
+    waited: Option<Value>,
+}
+
+impl ValidatedLaunchReceipt {
+    fn parse(
+        prepared: &PreparedClientRun,
+        data: &Value,
+        outcome: RunnerOutcome,
+    ) -> Result<Self, DomainResult> {
+        if data["ok"] != (outcome == RunnerOutcome::Completed)
+            || data["mode"] != prepared.arguments.mode.as_str()
+        {
+            return Err(reject(
+                RefusalCode::InvalidResult,
+                "v8-runner returned an inconsistent launch result",
+            ));
+        }
+        let platform = platform_of(data).ok_or_else(|| {
+            reject(
+                RefusalCode::InvalidResult,
+                "v8-runner did not name the platform installation it selected",
+            )
+        })?;
+        if data["provider_dispatched"] != true {
+            return Err(reject(
+                RefusalCode::InvalidResult,
+                "v8-runner reported success without dispatching the client",
+            ));
+        }
+        let pid = data["pid"]
+            .as_u64()
+            .and_then(|pid| u32::try_from(pid).ok())
+            .filter(|pid| *pid > 0)
+            .ok_or_else(|| {
+                reject(
+                    RefusalCode::InvalidResult,
+                    "v8-runner dispatched the client without reporting its process",
+                )
+            })?;
+        let wait = &data["external_epf_wait"];
+        let waited = if prepared.arguments.wait_timeout_ms.is_some() {
+            if wait["pid"].as_u64() != Some(u64::from(pid)) {
+                return Err(reject(
+                    RefusalCode::InvalidResult,
+                    "v8-runner wait result names a different process",
+                ));
+            }
+            let expected_execute = prepared
+                .arguments
+                .execute
+                .as_ref()
+                .map(|(_, absolute)| absolute.to_string_lossy().replace('\\', "/"));
+            if expected_execute.is_none()
+                || wait["execute_path"].as_str() != expected_execute.as_deref()
+            {
+                return Err(reject(
+                    RefusalCode::InvalidResult,
+                    "v8-runner wait result names a different external processor",
+                ));
+            }
+            let timed_out = wait["timed_out"].as_bool().ok_or_else(|| {
+                reject(
+                    RefusalCode::InvalidResult,
+                    "v8-runner waited for the processor without reporting the outcome",
+                )
+            })?;
+            let exit_code = match wait.get("exit_code") {
+                Some(Value::Null) => None,
+                Some(value) => Some(
+                    value
+                        .as_i64()
+                        .and_then(|code| i32::try_from(code).ok())
+                        .ok_or_else(|| {
+                            reject(
+                                RefusalCode::InvalidResult,
+                                "v8-runner returned an invalid processor exit code",
+                            )
+                        })?,
+                ),
+                None => {
+                    return Err(reject(
+                        RefusalCode::InvalidResult,
+                        "v8-runner omitted the processor exit code",
+                    ));
+                }
+            };
+            let expected_timeout = outcome == RunnerOutcome::StructuralWaitTimeout;
+            if timed_out != expected_timeout || exit_code.is_none() != expected_timeout {
+                return Err(reject(
+                    RefusalCode::InvalidResult,
+                    "v8-runner returned an inconsistent processor wait outcome",
+                ));
+            }
+            Some(json!({"exitCode": exit_code, "timedOut": timed_out}))
+        } else {
+            if !wait.is_null() {
+                return Err(reject(
+                    RefusalCode::InvalidResult,
+                    "v8-runner answered with an unrequested wait result",
+                ));
+            }
+            None
+        };
+        Ok(Self {
+            pid,
+            platform,
+            waited,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunnerOutcome {
+    Completed,
+    StructuralWaitTimeout,
+}
+
+struct RunnerInvocation {
+    envelope: Value,
+    outcome: RunnerOutcome,
+    handoff: Option<PendingProcessHandoff>,
 }
 
 fn invoke_runner(
@@ -446,7 +595,7 @@ fn invoke_runner(
     tool: &BundledTool,
     runner: &dyn ProcessRunner,
     cancellation: &CancellationToken,
-) -> Result<Value, DomainResult> {
+) -> Result<RunnerInvocation, DomainResult> {
     let mut args = vec![
         "--config".to_string(),
         prepared
@@ -516,35 +665,55 @@ fn invoke_runner(
                 .to_string(),
         ]);
     }
-    let output = runner
-        .run(&ProcessCommand {
-            program: tool.program.clone(),
-            args,
-            cwd: prepared.context.workspace_root.clone(),
-            env: Vec::new(),
-            env_remove: Vec::new(),
-            capture_limits: Some((RUNNER_OUTPUT_LIMIT, RUNNER_OUTPUT_LIMIT)),
-            timeout: None,
-            cancellation: cancellation.clone(),
-        })
-        .map_err(|error| {
-            if log_directory.is_some() {
-                reject_absent_runner("failed to start bundled v8-runner for the waited launch")
-            } else {
-                reject_absent_runner(format!(
-                    "failed to start bundled v8-runner: {}",
-                    redactor(&error)
-                ))
-            }
-        })?;
-    parse_runner_output(output, prepared.dry_run, log_directory.is_some())
+    let owns_client = !prepared.dry_run && prepared.arguments.wait_timeout_ms.is_none();
+    let command = ProcessCommand {
+        program: tool.program.clone(),
+        args,
+        cwd: prepared.context.workspace_root.clone(),
+        env: if owns_client {
+            vec![(CLIENT_OWNER_ENV.into(), "unica".into())]
+        } else {
+            Vec::new()
+        },
+        env_remove: vec![CLIENT_OWNER_ENV.into()],
+        capture_limits: Some((RUNNER_OUTPUT_LIMIT, RUNNER_OUTPUT_LIMIT)),
+        timeout: None,
+        cancellation: cancellation.clone(),
+    };
+    let execution = if owns_client {
+        runner
+            .run_pending_handoff(&command)
+            .map(|(output, handoff)| (output, Some(handoff)))
+    } else {
+        runner.run(&command).map(|output| (output, None))
+    };
+    let (output, handoff) = execution.map_err(|error| {
+        if error.starts_with(CANCELLED_PREFIX) || cancellation.is_cancelled() {
+            reject(
+                RefusalCode::Cancelled,
+                "launch cancelled while reading the runner result",
+            )
+        } else if owns_client {
+            reject(
+                RefusalCode::ProviderFailed,
+                "v8-runner could not complete the owned launch",
+            )
+        } else {
+            reject_absent_runner("failed to run bundled v8-runner for launch")
+        }
+    })?;
+    let (envelope, outcome) = parse_runner_output(output, prepared)?;
+    Ok(RunnerInvocation {
+        envelope,
+        outcome,
+        handoff,
+    })
 }
 
 fn parse_runner_output(
     output: ProcessOutput,
-    dry_run: bool,
-    private_output: bool,
-) -> Result<Value, DomainResult> {
+    prepared: &PreparedClientRun,
+) -> Result<(Value, RunnerOutcome), DomainResult> {
     if output.cancelled {
         return Err(reject(RefusalCode::Cancelled, "v8-runner was cancelled"));
     }
@@ -575,26 +744,34 @@ fn parse_runner_output(
     if !output.status_success || envelope["ok"] != true {
         // Отказ превью, которое всё же запустило клиента, — не отказ раннера,
         // а нарушение его же контракта: и он важнее любого кода ошибки.
-        if dry_run && envelope["data"]["provider_dispatched"] == true {
+        if prepared.dry_run && envelope["data"]["provider_dispatched"] == true {
             return Err(reject(
                 RefusalCode::InvalidResult,
                 "failed v8-runner preview did not prove that no client was dispatched",
             ));
         }
+        // A failed waited launch can carry a complete receipt. Classify only
+        // its structural candidate here; the shared receipt parser proves all
+        // session and wait fields before any provider data reaches the caller.
+        if !prepared.dry_run
+            && prepared.arguments.wait_timeout_ms.is_some()
+            && !output.status_success
+            && envelope["ok"] == false
+            && envelope["error"]["code"] == "runtime_failure"
+            && envelope["error"]["kind"] == "runtime"
+            && envelope["data"]["external_epf_wait"].is_object()
+        {
+            return Ok((envelope, RunnerOutcome::StructuralWaitTimeout));
+        }
         let code = envelope["error"]["code"]
             .as_str()
             .unwrap_or("provider_failed");
-        let message = if private_output {
-            "v8-runner failed while waiting for the external processor".to_string()
-        } else {
-            envelope["error"]["message"]
-                .as_str()
-                .map(redactor)
-                .unwrap_or_else(|| "v8-runner failed without a typed message".to_string())
-        };
+        // Runner errors may contain its command line and private capture paths.
+        // The typed code supplies the continuation; raw provider text is private.
+        let message = "v8-runner refused the launch".to_string();
         return Err(runner_rejection(Some(OPERATION.to_string()), code, message));
     }
-    Ok(envelope)
+    Ok((envelope, RunnerOutcome::Completed))
 }
 
 /// Выбранная платформа без путей: версия и способ, которым раннер её нашёл.
@@ -605,8 +782,26 @@ fn platform_of(data: &Value) -> Option<Value> {
     if !matches!(source, "explicit" | "default-root" | "path") {
         return None;
     }
+    let version = match resolution.get("version")? {
+        Value::Null => Value::Null,
+        Value::String(version) => {
+            let mut components = version.split('.');
+            let valid = (0..4).all(|_| {
+                components.next().is_some_and(|component| {
+                    !component.is_empty()
+                        && component.bytes().all(|byte| byte.is_ascii_digit())
+                        && component.parse::<u32>().is_ok()
+                })
+            }) && components.next().is_none();
+            if !valid {
+                return None;
+            }
+            Value::String(version.clone())
+        }
+        _ => return None,
+    };
     Some(json!({
-        "version": resolution["version"].as_str(),
+        "version": version,
         "source": source,
     }))
 }
@@ -660,6 +855,9 @@ mod tests {
     struct SequenceRunner {
         outputs: Mutex<Vec<ProcessOutput>>,
         calls: Mutex<Vec<ProcessCommand>>,
+        released: Arc<std::sync::atomic::AtomicUsize>,
+        discarded: Arc<std::sync::atomic::AtomicUsize>,
+        cancel_after_output: bool,
     }
 
     impl SequenceRunner {
@@ -667,6 +865,9 @@ mod tests {
             Self {
                 outputs: Mutex::new(outputs.into_iter().rev().collect()),
                 calls: Mutex::new(Vec::new()),
+                released: Arc::default(),
+                discarded: Arc::default(),
+                cancel_after_output: false,
             }
         }
     }
@@ -675,6 +876,23 @@ mod tests {
         fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
             self.calls.lock().unwrap().push(command.clone());
             Ok(self.outputs.lock().unwrap().pop().expect("runner output"))
+        }
+
+        fn run_pending_handoff(
+            &self,
+            command: &ProcessCommand,
+        ) -> Result<(ProcessOutput, PendingProcessHandoff), String> {
+            let output = self.run(command)?;
+            if self.cancel_after_output {
+                command.cancellation.cancel();
+            }
+            Ok((
+                output,
+                PendingProcessHandoff::for_test(
+                    Arc::clone(&self.released),
+                    Arc::clone(&self.discarded),
+                ),
+            ))
         }
     }
 
@@ -786,6 +1004,10 @@ mod tests {
         envelope
     }
 
+    fn runner_payload_path(path: &Path) -> String {
+        path.to_string_lossy().replace('\\', "/")
+    }
+
     fn fake_launch_executable() -> (tempfile::TempDir, BundledTool) {
         let directory = tempfile::tempdir().unwrap();
         let source = directory.path().join("fake_launch.rs");
@@ -812,18 +1034,22 @@ fn main() {
     assert_ne!(output, stderr);
     assert_eq!(output.parent(), stderr.parent());
     assert!(output.parent().unwrap().is_dir());
-    fs::write(output, "PRIVATE-CLIENT-OUTPUT").unwrap();
-    fs::write(stderr, "PRIVATE-CLIENT-STDERR").unwrap();
+    let scenario = fs::read_to_string("scenario").unwrap();
+    if scenario != "runner-timeout" {
+        fs::write(output, "PRIVATE-CLIENT-OUTPUT").unwrap();
+        fs::write(stderr, "PRIVATE-CLIENT-STDERR").unwrap();
+    }
     assert_eq!(fs::read_to_string(output).unwrap(), "PRIVATE-CLIENT-OUTPUT");
     assert_eq!(fs::read_to_string(stderr).unwrap(), "PRIVATE-CLIENT-STDERR");
     fs::write("observed-paths", format!("{}\n{}", output.display(), stderr.display())).unwrap();
     eprintln!("PRIVATE-RUNNER-STDERR {} {}", output.display(), stderr.display());
-    let scenario = fs::read_to_string("scenario").unwrap();
     if scenario == "runner-timeout" || scenario == "runner-cancel" {
         loop { thread::park(); }
     }
     let escape = |path: &Path| path.to_str().unwrap().replace('\\', "\\\\").replace('"', "\\\"");
+    let execute_path = value("--execute").replace('\\', "/");
     let reply = fs::read_to_string("reply.json").unwrap()
+        .replace("EXECUTE_PATH", &escape(Path::new(&execute_path)))
         .replace("OUTPUT_PATH", &escape(output))
         .replace("STDERR_PATH", &escape(stderr));
     fs::write(output, "PRIVATE-CLIENT-OUTPUT-terminal").unwrap();
@@ -899,6 +1125,14 @@ fn main() {
                 .push((output.clone(), stderr.clone()));
             let mut command = command.clone();
             if self.timeout {
+                // Timeout can precede the fixture's first instruction. Seed
+                // private bytes here; that scenario never truncates them.
+                assert_eq!(
+                    fs::read_to_string(command.cwd.join("scenario")).unwrap(),
+                    "runner-timeout"
+                );
+                fs::write(&output, "PRIVATE-CLIENT-OUTPUT").unwrap();
+                fs::write(&stderr, "PRIVATE-CLIENT-STDERR").unwrap();
                 command.timeout = Some(std::time::Duration::from_secs(1));
             }
             let result = std::thread::scope(|scope| {
@@ -999,6 +1233,7 @@ fn main() {
                     "pid": 77,
                     "exit_code": if scenario == "timeout" { Value::Null } else { json!(if scenario == "nonzero" { 3 } else { 0 }) },
                     "timed_out": scenario == "timeout",
+                    "execute_path": "EXECUTE_PATH",
                     "output_path": "OUTPUT_PATH",
                     "stderr_path": "STDERR_PATH",
                     "stdout": "PRIVATE-CLIENT-OUTPUT",
@@ -1012,7 +1247,7 @@ fn main() {
                     "message": "OUTPUT_PATH STDERR_PATH PRIVATE-CLIENT-OUTPUT PRIVATE-CLIENT-STDERR",
                 });
             }
-            // v8-runner 0.11.2 reports an EPF wait timeout as runtime_failure,
+            // v8-runner 0.11.3 reports an EPF wait timeout as runtime_failure,
             // with a nonzero process status, rather than a successful receipt.
             if scenario == "timeout" {
                 envelope["ok"] = json!(false);
@@ -1052,7 +1287,13 @@ fn main() {
                 "timeout" => {
                     assert!(!result.ok, "{result:?}");
                     assert_eq!(result.diagnostics[0]["code"], "provider_failed");
+                    assert_eq!(result.diagnostics[0]["outcome"], "deadEnd");
+                    let data = result.data.as_ref().expect("failed wait keeps its receipt");
+                    assert_eq!(data["pid"], 77);
+                    assert_eq!(data["providerDispatched"], true);
+                    assert_eq!(data["wait"], json!({"timedOut": true, "exitCode": null}));
                     assert!(result.changed.is_empty());
+                    assert!(result.next.is_empty());
                 }
                 "refusal" => {
                     assert!(!result.ok, "{result:?}");
@@ -1250,13 +1491,13 @@ fn main() {
             );
         }
         let accepted = parse_launch_arguments(
-            json!({"clientMode": "thick", "execute": "tools/Report.epf", "waitForExit": true, "waitTimeoutMs": 1500})
+            json!({"clientMode": "thin", "execute": "tools/Report.epf", "waitForExit": true, "waitTimeoutMs": 1500})
                 .as_object()
                 .unwrap(),
             &context,
         )
         .unwrap();
-        assert_eq!(accepted.mode, ClientMode::Thick);
+        assert_eq!(accepted.mode, ClientMode::Thin);
         assert_eq!(accepted.wait_timeout_ms, Some(1500));
         assert_eq!(
             accepted
@@ -1343,6 +1584,146 @@ fn main() {
         assert!(result.artifacts.is_empty());
         let call = &runner.calls.lock().unwrap()[0];
         assert!(!call.args.iter().any(|argument| argument == "--dry-run"));
+        assert_eq!(call.env, vec![(CLIENT_OWNER_ENV.into(), "unica".into())]);
+        assert_eq!(
+            runner.released.load(std::sync::atomic::Ordering::Acquire),
+            1
+        );
+        assert_eq!(
+            runner.discarded.load(std::sync::atomic::Ordering::Acquire),
+            0
+        );
+    }
+
+    #[test]
+    fn unverified_launch_receipts_discard_owned_processes() {
+        let root = workspace();
+        let prepared = prepared(root.path(), json!({"clientMode": "thin"}), false);
+        let valid = launched_envelope("thin", 4242, None);
+        let mutations = [
+            ("/ok", json!(false)),
+            ("/data/ok", json!(false)),
+            ("/data/mode", json!("designer")),
+            ("/data/provider_dispatched", json!(false)),
+            ("/data/pid", json!(0)),
+            ("/data/pid", json!(-1)),
+            ("/data/pid", json!(u64::from(u32::MAX) + 1)),
+            ("/data/platform_resolution/source", json!("unknown")),
+        ];
+        for (pointer, value) in mutations {
+            let mut envelope = valid.clone();
+            *envelope.pointer_mut(pointer).unwrap() = value;
+            let runner = SequenceRunner::new(vec![process(envelope, true)]);
+            let token = CancellationToken::new();
+            let result =
+                execute_with_resolved_runner(&prepared, &runner, token.clone(), &tool(root.path()));
+            assert!(!result.ok, "{pointer}: {result:?}");
+            assert!(!token.protected_process_started());
+            assert_eq!(
+                runner.released.load(std::sync::atomic::Ordering::Acquire),
+                0,
+                "{pointer}"
+            );
+            assert_eq!(
+                runner.discarded.load(std::sync::atomic::Ordering::Acquire),
+                1,
+                "{pointer}"
+            );
+        }
+        for (case, mut output) in [
+            process(valid.clone(), false),
+            process(valid.clone(), true),
+            process(valid.clone(), true),
+            process(valid.clone(), true),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            match case {
+                0 => {}
+                1 => output.stdout_truncated = true,
+                2 => output.stdout_had_invalid_utf8 = true,
+                _ => output.stdout = "{incomplete".into(),
+            }
+            let runner = SequenceRunner::new(vec![output]);
+            let result = execute_with_resolved_runner(
+                &prepared,
+                &runner,
+                CancellationToken::new(),
+                &tool(root.path()),
+            );
+            assert!(!result.ok);
+            assert_eq!(
+                runner.released.load(std::sync::atomic::Ordering::Acquire),
+                0
+            );
+            assert_eq!(
+                runner.discarded.load(std::sync::atomic::Ordering::Acquire),
+                1
+            );
+        }
+        let mut envelope = valid;
+        envelope["data"]["external_epf_wait"] =
+            json!({"pid": 4242, "timed_out": false, "exit_code": 0});
+        let runner = SequenceRunner::new(vec![process(envelope, true)]);
+        let result = execute_with_resolved_runner(
+            &prepared,
+            &runner,
+            CancellationToken::new(),
+            &tool(root.path()),
+        );
+        assert!(!result.ok);
+        assert_eq!(
+            runner.discarded.load(std::sync::atomic::Ordering::Acquire),
+            1
+        );
+    }
+
+    #[test]
+    fn owned_launch_failure_is_not_an_absent_provider_and_has_no_fallback() {
+        struct UnsupportedRunner;
+        impl ProcessRunner for UnsupportedRunner {
+            fn run(&self, _command: &ProcessCommand) -> Result<ProcessOutput, String> {
+                panic!("owned launch must never fall back to unmanaged run")
+            }
+        }
+        let root = workspace();
+        let prepared = prepared(root.path(), json!({"clientMode": "thin"}), false);
+        let result = execute_with_resolved_runner(
+            &prepared,
+            &UnsupportedRunner,
+            CancellationToken::new(),
+            &tool(root.path()),
+        );
+        assert!(!result.ok);
+        assert_eq!(result.diagnostics[0]["code"], "provider_failed");
+        assert!(result.diagnostics[0].get("detailCode").is_none());
+        assert!(!serde_json::to_string(&result)
+            .unwrap()
+            .contains(&root.path().display().to_string()));
+    }
+
+    #[test]
+    fn cancellation_before_verified_handoff_discards_the_client() {
+        let root = workspace();
+        let prepared = prepared(root.path(), json!({"clientMode": "thin"}), false);
+        let mut runner =
+            SequenceRunner::new(vec![process(launched_envelope("thin", 4242, None), true)]);
+        runner.cancel_after_output = true;
+        let token = CancellationToken::new();
+        let result =
+            execute_with_resolved_runner(&prepared, &runner, token.clone(), &tool(root.path()));
+        assert!(!result.ok);
+        assert_eq!(result.diagnostics[0]["code"], "cancelled");
+        assert!(!token.protected_process_started());
+        assert_eq!(
+            runner.released.load(std::sync::atomic::Ordering::Acquire),
+            0
+        );
+        assert_eq!(
+            runner.discarded.load(std::sync::atomic::Ordering::Acquire),
+            1
+        );
     }
 
     #[test]
@@ -1353,6 +1734,24 @@ fn main() {
             json!({"clientMode": "thin", "execute": "tools/Report.epf", "waitForExit": true, "waitTimeoutMs": 1500}),
             false,
         );
+        let execute_path = runner_payload_path(&prepared.arguments.execute.as_ref().unwrap().1);
+        let mut timeout = launched_envelope(
+            "thin",
+            78,
+            Some(json!({
+                "pid": 78,
+                "execute_path": execute_path,
+                "exit_code": null,
+                "timed_out": true,
+                "output_path": "/private/out.log",
+                "stderr_path": "/private/err.log"
+            })),
+        );
+        timeout["ok"] = json!(false);
+        timeout["data"]["ok"] = json!(false);
+        timeout["error"] = json!({"code": "runtime_failure", "kind": "runtime", "message": "/private/provider-output"});
+        let mut timeout = process(timeout, false);
+        timeout.status = "exit status: 3".into();
         let runner = SequenceRunner::new(vec![
             process(
                 launched_envelope(
@@ -1360,7 +1759,7 @@ fn main() {
                     77,
                     Some(json!({
                         "pid": 77,
-                        "execute_path": "/w/tools/Report.epf",
+                        "execute_path": execute_path,
                         "exit_code": 3,
                         "timed_out": false,
                         "output_path": "/w/build/logs/out.log",
@@ -1372,18 +1771,17 @@ fn main() {
             process(
                 launched_envelope(
                     "thin",
-                    78,
+                    79,
                     Some(json!({
-                        "pid": 78,
-                        "execute_path": "/w/tools/Report.epf",
-                        "exit_code": null,
-                        "timed_out": true,
-                        "output_path": "/w/build/logs/out.log",
-                        "stderr_path": "/w/build/logs/err.log"
+                        "pid": 79,
+                        "execute_path": execute_path,
+                        "exit_code": -1,
+                        "timed_out": false
                     })),
                 ),
                 true,
             ),
+            timeout,
         ]);
 
         let exited = execute_with_resolved_runner(
@@ -1407,15 +1805,204 @@ fn main() {
             "{joined}"
         );
 
+        let signalled = execute_with_resolved_runner(
+            &prepared,
+            &runner,
+            CancellationToken::new(),
+            &tool(root.path()),
+        );
+        assert!(signalled.ok, "{signalled:?}");
+        let data = signalled.data.as_ref().unwrap();
+        assert_eq!(data["pid"], 79);
+        assert_eq!(data["providerDispatched"], true);
+        assert_eq!(data["wait"], json!({"exitCode": -1, "timedOut": false}));
+
         let timed_out = execute_with_resolved_runner(
             &prepared,
             &runner,
             CancellationToken::new(),
             &tool(root.path()),
         );
-        assert!(timed_out.ok, "{timed_out:?}");
-        assert_eq!(timed_out.data.as_ref().unwrap()["wait"]["timedOut"], true);
-        assert!(timed_out.summary.contains("gave up waiting after 1500 ms"));
+        assert!(!timed_out.ok, "{timed_out:?}");
+        assert_eq!(timed_out.diagnostics[0]["code"], "provider_failed");
+        assert_eq!(timed_out.diagnostics[0]["outcome"], "deadEnd");
+        let data = timed_out.data.as_ref().unwrap();
+        assert_eq!(data["pid"], 78);
+        assert_eq!(data["providerDispatched"], true);
+        assert_eq!(data["wait"], json!({"timedOut": true, "exitCode": null}));
+        assert!(timed_out.changed.is_empty());
+        assert!(timed_out.next.is_empty());
+        assert!(!serde_json::to_string(&timed_out)
+            .unwrap()
+            .contains("/private/"));
+    }
+
+    #[test]
+    fn waiting_requires_a_thin_epf_but_nonwait_launch_modes_stay_available() {
+        let root = workspace();
+        fs::write(root.path().join("tools/Report.erf"), b"erf").unwrap();
+        let context = context(root.path());
+        for (mode, execute) in [
+            ("thick", "tools/Report.epf"),
+            ("ordinary", "tools/Report.epf"),
+            ("thin", "tools/Report.erf"),
+        ] {
+            let mut args = json!({"clientMode": mode, "execute": execute});
+            assert!(parse_launch_arguments(args.as_object().unwrap(), &context).is_ok());
+            args["waitForExit"] = json!(true);
+            args["waitTimeoutMs"] = json!(1500);
+            let rejected = parse_launch_arguments(args.as_object().unwrap(), &context)
+                .expect_err("unsupported wait must fail before any runner dispatch or preview");
+            assert_eq!(rejected.diagnostics[0]["code"], "bad_value");
+            assert!(rejected.changed.is_empty());
+        }
+    }
+
+    #[test]
+    fn waited_receipts_reject_inconsistent_identity_and_terminal_evidence() {
+        let root = workspace();
+        let prepared = prepared(
+            root.path(),
+            json!({
+                "clientMode": "thin", "execute": "tools/Report.epf",
+                "waitForExit": true, "waitTimeoutMs": 1500
+            }),
+            false,
+        );
+        for timed_out in [false, true] {
+            let mut valid = launched_envelope(
+                "thin",
+                77,
+                Some(json!({
+                    "pid": 77,
+                    "execute_path": runner_payload_path(&prepared.arguments.execute.as_ref().unwrap().1),
+                    "timed_out": timed_out,
+                    "exit_code": if timed_out { Value::Null } else { json!(7) }
+                })),
+            );
+            if timed_out {
+                valid["ok"] = json!(false);
+                valid["data"]["ok"] = json!(false);
+                valid["error"] =
+                    json!({"code":"runtime_failure", "kind":"runtime", "message":"private"});
+            }
+            for (pointer, value) in [
+                ("/data/pid", json!(0)),
+                ("/data/pid", json!(u64::from(u32::MAX) + 1)),
+                ("/data/external_epf_wait/pid", json!(78)),
+                (
+                    "/data/external_epf_wait/execute_path",
+                    json!("/private/another.epf"),
+                ),
+                ("/data/external_epf_wait/timed_out", json!("true")),
+                ("/data/external_epf_wait/timed_out", json!(!timed_out)),
+                ("/data/external_epf_wait/exit_code", json!("7")),
+                (
+                    "/data/external_epf_wait/exit_code",
+                    json!(i64::from(i32::MAX) + 1),
+                ),
+                (
+                    "/data/external_epf_wait/exit_code",
+                    if timed_out { json!(0) } else { Value::Null },
+                ),
+                ("/data/ok", json!(timed_out)),
+            ] {
+                let mut envelope = valid.clone();
+                *envelope.pointer_mut(pointer).unwrap() = value;
+                let mut output = process(envelope, !timed_out);
+                if timed_out {
+                    output.status = "exit status: 3".into();
+                }
+                let runner = SequenceRunner::new(vec![output]);
+                let result = execute_with_resolved_runner(
+                    &prepared,
+                    &runner,
+                    CancellationToken::new(),
+                    &tool(root.path()),
+                );
+                assert!(!result.ok, "timeout={timed_out} {pointer}: {result:?}");
+                assert_eq!(
+                    result.diagnostics[0]["code"], "invalid_result",
+                    "{pointer}: {result:?}"
+                );
+                assert!(result.data.is_none());
+                assert!(result.changed.is_empty());
+                assert!(!serde_json::to_string(&result)
+                    .unwrap()
+                    .contains("/private/"));
+            }
+            let mut missing_exit = valid;
+            missing_exit["data"]["external_epf_wait"]
+                .as_object_mut()
+                .unwrap()
+                .remove("exit_code");
+            let mut output = process(missing_exit, !timed_out);
+            if timed_out {
+                output.status = "exit status: 3".into();
+            }
+            let runner = SequenceRunner::new(vec![output]);
+            let result = execute_with_resolved_runner(
+                &prepared,
+                &runner,
+                CancellationToken::new(),
+                &tool(root.path()),
+            );
+            assert_eq!(result.diagnostics[0]["code"], "invalid_result");
+        }
+    }
+
+    #[test]
+    fn platform_receipts_keep_only_a_typed_version_or_explicit_unknown() {
+        let root = workspace();
+        for dry_run in [false, true] {
+            let prepared = prepared(root.path(), json!({"clientMode":"thin"}), dry_run);
+            for (version, accepted) in [
+                (Some(json!("8.3.27.2074")), true),
+                (Some(Value::Null), true),
+                (None, false),
+                (Some(json!("/private/platform/8.3.27.2074")), false),
+                (Some(json!("8.3.27")), false),
+                (Some(json!("8.3.27.4294967296")), false),
+                (Some(json!(123)), false),
+                (Some(json!({"path":"/private/platform"})), false),
+            ] {
+                let mut envelope = if dry_run {
+                    preview_envelope("thin", None)
+                } else {
+                    launched_envelope("thin", 77, None)
+                };
+                match version {
+                    Some(value) => envelope["data"]["platform_resolution"]["version"] = value,
+                    None => {
+                        envelope["data"]["platform_resolution"]
+                            .as_object_mut()
+                            .unwrap()
+                            .remove("version");
+                    }
+                }
+                let runner = SequenceRunner::new(vec![process(envelope, true)]);
+                let result = execute_with_resolved_runner(
+                    &prepared,
+                    &runner,
+                    CancellationToken::new(),
+                    &tool(root.path()),
+                );
+                assert_eq!(result.ok, accepted, "preview={dry_run}: {result:?}");
+                if !accepted {
+                    assert_eq!(result.diagnostics[0]["code"], "invalid_result");
+                    assert!(result.changed.is_empty());
+                }
+                assert!(!serde_json::to_string(&result)
+                    .unwrap()
+                    .contains("/private/"));
+                if !dry_run {
+                    assert_eq!(
+                        runner.released.load(std::sync::atomic::Ordering::Acquire),
+                        usize::from(accepted)
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -1453,7 +2040,7 @@ fn main() {
                 "error": {
                     "code": "environment_unavailable",
                     "kind": "environment",
-                    "message": "platform 8.3.27.2074 is not installed"
+                    "message": "platform 8.3.27.2074 is not installed; V8_RUNNER_CLIENT_OWNER=unica /private/config File=/private/ib"
                 }
             }),
             false,
@@ -1473,6 +2060,55 @@ fn main() {
         // its detail, so the agent sees the reason, not just the outcome.
         assert_eq!(result.diagnostics[0]["detailCode"], "provider_absent");
         assert_eq!(result.diagnostics[0]["outcome"], "needsHuman");
+        let public = serde_json::to_string(&result).unwrap();
+        for private in [
+            "V8_RUNNER_CLIENT_OWNER",
+            "/private/config",
+            "File=/private/ib",
+        ] {
+            assert!(!public.contains(private), "{public}");
+        }
+    }
+
+    #[test]
+    fn timeout_words_without_a_wait_receipt_remain_an_ordinary_runner_failure() {
+        let root = workspace();
+        let prepared = prepared(
+            root.path(),
+            json!({
+                "clientMode": "thin", "execute": "tools/Report.epf",
+                "waitForExit": true, "waitTimeoutMs": 1500
+            }),
+            false,
+        );
+        let mut output = process(
+            json!({
+                "ok": false,
+                "command": "launch",
+                "data": {"message": "wait timed out for /private/client.epf"},
+                "error": {"code": "runtime_failure", "kind": "runtime", "message": "wait timed out for /private/client.epf"}
+            }),
+            false,
+        );
+        output.status = "exit status: 3".into();
+        let runner = SequenceRunner::new(vec![output]);
+        let result = execute_with_resolved_runner(
+            &prepared,
+            &runner,
+            CancellationToken::new(),
+            &tool(root.path()),
+        );
+        assert!(!result.ok);
+        assert_eq!(result.diagnostics[0]["code"], "provider_failed");
+        assert!(
+            result.data.is_none(),
+            "prose must not invent a timed-out client receipt"
+        );
+        assert!(result.changed.is_empty());
+        assert!(result.next.is_empty());
+        assert!(!serde_json::to_string(&result)
+            .unwrap()
+            .contains("/private/"));
     }
 
     #[test]

@@ -1,51 +1,24 @@
 ---
 id: INV.SOURCE.RETAINED-LOGICAL-PUBLICATION
 check:
-  - crates/unica-coder/src/infrastructure/source_revision.rs::retained_snapshot_reuses_a_clean_fence_and_reconciles_once_after_change
-  - crates/unica-coder/src/infrastructure/source_revision.rs::review_final_confirmation_rejects_root_replacement_during_retained_scan
-  - crates/unica-coder/src/infrastructure/source_revision.rs::review_final_confirmation_rechecks_replaced_nested_directory
-  - crates/unica-coder/src/infrastructure/source_revision.rs::review_final_confirmation_rechecks_replaced_file
-  - crates/unica-coder/src/infrastructure/source_revision.rs::review_final_confirmation_rejects_membership_added_after_enumeration
-  - crates/unica-coder/src/infrastructure/source_revision.rs::review_final_confirmation_rejects_in_place_change_after_hash
-  - crates/unica-coder/src/infrastructure/source_revision.rs::unsupported_fence_stable_operation_lease_scans_at_admission_and_confirmation
-  - crates/unica-coder/src/infrastructure/source_revision.rs::unsupported_fence_reconcile_is_bounded_to_six_passes_when_corpus_never_stabilizes
-  - crates/unica-coder/src/infrastructure/source_revision.rs::retained_scan_limits_entries_files_and_aggregate_bytes
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::review_rejects_revision_change_during_post_fence_owner_proof
-gap: https://github.com/IngvarConsulting/unica/issues/971
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::logical_read_admission_does_not_scan_source_revisions
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::logical_read_publication_does_not_scan_source_revisions
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::logical_read_parent_publication_deadline_discards_staged_extension_data
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::logical_reads_preserve_deadline_without_source_scans_or_mutation_lane_wait
+  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::actor_owned_module_reader_never_follows_a_source_set_remap
+  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::every_typed_reader_remains_on_the_admitted_root_after_source_set_remap
 ---
 
-# Результат чтения выдаётся после повторной проверки исходников
+# Чтение удерживает выбранный корень без ревизии дерева
 
-Перед выдачей результата чтения Unica повторно подтверждает состояние
-исходников. Подмена корня, изменение состава каталога или прочитанных байтов
-во время этой проверки отклоняет результат. Это включает замену вложенного
-каталога или файла экземпляром с другим содержимым.
-Если заменён вложенный каталог или файл, но логические пути, состав дерева
-и учитываемые байты остались прежними, результат разрешён после повторного
-подтверждения новых экземпляров. Срок и число попыток не увеличиваются.
-Это относится только к чтению: проверки перед записью не ослабляются,
-а совпадение байтов не разрешает подмену корня, ссылки или выход за границы.
-Проверки подмены открытого каталога выполняются на ОС, которые её допускают.
+`view`, `resolve`, `search`, `check` и `diff` не снимают и не проверяют общую
+ревизию исходников ни при допуске, ни при выдаче ответа. Чтение использует
+выбранный удержанный корень, не следует вложенным ссылкам и не принимает
+подмену корня. Исходный срок и отмена продолжают действовать при передаче
+работы между исполнителями. Выдача ответа не ждёт очередь записи актора.
 
-Если платформенное наблюдение подтверждает отсутствие изменений,
-сервис ревизий использует сохранённую ревизию без повторного полного обхода.
-После стабилизировавшегося изменения содержимого достаточно одного
-повторного обхода; он возвращает новую ревизию.
-
-Если платформа не предоставляет надёжного подтверждения изменений,
-начальный допуск и конечное подтверждение каждого выбранного набора
-требуют по два совпавших обхода.
-Сравниваются содержимое и физическая идентичность файлов и каталогов.
-Стабильная операция требует четырёх обходов каждого выбранного набора.
-На каждой из двух границ — допуск и подтверждение — допускается не более
-трёх попыток по два обхода.
-Каждый обход ограничивает число элементов и глубину дерева. Содержимое
-хешируется блоками не более 64 КиБ с проверкой срока и отмены; фиксированного
-потолка байтов на файл или корпус нет. Большой обход может завершиться по сроку.
-
-Это проверка наблюдаемого состояния: она не гарантирует обнаружение
-изменения, которое произошло и было отменено между наблюдениями.
-
-Подготовка `apply`, включая допуск и предпросмотр, не ослабляет эти проверки
-и не отключает повторное использование подтверждённой ревизии. Проверка
-последующего чтения на том же акторе пока не закрыта; сценарии указаны в `gap`.
+Ответ чтения не обещает атомарный снимок всей конфигурации. Для применения
+правки требуется отдельный dry-run с маркером конкретного плана. Готовность
+поискового индекса не доказывает актуальность исходников; индекс сообщает
+своё поколение и неизвестную актуальность. Страницы сохранённого результата
+продолжают этот результат, а новый запрос читает доступные текущие входы.

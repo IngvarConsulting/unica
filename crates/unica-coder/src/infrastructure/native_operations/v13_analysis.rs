@@ -33,14 +33,53 @@ pub(crate) fn validate_with_availability(
     if availability == ValidatorAvailability::Unavailable {
         return unavailable_dependency();
     }
+    validate_with_format_guard(validator, args, context, || match validator {
+        CheckValidator::Cf => super::cf::validate_cf(args, context),
+        CheckValidator::Cfe => super::cfe::validate_cfe(args, context),
+        CheckValidator::Form => super::form::validate_form(args, context),
+        CheckValidator::Dcs => super::dcs::validate_dcs(args, context),
+        CheckValidator::Mxl => super::mxl::validate_mxl(args, context),
+        CheckValidator::Role => super::role::validate_role(args, context),
+        CheckValidator::Subsystem => super::subsystem::validate_subsystem(args, context),
+        CheckValidator::Interface => super::interface::validate_interface(args, context),
+    })
+}
+
+/// Canonical DCS input keeps the same format diagnostics and validator as the
+/// legacy path entry point, without resolving a second logical target.
+pub(crate) fn validate_dcs_input(
+    input: crate::infrastructure::v13_read_port::DcsValidationInput,
+) -> NativeCheckOutcome {
+    let args = Map::from_iter([("TemplatePath".into(), json!(input.artifact))]);
+    with_format_guard(Ok(input.format_guard), || {
+        super::dcs::validate_dcs_input(&args, &input.text, input.artifact)
+    })
+}
+
+fn validate_with_format_guard(
+    validator: CheckValidator,
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+    validate: impl FnOnce() -> crate::application::AdapterOutcome,
+) -> NativeCheckOutcome {
     // The retired `*.validate` tools ran the export-format guard before their
     // handler; the canonical check keeps that read-only warning so a root
     // outside the active profile is never reported as a silent pass.
-    let format_warning = match crate::infrastructure::format_guard::evaluate_read_format_guard(
-        validator.native_operation(),
-        args,
-        context,
-    ) {
+    with_format_guard(
+        crate::infrastructure::format_guard::evaluate_read_format_guard(
+            validator.native_operation(),
+            args,
+            context,
+        ),
+        validate,
+    )
+}
+
+fn with_format_guard(
+    guard: Result<FormatGuardCheck, crate::application::ports::FormatGuardError>,
+    validate: impl FnOnce() -> crate::application::AdapterOutcome,
+) -> NativeCheckOutcome {
+    let format_warning = match guard {
         Ok(FormatGuardCheck::Allow) | Err(_) => None,
         Ok(FormatGuardCheck::Warn {
             warning,
@@ -52,16 +91,7 @@ pub(crate) fn validate_with_availability(
             ..
         }) => Some(format_diagnostic(&outcome.warnings.join(" "), &diagnostic)),
     };
-    let outcome = match validator {
-        CheckValidator::Cf => super::cf::validate_cf(args, context),
-        CheckValidator::Cfe => super::cfe::validate_cfe(args, context),
-        CheckValidator::Form => super::form::validate_form(args, context),
-        CheckValidator::Dcs => super::dcs::validate_dcs(args, context),
-        CheckValidator::Mxl => super::mxl::validate_mxl(args, context),
-        CheckValidator::Role => super::role::validate_role(args, context),
-        CheckValidator::Subsystem => super::subsystem::validate_subsystem(args, context),
-        CheckValidator::Interface => super::interface::validate_interface(args, context),
-    };
+    let outcome = validate();
     let native = NativeCheckOutcome::from_adapter(&outcome);
     match format_warning {
         Some(diagnostic) => native.with_leading_diagnostic(diagnostic),
