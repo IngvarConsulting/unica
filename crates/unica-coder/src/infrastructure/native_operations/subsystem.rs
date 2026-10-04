@@ -463,6 +463,7 @@ pub(crate) fn edit_subsystem_with_data(
             definition_file,
             &mut transaction,
         )?;
+        let lists_only = operations.iter().all(|(op, _)| op != "set-property");
         let mut counters = SubsystemEditCounters::default();
         let mut log = SubsystemEditLog::new();
         let mut child_stubs = BTreeMap::<PathBuf, String>::new();
@@ -530,7 +531,13 @@ pub(crate) fn edit_subsystem_with_data(
         transaction.replace_bytes(
             &resolved_path,
             &original,
-            utf8_bom_bytes(&emit_subsystem_edit_model(&model)),
+            if lists_only {
+                let text = std::str::from_utf8(&original)
+                    .map_err(|_| "subsystem descriptor is not UTF-8")?;
+                patch_subsystem_lists(text, &model, Some(text))?.into_bytes()
+            } else {
+                utf8_bom_bytes(&emit_subsystem_edit_model(&model))
+            },
         )?;
         for (path, xml) in &child_stubs {
             transaction.create_utf8_bom_text(path, xml)?;
