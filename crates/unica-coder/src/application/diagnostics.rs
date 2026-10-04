@@ -516,6 +516,12 @@ fn normalize_provider_outcome(
                     "completed provider outcome included an error",
                 );
             }
+            // Coverage comes from the full provider response, before filtering
+            // and truncation can hide the resource that failed.
+            outcome.complete &= !outcome
+                .observations
+                .iter()
+                .any(|item| matches!(item, DiagnosticObservation::ResourceFailure { .. }));
         }
         DiagnosticProviderStatus::Empty => {
             if !outcome.complete
@@ -2004,9 +2010,12 @@ mod tests {
         assert_eq!(result.items.len(), 3);
         assert_eq!(result.truncated, Some(true));
         assert!(
-            result.complete,
-            "global truncation does not reduce provider coverage"
+            !result.complete,
+            "resource failure reduces provider coverage"
         );
+        assert_eq!(result.state, DiagnosticResultState::Partial);
+        assert!(!result.providers[0].complete);
+        assert!(result.providers[1].complete);
         assert_eq!(result.providers[0].resource_failures, Some(1));
         assert_eq!(result.providers[0].items_total, Some(3));
         assert_eq!(result.providers[0].items_returned, Some(2));
@@ -2034,6 +2043,62 @@ mod tests {
                 "bsl-language-server:SELECTED"
             ]
         );
+    }
+
+    #[test]
+    fn diagnostics_resource_failure_keeps_incomplete_coverage_when_limit_hides_the_failure() {
+        for failed_resource in [false, true] {
+            let mut observations = vec![diagnostic(
+                ANALYZER,
+                "selected",
+                "SELECTED",
+                DiagnosticSeverity::Error,
+                DiagnosticObservationFocus::Target,
+            )];
+            if failed_resource {
+                observations.push(DiagnosticObservation::ResourceFailure {
+                    provider: ANALYZER,
+                    location: DiagnosticObservationLocation::Resource {
+                        handle: "selected".to_string(),
+                    },
+                    error: DiagnosticError {
+                        code: "source_decode_failed".to_string(),
+                        message: "decode failed".to_string(),
+                        retryable: false,
+                    },
+                });
+            } else {
+                observations.push(diagnostic(
+                    ANALYZER,
+                    "selected",
+                    "Z-SECOND",
+                    DiagnosticSeverity::Warning,
+                    DiagnosticObservationFocus::Target,
+                ));
+            }
+            // The provider incorrectly claims complete coverage in the failure case.
+            let (registry, _) = fake_registry([
+                successful(observations),
+                successful(Vec::new()),
+                successful(Vec::new()),
+            ]);
+            let mut request = findings_request();
+            request.limit = 1;
+            let result = run(registry, &request).unwrap();
+            assert!(result.ok);
+            assert_eq!(result.complete, !failed_resource);
+            assert_eq!(result.providers[0].complete, !failed_resource);
+            assert_eq!(
+                result.providers[0].resource_failures,
+                Some(usize::from(failed_resource))
+            );
+            assert_eq!(result.items_total, Some(2));
+            assert_eq!(result.items_returned, Some(1));
+            assert_eq!(result.truncated, Some(true));
+            assert!(
+                matches!(result.items.as_slice(), [DiagnosticItem::Diagnostic { code, .. }] if code == "SELECTED")
+            );
+        }
     }
 
     #[test]
