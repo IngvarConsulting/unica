@@ -2808,8 +2808,9 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
                     "titleLocation": "None",
                     "skipOnInput": true,
                     "width": 40,
-                    "height": 10,
-                    "autoMaxWidth": false
+                    "height": 1,
+                    "autoMaxWidth": false,
+                    "autoMaxHeight": false
                 }]
             }),
         )?;

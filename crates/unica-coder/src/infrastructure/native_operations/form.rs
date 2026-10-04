@@ -9671,6 +9671,10 @@ fn emit_form_html_document_field(
         form_compile_validate_element_boolean(element, key)?;
     }
     emit_form_common_flags(lines, element, &inner);
+    form_compile_validate_element_boolean(element, "skipOnInput")?;
+    if let Some(value) = element.get("skipOnInput").and_then(Value::as_bool) {
+        lines.push(format!("{inner}<SkipOnInput>{value}</SkipOnInput>"));
+    }
     if let Some(value) = element.get("titleLocation").and_then(Value::as_str) {
         let location = form_compile_title_location(value).unwrap_or(value);
         lines.push(format!(
@@ -9678,21 +9682,18 @@ fn emit_form_html_document_field(
             escape_xml(location)
         ));
     }
-    for (key, tag) in [
-        ("skipOnInput", "SkipOnInput"),
-        ("autoMaxWidth", "AutoMaxWidth"),
-        ("autoMaxHeight", "AutoMaxHeight"),
+    for (key, tag, auto_key, auto_tag) in [
+        ("width", "Width", "autoMaxWidth", "AutoMaxWidth"),
+        ("height", "Height", "autoMaxHeight", "AutoMaxHeight"),
     ] {
-        form_compile_validate_element_boolean(element, key)?;
-        if let Some(value) = element.get(key).and_then(Value::as_bool) {
-            lines.push(format!("{inner}<{tag}>{value}</{tag}>"));
-        }
-    }
-    for (key, tag) in [("width", "Width"), ("height", "Height")] {
         if let Some(value) = element.get(key) {
             let number = value.as_u64().filter(|number| *number <= u32::MAX as u64)
                 .ok_or_else(|| format!("form HTML field property {key} must be an integer in 0..=4294967295 for 8.3.27"))?;
             lines.push(format!("{inner}<{tag}>{number}</{tag}>"));
+        }
+        form_compile_validate_element_boolean(element, auto_key)?;
+        if let Some(value) = element.get(auto_key).and_then(Value::as_bool) {
+            lines.push(format!("{inner}<{auto_tag}>{value}</{auto_tag}>"));
         }
     }
     emit_form_companion(
@@ -18360,6 +18361,30 @@ pub(crate) mod tests {
                 "{tag}"
             );
         }
+        let child_names = field
+            .children()
+            .filter(|node| node.is_element())
+            .map(|node| node.tag_name().name())
+            .collect::<Vec<_>>();
+        let binding_order = |node: roxmltree::Node<'_, '_>| {
+            node.children()
+                .filter(|child| child.is_element())
+                .map(|child| child.tag_name().name())
+                .filter(|name| ["DataPath", "SkipOnInput", "TitleLocation"].contains(name))
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(binding_order(field), binding_order(oracle_field));
+        // Two 8.3.27.2074 exports preserve this dimension/automatic-bound
+        // order; matching child values alone misses platform normalization.
+        assert_eq!(
+            child_names
+                .iter()
+                .copied()
+                .filter(|name| ["Width", "AutoMaxWidth", "Height", "AutoMaxHeight"].contains(name))
+                .collect::<Vec<_>>(),
+            ["Width", "AutoMaxWidth", "Height", "AutoMaxHeight"]
+        );
         for (tag, value) in [
             ("Width", "1"),
             ("Height", "2"),

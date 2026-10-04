@@ -98,11 +98,13 @@ EXPECTED_PLATFORM_INSTALL_FILE_COUNT = 4337
 LAST_VERIFIED_CASE_CONTRACT_SHA256 = (
     "1c4afc7adf86cdb8a0e94c1f87e2166e4759387158317848746de0cee678bedf"
 )
-# The verified 69-case inventory adds typed predefined items and canonical
-# role editing on top of the previous 67. Two independent generator runs
-# reproduced this digest and the full exact 8.3.27.2074 gate passed all 69
-# checkpoints.
-EXPECTED_CASE_CONTRACT_SHA256: str | None = LAST_VERIFIED_CASE_CONTRACT_SHA256
+# LAST_VERIFIED records the previous full 69-case platform run. Two current
+# independent generations agree on the HTML form candidate below; its two
+# managed-form checkpoints pass the exact 8.3.27.2074 gate. The full current
+# run failed during timeout cleanup (#1169), so LAST_VERIFIED stays unchanged.
+EXPECTED_CASE_CONTRACT_SHA256: str | None = (
+    "9c8b3ef88d04af0f7ad18db0d63a484512834439b9eeb2ca34d9498dca6750b4"
+)
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 300.0
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 CASE_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]*\Z")
