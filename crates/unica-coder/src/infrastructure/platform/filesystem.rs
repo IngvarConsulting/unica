@@ -8013,6 +8013,51 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn source_set_relative_path_accepts_a_verbatim_root_without_widening_containment() {
+        use crate::domain::workspace::WorkspaceContext;
+        use crate::infrastructure::platform_xml_source_targets::source_set_relative_path;
+        use crate::infrastructure::source_roots::normalize_path_identity;
+
+        let workspace = unique_temp_root("source-set-verbatim-root");
+        let module = workspace.join("src/CommonModules/Shared/Ext/Module.bsl");
+        let outside = workspace.join("src-neighbor/Module.bsl");
+        fs::create_dir_all(module.parent().unwrap()).unwrap();
+        fs::create_dir_all(outside.parent().unwrap()).unwrap();
+        fs::write(&module, b"Procedure Probe()\nEndProcedure").unwrap();
+        fs::write(&outside, b"Procedure Other()\nEndProcedure").unwrap();
+        let regular_workspace = normalize_path_identity(&workspace).unwrap();
+        let module = normalize_path_identity(&module).unwrap();
+        let outside = normalize_path_identity(&outside).unwrap();
+        let regular_text = regular_workspace.to_string_lossy();
+        let verbatim_workspace = if let Some(unc) = regular_text.strip_prefix(r"\\") {
+            PathBuf::from(format!(r"\\?\UNC\{unc}"))
+        } else {
+            PathBuf::from(format!(r"\\?\{regular_text}"))
+        };
+        let verbatim_source = verbatim_workspace.join("src");
+        let context = WorkspaceContext {
+            cwd: verbatim_workspace.clone(),
+            workspace_root: verbatim_workspace.clone(),
+            cache_root: verbatim_workspace.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+
+        assert!(module.strip_prefix(&verbatim_source).is_err());
+        assert_eq!(
+            source_set_relative_path(&context, &verbatim_source, &module),
+            Some(PathBuf::from("CommonModules/Shared/Ext/Module.bsl"))
+        );
+        assert_eq!(
+            source_set_relative_path(&context, &verbatim_source, &outside),
+            None,
+            "a sibling with the same lexical prefix must stay outside the source set"
+        );
+
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn containment_prefix_follows_windows_case_policy() {
         assert!(path_starts_with_host_root(
             Path::new(r"C:\WORKSPACE\src\Module.bsl"),
