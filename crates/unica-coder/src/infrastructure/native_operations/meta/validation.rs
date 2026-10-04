@@ -881,7 +881,9 @@ fn validate_child_resource(kind: MetadataChildResourceKind, bytes: &[u8]) -> Res
         // Retained payload is carried verbatim and never interpreted, so there
         // is no content contract to check — only the path shape, which
         // `validate_one_child_footprint` re-derives.
-        MetadataChildResourceKind::Retained => Ok(()),
+        MetadataChildResourceKind::Retained | MetadataChildResourceKind::OrdinaryFormContent => {
+            Ok(())
+        }
     }
 }
 
@@ -1061,8 +1063,10 @@ impl ClosedChildKind {
     fn matches(self, profile: MetadataChildProfile) -> bool {
         matches!(
             (self, profile),
-            (Self::Form, MetadataChildProfile::Form)
-                | (Self::Template, MetadataChildProfile::Template(_))
+            (
+                Self::Form,
+                MetadataChildProfile::Form | MetadataChildProfile::OrdinaryForm
+            ) | (Self::Template, MetadataChildProfile::Template(_))
                 | (Self::Command, MetadataChildProfile::Command)
         )
     }
@@ -1344,7 +1348,7 @@ fn parse_child_artifact(
     };
     let name = exact_child_name(*properties, kind)?;
     let profile = match kind {
-        "Form" => MetadataChildProfile::Form,
+        "Form" => form_profile(*properties)?,
         "Command" => MetadataChildProfile::Command,
         "Template" => {
             let template_types =
@@ -1367,6 +1371,24 @@ fn parse_child_artifact(
     )
     .map_err(|_| "child descriptor identity is not representable".to_string())?;
     Ok(ClosedChildDescriptor { child, profile })
+}
+
+fn form_profile(properties: roxmltree::Node<'_, '_>) -> Result<MetadataChildProfile, String> {
+    let types = exact_mdclasses_children(properties, "FormType", "Form descriptor")?;
+    let form_type = match types.as_slice() {
+        // Preserve abbreviated descriptors accepted by the existing reader.
+        [] => return Ok(MetadataChildProfile::Form),
+        [value] => *value,
+        _ => return Err("Form descriptor must contain at most one FormType".into()),
+    };
+    if form_type.children().any(|child| child.is_element()) {
+        return Err("FormType must be a scalar".into());
+    }
+    match meta_info_inner_text(form_type).trim() {
+        "Managed" => Ok(MetadataChildProfile::Form),
+        "Ordinary" => Ok(MetadataChildProfile::OrdinaryForm),
+        _ => Err("Form descriptor has unsupported FormType".into()),
+    }
 }
 
 fn exact_child_name(properties: roxmltree::Node<'_, '_>, kind: &str) -> Result<String, String> {
@@ -1407,9 +1429,10 @@ fn child_descriptor_role_matches(
     profile: MetadataChildProfile,
 ) -> bool {
     match (role, profile) {
-        (MetadataResourceRole::Form { owner, name }, MetadataChildProfile::Form) => {
-            child.as_str() == format!("{owner}.Form.{name}")
-        }
+        (
+            MetadataResourceRole::Form { owner, name },
+            MetadataChildProfile::Form | MetadataChildProfile::OrdinaryForm,
+        ) => child.as_str() == format!("{owner}.Form.{name}"),
         (MetadataResourceRole::Command { owner, name }, MetadataChildProfile::Command) => {
             child.as_str() == format!("{owner}.Command.{name}")
         }
@@ -1492,6 +1515,9 @@ fn validate_one_child_footprint(
     }
 
     let mut expected_kinds = match expected.profile {
+        MetadataChildProfile::OrdinaryForm => {
+            vec![(MetadataChildResourceKind::OrdinaryFormContent, 0)]
+        }
         MetadataChildProfile::Form => {
             let mut kinds = vec![(MetadataChildResourceKind::FormContent, 0)];
             if module_count == 1 {
@@ -4537,6 +4563,65 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_form_validator_rederives_profile_resource_kind_and_ordinal() {
+        let descriptor = typed_child_xml("Form", "Main", None).replace(
+            "</Properties>",
+            "<FormType>Ordinary</FormType></Properties>",
+        );
+        let mut subject = closed_child_subject(
+            "Form",
+            "Main",
+            None,
+            &descriptor,
+            vec![
+                MetadataChildDirectoryKind::Root,
+                MetadataChildDirectoryKind::Extension,
+            ],
+            vec![(MetadataChildResourceKind::OrdinaryFormContent, 0)],
+        );
+        subject.child_footprints[0].profile = MetadataChildProfile::OrdinaryForm;
+        subject.resources.last_mut().unwrap().bytes = vec![0xff, 0, 0x81];
+        assert!(closed_child_diagnostics(&subject).is_empty());
+
+        let mut forged = subject.clone();
+        forged.child_footprints[0].profile = MetadataChildProfile::Form;
+        assert!(!closed_child_diagnostics(&forged).is_empty());
+
+        let mut forged = subject.clone();
+        let MetadataResourceRole::ChildResource { ordinal, .. } =
+            &mut forged.resources.last_mut().unwrap().role
+        else {
+            panic!("fixture child resource")
+        };
+        *ordinal = 1;
+        assert!(!closed_child_diagnostics(&forged).is_empty());
+
+        let mut forged = subject.clone();
+        let MetadataResourceRole::ChildResource { kind, .. } =
+            &mut forged.resources.last_mut().unwrap().role
+        else {
+            panic!("fixture child resource")
+        };
+        *kind = MetadataChildResourceKind::FormContent;
+        forged.resources.last_mut().unwrap().bytes =
+            br#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"/>"#.to_vec();
+        assert!(!closed_child_diagnostics(&forged).is_empty());
+
+        let mut forged = subject.clone();
+        forged
+            .resources
+            .push(forged.resources.last().unwrap().clone());
+        assert!(!closed_child_diagnostics(&forged).is_empty());
+
+        let mut forged = subject;
+        forged.resources[1].bytes = typed_child_descriptor(&descriptor.replace(
+            "<FormType>Ordinary</FormType>",
+            "<FormType>Managed</FormType>",
+        ));
+        assert!(!closed_child_diagnostics(&forged).is_empty());
+    }
+
+    #[test]
     fn retained_form_content_rejects_wrong_namespace_and_export_version() {
         for (label, bytes) in [
             (
@@ -4798,6 +4883,7 @@ mod tests {
                     MetadataChildResourceKind::FormContent => br#"<?xml version="1.0" encoding="UTF-8"?><Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"/>"#.to_vec(),
                     MetadataChildResourceKind::TemplateContent { .. } => b"text".to_vec(),
                     MetadataChildResourceKind::Module
+                    | MetadataChildResourceKind::OrdinaryFormContent
                     | MetadataChildResourceKind::Retained => unreachable!(),
                 };
             }

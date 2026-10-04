@@ -1651,13 +1651,43 @@ pub(super) fn observe_typed_child_resources(
             } else {
                 (Vec::new(), Vec::new())
             };
-            let footprint = match validate_typed_child_footprint(
-                collection,
-                template_type,
-                &child,
-                &payload,
-                &directories,
-            ) {
+            let footprint_profile = (|| {
+                let mut profile = typed_child_footprint_profile(collection, template_type, &child)?;
+                if collection == MetaCollection::Forms {
+                    let parsed =
+                        super::validation::parse_child_profile_from_bytes(&descriptor, owner)
+                            .map_err(|message| typed_child_resource_failure(&child, &message))?;
+                    let Some((parsed_child, parsed_profile)) = parsed else {
+                        return Err(typed_child_resource_failure(
+                            &child,
+                            "form descriptor has a different child kind",
+                        ));
+                    };
+                    if parsed_child != child {
+                        return Err(typed_child_resource_failure(
+                            &child,
+                            "form descriptor names another child",
+                        ));
+                    }
+                    // Observation accepts opaque ordinary forms. Mutation planning
+                    // still uses its managed-only footprint profile.
+                    if parsed_profile == MetadataChildProfile::OrdinaryForm {
+                        profile = TypedChildFootprintProfile {
+                            logical_profile: parsed_profile,
+                            required_files: typed_child_modelled_payload(
+                                parsed_profile,
+                                false,
+                                &[],
+                            ),
+                            optional_files: BTreeSet::new(),
+                        };
+                    }
+                }
+                Ok(profile)
+            })();
+            let footprint = match footprint_profile.and_then(|profile| {
+                validate_child_footprint_profile(profile, &child, &payload, &directories)
+            }) {
                 Ok(footprint) => footprint,
                 Err(failure) => {
                     observation.diagnostics.extend(failure.diagnostics);
@@ -1731,6 +1761,7 @@ fn typed_child_footprint_profile(
 }
 
 pub(super) const TYPED_FORM_CONTENT_PATH: &str = "Ext/Form.xml";
+pub(super) const TYPED_ORDINARY_FORM_CONTENT_PATH: &str = "Ext/Form.bin";
 /// A managed form's module. Designer nests it one level below the other `Ext`
 /// members — `Ext/Form/Module.bsl`, not `Ext/Module.bsl`, which is where an
 /// *object* module lives. Every other reader in the crate already uses this
@@ -1795,6 +1826,9 @@ pub(super) fn typed_child_modelled_payload(
 ) -> BTreeSet<PathBuf> {
     let mut files = BTreeSet::new();
     match profile {
+        MetadataChildProfile::OrdinaryForm => {
+            files.insert(PathBuf::from(TYPED_ORDINARY_FORM_CONTENT_PATH));
+        }
         MetadataChildProfile::Form => {
             files.insert(PathBuf::from(TYPED_FORM_CONTENT_PATH));
             if has_module {
@@ -1824,6 +1858,9 @@ pub(super) fn typed_child_modelled_payload(
 /// directory holds bytes this contract does not recognise.
 pub(super) fn typed_child_retained_payload(profile: MetadataChildProfile, relative: &Path) -> bool {
     match profile {
+        MetadataChildProfile::OrdinaryForm => {
+            relative == Path::new("Ext/Help.xml") || relative.starts_with("Ext/Help")
+        }
         MetadataChildProfile::Form => {
             relative == Path::new("Ext/Help.xml")
                 || relative.starts_with("Ext/Help")
@@ -1877,8 +1914,18 @@ fn validate_typed_child_footprint(
     directories: &[PathBuf],
 ) -> Result<MetadataChildFootprintEvidence, MetaFailure> {
     let profile = typed_child_footprint_profile(collection, template_type, child)?;
+    validate_child_footprint_profile(profile, child, files, directories)
+}
+
+fn validate_child_footprint_profile(
+    profile: TypedChildFootprintProfile,
+    child: &MetadataAddress,
+    files: &[(PathBuf, Vec<u8>)],
+    directories: &[PathBuf],
+) -> Result<MetadataChildFootprintEvidence, MetaFailure> {
     let mut required_files = profile.required_files.clone();
-    if template_type == Some(MetadataTemplateType::HtmlDocument) {
+    if profile.logical_profile == MetadataChildProfile::Template(MetadataTemplateType::HtmlDocument)
+    {
         let descriptor = files
             .iter()
             .find(|(relative, _)| relative == Path::new("Ext/Template.xml"))
@@ -1979,6 +2026,9 @@ fn typed_child_payload_role(
         });
     }
     let kind = match collection {
+        MetaCollection::Forms if relative_path == Path::new(TYPED_ORDINARY_FORM_CONTENT_PATH) => {
+            MetadataChildResourceKind::OrdinaryFormContent
+        }
         MetaCollection::Forms if relative_path == Path::new("Ext/Form.xml") => {
             MetadataChildResourceKind::FormContent
         }
@@ -2048,7 +2098,10 @@ fn typed_child_payload_role(
         }
     };
     let ordinal = match (collection, kind) {
-        (MetaCollection::Forms, MetadataChildResourceKind::FormContent) => 0,
+        (
+            MetaCollection::Forms,
+            MetadataChildResourceKind::FormContent | MetadataChildResourceKind::OrdinaryFormContent,
+        ) => 0,
         (MetaCollection::Forms, MetadataChildResourceKind::Module) => 1,
         (MetaCollection::Commands, MetadataChildResourceKind::Module) => 0,
         (
@@ -3924,7 +3977,9 @@ fn apply_typed_properties(
     xml_text: &mut String,
     changes: &crate::domain::metadata::MetaPropertyChanges,
 ) -> Result<(), MetaDiagnostic> {
-    let doc = Document::parse(xml_text.trim_start_matches('\u{feff}')).map_err(|_| {
+    let parsed_body = xml_text.trim_start_matches('\u{feff}');
+    let prefix_len = xml_text.len() - parsed_body.len();
+    let doc = Document::parse(parsed_body).map_err(|_| {
         typed_diagnostic(
             MetaDiagnosticCode::ProviderUnavailable,
             "metadata descriptor is not valid XML",
@@ -3964,7 +4019,7 @@ fn apply_typed_properties(
         None
     };
     let range = properties.range();
-    let mut text = xml_text[range.clone()].to_string();
+    let mut text = parsed_body[range.clone()].to_string();
     let indent = meta_edit_property_child_indent(&text);
     let mut replacements = Vec::new();
     for (key, value) in changes.entries() {
@@ -4043,7 +4098,7 @@ fn apply_typed_properties(
         text.replace_range(property_range, &replacement);
     }
     drop(doc);
-    xml_text.replace_range(range, &text);
+    xml_text.replace_range(range.start + prefix_len..range.end + prefix_len, &text);
     Ok(())
 }
 
@@ -5315,27 +5370,33 @@ pub(crate) mod tests {
                 assert_eq!(counts.effects[0].before, counts.effects[0].after);
             }
             for default_namespace in ["", " xmlns=\"urn:foreign-default\""] {
-                let mut xml = format!(
-                    r#"<m:MetaDataObject xmlns:m="http://v8.1c.ru/8.3/MDClasses"{default_namespace} xmlns:d="http://v8.1c.ru/8.1/data/core" xmlns:s="http://www.w3.org/2001/XMLSchema" version="2.20"><m:Constant uuid="11111111-1111-4111-8111-111111111111"><m:Properties><m:Name>Setting</m:Name><m:Synonym/><m:Comment/><m:Type><d:Type>s:string</d:Type></m:Type></m:Properties><m:ChildObjects/></m:Constant></m:MetaDataObject>"#
-                );
-                let operation = constant_type_change(metadata_type.clone());
-                apply_typed_operations(&mut xml, std::slice::from_ref(&operation)).unwrap();
-                let doc = Document::parse(&xml).unwrap();
-                let object = meta_edit_object_node(&doc).unwrap();
-                let properties = meta_info_child(object, "Properties").unwrap();
-                assert!(
-                    properties
-                        .children()
-                        .any(|child| child.has_tag_name(("http://v8.1c.ru/8.3/MDClasses", "Type"))),
-                    "Constant.Type must remain in the metadata namespace: {xml}"
-                );
-                let observed =
-                    super::super::info_projection::parse_observed_metadata_type_node(properties)
+                for bom_count in 0..=2 {
+                    let mut xml = format!(
+                        r#"<m:MetaDataObject xmlns:m="http://v8.1c.ru/8.3/MDClasses"{default_namespace} xmlns:d="http://v8.1c.ru/8.1/data/core" xmlns:s="http://www.w3.org/2001/XMLSchema" version="2.20"><m:Constant uuid="11111111-1111-4111-8111-111111111111"><m:Properties><m:Name>Setting</m:Name><m:Synonym/><m:Comment/><m:Type><d:Type>s:string</d:Type></m:Type></m:Properties><m:ChildObjects/></m:Constant></m:MetaDataObject>"#
+                    );
+                    xml.insert_str(0, &"\u{feff}".repeat(bom_count));
+                    let operation = constant_type_change(metadata_type.clone());
+                    apply_typed_operations(&mut xml, std::slice::from_ref(&operation)).unwrap();
+                    let doc = Document::parse(xml.trim_start_matches('\u{feff}')).unwrap();
+                    let object = meta_edit_object_node(&doc).unwrap();
+                    let properties = meta_info_child(object, "Properties").unwrap();
+                    assert!(
+                        properties
+                            .children()
+                            .any(|child| child
+                                .has_tag_name(("http://v8.1c.ru/8.3/MDClasses", "Type"))),
+                        "Constant.Type must remain in the metadata namespace: {xml}"
+                    );
+                    let observed =
+                        super::super::info_projection::parse_observed_metadata_type_node(
+                            properties,
+                        )
                         .unwrap();
-                assert_eq!(MetadataType::try_from(observed).unwrap(), metadata_type);
-                let before = xml.clone();
-                apply_typed_operations(&mut xml, &[operation]).unwrap();
-                assert_eq!(xml, before, "equivalent Type must not rewrite aliased XML");
+                    assert_eq!(MetadataType::try_from(observed).unwrap(), metadata_type);
+                    let before = xml.clone();
+                    apply_typed_operations(&mut xml, &[operation]).unwrap();
+                    assert_eq!(xml, before, "equivalent Type must not rewrite aliased XML");
+                }
             }
         }
     }
