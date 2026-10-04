@@ -4863,18 +4863,7 @@ pub(crate) fn form_edit_apply_definition(
     form_edit_apply_planned_removals(xml_text, &planned_removals);
     let form_name = form_edit_form_name(form_path);
     let mut elem_ids = FormIdAllocator {
-        next: form_edit_next_id(
-            xml_text,
-            &[
-                "InputField",
-                "ContextMenu",
-                "ExtendedTooltip",
-                "UsualGroup",
-                "Table",
-                "Button",
-                "CommandBar",
-            ],
-        ),
+        next: form_edit_max_ui_id(xml_text),
     };
     let mut attr_ids = FormIdAllocator {
         next: form_edit_next_id(xml_text, &["Attribute", "Column"]),
@@ -4936,7 +4925,7 @@ pub(crate) fn form_edit_apply_definition(
                 let Some(name) = object.get("name").and_then(Value::as_str) else {
                     continue;
                 };
-                let id = attr_ids.next();
+                let id = attr_ids.next()?;
                 emit_form_edit_attribute_item(&mut lines, object, name, id, "\t\t")?;
                 let type_name = object
                     .get("type")
@@ -4964,7 +4953,7 @@ pub(crate) fn form_edit_apply_definition(
                 let Some(name) = object.get("name").and_then(Value::as_str) else {
                     continue;
                 };
-                let id = cmd_ids.next();
+                let id = cmd_ids.next()?;
                 emit_form_edit_command_item(&mut lines, object, name, id, "\t\t");
                 added_cmds.push(FormEditAddedCommand {
                     name: name.to_string(),
@@ -6358,6 +6347,24 @@ pub(crate) fn form_edit_form_name(path: &Path) -> String {
         .to_string()
 }
 
+fn form_edit_max_ui_id(xml_text: &str) -> usize {
+    let Ok(doc) = Document::parse(xml_text) else {
+        return 0;
+    };
+    // Elements and their companions share IDs, unlike attributes and commands.
+    // Walk the UI subtrees so imported element kinds need no allocator whitelist.
+    doc.descendants()
+        .filter(|node| {
+            node.ancestors().any(|ancestor| {
+                ancestor.has_tag_name("ChildItems") || ancestor.has_tag_name("AutoCommandBar")
+            })
+        })
+        .filter_map(|node| node.attribute("id"))
+        .filter_map(|value| value.parse::<usize>().ok())
+        .max()
+        .unwrap_or(0)
+}
+
 pub(crate) fn form_edit_next_id(xml_text: &str, tags: &[&str]) -> usize {
     let Ok(doc) = Document::parse(xml_text) else {
         return 0;
@@ -7494,9 +7501,9 @@ impl FormIdAllocator {
         Self { next: 0 }
     }
 
-    pub(crate) fn next(&mut self) -> usize {
-        self.next += 1;
-        self.next
+    pub(crate) fn next(&mut self) -> Result<usize, String> {
+        self.next = self.next.checked_add(1).ok_or("Form ID space exhausted")?;
+        Ok(self.next)
     }
 }
 
@@ -8841,20 +8848,16 @@ fn emit_form_element_with_context(
             emit_form_label_decoration(lines, object, kind.name(object)?, indent, ids)
         }
         FormEditElementDefinitionKind::LabelField => {
-            emit_form_label_field(lines, object, kind.name(object)?, indent, ids);
-            Ok(())
+            emit_form_label_field(lines, object, kind.name(object)?, indent, ids)
         }
-        FormEditElementDefinitionKind::Button => {
-            emit_form_button(
-                lines,
-                object,
-                kind.name(object)?,
-                indent,
-                ids,
-                in_command_bar,
-            );
-            Ok(())
-        }
+        FormEditElementDefinitionKind::Button => emit_form_button(
+            lines,
+            object,
+            kind.name(object)?,
+            indent,
+            ids,
+            in_command_bar,
+        ),
         FormEditElementDefinitionKind::CommandBar => {
             emit_form_command_bar_element(lines, object, kind.name(object)?, indent, ids)
         }
@@ -8868,8 +8871,7 @@ fn emit_form_element_with_context(
             emit_form_group(lines, object, kind.name(object)?, indent, ids)
         }
         FormEditElementDefinitionKind::CheckBox => {
-            emit_form_check(lines, object, kind.name(object)?, indent, ids);
-            Ok(())
+            emit_form_check(lines, object, kind.name(object)?, indent, ids)
         }
         FormEditElementDefinitionKind::InputField => {
             emit_form_input(lines, object, kind.name(object)?, indent, ids)
@@ -8902,7 +8904,7 @@ pub(crate) fn emit_form_group(
     indent: &str,
     ids: &mut FormIdAllocator,
 ) -> Result<(), String> {
-    let id = ids.next();
+    let id = ids.next()?;
     lines.push(format!(
         "{indent}<UsualGroup name=\"{}\" id=\"{id}\">",
         escape_xml(name)
@@ -8964,7 +8966,7 @@ pub(crate) fn emit_form_group(
         &format!("{name}РасширеннаяПодсказка"),
         &inner,
         ids,
-    );
+    )?;
     emit_form_children(lines, element, &inner, ids)?;
     lines.push(format!("{indent}</UsualGroup>"));
     Ok(())
@@ -8977,7 +8979,7 @@ pub(crate) fn emit_form_pages(
     indent: &str,
     ids: &mut FormIdAllocator,
 ) -> Result<(), String> {
-    let id = ids.next();
+    let id = ids.next()?;
     lines.push(format!(
         "{indent}<Pages name=\"{}\" id=\"{id}\">",
         escape_xml(name)
@@ -9005,7 +9007,7 @@ pub(crate) fn emit_form_pages(
         &format!("{name}РасширеннаяПодсказка"),
         &inner,
         ids,
-    );
+    )?;
     emit_form_element_events(lines, element, name, &inner);
     emit_form_children(lines, element, &inner, ids)?;
     lines.push(format!("{indent}</Pages>"));
@@ -9019,7 +9021,7 @@ pub(crate) fn emit_form_page(
     indent: &str,
     ids: &mut FormIdAllocator,
 ) -> Result<(), String> {
-    let id = ids.next();
+    let id = ids.next()?;
     lines.push(format!(
         "{indent}<Page name=\"{}\" id=\"{id}\">",
         escape_xml(name)
@@ -9049,7 +9051,7 @@ pub(crate) fn emit_form_page(
         &format!("{name}РасширеннаяПодсказка"),
         &inner,
         ids,
-    );
+    )?;
     emit_form_children(lines, element, &inner, ids)?;
     lines.push(format!("{indent}</Page>"));
     Ok(())
@@ -9175,8 +9177,8 @@ pub(crate) fn emit_form_check(
     name: &str,
     indent: &str,
     ids: &mut FormIdAllocator,
-) {
-    let id = ids.next();
+) -> Result<(), String> {
+    let id = ids.next()?;
     lines.push(format!(
         "{indent}<CheckBoxField name=\"{}\" id=\"{id}\">",
         escape_xml(name)
@@ -9217,16 +9219,17 @@ pub(crate) fn emit_form_check(
         &format!("{name}КонтекстноеМеню"),
         &inner,
         ids,
-    );
+    )?;
     emit_form_companion(
         lines,
         "ExtendedTooltip",
         &format!("{name}РасширеннаяПодсказка"),
         &inner,
         ids,
-    );
+    )?;
     emit_form_element_events(lines, element, name, &inner);
     lines.push(format!("{indent}</CheckBoxField>"));
+    Ok(())
 }
 
 pub(crate) fn emit_form_input(
@@ -9236,7 +9239,7 @@ pub(crate) fn emit_form_input(
     indent: &str,
     ids: &mut FormIdAllocator,
 ) -> Result<(), String> {
-    let id = ids.next();
+    let id = ids.next()?;
     lines.push(format!(
         "{indent}<InputField name=\"{}\" id=\"{id}\">",
         escape_xml(name)
@@ -9345,14 +9348,14 @@ pub(crate) fn emit_form_input(
         &format!("{name}КонтекстноеМеню"),
         &inner,
         ids,
-    );
+    )?;
     emit_form_companion(
         lines,
         "ExtendedTooltip",
         &format!("{name}РасширеннаяПодсказка"),
         &inner,
         ids,
-    );
+    )?;
     emit_form_element_events(lines, element, name, &inner);
     lines.push(format!("{indent}</InputField>"));
     Ok(())
@@ -9365,8 +9368,8 @@ pub(crate) fn emit_form_button(
     indent: &str,
     ids: &mut FormIdAllocator,
     in_command_bar: bool,
-) {
-    let id = ids.next();
+) -> Result<(), String> {
+    let id = ids.next()?;
     lines.push(format!(
         "{indent}<Button name=\"{}\" id=\"{id}\">",
         escape_xml(name)
@@ -9472,9 +9475,10 @@ pub(crate) fn emit_form_button(
         &format!("{name}РасширеннаяПодсказка"),
         &inner,
         ids,
-    );
+    )?;
     emit_form_element_events(lines, element, name, &inner);
     lines.push(format!("{indent}</Button>"));
+    Ok(())
 }
 
 pub(crate) fn emit_form_command_bar_element(
@@ -9484,7 +9488,7 @@ pub(crate) fn emit_form_command_bar_element(
     indent: &str,
     ids: &mut FormIdAllocator,
 ) -> Result<(), String> {
-    let id = ids.next();
+    let id = ids.next()?;
     lines.push(format!(
         "{indent}<CommandBar name=\"{}\" id=\"{id}\">",
         escape_xml(name)
@@ -9531,7 +9535,7 @@ pub(crate) fn emit_form_label_decoration(
     indent: &str,
     ids: &mut FormIdAllocator,
 ) -> Result<(), String> {
-    let id = ids.next();
+    let id = ids.next()?;
     lines.push(format!(
         "{indent}<LabelDecoration name=\"{}\" id=\"{id}\">",
         escape_xml(name)
@@ -9575,14 +9579,14 @@ pub(crate) fn emit_form_label_decoration(
         &format!("{name}КонтекстноеМеню"),
         &inner,
         ids,
-    );
+    )?;
     emit_form_companion(
         lines,
         "ExtendedTooltip",
         &format!("{name}РасширеннаяПодсказка"),
         &inner,
         ids,
-    );
+    )?;
     emit_form_element_events(lines, element, name, &inner);
     lines.push(format!("{indent}</LabelDecoration>"));
     Ok(())
@@ -9634,8 +9638,8 @@ pub(crate) fn emit_form_label_field(
     name: &str,
     indent: &str,
     ids: &mut FormIdAllocator,
-) {
-    let id = ids.next();
+) -> Result<(), String> {
+    let id = ids.next()?;
     lines.push(format!(
         "{indent}<LabelField name=\"{}\" id=\"{id}\">",
         escape_xml(name)
@@ -9653,16 +9657,17 @@ pub(crate) fn emit_form_label_field(
         &format!("{name}КонтекстноеМеню"),
         &inner,
         ids,
-    );
+    )?;
     emit_form_companion(
         lines,
         "ExtendedTooltip",
         &format!("{name}РасширеннаяПодсказка"),
         &inner,
         ids,
-    );
+    )?;
     emit_form_element_events(lines, element, name, &inner);
     lines.push(format!("{indent}</LabelField>"));
+    Ok(())
 }
 
 pub(crate) fn emit_form_table(
@@ -9672,7 +9677,7 @@ pub(crate) fn emit_form_table(
     indent: &str,
     ids: &mut FormIdAllocator,
 ) -> Result<(), String> {
-    let id = ids.next();
+    let id = ids.next()?;
     lines.push(format!(
         "{indent}<Table name=\"{}\" id=\"{id}\">",
         escape_xml(name)
@@ -9730,9 +9735,9 @@ pub(crate) fn emit_form_table(
         &format!("{name}КонтекстноеМеню"),
         &inner,
         ids,
-    );
+    )?;
     if element.get("tableAutofill").is_some() {
-        let id = ids.next();
+        let id = ids.next()?;
         let value = if element.get("tableAutofill").and_then(Value::as_bool) == Some(true) {
             "true"
         } else {
@@ -9751,7 +9756,7 @@ pub(crate) fn emit_form_table(
             &format!("{name}КоманднаяПанель"),
             &inner,
             ids,
-        );
+        )?;
     }
     emit_form_companion(
         lines,
@@ -9759,7 +9764,7 @@ pub(crate) fn emit_form_table(
         &format!("{name}РасширеннаяПодсказка"),
         &inner,
         ids,
-    );
+    )?;
     emit_form_table_addition(
         lines,
         "SearchStringAddition",
@@ -9768,7 +9773,7 @@ pub(crate) fn emit_form_table(
         "SearchStringRepresentation",
         &inner,
         ids,
-    );
+    )?;
     emit_form_table_addition(
         lines,
         "ViewStatusAddition",
@@ -9777,7 +9782,7 @@ pub(crate) fn emit_form_table(
         "ViewStatusRepresentation",
         &inner,
         ids,
-    );
+    )?;
     emit_form_table_addition(
         lines,
         "SearchControlAddition",
@@ -9786,7 +9791,7 @@ pub(crate) fn emit_form_table(
         "SearchControl",
         &inner,
         ids,
-    );
+    )?;
 
     emit_form_element_events(lines, element, name, &inner);
     if let Some(columns) = element.get("columns").and_then(Value::as_array) {
@@ -9894,9 +9899,9 @@ pub(crate) fn emit_form_table_addition(
     source_type: &str,
     indent: &str,
     ids: &mut FormIdAllocator,
-) {
+) -> Result<(), String> {
     let name = format!("{table_name}{suffix}");
-    let id = ids.next();
+    let id = ids.next()?;
     lines.push(format!(
         "{indent}<{tag} name=\"{}\" id=\"{id}\">",
         escape_xml(&name)
@@ -9912,15 +9917,16 @@ pub(crate) fn emit_form_table_addition(
         &format!("{name}КонтекстноеМеню"),
         &inner,
         ids,
-    );
+    )?;
     emit_form_companion(
         lines,
         "ExtendedTooltip",
         &format!("{name}РасширеннаяПодсказка"),
         &inner,
         ids,
-    );
+    )?;
     lines.push(format!("{indent}</{tag}>"));
+    Ok(())
 }
 
 pub(crate) fn emit_form_element_events(
@@ -10052,12 +10058,13 @@ pub(crate) fn emit_form_companion(
     name: &str,
     indent: &str,
     ids: &mut FormIdAllocator,
-) {
-    let id = ids.next();
+) -> Result<(), String> {
+    let id = ids.next()?;
     lines.push(format!(
         "{indent}<{tag} name=\"{}\" id=\"{id}\"/>",
         escape_xml(name)
     ));
+    Ok(())
 }
 
 pub(crate) fn form_compile_main_attribute_saves_data(type_name: &str) -> bool {
@@ -10097,7 +10104,7 @@ pub(crate) fn emit_form_attributes(
             .get("name")
             .and_then(Value::as_str)
             .ok_or_else(|| "Form attribute is missing name".to_string())?;
-        let attr_id = ids.next();
+        let attr_id = ids.next()?;
         lines.push(format!(
             "{indent}\t<Attribute name=\"{}\" id=\"{attr_id}\">",
             escape_xml(name)
@@ -10147,7 +10154,7 @@ pub(crate) fn emit_form_attribute_columns(
     columns: Option<&Value>,
     indent: &str,
 ) -> Result<(), String> {
-    emit_form_attribute_columns_with_ids(lines, columns, indent, |index| index + 1)
+    emit_form_attribute_columns_with_ids(lines, columns, indent, |index| Ok(index + 1))
 }
 
 fn emit_form_compile_attribute_columns(
@@ -10163,7 +10170,7 @@ fn emit_form_attribute_columns_with_ids(
     lines: &mut Vec<String>,
     columns: Option<&Value>,
     indent: &str,
-    mut next_id: impl FnMut(usize) -> usize,
+    mut next_id: impl FnMut(usize) -> Result<usize, String>,
 ) -> Result<(), String> {
     let Some(columns) = columns else {
         return Ok(());
@@ -10185,7 +10192,7 @@ fn emit_form_attribute_columns_with_ids(
             .and_then(Value::as_str)
             .ok_or_else(|| format!("Form attribute column #{} is missing name", idx + 1))?;
         let column_indent = format!("{indent}\t");
-        let id = next_id(idx);
+        let id = next_id(idx)?;
         lines.push(format!(
             "{column_indent}<Column name=\"{}\" id=\"{id}\">",
             escape_xml(name),
@@ -10341,7 +10348,7 @@ pub(crate) fn emit_form_commands(
             .get("name")
             .and_then(Value::as_str)
             .ok_or_else(|| "Form command is missing name".to_string())?;
-        let cmd_id = ids.next();
+        let cmd_id = ids.next()?;
         lines.push(format!(
             "{indent}\t<Command name=\"{}\" id=\"{cmd_id}\">",
             escape_xml(name)
@@ -13691,6 +13698,175 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn edit_form_refuses_exhausted_ui_ids_without_writing() {
+        let context = temp_context("edit-exhausted-ui-ids");
+        let form_path = context.cwd.join("Form.xml");
+        for highest in [usize::MAX, usize::MAX - 1] {
+            let original = form_edit_remove_test_xml(&format!(
+                r#"<HTMLDocumentField name="Imported" id="{highest}"/>"#
+            ));
+            fs::write(&form_path, &original).unwrap();
+            let mut unchanged = original.clone();
+            let root_start = Document::parse(&original)
+                .unwrap()
+                .root_element()
+                .range()
+                .start;
+            form_edit_apply_definition(&mut unchanged, &json!({}), &form_path, root_start).unwrap();
+            assert_eq!(unchanged, original, "a no-op does not allocate an ID");
+            let args = Map::from_iter([
+                (
+                    "FormPath".to_string(),
+                    json!(form_path.display().to_string()),
+                ),
+                (
+                    "definition".to_string(),
+                    json!({"elements": [{"input": "Added"}]}),
+                ),
+            ]);
+            for edit in [preview_form_edit, edit_form] {
+                let outcome = edit(&args, &context);
+                assert!(!outcome.ok, "{outcome:?}");
+                assert!(
+                    format!("{outcome:?}").contains("Form ID space exhausted"),
+                    "{outcome:?}"
+                );
+                assert_eq!(fs::read_to_string(&form_path).unwrap(), original);
+            }
+        }
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_form_allocates_ids_above_all_existing_ui_nodes() {
+        let context = temp_context("edit-imported-ui-ids");
+        let form_path = context.cwd.join("Form.xml");
+        // Imported forms need not number the element before its companions.
+        for kind in ["HTMLDocumentField", "CheckBoxField", "PictureField"] {
+            for extension in [false, true] {
+                let highest = if extension { 1_000_000 } else { 5 };
+                let element = format!(
+                    r#"<UsualGroup name="Container" id="1"><ExtendedTooltip name="ContainerTooltip" id="2"/><ChildItems><{kind} name="Imported" id="{highest}"><ContextMenu name="ImportedMenu" id="3"/><ExtendedTooltip name="ImportedTooltip" id="4"/></{kind}></ChildItems></UsualGroup>"#
+                );
+                let original = editable_form_xml(extension).replace(
+                    "\t<ChildItems>\n\t</ChildItems>",
+                    &format!("<ChildItems>{element}</ChildItems>"),
+                );
+                fs::write(&form_path, &original).unwrap();
+                let args = Map::from_iter([
+                    (
+                        "FormPath".to_string(),
+                        json!(form_path.display().to_string()),
+                    ),
+                    (
+                        "definition".to_string(),
+                        json!({"elements": [{"input": "Added"}]}),
+                    ),
+                ]);
+                let preview = preview_form_edit(&args, &context);
+                assert!(preview.ok, "{kind}, extension={extension}: {preview:?}");
+                assert_eq!(fs::read_to_string(&form_path).unwrap(), original);
+                let applied = edit_form(&args, &context);
+                assert!(applied.ok, "{kind}, extension={extension}: {applied:?}");
+                let updated = fs::read_to_string(&form_path).unwrap();
+                let doc = Document::parse(&updated).unwrap();
+                let added = doc
+                    .descendants()
+                    .find(|n| n.attribute("name") == Some("Added"))
+                    .unwrap();
+                assert_eq!(added.attribute("id").unwrap(), (highest + 1).to_string());
+                let ids: Vec<_> = doc
+                    .descendants()
+                    .filter(|n| n.ancestors().any(|a| a.has_tag_name("ChildItems")))
+                    .filter_map(|n| n.attribute("id"))
+                    .collect();
+                assert_eq!(
+                    ids.len(),
+                    ids.iter().collect::<HashSet<_>>().len(),
+                    "{updated}"
+                );
+                assert!(
+                    updated.contains(&element),
+                    "existing subtree changed: {updated}"
+                );
+            }
+        }
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_form_reserves_companion_ids_without_mixing_attribute_and_command_ids() {
+        let context = temp_context("edit-companion-ids");
+        let form_path = context.cwd.join("Form.xml");
+        let table = r#"<Table name="Rows" id="1"><ContextMenu name="RowsMenu" id="2"/><AutoCommandBar name="RowsBar" id="3"/><SearchStringAddition name="RowsSearch" id="4"/><ViewStatusAddition name="RowsStatus" id="5"/><SearchControlAddition name="RowsSearchControl" id="6"/></Table>"#;
+        for highest_node in [
+            "RowsBar",
+            "RowsSearch",
+            "RowsStatus",
+            "RowsSearchControl",
+            "RootTooltip",
+        ] {
+            let original = form_edit_remove_test_xml(table)
+                .replace("<AutoCommandBar name=\"FormCommandBar\" id=\"-1\"/>",
+                    "<AutoCommandBar name=\"FormCommandBar\" id=\"-1\"><ExtendedTooltip name=\"RootTooltip\" id=\"7\"/></AutoCommandBar>")
+                .replace("<Attributes/>", "<Attributes><Attribute name=\"ExistingAttribute\" id=\"100\"/></Attributes>")
+                .replace("<Commands/>", "<Commands><Command name=\"ExistingCommand\" id=\"200\"><Action>ExistingCommand</Action></Command></Commands>");
+            let doc = Document::parse(&original).unwrap();
+            let highest = doc
+                .descendants()
+                .find(|n| n.attribute("name") == Some(highest_node))
+                .unwrap();
+            let old_id = highest.attribute("id").unwrap();
+            let original = original.replace(
+                &format!("name=\"{highest_node}\" id=\"{old_id}\""),
+                &format!("name=\"{highest_node}\" id=\"10\""),
+            );
+            fs::write(&form_path, &original).unwrap();
+            let args = Map::from_iter([
+                (
+                    "FormPath".to_string(),
+                    json!(form_path.display().to_string()),
+                ),
+                (
+                    "definition".to_string(),
+                    json!({"elements": [{"input": "Added"}]}),
+                ),
+            ]);
+            let preview = preview_form_edit(&args, &context);
+            assert!(preview.ok, "{highest_node}: {preview:?}");
+            assert_eq!(fs::read_to_string(&form_path).unwrap(), original);
+            let applied = edit_form(&args, &context);
+            assert!(applied.ok, "{highest_node}: {applied:?}");
+            let updated = fs::read_to_string(&form_path).unwrap();
+            let doc = Document::parse(&updated).unwrap();
+            let added = doc
+                .descendants()
+                .find(|n| n.attribute("name") == Some("Added"))
+                .unwrap();
+            assert_eq!(
+                added.attribute("id"),
+                Some("11"),
+                "{highest_node}: {updated}"
+            );
+            assert_eq!(
+                doc.descendants()
+                    .find(|n| n.attribute("name") == Some("ExistingAttribute"))
+                    .unwrap()
+                    .attribute("id"),
+                Some("100")
+            );
+            assert_eq!(
+                doc.descendants()
+                    .find(|n| n.attribute("name") == Some("ExistingCommand"))
+                    .unwrap()
+                    .attribute("id"),
+                Some("200")
+            );
+        }
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
     fn edit_form_uses_extension_id_floor_when_base_form_exists() {
         let context = temp_context("edit-extension-ids");
         let form_path = context.cwd.join("Form.xml");
@@ -16695,7 +16871,8 @@ pub(crate) mod tests {
             "Check",
             "\t",
             &mut ids,
-        );
+        )
+        .unwrap();
         let input = json!({"titleLocation": "</TitleLocation><Injected/>"});
         emit_form_input(
             &mut lines,
