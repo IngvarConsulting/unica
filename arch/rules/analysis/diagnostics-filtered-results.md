@@ -1,11 +1,11 @@
 ---
 id: INV.APP.DIAGNOSTIC-FILTERED-RESULTS
 check:
+  - crates/unica-coder/src/application/diagnostics.rs::diagnostics_resource_failure_keeps_incomplete_coverage_when_limit_hides_the_failure
   - crates/unica-coder/src/application/diagnostics.rs::diagnostics_provider_selection_uses_registry_order_and_skips_inapplicable_providers
   - crates/unica-coder/src/application/diagnostics.rs::diagnostics_code_filters_do_not_select_execution_providers
   - crates/unica-coder/src/application/diagnostics.rs::diagnostics_result_assembly_filters_sorts_and_applies_one_global_limit
   - crates/unica-coder/src/application/diagnostics.rs::diagnostics_result_assembly_keeps_cross_provider_duplicates_and_metadata_focus_order
-gap: https://github.com/IngvarConsulting/unica/issues/963
 ---
 
 # Лимит диагностики применяется после отбора находок
