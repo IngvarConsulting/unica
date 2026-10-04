@@ -1,6 +1,8 @@
 ---
 id: INV.SOURCE.WRITABLE-PROFILE
 check:
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_template_read_warns_while_writes_keep_the_exact_owner_profile
+  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::canonical_dcs_validation_reports_readable_template_owner_versions
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::canonical_dcs_validation_keeps_exact_versionless_dcs_root_guard
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::canonical_dcs_validation_keeps_captured_owner_format_warnings
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::canonical_dcs_validation_keeps_large_configuration_owner_format_warning

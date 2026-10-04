@@ -13,7 +13,7 @@ use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::platform_profile::PlatformProfile;
 use crate::domain::project_sources::SourceSetKind;
-use crate::domain::refusal::{RefusalCode, RefusalDetail};
+use crate::domain::refusal::RefusalCode;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::logical_tree::route_logical_address;
 use crate::infrastructure::platform::filesystem::{
@@ -5942,22 +5942,41 @@ fn canonical_dcs_validation_keeps_exact_versionless_dcs_root_guard() {
 }
 
 #[test]
-fn canonical_dcs_validation_preserves_typed_template_profile_refusal() {
-    for version in ["2.19", "2.21"] {
+fn canonical_dcs_validation_reports_readable_template_owner_versions() {
+    for (version, expected) in [
+        (Some("2.19"), "formatMigrationAvailable"),
+        (Some("2.21"), "platformVersionUnsupported"),
+        (None, "formatMigrationAvailable"),
+    ] {
         let fixture = RealReaderFixture::new();
         let owner = fixture
             .source
             .join("Reports/ParityReport/Templates/MainSchema.xml");
         let original = fs::read_to_string(&owner).unwrap();
-        fs::write(&owner, original.replace("2.20", version)).unwrap();
+        let xml = original.replace(
+            "version=\"2.20\"",
+            &version
+                .map(|v| format!("version=\"{v}\""))
+                .unwrap_or_default(),
+        );
+        fs::write(&owner, &xml).unwrap();
         let address =
             QualifiedAddress::parse("main:Report.ParityReport.Template.MainSchema").unwrap();
-        let error = fixture
+        let input = fixture
             .read_authority()
             .dcs_validation_input(&address)
-            .err()
             .unwrap();
-        assert_eq!(error.detail(), Some(RefusalDetail::SourceUnreadable));
+        // Format evidence belongs to the captured input, not a later reread.
+        fs::write(&owner, &original).unwrap();
+        let checked = crate::application::v13::check::normalize_native_outcome(
+            &address,
+            "Template",
+            crate::application::v13::check::CheckValidator::Dcs,
+            crate::infrastructure::native_operations::v13_analysis::validate_dcs_input(input),
+        )
+        .unwrap();
+        assert_eq!(checked.diagnostics()[0].code(), expected);
+        assert_eq!(fs::read_to_string(&owner).unwrap(), original);
     }
 }
 

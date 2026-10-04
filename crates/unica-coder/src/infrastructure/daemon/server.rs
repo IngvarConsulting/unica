@@ -1608,6 +1608,108 @@ pub(crate) mod actor_capacity_tests {
     }
 
     #[test]
+    fn canonical_template_read_warns_while_writes_keep_the_exact_owner_profile() {
+        for kind in ["Report", "ExternalReport", "ExternalDataProcessor"] {
+            for version in [Some("2.21"), Some("2.19"), None] {
+                let (workspace, at, body) = dcs_check_workspace(kind);
+                let wrapper = body
+                    .parent()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .with_extension("xml");
+                let original = std::fs::read_to_string(&wrapper).unwrap();
+                let runtime = bootstrap_runtime();
+                let call = |tool, args| {
+                    direct_v5(
+                        &runtime,
+                        InvocationRequest::new(
+                            tool,
+                            args,
+                            std::fs::canonicalize(workspace.path())
+                                .unwrap()
+                                .to_string_lossy(),
+                            7_000,
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap()
+                };
+                let arguments = serde_json::json!({
+                    "at": format!("{at}.DataSet.НаборДанных1"),
+                    "ops": [{"op": "field.add", "args": {"items": [{"dataPath": "Other", "title": "Other"}]}}]
+                });
+                let preview = call(ToolIdentity::Apply, arguments.clone());
+                // External source sets have read/check support; the existing
+                // DCS write surface is restricted to configuration/extension.
+                let token = if kind == "Report" {
+                    assert!(preview.ok, "supported owner: {preview:?}");
+                    Some(preview.data.as_ref().unwrap()["executionToken"].clone())
+                } else {
+                    assert!(!preview.ok, "{preview:?}");
+                    assert_eq!(preview.diagnostics[0]["code"], "provider_unavailable");
+                    None
+                };
+                std::fs::write(
+                    &wrapper,
+                    original.replace(
+                        "version=\"2.20\"",
+                        &version
+                            .map(|v| format!("version=\"{v}\""))
+                            .unwrap_or_default(),
+                    ),
+                )
+                .unwrap();
+                let before = crate::test_support::tree_snapshot(&workspace.path().join("src"));
+                let viewed = call(ToolIdentity::View, serde_json::json!({"at": at}));
+                assert!(viewed.ok, "{kind} {version:?}: {viewed:?}");
+                let checked = call(ToolIdentity::Check, serde_json::json!({"at": at}));
+                assert!(checked.ok, "{kind} {version:?}: {checked:?}");
+                let expected = if version == Some("2.21") {
+                    "platformVersionUnsupported"
+                } else {
+                    "formatMigrationAvailable"
+                };
+                assert!(
+                    checked.data.as_ref().unwrap()["diagnostics"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|d| d["code"] == expected),
+                    "{checked:?}"
+                );
+                let refused = call(ToolIdentity::Apply, arguments);
+                assert!(!refused.ok, "{refused:?}");
+                assert_eq!(
+                    refused.diagnostics[0]["code"],
+                    if kind == "Report" {
+                        "invalid_source"
+                    } else {
+                        "provider_unavailable"
+                    },
+                    "{refused:?}"
+                );
+                assert!(refused
+                    .data
+                    .as_ref()
+                    .and_then(|d| d.get("executionToken"))
+                    .is_none());
+                if let Some(token) = token {
+                    let stale = call(
+                        ToolIdentity::Apply,
+                        serde_json::json!({"executionToken": token}),
+                    );
+                    assert!(!stale.ok, "{stale:?}");
+                }
+                assert_eq!(
+                    before,
+                    crate::test_support::tree_snapshot(&workspace.path().join("src"))
+                );
+            }
+        }
+    }
+
+    #[test]
     fn canonical_dcs_check_external_semantics_and_owner_isolation() {
         for kind in ["ExternalReport", "ExternalDataProcessor"] {
             let (workspace, at, body) = dcs_check_workspace(kind);
