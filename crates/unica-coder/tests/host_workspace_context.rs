@@ -133,13 +133,17 @@ fn workspace(root: &Path, name: &str) -> std::path::PathBuf {
 fn assert_workspace(response: &Value, expected: &Path) {
     let result = &response["result"]["structuredContent"];
     assert_eq!(result["ok"], true, "{response:#}");
+    let actual = Path::new(
+        result["data"]["workspaceRoot"]
+            .as_str()
+            .expect("workspace root path"),
+    );
+    assert!(actual.is_absolute(), "{response:#}");
     assert_eq!(
-        Path::new(
-            result["data"]["workspaceRoot"]
-                .as_str()
-                .expect("workspace root path")
-        ),
-        expected,
+        actual.canonicalize().expect("returned workspace directory"),
+        expected
+            .canonicalize()
+            .expect("expected workspace directory"),
         "{response:#}"
     );
 }
