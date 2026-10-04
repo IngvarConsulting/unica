@@ -81,12 +81,17 @@ class PlatformInstallError(SourceError):
         self.inventory = inventory
 
 
+class CommandCleanupError(SourceError):
+    """A timed-out command may still own its evidence directory."""
+
+
 class CheckpointExecutionError(SourceError):
     """A checkpoint failed after retaining its completed command evidence."""
 
-    def __init__(self, message: str, *, checkpoint: dict):
+    def __init__(self, message: str, *, checkpoint: dict, cleanup_incomplete=False):
         super().__init__(message)
         self.checkpoint = checkpoint
+        self.cleanup_incomplete = cleanup_incomplete
 
 
 EXPECTED_PROFILE = "1c-8.3.27-export-2.20"
@@ -3024,20 +3029,44 @@ class CommandRunner:
         try:
             stdout, stderr = process.communicate(timeout=self.timeout_seconds)
         except subprocess.TimeoutExpired as error:
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            try:
-                process.communicate(timeout=1)
-            except subprocess.TimeoutExpired:
+            cleanup_errors = []
+            drained = False
+            for stop_signal in (signal.SIGTERM, signal.SIGKILL):
                 try:
-                    os.killpg(process.pid, signal.SIGKILL)
+                    os.killpg(process.pid, stop_signal)
                 except ProcessLookupError:
                     pass
-                process.communicate()
-            raise SourceError(
-                f"command timed out after {self.timeout_seconds:g}s; process tree terminated"
+                except OSError as cleanup_error:
+                    cleanup_errors.append(f"{stop_signal.name}: {cleanup_error}")
+                try:
+                    process.communicate(timeout=1)
+                    drained = True
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
+                except OSError as cleanup_error:
+                    cleanup_errors.append(f"collect output: {cleanup_error}")
+                    if process.returncode is not None:
+                        # communicate may have reaped the leader before an I/O
+                        # failure. Its numeric process-group ID is no longer ours.
+                        break
+            if not drained:
+                cleanup_errors.append("process exit/output EOF was not confirmed")
+                # Never wait without a bound after a refused group signal. Close
+                # only our pipe ends; this does not prove descendant termination.
+                for stream in (process.stdout, process.stderr):
+                    try:
+                        stream.close()
+                    except OSError as cleanup_error:
+                        cleanup_errors.append(f"close output: {cleanup_error}")
+            cleanup = (
+                "cleanup incomplete: " + "; ".join(cleanup_errors)
+                if cleanup_errors
+                else "process tree stop requested; process exit/output EOF confirmed"
+            )
+            error_type = CommandCleanupError if cleanup_errors else SourceError
+            raise error_type(
+                f"command timed out after {self.timeout_seconds:g}s; {cleanup}"
             ) from error
         duration_ms = int(round((time.monotonic() - started) * 1000))
         stdout_text = stdout.decode("utf-8", errors="replace")
@@ -3484,7 +3513,7 @@ def _partial_checkpoint_result(
 
 
 def _checkpoint_execution_error(
-    error: SourceError,
+    error: SourceError | OSError,
     item: dict,
     kind: str,
     commands: list[dict],
@@ -3502,6 +3531,7 @@ def _checkpoint_execution_error(
             stage,
             evidence_sha256,
         ),
+        cleanup_incomplete=isinstance(error, CommandCleanupError),
     )
 
 
@@ -3640,7 +3670,7 @@ def run_checkpoint(
         return evidence
 
     def checkpoint_error(
-        error: SourceError, round_number: int | None, stage: str
+        error: SourceError | OSError, round_number: int | None, stage: str
     ) -> CheckpointExecutionError:
         return _checkpoint_execution_error(
             error,
@@ -3781,7 +3811,7 @@ def run_checkpoint(
                 record = runner.run(
                     command["argv"], cwd=round_root, redactions=redactions
                 )
-            except SourceError as error:
+            except (SourceError, OSError) as error:
                 raise checkpoint_error(error, round_number, command["stage"]) from error
             record = {"round": round_number, "stage": command["stage"], **record}
             commands.append(record)
@@ -4376,7 +4406,11 @@ def execute_gate(
     temporary = None
     if evidence_dir is None:
         try:
-            temporary = tempfile.TemporaryDirectory(prefix="unica-8-3-27-platform-")
+            # Explicit cleanup below is conditional on process ownership. A
+            # finalizer must not delete input/infobases after refused cleanup.
+            temporary = tempfile.TemporaryDirectory(
+                prefix="unica-8-3-27-platform-", delete=False
+            )
         except OSError as error:
             raise SourceError(
                 f"cannot create temporary evidence directory: {error}"
@@ -4404,6 +4438,7 @@ def execute_gate(
     processed: list[str] = []
     platform = None
     source_error = None
+    cleanup_incomplete = False
     after_snapshot = before_snapshot
     try:
         try:
@@ -4449,47 +4484,72 @@ def execute_gate(
                 "modified": [],
             }
 
-        with ThreadPoolExecutor(max_workers=jobs) as pool:
-            future_case_ids = {
-                pool.submit(
-                    run_checkpoint,
-                    item,
-                    Path(ibcmd),
-                    command_runner,
-                    checkpoint_evidence_path(evidence, item["id"]),
-                    corpus["root"],
-                    pinned_ibcmd_sha256=platform["ibcmdSha256"],
-                ): item["id"]
+        selected_by_id = {item["id"]: item for item in corpus["selected"]}
+
+        def record_future_result(future, case_id):
+            nonlocal cleanup_incomplete
+            if future.cancelled() or case_id in results:
+                return
+            try:
+                results[case_id] = future.result()
+                succeeded.add(case_id)
+                return
+            except CheckpointExecutionError as error:
+                failure = error
+            except (SourceError, OSError) as error:
+                item = selected_by_id[case_id]
+                failure = _checkpoint_execution_error(
+                    error, item, item["checkpoint"]["kind"], [], None, "checkpoint"
+                )
+            results[case_id] = failure.checkpoint
+            detail = _checkpoint_source_error(failure)
+            results[case_id]["sourceError"] = detail
+            checkpoint_source_errors.append(detail)
+            cleanup_incomplete |= failure.cleanup_incomplete
+
+        future_case_ids = {}
+        try:
+            with ThreadPoolExecutor(max_workers=jobs) as pool:
+                for item in corpus["selected"]:
+                    future = pool.submit(
+                        run_checkpoint,
+                        item,
+                        Path(ibcmd),
+                        command_runner,
+                        checkpoint_evidence_path(evidence, item["id"]),
+                        corpus["root"],
+                        pinned_ibcmd_sha256=platform["ibcmdSha256"],
+                    )
+                    future_case_ids[future] = item["id"]
+                for future in as_completed(future_case_ids):
+                    record_future_result(future, future_case_ids[future])
+                    current_snapshot = snapshot_regular_tree(corpus["root"])
+                    if current_snapshot != before_snapshot:
+                        after_snapshot = current_snapshot
+                        delta = _tree_delta(before_snapshot, current_snapshot)
+                        source_error = {
+                            "code": "corpus-mutated",
+                            "message": "platform processing changed the read-only corpus",
+                            **delta,
+                        }
+                        for pending in future_case_ids:
+                            pending.cancel()
+                        break
+        finally:
+            # Pool shutdown has waited for running checkpoints even when collection
+            # stopped early. Their cleanup failures still own evidence; cancelled
+            # work has no result and must never become processed coverage.
+            for future, case_id in future_case_ids.items():
+                if future.done():
+                    record_future_result(future, case_id)
+            checkpoints.extend(
+                results[item["id"]]
                 for item in corpus["selected"]
-            }
-            for future in as_completed(future_case_ids):
-                case_id = future_case_ids[future]
-                try:
-                    results[case_id] = future.result()
-                    succeeded.add(case_id)
-                except CheckpointExecutionError as error:
-                    results[case_id] = error.checkpoint
-                    checkpoint_source_errors.append(_checkpoint_source_error(error))
-                current_snapshot = snapshot_regular_tree(corpus["root"])
-                if current_snapshot != before_snapshot:
-                    after_snapshot = current_snapshot
-                    delta = _tree_delta(before_snapshot, current_snapshot)
-                    source_error = {
-                        "code": "corpus-mutated",
-                        "message": "platform processing changed the read-only corpus",
-                        **delta,
-                    }
-                    for pending in future_case_ids:
-                        pending.cancel()
-                    break
-        checkpoints.extend(
-            results[item["id"]]
-            for item in corpus["selected"]
-            if item["id"] in results
-        )
-        processed.extend(
-            item["id"] for item in corpus["selected"] if item["id"] in succeeded
-        )
+                if item["id"] in results
+            )
+            processed.extend(
+                item["id"] for item in corpus["selected"] if item["id"] in succeeded
+            )
         if source_error is None and checkpoint_source_errors:
             source_error = checkpoint_source_errors[0]
         require_executable_identity(Path(ibcmd), platform["ibcmdSha256"])
@@ -4528,6 +4588,7 @@ def execute_gate(
             "modified": [],
         }
     except SourceError as error:
+        cleanup_incomplete |= isinstance(error, CommandCleanupError)
         source_error = {
             "code": "platform-source-error",
             "message": _redact_text(
@@ -4633,7 +4694,12 @@ def execute_gate(
         source_error,
         case_filter=case_filter_ids,
     )
-    if temporary is not None:
+    if cleanup_incomplete:
+        report["retainedEvidence"] = {
+            "path": str(evidence),
+            "reason": "process-cleanup-incomplete",
+        }
+    elif temporary is not None:
         try:
             _cleanup_temporary_directory(temporary)
         except SourceError as error:
