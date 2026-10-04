@@ -1,4 +1,5 @@
 import copy
+import errno
 import hashlib
 import importlib.util
 import json
@@ -2179,6 +2180,58 @@ class CorpusAdapterTests(unittest.TestCase):
 
 
 class CommandRunnerTests(unittest.TestCase):
+    def test_timeout_cleanup_refusal_stays_bounded_and_never_claims_termination(self):
+        verifier = load_verifier()
+        for denied_signal in (verifier.signal.SIGTERM, verifier.signal.SIGKILL):
+            with self.subTest(signal=denied_signal), tempfile.TemporaryDirectory() as tmp:
+                process = mock.Mock(pid=987654321, returncode=None)
+                process.communicate.side_effect = subprocess.TimeoutExpired(["controlled"], 1)
+
+                def signal_group(pid, sig):
+                    self.assertEqual(pid, process.pid)
+                    if sig == denied_signal:
+                        raise PermissionError(errno.EPERM, "controlled cleanup refusal")
+
+                with mock.patch.object(verifier.subprocess, "Popen", return_value=process), mock.patch.object(
+                    verifier.os, "killpg", side_effect=signal_group
+                ) as kill:
+                    with self.assertRaises(verifier.SourceError) as raised:
+                        verifier.CommandRunner(timeout_seconds=0.1).run(
+                            ["controlled"], cwd=Path(tmp)
+                        )
+                message = str(raised.exception)
+                self.assertIn("timed out", message)
+                self.assertIn("cleanup", message)
+                self.assertIn("controlled cleanup refusal", message)
+                self.assertNotIn("process tree terminated", message)
+                self.assertEqual(
+                    [call.args[1] for call in kill.call_args_list],
+                    [verifier.signal.SIGTERM, verifier.signal.SIGKILL],
+                )
+                self.assertTrue(all(call.kwargs.get("timeout", 0) > 0 for call in process.communicate.call_args_list))
+                process.stdout.close.assert_called_once()
+                process.stderr.close.assert_called_once()
+
+    def test_cleanup_io_error_after_reaping_never_signals_the_released_group_again(self):
+        verifier = load_verifier()
+        process = mock.Mock(pid=987654321, returncode=None)
+
+        def communicate(*, timeout):
+            if timeout == 0.1:
+                raise subprocess.TimeoutExpired(["controlled"], timeout)
+            process.returncode = 0
+            raise OSError(errno.EIO, "controlled output collection failure")
+
+        process.communicate.side_effect = communicate
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            verifier.subprocess, "Popen", return_value=process
+        ), mock.patch.object(verifier.os, "killpg") as kill:
+            with self.assertRaises(verifier.CommandCleanupError):
+                verifier.CommandRunner(timeout_seconds=0.1).run(["controlled"], cwd=Path(tmp))
+        kill.assert_called_once_with(process.pid, verifier.signal.SIGTERM)
+        process.stdout.close.assert_called_once()
+        process.stderr.close.assert_called_once()
+
     def make_executable(self, root: Path, body: str, name: str = "fake-command") -> Path:
         script = root / name
         script.write_text(
@@ -3219,6 +3272,85 @@ class ParallelGateTests(unittest.TestCase):
 
     CASE_IDS = ("cf-edit-root-property", "cf-init-default")
 
+    def test_worker_os_error_preserves_completed_checkpoints_and_final_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            handles = self.two_case_gate(Path(tmp))
+            verifier, _, _, report_path, _ = handles
+            real = verifier.run_checkpoint
+            completed = threading.Event()
+
+            def checkpoint(item, *args, **kwargs):
+                if item["id"] == "cf-init-default":
+                    self.assertTrue(completed.wait(15), "successful checkpoint did not finish")
+                    raise PermissionError(errno.EPERM, "controlled worker cleanup refusal")
+                result = real(item, *args, **kwargs)
+                completed.set()
+                return result
+
+            with mock.patch.object(verifier, "run_checkpoint", side_effect=checkpoint):
+                exit_code, report = self.execute(*handles, jobs=2)
+            self.assertEqual(exit_code, 2)
+            self.assertEqual(json.loads(report_path.read_text()), report)
+            self.assertEqual(report["status"], "source-error")
+            self.assertEqual([item["id"] for item in report["checkpoints"]], list(self.CASE_IDS))
+            self.assertEqual([item["verdict"] for item in report["checkpoints"]], ["pass", "source-error"])
+            self.assertEqual(report["checkpoints"][0]["commandCount"], 6)
+            self.assertEqual(report["coverage"]["processedCaseIds"], [self.CASE_IDS[0]])
+            self.assertIn("controlled worker cleanup refusal", report["sourceError"]["message"])
+
+    def test_corpus_mutation_still_retains_late_worker_cleanup_failure(self):
+        temporary_directory = tempfile.TemporaryDirectory
+        with temporary_directory() as tmp:
+            root = Path(tmp)
+            verifier, manifest, _, report_path, fake = self.two_case_gate(root)
+            real_checkpoint = verifier.run_checkpoint
+            real_shutdown = verifier.ThreadPoolExecutor.shutdown
+            worker_waiting = threading.Event()
+            collection_stopped = threading.Event()
+            created = []
+
+            def owned_temporary(**kwargs):
+                directory = temporary_directory(dir=root, **kwargs)
+                created.append(Path(directory.name))
+                return directory
+
+            def checkpoint(item, *args, **kwargs):
+                result = real_checkpoint(item, *args, **kwargs)
+                if item["id"] == "cf-init-default":
+                    worker_waiting.set()
+                    self.assertTrue(collection_stopped.wait(15), "gate never stopped collection")
+                    raise verifier.CheckpointExecutionError(
+                        "controlled late cleanup refusal",
+                        checkpoint={**result, "verdict": "source-error", "failedRound": 2, "failedStage": "export"},
+                        cleanup_incomplete=True,
+                    )
+                self.assertTrue(worker_waiting.wait(15), "second checkpoint was not running")
+                (manifest.parent / "foreign-change.bin").write_bytes(b"external mutation")
+                return result
+
+            def shutdown(pool, wait=True, *, cancel_futures=False):
+                # __exit__ reaches shutdown only after the mutation branch broke
+                # out of as_completed. The running worker cannot be cancelled.
+                collection_stopped.set()
+                return real_shutdown(pool, wait=wait, cancel_futures=cancel_futures)
+
+            with mock.patch.object(verifier.tempfile, "TemporaryDirectory", side_effect=owned_temporary), mock.patch.object(
+                verifier, "run_checkpoint", side_effect=checkpoint
+            ), mock.patch.object(verifier.ThreadPoolExecutor, "shutdown", new=shutdown):
+                exit_code, report = self.execute(verifier, manifest, None, report_path, fake, jobs=2)
+            self.assertEqual(exit_code, 2)
+            self.assertEqual(json.loads(report_path.read_text()), report)
+            self.assertEqual(report["sourceError"]["code"], "corpus-mutated")
+            self.assertEqual([item["id"] for item in report["checkpoints"]], list(self.CASE_IDS))
+            late = report["checkpoints"][1]
+            self.assertEqual(late["verdict"], "source-error")
+            self.assertEqual(late["commandCount"], 6)
+            self.assertIn("controlled late cleanup refusal", late["sourceError"]["message"])
+            self.assertEqual(report["coverage"]["processedCaseIds"], [self.CASE_IDS[0]])
+            self.assertEqual(report["coverage"]["unprocessedCaseIds"], [self.CASE_IDS[1]])
+            self.assertTrue(created[0].is_dir())
+            self.assertEqual(report["retainedEvidence"]["path"], str(created[0].resolve()))
+
     def two_case_gate(self, root: Path):
         verifier = load_verifier()
         corpus_root = root / "corpus"
@@ -3947,6 +4079,98 @@ class GateAndReportTests(unittest.TestCase):
             self.assertEqual(partial["failedStage"], "check")
             self.assertEqual(partial["commandCount"], 1)
             self.assertEqual(report["coverage"]["processedCaseIds"], [])
+
+    def timeout_cleanup_runner(self, verifier, *, cleanup_refused=True):
+        class TimeoutRunner:
+            def __init__(self):
+                self.calls = 0
+
+            def run(self, argv, *, cwd, redactions=None):
+                self.calls += 1
+                if self.calls < 3:
+                    return verifier.CommandRunner(timeout_seconds=15).run(
+                        argv, cwd=cwd, redactions=redactions
+                    )
+                process = mock.Mock(pid=987654321, returncode=None)
+                timeout = subprocess.TimeoutExpired(argv, 1)
+                process.communicate.side_effect = (
+                    timeout if cleanup_refused else [timeout, (b"", b"")]
+                )
+                with mock.patch.object(verifier.subprocess, "Popen", return_value=process), mock.patch.object(
+                    verifier.os, "killpg", side_effect=(
+                        PermissionError(errno.EPERM, "controlled cleanup refusal")
+                        if cleanup_refused else None
+                    )
+                ):
+                    return verifier.CommandRunner(timeout_seconds=0.1).run(
+                        argv, cwd=cwd, redactions=redactions
+                    )
+        return TimeoutRunner()
+
+    def test_timeout_cleanup_error_keeps_prior_command_and_failed_stage_in_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            verifier, manifest, evidence, report_path, ibcmd = self.synthetic_gate(Path(tmp))
+            exit_code, report = verifier.execute_gate(
+                ibcmd=ibcmd,
+                corpus_manifest=manifest,
+                report_path=report_path,
+                evidence_dir=evidence,
+                timeout_seconds=15,
+                repo_root=ROOT,
+                home_root=Path.home(),
+                mandatory_case_ids={"cf-init-default"},
+                runner=self.timeout_cleanup_runner(verifier),
+            )
+            self.assertEqual(exit_code, 2)
+            self.assertEqual(json.loads(report_path.read_text()), report)
+            partial = report["checkpoints"][0]
+            self.assertEqual(partial["verdict"], "source-error")
+            self.assertEqual(partial["failedRound"], 1)
+            self.assertEqual(partial["failedStage"], "check")
+            self.assertEqual(partial["commandCount"], 1)
+            self.assertEqual(partial["commands"][0]["exitCode"], 0)
+            self.assertEqual(report["coverage"]["processedCaseIds"], [])
+            self.assertIn("timed out", report["sourceError"]["message"])
+            self.assertIn("cleanup incomplete", report["sourceError"]["message"])
+            self.assertEqual(partial["sourceError"], report["sourceError"])
+            self.assertNotIn("process tree terminated", json.dumps(report))
+
+    def test_automatic_evidence_is_retained_only_when_process_cleanup_is_incomplete(self):
+        temporary_directory = tempfile.TemporaryDirectory
+        for cleanup_refused in (True, False):
+            with self.subTest(cleanup_refused=cleanup_refused), temporary_directory() as tmp:
+                root = Path(tmp)
+                verifier, manifest, _, report_path, ibcmd = self.synthetic_gate(root)
+                created = []
+
+                def owned_temporary(**kwargs):
+                    directory = temporary_directory(dir=root, **kwargs)
+                    created.append(Path(directory.name))
+                    return directory
+
+                with mock.patch.object(verifier.tempfile, "TemporaryDirectory", side_effect=owned_temporary):
+                    exit_code, report = verifier.execute_gate(
+                        ibcmd=ibcmd,
+                        corpus_manifest=manifest,
+                        report_path=report_path,
+                        evidence_dir=None,
+                        timeout_seconds=15,
+                        repo_root=ROOT,
+                        home_root=Path.home(),
+                        mandatory_case_ids={"cf-init-default"},
+                        runner=self.timeout_cleanup_runner(verifier, cleanup_refused=cleanup_refused),
+                    )
+                self.assertEqual(exit_code, 2)
+                self.assertEqual(json.loads(report_path.read_text()), report)
+                self.assertEqual(len(created), 1)
+                self.assertEqual(created[0].exists(), cleanup_refused)
+                if cleanup_refused:
+                    retained = report["retainedEvidence"]
+                    self.assertEqual(retained["path"], str(created[0].resolve()))
+                    self.assertEqual(retained["reason"], "process-cleanup-incomplete")
+                    self.assertTrue((created[0] / "cf-init-default" / "input" / "source").is_dir())
+                else:
+                    self.assertNotIn("retainedEvidence", report)
 
     def test_source_error_still_checks_full_corpus_snapshot_and_marks_incomplete(self):
         verifier = load_verifier()
