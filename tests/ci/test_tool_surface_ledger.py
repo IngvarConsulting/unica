@@ -115,6 +115,12 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
         for name, kind in [("at", "string"), ("limit", "integer"), ("cursor", "string")]:
             self.assertIn(f"| `{name}` | {kind} or null | нет |", rendered)
 
+    def test_apply_ledger_keeps_both_closed_call_forms_branch_required(self) -> None:
+        apply = next(tool for tool in self.tools if tool["name"] == "unica.apply")
+        rendered = "\n".join(self.module.render_arguments(apply))
+        for name, kind in [("at", "string"), ("ops", "array"), ("executionToken", "string")]:
+            self.assertIn(f"| `{name}` | {kind} | по ветви |", rendered)
+
     def test_discriminated_object_branches_render_their_argument_union(self) -> None:
         schema = {
             "type": "object",

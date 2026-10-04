@@ -7712,6 +7712,48 @@ struct ActorLogicalReadLease {"#,
                 assert_eq!(crate::test_support::tree_snapshot(&source), before);
             }
         }
+
+        let original = std::fs::read_to_string(&form_path).unwrap();
+        let parsed = roxmltree::Document::parse(original.trim_start_matches('\u{feff}')).unwrap();
+        let imported_id = parsed
+            .descendants()
+            .find(|node| node.attribute("name") == Some("Html"))
+            .unwrap()
+            .attribute("id")
+            .unwrap();
+        let marker = format!("name=\"Html\" id=\"{imported_id}\"");
+        assert_eq!(original.matches(&marker).count(), 1);
+        for highest in [usize::MAX, usize::MAX - 1, usize::MAX - 2] {
+            let exhausted = original.replace(&marker, &format!("name=\"Html\" id=\"{highest}\""));
+            std::fs::write(&form_path, exhausted).unwrap();
+            let before = crate::test_support::tree_snapshot(&source);
+            let refused = call(
+                ToolIdentity::Apply,
+                serde_json::json!({
+                    "at": at,
+                    "ops": [{"op": "element.add", "args": {"items": [{
+                        "name": "OverflowHtml", "type": "HTMLDocumentField", "path": "HtmlSource"
+                    }]}}]
+                }),
+            );
+            assert!(!refused.ok, "highest={highest}: {refused:?}");
+            assert!(
+                refused
+                    .data
+                    .as_ref()
+                    .is_none_or(|data| data.get("executionToken").is_none()),
+                "{refused:?}"
+            );
+            assert!(
+                refused
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.to_string().contains("Form ID space exhausted")),
+                "{refused:?}"
+            );
+            assert!(refused.changed.is_empty(), "{refused:?}");
+            assert_eq!(crate::test_support::tree_snapshot(&source), before);
+        }
     }
 
     #[test]
