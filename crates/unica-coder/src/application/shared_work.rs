@@ -301,6 +301,8 @@ struct ProducerSignal {
     wake: Condvar,
     #[cfg(test)]
     before_cancel_wait: Mutex<Option<Box<dyn FnOnce() + Send + 'static>>>,
+    #[cfg(test)]
+    after_cancel: Mutex<Option<Box<dyn FnOnce() + Send + 'static>>>,
 }
 
 impl ProducerSignal {
@@ -311,6 +313,8 @@ impl ProducerSignal {
             wake: Condvar::new(),
             #[cfg(test)]
             before_cancel_wait: Mutex::new(None),
+            #[cfg(test)]
+            after_cancel: Mutex::new(None),
         }
     }
 
@@ -324,6 +328,17 @@ impl ProducerSignal {
         self.cancelled.store(true, Ordering::Release);
         self.wake.notify_all();
         drop(changed);
+        #[cfg(test)]
+        {
+            let hook = self
+                .after_cancel
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            if let Some(hook) = hook {
+                hook();
+            }
+        }
     }
 }
 
@@ -1092,6 +1107,18 @@ mod tests {
         });
         started_rx.recv().unwrap();
 
+        let (finished_tx, finished_rx) = mpsc::channel();
+        work.set_before_terminal_retire_registry_for_test(move || {
+            finished_tx.send(()).unwrap();
+        });
+        let (cancel_after_finish_tx, cancel_after_finish_rx) = mpsc::channel();
+        *owner.entry.signal.after_cancel.lock().unwrap() = Some(Box::new(move || {
+            // Only the producer can reach terminal retirement while this Drop
+            // is held here, after cancellation and before its own retirement.
+            finished_rx.recv().expect("cancelled producer finished");
+            cancel_after_finish_tx.send(()).unwrap();
+        }));
+
         let follower = {
             let work = Arc::clone(&work);
             let producers = Arc::clone(&producers);
@@ -1104,10 +1131,17 @@ mod tests {
             })
         };
         attach_entered.wait();
-        drop(owner);
+        // The follower holds the registry until the controller releases it.
+        // Dropping synchronously here would deadlock once the producer finishes.
+        let dropping_owner = std::thread::spawn(move || drop(owner));
+        cancel_after_finish_rx
+            .recv()
+            .expect("owner cancellation observed the finished producer");
         resume_attach.wait();
 
+        dropping_owner.join().expect("last owner drop");
         let follower = follower.join().expect("racing follower");
+        assert!(!follower.started_here());
         assert_eq!(
             follower.wait().unwrap_err().producer(),
             Some(&"cancelled"),
