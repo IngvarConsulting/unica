@@ -260,12 +260,13 @@ mod tests {
                     .unwrap()
                     .to_string(),
             ] {
-                assert_eq!(
-                    context
-                        .resolve(&metadata(serde_json::json!({"sandboxCwd": value})))
-                        .unwrap(),
-                    fixture.project().to_str().unwrap()
-                );
+                let resolved = context
+                    .resolve(&metadata(serde_json::json!({"sandboxCwd": value})))
+                    .unwrap();
+                let resolved = Path::new(&resolved);
+                assert!(resolved.is_absolute());
+                // A file URI can spell the same Windows directory without its verbatim prefix.
+                assert!(same_directory(resolved, &fixture.project()));
             }
             assert_eq!(
                 context.resolve(&Map::new()).unwrap(),
