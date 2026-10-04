@@ -2371,9 +2371,32 @@ mod tests {
             .await;
         let response = client.receive().await;
         assert!(response.get("error").is_none(), "{response}");
-        response["result"]["tools"]
+        let tools = response["result"]["tools"]
             .as_array()
-            .expect("tools/list must return tools")
+            .expect("tools/list must return tools");
+        for tool in tools {
+            let schema = &tool["inputSchema"];
+            assert_eq!(schema["type"], "object", "{}", tool["name"]);
+            for keyword in ["oneOf", "anyOf", "allOf"] {
+                assert!(
+                    schema.get(keyword).is_none(),
+                    "{} uses unsupported root-level {keyword} in its input schema",
+                    tool["name"]
+                );
+            }
+            if tool["name"] == "unica.apply" {
+                let validator = jsonschema::validator_for(schema).expect("valid apply wire schema");
+                let plan = json!({"at":"main:Document.Order", "ops":[{"op":"props.set"}]});
+                assert!(validator.is_valid(&plan));
+                assert!(validator.is_valid(&json!({"executionToken":"saved-plan"})));
+                let mut mixed = plan.clone();
+                mixed["executionToken"] = Value::Null;
+                assert!(!validator.is_valid(&mixed));
+                mixed["executionToken"] = json!("saved-plan");
+                assert!(!validator.is_valid(&mixed));
+            }
+        }
+        tools
             .iter()
             .map(|tool| tool["name"].as_str().expect("tool name").to_string())
             .collect()

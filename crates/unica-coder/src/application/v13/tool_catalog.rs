@@ -412,7 +412,11 @@ fn schema_for_saved_apply_plan(properties: Value, required: Value) -> Value {
         .unwrap()
         .insert("executionToken".into(), token);
     let mut result = schema(properties, json!([]));
-    result["oneOf"] = json!([plan, execute]);
+    // Some tool clients reject composition at the schema root. Select by presence so an
+    // invalid token can never fall back to planning, even alongside at and ops.
+    result["if"] = json!({"required": ["executionToken"]});
+    result["then"] = execute;
+    result["else"] = plan;
     result
 }
 
@@ -850,12 +854,9 @@ mod tests {
         let apply = contract(&catalog.tools, "apply");
         assert_eq!(apply.input_schema["properties"]["ops"]["type"], "array");
         assert_eq!(apply.input_schema["properties"]["ops"]["minItems"], 1);
+        assert_eq!(apply.input_schema["else"]["required"], json!(["at", "ops"]));
         assert_eq!(
-            apply.input_schema["oneOf"][0]["required"],
-            json!(["at", "ops"])
-        );
-        assert_eq!(
-            apply.input_schema["oneOf"][1]["required"],
+            apply.input_schema["then"]["required"],
             json!(["executionToken"])
         );
         assert_eq!(
