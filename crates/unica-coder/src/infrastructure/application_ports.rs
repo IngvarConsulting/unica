@@ -247,10 +247,21 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                         source_set: source_set.to_string(),
                         metadata_path: Some(address),
                     };
+                    // A registered module remains a valid empty search scope
+                    // when the platform omits its empty BSL file. The resolver
+                    // still proves the owner and refuses links and containment
+                    // violations before returning the exact file filter.
+                    let policy = if target.metadata_path.as_ref().is_some_and(|address| {
+                        address.target_kind() == crate::domain::source_target::TargetKind::Module
+                    }) {
+                        crate::infrastructure::platform_xml_source_targets::TargetKindPolicy::ModuleOnlyAllowingAbsent
+                    } else {
+                        crate::infrastructure::platform_xml_source_targets::TargetKindPolicy::Any
+                    };
                     crate::infrastructure::platform_xml_source_targets::resolve_platform_xml_target(
                         context,
                         &target,
-                        crate::infrastructure::platform_xml_source_targets::TargetKindPolicy::Any,
+                        policy,
                     )
                     .and_then(|resolution| resolution.handle.search_filters())
                     .map_err(|error| error.to_string())
