@@ -136,7 +136,7 @@ impl<'a> RlmNavigationAdapter<'a> {
             }
             Err(error) => return Err(error),
         };
-        let db_path = match readiness {
+        let _db_path = match readiness {
             IndexReadiness::Ready { db_path } => db_path,
             other => {
                 return Ok(RlmNavigationOutcome::plain(index_unavailable_outcome(
@@ -182,12 +182,26 @@ impl<'a> RlmNavigationAdapter<'a> {
         let mut outcome = AdapterOutcome::ok(format!(
             "{operation_name} completed through the persistent RLM MCP API"
         ));
+        // A usable build is pinned for this session. It does not prove that
+        // the workspace sources have stayed unchanged since that build.
+        if output.freshness.as_deref() != Some("current") {
+            outcome
+                .warnings
+                .push("RLM index freshness against current sources is unknown".to_string());
+        }
         let data;
         match request {
             // ADR-0023: the index already answers with structure, so the tool
             // publishes it instead of rendering it into a line grammar.
             CodeIntelligenceReadRequest::Definition { name, .. } => {
-                let (result, warnings) = definition_result(&value, name)?;
+                let (mut result, warnings) = definition_result(&value, name)?;
+                result.index_freshness = Some(
+                    output
+                        .freshness
+                        .clone()
+                        .unwrap_or_else(|| "unknown".to_string()),
+                );
+                result.index_build_id = output.build_id.clone();
                 // The summary keeps naming the transport so a caller can tell
                 // the persistent index path from the fallback refusal below.
                 outcome.summary = format!(
@@ -207,10 +221,10 @@ impl<'a> RlmNavigationAdapter<'a> {
                 return Err("call graph is not an index navigation capability".to_string())
             }
         }
-        outcome.artifacts = vec![
-            context.source_root.path.display().to_string(),
-            db_path.display().to_string(),
-        ];
+        // Readiness and execution are separate RPCs; the active build may
+        // switch between them. The readiness DB path is not evidence for the
+        // build that actually answered this call.
+        outcome.artifacts = vec![context.source_root.path.display().to_string()];
         if !output.stderr.trim().is_empty() {
             outcome
                 .warnings
@@ -328,6 +342,8 @@ fn definition_result(
         CodeDefinitionResult {
             name,
             definitions: typed,
+            index_freshness: None,
+            index_build_id: None,
         },
         warnings,
     ))
@@ -759,6 +775,8 @@ mod tests {
                 })
                 .to_string(),
                 stderr: String::new(),
+                freshness: Some("unknown".to_string()),
+                build_id: None,
             }))
         }
     }
@@ -1234,6 +1252,8 @@ mod tests {
                 })
                 .to_string(),
                 stderr: String::new(),
+                freshness: Some("unknown".to_string()),
+                build_id: Some("build-b".to_string()),
             }))
         }
     }
@@ -1285,6 +1305,13 @@ mod tests {
         };
         assert_eq!(result.name, "Найти");
         assert!(result.definitions.is_empty());
+        assert_eq!(result.index_freshness.as_deref(), Some("unknown"));
+        assert_eq!(result.index_build_id.as_deref(), Some("build-b"));
+        assert!(!outcome
+            .outcome
+            .artifacts
+            .iter()
+            .any(|path| path == "/tmp/index.db"));
         assert!(outcome.outcome.summary.contains("0 definition(s)"));
         assert_eq!(
             client.operations.lock().unwrap().as_slice(),

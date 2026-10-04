@@ -679,6 +679,10 @@ impl CompleteProjectSourceSelection {
 }
 
 impl RetainedSelectionPass {
+    pub(in crate::infrastructure) fn remaining_member_budget(&self) -> usize {
+        self.usage.remaining_members()
+    }
+
     pub(in crate::infrastructure) fn new(
         workspace: RetainedDirectoryCapability,
     ) -> Result<Self, String> {
@@ -2485,6 +2489,48 @@ pub(crate) mod tests {
             2,
             "retained directory evidence exceeded its deterministic handle budget"
         );
+    }
+
+    #[test]
+    fn actor_admission_accepts_external_processor_and_report_with_non_evidence_members() {
+        let root = tempfile::tempdir().unwrap();
+        write(
+            &root.path().join("v8project.yaml"),
+            concat!(
+                "format: DESIGNER\nsource-set:\n",
+                "  - name: processors\n    type: EXTERNAL_DATA_PROCESSORS\n    path: epf\n",
+                "  - name: reports\n    type: EXTERNAL_REPORTS\n    path: erf\n",
+            ),
+        );
+        for (directory, kind, name) in [
+            ("epf", "ExternalDataProcessor", "Import"),
+            ("erf", "ExternalReport", "Sales"),
+        ] {
+            write(
+                &root.path().join(format!("{directory}/{name}.xml")),
+                format!("<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><{kind}><Properties><Name>{name}</Name></Properties></{kind}></MetaDataObject>"),
+            );
+            write(
+                &root
+                    .path()
+                    .join(format!("{directory}/{name}/Ext/ObjectModule.bsl")),
+                "Procedure Execute() Export\nEndProcedure\n",
+            );
+        }
+        // Each directory consumes two member slots but contributes one format marker.
+        // The second enumeration must fit the remaining member budget, not reserve
+        // the larger format-evidence ceiling all over again.
+        let mut checkpoint = || Ok(());
+        let admitted = discover_project_source_admission(root.path(), &mut checkpoint)
+            .expect("two small external source sets must share one admission pass");
+        let sets = &admitted.map().source_sets;
+        assert_eq!(sets.len(), 2);
+        assert_eq!(sets[0].kind, SourceSetKind::ExternalProcessor);
+        assert_eq!(sets[1].kind, SourceSetKind::ExternalReport);
+        assert_eq!(sets[0].source_format, SourceFormat::PlatformXml);
+        assert_eq!(sets[1].source_format, SourceFormat::PlatformXml);
+        assert_eq!(sets[0].format_evidence, ["epf/Import.xml"]);
+        assert_eq!(sets[1].format_evidence, ["erf/Sales.xml"]);
     }
 
     #[test]

@@ -1,6 +1,7 @@
 use crate::domain::metadata::{metadata_kind_collections, MetaCollection, MetadataKind};
 use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind};
 use crate::infrastructure::metadata_kinds::{supports_nested_form_or_command, METADATA_KINDS};
+#[cfg(test)]
 use crate::infrastructure::workspace_actor::ActorRevisionServiceAuthority;
 use std::ffi::OsStr;
 use std::path::Path;
@@ -19,6 +20,7 @@ enum PlatformXmlSerializationFormat {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RevisionArtifactProfile {
+    #[cfg(test)]
     LegacyV12,
     ActorPlatformXml8_3_27 {
         source_kind: SourceSetKind,
@@ -26,7 +28,7 @@ enum RevisionArtifactProfile {
     },
 }
 
-/// Closed revision-corpus authority. Actor-scoped services receive this value
+/// Closed source-artifact authority. Apply planners receive this value
 /// from their authenticated source binding; it is never caller or wire input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RevisionArtifactPolicy {
@@ -34,23 +36,25 @@ pub(crate) struct RevisionArtifactPolicy {
 }
 
 impl RevisionArtifactPolicy {
+    #[cfg(test)]
     pub(crate) const fn legacy_v12() -> Self {
         Self {
             profile: RevisionArtifactProfile::LegacyV12,
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn from_authenticated_actor(
         authority: &ActorRevisionServiceAuthority,
     ) -> Result<Self, String> {
-        Self::from_actor_fields(
+        Self::from_source_profile(
             authority.source_kind(),
             authority.source_format(),
             authority.source_profile(),
         )
     }
 
-    fn from_actor_fields(
+    pub(crate) fn from_source_profile(
         source_kind: SourceSetKind,
         source_format: SourceFormat,
         source_profile: SourceProfile,
@@ -85,7 +89,7 @@ impl RevisionArtifactPolicy {
 
     #[cfg(test)]
     pub(crate) fn platform_xml_for_test(source_kind: SourceSetKind) -> Self {
-        Self::from_actor_fields(
+        Self::from_source_profile(
             source_kind,
             SourceFormat::PlatformXml,
             SourceProfile::platform_xml_8_3_27_format_2_20(),
@@ -97,12 +101,13 @@ impl RevisionArtifactPolicy {
         if has_legacy_content_extension(relative) {
             return RevisionArtifactDisposition::Content;
         }
-        let RevisionArtifactProfile::ActorPlatformXml8_3_27 {
-            source_kind,
-            serialization_format: PlatformXmlSerializationFormat::Format2_20,
-        } = self.profile
-        else {
-            return RevisionArtifactDisposition::Ignored;
+        let source_kind = match self.profile {
+            RevisionArtifactProfile::ActorPlatformXml8_3_27 {
+                source_kind,
+                serialization_format: PlatformXmlSerializationFormat::Format2_20,
+            } => source_kind,
+            #[cfg(test)]
+            RevisionArtifactProfile::LegacyV12 => return RevisionArtifactDisposition::Ignored,
         };
         let components = relative
             .components()
@@ -290,7 +295,7 @@ pub(crate) mod tests {
             );
         }
 
-        let configuration = RevisionArtifactPolicy::from_actor_fields(
+        let configuration = RevisionArtifactPolicy::from_source_profile(
             SourceSetKind::Configuration,
             SourceFormat::PlatformXml,
             SourceProfile::platform_xml_8_3_27_format_2_20(),
@@ -352,7 +357,7 @@ pub(crate) mod tests {
         // every known collection is exercised, including all impossible
         // owners, so adding a metadata kind cannot silently grant it Forms,
         // Templates or Help by sharing the same physical prefix shape.
-        let extension = RevisionArtifactPolicy::from_actor_fields(
+        let extension = RevisionArtifactPolicy::from_source_profile(
             SourceSetKind::Extension,
             SourceFormat::PlatformXml,
             SourceProfile::platform_xml_8_3_27_format_2_20(),
@@ -475,7 +480,7 @@ pub(crate) mod tests {
             );
         }
 
-        let external_processor = RevisionArtifactPolicy::from_actor_fields(
+        let external_processor = RevisionArtifactPolicy::from_source_profile(
             SourceSetKind::ExternalProcessor,
             SourceFormat::PlatformXml,
             SourceProfile::platform_xml_8_3_27_format_2_20(),
@@ -503,7 +508,7 @@ pub(crate) mod tests {
             RevisionArtifactDisposition::Ignored
         );
 
-        let external_report = RevisionArtifactPolicy::from_actor_fields(
+        let external_report = RevisionArtifactPolicy::from_source_profile(
             SourceSetKind::ExternalReport,
             SourceFormat::PlatformXml,
             SourceProfile::platform_xml_8_3_27_format_2_20(),
@@ -520,19 +525,19 @@ pub(crate) mod tests {
                 "external report omitted owned resource {content}"
             );
         }
-        assert!(RevisionArtifactPolicy::from_actor_fields(
+        assert!(RevisionArtifactPolicy::from_source_profile(
             SourceSetKind::Configuration,
             SourceFormat::Edt,
             SourceProfile::platform_xml_8_3_27_format_2_20(),
         )
         .is_err());
-        assert!(RevisionArtifactPolicy::from_actor_fields(
+        assert!(RevisionArtifactPolicy::from_source_profile(
             SourceSetKind::Configuration,
             SourceFormat::PlatformXml,
             SourceProfile::legacy_workspace_service_compatibility(),
         )
         .is_err());
-        let synthetic_unsupported = RevisionArtifactPolicy::from_actor_fields(
+        let synthetic_unsupported = RevisionArtifactPolicy::from_source_profile(
             SourceSetKind::Configuration,
             SourceFormat::PlatformXml,
             SourceProfile::TestPlatform8_3_28Format2_20,

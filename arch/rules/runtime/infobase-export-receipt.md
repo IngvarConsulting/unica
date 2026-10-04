@@ -3,10 +3,10 @@ id: INV.RUNTIME.V13-INFOBASE-EXPORTS
 check:
   - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::runner_011_provider_receipt_replaces_selection_for_all_three_operations
   - crates/unica-coder/src/application/v13/tool_catalog.rs::v13_infobase_exports_are_implemented_with_closed_agent_facing_arguments
-  - crates/unica-coder/src/infrastructure/daemon/server.rs::v5_infobase_exports_prepare_before_source_admission_and_keep_the_revision_gate
-  - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::preview_is_non_mutating_and_returns_an_apply_revision_without_raw_command
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::v5_infobase_exports_prepare_before_source_admission_and_run_without_a_revision_gate
+  - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::preview_is_non_mutating_and_returns_no_revision_or_raw_command
   - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::apply_repeats_preflight_and_returns_an_independent_file_receipt
-  - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::stale_apply_stops_after_non_executing_preflight
+  - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::direct_export_executes_without_a_previous_preview_or_revision
   - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::apply_rejects_a_runner_receipt_for_a_different_output
   - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::parser_rejects_provider_controls_and_output_escape
   - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::cfe_and_dt_invocations_use_only_their_closed_runner_arguments
@@ -21,9 +21,9 @@ gap: https://github.com/IngvarConsulting/unica/issues/974
 и пояснения о пропущенных кандидатах.
 
 `download` и `infobase.dump` доступны без source set. Preview вызывает
-раннер с `--dry-run`, возвращает план с ревизией и не создаёт файл.
-Применение требует `ifRev`, повторяет preview и при несовпадении ревизии
-останавливается до исполняющего вызова раннера.
+раннер с `--dry-run`, возвращает план и не создаёт файл. Операции требуют
+явный boolean `dryRun`: `true` выбирает preview, `false` проверяет текущий
+план и исполняет выгрузку без предварительного вызова preview.
 
 Закрытая схема `download` принимает `state` (`working` или `database`),
 `output` и необязательное имя `extension`; схема `infobase.dump` — только
@@ -43,15 +43,15 @@ gap: https://github.com/IngvarConsulting/unica/issues/974
 preview/apply проверен на CF, аргументы CFE и DT — отдельно.
 Платформа 1С в этих проверках не запускается.
 
-Ревизия preview связывает точные аргументы, основную и локальную
-конфигурацию проекта, состояние назначения, версию раннера и выбранный
-им исполнитель с планом. Изменение любого из этих входов требует нового
-предпросмотра.
+`run` не принимает `ifRev` и не выдаёт `rev`. Отдельный preview не фиксирует
+проект, состояние назначения или информационной базы между вызовами.
+Внутри вызова проектный файл, его локальное дополнение и файл назначения
+сверяются до и после внутреннего preview раннера. Их изменение даёт
+`concurrent_change` до исполнения.
 
 Квитанция подтверждает обычный файл: каталог, символическая ссылка или
 специальный файл не считаются успешной выгрузкой. Сырые stderr и данные
 аутентификации не попадают в результат.
 
-Влияние каждого входа на ревизию, отказ для всех перечисленных видов
-назначения и отсутствие секретов во всех ветвях ошибок отдельно не
-проверены; эти сценарии перечислены в gap.
+Отказ для всех перечисленных видов назначения и отсутствие секретов
+во всех ветвях ошибок отдельно не проверены; эти сценарии перечислены в gap.

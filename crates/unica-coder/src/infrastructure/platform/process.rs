@@ -1,11 +1,13 @@
-use crate::domain::cancellation::CancellationToken;
+use crate::domain::cancellation::{cancelled_error, CancellationToken};
 #[cfg(test)]
 use std::cell::Cell;
 use std::ffi::OsString;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
-use std::sync::mpsc::{self, Receiver};
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
 #[cfg(all(test, windows))]
 use std::sync::{Condvar, Mutex, OnceLock};
@@ -688,6 +690,62 @@ pub struct ManagedChild {
     capture_limits: Option<(usize, usize)>,
 }
 
+/// Owns the runner's process tree after its leader exited, while the caller
+/// validates the complete captured reply. An unverified reply leaves this guard
+/// armed: dropping it terminates the still-owned descendants.
+pub struct PendingProcessHandoff {
+    child: Option<ManagedChild>,
+    released: bool,
+    #[cfg(test)]
+    probe: Option<(Arc<AtomicUsize>, Arc<AtomicUsize>)>,
+}
+
+impl PendingProcessHandoff {
+    /// Release the tree only after the caller verified the launch receipt. A
+    /// failed release keeps ownership so Drop can still attempt cleanup.
+    pub(crate) fn release(&mut self) -> Result<(), String> {
+        if self.released {
+            return Err("process_failed: launch process handoff was already released".into());
+        }
+        if let Some(child) = self.child.as_mut() {
+            child
+                .process_tree
+                .release_handoff(&mut child.child)
+                .map_err(process_error)?;
+            child.state = ChildState::Reaped;
+        }
+        self.released = true;
+        #[cfg(test)]
+        if let Some((released, _)) = &self.probe {
+            released.fetch_add(1, Ordering::Relaxed);
+        }
+        self.child.take();
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(released: Arc<AtomicUsize>, discarded: Arc<AtomicUsize>) -> Self {
+        Self {
+            child: None,
+            released: false,
+            probe: Some((released, discarded)),
+        }
+    }
+}
+
+impl Drop for PendingProcessHandoff {
+    fn drop(&mut self) {
+        #[cfg(test)]
+        if !self.released {
+            if let Some((_, discarded)) = &self.probe {
+                discarded.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        // The armed ManagedChild is dropped after this method and performs the
+        // existing bounded process-tree cleanup, including an exited leader.
+    }
+}
+
 /// Owns a freshly spawned long-lived process tree until its readiness handshake
 /// succeeds. Dropping this guard terminates the tree; `detach` is the only path
 /// that intentionally leaves the process running.
@@ -915,6 +973,36 @@ impl ManagedChild {
         child.wait_for_output()
     }
 
+    /// Run a launcher while retaining its exact process-tree authority until
+    /// the upper layer validates the complete response. This path never uses
+    /// the generic leader reap, which terminates surviving descendants.
+    pub(crate) fn run_pending_handoff(
+        command: ManagedCommand,
+    ) -> Result<(ManagedOutput, PendingProcessHandoff), String> {
+        let mut process = Command::new(&command.program);
+        process.args(&command.args).current_dir(&command.cwd);
+        for name in command.env_remove {
+            process.env_remove(name);
+        }
+        process.envs(command.env);
+        let mut child = Self::spawn_process_with_limits(
+            process,
+            command.timeout,
+            command.cancellation,
+            command.capture_limits,
+        )?;
+        let output = child.wait_for_pending_handoff_output()?;
+        Ok((
+            output,
+            PendingProcessHandoff {
+                child: Some(child),
+                released: false,
+                #[cfg(test)]
+                probe: None,
+            },
+        ))
+    }
+
     pub fn run_with_input(
         command: ManagedCommand,
         input: Vec<u8>,
@@ -1029,6 +1117,60 @@ impl ManagedChild {
                 callback();
                 last_callback = Instant::now();
             }
+        }
+    }
+
+    fn wait_for_pending_handoff_output(&mut self) -> Result<ManagedOutput, String> {
+        drop(self.take_stdin());
+        let (stdout_limit, stderr_limit) = self
+            .capture_limits
+            .unwrap_or((STDOUT_CAPTURE_LIMIT, STDERR_CAPTURE_LIMIT));
+        let stdout = start_reader(self.take_stdout(), stdout_limit)
+            .ok_or("process_failed: launch runner stdout pipe is unavailable")?;
+        let stderr = start_reader(self.take_stderr(), stderr_limit)
+            .ok_or("process_failed: launch runner stderr pipe is unavailable")?;
+        let started = Instant::now();
+        let mut leader_status = None;
+        let mut captured_stdout = None;
+        let mut captured_stderr = None;
+
+        loop {
+            if self.cancellation.is_cancelled() {
+                self.terminate_gracefully()?;
+                return Err(cancelled_error(
+                    "launch runner was cancelled before handoff",
+                ));
+            }
+            if self.timeout.is_some_and(|limit| started.elapsed() >= limit) {
+                self.terminate()?;
+                return Err("process_failed: launch runner timed out before handoff".into());
+            }
+            if leader_status.is_none() {
+                leader_status = self
+                    .process_tree
+                    .observe_handoff_leader(&mut self.child)
+                    .map_err(process_error)?;
+            }
+            if captured_stdout.is_none() {
+                captured_stdout = receive_complete_capture(&stdout)?;
+            }
+            if captured_stderr.is_none() {
+                captured_stderr = receive_complete_capture(&stderr)?;
+            }
+            if let Some(status) = leader_status {
+                if captured_stdout.is_some() && captured_stderr.is_some() {
+                    // Both streams reached real EOF while the exited leader still
+                    // pins this process-group generation (or the Windows Job is held).
+                    return Ok(finish_captured_output(
+                        status,
+                        captured_stdout.take().expect("checked stdout EOF"),
+                        captured_stderr.take().expect("checked stderr EOF"),
+                        false,
+                        false,
+                    ));
+                }
+            }
+            thread::sleep(PROCESS_POLL_INTERVAL);
         }
     }
 
@@ -1502,6 +1644,13 @@ enum UnixLeaderOwnership {
     AuthorityLost,
 }
 
+#[cfg(unix)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReapFailurePolicy {
+    LoseAuthority,
+    RetainVerifiedHandoff,
+}
+
 /// Darwin's EPERM-on-zombie rule is evidence only for the generic managed
 /// child. Runtime jobs install a stronger descendant-lifetime sentinel and
 /// therefore require its EOF. `exact_retained_leader` prevents either branch
@@ -1924,7 +2073,32 @@ impl ProcessTree {
         }
     }
 
+    fn observe_handoff_leader(&mut self, child: &mut Child) -> io::Result<Option<ExitStatus>> {
+        self.observe_leader_exit(child)
+    }
+
+    fn release_handoff(&mut self, child: &mut Child) -> io::Result<()> {
+        if !self.retains_exact_exited_leader(child.id()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "launch handoff no longer owns the exited runner leader",
+            ));
+        }
+        // Reap without signalling the group: validation has transferred the
+        // surviving client to the caller, and the zombie pins its PGID until now.
+        self.reap_observed_leader_with_policy(child, ReapFailurePolicy::RetainVerifiedHandoff)
+            .map(|_| ())
+    }
+
     fn reap_observed_leader(&mut self, child: &mut Child) -> io::Result<ExitStatus> {
+        self.reap_observed_leader_with_policy(child, ReapFailurePolicy::LoseAuthority)
+    }
+
+    fn reap_observed_leader_with_policy(
+        &mut self,
+        child: &mut Child,
+        failure_policy: ReapFailurePolicy,
+    ) -> io::Result<ExitStatus> {
         let observed_status = match self.leader {
             UnixLeaderOwnership::ExitedUnreaped(status) => status,
             UnixLeaderOwnership::Reaped(status) => return Ok(status),
@@ -1943,21 +2117,37 @@ impl ProcessTree {
         };
         #[cfg(test)]
         if INJECT_UNIX_REAP_ERROR.with(|slot| slot.replace(false)) {
-            self.lose_authority();
-            return Err(io::Error::other("injected Unix reap failure"));
+            return self.reap_failure(
+                child,
+                observed_status,
+                io::Error::other("injected Unix reap failure"),
+                failure_policy,
+            );
         }
         let status = match child.try_wait() {
             Ok(Some(status)) => status,
-            Err(error) if error.raw_os_error() == Some(libc::ECHILD) => observed_status,
+            Err(error)
+                if error.raw_os_error() == Some(libc::ECHILD)
+                    && failure_policy == ReapFailurePolicy::LoseAuthority =>
+            {
+                observed_status
+            }
             Ok(None) => {
-                self.lose_authority();
-                return Err(io::Error::other(
-                    "retained managed-process leader could not be reaped",
-                ));
+                return self.reap_failure(
+                    child,
+                    observed_status,
+                    io::Error::other("retained managed-process leader could not be reaped"),
+                    failure_policy,
+                );
             }
             Err(error) => {
-                self.lose_authority();
-                return Err(error);
+                if error.raw_os_error() == Some(libc::ECHILD) {
+                    // The handoff must not release a group after another wait
+                    // owner has reaped its leader. That numeric PGID can be reused.
+                    self.lose_authority();
+                    return Err(error);
+                }
+                return self.reap_failure(child, observed_status, error, failure_policy);
             }
         };
         if let Some(mut authority) = self.process_group.take() {
@@ -1966,6 +2156,25 @@ impl ProcessTree {
         self.ownership_pipe = None;
         self.leader = UnixLeaderOwnership::Reaped(status);
         Ok(status)
+    }
+
+    fn reap_failure<T>(
+        &mut self,
+        child: &Child,
+        observed_status: ExitStatus,
+        error: io::Error,
+        failure_policy: ReapFailurePolicy,
+    ) -> io::Result<T> {
+        let still_owned = failure_policy == ReapFailurePolicy::RetainVerifiedHandoff
+            && self.retains_exact_exited_leader(child.id())
+            && matches!(
+                unix_leader_exit_unreaped(child.id()),
+                Ok(Some(status)) if status == observed_status
+            );
+        if !still_owned {
+            self.lose_authority();
+        }
+        Err(error)
     }
 
     fn is_empty_except_retained_leader(&mut self, leader_pid: u32) -> io::Result<bool> {
@@ -2132,6 +2341,56 @@ impl ProcessTree {
         child.try_wait()
     }
 
+    fn observe_handoff_leader(&mut self, child: &mut Child) -> io::Result<Option<ExitStatus>> {
+        child.try_wait()
+    }
+
+    fn release_handoff(&mut self, _child: &mut Child) -> io::Result<()> {
+        use std::mem::{size_of, zeroed};
+        use windows_sys::Win32::System::JobObjects::{
+            JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        };
+
+        // Keep crash cleanup armed on the same owned Job until the caller has
+        // verified the receipt. Preserve all other limits when releasing it.
+        // SAFETY: this Windows POD structure is valid when zero-initialized.
+        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
+        // SAFETY: the Job is still owned and the class, pointer and size agree.
+        if unsafe {
+            QueryInformationJobObject(
+                self.job,
+                JobObjectExtendedLimitInformation,
+                &mut limits as *mut _ as *mut _,
+                size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                std::ptr::null_mut(),
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        if limits.BasicLimitInformation.LimitFlags & JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE == 0 {
+            return Err(io::Error::other(
+                "pending launch Job has no crash cleanup policy",
+            ));
+        }
+        limits.BasicLimitInformation.LimitFlags &= !JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        // SAFETY: this updates the live owned Job with its queried limits.
+        // An error retains the handle and armed guard for explicit cleanup.
+        if unsafe {
+            SetInformationJobObject(
+                self.job,
+                JobObjectExtendedLimitInformation,
+                &limits as *const _ as *const _,
+                size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        self.detach()
+    }
+
     fn is_empty(&mut self) -> io::Result<bool> {
         use std::mem::{size_of, zeroed};
         use windows_sys::Win32::System::JobObjects::{
@@ -2174,8 +2433,8 @@ impl ProcessTree {
         if self.job.is_null() {
             return Ok(());
         }
-        // The detachable startup Job Object has no KILL_ON_JOB_CLOSE policy. Closing
-        // its last handle releases ownership without terminating the ready service.
+        // The startup Job was created without KILL_ON_JOB_CLOSE; a verified
+        // client handoff clears it above. Closing releases either ready process.
         // SAFETY: `self.job` is owned here and nulled only after a successful close.
         if unsafe { windows_sys::Win32::Foundation::CloseHandle(self.job) } == 0 {
             return Err(io::Error::last_os_error());
@@ -2292,6 +2551,14 @@ impl ProcessTree {
         child.try_wait()
     }
 
+    fn observe_handoff_leader(&mut self, child: &mut Child) -> io::Result<Option<ExitStatus>> {
+        child.try_wait()
+    }
+
+    fn release_handoff(&mut self, _child: &mut Child) -> io::Result<()> {
+        self.detach()
+    }
+
     fn is_empty(&mut self) -> io::Result<bool> {
         Ok(true)
     }
@@ -2322,6 +2589,7 @@ fn process_error(error: io::Error) -> String {
 struct CapturedOutput {
     bytes: Vec<u8>,
     truncated: bool,
+    complete: bool,
 }
 
 enum LineMessage {
@@ -2434,7 +2702,11 @@ where
             let mut chunk = [0_u8; 8192];
             loop {
                 match pipe.read(&mut chunk) {
-                    Ok(0) | Err(_) => break,
+                    Ok(0) => {
+                        captured.complete = true;
+                        break;
+                    }
+                    Err(_) => break,
                     Ok(count) => retain_tail(&mut captured, &chunk[..count], limit),
                 }
             }
@@ -2444,6 +2716,19 @@ where
     })
 }
 
+fn receive_complete_capture(
+    receiver: &Receiver<CapturedOutput>,
+) -> Result<Option<CapturedOutput>, String> {
+    match receiver.try_recv() {
+        Ok(captured) if captured.complete => Ok(Some(captured)),
+        Ok(_) => Err("process_failed: launch runner output ended without EOF".into()),
+        Err(TryRecvError::Empty) => Ok(None),
+        Err(TryRecvError::Disconnected) => {
+            Err("process_failed: launch runner output reader disconnected".into())
+        }
+    }
+}
+
 fn finish_output(
     status: ExitStatus,
     stdout: Option<Receiver<CapturedOutput>>,
@@ -2451,8 +2736,22 @@ fn finish_output(
     timed_out: bool,
     cancelled: bool,
 ) -> ManagedOutput {
-    let stdout = receive_output(stdout);
-    let mut stderr = receive_output(stderr);
+    finish_captured_output(
+        status,
+        receive_output(stdout),
+        receive_output(stderr),
+        timed_out,
+        cancelled,
+    )
+}
+
+fn finish_captured_output(
+    status: ExitStatus,
+    stdout: CapturedOutput,
+    mut stderr: CapturedOutput,
+    timed_out: bool,
+    cancelled: bool,
+) -> ManagedOutput {
     if stderr.truncated {
         retain_tail(
             &mut stderr,
@@ -2548,6 +2847,7 @@ pub(crate) fn ensure_truncation_diagnostics(output: &mut ManagedOutput) {
     let mut captured = CapturedOutput {
         bytes: output.stderr.as_bytes().to_vec(),
         truncated: output.stderr_truncated,
+        complete: true,
     };
     if output.stdout_truncated && !output.stderr.contains("stdout capture truncated") {
         retain_tail(
@@ -2760,6 +3060,55 @@ mod tests {
                 thread::sleep(Duration::from_secs(10));
             }
             "process_tree_child" => thread::sleep(Duration::from_secs(10)),
+            #[cfg(windows)]
+            "windows_parked_handoff_client" => loop {
+                thread::park();
+            },
+            #[cfg(windows)]
+            "windows_exit_leaving_parked_client" => {
+                super::detach_std_handles_from_inheritance();
+                let pid_file = PathBuf::from(std::env::var_os(HELPER_PID_FILE_ENV).unwrap());
+                let mut client = ChildCleanupGuard(Some(
+                    Command::new(std::env::current_exe().unwrap())
+                        .args([
+                            "--exact",
+                            "infrastructure::platform::process::tests::managed_child_test_helper",
+                            "--nocapture",
+                        ])
+                        .env(HELPER_ENV, "windows_parked_handoff_client")
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .spawn()
+                        .unwrap(),
+                ));
+                publish_handoff_probe_file(&pid_file, &client.child_mut().id().to_string());
+                // The owner above this launcher retains the Job authority.
+                drop(client.0.take());
+                print!("grandchild-detached");
+                std::io::stdout().flush().unwrap();
+            }
+            #[cfg(windows)]
+            "windows_pending_handoff_owner" | "windows_released_handoff_owner" => {
+                let pid_file = PathBuf::from(std::env::var_os(HELPER_PID_FILE_ENV).unwrap());
+                let (output, mut pending) =
+                    ManagedChild::run_pending_handoff(pending_handoff_command(
+                        "windows_exit_leaving_parked_client",
+                        &pid_file,
+                        CancellationToken::new(),
+                    ))
+                    .unwrap();
+                assert!(output.status_success, "{output:?}");
+                assert!(output.stdout.contains("grandchild-detached"));
+                if mode == "windows_released_handoff_owner" {
+                    pending.release().unwrap();
+                }
+                publish_handoff_probe_file(&pid_file.with_extension("ready"), "ready");
+                // The outer test terminates this process without running Drop.
+                // EOF on an abandoned test instead lets the armed guard clean up.
+                let _ = std::io::stdin().read_exact(&mut [0_u8]);
+                drop(pending);
+            }
             "exit_leaving_detached_grandchild" => {
                 super::detach_std_handles_from_inheritance();
                 let pid_file = std::env::var_os(HELPER_PID_FILE_ENV).unwrap();
@@ -2778,6 +3127,25 @@ mod tests {
                 std::fs::write(pid_file, format!("{}\n", grandchild.id())).unwrap();
                 print!("grandchild-detached");
                 std::io::Write::flush(&mut std::io::stdout()).unwrap();
+            }
+            "exit_leaving_inherited_pipe_grandchild" => {
+                let pid_file = std::env::var_os(HELPER_PID_FILE_ENV).unwrap();
+                let grandchild = Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "infrastructure::platform::process::tests::managed_child_test_helper",
+                        "--nocapture",
+                    ])
+                    .env(HELPER_ENV, "process_tree_child")
+                    .spawn()
+                    .unwrap();
+                print!("{{\"ok\":true,\"pid\":{}}}", grandchild.id());
+                std::io::Write::flush(&mut std::io::stdout()).unwrap();
+                std::fs::write(
+                    pid_file,
+                    format!("{}\n{}\n", std::process::id(), grandchild.id()),
+                )
+                .unwrap();
             }
             #[cfg(unix)]
             "graceful_runner_with_external_process_group" => {
@@ -2865,11 +3233,60 @@ mod tests {
 
     #[cfg(windows)]
     mod process_test_support {
-        use windows_sys::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
+        use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0, WAIT_TIMEOUT};
         use windows_sys::Win32::System::Threading::{
             OpenProcess, TerminateProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
             PROCESS_TERMINATE,
         };
+
+        pub(super) struct RetainedProcess(super::super::ScopedWindowsHandle);
+
+        impl RetainedProcess {
+            pub(super) fn open(pid: u32) -> Self {
+                // SAFETY: the live fixture publishes this PID before its owner can exit;
+                // the resulting non-inheritable handle pins the exact process object.
+                let handle =
+                    unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, 0, pid) };
+                assert!(
+                    !handle.is_null(),
+                    "open fixture process: {}",
+                    std::io::Error::last_os_error()
+                );
+                Self(super::super::ScopedWindowsHandle(handle))
+            }
+
+            pub(super) fn exited_within(&self, milliseconds: u32) -> bool {
+                // SAFETY: the retained handle has SYNCHRONIZE access and remains live.
+                let result = unsafe { WaitForSingleObject(self.0 .0, milliseconds) };
+                match result {
+                    WAIT_OBJECT_0 => true,
+                    WAIT_TIMEOUT => false,
+                    _ => panic!(
+                        "wait for fixture process: {}",
+                        std::io::Error::last_os_error()
+                    ),
+                }
+            }
+
+            pub(super) fn terminate_and_wait(&self) {
+                // SAFETY: this handle retains PROCESS_TERMINATE access to our fixture.
+                assert_ne!(unsafe { TerminateProcess(self.0 .0, 1) }, 0);
+                assert!(self.exited_within(5_000), "fixture cleanup did not finish");
+            }
+        }
+
+        impl Drop for RetainedProcess {
+            fn drop(&mut self) {
+                // SAFETY: cleanup uses only this retained process handle, never a
+                // freshly reopened PID. Termination and waiting are bounded on failure.
+                unsafe {
+                    if WaitForSingleObject(self.0 .0, 0) == WAIT_TIMEOUT {
+                        TerminateProcess(self.0 .0, 1);
+                        WaitForSingleObject(self.0 .0, 5_000);
+                    }
+                }
+            }
+        }
 
         pub fn is_alive(pid: u32) -> bool {
             unsafe {
@@ -3002,6 +3419,46 @@ mod tests {
             thread::sleep(Duration::from_millis(25));
         }
         panic!("helper did not record both process IDs within {timeout:?}");
+    }
+
+    fn read_helper_pid(path: &Path, timeout: Duration) -> u32 {
+        let started = Instant::now();
+        while started.elapsed() < timeout {
+            if let Ok(contents) = std::fs::read_to_string(path) {
+                if let Ok(pid) = contents.trim().parse() {
+                    return pid;
+                }
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        panic!("helper did not record its descendant process ID within {timeout:?}");
+    }
+
+    fn pending_handoff_command(
+        mode: &str,
+        pid_file: &Path,
+        cancellation: CancellationToken,
+    ) -> ManagedCommand {
+        ManagedCommand {
+            program: std::env::current_exe().unwrap(),
+            args: vec![
+                "--exact".into(),
+                "infrastructure::platform::process::tests::managed_child_test_helper".into(),
+                "--nocapture".into(),
+            ],
+            cwd: std::env::current_dir().unwrap(),
+            env: vec![
+                (OsString::from(HELPER_ENV), OsString::from(mode)),
+                (
+                    OsString::from(HELPER_PID_FILE_ENV),
+                    pid_file.as_os_str().to_os_string(),
+                ),
+            ],
+            env_remove: Vec::new(),
+            capture_limits: Some((64 * 1024, 64 * 1024)),
+            timeout: None,
+            cancellation,
+        }
     }
 
     fn wait_until_dead(pid: u32, timeout: Duration) -> bool {
@@ -4166,6 +4623,264 @@ mod tests {
         assert!(output.cancelled);
         assert!(wait_until_dead(parent_pid, Duration::from_secs(2)));
         assert!(wait_until_dead(child_pid, Duration::from_secs(2)));
+        cleanup.disarm();
+    }
+
+    #[test]
+    fn pending_launch_release_preserves_detached_descendant() {
+        let directory = tempfile::tempdir().unwrap();
+        let pid_file = directory.path().join("descendant.pid");
+        #[cfg(unix)]
+        super::reset_unix_signal_count_for_test();
+        let (output, mut pending) = ManagedChild::run_pending_handoff(pending_handoff_command(
+            "exit_leaving_detached_grandchild",
+            &pid_file,
+            CancellationToken::new(),
+        ))
+        .unwrap();
+        let descendant = read_helper_pid(&pid_file, Duration::from_secs(2));
+        let _cleanup = ProcessCleanupGuard(vec![descendant]);
+        assert!(output.status_success, "{output:?}");
+        assert!(output.stdout.contains("grandchild-detached"));
+        assert!(process_test_support::is_alive(descendant));
+        pending.release().unwrap();
+        drop(pending);
+        assert!(
+            process_test_support::is_alive(descendant),
+            "verified release must not terminate the detached client"
+        );
+        #[cfg(unix)]
+        assert_eq!(super::unix_signal_count_for_test(), 0);
+    }
+
+    #[test]
+    fn pending_launch_rejection_drops_owned_descendant() {
+        let directory = tempfile::tempdir().unwrap();
+        let pid_file = directory.path().join("descendant.pid");
+        let (output, pending) = ManagedChild::run_pending_handoff(pending_handoff_command(
+            "exit_leaving_detached_grandchild",
+            &pid_file,
+            CancellationToken::new(),
+        ))
+        .unwrap();
+        let descendant = read_helper_pid(&pid_file, Duration::from_secs(2));
+        let mut cleanup = ProcessCleanupGuard(vec![descendant]);
+        assert!(output.status_success, "{output:?}");
+        drop(pending);
+        assert!(wait_until_dead(descendant, Duration::from_secs(2)));
+        cleanup.disarm();
+    }
+
+    #[cfg(windows)]
+    fn publish_handoff_probe_file(path: &Path, contents: &str) {
+        let pending = path.with_extension("publishing");
+        let mut file = std::fs::File::create(&pending).unwrap();
+        file.write_all(contents.as_bytes()).unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        std::fs::rename(pending, path).unwrap();
+    }
+
+    #[cfg(windows)]
+    fn assert_pending_handoff_owner_crash(released: bool) {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+        use windows_sys::Win32::System::Threading::WaitForSingleObject;
+
+        let directory = tempfile::tempdir().unwrap();
+        let pid_file = directory.path().join("client.pid");
+        let ready_file = pid_file.with_extension("ready");
+        // A plain child is essential: an outer managed Job would hide whether
+        // the pending handoff's own Job kills the client when its owner crashes.
+        let mut owner = ChildCleanupGuard(Some(
+            Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "infrastructure::platform::process::tests::managed_child_test_helper",
+                    "--nocapture",
+                ])
+                .env(
+                    HELPER_ENV,
+                    if released {
+                        "windows_released_handoff_owner"
+                    } else {
+                        "windows_pending_handoff_owner"
+                    },
+                )
+                .env(HELPER_PID_FILE_ENV, &pid_file)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::inherit())
+                .spawn()
+                .unwrap(),
+        ));
+        let pid = read_helper_pid(&pid_file, Duration::from_secs(10));
+        let client = process_test_support::RetainedProcess::open(pid);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !ready_file.exists() {
+            assert!(
+                owner.child_mut().try_wait().unwrap().is_none(),
+                "owner exited before its barrier"
+            );
+            assert!(
+                Instant::now() < deadline,
+                "owner did not publish its handoff barrier"
+            );
+            thread::yield_now();
+        }
+        assert_eq!(std::fs::read_to_string(ready_file).unwrap(), "ready");
+        assert!(
+            !client.exited_within(0),
+            "client must be alive before owner termination"
+        );
+        owner.child_mut().kill().unwrap();
+        // SAFETY: Child owns a live process handle with synchronization access.
+        assert_eq!(
+            unsafe { WaitForSingleObject(owner.child_mut().as_raw_handle() as _, 5_000) },
+            WAIT_OBJECT_0,
+            "terminated owner did not exit within the cleanup bound"
+        );
+        owner.wait();
+        assert_eq!(
+            client.exited_within(2_000),
+            !released,
+            "client lifetime must follow whether the owner released its pending handoff"
+        );
+        if released {
+            client.terminate_and_wait();
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn pending_launch_owner_crash_kills_unreleased_client() {
+        assert_pending_handoff_owner_crash(false);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn released_launch_survives_owner_crash() {
+        assert_pending_handoff_owner_crash(true);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_pending_release_keeps_retained_leader_authority_for_drop_cleanup() {
+        let directory = tempfile::tempdir().unwrap();
+        let pid_file = directory.path().join("descendant.pid");
+        let (output, mut pending) = ManagedChild::run_pending_handoff(pending_handoff_command(
+            "exit_leaving_detached_grandchild",
+            &pid_file,
+            CancellationToken::new(),
+        ))
+        .unwrap();
+        let descendant = read_helper_pid(&pid_file, Duration::from_secs(2));
+        let mut cleanup = ProcessCleanupGuard(vec![descendant]);
+        assert!(output.status_success, "{output:?}");
+        assert!(process_test_support::is_alive(descendant));
+
+        super::inject_unix_reap_error_for_test();
+        let error = pending
+            .release()
+            .expect_err("injected reap must not release");
+        assert!(error.contains("injected Unix reap failure"), "{error}");
+        assert!(process_test_support::is_alive(descendant));
+        drop(pending);
+        assert!(
+            wait_until_dead(descendant, Duration::from_secs(2)),
+            "a failed release must still clean its retained process group"
+        );
+        cleanup.disarm();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pending_release_does_not_signal_after_external_leader_reap() {
+        let directory = tempfile::tempdir().unwrap();
+        let pid_file = directory.path().join("descendant.pid");
+        let (_, mut pending) = ManagedChild::run_pending_handoff(pending_handoff_command(
+            "exit_leaving_detached_grandchild",
+            &pid_file,
+            CancellationToken::new(),
+        ))
+        .unwrap();
+        let descendant = read_helper_pid(&pid_file, Duration::from_secs(2));
+        let _cleanup = ProcessCleanupGuard(vec![descendant]);
+        let leader = pending.child.as_ref().expect("real handoff").child.id();
+        let mut status = 0;
+        // Model an unrelated process-wide reaper consuming the runner's zombie
+        // after our WNOWAIT observation but before release.
+        assert_eq!(
+            unsafe { libc::waitpid(leader as i32, &mut status, 0) },
+            leader as i32
+        );
+        super::reset_unix_signal_count_for_test();
+        assert!(pending.release().is_err());
+        drop(pending);
+        assert_eq!(
+            super::unix_signal_count_for_test(),
+            0,
+            "lost leader authority must never signal a numeric PGID"
+        );
+        assert!(
+            process_test_support::is_alive(descendant),
+            "the unrelated reaper already removed our cleanup authority"
+        );
+    }
+
+    #[test]
+    fn pending_launch_cancel_during_startup_cleans_owned_descendant() {
+        let directory = tempfile::tempdir().unwrap();
+        let pid_file = directory.path().join("pids");
+        let cancellation = CancellationToken::new();
+        let command = pending_handoff_command(
+            "process_tree_immediate_parent",
+            &pid_file,
+            cancellation.clone(),
+        );
+        let launched = thread::spawn(move || ManagedChild::run_pending_handoff(command));
+        let pids = read_helper_pids(&pid_file, Duration::from_secs(2));
+        let mut cleanup = ProcessCleanupGuard(pids.clone());
+        cancellation.cancel();
+        let error = match launched.join().unwrap() {
+            Ok(_) => panic!("cancelled startup unexpectedly returned a handoff"),
+            Err(error) => error,
+        };
+        assert!(error.starts_with(crate::domain::cancellation::CANCELLED_PREFIX));
+        assert!(wait_until_dead(pids[1], Duration::from_secs(2)));
+        cleanup.disarm();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pending_launch_complete_json_without_eof_remains_cancelable() {
+        let directory = tempfile::tempdir().unwrap();
+        let pid_file = directory.path().join("pids");
+        let cancellation = CancellationToken::new();
+        let command = pending_handoff_command(
+            "exit_leaving_inherited_pipe_grandchild",
+            &pid_file,
+            cancellation.clone(),
+        );
+        let launched = thread::spawn(move || ManagedChild::run_pending_handoff(command));
+        let pids = read_helper_pids(&pid_file, Duration::from_secs(2));
+        let mut cleanup = ProcessCleanupGuard(pids.clone());
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while super::unix_leader_exit_unreaped(pids[0]).unwrap().is_none() {
+            assert!(Instant::now() < deadline, "runner leader did not exit");
+            thread::yield_now();
+        }
+        assert!(
+            !launched.is_finished(),
+            "a complete JSON prefix cannot release the group before actual EOF"
+        );
+        cancellation.cancel();
+        let error = match launched.join().unwrap() {
+            Ok(_) => panic!("inherited pipe unexpectedly produced a handoff"),
+            Err(error) => error,
+        };
+        assert!(error.starts_with(crate::domain::cancellation::CANCELLED_PREFIX));
+        assert!(wait_until_dead(pids[1], Duration::from_secs(2)));
         cleanup.disarm();
     }
 

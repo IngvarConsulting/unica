@@ -1,6 +1,7 @@
 use crate::application::ports::{MetadataChildProfile, MetadataTemplateType};
 use crate::application::v13::body_snapshot::BodySnapshot;
 use crate::application::v13::view::{ViewError, ViewFilter, ViewReadAuthority, ViewSourceSnapshot};
+#[cfg(test)]
 use crate::application::v13::LOGICAL_READ_OPERATION_BUDGET;
 use crate::domain::address::{AddressSegment, NodeKind, QualifiedAddress};
 use crate::domain::cancellation::CancellationToken;
@@ -32,12 +33,14 @@ use crate::infrastructure::logical_event_source::{
 use crate::infrastructure::logical_event_source::{resolve_event_source, LogicalEventSource};
 use crate::infrastructure::logical_tree::{route_logical_address, LogicalReader, LogicalTreeRoute};
 use crate::infrastructure::native_operations::form::{FormEventEvidence, FormInfoData};
+#[cfg(test)]
 use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
 use crate::infrastructure::platform_xml_owner::PlatformXmlSourceSetOwnerEvidence;
 #[cfg(test)]
 use crate::infrastructure::platform_xml_source_targets::{
     resolve_platform_xml_target, TargetKindPolicy,
 };
+#[cfg(test)]
 use crate::infrastructure::source_revision::SourceRevisionService;
 use crate::infrastructure::v13_large_configuration::{RegistrationCache, RegistrationIndex};
 use crate::infrastructure::v13_read_port::ProviderReadAuthority;
@@ -158,6 +161,7 @@ struct OwnerEdgeCacheKey {
 }
 
 impl<'a> LogicalViewReadAuthority<'a> {
+    #[cfg(test)]
     pub(crate) fn new(
         cancellation: &'a CancellationToken,
         source_set: impl Into<String>,
@@ -370,6 +374,94 @@ impl<'a> LogicalViewReadAuthority<'a> {
         self.deadline
     }
 
+    pub(crate) fn diagnostic_mapping(
+        &self,
+        at: &QualifiedAddress,
+        workspace: &crate::domain::workspace::WorkspaceContext,
+    ) -> Result<crate::infrastructure::diagnostics::CanonicalModuleDiagnosticMapping, ViewError>
+    {
+        use crate::domain::diagnostics::DiagnosticContext;
+        use crate::domain::project_sources::{ProjectSourceSet, SourceFormat, SourceSetState};
+        use crate::domain::source_roots::ResolvedSourceRoot;
+        use crate::domain::source_target::{ResolvedTarget, TargetKind};
+        let admitted = self.snapshot(at)?;
+        let canonical = self.canonical_address(at, &admitted)?;
+        let capability = self
+            .profile
+            .module_prefix_capability(&canonical)
+            .ok_or_else(|| {
+                ViewError::new(
+                    RefusalCode::BadValue,
+                    "BSL diagnostics requires a module or its body",
+                )
+            })?;
+        let (module_at, _) = shared_module_prefix(&canonical, self.profile, capability)
+            .map_err(|error| ViewError::new(RefusalCode::BadValue, error))?;
+        // Registration, owner identity, format and module containment are proved
+        // by the same reader as view, using this invocation's retained root.
+        self.read_exact(&module_at, &ViewFilter::default(), &admitted)?;
+        let target = module_source_address(&module_at, capability)?;
+        let relative = self.read.module_export_path(&target)?;
+        let source_set = self.read.source_set().to_owned();
+        let context = DiagnosticContext::new(
+            workspace.clone(),
+            ProjectSourceSet {
+                name: source_set.clone(),
+                kind: self.read.source_set_kind(),
+                path: self.read.root_path().to_string_lossy().into_owned(),
+                source_format: SourceFormat::PlatformXml,
+                source_state: SourceSetState::Supported,
+                format_evidence: Vec::new(),
+                format_probe_error: None,
+            },
+            ResolvedSourceRoot {
+                source_set: Some(source_set.clone()),
+                path: self.read.root_path().to_path_buf(),
+            },
+            ResolvedTarget {
+                source_set,
+                metadata_path: Some(target),
+                target_kind: TargetKind::Module,
+            },
+        );
+        crate::infrastructure::diagnostics::CanonicalModuleDiagnosticMapping::from_proven_module(
+            context,
+            relative.into(),
+        )
+        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
+    }
+
+    /// Proves a DCS template through the same registration and descriptor
+    /// authority as view, then reads its body through the retained source root.
+    pub(crate) fn dcs_validation_input(
+        &self,
+        at: &QualifiedAddress,
+    ) -> Result<crate::infrastructure::v13_read_port::DcsValidationInput, ViewError> {
+        let admitted = self.snapshot(at)?;
+        let canonical = self.canonical_address(at, &admitted)?;
+        let target =
+            crate::infrastructure::native_operations::dcs::typed_dcs_reader_target(&canonical)
+                .ok_or_else(|| {
+                    ViewError::new(RefusalCode::BadValue, "DCS validation requires a template")
+                })?;
+        self.verify_registered_owner(&target, &admitted)?;
+        if !matches!(
+            self.read.metadata_child_profile(&target)?,
+            MetadataChildProfile::Template(MetadataTemplateType::DataCompositionSchema)
+        ) {
+            return Err(ViewError::new(
+                RefusalCode::BadValue,
+                "template is not a data composition schema",
+            ));
+        }
+        self.read_checkpoint()?;
+        let input = self
+            .read
+            .dcs_validation_input(&target, &mut || self.read_checkpoint())?;
+        self.read_checkpoint()?;
+        Ok(input)
+    }
+
     fn typed_payload(&self, route: &LogicalTreeRoute) -> Result<Value, ViewError> {
         let admitted = ViewSourceSnapshot {
             source_set_identity: self.read.source_set_identity().to_string(),
@@ -440,47 +532,51 @@ impl<'a> LogicalViewReadAuthority<'a> {
             return self.metadata_payload(route, admitted);
         }
         if route.reader() == LogicalReader::Form {
-            return self
-                .read
-                .form_payload(route.reader_metadata_path().ok_or_else(|| {
+            return self.read.form_payload(
+                route.reader_metadata_path().ok_or_else(|| {
                     ViewError::new(
                         RefusalCode::ProviderUnavailable,
                         "form route has no typed target",
                     )
-                })?);
+                })?,
+                &mut || self.read_checkpoint(),
+            );
         }
         if route.reader() == LogicalReader::Dcs {
-            return self
-                .read
-                .dcs_payload(route.reader_metadata_path().ok_or_else(|| {
+            return self.read.dcs_payload(
+                route.reader_metadata_path().ok_or_else(|| {
                     ViewError::new(
                         RefusalCode::ProviderUnavailable,
                         "DCS route has no typed target",
                     )
-                })?);
+                })?,
+                &mut || self.read_checkpoint(),
+            );
         }
         if route.reader() == LogicalReader::Role {
-            return self
-                .read
-                .role_payload(route.reader_metadata_path().ok_or_else(|| {
+            return self.read.role_payload(
+                route.reader_metadata_path().ok_or_else(|| {
                     ViewError::new(
                         RefusalCode::ProviderUnavailable,
                         "role route has no typed target",
                     )
-                })?);
+                })?,
+                &mut || self.read_checkpoint(),
+            );
         }
         if matches!(
             route.reader(),
             LogicalReader::Subsystem | LogicalReader::Interface
         ) {
-            return self
-                .read
-                .subsystem_payload(route.reader_metadata_path().ok_or_else(|| {
+            return self.read.subsystem_payload(
+                route.reader_metadata_path().ok_or_else(|| {
                     ViewError::new(
                         RefusalCode::ProviderUnavailable,
                         "subsystem route has no typed target",
                     )
-                })?);
+                })?,
+                &mut || self.read_checkpoint(),
+            );
         }
         if route.reader() == LogicalReader::Mxl {
             return self.read.mxl_payload(
@@ -491,6 +587,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
                     )
                 })?,
                 mxl_content_requested(route),
+                &mut || self.read_checkpoint(),
             );
         }
         if route.reader() == LogicalReader::Xdto {
@@ -578,7 +675,9 @@ impl<'a> LogicalViewReadAuthority<'a> {
         if MetadataKind::parse(kind).is_err() {
             return self.read.identity_metadata_payload(target);
         }
-        let read = self.read.metadata_local(target)?;
+        let read = self
+            .read
+            .metadata_local(target, &mut || self.read_checkpoint())?;
         let local = read.info;
         for (kind, children) in [
             (NodeKind::Form, &local.collections.forms),
@@ -1187,7 +1286,10 @@ impl<'a> LogicalViewReadAuthority<'a> {
         if let Some(data) = cache.get(&key) {
             return Ok(Arc::clone(data));
         }
-        let data = Arc::new(self.read.form_data(target)?);
+        let data = Arc::new(
+            self.read
+                .form_data(target, &mut || self.read_checkpoint())?,
+        );
         cache.insert(key, Arc::clone(&data));
         Ok(data)
     }
@@ -1641,7 +1743,9 @@ impl LogicalViewReadAuthority<'_> {
     ) -> Result<Vec<(NodeKind, usize)>, ViewError> {
         Ok(match self.read.metadata_child_profile(child) {
             Ok(MetadataChildProfile::Template(MetadataTemplateType::DataCompositionSchema)) => {
-                let payload = self.read.dcs_payload(child)?;
+                let payload = self
+                    .read
+                    .dcs_payload(child, &mut || self.read_checkpoint())?;
                 vec![(
                     NodeKind::DataSet,
                     payload
@@ -1651,7 +1755,9 @@ impl LogicalViewReadAuthority<'_> {
                 )]
             }
             Ok(MetadataChildProfile::Template(MetadataTemplateType::SpreadsheetDocument)) => {
-                let payload = self.read.mxl_payload(child, false)?;
+                let payload = self
+                    .read
+                    .mxl_payload(child, false, &mut || self.read_checkpoint())?;
                 vec![(
                     NodeKind::Area,
                     payload

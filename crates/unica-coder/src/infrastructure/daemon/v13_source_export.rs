@@ -88,7 +88,6 @@ struct ExportArguments {
 pub(super) struct PreparedSourceExport {
     arguments: ExportArguments,
     dry_run: bool,
-    if_rev: Option<String>,
     context: WorkspaceContext,
 }
 
@@ -123,31 +122,9 @@ impl PreparedSourceExport {
             .ok_or_else(|| {
                 reject(
                     RefusalCode::BadValue,
-                    "pull requires dryRun: true to preview or dryRun: false with ifRev to apply",
+                    "pull requires dryRun: true to preview or dryRun: false to execute",
                 )
             })?;
-        let if_rev = match arguments.get("ifRev") {
-            None => None,
-            Some(Value::String(value)) if !value.trim().is_empty() => Some(value.clone()),
-            Some(_) => {
-                return Err(reject(
-                    RefusalCode::BadValue,
-                    "pull ifRev must be non-empty text",
-                ))
-            }
-        };
-        if dry_run && if_rev.is_some() {
-            return Err(reject(
-                RefusalCode::BadValue,
-                "pull preview does not accept ifRev; apply the revision returned by this preview",
-            ));
-        }
-        if !dry_run && if_rev.is_none() {
-            return Err(reject(
-                RefusalCode::BadValue,
-                "pull apply requires ifRev from a prior dryRun preview",
-            ));
-        }
         let context =
             discover_workspace(Some(PathBuf::from(request.workspace_hint()))).map_err(|error| {
                 reject(
@@ -174,7 +151,6 @@ impl PreparedSourceExport {
         Ok(Self {
             arguments,
             dry_run,
-            if_rev,
             context,
         })
     }
@@ -344,7 +320,7 @@ fn execute_with_resolved_runner(
     runner: &dyn ProcessRunner,
     cancellation: CancellationToken,
     tool: &BundledTool,
-    runner_version: &str,
+    _runner_version: &str,
 ) -> DomainResult {
     if cancellation.is_cancelled() {
         return reject(RefusalCode::Cancelled, "pull cancelled before preflight");
@@ -380,7 +356,7 @@ fn execute_with_resolved_runner(
             "pull inputs changed during preview; run dryRun: true again",
         );
     }
-    let revision = plan_revision(prepared, &before, runner_version, &plan);
+
     if prepared.dry_run {
         let mut result = DomainResult::success(format!(
             "pull planned a {} export of source set `{}` without writing anything",
@@ -403,30 +379,17 @@ fn execute_with_resolved_runner(
             "providerDispatched": false,
             "requiresPlatform": true,
         }));
-        result.rev = Some(revision.clone());
+
         result.next.push(json!({
             "tool": "unica.run",
             "args": {
                 "op": OPERATION,
                 "args": public_arguments(prepared),
                 "dryRun": false,
-                "ifRev": revision,
             },
-            "reason": "apply exactly this previewed export"
+            "reason": "execute with the current arguments"
         }));
         return result;
-    }
-    if prepared.if_rev.as_deref() != Some(revision.as_str()) {
-        // A stale `ifRev` is the caller's conflict with a known recovery, so it
-        // answers `stale_revision` and names both revisions
-        // (INV.WIRE.V13-REFUSAL-CHANNEL).
-        return reject(
-            RefusalCode::StaleRevision,
-            format!(
-                "pull plan or environment changed after preview: expected rev {revision}, ifRev {}; run dryRun: true again",
-                prepared.if_rev.as_deref().unwrap_or("absent")
-            ),
-        );
     }
     if cancellation.is_cancelled() {
         return reject(
@@ -488,7 +451,7 @@ fn execute_with_resolved_runner(
         "path": path_text(&plan.target),
         "kind": state,
     }));
-    result.rev = Some(revision);
+
     result
 }
 
@@ -696,32 +659,6 @@ fn parse_runner_output(output: ProcessOutput) -> Result<Value, DomainResult> {
     Ok(envelope)
 }
 
-fn plan_revision(
-    prepared: &PreparedSourceExport,
-    inputs: &StableInputs,
-    runner_version: &str,
-    plan: &ExportPlan,
-) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(b"unica-v13-source-export-plan-v1\0");
-    hasher.update(
-        serde_json::to_vec(&json!({
-            "op": OPERATION,
-            "args": public_arguments(prepared),
-            "inputs": {
-                "config": inputs.config_sha256,
-                "localConfig": inputs.local_config_sha256,
-                "declared": inputs.declared,
-            },
-            "runnerVersion": runner_version,
-            "sourceSet": plan.source_set,
-            "target": path_text(&plan.target),
-        }))
-        .expect("plan revision data serializes"),
-    );
-    format!("unica-source-export-sha256-v1:{:x}", hasher.finalize())
-}
-
 fn public_arguments(prepared: &PreparedSourceExport) -> Value {
     let mut args = Map::new();
     args.insert("force".to_string(), Value::Bool(true));
@@ -839,7 +776,6 @@ mod tests {
         source_set: Option<&str>,
         extension: Option<&str>,
         dry_run: bool,
-        if_rev: Option<String>,
     ) -> PreparedSourceExport {
         PreparedSourceExport {
             arguments: ExportArguments {
@@ -848,7 +784,6 @@ mod tests {
                 extension: extension.map(str::to_string),
             },
             dry_run,
-            if_rev,
             context: WorkspaceContext {
                 cwd: root.to_path_buf(),
                 workspace_root: root.to_path_buf(),
@@ -982,7 +917,6 @@ mod tests {
                 Some("ext-purchases"),
                 None,
                 true,
-                None,
             ),
             &runner,
         );
@@ -1003,7 +937,7 @@ mod tests {
         )]);
         let result = run(
             root.path(),
-            &prepared(root.path(), ExportMode::Full, None, None, true, None),
+            &prepared(root.path(), ExportMode::Full, None, None, true),
             &runner,
         );
 
@@ -1014,9 +948,9 @@ mod tests {
         assert_eq!(data["plan"]["mode"], "full");
         assert_eq!(data["plan"]["target"], "main");
         assert_eq!(data["plan"]["targetExists"], false);
-        let revision = result.rev.clone().expect("preview returns a revision");
-        assert!(revision.starts_with("unica-source-export-sha256-v1:"));
-        assert_eq!(result.next[0]["args"]["ifRev"], revision);
+        assert!(result.rev.is_none());
+        assert_eq!(result.next[0]["args"]["dryRun"], false);
+        assert!(result.next[0]["args"].get("ifRev").is_none());
         assert_eq!(result.next[0]["args"]["args"], json!({"force":true}));
         assert!(result.changed.is_empty());
         let encoded = serde_json::to_string(&result).unwrap();
@@ -1055,7 +989,6 @@ mod tests {
                 Some("ext-sales"),
                 Some("Sales"),
                 true,
-                None,
             ),
             &runner,
         );
@@ -1112,7 +1045,7 @@ mod tests {
         let runner = SequenceRunner::new(vec![process(outside, true)]);
         let result = run(
             root.path(),
-            &prepared(root.path(), ExportMode::Full, None, None, true, None),
+            &prepared(root.path(), ExportMode::Full, None, None, true),
             &runner,
         );
         assert_eq!(
@@ -1130,7 +1063,7 @@ mod tests {
         )]);
         let result = run(
             root.path(),
-            &prepared(root.path(), ExportMode::Full, None, None, true, None),
+            &prepared(root.path(), ExportMode::Full, None, None, true),
             &runner,
         );
         assert_eq!(
@@ -1144,7 +1077,7 @@ mod tests {
         )]);
         let result = run(
             root.path(),
-            &prepared(root.path(), ExportMode::Full, None, None, true, None),
+            &prepared(root.path(), ExportMode::Full, None, None, true),
             &runner,
         );
         assert_eq!(
@@ -1158,18 +1091,8 @@ mod tests {
     }
 
     #[test]
-    fn apply_repeats_the_preview_and_counts_the_exported_files_itself() {
+    fn apply_without_prior_preview_counts_the_exported_files_itself() {
         let root = workspace();
-        let revision = run(
-            root.path(),
-            &prepared(root.path(), ExportMode::Full, None, None, true, None),
-            &SequenceRunner::new(vec![process(
-                envelope(root.path(), "main", "FULL", None, false),
-                true,
-            )]),
-        )
-        .rev
-        .unwrap();
         let runner = SequenceRunner::exporting(
             vec![
                 process(envelope(root.path(), "main", "FULL", None, false), true),
@@ -1180,14 +1103,7 @@ mod tests {
 
         let result = run(
             root.path(),
-            &prepared(
-                root.path(),
-                ExportMode::Full,
-                None,
-                None,
-                false,
-                Some(revision.clone()),
-            ),
+            &prepared(root.path(), ExportMode::Full, None, None, false),
             &runner,
         );
 
@@ -1201,7 +1117,7 @@ mod tests {
         assert_eq!(data["state"], "created");
         assert_eq!(result.changed[0]["path"], "main");
         assert_eq!(result.changed[0]["kind"], "created");
-        assert_eq!(result.rev, Some(revision));
+        assert!(result.rev.is_none());
         assert!(result.artifacts.is_empty());
         let encoded = serde_json::to_string(&result).unwrap();
         assert!(!encoded.contains("1cv8"), "platform path leaked: {encoded}");
@@ -1209,38 +1125,8 @@ mod tests {
     }
 
     #[test]
-    fn apply_refuses_a_stale_revision_another_target_and_an_empty_target() {
+    fn apply_refuses_another_target_and_an_empty_target() {
         let root = workspace();
-        let runner = SequenceRunner::new(vec![process(
-            envelope(root.path(), "main", "FULL", None, false),
-            true,
-        )]);
-        let result = run(
-            root.path(),
-            &prepared(
-                root.path(),
-                ExportMode::Full,
-                None,
-                None,
-                false,
-                Some("stale".to_string()),
-            ),
-            &runner,
-        );
-        assert_eq!(result.diagnostics[0]["code"], "stale_revision");
-        assert_eq!(runner.call_count(), 1);
-
-        let preview_runner = SequenceRunner::new(vec![process(
-            envelope(root.path(), "main", "FULL", None, false),
-            true,
-        )]);
-        let revision = run(
-            root.path(),
-            &prepared(root.path(), ExportMode::Full, None, None, true, None),
-            &preview_runner,
-        )
-        .rev
-        .unwrap();
         let runner = SequenceRunner::exporting(
             vec![
                 process(envelope(root.path(), "main", "FULL", None, false), true),
@@ -1250,14 +1136,7 @@ mod tests {
         );
         let result = run(
             root.path(),
-            &prepared(
-                root.path(),
-                ExportMode::Full,
-                None,
-                None,
-                false,
-                Some(revision.clone()),
-            ),
+            &prepared(root.path(), ExportMode::Full, None, None, false),
             &runner,
         );
         assert_eq!(
@@ -1270,30 +1149,13 @@ mod tests {
             .contains("different source set or target"));
 
         let root = workspace();
-        let revision = run(
-            root.path(),
-            &prepared(root.path(), ExportMode::Full, None, None, true, None),
-            &SequenceRunner::new(vec![process(
-                envelope(root.path(), "main", "FULL", None, false),
-                true,
-            )]),
-        )
-        .rev
-        .unwrap();
         let runner = SequenceRunner::new(vec![
             process(envelope(root.path(), "main", "FULL", None, false), true),
             process(envelope(root.path(), "main", "FULL", None, true), true),
         ]);
         let result = run(
             root.path(),
-            &prepared(
-                root.path(),
-                ExportMode::Full,
-                None,
-                None,
-                false,
-                Some(revision),
-            ),
+            &prepared(root.path(), ExportMode::Full, None, None, false),
             &runner,
         );
         assert_eq!(
@@ -1307,16 +1169,6 @@ mod tests {
 
         // Цель есть, но раннер в неё ничего не положил: квитанция пустая.
         let root = workspace();
-        let revision = run(
-            root.path(),
-            &prepared(root.path(), ExportMode::Full, None, None, true, None),
-            &SequenceRunner::new(vec![process(
-                envelope(root.path(), "main", "FULL", None, false),
-                true,
-            )]),
-        )
-        .rev
-        .unwrap();
         std::fs::create_dir(root.path().join("main")).unwrap();
         let runner = SequenceRunner::new(vec![
             process(envelope(root.path(), "main", "FULL", None, false), true),
@@ -1324,14 +1176,7 @@ mod tests {
         ]);
         let result = run(
             root.path(),
-            &prepared(
-                root.path(),
-                ExportMode::Full,
-                None,
-                None,
-                false,
-                Some(revision),
-            ),
+            &prepared(root.path(), ExportMode::Full, None, None, false),
             &runner,
         );
         assert_eq!(
@@ -1377,14 +1222,7 @@ mod tests {
             )]);
             let result = run(
                 root.path(),
-                &prepared(
-                    root.path(),
-                    ExportMode::Full,
-                    Some("ext-sales"),
-                    None,
-                    true,
-                    None,
-                ),
+                &prepared(root.path(), ExportMode::Full, Some("ext-sales"), None, true),
                 &runner,
             );
             assert_eq!(result.diagnostics[0]["code"], expected, "{code}");

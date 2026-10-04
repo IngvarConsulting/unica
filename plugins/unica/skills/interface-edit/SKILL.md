@@ -19,9 +19,9 @@ allowed-tools:
 - Интерфейс называет адрес: `args.at` вида
   `<набор>:Subsystem.<Имя>.Interface`. Пути к `CommandInterface.xml` наружу
   нет; путь из диффа или лога переводит в адрес аварийный `unica.resolve`.
-- Всегда сначала `dryRun: true`. Применяй `dryRun: false` только когда
-  пользователь явно попросил внести именно эту правку, и только с `ifRev` из
-  предпросмотра.
+- Сначала вызови `unica.apply` с `at` и `ops`: это план без записи.
+  Когда пользователь поручил внести эту правку, вызови `unica.apply` только
+  с `executionToken` из `data.executionToken` успешного плана.
 
 **Команда лежит в аргументах, а не в адресе.** Имя команды в интерфейсе — это
 ссылка на команду, живущую в другом месте (`CommonCommand.Печать`,
@@ -57,8 +57,8 @@ allowed-tools:
 2. Прочти интерфейс: `unica.view {at: "…Subsystem.<Имя>.Interface"}` — ветви
    `Command`, `Group` и `Subsystem` показывают команды, порядок групп и
    порядок дочерних подсистем.
-3. Предпросмотр: `unica.apply` с `dryRun: true`; ответ несёт план и `ifRev`.
-4. Применение: тот же вызов с `dryRun: false` и этим `ifRev`.
+3. Предпросмотр: `unica.apply` с `at` и `ops`; ответ несёт план и `data.executionToken`.
+4. Применение: вызов только с `executionToken` из `data.executionToken` успешного плана.
 
 ## Примеры
 
@@ -83,14 +83,15 @@ allowed-tools:
             ]
           }
         }
-      ],
-      "dryRun": true
+      ]
     }
   }
 }
 ```
 
 ### Разместить команду и задать порядок в группе
+
+Сначала получи план этого изменения:
 
 ```json
 {
@@ -105,7 +106,12 @@ allowed-tools:
           "op": "commandPlacement.set",
           "args": {
             "at": "main:Subsystem.Продажи.Interface",
-            "items": [{"command": "Report.Продажи.Command.Отчёт", "group": "NavigationPanelImportant"}]
+            "items": [
+              {
+                "command": "Report.Продажи.Command.Отчёт",
+                "group": "NavigationPanelImportant"
+              }
+            ]
           }
         },
         {
@@ -121,9 +127,22 @@ allowed-tools:
             }
           }
         }
-      ],
-      "dryRun": false,
-      "ifRev": "<rev из предпросмотра>"
+      ]
+    }
+  }
+}
+```
+
+Для исполнения передай `data.executionToken` из этого успешного плана:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "unica.apply",
+    "arguments": {
+      "executionToken": "<data.executionToken из успешного плана>"
     }
   }
 }
@@ -147,8 +166,7 @@ allowed-tools:
             "values": {"subsystems": ["Subsystem.Продажи", "Subsystem.Склад"]}
           }
         }
-      ],
-      "dryRun": true
+      ]
     }
   }
 }

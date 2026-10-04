@@ -76,7 +76,6 @@ pub(super) struct PreparedExtensions {
     operation: Operation,
     args: Map<String, Value>,
     dry_run: bool,
-    if_rev: Option<String>,
     context: WorkspaceContext,
 }
 pub(super) enum Preparation {
@@ -124,18 +123,8 @@ impl PreparedExtensions {
             .get("dryRun")
             .and_then(Value::as_bool)
             .ok_or_else(|| {
-                reject("extension operations require explicit dryRun: true, or false with ifRev")
+                reject("extension operations require explicit dryRun: true, or false to execute")
             })?;
-        let if_rev = match request.arguments().get("ifRev") {
-            None => None,
-            Some(Value::String(value)) if !value.trim().is_empty() => Some(value.clone()),
-            _ => return Err(reject("ifRev must be non-empty text")),
-        };
-        if dry_run == if_rev.is_some() {
-            return Err(reject(
-                "preview takes no ifRev; apply requires the revision from preview",
-            ));
-        }
         let context =
             discover_workspace(Some(PathBuf::from(request.workspace_hint()))).map_err(|error| {
                 rejection(
@@ -148,7 +137,6 @@ impl PreparedExtensions {
             operation,
             args: args.clone(),
             dry_run,
-            if_rev,
             context,
         })
     }
@@ -440,7 +428,7 @@ impl PreparedExtensions {
         &self,
         runner: &dyn ProcessRunner,
         tool: &BundledTool,
-        version: &str,
+        _version: &str,
         cancellation: CancellationToken,
     ) -> Result<DomainResult, DomainResult> {
         if cancellation.is_cancelled() {
@@ -459,22 +447,15 @@ impl PreparedExtensions {
                 "project configuration changed during preview",
             ));
         }
-        let encoded = serde_json::to_vec(&json!({"op":self.operation.name(),"args":self.args,"inputs":before,"workspace":self.workspace_identity_hash().as_str(),"runnerVersion":version,"provider":receipt})).expect("revision serializes");
-        let revision = format!("unica-extension-sha256-v1:{:x}", Sha256::digest(encoded));
+
         let plan = json!({"op":self.operation.name(),"args":self.args,"target":target,"provider":receipt["selected"],"providerOrigin":receipt["origin"]["kind"],"requiresPlatform":true,"deletesExtensionData":self.operation == Operation::Delete});
         if self.dry_run {
             let mut result =
                 DomainResult::success("extension operation planned without starting the platform");
             result.data = Some(json!({"op":self.operation.name(),"dryRun":true,"plan":plan}));
-            result.rev = Some(revision.clone());
-            result.next.push(json!({"tool":"unica.run","args":{"op":self.operation.name(),"args":self.args,"dryRun":false,"ifRev":revision},"reason":"execute exactly this previewed operation; the preview does not inspect infobase state"}));
+
+            result.next.push(json!({"tool":"unica.run","args":{"op":self.operation.name(),"args":self.args,"dryRun":false},"reason":"execute with the current arguments; preview does not inspect infobase state"}));
             return Ok(result);
-        }
-        if self.if_rev.as_deref() != Some(revision.as_str()) {
-            return Err(self.fail(
-                RefusalCode::StaleRevision,
-                "extension plan or configuration changed; preview again",
-            ));
         }
         let applied = self.invoke(runner, tool, &cancellation, false)?;
         let applied_receipt = self.validate(&applied, false)?;
@@ -505,7 +486,7 @@ impl PreparedExtensions {
             );
         }
         result.data = Some(data);
-        result.rev = Some(revision);
+
         Ok(result)
     }
 }
@@ -684,7 +665,7 @@ mod tests {
                 .contains(&"--dry-run".into()));
             assert!(!serde_json::to_string(&result).unwrap().contains("PRIVATE"));
             prepared.dry_run = false;
-            prepared.if_rev = result.rev;
+
             let runner = SequenceRunner::new(vec![preview, applied]);
             let result = prepared.execute_with(
                 &runner,
@@ -710,26 +691,22 @@ mod tests {
         }
     }
     #[test]
-    fn changed_args_config_version_or_provider_never_pass_the_extension_fence() {
-        for change in ["args", "config", "local", "version", "provider"] {
+    fn extension_execution_uses_current_arguments_config_and_runner() {
+        for change in ["args", "config", "local", "version"] {
             let root = tempfile::tempdir().unwrap();
             let mut p = fixture(root.path(), Operation::Activate);
             let tool = tool(root.path());
-            let preview = envelope(&p, true);
-            p.if_rev = p
-                .execute_with(
-                    &SequenceRunner::new(vec![preview.clone()]),
-                    &tool,
-                    super::super::runner_011::VERSION,
-                    CancellationToken::new(),
-                )
-                .rev;
-            p.dry_run = false;
-            let mut new_preview = preview;
+            let preview = p.execute_with(
+                &SequenceRunner::new(vec![envelope(&p, true)]),
+                &tool,
+                super::super::runner_011::VERSION,
+                CancellationToken::new(),
+            );
+            assert!(preview.ok);
+            assert!(preview.rev.is_none());
             match change {
                 "args" => {
                     p.args.insert("active".into(), json!(true));
-                    new_preview["data"]["steps"][0]["action"] = json!("activate");
                 }
                 "config" => std::fs::write(
                     root.path().join(CONFIG_NAME),
@@ -741,19 +718,25 @@ mod tests {
                     "infobase:\n  user: another\n",
                 )
                 .unwrap(),
-                "provider" => new_preview["data"]["provider"]["selected"] = json!("agent"),
                 _ => {}
             }
-            let runner = SequenceRunner::new(vec![new_preview]);
+            p.dry_run = false;
+            let runner = SequenceRunner::new(vec![envelope(&p, true), envelope(&p, false)]);
             let version = if change == "version" {
                 "0.11.1"
             } else {
                 super::super::runner_011::VERSION
             };
             let result = p.execute_with(&runner, &tool, version, CancellationToken::new());
-            assert!(!result.ok, "{change}");
-            assert_eq!(result.diagnostics[0]["code"], "stale_revision");
-            assert_eq!(runner.calls.lock().unwrap().len(), 1);
+            assert!(result.ok, "{change}: {result:?}");
+            assert!(result.rev.is_none());
+            let calls = runner.calls.lock().unwrap();
+            assert_eq!(calls.len(), 2);
+            let active = if change == "args" { "yes" } else { "no" };
+            assert!(calls[1]
+                .args
+                .windows(2)
+                .any(|pair| pair == ["--active", active]));
         }
     }
     #[test]
@@ -805,14 +788,8 @@ mod tests {
             let mut applied = envelope(&prepared, false);
             applied["data"]["extensions"][0]["name_prefix"] = prefix.clone();
             let tool = tool(root.path());
-            let preview_result = prepared.execute_with(
-                &SequenceRunner::new(vec![preview.clone()]),
-                &tool,
-                super::super::runner_011::VERSION,
-                CancellationToken::new(),
-            );
             prepared.dry_run = false;
-            prepared.if_rev = preview_result.rev;
+
             let result = prepared.execute_with(
                 &SequenceRunner::new(vec![preview, applied]),
                 &tool,
@@ -842,14 +819,8 @@ mod tests {
                     .collect(),
             );
             let tool = tool(root.path());
-            let planned = prepared.execute_with(
-                &SequenceRunner::new(vec![preview.clone()]),
-                &tool,
-                super::super::runner_011::VERSION,
-                CancellationToken::new(),
-            );
             prepared.dry_run = false;
-            prepared.if_rev = planned.rev;
+
             let result = prepared.execute_with(
                 &SequenceRunner::new(vec![preview, applied]),
                 &tool,
@@ -863,8 +834,9 @@ mod tests {
         }
     }
     #[test]
-    fn extension_arguments_are_closed_and_apply_requires_the_preview_revision() {
+    fn extension_arguments_are_closed_and_execution_requires_a_boolean_mode() {
         let root = tempfile::tempdir().unwrap();
+        let _fixture = fixture(root.path(), Operation::List);
         for (op, args) in [
             (Operation::List, json!({"name":"X"})),
             (Operation::Activate, json!({"name":"X","active":"yes"})),
@@ -872,10 +844,23 @@ mod tests {
         ] {
             assert!(validate_arguments(op, args.as_object().unwrap()).is_err());
         }
-        for (dry, rev) in [(false, None), (true, Some("rev"))] {
+        for dry in [json!(true), json!(false)] {
             let req = InvocationRequest::new(
                 ToolIdentity::Run,
-                json!({"op":"extensions.list","args":{},"dryRun":dry,"ifRev":rev}),
+                json!({"op":"extensions.list","args":{},"dryRun":dry}),
+                root.path().display().to_string(),
+                7_000,
+            )
+            .unwrap();
+            assert!(PreparedExtensions::parse(&req, Operation::List).is_ok());
+        }
+        for args in [
+            json!({"op":"extensions.list","args":{}}),
+            json!({"op":"extensions.list","args":{},"dryRun":"false"}),
+        ] {
+            let req = InvocationRequest::new(
+                ToolIdentity::Run,
+                args,
                 root.path().display().to_string(),
                 7_000,
             )
@@ -884,7 +869,7 @@ mod tests {
         }
     }
     #[test]
-    fn extension_revision_cannot_be_replayed_in_another_workspace() {
+    fn extension_execution_uses_its_current_workspace() {
         let first = tempfile::tempdir().unwrap();
         let second = tempfile::tempdir().unwrap();
         let p1 = fixture(first.path(), Operation::Delete);
@@ -896,7 +881,7 @@ mod tests {
             CancellationToken::new(),
         );
         p2.dry_run = false;
-        p2.if_rev = receipt.rev;
+
         let runner = SequenceRunner::new(vec![envelope(&p2, true), envelope(&p2, false)]);
         let result = p2.execute_with(
             &runner,
@@ -905,10 +890,15 @@ mod tests {
             CancellationToken::new(),
         );
         assert!(
-            !result.ok,
-            "a relative File=base in a different workspace is a different infobase"
+            result.ok,
+            "an independent request executes in its own workspace"
         );
-        assert_eq!(runner.calls.lock().unwrap().len(), 1);
+        assert!(receipt.ok);
+        assert!(receipt.rev.is_none());
+        assert!(result.rev.is_none());
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert!(calls.iter().all(|call| call.cwd == second.path()));
     }
 
     #[test]

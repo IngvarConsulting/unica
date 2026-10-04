@@ -10,11 +10,13 @@ description: "Обработчики событий объекта 1С. Испо
 - Preferred path: use MCP `unica` tools `unica.view {}`, `unica.view` on the object node, `unica.search`, `unica.apply`, `unica.check`, and `unica.run`.
 - Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,
-`ifRevRequiredOnApply`. Контракт вызова бери оттуда, а не из этого текста;
+`dryRunRequired`. Контракт вызова бери оттуда, а не из этого текста;
 при `implemented: true` используй опубликованную `argsSchema`; при
 `support.state: limited` разрешено только подмножество `support.supportedArgs`.
 При `support.state: unavailable` остановись; не выдумывай аргументов при
-`argsSchema: null`. Превью исполнением не является. Не обходи контракт прямым runner-ом.
+`argsSchema: null`. Для плановой операции сначала проверь результат `dryRun: true`,
+затем исполняй запрос с `dryRun: false`. Preview не фиксирует входы между
+вызовами. Не обходи контракт прямым runner-ом.
 - Use `unica.docs` with `source: "development-standard"` for the standards about handlers: 396, 455, 463, 464, 465, 466, 686, 752, 773, and diagnostics АПК:75, АПК:144, АПК:1340, BSLLS:DataExchangeLoading, BSLLS:UsingCancelParameter, BSLLS:MissingEventSubscriptionHandler. These are standards, not evidence of runtime behavior; confirm the wording before citing one.
 - Do not call internal analyzer, runtime, standards, or package adapters directly. They are hidden behind MCP `unica`.
 

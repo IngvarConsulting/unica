@@ -2371,9 +2371,32 @@ mod tests {
             .await;
         let response = client.receive().await;
         assert!(response.get("error").is_none(), "{response}");
-        response["result"]["tools"]
+        let tools = response["result"]["tools"]
             .as_array()
-            .expect("tools/list must return tools")
+            .expect("tools/list must return tools");
+        for tool in tools {
+            let schema = &tool["inputSchema"];
+            assert_eq!(schema["type"], "object", "{}", tool["name"]);
+            for keyword in ["oneOf", "anyOf", "allOf"] {
+                assert!(
+                    schema.get(keyword).is_none(),
+                    "{} uses unsupported root-level {keyword} in its input schema",
+                    tool["name"]
+                );
+            }
+            if tool["name"] == "unica.apply" {
+                let validator = jsonschema::validator_for(schema).expect("valid apply wire schema");
+                let plan = json!({"at":"main:Document.Order", "ops":[{"op":"props.set"}]});
+                assert!(validator.is_valid(&plan));
+                assert!(validator.is_valid(&json!({"executionToken":"saved-plan"})));
+                let mut mixed = plan.clone();
+                mixed["executionToken"] = Value::Null;
+                assert!(!validator.is_valid(&mixed));
+                mixed["executionToken"] = json!("saved-plan");
+                assert!(!validator.is_valid(&mixed));
+            }
+        }
+        tools
             .iter()
             .map(|tool| tool["name"].as_str().expect("tool name").to_string())
             .collect()
@@ -2706,108 +2729,132 @@ mod tests {
         use crate::domain::invocation::{InvocationStatus, TaskId};
         use std::sync::atomic::AtomicUsize;
 
-        let task_id = TaskId::new();
-        let subject = canonical_result("same terminal subject result");
-        let executions = Arc::new(AtomicUsize::new(0));
-        let execution_observed = Arc::clone(&executions);
-        let direct_subject = subject.clone();
-        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, arguments, _, _, _| {
-            execution_observed.fetch_add(1, Ordering::SeqCst);
-            if arguments.get("direct").and_then(Value::as_bool) == Some(true) {
-                direct_outcome(direct_subject.clone())
-            } else {
-                Ok(CanonicalCallOutcome::Task(canonical_snapshot(
-                    task_id,
-                    InvocationStatus::Working,
-                    None,
-                )))
-            }
-        });
-        let get: Arc<CanonicalTaskHandler> =
-            Arc::new(move |_, _| Ok(canonical_snapshot(task_id, InvocationStatus::Working, None)));
-        let waits = Arc::new(Mutex::new(Vec::<u64>::new()));
-        let waits_observed = Arc::clone(&waits);
-        let wait_subject = subject.clone();
-        let wait: Arc<CanonicalTaskWaitHandler> = Arc::new(move |_, wait_ms, _| {
-            waits_observed.lock().unwrap().push(wait_ms);
-            Ok(if wait_ms == 0 {
-                canonical_snapshot(task_id, InvocationStatus::Working, None)
-            } else {
-                canonical_snapshot(
-                    task_id,
-                    InvocationStatus::Completed,
-                    Some(wait_subject.clone()),
-                )
-            })
-        });
-        let cancel = Arc::clone(&get);
-        let server = UnicaServer::with_canonical_v13_task_handlers(call, get, wait, cancel);
-        let (mut client, _) = spawn_unica_server(server);
+        for is_error in [false, true] {
+            let task_id = TaskId::new();
+            let mut subject = canonical_result("same terminal subject result");
+            subject.ok = !is_error;
+            subject.diagnostics = vec![json!({
+                "code": "provider_unavailable", "outcome": "needsHuman",
+                "message": "v8-runner is unavailable", "remediation": "prefetch the engine"
+            })];
+            let executions = Arc::new(AtomicUsize::new(0));
+            let execution_observed = Arc::clone(&executions);
+            let direct_subject = subject.clone();
+            let call: Arc<CanonicalCallHandler> = Arc::new(move |_, arguments, _, _, _| {
+                execution_observed.fetch_add(1, Ordering::SeqCst);
+                if arguments.get("direct").and_then(Value::as_bool) == Some(true) {
+                    direct_outcome(direct_subject.clone())
+                } else {
+                    Ok(CanonicalCallOutcome::Task(canonical_snapshot(
+                        task_id,
+                        InvocationStatus::Working,
+                        None,
+                    )))
+                }
+            });
+            let get: Arc<CanonicalTaskHandler> = Arc::new(move |_, _| {
+                Ok(canonical_snapshot(task_id, InvocationStatus::Working, None))
+            });
+            let waits = Arc::new(Mutex::new(Vec::<u64>::new()));
+            let waits_observed = Arc::clone(&waits);
+            let wait_subject = subject.clone();
+            let wait: Arc<CanonicalTaskWaitHandler> = Arc::new(move |_, wait_ms, _| {
+                waits_observed.lock().unwrap().push(wait_ms);
+                Ok(if wait_ms == 0 {
+                    canonical_snapshot(task_id, InvocationStatus::Working, None)
+                } else {
+                    canonical_snapshot(
+                        task_id,
+                        InvocationStatus::Completed,
+                        Some(wait_subject.clone()),
+                    )
+                })
+            });
+            let cancel = Arc::clone(&get);
+            let server = UnicaServer::with_canonical_v13_task_handlers(call, get, wait, cancel);
+            let (mut client, _) = spawn_unica_server(server);
 
-        client
-            .send(json!({
-                "jsonrpc":"2.0", "id":1, "method":"tools/call",
-                "params":{
-                    "name":"unica.check", "arguments":{"direct":true}, "_meta":modern_meta()
-                }
-            }))
-            .await;
-        let direct = client.receive().await;
-        client
-            .send(json!({
-                "jsonrpc":"2.0", "id":2, "method":"tools/call",
-                "params":{
-                    "name":"unica.check", "arguments":{}, "_meta":modern_meta()
-                }
-            }))
-            .await;
-        let initial = client.receive().await;
-        assert_eq!(
-            initial["result"]["structuredContent"]["data"]["task"]["taskId"],
-            task_id.to_string()
-        );
-        client
-            .send(json!({
-                "jsonrpc":"2.0", "id":3, "method":"tools/call",
-                "params":{
-                    "name":"unica.task.result",
-                    "arguments":{"taskId":task_id.to_string(), "waitMs":0},
-                    "_meta":modern_meta()
-                }
-            }))
-            .await;
-        let still_working = client.receive().await;
-        assert_eq!(
-            still_working["result"]["structuredContent"]["data"]["task"]["status"], "working",
-            "{still_working}"
-        );
-        client
-            .send(json!({
-                "jsonrpc":"2.0", "id":4, "method":"tools/call",
-                "params":{
-                    "name":"unica.task.result",
-                    "arguments":{"taskId":task_id.to_string()},
-                    "_meta":modern_meta()
-                }
-            }))
-            .await;
-        let terminal = client.receive().await;
-        assert_eq!(
-            serde_json::to_vec(&direct["result"]).unwrap(),
-            serde_json::to_vec(&terminal["result"]).unwrap()
-        );
-        assert_eq!(executions.load(Ordering::SeqCst), 2);
-        {
-            let waits = waits.lock().unwrap();
-            assert_eq!(waits.len(), 2);
-            assert_eq!(waits[0], 0);
-            assert!(waits[1] <= 7_000);
-            assert!(
-                waits[1] > 0,
-                "default result wait must not become immediate"
+            client
+                .send(json!({
+                    "jsonrpc":"2.0", "id":1, "method":"tools/call",
+                    "params":{
+                        "name":"unica.check", "arguments":{"direct":true}, "_meta":modern_meta()
+                    }
+                }))
+                .await;
+            let direct = client.receive().await;
+            assert_eq!(direct["result"]["isError"], is_error);
+            if is_error {
+                let fallback: Value = serde_json::from_str(
+                    direct["result"]["content"][0]["text"]
+                        .as_str()
+                        .expect("readable error"),
+                )
+                .unwrap();
+                assert_eq!(fallback["diagnostics"][0]["outcome"], "needsHuman");
+                assert_eq!(
+                    fallback["diagnostics"][0]["remediation"],
+                    "prefetch the engine"
+                );
+            } else {
+                assert_eq!(direct["result"]["content"], json!([]));
+            }
+            client
+                .send(json!({
+                    "jsonrpc":"2.0", "id":2, "method":"tools/call",
+                    "params":{
+                        "name":"unica.check", "arguments":{}, "_meta":modern_meta()
+                    }
+                }))
+                .await;
+            let initial = client.receive().await;
+            assert_eq!(
+                initial["result"]["structuredContent"]["data"]["task"]["taskId"],
+                task_id.to_string()
             );
+            client
+                .send(json!({
+                    "jsonrpc":"2.0", "id":3, "method":"tools/call",
+                    "params":{
+                        "name":"unica.task.result",
+                        "arguments":{"taskId":task_id.to_string(), "waitMs":0},
+                        "_meta":modern_meta()
+                    }
+                }))
+                .await;
+            let still_working = client.receive().await;
+            assert_eq!(
+                still_working["result"]["structuredContent"]["data"]["task"]["status"], "working",
+                "{still_working}"
+            );
+            client
+                .send(json!({
+                    "jsonrpc":"2.0", "id":4, "method":"tools/call",
+                    "params":{
+                        "name":"unica.task.result",
+                        "arguments":{"taskId":task_id.to_string()},
+                        "_meta":modern_meta()
+                    }
+                }))
+                .await;
+            let terminal = client.receive().await;
+            assert_eq!(
+                serde_json::to_vec(&direct["result"]).unwrap(),
+                serde_json::to_vec(&terminal["result"]).unwrap()
+            );
+            assert_eq!(executions.load(Ordering::SeqCst), 2);
+            {
+                let waits = waits.lock().unwrap();
+                assert_eq!(waits.len(), 2);
+                assert_eq!(waits[0], 0);
+                assert!(waits[1] <= 7_000);
+                assert!(
+                    waits[1] > 0,
+                    "default result wait must not become immediate"
+                );
+            }
+            client.shutdown().await;
         }
-        client.shutdown().await;
     }
 
     async fn compatibility_closed_errors_case() {
@@ -3579,13 +3626,21 @@ mod tests {
             Instant::now() + Duration::from_secs(20),
         )
         .await;
-        let rev = preview_result["result"]["structuredContent"]["rev"]
-            .as_str()
-            .unwrap_or_else(|| panic!("preview has no revision: {preview_result}"));
+        assert_eq!(
+            preview_result["result"]["structuredContent"]["ok"], true,
+            "{preview_result}"
+        );
+        assert!(
+            preview_result["result"]["structuredContent"]
+                .get("rev")
+                .is_none(),
+            "{preview_result}"
+        );
+        assert!(!workspace.join("entered.marker").exists());
         client
             .send(json!({
                 "jsonrpc":"2.0", "id":3, "method":"tools/call",
-                "params":{"name":"unica.run", "arguments":{"op":"infobase.create","args":{},"dryRun":false,"ifRev":rev}, "_meta":modern_meta()}
+                "params":{"name":"unica.run", "arguments":{"op":"infobase.create","args":{},"dryRun":false}, "_meta":modern_meta()}
             }))
             .await;
         let apply = client.receive().await;
@@ -3627,6 +3682,10 @@ mod tests {
         );
         assert_eq!(
             result["result"]["structuredContent"]["data"]["state"], "created",
+            "{result}"
+        );
+        assert!(
+            result["result"]["structuredContent"].get("rev").is_none(),
             "{result}"
         );
         assert_eq!(
@@ -3676,31 +3735,6 @@ mod tests {
             workspace.to_string_lossy().into_owned(),
         ));
 
-        client
-            .send(json!({
-                "jsonrpc":"2.0", "id":1, "method":"tools/call",
-                "params":{"name":"unica.run", "arguments":{"op":"infobase.create","args":{},"dryRun":true}, "_meta":modern_meta()}
-            }))
-            .await;
-        let preview = client.receive().await;
-        let preview_id = preview["result"]["structuredContent"]["data"]["task"]["taskId"]
-            .as_str()
-            .unwrap_or_else(|| panic!("preview did not return a task: {preview}"));
-        let preview_deadline = Instant::now() + Duration::from_secs(20);
-        let rev = loop {
-            assert!(Instant::now() < preview_deadline, "preview did not settle");
-            client
-                .send(json!({
-                    "jsonrpc":"2.0", "id":2, "method":"tools/call",
-                    "params":{"name":"unica.task.result", "arguments":{"taskId":preview_id,"waitMs":1000}, "_meta":modern_meta()}
-                }))
-                .await;
-            let response = client.receive().await;
-            if let Some(rev) = response["result"]["structuredContent"]["rev"].as_str() {
-                break rev.to_owned();
-            }
-        };
-
         let target = crate::infrastructure::platform::current_target_id().unwrap();
         let runner = root
             .path()
@@ -3711,7 +3745,7 @@ mod tests {
         client
             .send(json!({
                 "jsonrpc":"2.0", "id":3, "method":"tools/call",
-                "params":{"name":"unica.run", "arguments":{"op":"infobase.create","args":{},"dryRun":false,"ifRev":rev}, "_meta":modern_meta()}
+                "params":{"name":"unica.run", "arguments":{"op":"infobase.create","args":{},"dryRun":false}, "_meta":modern_meta()}
             }))
             .await;
         let apply = client.receive().await;
@@ -4110,61 +4144,79 @@ mod tests {
     async fn tasks_direct_and_completed_get_case() {
         use crate::domain::invocation::{InvocationStatus, TaskId};
 
-        let task_id = TaskId::new();
-        let expected = canonical_result("same canonical result");
-        let direct_expected = expected.clone();
-        let call: Arc<CanonicalCallHandler> = Arc::new(move |_, arguments, _, _, _| {
-            if arguments.get("async").and_then(Value::as_bool) == Some(true) {
-                Ok(CanonicalCallOutcome::Task(canonical_snapshot(
+        for is_error in [false, true] {
+            let task_id = TaskId::new();
+            let mut expected = canonical_result("same canonical result");
+            expected.ok = !is_error;
+            expected.diagnostics = vec![json!({
+                "code": "bad_value", "outcome": "fixCall", "message": "correct the source set"
+            })];
+            let direct_expected = expected.clone();
+            let call: Arc<CanonicalCallHandler> = Arc::new(move |_, arguments, _, _, _| {
+                if arguments.get("async").and_then(Value::as_bool) == Some(true) {
+                    Ok(CanonicalCallOutcome::Task(canonical_snapshot(
+                        task_id,
+                        InvocationStatus::Working,
+                        None,
+                    )))
+                } else {
+                    direct_outcome(direct_expected.clone())
+                }
+            });
+            let get_expected = expected.clone();
+            let get: Arc<CanonicalTaskHandler> = Arc::new(move |_, _| {
+                Ok(canonical_snapshot(
                     task_id,
-                    InvocationStatus::Working,
-                    None,
-                )))
-            } else {
-                direct_outcome(direct_expected.clone())
-            }
-        });
-        let get_expected = expected.clone();
-        let get: Arc<CanonicalTaskHandler> = Arc::new(move |_, _| {
-            Ok(canonical_snapshot(
-                task_id,
-                InvocationStatus::Completed,
-                Some(get_expected.clone()),
-            ))
-        });
-        let server = UnicaServer::with_canonical_v13_tasks(call, Arc::clone(&get), get);
-        let (mut client, _) = spawn_unica_server(server);
+                    InvocationStatus::Completed,
+                    Some(get_expected.clone()),
+                ))
+            });
+            let server = UnicaServer::with_canonical_v13_tasks(call, Arc::clone(&get), get);
+            let (mut client, _) = spawn_unica_server(server);
 
-        for (id, arguments) in [(1, json!({})), (2, json!({"async": true}))] {
-            client
-                .send(json!({
-                    "jsonrpc": "2.0", "id": id, "method": "tools/call",
-                    "params": {
-                        "name": "unica.check", "arguments": arguments,
-                        "_meta": modern_tasks_meta()
-                    }
-                }))
-                .await;
-            let response = client.receive().await;
-            if id == 1 {
-                assert_eq!(response["result"]["resultType"], "complete");
+            for (id, arguments) in [(1, json!({})), (2, json!({"async": true}))] {
                 client
                     .send(json!({
-                        "jsonrpc": "2.0", "id": 3, "method": "tasks/get",
-                        "params": {"taskId": task_id.to_string(), "_meta": modern_tasks_meta()}
+                        "jsonrpc": "2.0", "id": id, "method": "tools/call",
+                        "params": {
+                            "name": "unica.check", "arguments": arguments,
+                            "_meta": modern_tasks_meta()
+                        }
                     }))
                     .await;
-                let completed = client.receive().await;
-                assert_eq!(
+                let response = client.receive().await;
+                if id == 1 {
+                    assert_eq!(response["result"]["resultType"], "complete");
+                    assert_eq!(response["result"]["isError"], is_error);
+                    if is_error {
+                        let fallback: Value = serde_json::from_str(
+                            response["result"]["content"][0]["text"]
+                                .as_str()
+                                .expect("readable error"),
+                        )
+                        .unwrap();
+                        assert_eq!(fallback["diagnostics"][0]["outcome"], "fixCall");
+                    } else {
+                        assert_eq!(response["result"]["content"], json!([]));
+                    }
+                    client
+                        .send(json!({
+                            "jsonrpc": "2.0", "id": 3, "method": "tasks/get",
+                            "params": {"taskId": task_id.to_string(), "_meta": modern_tasks_meta()}
+                        }))
+                        .await;
+                    let completed = client.receive().await;
+                    assert_eq!(
                     serde_json::to_vec(&response["result"]).unwrap(),
                     serde_json::to_vec(&completed["result"]["result"]).unwrap(),
                     "direct and durable terminal projections diverged: direct={response}, task={completed}"
                 );
-            } else {
-                assert_eq!(response["result"]["resultType"], "task", "{response}");
+                } else {
+                    assert_eq!(response["result"]["resultType"], "task", "{response}");
+                }
             }
+            client.shutdown().await;
         }
-        client.shutdown().await;
     }
 
     async fn tasks_projection_rejects_reverse_timestamps_on_wire_case() {
