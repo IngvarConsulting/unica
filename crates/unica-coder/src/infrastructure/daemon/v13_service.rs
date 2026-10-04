@@ -1392,19 +1392,37 @@ impl CanonicalV13ReadService {
                         "sourceSet".to_string(),
                         Value::String(address.source_set().to_string()),
                     );
-                    let owner = address
-                        .segments()
-                        .iter()
-                        .take_while(|segment| segment.name().is_some())
-                        .map(|segment| {
-                            format!(
-                                "{}.{}",
-                                segment.kind().as_str(),
-                                segment.name().unwrap_or("")
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                        .join(".");
+                    let owner = if let Some(capability) =
+                        crate::domain::platform_profile::PlatformProfile::v8_3_27()
+                            .module_capability(&address)
+                    {
+                        match crate::infrastructure::logical_event_source::module_source_address(
+                            &address, capability,
+                        ) {
+                            Ok(module) => module.as_str().to_owned(),
+                            Err(error) => {
+                                return error_result_detailed(
+                                    Some(scope.to_string()),
+                                    RefusalDetail::ProviderAbsent,
+                                    error,
+                                );
+                            }
+                        }
+                    } else {
+                        address
+                            .segments()
+                            .iter()
+                            .take_while(|segment| segment.name().is_some())
+                            .map(|segment| {
+                                format!(
+                                    "{}.{}",
+                                    segment.kind().as_str(),
+                                    segment.name().unwrap_or("")
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join(".")
+                    };
                     if !owner.is_empty() {
                         selector.insert("metadataPath".to_string(), Value::String(owner));
                     }
@@ -4048,6 +4066,162 @@ mod tests {
         std::fs::write(workspace.path().join("src/Configuration.xml"),
             r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#).unwrap();
         workspace
+    }
+
+    #[test]
+    fn canonical_lexical_module_scope_searches_only_the_selected_file() {
+        use crate::application::invocation_store::ToolIdentity;
+        use crate::application::ports::TokioClock;
+        use crate::infrastructure::daemon::protocol::InvocationRequest;
+        use crate::infrastructure::daemon::server::V5CanonicalInvocationRuntime;
+
+        let workspace = role_search_workspace();
+        let source = workspace.path().join("src");
+        let descriptor = |kind: &str, name: &str, children: &str| {
+            format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{kind}><Properties><Name>{name}</Name></Properties><ChildObjects>{children}</ChildObjects></{kind}></MetaDataObject>"#
+            )
+        };
+        std::fs::write(source.join("Configuration.xml"), descriptor("Configuration", "Store", "<Catalog>Items</Catalog><Catalog>Neighbor</Catalog><CommonModule>Shared</CommonModule><CommonModule>Empty</CommonModule>")).unwrap();
+        for (path, kind, name, children) in [
+            (
+                "Catalogs/Items.xml",
+                "Catalog",
+                "Items",
+                "<Form>Main</Form><Command>Act</Command>",
+            ),
+            ("Catalogs/Neighbor.xml", "Catalog", "Neighbor", ""),
+            ("Catalogs/Items/Forms/Main.xml", "Form", "Main", ""),
+            ("Catalogs/Items/Commands/Act.xml", "Command", "Act", ""),
+            ("CommonModules/Shared.xml", "CommonModule", "Shared", ""),
+            ("CommonModules/Empty.xml", "CommonModule", "Empty", ""),
+        ] {
+            let path = source.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, descriptor(kind, name, children)).unwrap();
+        }
+        let modules = [
+            (
+                "main:Catalog.Items.Module.Object",
+                "Catalogs/Items/Ext/ObjectModule.bsl",
+                "Catalog.Items.ObjectModule",
+            ),
+            (
+                "main:Catalog.Items.Module.Manager",
+                "Catalogs/Items/Ext/ManagerModule.bsl",
+                "Catalog.Items.ManagerModule",
+            ),
+            (
+                "main:Catalog.Items.Form.Main.Module.Form",
+                "Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+                "Catalog.Items.Form.Main.FormModule",
+            ),
+            (
+                "main:Catalog.Items.Command.Act.Module.Command",
+                "Catalogs/Items/Commands/Act/Ext/CommandModule.bsl",
+                "Catalog.Items.Command.Act.CommandModule",
+            ),
+            (
+                "main:CommonModule.Shared",
+                "CommonModules/Shared/Ext/Module.bsl",
+                "CommonModule.Shared.Module",
+            ),
+            (
+                "main:Module.Session",
+                "Ext/SessionModule.bsl",
+                "SessionModule",
+            ),
+            (
+                "main:Catalog.Neighbor.Module.Object",
+                "Catalogs/Neighbor/Ext/ObjectModule.bsl",
+                "Catalog.Neighbor.ObjectModule",
+            ),
+        ];
+        for (_, path, _) in modules {
+            let path = source.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "// Needle\n").unwrap();
+        }
+        assert!(std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(workspace.path())
+            .status()
+            .unwrap()
+            .success());
+        let runtime = V5CanonicalInvocationRuntime::new(
+            Arc::new(super::CanonicalV13ReadService::default()),
+            Arc::new(TokioClock),
+        );
+        let search = |scope: &str| {
+            let request = InvocationRequest::new(
+                ToolIdentity::Search,
+                json!({"query":"Needle", "corpus":"text", "role":"lexical", "scope":scope, "limit":50}),
+                std::fs::canonicalize(workspace.path()).unwrap().to_string_lossy(),
+                7_000,
+            ).unwrap();
+            runtime
+                .bind(request)
+                .unwrap()
+                .prepare()
+                .unwrap()
+                .execute(CancellationToken::new())
+                .unwrap()
+        };
+        for (scope, _, metadata_path) in modules {
+            let result = search(scope);
+            assert!(result.ok, "{scope}: {result:?}");
+            assert!(result.diagnostics.is_empty(), "{scope}: {result:?}");
+            let hits = result.data.as_ref().unwrap()["matches"][0]["hits"]
+                .as_array()
+                .unwrap();
+            assert_eq!(
+                hits.len(),
+                1,
+                "{scope} must not include a neighbor: {result:?}"
+            );
+            assert_eq!(
+                hits[0]["location"]["metadataPath"], metadata_path,
+                "{scope}: {result:?}"
+            );
+        }
+        for (scope, count) in [("main:Catalog.Items", 4), ("main:Configuration", 7)] {
+            let result = search(scope);
+            assert!(result.ok, "{scope}: {result:?}");
+            assert_eq!(
+                result.data.as_ref().unwrap()["matches"][0]["hits"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                count,
+                "{scope}: {result:?}"
+            );
+        }
+        for scope in [
+            "main:CommonModule.Empty",
+            "main:Catalog.Items.Module.Manager",
+        ] {
+            if scope.ends_with("Manager") {
+                std::fs::remove_file(source.join("Catalogs/Items/Ext/ManagerModule.bsl")).unwrap();
+            }
+            let result = search(scope);
+            assert!(
+                result.ok,
+                "registered absent module is empty: {scope}: {result:?}"
+            );
+            assert!(result.diagnostics.is_empty(), "{scope}: {result:?}");
+            assert!(
+                result.data.as_ref().unwrap()["matches"][0]["hits"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty(),
+                "{scope}: {result:?}"
+            );
+        }
+        let result = search("main:Catalog.Unknown.Module.Object");
+        assert!(
+            !result.ok,
+            "an unknown owner must not become a source-wide search: {result:?}"
+        );
     }
 
     #[test]
