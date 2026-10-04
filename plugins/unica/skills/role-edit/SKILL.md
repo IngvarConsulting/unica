@@ -17,9 +17,9 @@ allowed-tools:
   `unica.resolve`, и в обычном ходе работы он не нужен.
 - Имя набора даёт `unica.view {}`, адрес роли по имени —
   `unica.search {corpus: "names", kind: "Role"}`. `"main"` ниже только пример.
-- Всегда сначала `dryRun: true`. Применяй `dryRun: false` только когда
-  пользователь явно попросил внести именно эту правку, и только с `ifRev` из
-  предпросмотра.
+- Сначала вызови `unica.apply` с `at` и `ops`: это план без записи.
+  Когда пользователь поручил внести эту правку, вызови `unica.apply` только
+  с `executionToken` из `data.executionToken` успешного плана.
 - Читай из ответа `changed`, `effects` по порядку операций и диагностики.
   Физический путь и diff контрактом результата не являются.
 
@@ -79,14 +79,15 @@ allowed-tools:
             }
           }
         }
-      ],
-      "dryRun": true
+      ]
     }
   }
 }
 ```
 
 ### Право с ограничением записей
+
+Сначала получи план этого изменения:
 
 ```json
 {
@@ -109,9 +110,22 @@ allowed-tools:
             }
           }
         }
-      ],
-      "dryRun": false,
-      "ifRev": "<rev из предпросмотра>"
+      ]
+    }
+  }
+}
+```
+
+Для исполнения передай `data.executionToken` из этого успешного плана:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "unica.apply",
+    "arguments": {
+      "executionToken": "<data.executionToken из успешного плана>"
     }
   }
 }

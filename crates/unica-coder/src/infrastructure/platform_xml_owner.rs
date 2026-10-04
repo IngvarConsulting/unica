@@ -654,6 +654,15 @@ fn read_version_owning_target(
     let Some((path, raw)) = snapshot_candidate_file(path, provenance, false)? else {
         return Ok(None);
     };
+    version_owning_target_from_bytes(&path, raw, expected_root)
+}
+
+/// Classifies an already retained document; it never resolves or opens its path.
+pub(crate) fn version_owning_target_from_bytes(
+    path: &Path,
+    raw: Vec<u8>,
+    expected_root: Option<PlatformXmlRootExpectation>,
+) -> Result<Option<PlatformXmlOwner>, PlatformXmlOwnerError> {
     if expected_root.is_none()
         && !path
             .extension()
@@ -663,12 +672,12 @@ fn read_version_owning_target(
         return Ok(None);
     }
     let text = std::str::from_utf8(&raw).map_err(|error| PlatformXmlOwnerError {
-        path: path.clone(),
+        path: path.to_path_buf(),
         message: format!("failed to read {} as UTF-8: {error}", path.display()),
     })?;
     let source = text.trim_start_matches('\u{feff}');
     let document = Document::parse(source).map_err(|error| PlatformXmlOwnerError {
-        path: path.clone(),
+        path: path.to_path_buf(),
         message: format!("failed to parse {}: {error}", path.display()),
     })?;
     let root = document.root_element();
@@ -676,7 +685,7 @@ fn read_version_owning_target(
     if let Some(expected_root) = expected_root {
         if root_qname != (Some(expected_root.namespace), expected_root.local_name) {
             return invalid_owner(
-                &path,
+                path,
                 &format!(
                     "declared platform XML target root is {{{}}}{}, expected {{{}}}{}",
                     root_qname.0.unwrap_or(""),
@@ -699,7 +708,7 @@ fn read_version_owning_target(
         })
     {
         return invalid_owner(
-            &path,
+            path,
             &format!(
                 "registered versionless platform XML root {{{}}}{} must not carry a version attribute",
                 root_qname.0.unwrap_or(""),
@@ -711,11 +720,11 @@ fn read_version_owning_target(
         Some(
             PlatformXmlOwnerPolicy::MetadataDescriptor
             | PlatformXmlOwnerPolicy::StandaloneVersionOwner,
-        ) => parse_platform_xml_owner(&path, raw, OwnerExpectation::Standalone).map(Some),
+        ) => parse_platform_xml_owner(path, raw, OwnerExpectation::Standalone).map(Some),
         Some(PlatformXmlOwnerPolicy::ContainerScoped | PlatformXmlOwnerPolicy::NoOwner) => Ok(None),
         None if raw_version.is_none() => Ok(None),
         None => invalid_owner(
-            &path,
+            path,
             &format!(
                 "unsupported version-owning platform XML root {{{}}}{}",
                 root_qname.0.unwrap_or(""),
@@ -938,6 +947,15 @@ fn owner_path_in_source_set(
             Some(source_root.join(artifact).with_extension("xml"))
         }
     }
+}
+
+/// The same source-set owner proof for a caller that already retained the bytes.
+pub(crate) fn source_set_owner_from_bytes(
+    path: &Path,
+    raw: Vec<u8>,
+    kind: SourceSetKind,
+) -> Result<PlatformXmlOwner, PlatformXmlOwnerError> {
+    parse_platform_xml_owner(path, raw, OwnerExpectation::SourceSet(kind))
 }
 
 fn parse_platform_xml_owner(

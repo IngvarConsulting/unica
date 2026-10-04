@@ -664,8 +664,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -691,8 +690,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -701,19 +699,7 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Catalog.Валюты",
-      "ops": [
-       {
-        "op": "props.set",
-        "args": {
-         "values": {
-          "Comment": "Приёмочный прогон"
-         }
-        }
-       }
-      ],
-      "dryRun": false,
-      "ifRev": "$rev"
+      "executionToken": "$executionToken"
      },
      "expect": [
       "ok"
@@ -739,8 +725,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -766,8 +751,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -793,8 +777,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -820,8 +803,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -847,8 +829,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -874,8 +855,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -901,8 +881,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -928,8 +907,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -940,7 +918,7 @@
   },
   {
    "area": "Свойства объектов",
-   "task": "Проверить ревизию и записать комментарий с оптимистичной блокировкой",
+   "task": "Прочитать объект и записать комментарий по сохранённому плану",
    "wire": [
     {
      "tool": "unica.view",
@@ -960,13 +938,20 @@
         "op": "props.set",
         "args": {
          "values": {
-          "Comment": "с ifRev"
+          "Comment": "по executionToken"
          }
         }
        }
-      ],
-      "ifRev": "$rev",
-      "dryRun": true
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
      },
      "expect": [
       "ok"
@@ -993,8 +978,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -1020,8 +1004,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -1040,8 +1023,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -1067,8 +1049,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -1102,8 +1083,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -1129,8 +1109,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -1156,8 +1135,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -1197,8 +1175,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -1233,8 +1210,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -1271,8 +1247,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -1298,8 +1273,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -1325,8 +1299,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -1363,8 +1336,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -1401,8 +1373,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -1411,30 +1382,7 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
-      "ops": [
-       {
-        "op": "attribute.add",
-        "args": {
-         "items": [
-          {
-           "name": "ПризнакПриемки",
-           "type": {
-            "variants": [
-             {
-              "kind": "string",
-              "length": 10,
-              "allowedLength": "variable"
-             }
-            ]
-           }
-          }
-         ]
-        }
-       }
-      ],
-      "dryRun": false,
-      "ifRev": "$rev"
+      "executionToken": "$executionToken"
      },
      "expect": [
       "ok"
@@ -1472,8 +1420,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -1508,8 +1455,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -1545,8 +1491,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -1582,8 +1527,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -1624,8 +1568,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -1675,8 +1618,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -1713,8 +1655,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -1753,8 +1694,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -1789,8 +1729,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -1811,8 +1750,7 @@
        {
         "op": "attribute.remove"
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -1847,8 +1785,7 @@
        {
         "op": "attribute.remove"
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -1891,8 +1828,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -1920,8 +1856,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -1948,8 +1883,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -1975,8 +1909,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -2016,8 +1949,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -2044,8 +1976,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -2071,8 +2002,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -2110,8 +2040,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -2138,8 +2067,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -2165,8 +2093,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -2197,8 +2124,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -2225,8 +2151,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -2252,8 +2177,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -2281,8 +2205,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -2309,8 +2232,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -2336,8 +2258,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -2366,8 +2287,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -2405,8 +2325,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -2443,8 +2362,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -2470,8 +2388,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "refused"
@@ -2491,8 +2408,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -2585,8 +2501,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "refused"
@@ -2643,8 +2558,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -2679,8 +2593,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -2689,39 +2602,7 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
-      "ops": [
-       {
-        "op": "props.set",
-        "args": {
-         "values": {
-          "Comment": "Обратимость"
-         }
-        }
-       }
-      ],
-      "dryRun": false,
-      "ifRev": "$rev"
-     },
-     "expect": [
-      "ok"
-     ]
-    },
-    {
-     "tool": "unica.apply",
-     "args": {
-      "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
-      "ops": [
-       {
-        "op": "props.set",
-        "args": {
-         "values": {
-          "Comment": ""
-         }
-        }
-       }
-      ],
-      "dryRun": true
+      "executionToken": "$executionToken"
      },
      "expect": [
       "ok"
@@ -2740,9 +2621,16 @@
          }
         }
        }
-      ],
-      "dryRun": false,
-      "ifRev": "$rev"
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
      },
      "expect": [
       "ok"
@@ -2789,8 +2677,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -2820,8 +2707,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -2849,8 +2735,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -2895,8 +2780,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -2963,8 +2847,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -3001,8 +2884,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -3029,8 +2911,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -3057,8 +2938,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -3085,8 +2965,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -3113,8 +2992,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -3141,8 +3019,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -3169,8 +3046,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -3197,8 +3073,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -3207,20 +3082,7 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Configuration",
-      "ops": [
-       {
-        "op": "object.create",
-        "args": {
-         "values": {
-          "kind": "Catalog",
-          "name": "Контрагенты"
-         }
-        }
-       }
-      ],
-      "dryRun": false,
-      "ifRev": "$rev"
+      "executionToken": "$executionToken"
      },
      "expect": [
       "ok"
@@ -3250,8 +3112,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -3260,30 +3121,7 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Catalog.Контрагенты",
-      "ops": [
-       {
-        "op": "attribute.add",
-        "args": {
-         "items": [
-          {
-           "name": "ИНН",
-           "type": {
-            "variants": [
-             {
-              "kind": "string",
-              "length": 12,
-              "allowedLength": "variable"
-             }
-            ]
-           }
-          }
-         ]
-        }
-       }
-      ],
-      "dryRun": false,
-      "ifRev": "$rev"
+      "executionToken": "$executionToken"
      },
      "expect": [
       "ok"
@@ -3313,8 +3151,7 @@
        {
         "op": "object.remove"
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -3335,8 +3172,7 @@
        {
         "op": "object.remove"
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "refused"
@@ -3368,8 +3204,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -3400,8 +3235,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -3445,8 +3279,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -3472,8 +3305,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -3509,8 +3341,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -3558,8 +3389,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -3586,8 +3416,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -3614,8 +3443,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -3642,8 +3470,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -3670,8 +3497,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -3698,8 +3524,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -3728,8 +3553,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -3758,8 +3582,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -3785,8 +3608,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -3807,8 +3629,7 @@
        {
         "op": "form.remove"
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -3835,8 +3656,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -3866,8 +3686,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -3888,8 +3707,7 @@
        {
         "op": "element.remove"
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -3918,8 +3736,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -3947,8 +3764,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -3975,8 +3791,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -4013,8 +3828,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -4043,8 +3857,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -4073,8 +3886,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -4117,8 +3929,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -4147,8 +3958,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -4175,8 +3985,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -4207,8 +4016,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -4238,8 +4046,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -4267,8 +4074,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -4313,8 +4119,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -4512,8 +4317,7 @@
          "position": "after"
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -4540,8 +4344,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -4565,8 +4368,7 @@
          "at": "main:Catalog.Валюты.Event.ПриЗаписи"
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -4612,8 +4414,7 @@
          "position": "after"
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -4784,8 +4585,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -4813,8 +4613,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -4840,8 +4639,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -4869,8 +4667,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -4898,8 +4695,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -4927,8 +4723,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -5026,8 +4821,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -5109,8 +4903,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -5137,8 +4930,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -5159,8 +4951,7 @@
        {
         "op": "field.remove"
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -5189,8 +4980,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -5217,8 +5007,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -5248,8 +5037,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -5270,8 +5058,7 @@
        {
         "op": "filter.clear"
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -5298,8 +5085,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -5327,8 +5113,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -5357,8 +5142,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -5387,8 +5171,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -5416,8 +5199,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -5446,8 +5228,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -5517,8 +5298,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -5545,8 +5325,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -5572,8 +5351,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -5615,8 +5393,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -5700,8 +5477,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -5743,8 +5519,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -5772,8 +5547,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -5811,8 +5585,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -5840,8 +5613,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -5869,8 +5641,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -5977,8 +5748,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -6004,8 +5774,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -6035,8 +5804,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -6057,8 +5825,7 @@
        {
         "op": "type.remove"
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -6084,8 +5851,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -6269,8 +6035,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -6306,8 +6071,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -6316,19 +6080,7 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Enum.ВажностьПроблемыУчета",
-      "ops": [
-       {
-        "op": "props.set",
-        "args": {
-         "values": {
-          "Comment": "для сравнения"
-         }
-        }
-       }
-      ],
-      "dryRun": false,
-      "ifRev": "$rev"
+      "executionToken": "$executionToken"
      },
      "expect": [
       "ok"
@@ -6708,8 +6460,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -6735,8 +6486,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -6893,8 +6643,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -6903,19 +6652,7 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Report.АнализВерсийОбъектов",
-      "ops": [
-       {
-        "op": "props.set",
-        "args": {
-         "values": {
-          "Comment": "Отчёт проверен приёмкой"
-         }
-        }
-       }
-      ],
-      "dryRun": false,
-      "ifRev": "$rev"
+      "executionToken": "$executionToken"
      },
      "expect": [
       "ok"
@@ -6941,8 +6678,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -6951,19 +6687,7 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:CommonModule.GoogleПереводчик",
-      "ops": [
-       {
-        "op": "props.set",
-        "args": {
-         "values": {
-          "Comment": "Модуль внешнего перевода"
-         }
-        }
-       }
-      ],
-      "dryRun": false,
-      "ifRev": "$rev"
+      "executionToken": "$executionToken"
      },
      "expect": [
       "ok"
@@ -6989,8 +6713,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -6999,19 +6722,7 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
-      "ops": [
-       {
-        "op": "props.set",
-        "args": {
-         "values": {
-          "Comment": "Документ под наблюдением"
-         }
-        }
-       }
-      ],
-      "dryRun": false,
-      "ifRev": "$rev"
+      "executionToken": "$executionToken"
      },
      "expect": [
       "ok"
@@ -7048,8 +6759,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -7086,8 +6796,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -7355,8 +7064,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "refused"
@@ -7384,8 +7092,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "refused"
@@ -7413,8 +7120,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "refused"
@@ -7442,8 +7148,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "refused"
@@ -7474,8 +7179,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "refused"
@@ -7501,8 +7205,7 @@
          "text": "// проба\n"
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "refused"
@@ -7532,8 +7235,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "refused"
@@ -7561,8 +7263,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "refused"
@@ -7590,8 +7291,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "refused"
@@ -7620,8 +7320,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "refused"
@@ -7651,8 +7350,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "refused"
@@ -7682,8 +7380,7 @@
          ]
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "refused"
@@ -7706,8 +7403,7 @@
         "op": "object.remove",
         "args": {}
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "refused"
@@ -7734,8 +7430,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -7761,8 +7456,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -7771,19 +7465,7 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Enum.НастройкиПоставщика",
-      "ops": [
-       {
-        "op": "supportRule.set",
-        "args": {
-         "values": {
-          "rule": "editable"
-         }
-        }
-       }
-      ],
-      "dryRun": false,
-      "ifRev": "$rev"
+      "executionToken": "$executionToken"
      },
      "expect": [
       "ok"
@@ -7802,8 +7484,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -7829,8 +7510,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -7839,19 +7519,7 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Catalog.Валюты",
-      "ops": [
-       {
-        "op": "supportCapability.set",
-        "args": {
-         "values": {
-          "enabled": false
-         }
-        }
-       }
-      ],
-      "dryRun": false,
-      "ifRev": "$rev"
+      "executionToken": "$executionToken"
      },
      "expect": [
       "ok"
@@ -7870,8 +7538,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "refused"
@@ -7974,8 +7641,7 @@
          "force": true
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -8011,8 +7677,7 @@
         "op": "form.remove",
         "args": {}
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "refused"
@@ -8035,8 +7700,7 @@
         "op": "object.remove",
         "args": {}
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "ok"
@@ -8045,15 +7709,7 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Enum.LanguageAware",
-      "ops": [
-       {
-        "op": "object.remove",
-        "args": {}
-       }
-      ],
-      "dryRun": false,
-      "ifRev": "$rev"
+      "executionToken": "$executionToken"
      },
      "expect": [
       "ok"
@@ -8354,8 +8010,7 @@
          }
         }
        }
-      ],
-      "dryRun": true
+      ]
      },
      "expect": [
       "refused"

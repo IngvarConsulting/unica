@@ -1,31 +1,27 @@
 ---
 id: INV.SOURCE.REVISION-PROJECTION-CAPTURE-EQUALITY
 check:
-  - crates/unica-coder/src/infrastructure/workspace_actor.rs::actor_revision_platform_resource_projection_matches_live_capture
-  - crates/unica-coder/src/infrastructure/workspace_actor.rs::actor_revision_unknown_staged_artifact_is_rejected_before_publication
-  - crates/unica-coder/src/infrastructure/workspace_actor.rs::actor_revision_lookalike_resource_is_rejected_before_publication
-  - crates/unica-coder/src/infrastructure/workspace_actor.rs::actor_revision_policy_migrates_old_scoped_record_once_then_is_restart_stable
-  - crates/unica-coder/src/infrastructure/source_revision.rs::actor_revision_projection_uses_capture_byte_limits_and_final_batch_accounting
-  - crates/unica-coder/src/infrastructure/source_revision.rs::actor_revision_projection_rebuilds_wire_slash_paths_in_native_manifest_encoding
-  - crates/unica-coder/src/infrastructure/source_revision.rs::actor_revision_projection_rejects_entry_overflow_before_publication
-  - crates/unica-coder/src/infrastructure/source_revision.rs::actor_revision_projection_preserves_final_entry_accounting
-  - crates/unica-coder/src/infrastructure/source_revision.rs::actor_revision_projection_counts_new_parent_topology
-  - crates/unica-coder/src/infrastructure/source_revision.rs::actor_revision_planning_requires_stable_ignored_entry_accounting
-  - crates/unica-coder/src/infrastructure/source_revision.rs::actor_revision_projection_matches_capture_depth_boundary
+  - crates/unica-coder/src/infrastructure/native_operations/apply.rs::reference_scan_keeps_content_guard_without_retaining_every_body
+  - crates/unica-coder/src/infrastructure/native_operations/apply.rs::reference_guard_rejects_same_inode_same_size_mutation_without_writing
+  - crates/unica-coder/src/infrastructure/native_operations/apply.rs::reference_guard_rechecks_identity_after_stream_and_rolls_back
+  - crates/unica-coder/src/infrastructure/workspace_actor.rs::apply_plan_fence_is_targeted_and_binds_read_only_inputs
+  - crates/unica-coder/src/infrastructure/workspace_actor.rs::disjoint_apply_plans_publish_without_a_global_revision_conflict
+  - crates/unica-coder/src/infrastructure/native_operations/apply.rs::read_only_absence_below_missing_parent_is_guarded_without_creating_it
+  - crates/unica-coder/src/infrastructure/native_operations/apply.rs::enumerated_payload_changes_refuse_before_write_and_roll_back_late_writes
+  - crates/unica-coder/src/infrastructure/native_operations/apply_families/metadata.rs::object_remove_retains_unchanged_reference_and_subsystem_inputs
 ---
 
-# Подготовленная ревизия совпадает с ревизией записанного дерева
+# Предпросмотр связывает применение с прочитанными входами плана
 
-Подготовка `apply` и последующее чтение дерева одинаково определяют пути,
-виды файлов и хеши содержимого. Ревизия успешной записи воспроизводится
-следующим допуском и после пересоздания актора. Файл, содержимое которого не учитывается ревизией, в том числе только
-похожий путём на ресурс, отклоняется до публикации.
+`apply` связывает `executionToken` с конкретным планом предпросмотра: операциями и их
+аргументами, прочитанными входами, доказанным отсутствием файлов и ожидаемыми
+результатами записи. Вход, который план только читает, защищается так же,
+как изменяемый файл. Изменение любого из этих условий требует нового
+предпросмотра. Если операция перечисляет каталог для проверки ссылок или
+удаления содержимого, состав этого каталога также входит в план. Проверка
+отсутствующего входа сама по себе не создаёт каталогов.
 
-Подготовка и последующий реальный обход одинаково хешируют всё учитываемое
-содержимое без фиксированного предела байтов одного файла и корпуса. Размеры
-учитываются с проверкой переполнения; пределы числа элементов и глубины
-остаются одинаковыми для подготовки и обхода.
-Считается итог всей партии: удаление освобождает место, замена не добавляет
-элемент, новые родительские каталоги учитываются один раз. Посторонний файл
-расходует лимит числа элементов, даже если его содержимое не хешируется.
-Изменившееся между проверками число таких элементов даёт отказ.
+Подготовка и исполнение проверяют только зависимости плана; полный обход
+исходников ради общей ревизии не выполняется. Изменение непрочитанного файла
+не меняет план. Две независимые партии могут примениться последовательно, если их прочитанные
+входы и ожидаемые результаты сохраняются.

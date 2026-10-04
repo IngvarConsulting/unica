@@ -83,10 +83,25 @@ pub(crate) fn validate_requested_overrides(
 
 /// Uses the existing platform profile for the first descriptor. Refreshes are
 /// surgical: extension-owned structure is never regenerated from the parent.
+#[cfg(test)]
 pub(crate) fn plan_borrow_object(
     parent: &[u8],
     existing: Option<&[u8]>,
     requested_overrides: Option<&[String]>,
+) -> Result<BorrowObjectPlan, BorrowObjectError> {
+    plan_borrow_object_with_identity(
+        parent,
+        existing,
+        requested_overrides,
+        &CfeBorrowIdentity::default(),
+    )
+}
+
+pub(crate) fn plan_borrow_object_with_identity(
+    parent: &[u8],
+    existing: Option<&[u8]>,
+    requested_overrides: Option<&[String]>,
+    identity: &CfeBorrowIdentity,
 ) -> Result<BorrowObjectPlan, BorrowObjectError> {
     let parent_text = utf8(parent)?;
     let parent_doc =
@@ -117,7 +132,7 @@ pub(crate) fn plan_borrow_object(
         &parent_uuid,
         Some(parent_props),
         version,
-        &CfeBorrowIdentity::default(),
+        identity,
     )?;
     let template_doc = Document::parse(&template).map_err(|e| e.to_string())?;
     let template_object = object(&template_doc)?;
@@ -537,6 +552,86 @@ mod tests {
             .unwrap()
             .bytes
     }
+    #[test]
+    fn seeded_borrow_replays_all_generated_ids_and_separates_objects() {
+        fn identifiers(bytes: &[u8]) -> BTreeSet<String> {
+            let text = std::str::from_utf8(bytes).unwrap();
+            let doc = Document::parse(text).unwrap();
+            let mut ids = BTreeSet::new();
+            for node in doc.descendants().filter(|node| node.is_element()) {
+                if let Some(value) = node.attribute("uuid") {
+                    assert!(ids.insert(value.to_owned()));
+                }
+                if matches!(node.tag_name().name(), "TypeId" | "ValueId" | "ThisNode") {
+                    assert!(ids.insert(node.text().unwrap().to_owned()));
+                }
+            }
+            ids
+        }
+        for kind in ["Catalog", "ExchangePlan", "CommonModule"] {
+            let source = parent(kind);
+            let identity = CfeBorrowIdentity::for_plan([1; 32]);
+            let first =
+                plan_borrow_object_with_identity(source.as_bytes(), None, None, &identity).unwrap();
+            let repeated =
+                plan_borrow_object_with_identity(source.as_bytes(), None, None, &identity).unwrap();
+            assert_eq!(
+                first.bytes, repeated.bytes,
+                "preview and publication must agree for {kind}"
+            );
+            let other = plan_borrow_object_with_identity(
+                source.as_bytes(),
+                None,
+                None,
+                &CfeBorrowIdentity::for_plan([2; 32]),
+            )
+            .unwrap();
+            let first_ids = identifiers(&first.bytes);
+            let other_ids = identifiers(&other.bytes);
+            assert!(!first_ids.is_empty());
+            assert!(
+                first_ids.is_disjoint(&other_ids),
+                "generated identities overlap between object plans: {kind}"
+            );
+            if kind == "ExchangePlan" {
+                assert!(std::str::from_utf8(&first.bytes)
+                    .unwrap()
+                    .contains("ThisNode"));
+                assert!(
+                    first_ids.len() > 3,
+                    "generated type/value identities must be exercised"
+                );
+            }
+            let refresh = plan_borrow_object_with_identity(
+                source.as_bytes(),
+                Some(&first.bytes),
+                None,
+                &CfeBorrowIdentity::for_plan([3; 32]),
+            )
+            .unwrap();
+            assert_eq!(
+                identifiers(&refresh.bytes),
+                first_ids,
+                "refresh must retain published identity"
+            );
+        }
+    }
+
+    #[test]
+    fn unseeded_borrow_keeps_fresh_legacy_identity() {
+        let source = parent("Catalog");
+        let first = plan_borrow_object(source.as_bytes(), None, None).unwrap();
+        let second = plan_borrow_object(source.as_bytes(), None, None).unwrap();
+        let first_text = std::str::from_utf8(&first.bytes).unwrap();
+        let second_text = std::str::from_utf8(&second.bytes).unwrap();
+        let first_doc = Document::parse(first_text).unwrap();
+        let second_doc = Document::parse(second_text).unwrap();
+        assert_ne!(
+            object(&first_doc).unwrap().attribute("uuid"),
+            object(&second_doc).unwrap().attribute("uuid")
+        );
+    }
+
     #[test]
     fn comment_is_extension_owned_without_a_property_state() {
         let parent = parent("CommonModule");

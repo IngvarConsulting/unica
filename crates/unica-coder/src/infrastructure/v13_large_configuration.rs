@@ -207,9 +207,9 @@ pub(crate) struct RegistrationIndex {
     count: u64,
 }
 
-/// Owned by the workspace actor and shared by its per-invocation read
-/// capabilities. Each source identity retains at most one completed revision
-/// index. Building runs outside the mutex: concurrent cold reads may perform
+/// Owned by one source read lease and shared by its capabilities. A new
+/// invocation gets a fresh cache; each source identity retains at most one
+/// completed read-identity index. Building runs outside the mutex: concurrent cold reads may perform
 /// duplicate work, but an expired or cancelled caller never blocks another
 /// caller behind a long XML parse.
 #[derive(Default)]

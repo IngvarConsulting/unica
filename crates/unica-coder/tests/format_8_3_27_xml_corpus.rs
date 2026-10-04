@@ -779,6 +779,11 @@ fn call_canonical_tool(tool: &str, args: &Map<String, Value>) -> Result<String, 
     let state = fs::canonicalize(&state).map_err(|error| error.to_string())?;
     let mut request = args.clone();
     request.remove("cwd");
+    let publish_apply =
+        tool == CANONICAL_APPLY_TOOL && request.remove("dryRun") != Some(Value::Bool(true));
+    if tool == CANONICAL_APPLY_TOOL {
+        request.remove("ifRev");
+    }
     let mut child = Command::new(env!("CARGO_BIN_EXE_unica"))
         .current_dir(&workspace)
         .env("UNICA_PROVIDER_STATE_DIR", &state)
@@ -840,7 +845,7 @@ fn call_canonical_tool(tool: &str, args: &Map<String, Value>) -> Result<String, 
     )
     .map_err(|error| error.to_string())?;
     stdin.write_all(b"\n").map_err(|error| error.to_string())?;
-    let response = exchange(
+    let mut response = exchange(
         &mut stdin,
         &mut reader,
         json!({
@@ -850,6 +855,21 @@ fn call_canonical_tool(tool: &str, args: &Map<String, Value>) -> Result<String, 
             "params": {"name": tool, "arguments": Value::Object(request)}
         }),
     )?;
+    if publish_apply && response["result"]["structuredContent"]["ok"] == true {
+        let token = response["result"]["structuredContent"]["data"]["executionToken"]
+            .as_str()
+            .ok_or_else(|| {
+                format!("canonical apply preview returned no executionToken: {response}")
+            })?;
+        response = exchange(
+            &mut stdin,
+            &mut reader,
+            json!({
+                "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                "params": {"name": tool, "arguments": {"executionToken": token}}
+            }),
+        )?;
+    }
     drop(stdin);
     let _ = child.wait();
     let _ = fs::remove_dir_all(&state);

@@ -38,7 +38,6 @@ pub(super) struct PreparedConfigurationTransition {
     operation: Transition,
     extension: Option<String>,
     dry_run: bool,
-    if_rev: Option<String>,
     context: WorkspaceContext,
 }
 pub(super) enum Preparation {
@@ -92,23 +91,12 @@ impl PreparedConfigurationTransition {
             .get("dryRun")
             .and_then(Value::as_bool)
             .ok_or_else(|| fail("dryRun must be boolean"))?;
-        let if_rev = match arguments.get("ifRev") {
-            None => None,
-            Some(Value::String(v)) if !v.trim().is_empty() => Some(v.clone()),
-            _ => return Err(fail("ifRev must be non-empty text")),
-        };
-        if dry_run == if_rev.is_some() {
-            return Err(fail(
-                "preview takes no ifRev; execution requires its preview revision",
-            ));
-        }
         let context = discover_workspace(Some(PathBuf::from(request.workspace_hint())))
             .map_err(|_| fail("workspace discovery failed"))?;
         Ok(Self {
             operation,
             extension,
             dry_run,
-            if_rev,
             context,
         })
     }
@@ -276,7 +264,7 @@ impl PreparedConfigurationTransition {
         &self,
         runner: &dyn ProcessRunner,
         tool: &BundledTool,
-        version: &str,
+        _version: &str,
         cancellation: CancellationToken,
     ) -> Result<DomainResult, DomainResult> {
         let inputs = self.inputs()?;
@@ -288,13 +276,7 @@ impl PreparedConfigurationTransition {
             ));
         }
         let provider = &preview["data"]["provider"];
-        let revision=format!("unica-configuration-transition-v1:{:x}",Sha256::digest(serde_json::to_vec(&json!({"workspace":self.workspace_identity_hash().as_str(),"op":self.operation.name(),"args":self.args(),"inputs":inputs,"version":version,"provider":provider})).expect("revision serializes")));
-        if !self.dry_run && self.if_rev.as_deref() != Some(&revision) {
-            return Err(self.fail(
-                RefusalCode::StaleRevision,
-                "transition plan changed; preview again",
-            ));
-        }
+
         let mut result = DomainResult::success(if self.dry_run {
             "configuration transition planned without changing the infobase"
         } else {
@@ -304,7 +286,7 @@ impl PreparedConfigurationTransition {
             result.data = Some(
                 json!({"op":self.operation.name(),"dryRun":true,"plan":{"infobase":"origin","args":self.args(),"provider":provider["selected"],"discardsPendingChanges":self.operation==Transition::Reset,"generationProtection":false,"extensionPresenceChecked":false,"databaseConfigurationUpdated":self.operation==Transition::Apply}}),
             );
-            result.next.push(json!({"tool":"unica.run","args":{"op":self.operation.name(),"args":self.args(),"dryRun":false,"ifRev":revision},"reason":"execute exactly the previewed transition"}));
+            result.next.push(json!({"tool":"unica.run","args":{"op":self.operation.name(),"args":self.args(),"dryRun":false},"reason":"execute with the current arguments"}));
         } else {
             let applied = self.invoke(runner, tool, &cancellation, false)?;
             result.data = Some(
@@ -314,7 +296,7 @@ impl PreparedConfigurationTransition {
                 json!({"infobase":true,"extension":self.extension,"kind":self.operation.name()}),
             );
         }
-        result.rev = Some(revision);
+
         Ok(result)
     }
 }
@@ -382,7 +364,6 @@ mod tests {
             operation,
             extension: extension.map(str::to_owned),
             dry_run: true,
-            if_rev: None,
             context: WorkspaceContext {
                 cwd: root.into(),
                 workspace_root: root.into(),
@@ -427,7 +408,7 @@ mod tests {
     }
 
     #[test]
-    fn transitions_apply_only_the_previewed_target_and_never_lose_the_force_flag() {
+    fn transitions_preview_and_execute_the_current_target_with_the_force_flag() {
         for op in [Transition::Apply, Transition::Reset] {
             for ext in [None, Some("Sales")] {
                 let root = tempfile::tempdir().unwrap();
@@ -442,7 +423,7 @@ mod tests {
                 );
                 assert!(result.ok);
                 assert!(result.changed.is_empty());
-                p.if_rev = result.rev;
+
                 p.dry_run = false;
                 let runner = Probe::new(vec![preview, apply]);
                 let result = p.execute_with(
@@ -474,7 +455,9 @@ mod tests {
             super::super::runner_011::VERSION,
             CancellationToken::new(),
         );
-        p.if_rev = planned.rev;
+
+        assert!(planned.ok);
+        assert!(planned.rev.is_none());
         p.dry_run = false;
         let mut bad = envelope(&p, false);
         bad["data"]["status"] = json!("failed");
@@ -501,20 +484,24 @@ mod tests {
     }
 
     #[test]
-    fn stale_transition_revision_stops_before_mutation() {
+    fn transition_executes_without_a_prior_preview_or_revision() {
         let root = tempfile::tempdir().unwrap();
         let mut p = fixture(root.path(), Transition::Apply, None);
         p.dry_run = false;
-        p.if_rev = Some("stale".into());
-        let runner = Probe::new(vec![envelope(&p, true)]);
+        let runner = Probe::new(vec![envelope(&p, true), envelope(&p, false)]);
         let result = p.execute_with(
             &runner,
             &tool(root.path()),
             super::super::runner_011::VERSION,
             CancellationToken::new(),
         );
-        assert!(!result.ok);
-        assert_eq!(runner.calls.lock().unwrap().len(), 1);
+        assert!(result.ok, "{result:?}");
+        assert!(result.rev.is_none());
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert!(calls[0].args.contains(&"--dry-run".into()));
+        assert!(!calls[1].args.contains(&"--dry-run".into()));
+        assert_eq!(result.data.as_ref().unwrap()["completed"], true);
     }
     #[test]
     fn wrong_transition_target_or_false_dispatch_receipt_is_never_success() {

@@ -1,18 +1,21 @@
 ---
 id: INV.SOURCE.REVISION-EXCLUDES-GENERATED-DIRECTORY
 check:
-  - crates/unica-coder/src/infrastructure/source_revision.rs::corpus_digest_tracks_content_and_path_but_ignores_generated_cache
-  - crates/unica-coder/src/infrastructure/source_revision.rs::retained_scan_resolves_child_name_policy_once_per_directory
+  - crates/unica-coder/src/infrastructure/native_operations/apply.rs::source_generated_guard_uses_each_retained_parent_case_policy
+  - crates/unica-coder/src/infrastructure/workspace_actor.rs::source_role_rejects_platform_equivalent_generated_components
+  - crates/unica-coder/src/infrastructure/workspace_actor.rs::workspace_root_source_allows_exact_generated_cache_descendant
 ---
 
-# Содержимое .build не входит в ревизию исходников
+# План исходников не включает служебный каталог .build
 
-При вычислении ревизии Unica не обходит `.build` на любом уровне дерева
-исходников и не учитывает его содержимое. Имя сравнивается по правилам
+Участник `apply`, изменяющий исходники, не получает доступ к `.build`
+на любом уровне дерева. При перечислении нужного поддерева этот каталог
+и его содержимое исключаются из входов плана. Имя сравнивается по правилам
 файловой системы содержащего каталога.
 
-Это не делает такой каталог допустимой частью исходников: проверка
-готовности отдельно сообщает о `.build` в корне набора.
+Запись служебного кеша требует отдельных полномочий на точный каталог
+кеша. Совпадение корня набора исходников с корнем рабочей области не
+позволяет выдать такие полномочия обычному участнику исходников.
 
-Проверки охватывают обычный обход и удерживаемое дерево с управляемыми
-правилами сравнения имён вложенного каталога.
+Проверка готовности отдельно сообщает о `.build` в корне набора;
+исключение из плана не делает каталог частью исходников.

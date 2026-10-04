@@ -15,9 +15,9 @@ allowed-tools:
   `subsystem.create`, `props.set` и `content.add`.
 - Do not call internal MCP/CLI adapters directly. They are hidden behind
   `unica` and synchronized by the orchestrator.
-- Всегда сначала `dryRun: true`. Применяй `dryRun: false` только когда
-  пользователь явно попросил внести именно эту правку, и только с `ifRev` из
-  предпросмотра.
+- Сначала вызови `unica.apply` с `at` и `ops`: это план без записи.
+  Когда пользователь поручил внести эту правку, вызови `unica.apply` только
+  с `executionToken` из `data.executionToken` успешного плана.
 - Проверка поддержки поставщика работает внутри `unica`.
 
 **Куда метит создание.** Подсистемы верхнего уровня — `args.at` вида
@@ -62,14 +62,15 @@ allowed-tools:
             "values": {"name": "Тест"}
           }
         }
-      ],
-      "dryRun": true
+      ]
     }
   }
 }
 ```
 
 ### С составом и свойствами
+
+Сначала получи план этого изменения:
 
 ```json
 {
@@ -84,7 +85,9 @@ allowed-tools:
           "op": "subsystem.create",
           "args": {
             "at": "main:Configuration",
-            "values": {"name": "Продажи"}
+            "values": {
+              "name": "Продажи"
+            }
           }
         },
         {
@@ -102,12 +105,32 @@ allowed-tools:
           "op": "content.add",
           "args": {
             "at": "main:Subsystem.Продажи",
-            "items": [{"object": "Catalog.Товары"}, {"object": "Report.Продажи"}]
+            "items": [
+              {
+                "object": "Catalog.Товары"
+              },
+              {
+                "object": "Report.Продажи"
+              }
+            ]
           }
         }
-      ],
-      "dryRun": false,
-      "ifRev": "<rev из предпросмотра>"
+      ]
+    }
+  }
+}
+```
+
+Для исполнения передай `data.executionToken` из этого успешного плана:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "unica.apply",
+    "arguments": {
+      "executionToken": "<data.executionToken из успешного плана>"
     }
   }
 }
@@ -133,8 +156,7 @@ allowed-tools:
             "items": [{"name": "Дочерняя"}]
           }
         }
-      ],
-      "dryRun": true
+      ]
     }
   }
 }

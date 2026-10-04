@@ -3523,6 +3523,8 @@ pub(crate) mod tests {
                         crate::domain::code_intelligence::CodeDefinitionResult {
                             name: name.clone(),
                             definitions: Vec::new(),
+                            index_freshness: None,
+                            index_build_id: None,
                         },
                     )
                 }

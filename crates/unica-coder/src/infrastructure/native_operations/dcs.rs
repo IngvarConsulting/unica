@@ -1918,151 +1918,168 @@ pub(crate) fn validate_dcs(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
-    const NS_SCHEMA: &str = DCS_SCHEMA_NS;
-
-    let result = (|| -> Result<DcsValidationRun, String> {
+    let result = (|| {
         let template_path = resolve_dcs_validate_path(args, context)?;
-        let resolved_path = template_path
-            .canonicalize()
-            .unwrap_or_else(|_| template_path.clone());
-        let file_name = resolved_path
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or("")
-            .to_string();
-        let detailed = bool_arg(args, &["detailed", "Detailed"]);
-        let max_errors = int_arg(args, &["maxErrors", "MaxErrors"])
-            .unwrap_or(20)
-            .max(0) as usize;
-
+        let resolved_path = template_path.canonicalize().unwrap_or(template_path);
         let text = read_utf8_sig(&resolved_path)?;
-        let mut report = DcsValidationReporter::new(max_errors, detailed, &file_name);
-        let doc = match Document::parse(text.trim_start_matches('\u{feff}')) {
-            Ok(doc) => {
-                report.ok("XML parsed successfully");
-                doc
-            }
-            Err(err) => {
-                report.error(format!("XML parse failed: {err}"));
-                let errors = report
-                    .lines
-                    .iter()
-                    .filter(|line| line.starts_with("[ERROR] "))
-                    .cloned()
-                    .collect::<Vec<_>>();
-                return Ok(DcsValidationRun {
-                    ok: false,
-                    stdout: format!("{}\n", report.lines.join("\n")),
-                    artifact: resolved_path,
-                    errors,
-                });
-            }
-        };
-
-        let root = doc.root_element();
-        if let Err(error) = require_dcs_root(root) {
-            report.error(error);
-            return dcs_validation_finish(report, &file_name, resolved_path);
-        }
-        report.ok("Root element: DataCompositionSchema");
-        report.ok("Default namespace correct");
-
-        let data_source_nodes = dcs_children(root, "dataSource", NS_SCHEMA);
-        let mut data_source_names = HashSet::<String>::new();
-        for dsn in &data_source_nodes {
-            if let Some(name) = dcs_child(*dsn, "name", NS_SCHEMA) {
-                data_source_names.insert(dcs_inner_text(name));
-            }
-        }
-
-        let data_set_nodes = dcs_children(root, "dataSet", NS_SCHEMA);
-        let mut data_set_names = HashSet::<String>::new();
-        let mut all_field_paths = HashMap::<String, String>::new();
-        for ds in &data_set_nodes {
-            if let Some(name_node) = dcs_child(*ds, "name", NS_SCHEMA) {
-                let ds_name = dcs_inner_text(name_node);
-                data_set_names.insert(ds_name.clone());
-                dcs_collect_data_set_fields(*ds, &ds_name, &mut all_field_paths);
-            }
-        }
-
-        let calc_field_nodes = dcs_children(root, "calculatedField", NS_SCHEMA);
-        let mut calc_field_paths = HashSet::<String>::new();
-        for cf in &calc_field_nodes {
-            if let Some(dp) = dcs_child(*cf, "dataPath", NS_SCHEMA) {
-                calc_field_paths.insert(dcs_inner_text(dp));
-            }
-        }
-        let total_field_nodes = dcs_children(root, "totalField", NS_SCHEMA);
-        let param_nodes = dcs_children(root, "parameter", NS_SCHEMA);
-        let template_nodes = dcs_children(root, "template", NS_SCHEMA);
-        let mut template_names = HashSet::<String>::new();
-        for template in &template_nodes {
-            if let Some(name_node) = dcs_child(*template, "name", NS_SCHEMA) {
-                template_names.insert(dcs_inner_text(name_node));
-            }
-        }
-        let group_template_nodes = dcs_children(root, "groupTemplate", NS_SCHEMA);
-        let variant_nodes = dcs_children(root, "settingsVariant", NS_SCHEMA);
-        let mut known_fields = all_field_paths.keys().cloned().collect::<HashSet<String>>();
-        known_fields.extend(calc_field_paths.iter().cloned());
-
-        dcs_validate_data_sources(&mut report, &data_source_nodes);
-        if report.stopped {
-            return dcs_validation_finish(report, &file_name, resolved_path);
-        }
-        dcs_validate_data_sets(&mut report, &data_set_nodes, &data_source_names);
-        if report.stopped {
-            return dcs_validation_finish(report, &file_name, resolved_path);
-        }
-        for ds in &data_set_nodes {
-            let ds_name = dcs_child(*ds, "name", NS_SCHEMA)
-                .map(dcs_inner_text)
-                .unwrap_or_else(|| "(unnamed)".to_string());
-            dcs_validate_data_set_fields(&mut report, *ds, &ds_name);
-            if report.stopped {
-                return dcs_validation_finish(report, &file_name, resolved_path.clone());
-            }
-        }
-        if report.stopped {
-            return dcs_validation_finish(report, &file_name, resolved_path);
-        }
-        dcs_validate_data_set_links(&mut report, root, &data_set_names);
-        if report.stopped {
-            return dcs_validation_finish(report, &file_name, resolved_path);
-        }
-        dcs_validate_calculated_fields(&mut report, &calc_field_nodes, &all_field_paths);
-        if report.stopped {
-            return dcs_validation_finish(report, &file_name, resolved_path);
-        }
-        dcs_validate_total_fields(&mut report, &total_field_nodes);
-        if report.stopped {
-            return dcs_validation_finish(report, &file_name, resolved_path);
-        }
-        dcs_validate_parameters(&mut report, &param_nodes);
-        if report.stopped {
-            return dcs_validation_finish(report, &file_name, resolved_path);
-        }
-        dcs_validate_templates(&mut report, &template_nodes);
-        if report.stopped {
-            return dcs_validation_finish(report, &file_name, resolved_path);
-        }
-        dcs_validate_group_templates(&mut report, &group_template_nodes, &template_names);
-        if report.stopped {
-            return dcs_validation_finish(report, &file_name, resolved_path);
-        }
-        dcs_validate_settings_variants(&mut report, &variant_nodes, &known_fields);
-        if report.stopped {
-            return dcs_validation_finish(report, &file_name, resolved_path);
-        }
-        dcs_validate_value_types(&mut report, root);
-        if report.stopped {
-            return dcs_validation_finish(report, &file_name, resolved_path);
-        }
-        dcs_validate_value_contents(&mut report, root);
-        dcs_validation_finish(report, &file_name, resolved_path)
+        validate_dcs_text(args, &text, resolved_path)
     })();
+    dcs_validation_outcome(result)
+}
 
+/// Validates the exact input already read through the canonical source authority.
+/// The path is an artifact label; this entry point never reopens it.
+pub(crate) fn validate_dcs_input(
+    args: &Map<String, Value>,
+    text: &str,
+    artifact: PathBuf,
+) -> AdapterOutcome {
+    dcs_validation_outcome(validate_dcs_text(args, text, artifact))
+}
+
+fn validate_dcs_text(
+    args: &Map<String, Value>,
+    text: &str,
+    resolved_path: PathBuf,
+) -> Result<DcsValidationRun, String> {
+    const NS_SCHEMA: &str = DCS_SCHEMA_NS;
+    let file_name = resolved_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_string();
+    let detailed = bool_arg(args, &["detailed", "Detailed"]);
+    let max_errors = int_arg(args, &["maxErrors", "MaxErrors"])
+        .unwrap_or(20)
+        .max(0) as usize;
+    let mut report = DcsValidationReporter::new(max_errors, detailed, &file_name);
+    let doc = match Document::parse(text.trim_start_matches('\u{feff}')) {
+        Ok(doc) => {
+            report.ok("XML parsed successfully");
+            doc
+        }
+        Err(err) => {
+            report.error(format!("XML parse failed: {err}"));
+            let errors = report
+                .lines
+                .iter()
+                .filter(|line| line.starts_with("[ERROR] "))
+                .cloned()
+                .collect::<Vec<_>>();
+            return Ok(DcsValidationRun {
+                ok: false,
+                stdout: format!("{}\n", report.lines.join("\n")),
+                artifact: resolved_path,
+                errors,
+            });
+        }
+    };
+
+    let root = doc.root_element();
+    if let Err(error) = require_dcs_root(root) {
+        report.error(error);
+        return dcs_validation_finish(report, &file_name, resolved_path);
+    }
+    report.ok("Root element: DataCompositionSchema");
+    report.ok("Default namespace correct");
+
+    let data_source_nodes = dcs_children(root, "dataSource", NS_SCHEMA);
+    let mut data_source_names = HashSet::<String>::new();
+    for dsn in &data_source_nodes {
+        if let Some(name) = dcs_child(*dsn, "name", NS_SCHEMA) {
+            data_source_names.insert(dcs_inner_text(name));
+        }
+    }
+
+    let data_set_nodes = dcs_children(root, "dataSet", NS_SCHEMA);
+    let mut data_set_names = HashSet::<String>::new();
+    let mut all_field_paths = HashMap::<String, String>::new();
+    for ds in &data_set_nodes {
+        if let Some(name_node) = dcs_child(*ds, "name", NS_SCHEMA) {
+            let ds_name = dcs_inner_text(name_node);
+            data_set_names.insert(ds_name.clone());
+            dcs_collect_data_set_fields(*ds, &ds_name, &mut all_field_paths);
+        }
+    }
+
+    let calc_field_nodes = dcs_children(root, "calculatedField", NS_SCHEMA);
+    let mut calc_field_paths = HashSet::<String>::new();
+    for cf in &calc_field_nodes {
+        if let Some(dp) = dcs_child(*cf, "dataPath", NS_SCHEMA) {
+            calc_field_paths.insert(dcs_inner_text(dp));
+        }
+    }
+    let total_field_nodes = dcs_children(root, "totalField", NS_SCHEMA);
+    let param_nodes = dcs_children(root, "parameter", NS_SCHEMA);
+    let template_nodes = dcs_children(root, "template", NS_SCHEMA);
+    let mut template_names = HashSet::<String>::new();
+    for template in &template_nodes {
+        if let Some(name_node) = dcs_child(*template, "name", NS_SCHEMA) {
+            template_names.insert(dcs_inner_text(name_node));
+        }
+    }
+    let group_template_nodes = dcs_children(root, "groupTemplate", NS_SCHEMA);
+    let variant_nodes = dcs_children(root, "settingsVariant", NS_SCHEMA);
+    let mut known_fields = all_field_paths.keys().cloned().collect::<HashSet<String>>();
+    known_fields.extend(calc_field_paths.iter().cloned());
+
+    dcs_validate_data_sources(&mut report, &data_source_nodes);
+    if report.stopped {
+        return dcs_validation_finish(report, &file_name, resolved_path);
+    }
+    dcs_validate_data_sets(&mut report, &data_set_nodes, &data_source_names);
+    if report.stopped {
+        return dcs_validation_finish(report, &file_name, resolved_path);
+    }
+    for ds in &data_set_nodes {
+        let ds_name = dcs_child(*ds, "name", NS_SCHEMA)
+            .map(dcs_inner_text)
+            .unwrap_or_else(|| "(unnamed)".to_string());
+        dcs_validate_data_set_fields(&mut report, *ds, &ds_name);
+        if report.stopped {
+            return dcs_validation_finish(report, &file_name, resolved_path.clone());
+        }
+    }
+    if report.stopped {
+        return dcs_validation_finish(report, &file_name, resolved_path);
+    }
+    dcs_validate_data_set_links(&mut report, root, &data_set_names);
+    if report.stopped {
+        return dcs_validation_finish(report, &file_name, resolved_path);
+    }
+    dcs_validate_calculated_fields(&mut report, &calc_field_nodes, &all_field_paths);
+    if report.stopped {
+        return dcs_validation_finish(report, &file_name, resolved_path);
+    }
+    dcs_validate_total_fields(&mut report, &total_field_nodes);
+    if report.stopped {
+        return dcs_validation_finish(report, &file_name, resolved_path);
+    }
+    dcs_validate_parameters(&mut report, &param_nodes);
+    if report.stopped {
+        return dcs_validation_finish(report, &file_name, resolved_path);
+    }
+    dcs_validate_templates(&mut report, &template_nodes);
+    if report.stopped {
+        return dcs_validation_finish(report, &file_name, resolved_path);
+    }
+    dcs_validate_group_templates(&mut report, &group_template_nodes, &template_names);
+    if report.stopped {
+        return dcs_validation_finish(report, &file_name, resolved_path);
+    }
+    dcs_validate_settings_variants(&mut report, &variant_nodes, &known_fields);
+    if report.stopped {
+        return dcs_validation_finish(report, &file_name, resolved_path);
+    }
+    dcs_validate_value_types(&mut report, root);
+    if report.stopped {
+        return dcs_validation_finish(report, &file_name, resolved_path);
+    }
+    dcs_validate_value_contents(&mut report, root);
+    dcs_validation_finish(report, &file_name, resolved_path)
+}
+
+fn dcs_validation_outcome(result: Result<DcsValidationRun, String>) -> AdapterOutcome {
     match result {
         Ok(run) => AdapterOutcome {
             ok: run.ok,
@@ -12765,6 +12782,17 @@ pub(crate) mod tests {
         assert_eq!(file_identity_for_test(&template_path).unwrap(), identity);
 
         let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn verified_dcs_input_is_validated_without_reopening_the_artifact_path() {
+        let root = tempfile::tempdir().unwrap();
+        let artifact = root.path().join("Template.xml");
+        let replacement = b"not the retained DCS input";
+        fs::write(&artifact, replacement).unwrap();
+        let result = validate_dcs_input(&Map::new(), base_dcs_xml(), artifact.clone());
+        assert!(result.ok, "{result:?}");
+        assert_eq!(fs::read(artifact).unwrap(), replacement);
     }
 
     /// #311. A `SettingsParameterValue` with an empty `<dcscor:parameter>` is

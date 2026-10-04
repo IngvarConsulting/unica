@@ -33,6 +33,7 @@ pub(crate) struct AnalyzerDiagnosticsBatch {
 #[derive(Debug)]
 pub(crate) struct DiagnosticsJsonlParser {
     source_root: PathBuf,
+    expected_module: Option<String>,
     first_error: Option<(usize, StreamErrorKind)>,
     started: bool,
     done: bool,
@@ -52,6 +53,7 @@ impl DiagnosticsJsonlParser {
     pub(crate) fn new(source_root: &Path) -> Result<Self, String> {
         Ok(Self {
             source_root: normalize_absolute_root(source_root)?,
+            expected_module: None,
             first_error: None,
             started: false,
             done: false,
@@ -66,6 +68,18 @@ impl DiagnosticsJsonlParser {
             done_files: None,
             done_failures: None,
         })
+    }
+
+    pub(crate) fn for_module(source_root: &Path, module: &Path) -> Result<Self, String> {
+        let mut parser = Self::new(source_root)?;
+        let module = module
+            .to_str()
+            .ok_or_else(|| "diagnostics module path must be UTF-8".to_string())?;
+        parser.expected_module = Some(
+            normalize_reported_path(&parser.source_root, module)
+                .map_err(|_| "diagnostics module is outside the source root".to_string())?,
+        );
+        Ok(parser)
     }
 
     pub(crate) fn push_line(&mut self, line_number: usize, bytes: &[u8]) {
@@ -145,6 +159,18 @@ impl DiagnosticsJsonlParser {
 
         let failed = self.done_failures.expect("validated done event");
         let discovered = self.discovered.expect("validated start event");
+        if self
+            .expected_module
+            .as_ref()
+            .is_some_and(|module| self.files_seen.len() != 1 || !self.files_seen.contains(module))
+        {
+            return self.failure(
+                DiagnosticProviderStatus::Failed,
+                "diagnostics_incomplete",
+                false,
+                "bsl-analyzer did not report exactly the requested module".to_string(),
+            );
+        }
         let status = if self.observations.is_empty() {
             DiagnosticProviderStatus::Empty
         } else {
@@ -508,6 +534,97 @@ mod tests {
             }]
         })
         .to_string()
+    }
+
+    #[test]
+    fn scoped_stream_requires_exact_module_completion_even_without_findings() {
+        let root = TempDir::new().unwrap();
+        let module = root.path().join("CommonModules/Заказ, тест/Ext/Module.bsl");
+        for (paths, complete, expected_error) in [
+            (vec![module.clone()], true, None),
+            (
+                vec![PathBuf::from("CommonModules/Заказ, тест/Ext/Module.bsl")],
+                true,
+                None,
+            ),
+            (Vec::new(), true, Some("diagnostics_incomplete")),
+            (
+                vec![root.path().join("Other.bsl")],
+                true,
+                Some("diagnostics_incomplete"),
+            ),
+            (
+                vec![module.clone(), root.path().join("Other.bsl")],
+                true,
+                Some("diagnostics_incomplete"),
+            ),
+            (vec![module.clone()], false, Some("diagnostics_incomplete")),
+            (
+                vec![root.path().join("../outside.bsl")],
+                true,
+                Some("diagnostics_invalid"),
+            ),
+        ] {
+            let mut parser = DiagnosticsJsonlParser::for_module(root.path(), &module).unwrap();
+            parser.push_line(
+                1,
+                json!({"type":"start", "total_files": paths.len(), "version":"test"})
+                    .to_string()
+                    .as_bytes(),
+            );
+            for (index, path) in paths.iter().enumerate() {
+                parser.push_line(
+                    index + 2,
+                    json!({"type":"file", "path":path, "diagnostics":[]})
+                        .to_string()
+                        .as_bytes(),
+                );
+            }
+            if complete {
+                parser.push_line(paths.len() + 2, json!({"type":"done", "elapsed_secs":0.1, "total_files":paths.len(), "total_diagnostics":0, "failed_files":0}).to_string().as_bytes());
+            }
+            let batch = parser.finish();
+            assert_eq!(
+                batch.outcome.complete,
+                expected_error.is_none(),
+                "{paths:?}"
+            );
+            assert_eq!(
+                batch
+                    .outcome
+                    .error
+                    .as_ref()
+                    .map(|error| error.code.as_str()),
+                expected_error,
+                "{paths:?}"
+            );
+            if expected_error.is_none() {
+                assert_eq!(batch.outcome.status, DiagnosticProviderStatus::Empty);
+                assert_eq!(batch.files.processed, Some(1));
+            }
+        }
+    }
+
+    #[test]
+    fn scoped_failed_module_never_proves_clean_analysis() {
+        let root = TempDir::new().unwrap();
+        let module = root.path().join("Module.bsl");
+        let mut parser = DiagnosticsJsonlParser::for_module(root.path(), &module).unwrap();
+        feed(
+            &mut parser,
+            &[
+                r#"{"type":"start","total_files":1,"version":"test"}"#,
+                r#"{"type":"file","path":"Module.bsl","diagnostics":[],"error":"cannot analyze module"}"#,
+                r#"{"type":"done","elapsed_secs":0.1,"total_files":1,"total_diagnostics":0,"failed_files":1}"#,
+            ],
+        );
+        let batch = parser.finish();
+        assert!(!batch.outcome.complete);
+        assert_eq!(batch.files.failed, Some(1));
+        assert!(matches!(
+            batch.outcome.observations.as_slice(),
+            [DiagnosticObservation::ResourceFailure { .. }]
+        ));
     }
 
     #[test]

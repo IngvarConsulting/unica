@@ -158,6 +158,7 @@ pub(crate) struct SubsystemEditModel {
     pub(crate) use_one_command: String,
     pub(crate) explanation: String,
     pub(crate) picture: String,
+    pub(crate) picture_load_transparent: Option<String>,
     pub(crate) content: Vec<String>,
     pub(crate) children: Vec<String>,
 }

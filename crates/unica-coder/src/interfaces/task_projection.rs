@@ -8,14 +8,40 @@ use crate::domain::invocation::{DomainResult, InvocationStatus};
 use crate::infrastructure::daemon::protocol_v5::V5DaemonTaskSnapshot;
 use chrono::{SecondsFormat, Utc};
 use rmcp::model::{
-    CallToolResult, CreateTaskResult, DetailedTask, ErrorCode, ErrorData, JsonObject, Task,
-    TaskPayload, TaskStatus,
+    CallToolResult, ContentBlock, CreateTaskResult, DetailedTask, ErrorCode, ErrorData, JsonObject,
+    Task, TaskPayload, TaskStatus,
 };
 use serde::Serialize;
 use std::io::{self, Write};
 
 const MAX_MCP_TASK_PROJECTION_BYTES: usize =
     MAX_CANONICAL_RESULT_BYTES + MAX_TASK_RECORD_ENVELOPE_BYTES;
+
+// Even sixfold JSON escaping leaves this fallback within the envelope reserve.
+const MAX_ERROR_TEXT_BYTES: usize = 4_096;
+const ERROR_TEXT_TRUNCATED: &str = "\n[truncated; full diagnostics are in structuredContent]";
+
+fn error_text(result: &DomainResult) -> Result<String, TaskProjectionError> {
+    #[derive(Serialize)]
+    struct ErrorText<'a> {
+        summary: &'a str,
+        diagnostics: &'a [serde_json::Value],
+    }
+    let mut text = serde_json::to_string(&ErrorText {
+        summary: &result.summary,
+        diagnostics: &result.diagnostics,
+    })
+    .map_err(|_| TaskProjectionError::Serialization)?;
+    if text.len() > MAX_ERROR_TEXT_BYTES {
+        let mut end = MAX_ERROR_TEXT_BYTES - ERROR_TEXT_TRUNCATED.len();
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+        text.push_str(ERROR_TEXT_TRUNCATED);
+    }
+    Ok(text)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum TaskProjectionError {
@@ -89,13 +115,16 @@ pub(super) fn call_tool_result(
         Err(CanonicalResultSizeError::Checkpoint(never)) => match never {},
     }
     let value = serde_json::to_value(result).map_err(|_| TaskProjectionError::Serialization)?;
-    // `CallToolResult::structured` mirrors the complete JSON value into a text
-    // ContentBlock. The canonical V13 result is already self-describing
-    // structured content, so that convenience constructor would double an
-    // allowed 8 MiB result on the MCP wire.
+    // Hosts may ignore structuredContent when isError is true. Mirror only
+    // bounded diagnostics, never the potentially 8 MiB subject data.
     let mut projected = CallToolResult::default();
     projected.structured_content = Some(value);
     projected.is_error = Some(!result.ok);
+    if !result.ok {
+        projected
+            .content
+            .push(ContentBlock::text(error_text(result)?));
+    }
     ensure_projection_bounded(&projected)?;
     Ok(projected)
 }
@@ -406,7 +435,83 @@ mod tests {
             serde_json::to_value(&direct).expect("serialize direct result")
         );
         assert_eq!(direct.is_error, Some(true));
-        assert!(direct.content.is_empty());
+        let wire = serde_json::to_value(&direct).unwrap();
+        let text = wire["content"][0]["text"]
+            .as_str()
+            .expect("readable refusal");
+        let fallback: Value = serde_json::from_str(text).expect("complete small fallback");
+        assert_eq!(fallback["summary"], "checked");
+        assert_eq!(fallback["diagnostics"], json!([{"code": "bad_value"}]));
+        assert!(fallback.get("data").is_none());
+    }
+
+    #[test]
+    fn error_fallback_is_bounded_without_losing_structured_diagnostics() {
+        use crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES;
+
+        for message in ["\"\\\n\u{0000}".repeat(4_096), "Ошибка🙂".repeat(4_096)] {
+            let mut result = DomainResult::success("provider failed");
+            result.ok = false;
+            result.diagnostics = vec![json!({"code": "provider_unavailable", "message": message})];
+            result.data = Some(json!({"padding": ""}));
+            let base_size = serde_json::to_vec(&result).unwrap().len();
+            result.data =
+                Some(json!({"padding": "x".repeat(MAX_CANONICAL_RESULT_BYTES - base_size)}));
+            assert_eq!(
+                serde_json::to_vec(&result).unwrap().len(),
+                MAX_CANONICAL_RESULT_BYTES
+            );
+            let projected =
+                super::call_tool_result(&result).expect("exact-limit error is admitted");
+            let wire = serde_json::to_value(&projected).unwrap();
+            let text = wire["content"][0]["text"].as_str().unwrap();
+            assert!(text.len() <= super::MAX_ERROR_TEXT_BYTES);
+            assert!(text.ends_with(super::ERROR_TEXT_TRUNCATED));
+            assert!(!text.contains("padding"));
+            assert_eq!(
+                wire["structuredContent"],
+                serde_json::to_value(&result).unwrap()
+            );
+
+            let (task_id, invocation_id, receipt_key_digest) = v5_common();
+            let snapshot = V5DaemonTaskSnapshot::Completed {
+                task_id,
+                invocation_id,
+                receipt_key_digest,
+                created_at_epoch_ms: 1_777_012_345_678,
+                updated_at_epoch_ms: 1_777_012_346_789,
+                ttl_ms: 3_600_000,
+                poll_interval_ms: 250,
+                version: 3,
+                cancel_requested: false,
+                terminal_epoch_ms: 1_777_012_346_789,
+                terminal_digest: v5_terminal_digest(),
+                result: Box::new(result),
+            };
+            let detailed =
+                super::detailed_task_v5(&snapshot).expect("exact-limit Task is admitted");
+            let detailed_wire = serde_json::to_value(&detailed).unwrap();
+            assert_eq!(detailed_wire["result"], wire);
+            assert!(
+                serde_json::to_vec(&detailed).unwrap().len()
+                    <= super::MAX_MCP_TASK_PROJECTION_BYTES
+            );
+        }
+    }
+
+    #[test]
+    fn error_without_diagnostics_still_has_readable_summary() {
+        let mut result = DomainResult::success("operation failed");
+        result.ok = false;
+        let wire = serde_json::to_value(super::call_tool_result(&result).unwrap()).unwrap();
+        let text: Value =
+            serde_json::from_str(wire["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            text,
+            json!({"summary": "operation failed", "diagnostics": []})
+        );
+        result.ok = true;
+        assert!(super::call_tool_result(&result).unwrap().content.is_empty());
     }
 
     #[test]

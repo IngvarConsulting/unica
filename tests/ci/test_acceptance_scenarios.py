@@ -61,6 +61,8 @@ def substitute(value, context):
     if isinstance(value, str):
         if value == "$task":
             return context.get("task", "00000000-0000-4000-8000-000000000000")
+        if value == "$executionToken":
+            return context.get("executionToken", "unica-missing-execution-token")
         if value == "$rev":
             return context.get("rev", "unica-missing-rev")
         return value
@@ -88,7 +90,10 @@ def classify(response, context):
         return "error", "no structuredContent"
     if structured.get("rev"):
         context["rev"] = structured["rev"]
-    task = (structured.get("data") or {}).get("task") or {}
+    data = structured.get("data") or {}
+    if data.get("executionToken"):
+        context["executionToken"] = data["executionToken"]
+    task = data.get("task") or {}
     if task.get("taskId"):
         context["task"] = task["taskId"]
     if structured.get("ok"):
@@ -178,7 +183,7 @@ def derive_source_sets(source: Path, workspace: Path) -> None:
 def scenario_publishes(scenario) -> bool:
     """True when a step can change the workspace: an apply that is not a preview."""
     return any(
-        step["tool"] == "unica.apply" and not step["args"].get("dryRun", False)
+        step["tool"] == "unica.apply" and "executionToken" in step["args"]
         for step in scenario["wire"]
     )
 
@@ -308,6 +313,27 @@ class AcceptanceServer:
             pass
 
 
+class SavedPlanWireTests(unittest.TestCase):
+    def test_execute_uses_the_preview_token_and_reads_do_not_replace_it(self):
+        context = {}
+        plan = {"result": {"structuredContent": {
+            "ok": True, "rev": "source-revision", "data": {"executionToken": "saved-plan-token"}
+        }}}
+        self.assertEqual(classify(plan, context)[0], "ok")
+        classify({"result": {"structuredContent": {"ok": True, "rev": "read-revision"}}}, context)
+        self.assertEqual(substitute({"executionToken": "$executionToken"}, context),
+                         {"executionToken": "saved-plan-token"})
+        self.assertEqual(context["rev"], "read-revision")
+
+    def test_only_token_execution_requires_an_isolated_mutable_workspace(self):
+        self.assertFalse(scenario_publishes({"wire": [{"tool": "unica.apply", "args": {
+            "at": "main:Configuration", "ops": []
+        }}]}))
+        self.assertTrue(scenario_publishes({"wire": [{"tool": "unica.apply", "args": {
+            "executionToken": "$executionToken"
+        }}]}))
+
+
 class AcceptanceCorpusShapeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -316,11 +342,9 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
     def test_corpus_holds_the_run_free_scenario_set_uniquely_numbered(self) -> None:
         scenarios = self.corpus["scenarios"]
         self.assertEqual(len(scenarios), 311)
-        # Тринадцать применений стали двухшаговыми: забор ревизии у `apply`
-        # обязателен, и предпросмотр теперь часть сценария, а не дисциплина
-        # читателя (DEC.2026-09-10.APPLY-FENCE-IS-A-CONTRACT).
-        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 360,
-            "a wire step went missing: the corpus freezes 360 steps",
+        # Исполнение apply следует за планированием с сохранением токена.
+        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 361,
+            "a wire step went missing: the corpus freezes 361 steps",
         )
         identifiers = [scenario["id"] for scenario in scenarios]
         self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 312)])
@@ -428,6 +452,42 @@ class AcceptanceCorpusRunTests(unittest.TestCase):
             check=True,
         )
         cls.corpus = json.loads(CORPUS.read_text(encoding="utf-8"))
+
+    def test_s047_publishes_the_planned_comment_after_reading_the_object(self) -> None:
+        scenario = next(s for s in self.corpus["scenarios"] if s["id"] == "S047")
+        self.assertTrue(scenario_publishes(scenario), "the comment-writing task must execute its plan")
+        planning = next(s["args"] for s in scenario["wire"] if "ops" in s["args"])
+        expected = planning["ops"][0]["args"]["values"]["Comment"]
+        with tempfile.TemporaryDirectory(prefix="unica-s047-") as raw:
+            root = Path(raw).resolve()
+            workspace = root / "workspace"
+            shutil.copytree(REPO_ROOT / self.corpus["workspace"], workspace)
+            state = root / "state"
+            state.mkdir()
+
+            def snapshot():
+                return {p.relative_to(workspace / "src"): p.read_bytes()
+                        for p in (workspace / "src").rglob("*") if p.is_file()}
+
+            before = snapshot()
+            context = {}
+            server = AcceptanceServer(workspace, state, self.corpus["protocolVersion"])
+            try:
+                for step in scenario["wire"]:
+                    arguments = substitute(step["args"], context)
+                    response = server.call(step["tool"], arguments)
+                    actual, note = classify(response, context)
+                    self.assertTrue(matches(step["expect"], actual), note)
+                    if "ops" in arguments:
+                        self.assertEqual(snapshot(), before, "planning must not publish the comment")
+                self.assertNotEqual(snapshot(), before, "the scenario must write its comment")
+                response = server.call("unica.view", {"at": planning["at"]})
+                result = response["result"]["structuredContent"]
+                self.assertTrue(result["ok"], result)
+                self.assertEqual(result["data"]["props"]["Comment"], expected)
+            finally:
+                server.close()
+                server.process.stdout.close()
 
     def test_every_wire_answers_its_frozen_classes(self) -> None:
         corpus = self.corpus

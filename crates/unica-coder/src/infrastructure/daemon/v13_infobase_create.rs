@@ -45,7 +45,6 @@ const EDT_STEP: &str = "edt_workspace";
 #[derive(Debug, Clone)]
 pub(super) struct PreparedInfobaseCreate {
     dry_run: bool,
-    if_rev: Option<String>,
     context: WorkspaceContext,
 }
 
@@ -88,31 +87,9 @@ impl PreparedInfobaseCreate {
             .ok_or_else(|| {
                 reject(
                     RefusalCode::BadValue,
-                    "infobase.create requires dryRun: true to preview or dryRun: false with ifRev to apply",
+                    "infobase.create requires dryRun: true to preview or dryRun: false to execute",
                 )
             })?;
-        let if_rev = match arguments.get("ifRev") {
-            None => None,
-            Some(Value::String(value)) if !value.trim().is_empty() => Some(value.clone()),
-            Some(_) => {
-                return Err(reject(
-                    RefusalCode::BadValue,
-                    "infobase.create ifRev must be non-empty text",
-                ))
-            }
-        };
-        if dry_run && if_rev.is_some() {
-            return Err(reject(
-                RefusalCode::BadValue,
-                "infobase.create preview does not accept ifRev; apply the revision returned by this preview",
-            ));
-        }
-        if !dry_run && if_rev.is_none() {
-            return Err(reject(
-                RefusalCode::BadValue,
-                "infobase.create apply requires ifRev from a prior dryRun preview",
-            ));
-        }
         let context =
             discover_workspace(Some(PathBuf::from(request.workspace_hint()))).map_err(|error| {
                 reject(
@@ -120,11 +97,7 @@ impl PreparedInfobaseCreate {
                     format!("workspace discovery failed: {error}"),
                 )
             })?;
-        Ok(Self {
-            dry_run,
-            if_rev,
-            context,
-        })
+        Ok(Self { dry_run, context })
     }
 
     pub(super) fn workspace_identity_hash(&self) -> SafeIdentityHash {
@@ -233,7 +206,7 @@ fn execute_with_resolved_runner(
     runner: &dyn ProcessRunner,
     cancellation: CancellationToken,
     tool: &BundledTool,
-    runner_version: &str,
+    _runner_version: &str,
 ) -> DomainResult {
     if cancellation.is_cancelled() {
         return reject(
@@ -262,7 +235,7 @@ fn execute_with_resolved_runner(
             "infobase.create inputs changed during preview; run dryRun: true again",
         );
     }
-    let revision = plan_revision(&before, runner_version);
+
     if prepared.dry_run {
         let mut result = DomainResult::success(
             "infobase.create planned creating the infobase without touching anything".to_string(),
@@ -283,30 +256,17 @@ fn execute_with_resolved_runner(
             "providerDispatched": false,
             "requiresPlatform": true,
         }));
-        result.rev = Some(revision.clone());
+
         result.next.push(json!({
             "tool": "unica.run",
             "args": {
                 "op": OPERATION,
                 "args": {},
                 "dryRun": false,
-                "ifRev": revision,
             },
-            "reason": "create exactly this planned infobase"
+            "reason": "create using the current workspace inputs"
         }));
         return result;
-    }
-    if prepared.if_rev.as_deref() != Some(revision.as_str()) {
-        // A stale `ifRev` is the caller's conflict with a known recovery, so it
-        // answers `stale_revision` and names both revisions
-        // (INV.WIRE.V13-REFUSAL-CHANNEL).
-        return reject(
-            RefusalCode::StaleRevision,
-            format!(
-                "infobase.create plan or environment changed after preview: expected rev {revision}, ifRev {}; run dryRun: true again",
-                prepared.if_rev.as_deref().unwrap_or("absent")
-            ),
-        );
     }
     if cancellation.is_cancelled() {
         return reject(
@@ -382,7 +342,7 @@ fn execute_with_resolved_runner(
         "infobase": true,
         "kind": "created",
     }));
-    result.rev = Some(revision);
+
     result
 }
 
@@ -517,24 +477,6 @@ fn parse_runner_output(output: ProcessOutput) -> Result<Value, DomainResult> {
     Ok(envelope)
 }
 
-fn plan_revision(inputs: &StableInputs, runner_version: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(b"unica-v13-infobase-create-plan-v1\0");
-    hasher.update(
-        serde_json::to_vec(&json!({
-            "op": OPERATION,
-            "inputs": {
-                "config": inputs.config_sha256,
-                "localConfig": inputs.local_config_sha256,
-            },
-            "runnerVersion": runner_version,
-            "plan": {"target": INFOBASE_STEP, "action": "create"},
-        }))
-        .expect("plan revision data serializes"),
-    );
-    format!("unica-infobase-create-sha256-v1:{:x}", hasher.finalize())
-}
-
 fn reject(code: RefusalCode, message: impl Into<String>) -> DomainResult {
     DomainResult::canonical_rejection(Some(OPERATION.to_string()), code, message)
 }
@@ -612,10 +554,9 @@ mod tests {
         root
     }
 
-    fn prepared(root: &Path, dry_run: bool, if_rev: Option<String>) -> PreparedInfobaseCreate {
+    fn prepared(root: &Path, dry_run: bool) -> PreparedInfobaseCreate {
         PreparedInfobaseCreate {
             dry_run,
-            if_rev,
             context: WorkspaceContext {
                 cwd: root.to_path_buf(),
                 workspace_root: root.to_path_buf(),
@@ -687,7 +628,7 @@ mod tests {
     fn a_missing_project_file_is_named_before_the_runner_is_called() {
         let root = tempfile::tempdir().unwrap();
         let runner = SequenceRunner::new(Vec::new());
-        let result = run(root.path(), &prepared(root.path(), true, None), &runner);
+        let result = run(root.path(), &prepared(root.path(), true), &runner);
         assert_eq!(result.diagnostics[0]["code"], "invalid_state");
         assert_eq!(result.next[0]["tool"], "unica.view");
         assert_eq!(runner.call_count(), 0);
@@ -700,7 +641,7 @@ mod tests {
             envelope(root.path(), "planned", "skipped", false),
             true,
         )]);
-        let result = run(root.path(), &prepared(root.path(), true, None), &runner);
+        let result = run(root.path(), &prepared(root.path(), true), &runner);
 
         assert!(result.ok, "{result:?}");
         let data = result.data.as_ref().unwrap();
@@ -709,9 +650,9 @@ mod tests {
         assert_eq!(data["plan"]["action"], "create");
         assert_eq!(data["plan"]["connectionFrom"], "v8project.yaml");
         assert_eq!(data["plan"]["targetStateKnownBeforeApply"], false);
-        let revision = result.rev.clone().expect("preview returns a revision");
-        assert!(revision.starts_with("unica-infobase-create-sha256-v1:"));
-        assert_eq!(result.next[0]["args"]["ifRev"], revision);
+        assert!(result.rev.is_none());
+        assert_eq!(result.next[0]["args"]["dryRun"], false);
+        assert!(result.next[0]["args"].get("ifRev").is_none());
         assert_eq!(result.next[0]["args"]["args"], json!({}));
         assert!(result.changed.is_empty());
         let encoded = serde_json::to_string(&result).unwrap();
@@ -733,7 +674,7 @@ mod tests {
             envelope(root.path(), "skipped", "skipped", false),
             true,
         )]);
-        let result = run(root.path(), &prepared(root.path(), true, None), &runner);
+        let result = run(root.path(), &prepared(root.path(), true), &runner);
 
         assert_eq!(result.diagnostics[0]["code"], "invalid_state", "{result:?}");
         assert!(result.diagnostics[0]["message"]
@@ -750,7 +691,7 @@ mod tests {
             envelope(root.path(), "planned", "planned", false),
             true,
         )]);
-        let result = run(root.path(), &prepared(root.path(), true, None), &runner);
+        let result = run(root.path(), &prepared(root.path(), true), &runner);
 
         assert_eq!(result.diagnostics[0]["code"], "invalid_state", "{result:?}");
         assert!(result.diagnostics[0]["message"]
@@ -760,30 +701,15 @@ mod tests {
     }
 
     #[test]
-    fn apply_creates_and_takes_its_receipt_from_a_repeated_preview() {
+    fn apply_without_prior_preview_creates_and_confirms_the_provider_receipt() {
         let root = workspace();
-        let preview_runner = SequenceRunner::new(vec![process(
-            envelope(root.path(), "planned", "skipped", false),
-            true,
-        )]);
-        let revision = run(
-            root.path(),
-            &prepared(root.path(), true, None),
-            &preview_runner,
-        )
-        .rev
-        .unwrap();
         let runner = SequenceRunner::new(vec![
             process(envelope(root.path(), "planned", "skipped", false), true),
             process(envelope(root.path(), "ok", "skipped", true), true),
             process(envelope(root.path(), "skipped", "skipped", false), true),
         ]);
 
-        let result = run(
-            root.path(),
-            &prepared(root.path(), false, Some(revision.clone())),
-            &runner,
-        );
+        let result = run(root.path(), &prepared(root.path(), false), &runner);
 
         assert!(result.ok, "{result:?}");
         assert_eq!(runner.call_count(), 3);
@@ -796,7 +722,7 @@ mod tests {
         assert_eq!(result.changed[0]["infobase"], true);
         assert_eq!(result.changed[0]["kind"], "created");
         assert!(result.changed[0].get("path").is_none());
-        assert_eq!(result.rev, Some(revision));
+        assert!(result.rev.is_none());
         let encoded = serde_json::to_string(&result).unwrap();
         assert!(
             !encoded.contains("build/ib"),
@@ -823,16 +749,6 @@ mod tests {
         }
 
         let root = workspace();
-        let revision = run(
-            root.path(),
-            &prepared(root.path(), true, None),
-            &SequenceRunner::new(vec![process(
-                envelope(root.path(), "planned", "skipped", false),
-                true,
-            )]),
-        )
-        .rev
-        .unwrap();
         let cancellation = CancellationToken::new();
         let runner = CancelAfterMutationRunner {
             inner: SequenceRunner::new(vec![
@@ -843,7 +759,7 @@ mod tests {
             signal: cancellation.clone(),
         };
         let result = execute_with_resolved_runner(
-            &prepared(root.path(), false, Some(revision)),
+            &prepared(root.path(), false),
             &runner,
             cancellation.clone(),
             &tool(root.path()),
@@ -859,39 +775,13 @@ mod tests {
     }
 
     #[test]
-    fn apply_refuses_a_stale_revision_and_an_infobase_created_elsewhere() {
+    fn apply_refuses_an_infobase_created_elsewhere() {
         let root = workspace();
-        let runner = SequenceRunner::new(vec![process(
-            envelope(root.path(), "planned", "skipped", false),
-            true,
-        )]);
-        let result = run(
-            root.path(),
-            &prepared(root.path(), false, Some("stale".to_string())),
-            &runner,
-        );
-        assert_eq!(result.diagnostics[0]["code"], "stale_revision");
-        assert_eq!(runner.call_count(), 1);
-
-        let revision = run(
-            root.path(),
-            &prepared(root.path(), true, None),
-            &SequenceRunner::new(vec![process(
-                envelope(root.path(), "planned", "skipped", false),
-                true,
-            )]),
-        )
-        .rev
-        .unwrap();
         let runner = SequenceRunner::new(vec![
             process(envelope(root.path(), "planned", "skipped", false), true),
             process(envelope(root.path(), "skipped", "skipped", true), true),
         ]);
-        let result = run(
-            root.path(),
-            &prepared(root.path(), false, Some(revision)),
-            &runner,
-        );
+        let result = run(root.path(), &prepared(root.path(), false), &runner);
         assert_eq!(
             result.diagnostics[0]["code"], "concurrent_change",
             "{result:?}"
@@ -905,26 +795,12 @@ mod tests {
     #[test]
     fn apply_refuses_a_receipt_that_still_plans_to_create() {
         let root = workspace();
-        let revision = run(
-            root.path(),
-            &prepared(root.path(), true, None),
-            &SequenceRunner::new(vec![process(
-                envelope(root.path(), "planned", "skipped", false),
-                true,
-            )]),
-        )
-        .rev
-        .unwrap();
         let runner = SequenceRunner::new(vec![
             process(envelope(root.path(), "planned", "skipped", false), true),
             process(envelope(root.path(), "ok", "skipped", true), true),
             process(envelope(root.path(), "planned", "skipped", false), true),
         ]);
-        let result = run(
-            root.path(),
-            &prepared(root.path(), false, Some(revision)),
-            &runner,
-        );
+        let result = run(root.path(), &prepared(root.path(), false), &runner);
         assert_eq!(
             result.diagnostics[0]["code"], "invalid_result",
             "{result:?}"
@@ -960,7 +836,7 @@ mod tests {
             ("workspace_busy", "concurrent_change", Outcome::RetryAsIs),
         ] {
             let runner = SequenceRunner::new(vec![process(failure(code), false)]);
-            let result = run(root.path(), &prepared(root.path(), true, None), &runner);
+            let result = run(root.path(), &prepared(root.path(), true), &runner);
             assert_eq!(result.diagnostics[0]["code"], expected, "{code}");
             assert_eq!(map_runner_code(code).outcome(), outcome, "{code}");
         }
