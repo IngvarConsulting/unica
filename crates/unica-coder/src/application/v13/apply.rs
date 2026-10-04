@@ -29,7 +29,7 @@ mod tests {
     use crate::application::v13::tool_catalog::catalog_for;
     use crate::domain::address::NodeKind;
     use crate::domain::apply::OperationFamily;
-    use serde_json::json;
+    use serde_json::{json, Value};
 
     #[test]
     fn planning_and_saved_plan_execution_have_disjoint_public_shapes() {
@@ -48,6 +48,8 @@ mod tests {
             json!({}),
             json!({"executionToken": ""}),
             json!({"executionToken": null}),
+            json!({"executionToken": 7}),
+            json!({"executionToken": "saved-plan", "unknown": true}),
             json!({"executionToken": "saved-plan", "at": "main:Document.Order"}),
             json!({"executionToken": "saved-plan", "ops": [{"op": "props.set"}]}),
             json!({"at": "main:Document.Order"}),
@@ -64,6 +66,10 @@ mod tests {
             ("dryRun", json!(false)),
             ("ifRev", json!("revision")),
             ("executionToken", json!("saved-plan")),
+            ("executionToken", Value::Null),
+            ("executionToken", json!("")),
+            ("executionToken", json!(7)),
+            ("unknown", json!(true)),
         ] {
             let mut mixed = plan.clone();
             mixed[key] = value;
@@ -72,15 +78,14 @@ mod tests {
                 "invalid mixed request: {mixed}"
             );
         }
-        let alternatives = schema["oneOf"].as_array().unwrap();
-        assert_eq!(alternatives.len(), 2);
+        let alternatives = [&schema["else"], &schema["then"]];
         assert_eq!(alternatives[0]["required"], json!(["at", "ops"]));
         assert_eq!(alternatives[1]["required"], json!(["executionToken"]));
         assert_eq!(
             alternatives[1]["properties"]["executionToken"]["minLength"],
             1
         );
-        for alternative in alternatives {
+        for alternative in &alternatives {
             assert_eq!(alternative["additionalProperties"], false);
             assert!(alternative["properties"].get("dryRun").is_none());
             assert!(alternative["properties"].get("ifRev").is_none());
