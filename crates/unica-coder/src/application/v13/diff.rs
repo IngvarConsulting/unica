@@ -70,21 +70,14 @@ impl DiffRequest {
 pub(crate) struct DiffSource {
     at: QualifiedAddress,
     kind: String,
-    revision: String,
     data: Value,
 }
 
 impl DiffSource {
-    pub(crate) fn new(
-        at: QualifiedAddress,
-        kind: impl Into<String>,
-        revision: impl Into<String>,
-        data: Value,
-    ) -> Self {
+    pub(crate) fn new(at: QualifiedAddress, kind: impl Into<String>, data: Value) -> Self {
         Self {
             at,
             kind: kind.into(),
-            revision: revision.into(),
             data,
         }
     }
@@ -126,7 +119,6 @@ pub(crate) enum DiffError {
     UnsupportedFilter(String),
     IncomparableNodes,
     InvalidCursor,
-    StaleCursor,
 }
 
 impl DiffError {
@@ -136,7 +128,6 @@ impl DiffError {
             Self::UnsupportedFilter(_) => RefusalCode::UnsupportedFilter,
             Self::IncomparableNodes => RefusalCode::IncomparableNodes,
             Self::InvalidCursor => RefusalCode::InvalidCursor,
-            Self::StaleCursor => RefusalCode::StaleCursor,
         }
     }
 }
@@ -152,9 +143,6 @@ impl fmt::Display for DiffError {
             Self::InvalidCursor => {
                 formatter.write_str("diff cursor is invalid or belongs to another question")
             }
-            Self::StaleCursor => {
-                formatter.write_str("a source revision changed after the diff cursor was issued")
-            }
         }
     }
 }
@@ -162,8 +150,8 @@ impl fmt::Display for DiffError {
 #[derive(Debug, Clone)]
 struct CursorEntry {
     fingerprint: String,
-    left_revision: String,
-    right_revision: String,
+    left_data: std::sync::Arc<Value>,
+    right_data: std::sync::Arc<Value>,
     offset: usize,
 }
 
@@ -220,27 +208,27 @@ impl DiffHandler {
                 message: "sources do not match the logical diff request".to_string(),
             });
         }
-        if left.kind != right.kind {
-            return Err(DiffError::IncomparableNodes);
-        }
-        let left_data = project_data(&left.data, &request.filter)?;
-        let right_data = project_data(&right.data, &request.filter)?;
-        if left_data.get("kind") != right_data.get("kind") {
-            return Err(DiffError::IncomparableNodes);
-        }
-
         let fingerprint = request.fingerprint();
-        let offset = if let Some(token) = request.cursor.as_deref() {
+        let (left_data, right_data, offset) = if let Some(token) = request.cursor.as_deref() {
             let entry = self.cursors.read(token)?;
             if entry.fingerprint != fingerprint {
                 return Err(DiffError::InvalidCursor);
             }
-            if entry.left_revision != left.revision || entry.right_revision != right.revision {
-                return Err(DiffError::StaleCursor);
-            }
-            entry.offset
+            (entry.left_data, entry.right_data, entry.offset)
         } else {
-            0
+            if left.kind != right.kind {
+                return Err(DiffError::IncomparableNodes);
+            }
+            let left_data = project_data(&left.data, &request.filter)?;
+            let right_data = project_data(&right.data, &request.filter)?;
+            if left_data.get("kind") != right_data.get("kind") {
+                return Err(DiffError::IncomparableNodes);
+            }
+            (
+                std::sync::Arc::new(left_data),
+                std::sync::Arc::new(right_data),
+                0,
+            )
         };
         let mut skip = offset;
         let mut changes = Vec::with_capacity(request.limit.saturating_add(1));
@@ -258,8 +246,8 @@ impl DiffHandler {
             .then(|| {
                 self.cursors.issue(CursorEntry {
                     fingerprint,
-                    left_revision: left.revision.clone(),
-                    right_revision: right.revision.clone(),
+                    left_data: left_data.clone(),
+                    right_data: right_data.clone(),
                     offset: offset.saturating_add(changes.len()),
                 })
             })
@@ -542,11 +530,10 @@ mod tests {
     use crate::domain::address::QualifiedAddress;
     use serde_json::json;
 
-    fn source(at: &str, kind: &str, revision: &str, value: i64) -> DiffSource {
+    fn source(at: &str, kind: &str, _snapshot_label: &str, value: i64) -> DiffSource {
         DiffSource::new(
             QualifiedAddress::parse(at).unwrap(),
             kind,
-            revision,
             json!({"kind": kind, "props": {"value": value}, "items": (0..50).map(|n| json!({"n": n + value})).collect::<Vec<_>>() }),
         )
     }
@@ -584,29 +571,24 @@ mod tests {
     }
 
     #[test]
-    fn diff_cursor_is_bound_to_both_source_revisions() {
+    fn diff_cursor_replays_the_saved_comparison_after_sources_change() {
         let handler = DiffHandler::default();
         let request = DiffRequest::new("main:Catalog.Items", "main:Catalog.Items")
             .unwrap()
             .with_limit(1);
-        let left = source("main:Catalog.Items", "Catalog", "left-1", 1);
-        let right = source("main:Catalog.Items", "Catalog", "right-1", 2);
+        let left = source("main:Catalog.Items", "Catalog", "left", 1);
+        let right = source("main:Catalog.Items", "Catalog", "right", 2);
         let first = handler.compare(&request, &left, &right).unwrap();
-        let cursor = first.cursor().unwrap().to_string();
-        let stale_left = source("main:Catalog.Items", "Catalog", "left-2", 1);
-        let stale = handler
-            .compare(
-                &request.clone().with_cursor(cursor.clone()),
-                &stale_left,
-                &right,
-            )
-            .unwrap_err();
-        assert_eq!(stale.code().as_str(), "stale_cursor");
-        let stale_right = source("main:Catalog.Items", "Catalog", "right-2", 2);
-        let stale = handler
-            .compare(&request.with_cursor(cursor), &left, &stale_right)
-            .unwrap_err();
-        assert_eq!(stale.code().as_str(), "stale_cursor");
+        let continued = request.with_cursor(first.cursor().unwrap().to_string());
+        let expected = handler.compare(&continued, &left, &right).unwrap();
+        let changed_left = source("main:Catalog.Items", "Document", "changed", 100);
+        let changed_right = source("main:Catalog.Items", "Catalog", "changed", 200);
+        let replayed = handler
+            .compare(&continued, &changed_left, &changed_right)
+            .unwrap();
+        assert_eq!(replayed.changes(), expected.changes());
+        assert_eq!(replayed.truncated(), expected.truncated());
+        assert!(replayed.cursor().is_some());
     }
 
     #[test]

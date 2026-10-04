@@ -171,7 +171,7 @@ def selector_branches(schema: dict) -> list[dict]:
 def discriminated_object_surface(
     schema: dict,
 ) -> tuple[dict, set[str], set[str], set[str]] | None:
-    """Flatten a closed `oneOf` of complete object variants for the ledger.
+    """Flatten closed alternative object variants for the ledger.
 
     Some tools publish each action as a separate object schema so a host can
     validate forbidden action-specific arguments.  The ledger still needs to
@@ -179,6 +179,8 @@ def discriminated_object_surface(
     and branch-only optional arguments.
     """
     variants = schema.get("oneOf")
+    if variants is None and isinstance(schema.get("if"), dict):
+        variants = [schema.get("then"), schema.get("else")]
     if not isinstance(variants, list) or not variants:
         return None
     if any(
@@ -252,7 +254,11 @@ def render_arguments(tool: dict) -> list[str]:
         }
     # Обязательность по значению другого аргумента и обязательность по ветви —
     # разные вещи, и ведомость называет их разными словами.
-    by_value = conditionally_required(schema) - set(required)
+    by_value = (
+        conditionally_required(schema) - set(required)
+        if variant_surface is None
+        else set()
+    )
     lines: list[str] = []
     shared = len(properties) > SHARED_ARGUMENT_THRESHOLD
     shown = (

@@ -3662,107 +3662,103 @@ pub(crate) mod tests {
 
     #[test]
     fn staged_xdto_dry_and_real_share_postimage_effects_and_revision() {
-        let dry = staged_xdto_fixture("dry", PACKAGE.as_bytes());
-        let real = staged_xdto_fixture("real", PACKAGE.as_bytes());
+        let fixture = staged_xdto_fixture("dry-real-plan", PACKAGE.as_bytes());
         let operation = [add_value("main:XDTOPackage.Sample", "Added", "xs:string")];
-
-        let dry_admission = staged_xdto_admission(&dry, None, true);
-        let dry_admitted_rev = dry_admission.revision_identity();
+        let dry_admission = staged_xdto_admission(&fixture, None, true);
         let (mut dry_state, dry_effects) =
-            plan_admitted_xdto(&dry_admission, &dry.binding, &operation).unwrap();
+            plan_admitted_xdto(&dry_admission, &fixture.binding, &operation).unwrap();
         let dry_bytes = dry_state
             .read(Path::new("XDTOPackages/Sample/Ext/Package.bin"))
             .unwrap()
             .unwrap();
-        let dry_prepared = dry_admission
-            .prepare_with_effects(dry_state, dry_effects)
+        let dry_result = fixture
+            .actor
+            .publish_prepared_apply(
+                dry_admission
+                    .prepare_with_effects(dry_state, dry_effects)
+                    .unwrap(),
+            )
             .unwrap();
-        let dry_result = dry.actor.publish_prepared_apply(dry_prepared).unwrap();
         assert_eq!(dry_result.commit_count_for_test(), 0);
-        assert_eq!(dry_result.rev(), dry_admitted_rev);
-        assert_eq!(fs::read(&dry.package).unwrap(), PACKAGE.as_bytes());
+        assert_eq!(fs::read(&fixture.package).unwrap(), PACKAGE.as_bytes());
 
-        let real_admission = staged_xdto_admission(&real, None, false);
-        let real_admitted_rev = real_admission.revision_identity();
+        let reconstructed = staged_xdto_actor(&fixture.context, &fixture.source);
+        let binding = reconstructed
+            .bind_provider_root("main", &fixture.source)
+            .unwrap();
+        let real_admission = reconstructed
+            .admit_apply(
+                &binding,
+                Some(dry_result.rev()),
+                false,
+                crate::domain::code_intelligence::ProviderDeadline::from_budget(
+                    Duration::from_secs(7),
+                ),
+                &crate::domain::cancellation::CancellationToken::new(),
+            )
+            .unwrap();
         let (mut real_state, real_effects) =
-            plan_admitted_xdto(&real_admission, &real.binding, &operation).unwrap();
-        let real_bytes = real_state
-            .read(Path::new("XDTOPackages/Sample/Ext/Package.bin"))
-            .unwrap()
+            plan_admitted_xdto(&real_admission, &binding, &operation).unwrap();
+        assert_eq!(
+            real_state
+                .read(Path::new("XDTOPackages/Sample/Ext/Package.bin"))
+                .unwrap()
+                .unwrap(),
+            dry_bytes
+        );
+        let real_result = reconstructed
+            .publish_prepared_apply(
+                real_admission
+                    .prepare_with_effects(real_state, real_effects)
+                    .unwrap(),
+            )
             .unwrap();
-        assert_eq!(real_bytes, dry_bytes);
-        let real_prepared = real_admission
-            .prepare_with_effects(real_state, real_effects)
-            .unwrap();
-        let real_result = real.actor.publish_prepared_apply(real_prepared).unwrap();
         assert_eq!(real_result.commit_count_for_test(), 1);
-        assert_ne!(real_result.rev(), real_admitted_rev);
-        assert_eq!(fs::read(&real.package).unwrap(), dry_bytes);
+        assert_eq!(real_result.rev(), dry_result.rev());
+        assert_eq!(fs::read(&fixture.package).unwrap(), dry_bytes);
         assert_eq!(real_result.effects().events().len(), 1);
         assert_eq!(
             dry_result.effects().events(),
             real_result.effects().events()
         );
 
-        let next = staged_xdto_admission(&real, Some(real_result.rev()), true);
-        assert_eq!(next.revision_identity(), real_result.rev());
-        drop(next);
-        let reconstructed = staged_xdto_actor(&real.context, &real.source);
-        let reconstructed_binding = reconstructed
-            .bind_provider_root("main", &real.source)
-            .unwrap();
-        let reconstructed_admission = reconstructed
-            .admit_apply(
-                &reconstructed_binding,
-                Some(real_result.rev()),
-                true,
-                crate::domain::code_intelligence::ProviderDeadline::from_budget(
-                    Duration::from_secs(7),
-                ),
-                &crate::domain::cancellation::CancellationToken::new(),
-            )
-            .unwrap();
-        assert_eq!(
-            reconstructed_admission.revision_identity(),
-            real_result.rev()
-        );
-        dry.cleanup();
-        real.cleanup();
+        let next = staged_xdto_admission(&fixture, Some(real_result.rev()), true);
+        let (state, effects) = plan_admitted_xdto(
+            &next,
+            &fixture.binding,
+            &[add_value("main:XDTOPackage.Sample", "Another", "xs:string")],
+        )
+        .unwrap();
+        let error = next.prepare_with_effects(state, effects).unwrap_err();
+        assert_eq!(error.kind(), crate::infrastructure::native_operations::apply::ApplyStagingErrorKind::ConcurrentRevision);
+        assert_eq!(fs::read(&fixture.package).unwrap(), dry_bytes);
+        fixture.cleanup();
     }
 
     #[test]
     fn staged_xdto_reuses_actor_authority_and_race_fences() {
         let fixture = staged_xdto_fixture("authority", PACKAGE.as_bytes());
+        let operation = [add_object("main:XDTOPackage.Sample", "Added")];
         let admitted = staged_xdto_admission(&fixture, None, true);
-        let rev = admitted.revision_identity();
-        drop(admitted);
-        assert!(fixture
+        let (state, effects) = plan_admitted_xdto(&admitted, &fixture.binding, &operation).unwrap();
+        let preview = fixture
             .actor
-            .admit_apply(
-                &fixture.binding,
-                Some(&rev),
-                true,
-                crate::domain::code_intelligence::ProviderDeadline::from_budget(
-                    Duration::from_secs(7),
-                ),
-                &crate::domain::cancellation::CancellationToken::new(),
-            )
-            .is_ok());
+            .publish_prepared_apply(admitted.prepare_with_effects(state, effects).unwrap())
+            .unwrap();
+        let exact = staged_xdto_admission(&fixture, Some(preview.rev()), true);
+        let (state, effects) = plan_admitted_xdto(&exact, &fixture.binding, &operation).unwrap();
+        let repeated = fixture
+            .actor
+            .publish_prepared_apply(exact.prepare_with_effects(state, effects).unwrap())
+            .unwrap();
+        assert_eq!(repeated.rev(), preview.rev());
         for stale in ["stale", "not-a-revision"] {
-            assert!(fixture
-                .actor
-                .admit_apply(
-                    &fixture.binding,
-                    Some(stale),
-                    true,
-                    crate::domain::code_intelligence::ProviderDeadline::from_budget(
-                        Duration::from_secs(7),
-                    ),
-                    &crate::domain::cancellation::CancellationToken::new(),
-                )
-                .unwrap_err()
-                .to_string()
-                .contains("stale"));
+            let admission = staged_xdto_admission(&fixture, Some(stale), true);
+            let (state, effects) =
+                plan_admitted_xdto(&admission, &fixture.binding, &operation).unwrap();
+            let error = admission.prepare_with_effects(state, effects).unwrap_err();
+            assert_eq!(error.kind(), crate::infrastructure::native_operations::apply::ApplyStagingErrorKind::ConcurrentRevision);
+            assert!(error.to_string().contains("stale"));
         }
         let cancelled = crate::domain::cancellation::CancellationToken::new();
         cancelled.cancel();

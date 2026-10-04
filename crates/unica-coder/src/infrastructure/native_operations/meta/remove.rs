@@ -1,5 +1,3 @@
-use crate::infrastructure::native_operations::common::Utf8TextSnapshot;
-use crate::infrastructure::platform::secure_read::read_root_relative_regular_file;
 use roxmltree::Document;
 use std::collections::HashSet;
 use std::ffi::OsString;
@@ -23,16 +21,8 @@ pub(crate) struct MetaRemoveSubsystemReplacement {
 }
 
 pub(crate) struct MetaRemoveTextRead {
-    path: PathBuf,
-    text: String,
-}
-
-struct MetaRemoveReferenceScan {
-    references: Vec<MetaRemoveReference>,
-}
-
-pub(crate) struct MetaRemoveTraversal {
-    pub(crate) files: Vec<PathBuf>,
+    pub(crate) path: PathBuf,
+    pub(crate) raw: Vec<u8>,
 }
 
 const META_REMOVE_MAX_TRAVERSAL_DEPTH: usize = 256;
@@ -315,7 +305,7 @@ pub(super) fn plan_meta_remove_subsystem_replacements_bounded(
             remove_subsystem_content_items(&snapshot.text, qualified_object_name)?;
         descriptor_reads.push(MetaRemoveTextRead {
             path: path.clone(),
-            text: snapshot.text.clone(),
+            raw: snapshot.raw.clone(),
         });
 
         let child_dir = path
@@ -399,210 +389,15 @@ pub(crate) fn remove_metadata_child_text_with_flag(
     }
 }
 
-pub(super) struct MetaRemoveReference {
-    pub(crate) file: String,
-}
-
 /// Largest single source file the reference scan will read.
 ///
 /// The scan decides whether an object may be removed, so it reads every XML and
 /// BSL file under the source root. Without a per-file bound one oversized file
 /// would size the whole operation, and the traversal limits above only bound
 /// how many entries are visited, not how big each one is.
-pub(super) const META_REMOVE_REFERENCE_FILE_MAX_BYTES: usize = 16 * 1024 * 1024;
+pub(crate) const META_REMOVE_REFERENCE_FILE_MAX_BYTES: usize = 16 * 1024 * 1024;
 
-/// Read one reference-scan file bound to the source root.
-///
-/// The scan runs against a tree another writer may be touching, and its verdict
-/// gates a destructive publication. Reading through a directory-relative
-/// no-follow handle keeps a symlink swapped in mid-scan from redirecting the
-/// read outside the root, which a plain path read would follow.
-pub(super) fn read_reference_scan_snapshot(
-    root: &Path,
-    path: &Path,
-) -> Result<Utf8TextSnapshot, String> {
-    let read =
-        read_root_relative_regular_file(root, path, META_REMOVE_REFERENCE_FILE_MAX_BYTES, |_| {})
-            .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
-    let text = std::str::from_utf8(&read.bytes)
-        .map_err(|error| format!("{} is not valid UTF-8: {error}", path.display()))?
-        .trim_start_matches('\u{feff}')
-        .to_string();
-    Ok(Utf8TextSnapshot {
-        raw: read.bytes,
-        text,
-    })
-}
-
-/// Source files that still mention `Kind.Name`, for planners that stage a
-/// removal without the legacy transaction. Same scan, same patterns; only the
-/// file list travels back.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn typed_remove_reference_files(
-    config_dir: &Path,
-    obj_type: &str,
-    obj_name: &str,
-    type_plural: &str,
-    obj_xml: &Path,
-    obj_dir: &Path,
-    has_xml: bool,
-    has_dir: bool,
-) -> Result<Vec<String>, String> {
-    let scan = meta_remove_reference_scan(
-        config_dir,
-        obj_type,
-        obj_name,
-        type_plural,
-        obj_xml,
-        obj_dir,
-        has_xml,
-        has_dir,
-    )?;
-    Ok(scan
-        .references
-        .into_iter()
-        .map(|reference| reference.file)
-        .collect())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn meta_remove_reference_scan(
-    config_dir: &Path,
-    obj_type: &str,
-    obj_name: &str,
-    type_plural: &str,
-    obj_xml: &Path,
-    obj_dir: &Path,
-    has_xml: bool,
-    has_dir: bool,
-) -> Result<MetaRemoveReferenceScan, String> {
-    let patterns = meta_remove_search_patterns(obj_type, obj_name, type_plural);
-    let mut references = Vec::new();
-    let mut already_found = HashSet::new();
-    let mut reads = Vec::new();
-    let traversal = metadata_files_recursive(config_dir)?;
-
-    for file in traversal.files.iter().filter(|file| {
-        matches!(
-            file.extension().and_then(|ext| ext.to_str()).map(str::to_ascii_lowercase),
-            Some(ext) if ext == "xml" || ext == "bsl"
-        )
-    }) {
-        if meta_remove_should_skip_file(file, config_dir, obj_xml, obj_dir, has_xml, has_dir) {
-            continue;
-        }
-        let snapshot = read_reference_scan_snapshot(config_dir, file)?;
-        let content = snapshot.text.clone();
-        reads.push(MetaRemoveTextRead {
-            path: file.clone(),
-            text: snapshot.text,
-        });
-        let rel = relative_display(file, config_dir);
-        for pattern in &patterns {
-            if content.contains(pattern) {
-                already_found.insert(rel.clone());
-                references.push(MetaRemoveReference { file: rel });
-                break;
-            }
-        }
-    }
-
-    let type_name_ref = format!("{obj_type}.{obj_name}");
-    for read in reads.iter().filter(|read| {
-        read.path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("xml"))
-    }) {
-        let rel = relative_display(&read.path, config_dir);
-        if already_found.contains(&rel) {
-            continue;
-        }
-        if read.text.contains(&type_name_ref) {
-            references.push(MetaRemoveReference { file: rel });
-        }
-    }
-
-    Ok(MetaRemoveReferenceScan { references })
-}
-
-pub(crate) fn metadata_files_recursive(root: &Path) -> Result<MetaRemoveTraversal, String> {
-    metadata_files_recursive_with_limits(
-        root,
-        MetaRemoveTraversalLimits {
-            max_depth: META_REMOVE_MAX_TRAVERSAL_DEPTH,
-            max_entries: META_REMOVE_MAX_TRAVERSAL_ENTRIES,
-        },
-    )
-}
-
-pub(super) fn metadata_files_recursive_with_limits(
-    root: &Path,
-    limits: MetaRemoveTraversalLimits,
-) -> Result<MetaRemoveTraversal, String> {
-    let mut visited_directories = HashSet::new();
-    let mut visited_entries = 0usize;
-    metadata_files_recursive_bounded(
-        root,
-        0,
-        limits,
-        &mut visited_directories,
-        &mut visited_entries,
-    )
-}
-
-pub(super) fn metadata_files_recursive_bounded(
-    root: &Path,
-    depth: usize,
-    limits: MetaRemoveTraversalLimits,
-    visited_directories: &mut HashSet<PathBuf>,
-    visited_entries: &mut usize,
-) -> Result<MetaRemoveTraversal, String> {
-    // The format guard calls this helper before the operation can render its
-    // normal "Config directory not found" outcome. Preserve that public error
-    // path for an initially absent root, while retaining fail-closed traversal
-    // once a root or child has been observed.
-    let Some(inspected_entries) = inspect_meta_remove_directory(
-        root,
-        depth,
-        limits,
-        MetaRemoveDirectoryWalkPolicy {
-            label: "reference scan",
-            allow_absent_root: true,
-        },
-        visited_directories,
-        visited_entries,
-    )?
-    else {
-        return Ok(MetaRemoveTraversal { files: Vec::new() });
-    };
-    let mut result = MetaRemoveTraversal { files: Vec::new() };
-
-    for (path, _, kind) in inspected_entries {
-        if kind == DirectoryTopologyEntryKind::Directory {
-            if depth >= limits.max_depth {
-                return Err(format!(
-                    "reference scan traversal exceeded the maximum depth of {}: {}",
-                    limits.max_depth,
-                    path.display()
-                ));
-            }
-            let nested = metadata_files_recursive_bounded(
-                &path,
-                depth + 1,
-                limits,
-                visited_directories,
-                visited_entries,
-            )?;
-            result.files.extend(nested.files);
-        } else {
-            result.files.push(path);
-        }
-    }
-    Ok(result)
-}
-
-pub(super) fn meta_remove_should_skip_file(
+pub(crate) fn meta_remove_should_skip_file(
     file: &Path,
     config_dir: &Path,
     obj_xml: &Path,
@@ -628,7 +423,7 @@ pub(super) fn meta_remove_should_skip_file(
         })
 }
 
-pub(super) fn meta_remove_search_patterns(
+pub(crate) fn meta_remove_search_patterns(
     obj_type: &str,
     obj_name: &str,
     type_plural: &str,

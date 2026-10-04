@@ -2045,11 +2045,15 @@ fn actor_format_evidence(
         let limit = state
             .remaining_format_evidence_entries
             .unwrap_or(MAX_HEALTH_FORMAT_EVIDENCE_ENTRIES);
-        let entries = state
+        let pass = state
             .actor_pass
             .as_mut()
-            .expect("actor format discovery has retained evidence state")
-            .observe_membership(&configured_path, &source_directory, limit, checkpoint)?;
+            .expect("actor format discovery has retained evidence state");
+        // Non-marker entries consume actor work too, so the remaining format
+        // evidence allowance can exceed the remaining enumeration capacity.
+        let limit = limit.min(pass.remaining_member_budget());
+        let entries =
+            pass.observe_membership(&configured_path, &source_directory, limit, checkpoint)?;
         for entry in entries {
             checkpoint()?;
             let path = Path::new(&entry.name);

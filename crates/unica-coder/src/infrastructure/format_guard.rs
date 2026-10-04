@@ -83,6 +83,46 @@ pub(crate) fn evaluate_read_format_guard(
     evaluate_operation_format_guard(operation, false, operation, args, context)
 }
 
+/// DCS check owns these documents through its retained source authority. Reuse
+/// the owner parser and version policy without reopening the display paths.
+pub(crate) fn evaluate_retained_dcs_format_guard(
+    artifact: &Path,
+    text: &str,
+    wrapper: (PathBuf, Vec<u8>),
+    source_owner: (
+        PathBuf,
+        Vec<u8>,
+        crate::domain::project_sources::SourceSetKind,
+    ),
+) -> Result<FormatGuardCheck, FormatGuardError> {
+    use crate::infrastructure::platform_xml_owner::{
+        source_set_owner_from_bytes, version_owning_target_from_bytes,
+    };
+    let owners = (|| {
+        let mut owners = Vec::new();
+        if let Some(owner) =
+            version_owning_target_from_bytes(artifact, text.as_bytes().to_vec(), Some(DCS_ROOT))?
+        {
+            owners.push(owner);
+        }
+        if let Some(owner) = version_owning_target_from_bytes(&wrapper.0, wrapper.1, None)? {
+            owners.push(owner);
+        }
+        owners.push(source_set_owner_from_bytes(
+            &source_owner.0,
+            source_owner.1,
+            source_owner.2,
+        )?);
+        Ok(owners)
+    })();
+    match owners {
+        Ok(owners) => evaluate_resolved_format_owners("dcs-validate", false, owners, None),
+        Err(error) => {
+            evaluate_resolved_format_owners("dcs-validate", false, Vec::new(), Some(error))
+        }
+    }
+}
+
 /// Mutation-side guard by operation name, for tests that prove a writer
 /// refuses before its handler without a public v0.12 tool record.
 #[cfg(test)]

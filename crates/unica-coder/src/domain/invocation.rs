@@ -496,5 +496,18 @@ mod tests {
                 );
             }
         }
+
+        #[test]
+        fn a_pending_dependency_retries_without_claiming_engine_delivery() {
+            let result = DomainResult::canonical_rejection_detailed(
+                None,
+                RefusalDetail::DependencyPending,
+                "search index is not ready",
+            );
+            assert!(!result.ok);
+            assert_eq!(result.diagnostics[0]["code"], "provider_unavailable");
+            assert_eq!(result.diagnostics[0]["detailCode"], "dependency_pending");
+            assert_eq!(result.diagnostics[0]["outcome"], "retry");
+        }
     }
 }

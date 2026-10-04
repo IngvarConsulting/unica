@@ -112,8 +112,18 @@ impl fmt::Display for DiagnosticMapError {
 
 impl std::error::Error for DiagnosticMapError {}
 
+/// One module admitted by the logical reader. This is an execution scope,
+/// not a filter on findings and not a replacement source root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DiagnosticModuleScope {
+    pub(crate) source_set: String,
+    pub(crate) source_root: std::path::PathBuf,
+    pub(crate) module_path: std::path::PathBuf,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiagnosticProviderRequest {
+    pub(crate) module_scope: Option<DiagnosticModuleScope>,
     pub action: DiagnosticAction,
     pub source_set: String,
     pub metadata_path: Option<MetadataAddress>,

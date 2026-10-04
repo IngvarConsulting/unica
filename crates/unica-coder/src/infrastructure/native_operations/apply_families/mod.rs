@@ -78,14 +78,6 @@ fn refuse_targets_on_locked_vendor_objects(
     }
     let at = request.at().to_string();
     let marker_path = std::path::Path::new("Ext/ParentConfigurations.bin");
-    // A source without `Ext/` is not on support; reading the marker below a
-    // missing parent would retain that chain as a postimage to own.
-    if !staged
-        .parent_exists(marker_path)
-        .map_err(|error| ApplyPlanError::staging(error, at.clone()))?
-    {
-        return Ok(());
-    }
     let marker = staged
         .read(marker_path)
         .map_err(|error| ApplyPlanError::staging(error, at.clone()))?;
