@@ -12,6 +12,11 @@ check:
   - crates/unica-coder/src/infrastructure/platform/process.rs::pending_launch_rejection_drops_owned_descendant
   - crates/unica-coder/src/infrastructure/platform/process.rs::pending_launch_complete_json_without_eof_remains_cancelable
   - crates/unica-coder/src/infrastructure/daemon/v13_client_run.rs::waited_launch_reports_the_exit_code_and_the_timeout
+  - crates/unica-coder/src/infrastructure/daemon/v13_client_run.rs::waited_launch_real_process_has_private_writable_logs_until_terminal_and_cleans_up
+  - crates/unica-coder/src/infrastructure/daemon/v13_client_run.rs::waiting_requires_a_thin_epf_but_nonwait_launch_modes_stay_available
+  - crates/unica-coder/src/infrastructure/daemon/v13_client_run.rs::waited_receipts_reject_inconsistent_identity_and_terminal_evidence
+  - crates/unica-coder/src/infrastructure/daemon/v13_client_run.rs::platform_receipts_keep_only_a_typed_version_or_explicit_unknown
+  - crates/unica-coder/src/infrastructure/daemon/v13_client_run.rs::timeout_words_without_a_wait_receipt_remain_an_ordinary_runner_failure
   - crates/unica-coder/src/infrastructure/daemon/v13_client_run.rs::a_preview_that_dispatched_a_client_is_refused_as_a_broken_contract
 ---
 
@@ -25,10 +30,16 @@ check:
 отклоняется.
 
 Закрытые аргументы — `clientMode`, `execute`, `waitForExit`, `waitTimeoutMs`.
-Ожидание внешней обработки требует одновременно `execute`, `waitForExit`
-и положительного `waitTimeoutMs`. Ответ называет версию и источник
+Ожидание завершения поддерживается для `thin` с `execute` на `.epf`,
+`waitForExit` и положительным `waitTimeoutMs`. Ответ называет версию и источник
 платформы, PID и исход ожидания. Команда раннера, пути установки и журналов,
 вывод клиента и строка соединения в него не переносятся.
+
+При истечении `waitTimeoutMs` раннер завершает клиент. Подтверждённый
+таймаут возвращает `provider_failed` с PID и исходом ожидания в `data`,
+без записи в `changed` и предложения повторить запуск. Неуспешная
+квитанция проходит общие проверки сеанса и ожидания; текст ошибки
+провайдера не подтверждает таймаут.
 
 Сведения о сеансе подтверждает провайдер. Проверки исполняют адаптер
 с управляемыми ответами раннера, без запуска настоящей платформы 1С.

@@ -233,7 +233,7 @@ impl RunOperation {
                 "properties": {
                     "clientMode": {"type": "string", "enum": ["designer", "thin", "thick", "ordinary"], "description": "1C client to launch."},
                     "execute": {"type": "string", "description": "Workspace-relative .epf or .erf external processor to run with /Execute; enterprise clients only."},
-                    "waitForExit": {"type": "boolean", "default": false, "description": "Wait for the external processor session to exit; requires execute and waitTimeoutMs."},
+                    "waitForExit": {"type": "boolean", "default": false, "description": "Wait for a thin-client .epf session to exit; requires execute and waitTimeoutMs."},
                     "waitTimeoutMs": {"type": "integer", "minimum": 1, "maximum": 86400000, "description": "Bound for waitForExit in milliseconds."}
                 },
                 "required": ["clientMode"]
