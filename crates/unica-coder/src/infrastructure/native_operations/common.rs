@@ -541,7 +541,9 @@ pub(crate) fn parse_subsystem_edit_model(
         .map(|content| {
             content
                 .children()
-                .filter(|node| role_info_element(*node, "Item", None))
+                .filter(|node| {
+                    role_info_element(*node, "Item", Some("http://v8.1c.ru/8.3/xcf/readable"))
+                })
                 .filter_map(|node| node.text())
                 .map(str::trim)
                 .map(ToOwned::to_owned)
@@ -550,7 +552,7 @@ pub(crate) fn parse_subsystem_edit_model(
         .unwrap_or_default();
     let children = child_objects
         .children()
-        .filter(|node| role_info_element(*node, "Subsystem", None))
+        .filter(|node| role_info_element(*node, "Subsystem", Some("http://v8.1c.ru/8.3/MDClasses")))
         .filter_map(|node| node.text())
         .map(str::trim)
         .map(ToOwned::to_owned)
@@ -589,6 +591,192 @@ pub(crate) fn parse_subsystem_edit_model(
         content,
         children,
     })
+}
+
+/// Change only subsystem membership. Existing entries and all outside XML stay raw.
+pub(crate) fn patch_subsystem_lists(
+    text: &str,
+    model: &SubsystemEditModel,
+    original: Option<&str>,
+) -> Result<String, String> {
+    const MD: &str = "http://v8.1c.ru/8.3/MDClasses";
+    const XR: &str = "http://v8.1c.ru/8.3/xcf/readable";
+    const XSI: &str = "http://www.w3.org/2001/XMLSchema-instance";
+    fn child<'a, 'input>(
+        node: roxmltree::Node<'a, 'input>,
+        name: &str,
+    ) -> Result<Option<roxmltree::Node<'a, 'input>>, String> {
+        let mut found = node.children().filter(|n| n.has_tag_name((MD, name)));
+        let first = found.next();
+        if found.next().is_some() {
+            return Err(format!("ambiguous subsystem {name}"));
+        }
+        Ok(first)
+    }
+    fn lexical_name<'a>(body: &'a str, node: roxmltree::Node<'_, '_>) -> &'a str {
+        body[node.range().start + 1..]
+            .split([' ', '\t', '\r', '\n', '/', '>'])
+            .next()
+            .unwrap()
+    }
+    fn insert(
+        body: &str,
+        node: roxmltree::Node<'_, '_>,
+        value: &str,
+    ) -> Result<(std::ops::Range<usize>, String), String> {
+        let range = node.range();
+        let raw = &body[range.clone()];
+        if raw.ends_with("/>") {
+            let at = range.end - 2;
+            Ok((
+                at..range.end,
+                format!(">{value}</{}>", lexical_name(body, node)),
+            ))
+        } else {
+            let at = raw
+                .rfind("</")
+                .ok_or("subsystem container has no closing tag")?
+                + range.start;
+            Ok((at..at, value.to_owned()))
+        }
+    }
+    let body = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let doc = Document::parse(body).map_err(|e| format!("XML parse error: {e}"))?;
+    if !doc.root_element().has_tag_name((MD, "MetaDataObject")) {
+        return Err("Expected MDClasses MetaDataObject root".to_owned());
+    }
+    let sub = child(doc.root_element(), "Subsystem")?.ok_or("No Subsystem element")?;
+    let props = child(sub, "Properties")?.ok_or("No Properties element")?;
+    let children = child(sub, "ChildObjects")?.ok_or("No ChildObjects element")?;
+    let content = child(props, "Content")?;
+    let original_body = original.map(|s| s.strip_prefix('\u{feff}').unwrap_or(s));
+    let original_doc = original_body
+        .map(Document::parse)
+        .transpose()
+        .map_err(|e| format!("XML parse error: {e}"))?;
+    let mut edits = Vec::new();
+    for (container, parent, name, item_namespace, item_name, desired) in [
+        (content, props, "Content", XR, "Item", &model.content),
+        (
+            Some(children),
+            sub,
+            "ChildObjects",
+            MD,
+            "Subsystem",
+            &model.children,
+        ),
+    ] {
+        let entries: Vec<_> = container
+            .into_iter()
+            .flat_map(|n| n.children())
+            .filter(|n| n.has_tag_name((item_namespace, item_name)))
+            .collect();
+        if let (Some(base_doc), Some(base_body)) = (&original_doc, original_body) {
+            let base_sub = child(base_doc.root_element(), "Subsystem")?
+                .ok_or("No original Subsystem element")?;
+            let base_parent = if name == "Content" {
+                child(base_sub, "Properties")?.ok_or("No original Properties element")?
+            } else {
+                base_sub
+            };
+            let base_container = child(base_parent, name)?;
+            let base_items: Vec<_> = base_container
+                .into_iter()
+                .flat_map(|n| n.children())
+                .filter(|n| n.has_tag_name((item_namespace, item_name)))
+                .map(|n| n.text().unwrap_or("").trim())
+                .collect();
+            // An intervening editor may have changed inherited namespace
+            // bindings. Never transplant raw prefixed XML into a different
+            // context; edit the current list normally in that case.
+            let bindings_compatible = base_container.is_none_or(|base| {
+                let current_scope = container.unwrap_or(parent);
+                base.namespaces()
+                    .all(|ns| current_scope.lookup_namespace_uri(ns.name()) == Some(ns.uri()))
+            });
+            if bindings_compatible
+                && base_items
+                    .iter()
+                    .copied()
+                    .eq(desired.iter().map(String::as_str))
+            {
+                if let Some(node) = container {
+                    let raw = base_container.map_or("", |n| &base_body[n.range()]);
+                    edits.push((node.range(), raw.to_owned()));
+                }
+                continue;
+            }
+        }
+        let current: Vec<_> = entries
+            .iter()
+            .map(|n| n.text().unwrap_or("").trim())
+            .collect();
+        if current
+            .iter()
+            .copied()
+            .eq(desired.iter().map(String::as_str))
+        {
+            continue;
+        }
+        for entry in &entries {
+            if !desired
+                .iter()
+                .any(|v| v == entry.text().unwrap_or("").trim())
+            {
+                edits.push((entry.range(), String::new()));
+            }
+        }
+        let scope = container.unwrap_or(parent);
+        let prefix = scope.lookup_prefix(item_namespace);
+        let tag = prefix.map_or_else(|| item_name.to_owned(), |p| format!("{p}:{item_name}"));
+        let mut added = String::new();
+        for value in desired.iter().filter(|v| !current.contains(&v.as_str())) {
+            if item_namespace == XR {
+                // A QName in xsi:type must bind to the readable namespace too.
+                let xsi_prefix = scope.lookup_prefix(XSI);
+                let xr = prefix.unwrap_or(if xsi_prefix == Some("xr") {
+                    "xr1"
+                } else {
+                    "xr"
+                });
+                let xsi = xsi_prefix.unwrap_or(if xr == "xsi" { "xsi1" } else { "xsi" });
+                let xr_decl = if prefix.is_none() {
+                    format!(" xmlns:{xr}=\"{XR}\"")
+                } else {
+                    String::new()
+                };
+                let xsi_decl = if scope.lookup_prefix(XSI).is_none() {
+                    format!(" xmlns:{xsi}=\"{XSI}\"")
+                } else {
+                    String::new()
+                };
+                added.push_str(&format!(
+                    "<{xr}:Item{xr_decl}{xsi_decl} {xsi}:type=\"{xr}:MDObjectRef\">{}</{xr}:Item>",
+                    escape_xml(value)
+                ));
+            } else {
+                added.push_str(&format!("<{tag}>{}</{tag}>", escape_xml(value)));
+            }
+        }
+        if !added.is_empty() {
+            if let Some(node) = container {
+                edits.push(insert(body, node, &added)?);
+            } else {
+                let prefix = parent.lookup_prefix(MD);
+                let tag = prefix.map_or_else(|| name.to_owned(), |p| format!("{p}:{name}"));
+                edits.push(insert(body, parent, &format!("<{tag}>{added}</{tag}>"))?);
+            }
+        }
+    }
+    edits.sort_by_key(|a| std::cmp::Reverse(a.0.start));
+    let mut updated = body.to_owned();
+    for (range, replacement) in edits {
+        updated.replace_range(range, &replacement);
+    }
+    if body.len() != text.len() {
+        updated.insert(0, '\u{feff}');
+    }
+    Ok(updated)
 }
 
 pub(crate) fn emit_subsystem_edit_model(model: &SubsystemEditModel) -> String {
@@ -3350,4 +3538,79 @@ pub(crate) fn escape_xml(value: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+#[cfg(test)]
+mod subsystem_list_patch_tests {
+    use super::{parse_subsystem_edit_model, patch_subsystem_lists};
+    const MD: &str = "http://v8.1c.ru/8.3/MDClasses";
+    const XR: &str = "http://v8.1c.ru/8.3/xcf/readable";
+    const XSI: &str = "http://www.w3.org/2001/XMLSchema-instance";
+
+    #[test]
+    fn subsystem_list_patch_preserves_raw_entries_and_foreign_nodes() {
+        let retained = "<ref:Item xsi:type=\"ref:MDObjectRef\" extra=\"keep\">Document.&#70;irst</ref:Item><!--keep--><foreign:Item>Document.Foreign</foreign:Item>";
+        let source = format!("\u{feff}<md:MetaDataObject xmlns:md=\"{MD}\" xmlns:ref=\"{XR}\" xmlns:xsi=\"{XSI}\" xmlns:foreign=\"urn:other\" version=\"2.20\">\r\n<md:Subsystem><md:Properties><md:Name>Sales</md:Name><md:Content>{retained}<ref:Item xsi:type=\"ref:MDObjectRef\">Document.Remove</ref:Item></md:Content></md:Properties><md:ChildObjects/></md:Subsystem></md:MetaDataObject>");
+        let mut model = parse_subsystem_edit_model(&source, "test").unwrap();
+        assert_eq!(model.content, ["Document.First", "Document.Remove"]);
+        assert_eq!(
+            patch_subsystem_lists(&source, &model, None).unwrap(),
+            source
+        );
+        model.content = vec!["Document.First".into(), "Document.Added".into()];
+        let actual = patch_subsystem_lists(&source, &model, None).unwrap();
+        let expected = source.replace(
+            "<ref:Item xsi:type=\"ref:MDObjectRef\">Document.Remove</ref:Item>",
+            "<ref:Item xsi:type=\"ref:MDObjectRef\">Document.Added</ref:Item>",
+        );
+        assert_eq!(actual, expected);
+        model.content.clear();
+        let actual = patch_subsystem_lists(&source, &model, None).unwrap();
+        assert!(actual.contains("<!--keep--><foreign:Item>Document.Foreign</foreign:Item>"));
+        assert!(!actual.contains("<ref:Item"));
+    }
+
+    #[test]
+    fn subsystem_list_patch_binds_missing_or_rebound_prefixes() {
+        for declarations in [
+            "",
+            "xmlns:xr=\"urn:foreign\" xmlns:xsi=\"urn:foreign-instance\"",
+            "xmlns:xsi=\"http://v8.1c.ru/8.3/xcf/readable\"",
+            "xmlns:xr=\"http://www.w3.org/2001/XMLSchema-instance\"",
+        ] {
+            let source = format!("<MetaDataObject xmlns=\"{MD}\" {declarations} version=\"2.20\"><Subsystem><Properties><Name>Sales</Name><Content /></Properties><ChildObjects /></Subsystem></MetaDataObject>");
+            let mut model = parse_subsystem_edit_model(&source, "test").unwrap();
+            model.content.push("Document.First".into());
+            model.children.push("Orders".into());
+            let actual = patch_subsystem_lists(&source, &model, None).unwrap();
+            let doc = roxmltree::Document::parse(&actual).unwrap();
+            let item = doc
+                .descendants()
+                .find(|n| n.has_tag_name((XR, "Item")))
+                .unwrap();
+            assert_eq!(item.text(), Some("Document.First"));
+            let ty = item.attribute((XSI, "type")).unwrap();
+            let (prefix, local) = ty.split_once(':').unwrap();
+            assert_eq!(item.lookup_namespace_uri(Some(prefix)), Some(XR));
+            assert_eq!(local, "MDObjectRef");
+            assert!(doc
+                .descendants()
+                .any(|n| n.has_tag_name((MD, "Subsystem")) && n.text() == Some("Orders")));
+        }
+    }
+
+    #[test]
+    fn subsystem_list_patch_refuses_ambiguous_direct_containers() {
+        for duplicate in [
+            "<Properties/><Properties/>",
+            "<Properties><Content/><Content/></Properties>",
+            "<Properties/><ChildObjects/>",
+        ] {
+            let source = format!("<MetaDataObject xmlns=\"{MD}\" version=\"2.20\"><Subsystem>{duplicate}<ChildObjects/></Subsystem></MetaDataObject>");
+            let model = parse_subsystem_edit_model(&source, "test").unwrap();
+            assert!(patch_subsystem_lists(&source, &model, None)
+                .unwrap_err()
+                .contains("ambiguous"));
+        }
+    }
 }

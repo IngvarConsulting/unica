@@ -2350,13 +2350,26 @@ pub(crate) fn plan_form_resource_batch(
                         }
                     }
                 }
-                let mut postimage = UTF8_BOM.to_vec();
-                postimage.extend_from_slice(
-                    crate::infrastructure::native_operations::common::emit_subsystem_edit_model(
-                        &model,
+                let original = staged
+                    .original_image(relative)
+                    .map(std::str::from_utf8)
+                    .transpose()
+                    .map_err(|_| {
+                        ApplyPlanError::new(
+                            ApplyPlanErrorKind::InvalidSource,
+                            "the original subsystem descriptor is not UTF-8",
+                        )
+                        .at_path(at_path.clone())
+                    })?;
+                let postimage =
+                    crate::infrastructure::native_operations::common::patch_subsystem_lists(
+                        &text, &model, original,
                     )
-                    .as_bytes(),
-                );
+                    .map_err(|message| {
+                        ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                            .at_path(at_path.clone())
+                    })?
+                    .into_bytes();
                 if postimage != preimage {
                     staged
                         .replace(relative, &preimage, postimage)
@@ -2889,6 +2902,10 @@ mod tests {
         std::fs::create_dir_all(fixture.source_dir().join("Subsystems")).unwrap();
         let stub =
             super::subsystem_stub_xml("Sales", "2.20", "55555555-5555-4555-8555-555555555555");
+        let stub = stub
+            .replace("<Properties>", "<InternalInfo><xr:PropertyState><xr:Property>CommandInterface</xr:Property><xr:State>Extended</xr:State></xr:PropertyState></InternalInfo><Properties><ObjectBelonging>Adopted</ObjectBelonging><ExtendedConfigurationObject>66666666-6666-4666-8666-666666666666</ExtendedConfigurationObject>")
+            .replace("<Synonym/>", "<Synonym><v8:item><v8:lang>en</v8:lang><v8:content>Sales original</v8:content></v8:item></Synonym>")
+            .replace("<Comment/>", "<Comment>Keep&#13;this</Comment>");
         std::fs::write(
             fixture.source_dir().join("Subsystems/Sales.xml"),
             format!("\u{feff}{stub}"),
@@ -2925,8 +2942,142 @@ mod tests {
         let text = staged_text(&staged, "Subsystems/Sales.xml");
         assert!(text.contains("Document.First"), "{text}");
         assert!(text.contains("<Subsystem>Orders</Subsystem>"), "{text}");
+        let expected = format!("\u{feff}{stub}")
+            .replace(
+                "<Content/>",
+                "<Content><xr:Item xsi:type=\"xr:MDObjectRef\">Document.First</xr:Item></Content>",
+            )
+            .replace(
+                "<ChildObjects/>",
+                "<ChildObjects><Subsystem>Orders</Subsystem></ChildObjects>",
+            );
+        assert_eq!(
+            text, expected,
+            "only the requested lists change; all other source bytes survive"
+        );
+        assert_eq!(
+            std::fs::read_to_string(fixture.source_dir().join("Subsystems/Sales.xml")).unwrap(),
+            format!("\u{feff}{stub}"),
+            "planning never writes the source"
+        );
         let child = staged_text(&staged, "Subsystems/Sales/Subsystems/Orders.xml");
         assert!(child.contains("<Name>Orders</Name>"), "{child}");
+    }
+
+    #[test]
+    fn subsystem_membership_batch_noop_keeps_the_exact_original_image() {
+        for empty in ["<Content/>", "<Content></Content>", "<Content > </Content>"] {
+            let fixture = ApplySeamFixture::new();
+            std::fs::create_dir_all(fixture.source_dir().join("Subsystems")).unwrap();
+            let original =
+                super::subsystem_stub_xml("Sales", "2.20", "55555555-5555-4555-8555-555555555555")
+                    .replace("<Content/>", empty)
+                    .replace('\n', "\r\n");
+            let path = fixture.source_dir().join("Subsystems/Sales.xml");
+            std::fs::write(&path, original.as_bytes()).unwrap();
+            let admission = fixture.admission();
+            let staged = admission.staged_state().unwrap();
+            let authority = admission
+                .form_resource_planning_authority(&fixture.binding)
+                .unwrap();
+            let operations: Vec<_> = ["content.add", "content.remove"].into_iter().enumerate().map(|(index, op)| {
+                let args = json!({"at": "main:Subsystem.Sales", "items": [{"object": "Document.First"}]});
+                IndexedPlanOperation::new(index, parse_form_resource_plan_operation(op, &args, index, &fixture.binding).unwrap())
+            }).collect();
+            let (mut staged, _) = plan_form_resource_batch(staged, authority, &operations).unwrap();
+            assert!(staged.planned_changes().is_empty(), "{empty}");
+            assert_eq!(
+                staged
+                    .read(std::path::Path::new("Subsystems/Sales.xml"))
+                    .unwrap()
+                    .unwrap(),
+                original.as_bytes()
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), original.as_bytes());
+        }
+    }
+
+    #[test]
+    fn subsystem_membership_restores_original_lists_across_family_batches() {
+        let fixture = ApplySeamFixture::new();
+        std::fs::create_dir_all(fixture.source_dir().join("Subsystems")).unwrap();
+        let original =
+            super::subsystem_stub_xml("Sales", "2.20", "55555555-5555-4555-8555-555555555555");
+        std::fs::write(fixture.source_dir().join("Subsystems/Sales.xml"), &original).unwrap();
+        let admission = fixture.admission();
+        let mut staged = admission.staged_state().unwrap();
+        let relative = std::path::Path::new("Subsystems/Sales.xml");
+        for (index, op) in ["content.add", "content.remove"].into_iter().enumerate() {
+            let authority = admission
+                .form_resource_planning_authority(&fixture.binding)
+                .unwrap();
+            let args =
+                json!({"at": "main:Subsystem.Sales", "items": [{"object": "Document.First"}]});
+            let operation = IndexedPlanOperation::new(
+                index,
+                parse_form_resource_plan_operation(op, &args, index, &fixture.binding).unwrap(),
+            );
+            (staged, _) = plan_form_resource_batch(staged, authority, &[operation]).unwrap();
+            if index == 0 {
+                // An intervening family can edit the same descriptor. Restoration
+                // must be scoped to membership and keep that staged property.
+                let before = staged.read(relative).unwrap().unwrap();
+                let after = String::from_utf8(before.clone())
+                    .unwrap()
+                    .replace("<Comment/>", "<Comment>Changed</Comment>");
+                staged
+                    .replace(relative, &before, after.into_bytes())
+                    .unwrap();
+            }
+        }
+        assert_eq!(
+            staged.read(relative).unwrap().unwrap(),
+            original
+                .replace("<Comment/>", "<Comment>Changed</Comment>")
+                .as_bytes()
+        );
+    }
+
+    #[test]
+    fn subsystem_membership_after_props_set_keeps_valid_namespace_bindings() {
+        use super::super::metadata::{parse_metadata_plan_operation, plan_metadata_batch};
+        let fixture = ApplySeamFixture::new();
+        std::fs::create_dir_all(fixture.source_dir().join("Subsystems")).unwrap();
+        let source = "<m:MetaDataObject xmlns:m=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:r=\"http://v8.1c.ru/8.3/xcf/readable\" version=\"2.20\"><m:Subsystem uuid=\"55555555-5555-4555-8555-555555555555\"><m:Properties><m:Name>Sales</m:Name><m:Comment/><m:Content/></m:Properties><m:ChildObjects/></m:Subsystem></m:MetaDataObject>";
+        std::fs::write(fixture.source_dir().join("Subsystems/Sales.xml"), source).unwrap();
+        let admission = fixture.admission();
+        let mut staged = admission.staged_state().unwrap();
+        for (index, op) in ["content.add", "content.remove"].into_iter().enumerate() {
+            let authority = admission
+                .form_resource_planning_authority(&fixture.binding)
+                .unwrap();
+            let args =
+                json!({"at": "main:Subsystem.Sales", "items": [{"object": "Document.First"}]});
+            let operation = IndexedPlanOperation::new(
+                index * 2,
+                parse_form_resource_plan_operation(op, &args, index * 2, &fixture.binding).unwrap(),
+            );
+            (staged, _) = plan_form_resource_batch(staged, authority, &[operation]).unwrap();
+            if index == 0 {
+                let authority = admission
+                    .metadata_planning_authority(&fixture.binding)
+                    .unwrap();
+                let args = json!({"at": "main:Subsystem.Sales", "values": {"Comment": "Changed"}});
+                let operation = IndexedPlanOperation::new(
+                    1,
+                    parse_metadata_plan_operation("props.set", &args, 1, &fixture.binding).unwrap(),
+                );
+                (staged, _) = plan_metadata_batch(staged, authority, &[operation]).unwrap();
+            }
+        }
+        let actual = staged_text(&staged, "Subsystems/Sales.xml");
+        let doc = roxmltree::Document::parse(actual.trim_start_matches('\u{feff}')).unwrap();
+        assert!(doc.descendants().any(|n| n
+            .has_tag_name(("http://v8.1c.ru/8.3/MDClasses", "Comment"))
+            && n.text() == Some("Changed")));
+        assert!(!doc
+            .descendants()
+            .any(|n| n.has_tag_name(("http://v8.1c.ru/8.3/xcf/readable", "Item"))));
     }
 
     #[test]

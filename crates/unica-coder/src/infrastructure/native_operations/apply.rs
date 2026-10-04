@@ -663,6 +663,19 @@ impl ApplyStagedState {
         Ok(self.entries[index].current.as_option())
     }
 
+    /// Borrow the already retained first image of this one target; no new read
+    /// or copy is made. A local editor can restore a reverted XML subtree
+    /// without overwriting other properties changed by an intervening family.
+    pub(crate) fn original_image(&self, relative: &Path) -> Option<&[u8]> {
+        self.entries
+            .iter()
+            .find(|entry| entry.relative_path == relative)
+            .and_then(|entry| match &entry.original {
+                StagedFileState::Bytes(bytes) => Some(bytes.as_slice()),
+                StagedFileState::Absent => None,
+            })
+    }
+
     /// Read one reference input without retaining its complete body in the
     /// saved plan. The caller owns the temporary bytes only for this scan.
     pub(crate) fn read_guarded_bounded(
