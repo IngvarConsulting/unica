@@ -18,7 +18,9 @@ use crate::infrastructure::metadata_kinds::{
 };
 use crate::infrastructure::native_operations::compile_transaction::CompileTransaction;
 use crate::infrastructure::path_policy::WorkspacePathPolicy;
-use crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point;
+use crate::infrastructure::platform::filesystem::{
+    metadata_is_link_or_reparse_point, strip_windows_extended_length_prefix,
+};
 use crate::infrastructure::source_roots::{
     normalize_path_identity, resolve_named_source_set, NamedSourceSetError,
     NamedSourceSetErrorKind, ResolvedNamedSourceSet,
@@ -314,6 +316,10 @@ pub(crate) fn source_set_relative_path(
     source_root: &Path,
     raw: &Path,
 ) -> Option<PathBuf> {
+    // The retained root can keep Windows' verbatim spelling while a candidate
+    // normalized below has that prefix removed. Do not resolve the root again:
+    // a named route might have changed since the actor retained its authority.
+    let source_root = strip_windows_extended_length_prefix(source_root);
     let mut candidates = Vec::new();
     if raw.is_absolute() {
         candidates.push(raw.to_path_buf());
@@ -325,7 +331,7 @@ pub(crate) fn source_set_relative_path(
         let Ok(normalized) = normalize_path_identity(&candidate) else {
             continue;
         };
-        if let Ok(relative) = normalized.strip_prefix(source_root) {
+        if let Ok(relative) = normalized.strip_prefix(&source_root) {
             if relative.as_os_str().is_empty() {
                 continue;
             }
@@ -2373,7 +2379,8 @@ mod tests {
     use crate::domain::workspace::WorkspaceContext;
     use crate::infrastructure::platform::filesystem::create_dir_symlink_for_test;
     use crate::infrastructure::platform::testing::{
-        create_file_link_fixture_for_test, FileLinkFixtureOutcome,
+        create_directory_link_fixture_for_test, create_file_link_fixture_for_test,
+        FileLinkFixtureOutcome,
     };
     use crate::infrastructure::source_roots::normalize_path_identity;
     use std::fs;
@@ -2458,6 +2465,48 @@ mod tests {
                     .join("ext/CommonModules/Shared/Ext/Module.bsl")
             )
             .unwrap()
+        );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn source_set_relative_path_does_not_follow_a_replaced_named_root() {
+        let context = fixture(
+            "relative-path-root-remap",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let workspace = normalize_path_identity(&context.workspace_root).unwrap();
+        let source_root = workspace.join("src");
+        let foreign_root = workspace.join("foreign");
+        let relative = Path::new("CommonModules/Shared/Ext/Module.bsl");
+        let original = source_root.join(relative);
+        fs::create_dir_all(original.parent().unwrap()).unwrap();
+        fs::write(&original, b"Procedure Original()\nEndProcedure").unwrap();
+        fs::create_dir_all(foreign_root.join(relative).parent().unwrap()).unwrap();
+        fs::write(
+            foreign_root.join(relative),
+            b"Procedure Foreign()\nEndProcedure",
+        )
+        .unwrap();
+
+        assert_eq!(
+            super::source_set_relative_path(&context, &source_root, &original),
+            Some(relative.to_path_buf())
+        );
+        fs::remove_dir_all(&source_root).unwrap();
+        match create_directory_link_fixture_for_test(&foreign_root, &source_root).unwrap() {
+            FileLinkFixtureOutcome::Created => {}
+            FileLinkFixtureOutcome::Unsupported
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                cleanup(&context);
+                return;
+            }
+        }
+
+        assert_eq!(
+            super::source_set_relative_path(&context, &source_root, &original),
+            None,
+            "the old source root must not be re-resolved through its new link"
         );
         cleanup(&context);
     }
