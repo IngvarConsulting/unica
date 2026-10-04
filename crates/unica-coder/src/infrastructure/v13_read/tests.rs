@@ -1,17 +1,19 @@
 use super::{
     project_known_suffix, project_typed_payload, resolve_platform_xml_target,
-    review_set_after_canonical_role_read, review_set_before_owner_proof, LogicalViewReadAuthority,
-    MetadataAddress, SourceTarget, TargetKindPolicy, PLATFORM_XML_8_3_27_FORMAT_2_20,
+    review_set_before_owner_proof, LogicalViewReadAuthority, MetadataAddress, SourceTarget,
+    TargetKindPolicy, PLATFORM_XML_8_3_27_FORMAT_2_20,
 };
 use crate::application::result_store::ViewCursorStore;
 use crate::application::v13::find::{FindRequest, FindResult};
-use crate::application::v13::view::{ViewFilter, ViewReadAuthority, ViewRequest, ViewService};
+use crate::application::v13::view::{
+    ViewError, ViewFilter, ViewReadAuthority, ViewRequest, ViewService,
+};
 use crate::domain::address::QualifiedAddress;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::platform_profile::PlatformProfile;
 use crate::domain::project_sources::SourceSetKind;
-use crate::domain::refusal::RefusalCode;
+use crate::domain::refusal::{RefusalCode, RefusalDetail};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::logical_tree::route_logical_address;
 use crate::infrastructure::platform::filesystem::{
@@ -3571,6 +3573,136 @@ pub(crate) fn typed_reads_parse_the_support_marker_once_per_actor_revision() {
 }
 
 #[test]
+fn large_support_marker_reads_late_rules_once_for_multiple_owners() {
+    use crate::domain::support_state::ObjectSupportState;
+    use crate::infrastructure::native_operations::common::support_root_uuid_from_bytes;
+
+    let fixture = RealReaderFixture::new();
+    let catalog_uuid =
+        support_root_uuid_from_bytes(&fs::read(fixture.source.join("Catalogs/Items.xml")).unwrap())
+            .unwrap();
+    let report_uuid = support_root_uuid_from_bytes(
+        &fs::read(fixture.source.join("Reports/ParityReport.xml")).unwrap(),
+    )
+    .unwrap();
+    assert_ne!(catalog_uuid, report_uuid);
+    let mut marker = format!("{{6,0,1,0,0,{catalog_uuid},").into_bytes();
+    // The final rule straddles a 64 KiB window after the former 8 MiB ceiling.
+    marker.resize(8 * 1024 * 1024 + 64 * 1024 - 13, b' ');
+    marker.extend_from_slice(format!("1,0,{report_uuid},}}").as_bytes());
+    fs::create_dir_all(fixture.source.join("Ext")).unwrap();
+    fs::write(fixture.source.join("Ext/ParentConfigurations.bin"), marker).unwrap();
+    let authority = fixture.read_authority();
+    for (path, expected) in [
+        ("Catalog.Items", ObjectSupportState::Locked),
+        (
+            "Report.ParityReport",
+            ObjectSupportState::EditableWithSupport,
+        ),
+        ("Catalog.Items", ObjectSupportState::Locked),
+    ] {
+        let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, path).unwrap();
+        assert_eq!(
+            authority
+                .read
+                .object_support(&target, &mut || Ok(()))
+                .unwrap()
+                .state,
+            expected
+        );
+    }
+    let configuration = configuration_payload(&authority.read).unwrap();
+    assert_eq!(
+        configuration["support"]["objects"],
+        json!({"locked": 1, "editable": 1, "removed": 0})
+    );
+    assert_eq!(authority.support_state_read_count(), 1);
+}
+
+#[test]
+fn support_marker_stream_preserves_terminal_errors_and_never_memoizes_interruption() {
+    use crate::application::v13::view::ViewError;
+    let fixture = RealReaderFixture::new();
+    let marker_path = fixture.source.join("Ext/ParentConfigurations.bin");
+    fs::create_dir_all(marker_path.parent().unwrap()).unwrap();
+    let mut marker = b"{6,0,1,".to_vec();
+    marker.resize(64 * 1024 + 1, b' ');
+    fs::write(&marker_path, marker).unwrap();
+    let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Items").unwrap();
+    for code in [RefusalCode::Cancelled, RefusalCode::DeadlineExceeded] {
+        // Before opening, between chunks, after EOF, and immediately before memo publication.
+        for stop_at in [1, 3, 5, 6] {
+            let authority = fixture.read_authority();
+            let mut calls = 0;
+            let error = authority
+                .read
+                .object_support(&target, &mut || {
+                    calls += 1;
+                    if calls == stop_at {
+                        Err(ViewError::new(code, "original operation stopped"))
+                    } else {
+                        Ok(())
+                    }
+                })
+                .unwrap_err();
+            assert_eq!(error.code(), code, "checkpoint {stop_at}");
+            assert_eq!(calls, stop_at);
+            let reads_before_retry = authority.support_state_read_count();
+            authority
+                .read
+                .object_support(&target, &mut || Ok(()))
+                .unwrap();
+            assert_eq!(
+                authority.support_state_read_count(),
+                reads_before_retry + 1,
+                "interrupted state was not published"
+            );
+            let mut calls = 0;
+            let error = authority
+                .read
+                .object_support(&target, &mut || {
+                    calls += 1;
+                    if calls == 2 {
+                        Err(ViewError::new(code, "cached read stopped"))
+                    } else {
+                        Ok(())
+                    }
+                })
+                .unwrap_err();
+            assert_eq!(error.code(), code);
+            assert_eq!(calls, 2, "cached return keeps the caller checkpoint");
+            assert_eq!(authority.support_state_read_count(), reads_before_retry + 1);
+        }
+    }
+    fs::remove_file(marker_path).unwrap();
+    for code in [RefusalCode::Cancelled, RefusalCode::DeadlineExceeded] {
+        let authority = fixture.read_authority();
+        let mut calls = 0;
+        let error = authority
+            .read
+            .object_support(&target, &mut || {
+                calls += 1;
+                if calls == 2 {
+                    Err(ViewError::new(code, "absent marker read stopped"))
+                } else {
+                    Ok(())
+                }
+            })
+            .unwrap_err();
+        assert_eq!(error.code(), code);
+        authority
+            .read
+            .object_support(&target, &mut || Ok(()))
+            .unwrap();
+        assert_eq!(
+            authority.support_state_read_count(),
+            2,
+            "absence is memoized only after a successful checkpoint"
+        );
+    }
+}
+
+#[test]
 fn ambiguous_short_role_alias_is_rejected_and_canonical_aliases_work() {
     let payload = json!({
         "name": "SalesReader",
@@ -4533,7 +4665,7 @@ fn review_rejects_revision_change_during_post_fence_owner_proof() {
 }
 
 #[test]
-fn cursor_retry_rejects_revision_change_during_role_canonicalization() {
+fn cursor_retry_uses_saved_role_results_without_recanonicalizing() {
     let fixture = RealReaderFixture::new();
     let rights_path = fixture.source.join("Roles/SalesReader/Ext/Rights.xml");
     let rights = fs::read_to_string(&rights_path).unwrap().replacen(
@@ -4551,13 +4683,7 @@ fn cursor_retry_rejects_revision_change_during_role_canonicalization() {
     );
     assert!(first.ok, "{:?}", first.diagnostics);
     let cursor = first.cursor.expect("two role objects require a cursor");
-    let changed_path = rights_path.clone();
-    review_set_after_canonical_role_read(move || {
-        let mut changed = fs::read_to_string(&changed_path).unwrap();
-        changed.push('\n');
-        fs::write(&changed_path, changed).unwrap();
-    });
-
+    fs::write(&rights_path, b"changed source is no longer valid XML").unwrap();
     let replay = service.view(
         ViewRequest::new("main:Role.SalesReader.Right")
             .unwrap()
@@ -4566,11 +4692,7 @@ fn cursor_retry_rejects_revision_change_during_role_canonicalization() {
             .with_cursor(cursor),
     );
 
-    assert!(
-        !replay.ok,
-        "cursor page crossed a post-canonical read mutation"
-    );
-    assert_eq!(replay.diagnostics[0]["code"], "stale_cursor");
+    assert!(replay.ok, "saved cursor must remain usable: {replay:?}");
 }
 
 #[test]
@@ -5067,4 +5189,822 @@ fn review_production_read_port_has_no_nocancel_inventory_entrypoint() {
         !source.contains("configuration_payload_with_checkpoint(&mut || Ok(()))"),
         "production-compiled read port retains a no-op cancellation bypass"
     );
+}
+
+#[test]
+fn diagnostic_module_scope_preserves_exact_common_module_and_catalog_roles() {
+    let fixture = RealReaderFixture::new();
+    for (role, text) in [("Object", "// object\n"), ("Manager", "// manager\n")] {
+        write(
+            &fixture
+                .source
+                .join(format!("Catalogs/Items/Ext/{role}Module.bsl")),
+            text,
+        );
+    }
+    let authority = fixture.read_authority();
+    for (at, relative) in [
+        (
+            "main:CommonModule.РеактивныйСервер",
+            "CommonModules/РеактивныйСервер/Ext/Module.bsl",
+        ),
+        (
+            "main:CommonModule.РеактивныйСервер.Body",
+            "CommonModules/РеактивныйСервер/Ext/Module.bsl",
+        ),
+        (
+            "main:Catalog.Items.Module.Object",
+            "Catalogs/Items/Ext/ObjectModule.bsl",
+        ),
+        (
+            "main:Catalog.Items.Module.Manager",
+            "Catalogs/Items/Ext/ManagerModule.bsl",
+        ),
+    ] {
+        let expected = fixture.source.join(relative);
+        let before = fs::read(&expected).unwrap();
+        let scope = authority
+            .diagnostic_mapping(&QualifiedAddress::parse(at).unwrap(), &fixture.context)
+            .map(|mapping| mapping.module_scope())
+            .unwrap();
+        assert_eq!(scope.source_set, "main", "{at}");
+        assert_eq!(scope.source_root, fixture.source, "{at}");
+        assert_eq!(scope.module_path, expected, "{at}");
+        assert_eq!(fs::read(expected).unwrap(), before, "{at}");
+    }
+}
+
+#[test]
+fn diagnostic_module_scope_refuses_foreign_source_object_and_unregistered_module() {
+    let fixture = RealReaderFixture::new();
+    write(
+        &fixture.source.join("CommonModules/Orphan/Ext/Module.bsl"),
+        "// not registered\n",
+    );
+    let authority = fixture.read_authority();
+    for at in [
+        "other:CommonModule.РеактивныйСервер",
+        "main:Catalog.Items",
+        "main:CommonModule.Orphan",
+        "main:Catalog.Missing.Module.Manager",
+    ] {
+        assert!(
+            authority
+                .diagnostic_mapping(&QualifiedAddress::parse(at).unwrap(), &fixture.context)
+                .map(|mapping| mapping.module_scope())
+                .is_err(),
+            "invented module scope for {at}"
+        );
+    }
+}
+
+#[test]
+fn diagnostic_module_scope_keeps_admitted_source_after_project_remap() {
+    let fixture = RealReaderFixture::new();
+    let authority = fixture.read_authority();
+    let at = QualifiedAddress::parse("main:CommonModule.РеактивныйСервер.Body").unwrap();
+    let admitted = authority
+        .diagnostic_mapping(&at, &fixture.context)
+        .map(|mapping| mapping.module_scope())
+        .unwrap();
+    let replacement = fixture.root.path().join("replacement");
+    write(
+        &replacement.join("CommonModules/РеактивныйСервер/Ext/Module.bsl"),
+        "// replacement only\n",
+    );
+    fs::write(fixture.root.path().join("v8project.yaml"), "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: replacement\n").unwrap();
+    let retained = authority
+        .diagnostic_mapping(&at, &fixture.context)
+        .map(|mapping| mapping.module_scope())
+        .unwrap();
+    assert_eq!(retained.source_root, admitted.source_root);
+    assert_eq!(retained.module_path, admitted.module_path);
+    assert_ne!(retained.source_root, replacement);
+}
+
+#[test]
+fn diagnostic_module_scope_refuses_replaced_retained_root() {
+    if !supports_retained_root_replacement_test() {
+        return;
+    }
+    let fixture = RealReaderFixture::new();
+    let authority = fixture.operation_read_authority();
+    let at = QualifiedAddress::parse("main:CommonModule.РеактивныйСервер").unwrap();
+    assert!(authority
+        .diagnostic_mapping(&at, &fixture.context)
+        .map(|mapping| mapping.module_scope())
+        .is_ok());
+    fs::rename(&fixture.source, fixture.root.path().join("saved-source")).unwrap();
+    fs::create_dir(&fixture.source).unwrap();
+    assert!(authority
+        .diagnostic_mapping(&at, &fixture.context)
+        .map(|mapping| mapping.module_scope())
+        .is_err());
+}
+
+#[test]
+fn diagnostic_module_scope_refuses_module_replaced_by_foreign_symlink() {
+    use crate::infrastructure::platform::testing::{
+        create_file_link_fixture_for_test, FileLinkFixtureOutcome,
+    };
+    let fixture = RealReaderFixture::new();
+    let authority = fixture.read_authority();
+    let at = QualifiedAddress::parse("main:CommonModule.РеактивныйСервер").unwrap();
+    let module = authority
+        .diagnostic_mapping(&at, &fixture.context)
+        .map(|mapping| mapping.module_scope())
+        .unwrap()
+        .module_path;
+    let foreign = fixture.root.path().join("foreign.bsl");
+    fs::write(&foreign, "// foreign module\n").unwrap();
+    fs::remove_file(&module).unwrap();
+    let outcome = create_file_link_fixture_for_test(&foreign, &module)
+        .expect("unexpected file-link creation error must fail the fixture test");
+    if outcome != FileLinkFixtureOutcome::Created {
+        eprintln!("[SKIPPED FIXTURE] file-link fixture unavailable: {outcome:?}");
+        return;
+    }
+    assert!(authority
+        .diagnostic_mapping(&at, &fixture.context)
+        .map(|mapping| mapping.module_scope())
+        .is_err());
+    assert_eq!(fs::read_to_string(foreign).unwrap(), "// foreign module\n");
+}
+
+mod canonical_module_diagnostics {
+    use super::*;
+    use crate::application::diagnostics::{DiagnosticCoordinator, DiagnosticMapping};
+    use crate::domain::diagnostics::*;
+    use crate::domain::source_location::SourceLocation;
+    use crate::domain::source_target::TargetKind;
+    use crate::infrastructure::diagnostics::CanonicalModuleDiagnosticMapping;
+    use std::time::Duration;
+
+    fn request(mapping: &CanonicalModuleDiagnosticMapping) -> DiagnosticRequest {
+        DiagnosticRequest {
+            action: DiagnosticAction::Analyze,
+            source_set: mapping.target().source_set.clone(),
+            metadata_path: mapping.target().metadata_path.clone(),
+            filter: DiagnosticFilter::default(),
+            range: None,
+            limit: 200,
+            timeout: Some(Duration::from_secs(5)),
+        }
+    }
+
+    fn finding(path: &Path, code: &str) -> DiagnosticObservation {
+        DiagnosticObservation::Diagnostic {
+            provider: BSL_ANALYZER_PROVIDER,
+            location: DiagnosticObservationLocation::Resource {
+                handle: path.to_string_lossy().into_owned(),
+            },
+            focus: DiagnosticObservationFocus::Target,
+            code: code.into(),
+            severity: DiagnosticSeverity::Error,
+            message: "fixture finding".into(),
+            tags: Vec::new(),
+        }
+    }
+
+    fn assert_mapping(
+        authority: &LogicalViewReadAuthority<'_>,
+        workspace: &WorkspaceContext,
+        at: &str,
+        expected: &str,
+        physical: &Path,
+    ) {
+        let mapping = authority
+            .diagnostic_mapping(&QualifiedAddress::parse(at).unwrap(), workspace)
+            .unwrap_or_else(|error| panic!("{at}: {error:?}"));
+        let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, expected).unwrap();
+        assert_eq!(mapping.target().metadata_path.as_ref(), Some(&target));
+        assert_eq!(mapping.target().target_kind, TargetKind::Module);
+        let cancellation = CancellationToken::new();
+        let context = mapping
+            .resolve_context(&request(&mapping), workspace, &cancellation)
+            .unwrap();
+        let item = mapping
+            .map_observation(finding(physical, "Requested"), &context, &cancellation)
+            .unwrap();
+        assert!(
+            matches!(item, DiagnosticItem::Diagnostic {
+            location: SourceLocation::Addressed { metadata_path: Some(path), target_kind: TargetKind::Module, .. }, ..
+        } if path == target),
+            "{at}: provider resource must map to proved module"
+        );
+    }
+
+    #[test]
+    fn external_object_form_and_body_use_proven_canonical_modules() {
+        let fixture = RealExternalReaderFixture::new();
+        for (set, kind, class, name, root) in [
+            (
+                "artifact_processor",
+                SourceSetKind::ExternalProcessor,
+                "ExternalDataProcessor",
+                "Import",
+                &fixture.processor,
+            ),
+            (
+                "artifact_report",
+                SourceSetKind::ExternalReport,
+                "ExternalReport",
+                "Sales",
+                &fixture.report,
+            ),
+        ] {
+            let form = root.join(format!("{name}/Forms/Main/Ext/Form/Module.bsl"));
+            write(&form, "Procedure OnOpen()\nEndProcedure\n");
+            let authority = fixture.operation_read_authority(set, kind);
+            for tail in ["", ".Body"] {
+                assert_mapping(
+                    &authority,
+                    &fixture.context,
+                    &format!("{set}:{class}.{name}.Module.Object{tail}"),
+                    &format!("{class}.{name}.ObjectModule"),
+                    &root.join(format!("{name}/Ext/ObjectModule.bsl")),
+                );
+                assert_mapping(
+                    &authority,
+                    &fixture.context,
+                    &format!("{set}:{class}.{name}.Form.Main.Module.Form{tail}"),
+                    &format!("{class}.{name}.Form.Main.FormModule"),
+                    &form,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn configuration_common_object_and_form_modules_keep_exact_diagnostic_targets() {
+        let fixture = RealReaderFixture::new();
+        write(
+            &fixture.source.join("Catalogs/Items/Ext/ObjectModule.bsl"),
+            "Procedure Run()\nEndProcedure\n",
+        );
+        write(
+            &fixture.source.join("Catalogs/Items/Ext/ManagerModule.bsl"),
+            "Procedure Manage()\nEndProcedure\n",
+        );
+        for authority in [
+            fixture.operation_read_authority(),
+            fixture.extension_read_authority(),
+        ] {
+            for (at, expected, relative) in [
+                (
+                    "CommonModule.РеактивныйСервер",
+                    "CommonModule.РеактивныйСервер.Module",
+                    "CommonModules/РеактивныйСервер/Ext/Module.bsl",
+                ),
+                (
+                    "Catalog.Items.Module.Object",
+                    "Catalog.Items.ObjectModule",
+                    "Catalogs/Items/Ext/ObjectModule.bsl",
+                ),
+                (
+                    "Catalog.Items.Module.Manager",
+                    "Catalog.Items.ManagerModule",
+                    "Catalogs/Items/Ext/ManagerModule.bsl",
+                ),
+                (
+                    "Report.ParityReport.Form.MainForm.Module.Form",
+                    "Report.ParityReport.Form.MainForm.FormModule",
+                    "Reports/ParityReport/Forms/MainForm/Ext/Form/Module.bsl",
+                ),
+            ] {
+                for tail in ["", ".Body"] {
+                    assert_mapping(
+                        &authority,
+                        &fixture.context,
+                        &format!("main:{at}{tail}"),
+                        expected,
+                        &fixture.source.join(relative),
+                    );
+                }
+            }
+        }
+    }
+
+    struct AnalysisFixture(DiagnosticProviderOutcome);
+
+    impl DiagnosticProvider for AnalysisFixture {
+        fn descriptor(&self) -> &'static DiagnosticProviderDescriptor {
+            static DESCRIPTOR: DiagnosticProviderDescriptor = DiagnosticProviderDescriptor {
+                id: BSL_ANALYZER_PROVIDER,
+                actions: &[DiagnosticAction::Analyze],
+                findings_target_kinds: &[TargetKind::Module],
+                emits_focus_kinds: &[DiagnosticFocusKind::Target],
+            };
+            &DESCRIPTOR
+        }
+        fn execute(
+            &self,
+            request: &DiagnosticProviderRequest,
+            context: &DiagnosticContext,
+            _deadline: ProviderDeadline,
+            _cancellation: &CancellationToken,
+        ) -> DiagnosticProviderOutcome {
+            assert_eq!(request.action, DiagnosticAction::Analyze);
+            assert_eq!(context.target.target_kind, TargetKind::Module);
+            self.0.clone()
+        }
+    }
+
+    #[test]
+    fn analyze_filters_neighbors_after_mapping_but_keeps_outside_and_incomplete_failures() {
+        let fixture = RealExternalReaderFixture::new();
+        let authority = fixture
+            .operation_read_authority("artifact_processor", SourceSetKind::ExternalProcessor);
+        let mapping = authority
+            .diagnostic_mapping(
+                &QualifiedAddress::parse(
+                    "artifact_processor:ExternalDataProcessor.Import.Module.Object",
+                )
+                .unwrap(),
+                &fixture.context,
+            )
+            .unwrap();
+        let selected = fixture.processor.join("Import/Ext/ObjectModule.bsl");
+        let neighbor = fixture.processor.join("Импорт/Ext/ObjectModule.bsl");
+        for scenario in [
+            "neighbor",
+            "outside",
+            "incomplete",
+            "neighbor_only",
+            "incomplete_empty",
+        ] {
+            let mut observations = vec![
+                finding(&selected, "Selected"),
+                finding(&neighbor, "Neighbor"),
+            ];
+            if scenario == "neighbor_only" {
+                observations = vec![finding(&neighbor, "Neighbor")];
+            } else if scenario == "incomplete_empty" {
+                observations.clear();
+            }
+            let complete = !matches!(scenario, "incomplete" | "incomplete_empty");
+            if scenario == "outside" {
+                observations.push(finding(
+                    &fixture.report.join("Sales/Ext/ObjectModule.bsl"),
+                    "Outside",
+                ));
+            }
+            let outcome = DiagnosticProviderOutcome {
+                status: DiagnosticProviderStatus::Completed,
+                complete,
+                version: None,
+                observations,
+                rules: Vec::new(),
+                readiness: None,
+                error: None,
+            };
+            let registry =
+                DiagnosticProviderRegistry::new(vec![Arc::new(AnalysisFixture(outcome))]).unwrap();
+            let result = DiagnosticCoordinator::new(registry, &mapping)
+                .execute(&request(&mapping), &fixture.context, &fixture.cancellation)
+                .unwrap();
+            if scenario == "outside" {
+                assert!(!result.ok);
+                assert!(!result.complete);
+                assert_eq!(result.providers[0].status, DiagnosticProviderStatus::Failed);
+                assert!(
+                    result.items.is_empty(),
+                    "outside resource must poison the whole provider before filtering"
+                );
+            } else {
+                let has_selected = !matches!(scenario, "neighbor_only" | "incomplete_empty");
+                assert_eq!(
+                    result.items.len(),
+                    usize::from(has_selected),
+                    "{scenario}: only selected module findings may remain"
+                );
+                if has_selected {
+                    assert!(
+                        matches!(&result.items[0], DiagnosticItem::Diagnostic { code, .. } if code == "Selected")
+                    );
+                }
+                assert_eq!(result.complete, complete);
+                assert_eq!(
+                    result.state,
+                    if !complete {
+                        DiagnosticResultState::Partial
+                    } else {
+                        DiagnosticResultState::Completed
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn diagnostic_mapping_refuses_an_unregistered_form_even_with_a_module_file() {
+        let fixture = RealExternalReaderFixture::new();
+        write(
+            &fixture.processor.join("Import/Forms/Orphan.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form><Properties><Name>Orphan</Name></Properties></Form></MetaDataObject>"#,
+        );
+        write(
+            &fixture
+                .processor
+                .join("Import/Forms/Orphan/Ext/Form/Module.bsl"),
+            "Procedure Run()\nEndProcedure\n",
+        );
+        let authority = fixture
+            .operation_read_authority("artifact_processor", SourceSetKind::ExternalProcessor);
+        let error = authority
+            .diagnostic_mapping(
+                &QualifiedAddress::parse(
+                    "artifact_processor:ExternalDataProcessor.Import.Form.Orphan.Module.Form",
+                )
+                .unwrap(),
+                &fixture.context,
+            )
+            .err()
+            .expect("orphan form must not acquire diagnostic authority");
+        assert_eq!(error.code(), RefusalCode::NotFound);
+    }
+    #[test]
+    fn diagnostic_mapping_refuses_replacement_of_its_retained_source_root() {
+        if !supports_retained_root_replacement_test() {
+            return;
+        }
+        let fixture = RealReaderFixture::new();
+        let authority = fixture.operation_read_authority();
+        let saved = fixture.root.path().join("retained-a");
+        fs::rename(&fixture.source, &saved).unwrap();
+        fs::create_dir_all(&fixture.source).unwrap();
+        fs::copy(
+            saved.join("Configuration.xml"),
+            fixture.source.join("Configuration.xml"),
+        )
+        .unwrap();
+        let error = authority
+            .diagnostic_mapping(
+                &QualifiedAddress::parse("main:CommonModule.РеактивныйСервер").unwrap(),
+                &fixture.context,
+            )
+            .err()
+            .expect("changed named root must not acquire diagnostic authority");
+        assert_eq!(error.code(), RefusalCode::ProviderUnavailable);
+    }
+}
+
+#[test]
+fn dcs_validation_input_keeps_the_authority_cancellation_and_deadline() {
+    let fixture = RealReaderFixture::new();
+    let address = QualifiedAddress::parse("main:Report.ParityReport.Template.MainSchema").unwrap();
+    let mut authority = fixture.read_authority();
+    authority.deadline = ProviderDeadline::from_budget(std::time::Duration::ZERO);
+    assert_eq!(
+        authority
+            .dcs_validation_input(&address)
+            .err()
+            .unwrap()
+            .code(),
+        RefusalCode::DeadlineExceeded
+    );
+    let authority = fixture.read_authority();
+    fixture.cancellation.cancel();
+    assert_eq!(
+        authority
+            .dcs_validation_input(&address)
+            .err()
+            .unwrap()
+            .code(),
+        RefusalCode::Cancelled
+    );
+}
+
+#[test]
+fn canonical_dcs_validation_keeps_captured_format_evidence_after_replacement() {
+    let fixture = RealReaderFixture::new();
+    let address = QualifiedAddress::parse("main:Report.ParityReport.Template.MainSchema").unwrap();
+    let authority = fixture.read_authority();
+    let input = authority.dcs_validation_input(&address).unwrap();
+    let wrapper = fixture
+        .source
+        .join("Reports/ParityReport/Templates/MainSchema.xml");
+    let original = fs::read_to_string(&wrapper).unwrap();
+    fs::write(&wrapper, original.replace("2.20", "2.21")).unwrap();
+    fs::write(&input.artifact, "not XML: a later writer owns these bytes").unwrap();
+    let checked = crate::application::v13::check::normalize_native_outcome(
+        &address,
+        "Template",
+        crate::application::v13::check::CheckValidator::Dcs,
+        crate::infrastructure::native_operations::v13_analysis::validate_dcs_input(input),
+    )
+    .unwrap();
+    assert!(
+        checked.diagnostics().iter().all(|diagnostic| !matches!(
+            diagnostic.code(),
+            "formatVersionInvalid" | "platformVersionUnsupported"
+        )),
+        "format diagnostics must describe the captured input: {:?}",
+        checked.diagnostics()
+    );
+}
+
+#[test]
+fn canonical_dcs_validation_keeps_captured_owner_format_warnings() {
+    for relative in ["Configuration.xml"] {
+        for (version, expected) in [
+            ("2.21", "platformVersionUnsupported"),
+            ("2.19", "formatMigrationAvailable"),
+            ("2.&#50;0", "formatVersionInvalid"),
+        ] {
+            let fixture = RealReaderFixture::new();
+            let owner = fixture.source.join(relative);
+            let original = fs::read_to_string(&owner).unwrap();
+            fs::write(&owner, original.replace("2.20", version)).unwrap();
+            let address =
+                QualifiedAddress::parse("main:Report.ParityReport.Template.MainSchema").unwrap();
+            let captured = fixture.read_authority().dcs_validation_input(&address);
+            let input = captured.unwrap();
+            fs::write(&owner, original).unwrap();
+            let checked = crate::application::v13::check::normalize_native_outcome(
+                &address,
+                "Template",
+                crate::application::v13::check::CheckValidator::Dcs,
+                crate::infrastructure::native_operations::v13_analysis::validate_dcs_input(input),
+            )
+            .unwrap();
+            assert_eq!(
+                checked.diagnostics()[0].code(),
+                expected,
+                "{relative}: {version}"
+            );
+        }
+    }
+
+    let fixture = RealExternalReaderFixture::new();
+    let template_owner = fixture_text(
+        "unica_mcp_script_parity/template-remove/ParityReport/Templates/MainSchema.xml",
+    );
+    let dcs = fixture_text("unica_mcp_script_parity/dcs-validate/BadPrefix.xml").replace(
+        "xmlns:bad=\"http://example.com\">bad:CatalogRef.X",
+        ">xs:string",
+    );
+    for (source_set, kind, object_kind, name, source) in [
+        (
+            "artifact_report",
+            SourceSetKind::ExternalReport,
+            "ExternalReport",
+            "Sales",
+            &fixture.report,
+        ),
+        (
+            "artifact_processor",
+            SourceSetKind::ExternalProcessor,
+            "ExternalDataProcessor",
+            "Import",
+            &fixture.processor,
+        ),
+    ] {
+        let owner = source.join(format!("{name}.xml"));
+        let original = fs::read_to_string(&owner).unwrap().replace(
+            "</ChildObjects>",
+            "<Template>MainSchema</Template></ChildObjects>",
+        );
+        write(
+            &source.join(format!("{name}/Templates/MainSchema.xml")),
+            &template_owner,
+        );
+        write(
+            &source.join(format!("{name}/Templates/MainSchema/Ext/Template.xml")),
+            &dcs,
+        );
+        // Only the external root has the older format; its Template stays 2.20.
+        fs::write(
+            &owner,
+            original.replace("version=\"2.20\"", "version=\"2.19\""),
+        )
+        .unwrap();
+        let address = QualifiedAddress::parse(&format!(
+            "{source_set}:{object_kind}.{name}.Template.MainSchema"
+        ))
+        .unwrap();
+        let input = fixture
+            .read_authority(source_set, kind)
+            .dcs_validation_input(&address)
+            .unwrap();
+        fs::write(&owner, &original).unwrap();
+        let checked = crate::application::v13::check::normalize_native_outcome(
+            &address,
+            "Template",
+            crate::application::v13::check::CheckValidator::Dcs,
+            crate::infrastructure::native_operations::v13_analysis::validate_dcs_input(input),
+        )
+        .unwrap();
+        assert_eq!(
+            checked.diagnostics()[0].code(),
+            "formatMigrationAvailable",
+            "{source_set}: restored owner bytes must not replace captured format evidence"
+        );
+        assert_eq!(fs::read_to_string(&owner).unwrap(), original);
+    }
+}
+
+#[test]
+fn canonical_dcs_validation_does_not_follow_links_after_input_capture() {
+    use crate::infrastructure::platform::testing::{
+        create_file_link_fixture_for_test, FileLinkFixtureOutcome,
+    };
+
+    let fixture = RealReaderFixture::new();
+    let address = QualifiedAddress::parse("main:Report.ParityReport.Template.MainSchema").unwrap();
+    let input = fixture
+        .read_authority()
+        .dcs_validation_input(&address)
+        .unwrap();
+    let outside = fixture.root.path().join("foreign.xml");
+    fs::write(&outside, "not XML: foreign input must never participate").unwrap();
+    for path in [
+        input.artifact.clone(),
+        fixture.source.join("Configuration.xml"),
+        fixture
+            .source
+            .join("Reports/ParityReport/Templates/MainSchema.xml"),
+    ] {
+        fs::remove_file(&path).unwrap();
+        let outcome = create_file_link_fixture_for_test(&outside, &path)
+            .expect("unexpected file-link creation error must fail the fixture test");
+        if outcome != FileLinkFixtureOutcome::Created {
+            eprintln!("[SKIPPED FIXTURE] file-link fixture unavailable: {outcome:?}");
+            return;
+        }
+    }
+    let checked = crate::application::v13::check::normalize_native_outcome(
+        &address,
+        "Template",
+        crate::application::v13::check::CheckValidator::Dcs,
+        crate::infrastructure::native_operations::v13_analysis::validate_dcs_input(input),
+    )
+    .unwrap();
+    assert!(checked
+        .diagnostics()
+        .iter()
+        .all(|diagnostic| diagnostic.code() != "formatVersionInvalid"));
+    assert_eq!(
+        fs::read_to_string(outside).unwrap(),
+        "not XML: foreign input must never participate"
+    );
+}
+
+#[test]
+fn canonical_dcs_validation_refuses_linked_format_owners_before_capture() {
+    use crate::infrastructure::platform::testing::{
+        create_file_link_fixture_for_test, FileLinkFixtureOutcome,
+    };
+
+    for relative in [
+        "Configuration.xml",
+        "Reports/ParityReport/Templates/MainSchema.xml",
+    ] {
+        let fixture = RealReaderFixture::new();
+        let owner = fixture.source.join(relative);
+        let outside = fixture.root.path().join("foreign.xml");
+        fs::rename(&owner, &outside).unwrap();
+        let outcome = create_file_link_fixture_for_test(&outside, &owner)
+            .expect("unexpected file-link creation error must fail the fixture test");
+        if outcome != FileLinkFixtureOutcome::Created {
+            eprintln!("[SKIPPED FIXTURE] file-link fixture unavailable: {outcome:?}");
+            return;
+        }
+        let address =
+            QualifiedAddress::parse("main:Report.ParityReport.Template.MainSchema").unwrap();
+        assert!(
+            fixture
+                .read_authority()
+                .dcs_validation_input(&address)
+                .is_err(),
+            "{relative}"
+        );
+    }
+}
+
+#[test]
+fn canonical_dcs_validation_keeps_large_configuration_owner_format_warning() {
+    let fixture = RealReaderFixture::new();
+    let path = fixture.source.join("Configuration.xml");
+    let xml = fs::read_to_string(&path).unwrap().replace("2.20", "2.21");
+    fs::write(
+        &path,
+        xml.replace(
+            "</MetaDataObject>",
+            &format!("<!--{}--></MetaDataObject>", "x".repeat(8 * 1024 * 1024)),
+        ),
+    )
+    .unwrap();
+    let address = QualifiedAddress::parse("main:Report.ParityReport.Template.MainSchema").unwrap();
+    let input = fixture
+        .read_authority()
+        .dcs_validation_input(&address)
+        .unwrap();
+    let checked = crate::application::v13::check::normalize_native_outcome(
+        &address,
+        "Template",
+        crate::application::v13::check::CheckValidator::Dcs,
+        crate::infrastructure::native_operations::v13_analysis::validate_dcs_input(input),
+    )
+    .unwrap();
+    assert_eq!(
+        checked.diagnostics()[0].code(),
+        "platformVersionUnsupported"
+    );
+}
+
+#[test]
+fn canonical_dcs_validation_keeps_exact_versionless_dcs_root_guard() {
+    let fixture = RealReaderFixture::new();
+    let artifact = fixture
+        .source
+        .join("Reports/ParityReport/Templates/MainSchema/Ext/Template.xml");
+    fs::write(&artifact, r#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" version="2.20"/>"#).unwrap();
+    let address = QualifiedAddress::parse("main:Report.ParityReport.Template.MainSchema").unwrap();
+    let input = fixture
+        .read_authority()
+        .dcs_validation_input(&address)
+        .unwrap();
+    let checked = crate::application::v13::check::normalize_native_outcome(
+        &address,
+        "Template",
+        crate::application::v13::check::CheckValidator::Dcs,
+        crate::infrastructure::native_operations::v13_analysis::validate_dcs_input(input),
+    )
+    .unwrap();
+    assert!(
+        checked
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.code() == "formatVersionInvalid"),
+        "versionless DCS publication policy must survive the retained-input bridge"
+    );
+}
+
+#[test]
+fn canonical_dcs_validation_preserves_typed_template_profile_refusal() {
+    for version in ["2.19", "2.21"] {
+        let fixture = RealReaderFixture::new();
+        let owner = fixture
+            .source
+            .join("Reports/ParityReport/Templates/MainSchema.xml");
+        let original = fs::read_to_string(&owner).unwrap();
+        fs::write(&owner, original.replace("2.20", version)).unwrap();
+        let address =
+            QualifiedAddress::parse("main:Report.ParityReport.Template.MainSchema").unwrap();
+        let error = fixture
+            .read_authority()
+            .dcs_validation_input(&address)
+            .err()
+            .unwrap();
+        assert_eq!(error.detail(), Some(RefusalDetail::SourceUnreadable));
+    }
+}
+
+#[test]
+fn canonical_dcs_format_owner_read_stops_at_typed_midstream_checkpoint() {
+    for code in [RefusalCode::Cancelled, RefusalCode::DeadlineExceeded] {
+        let fixture = RealReaderFixture::new();
+        let owner = fixture.source.join("Configuration.xml");
+        let original = fs::read_to_string(&owner).unwrap();
+        fs::write(
+            &owner,
+            original.replace(
+                "</MetaDataObject>",
+                &format!("<!--{}--></MetaDataObject>", "x".repeat(256 * 1024)),
+            ),
+        )
+        .unwrap();
+        let authority = fixture.read_authority();
+        let target = crate::domain::source_target::MetadataAddress::parse(
+            crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+            "Report.ParityReport.Template.MainSchema",
+        )
+        .unwrap();
+        let mut checkpoints = 0;
+        let error = authority
+            .read
+            .dcs_validation_input(&target, &mut || {
+                checkpoints += 1;
+                if checkpoints == 2 {
+                    Err(ViewError::new(
+                        code,
+                        "interrupted after the first owner chunk",
+                    ))
+                } else {
+                    Ok(())
+                }
+            })
+            .err()
+            .unwrap();
+        assert_eq!(error.code(), code);
+        assert_eq!(checkpoints, 2, "read must stop at the rejecting checkpoint");
+        assert!(
+            authority
+                .read
+                .dcs_validation_input(&target, &mut || Ok(()))
+                .is_ok(),
+            "partial capture must not be published or cached"
+        );
+    }
 }

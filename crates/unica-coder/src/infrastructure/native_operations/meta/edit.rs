@@ -4001,7 +4001,7 @@ fn apply_typed_properties(
                 // The replacement owns these QName bindings even when the
                 // original descriptor uses aliases or shadows canonical names.
                 lines[0] = format!(
-                    r#"{indent}<Type xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config">"#
+                    r#"{indent}<Type xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config">"#
                 );
                 lines.join("\n")
             }
@@ -5313,6 +5313,29 @@ pub(crate) mod tests {
                 let counts = apply_typed_operations(&mut xml, &[operation]).unwrap();
                 assert_eq!(xml, before, "same logical type must not rewrite XML");
                 assert_eq!(counts.effects[0].before, counts.effects[0].after);
+            }
+            for default_namespace in ["", " xmlns=\"urn:foreign-default\""] {
+                let mut xml = format!(
+                    r#"<m:MetaDataObject xmlns:m="http://v8.1c.ru/8.3/MDClasses"{default_namespace} xmlns:d="http://v8.1c.ru/8.1/data/core" xmlns:s="http://www.w3.org/2001/XMLSchema" version="2.20"><m:Constant uuid="11111111-1111-4111-8111-111111111111"><m:Properties><m:Name>Setting</m:Name><m:Synonym/><m:Comment/><m:Type><d:Type>s:string</d:Type></m:Type></m:Properties><m:ChildObjects/></m:Constant></m:MetaDataObject>"#
+                );
+                let operation = constant_type_change(metadata_type.clone());
+                apply_typed_operations(&mut xml, std::slice::from_ref(&operation)).unwrap();
+                let doc = Document::parse(&xml).unwrap();
+                let object = meta_edit_object_node(&doc).unwrap();
+                let properties = meta_info_child(object, "Properties").unwrap();
+                assert!(
+                    properties
+                        .children()
+                        .any(|child| child.has_tag_name(("http://v8.1c.ru/8.3/MDClasses", "Type"))),
+                    "Constant.Type must remain in the metadata namespace: {xml}"
+                );
+                let observed =
+                    super::super::info_projection::parse_observed_metadata_type_node(properties)
+                        .unwrap();
+                assert_eq!(MetadataType::try_from(observed).unwrap(), metadata_type);
+                let before = xml.clone();
+                apply_typed_operations(&mut xml, &[operation]).unwrap();
+                assert_eq!(xml, before, "equivalent Type must not rewrite aliased XML");
             }
         }
     }

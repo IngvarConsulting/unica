@@ -150,6 +150,19 @@ impl<'a, M: DiagnosticMapping + ?Sized> DiagnosticCoordinator<'a, M> {
         workspace: &WorkspaceContext,
         cancellation: &CancellationToken,
     ) -> Result<DiagnosticResult, DiagnosticRequestError> {
+        self.execute_scoped(request, workspace, cancellation, None)
+    }
+
+    pub(crate) fn execute_scoped(
+        &self,
+        request: &DiagnosticRequest,
+        workspace: &WorkspaceContext,
+        cancellation: &CancellationToken,
+        scope: Option<(
+            crate::domain::diagnostics::DiagnosticModuleScope,
+            crate::domain::code_intelligence::ProviderDeadline,
+        )>,
+    ) -> Result<DiagnosticResult, DiagnosticRequestError> {
         if cancellation.is_cancelled() {
             return Err(cancelled_request_error(
                 "diagnostics stopped before providers started",
@@ -158,6 +171,20 @@ impl<'a, M: DiagnosticMapping + ?Sized> DiagnosticCoordinator<'a, M> {
         let context = self
             .mapping
             .resolve_context(request, workspace, cancellation)?;
+        if let Some((scope, _)) = &scope {
+            if request.action != DiagnosticAction::Analyze
+                || scope.source_set != request.source_set
+                || scope.source_set != context.source_set.name
+                || scope.source_root != context.source_root.path
+                || !scope.module_path.starts_with(&scope.source_root)
+            {
+                return Err(request_error(
+                    "target_kind_mismatch",
+                    Some("sourceSet"),
+                    "diagnostic execution scope does not match the admitted source set",
+                ));
+            }
+        }
         if request.range.is_some() && context.target.target_kind != TargetKind::Module {
             return Err(request_error(
                 "target_kind_mismatch",
@@ -173,6 +200,7 @@ impl<'a, M: DiagnosticMapping + ?Sized> DiagnosticCoordinator<'a, M> {
             .map(|(index, selected)| (selected.descriptor.id.as_str(), index))
             .collect::<HashMap<_, _>>();
         let provider_request = DiagnosticProviderRequest {
+            module_scope: scope.as_ref().map(|(module, _)| module.clone()),
             action: request.action,
             source_set: request.source_set.clone(),
             metadata_path: request.metadata_path.clone(),
@@ -180,11 +208,23 @@ impl<'a, M: DiagnosticMapping + ?Sized> DiagnosticCoordinator<'a, M> {
             filter: request.filter.clone(),
             range: request.range,
         };
+        let configured_budget = request.timeout.unwrap_or(DIAGNOSTIC_BUDGET_WITHOUT_CONFIG);
+        let configured_deadline = ProviderDeadline::from_budget(configured_budget);
+        let deadline = scope.as_ref().map_or(configured_deadline, |(_, deadline)| {
+            deadline.earlier(configured_deadline)
+        });
+        if deadline.remaining().is_zero() {
+            return Err(request_error(
+                "provider_timeout",
+                None,
+                "diagnostic execution deadline elapsed",
+            ));
+        }
         let executions = execute_selected_providers(
             &selected,
             &provider_request,
             &context,
-            request.timeout.unwrap_or(DIAGNOSTIC_BUDGET_WITHOUT_CONFIG),
+            deadline,
             cancellation,
         )?;
         let mut sections = Vec::with_capacity(selected.len());
@@ -339,10 +379,9 @@ fn execute_selected_providers(
     selected: &[SelectedProvider],
     request: &DiagnosticProviderRequest,
     context: &DiagnosticContext,
-    total_budget: Duration,
+    deadline: ProviderDeadline,
     cancellation: &CancellationToken,
 ) -> Result<Vec<DiagnosticProviderOutcome>, DiagnosticRequestError> {
-    let started_at = Instant::now();
     let (sender, receiver) = mpsc::channel();
     let mut slots = (0..selected.len())
         .map(|_| None)
@@ -374,12 +413,7 @@ fn execute_selected_providers(
             .spawn(move || {
                 let _permit = permit;
                 let outcome = catch_unwind(AssertUnwindSafe(|| {
-                    provider.execute(
-                        &request,
-                        &context,
-                        ProviderDeadline::from_started_at(started_at, total_budget),
-                        &worker_cancellation,
-                    )
+                    provider.execute(&request, &context, deadline, &worker_cancellation)
                 }))
                 .map(|outcome| normalize_provider_outcome(provider_id, request.action, outcome))
                 .unwrap_or_else(|panic| provider_panic_outcome(provider_id, panic));
@@ -405,9 +439,7 @@ fn execute_selected_providers(
                 "diagnostics stopped while providers were running",
             ));
         }
-        let remaining = total_budget
-            .checked_sub(started_at.elapsed())
-            .unwrap_or(Duration::ZERO);
+        let remaining = deadline.remaining();
         if remaining.is_zero() {
             for (index, slot) in slots.iter_mut().enumerate() {
                 if slot.is_none() {
@@ -1031,7 +1063,9 @@ fn item_matches_request(
             return false;
         }
     }
-    if request.action == DiagnosticAction::Findings
+    if (request.action == DiagnosticAction::Findings
+        || (request.action == DiagnosticAction::Analyze
+            && context.target.target_kind == TargetKind::Module))
         && !item_location(item)
             .is_some_and(|location| location_within_findings_target(location, &context.target))
     {
@@ -1632,6 +1666,94 @@ mod tests {
             cache_root: PathBuf::from("workspace/.build/unica"),
             workspace_epoch: 1,
         }
+    }
+
+    #[test]
+    fn scoped_diagnostics_bind_context_and_keep_the_remaining_deadline() {
+        struct Capture(Arc<Mutex<Vec<(DiagnosticProviderRequest, ProviderDeadline)>>>);
+        impl DiagnosticProvider for Capture {
+            fn descriptor(&self) -> &'static DiagnosticProviderDescriptor {
+                &ANALYZER_DESCRIPTOR
+            }
+            fn execute(
+                &self,
+                request: &DiagnosticProviderRequest,
+                _: &DiagnosticContext,
+                deadline: ProviderDeadline,
+                _: &CancellationToken,
+            ) -> DiagnosticProviderOutcome {
+                self.0.lock().unwrap().push((request.clone(), deadline));
+                successful(Vec::new())
+            }
+        }
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let registry =
+            DiagnosticProviderRegistry::new(vec![Arc::new(Capture(Arc::clone(&observed)))])
+                .unwrap();
+        let coordinator = DiagnosticCoordinator::new(registry, &FAKE_MAPPING);
+        let workspace = workspace();
+        let mut request = findings_request();
+        request.action = DiagnosticAction::Analyze;
+        request.timeout = Some(Duration::from_secs(120));
+        let scope = DiagnosticModuleScope {
+            source_set: "main".into(),
+            source_root: workspace.workspace_root.join("src"),
+            module_path: workspace
+                .workspace_root
+                .join("src/CommonModules/Selected/Ext/Module.bsl"),
+        };
+        let deadline = ProviderDeadline::from_budget(Duration::from_secs(5));
+        coordinator
+            .execute_scoped(
+                &request,
+                &workspace,
+                &CancellationToken::new(),
+                Some((scope.clone(), deadline)),
+            )
+            .unwrap();
+        let calls = observed.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0.module_scope.as_ref(), Some(&scope));
+        assert_eq!(
+            calls[0].1, deadline,
+            "provider deadline must not be recreated"
+        );
+        drop(calls);
+        for mut wrong in [scope.clone(), scope.clone(), scope.clone()]
+            .into_iter()
+            .enumerate()
+        {
+            match wrong.0 {
+                0 => wrong.1.source_set = "other".into(),
+                1 => wrong.1.source_root = workspace.workspace_root.join("other"),
+                _ => wrong.1.module_path = workspace.workspace_root.join("outside/Module.bsl"),
+            }
+            assert!(coordinator
+                .execute_scoped(
+                    &request,
+                    &workspace,
+                    &CancellationToken::new(),
+                    Some((
+                        wrong.1,
+                        ProviderDeadline::from_budget(Duration::from_secs(5))
+                    ))
+                )
+                .is_err());
+        }
+        let error = coordinator
+            .execute_scoped(
+                &request,
+                &workspace,
+                &CancellationToken::new(),
+                Some((scope, ProviderDeadline::from_budget(Duration::ZERO))),
+            )
+            .unwrap_err();
+        assert_eq!(error.code, "provider_timeout");
+        assert_eq!(
+            observed.lock().unwrap().len(),
+            1,
+            "invalid or expired scope must not invoke a provider"
+        );
     }
 
     fn run_with_logical_mapping(

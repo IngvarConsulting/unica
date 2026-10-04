@@ -1,6 +1,7 @@
 ---
 id: INV.CACHE.GENERATION-CUTOVER
 check:
+  - crates/unica-coder/src/infrastructure/workspace_index.rs::legacy_ready_marker_requires_an_isolated_build_before_becoming_active
   - crates/unica-coder/src/infrastructure/workspace_index.rs::legacy_status_and_lock_do_not_gate_builder_15
   - crates/unica-coder/src/infrastructure/workspace_index.rs::current_pair_scoped_builder_14_bytes_are_ignored_and_preserved
   - crates/unica-coder/src/infrastructure/workspace_index.rs::builder_15_never_accepts_a_ready_db_reported_from_builder_14_storage
@@ -21,3 +22,8 @@ check:
 Тесты проверяют разделение поколений 14 и 15 и сохранность старых файлов
 при запуске нового построения. Автоматическая очистка пока не реализована;
 эти проверки не подтверждают безопасность будущего механизма очистки.
+
+Поколение формата 15 указывает совместимость схемы хранения, а не конкретную
+сборку данных. Несколько сборок этого формата имеют разные идентификаторы и
+отдельные каталоги. Читающая сессия закрепляет идентификатор активной сборки;
+переключение активной записи не изменяет каталог уже начатого чтения.

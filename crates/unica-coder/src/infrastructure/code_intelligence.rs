@@ -18,7 +18,7 @@ use crate::infrastructure::rlm_navigation::RlmNavigationAdapter;
 use crate::infrastructure::workspace_index::{read_bsl_index_status, IndexReadiness};
 use crate::infrastructure::workspace_services::{
     WorkspaceRlmOperation, WorkspaceServiceBslCall, WorkspaceServiceBslOutput,
-    WorkspaceServiceManager, WorkspaceServiceRlmCall,
+    WorkspaceServiceManager, WorkspaceServiceRlmCall, WorkspaceServiceRlmOutput,
 };
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
@@ -469,6 +469,15 @@ impl CodeIntelligenceProvider for BslAnalyzerProvider<'_> {
                     request.limit,
                     cancellation,
                 );
+                if matches!(
+                    section.status,
+                    ProviderSectionStatus::Ok
+                        | ProviderSectionStatus::Empty
+                        | ProviderSectionStatus::LimitReached
+                        | ProviderSectionStatus::Partial
+                ) {
+                    section.index_freshness = Some("unknown".to_string());
+                }
                 // Keep stderr wherever the section is the provider's own
                 // account of why it cannot serve — that includes waiting on
                 // the index, whose stderr names the dependency. A plain
@@ -516,7 +525,7 @@ trait RlmSearchClient: Send + Sync {
 }
 
 enum RlmSearchAttempt {
-    Output(String),
+    Output(WorkspaceServiceRlmOutput),
     Unready(IndexReadiness),
 }
 
@@ -557,7 +566,7 @@ impl RlmSearchClient for WorkspaceRlmSearchClient {
             )?;
             let readiness = match attempt {
                 WorkspaceServiceRlmCall::Output(output) => {
-                    return Ok(RlmSearchAttempt::Output(output.result_text));
+                    return Ok(RlmSearchAttempt::Output(output));
                 }
                 WorkspaceServiceRlmCall::Unready(readiness) => readiness,
             };
@@ -726,7 +735,12 @@ impl CodeIntelligenceProvider for RlmProvider<'_> {
         };
         match attempt {
             RlmSearchAttempt::Output(result) => {
-                parse_rlm_search(&result, context, request.limit, cancellation)
+                let mut section =
+                    parse_rlm_search(&result.result_text, context, request.limit, cancellation);
+                section.index_freshness =
+                    Some(result.freshness.unwrap_or_else(|| "unknown".to_string()));
+                section.index_build_id = result.build_id;
+                section
             }
             RlmSearchAttempt::Unready(readiness) => {
                 let dependency_detail = match &readiness {
@@ -2879,6 +2893,7 @@ mod tests {
         );
 
         assert_eq!(section.status, ProviderSectionStatus::Empty);
+        assert_eq!(section.index_freshness.as_deref(), Some("unknown"));
         assert!(section.diagnostics.is_empty());
         let calls = client.calls.lock().unwrap();
         assert_eq!(calls.len(), 1);
@@ -3209,7 +3224,14 @@ mod tests {
                 timeout,
             ));
             match &self.readiness {
-                IndexReadiness::Ready { .. } => Ok(RlmSearchAttempt::Output(self.result.clone())),
+                IndexReadiness::Ready { .. } => Ok(RlmSearchAttempt::Output(
+                    crate::infrastructure::workspace_services::WorkspaceServiceRlmOutput {
+                        result_text: self.result.clone(),
+                        stderr: String::new(),
+                        freshness: Some("unknown".to_string()),
+                        build_id: Some("test-build".to_string()),
+                    },
+                )),
                 readiness => Ok(RlmSearchAttempt::Unready(readiness.clone())),
             }
         }
@@ -3232,7 +3254,14 @@ mod tests {
             self.search_calls.lock().unwrap().push(timeout);
             cancellation.cancel();
             match &self.readiness {
-                IndexReadiness::Ready { .. } => Ok(RlmSearchAttempt::Output("[]".to_string())),
+                IndexReadiness::Ready { .. } => Ok(RlmSearchAttempt::Output(
+                    crate::infrastructure::workspace_services::WorkspaceServiceRlmOutput {
+                        result_text: "[]".to_string(),
+                        stderr: String::new(),
+                        freshness: Some("unknown".to_string()),
+                        build_id: Some("test-build".to_string()),
+                    },
+                )),
                 readiness => Ok(RlmSearchAttempt::Unready(readiness.clone())),
             }
         }
@@ -3252,7 +3281,14 @@ mod tests {
             _cancellation: &CancellationToken,
         ) -> Result<RlmSearchAttempt, String> {
             self.timeouts.lock().unwrap().push(timeout);
-            Ok(RlmSearchAttempt::Output("[]".to_string()))
+            Ok(RlmSearchAttempt::Output(
+                crate::infrastructure::workspace_services::WorkspaceServiceRlmOutput {
+                    result_text: "[]".to_string(),
+                    stderr: String::new(),
+                    freshness: Some("unknown".to_string()),
+                    build_id: Some("test-build".to_string()),
+                },
+            ))
         }
     }
 
@@ -3292,6 +3328,8 @@ mod tests {
         );
 
         assert_eq!(section.status, ProviderSectionStatus::Empty);
+        assert_eq!(section.index_freshness.as_deref(), Some("unknown"));
+        assert_eq!(section.index_build_id.as_deref(), Some("test-build"));
         let calls = client.calls.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, PathBuf::from("/workspace/src"));

@@ -203,6 +203,28 @@ fn reject_workspace_admission(
 }
 
 fn validate_hidden_v13_request(request: &InvocationRequest) -> Result<(), String> {
+    if request.tool() == crate::application::invocation_store::ToolIdentity::Apply {
+        let arguments = request.arguments();
+        if arguments.contains_key("dryRun") || arguments.contains_key("ifRev") {
+            return Err("unica.apply no longer accepts dryRun or ifRev. Call with at and ops to get a saved plan and data.executionToken, then call with executionToken only to execute that plan".to_string());
+        }
+        if arguments.contains_key("executionToken") {
+            if arguments.len() != 1 {
+                return Err("executionToken must be the only apply argument; at and ops belong to the planning call".to_string());
+            }
+            if !arguments["executionToken"]
+                .as_str()
+                .is_some_and(|token| !token.is_empty())
+            {
+                return Err(
+                    "executionToken must be non-empty text returned by a successful apply plan"
+                        .to_string(),
+                );
+            }
+        } else if !arguments.contains_key("at") || !arguments.contains_key("ops") {
+            return Err("call unica.apply with at and ops to prepare a plan, or with executionToken only to execute a saved plan".to_string());
+        }
+    }
     let catalog = crate::application::v13::tool_catalog::catalog_for(SurfaceRelease::V13)
         .ok_or_else(|| "canonical v0.13 catalog is unavailable".to_string())?;
     let contract = catalog
@@ -1177,6 +1199,7 @@ pub(crate) mod actor_capacity_tests {
     use super::super::protocol_v5::{
         V5DaemonTaskSnapshot, V5InvocationRequest, V5InvocationResponse, V5ServerResponse,
     };
+    use super::super::runner_011::VERSION as RUNNER_VERSION;
     use super::*;
     use crate::application::invocation::INVOCATION_HANDOFF_WINDOW;
     use crate::application::invocation_store::ToolIdentity;
@@ -1293,21 +1316,20 @@ pub(crate) mod actor_capacity_tests {
                 .unwrap();
                 direct_v5(&runtime, request).unwrap()
             };
-            let mut arguments = serde_json::json!({
+            let arguments = serde_json::json!({
                 "at": "main:Subsystem.Sales",
                 "ops": [
                     {"op": "content.add", "args": {"items": [{"object": "Catalog.Items"}]}},
                     {"op": "content.remove", "args": {"items": [{"object": "Catalog.Old"}]}}
-                ],
-                "dryRun": true
+                ]
             });
             let before = crate::test_support::tree_snapshot(workspace.path());
             let preview = call(arguments.clone());
             assert!(preview.ok, "{preview:?}");
             assert_eq!(before, crate::test_support::tree_snapshot(workspace.path()));
-            arguments["dryRun"] = serde_json::json!(false);
-            arguments["ifRev"] = serde_json::json!(preview.rev.as_ref().unwrap());
-            let applied = call(arguments);
+            let applied = call(
+                serde_json::json!({"executionToken": preview.data.as_ref().unwrap()["executionToken"]}),
+            );
             assert!(applied.ok, "{applied:?}");
             let preview_data = preview.data.as_ref().unwrap();
             let applied_data = applied.data.as_ref().unwrap();
@@ -1331,10 +1353,9 @@ pub(crate) mod actor_capacity_tests {
             assert_eq!(value("LoadTransparent"), transparent);
             assert_eq!(value("Ref"), reference.then_some("CommonPicture.Sales"));
 
-            let mut child = serde_json::json!({
+            let child = serde_json::json!({
                 "at": "main:Subsystem.Sales",
-                "ops": [{"op": "childSubsystem.add", "args": {"items": [{"name": "Orders"}]}}],
-                "dryRun": true
+                "ops": [{"op": "childSubsystem.add", "args": {"items": [{"name": "Orders"}]}}]
             });
             let before = crate::test_support::tree_snapshot(workspace.path());
             let preview = call(child.clone());
@@ -1344,9 +1365,9 @@ pub(crate) mod actor_capacity_tests {
                 .path()
                 .join("src/Subsystems/Sales/Subsystems")
                 .exists());
-            child["dryRun"] = serde_json::json!(false);
-            child["ifRev"] = serde_json::json!(preview.rev.unwrap());
-            let applied = call(child);
+            let applied = call(
+                serde_json::json!({"executionToken": preview.data.as_ref().unwrap()["executionToken"]}),
+            );
             assert!(applied.ok, "{applied:?}");
             assert_eq!(
                 preview.data.unwrap()["planHash"],
@@ -1372,18 +1393,17 @@ pub(crate) mod actor_capacity_tests {
                 .and_then(|node| node.text());
             assert_eq!(transparency, transparent);
 
-            let mut removal = serde_json::json!({
+            let removal = serde_json::json!({
                 "at": "main:Subsystem.Sales",
-                "ops": [{"op": "childSubsystem.remove", "args": {"items": [{"name": "Orders"}]}}],
-                "dryRun": true
+                "ops": [{"op": "childSubsystem.remove", "args": {"items": [{"name": "Orders"}]}}]
             });
             let before = crate::test_support::tree_snapshot(workspace.path());
             let preview = call(removal.clone());
             assert!(preview.ok, "{preview:?}");
             assert_eq!(before, crate::test_support::tree_snapshot(workspace.path()));
-            removal["dryRun"] = serde_json::json!(false);
-            removal["ifRev"] = serde_json::json!(preview.rev.unwrap());
-            let applied = call(removal);
+            let applied = call(
+                serde_json::json!({"executionToken": preview.data.as_ref().unwrap()["executionToken"]}),
+            );
             assert!(applied.ok, "{applied:?}");
             assert_eq!(
                 preview.data.unwrap()["planHash"],
@@ -1411,7 +1431,8 @@ pub(crate) mod actor_capacity_tests {
     }
 
     #[test]
-    fn canonical_subsystem_picture_property_refusal_is_write_free_in_both_modes() {
+    fn canonical_subsystem_picture_property_refusal_never_mints_a_token_and_execution_cannot_override_ops(
+    ) {
         let workspace =
             subsystem_picture_workspace("<xr:LoadTransparent>true</xr:LoadTransparent>", false);
         let runtime = V5CanonicalInvocationRuntime::new(
@@ -1433,8 +1454,7 @@ pub(crate) mod actor_capacity_tests {
         };
         let mut arguments = serde_json::json!({
             "at": "main:Subsystem.Sales",
-            "ops": [{"op": "childSubsystem.add", "args": {"items": [{"name": "Orders"}]}}],
-            "dryRun": true
+            "ops": [{"op": "childSubsystem.add", "args": {"items": [{"name": "Orders"}]}}]
         });
         let before = crate::test_support::tree_snapshot(workspace.path());
         let preview = call(arguments.clone());
@@ -1447,16 +1467,20 @@ pub(crate) mod actor_capacity_tests {
             arguments["ops"][1] = serde_json::json!({
                 "op": "props.set", "args": {"values": {property: true}}
             });
-            arguments["dryRun"] = serde_json::json!(true);
             let refused_preview = call(arguments.clone());
-            arguments["dryRun"] = serde_json::json!(false);
-            arguments["ifRev"] = serde_json::json!(preview.rev.as_ref().unwrap());
-            let refused_apply = call(arguments.clone());
+            let refused_apply = call(serde_json::json!({
+                "executionToken": preview.data.as_ref().unwrap()["executionToken"],
+                "ops": arguments["ops"]
+            }));
             assert!(!refused_preview.ok, "{refused_preview:?}");
             assert!(!refused_apply.ok, "{refused_apply:?}");
             assert_eq!(refused_preview.diagnostics[0]["code"], "bad_value");
-            assert_eq!(refused_preview.diagnostics, refused_apply.diagnostics);
-            assert_eq!(refused_preview.at, refused_apply.at);
+            assert!(refused_preview
+                .data
+                .as_ref()
+                .and_then(|data| data.get("executionToken"))
+                .is_none());
+            assert_eq!(refused_apply.diagnostics[0]["code"], "bad_value");
             assert!(format!("{refused_preview:?}").contains(property));
             assert_eq!(before, crate::test_support::tree_snapshot(workspace.path()));
             assert!(!workspace
@@ -1464,6 +1488,261 @@ pub(crate) mod actor_capacity_tests {
                 .join("src/Subsystems/Sales/Subsystems")
                 .exists());
         }
+    }
+
+    fn dcs_check_workspace(kind: &str) -> (tempfile::TempDir, String, std::path::PathBuf) {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("src");
+        let external = kind != "Report";
+        let source_type = match kind {
+            "ExternalReport" => "EXTERNAL_REPORTS",
+            "ExternalDataProcessor" => "EXTERNAL_DATA_PROCESSORS",
+            "Report" => "CONFIGURATION",
+            _ => unreachable!(),
+        };
+        let owner = if external {
+            source.join("Sales")
+        } else {
+            source.join("Reports/Sales")
+        };
+        std::fs::create_dir_all(owner.join("Templates/Dcs/Ext")).unwrap();
+        std::fs::write(workspace.path().join("v8project.yaml"), format!(
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: {source_type}\n    path: src\n"
+        )).unwrap();
+        let descriptor = |body: String| {
+            format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">{body}</MetaDataObject>"#
+            )
+        };
+        if !external {
+            std::fs::write(source.join("Configuration.xml"), descriptor(
+                "<Configuration uuid=\"10000000-0000-4000-8000-000000000001\"><Properties><Name>Control</Name></Properties><ChildObjects><Report>Sales</Report></ChildObjects></Configuration>".into()
+            )).unwrap();
+        }
+        std::fs::write(owner.with_extension("xml"), descriptor(format!(
+            "<{kind} uuid=\"10000000-0000-4000-8000-000000000010\"><Properties><Name>Sales</Name></Properties><ChildObjects><Template>Dcs</Template></ChildObjects></{kind}>"
+        ))).unwrap();
+        std::fs::write(owner.join("Templates/Dcs.xml"), descriptor(
+            "<Template uuid=\"10000000-0000-4000-8000-000000000013\"><Properties><Name>Dcs</Name><TemplateType>DataCompositionSchema</TemplateType></Properties></Template>".into()
+        )).unwrap();
+        let body = owner.join("Templates/Dcs/Ext/Template.xml");
+        std::fs::write(
+            &body,
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema"
+		xmlns:dcscom="http://v8.1c.ru/8.1/data-composition-system/common"
+		xmlns:dcscor="http://v8.1c.ru/8.1/data-composition-system/core"
+		xmlns:dcsset="http://v8.1c.ru/8.1/data-composition-system/settings"
+		xmlns:v8="http://v8.1c.ru/8.1/data/core"
+		xmlns:v8ui="http://v8.1c.ru/8.1/data/ui"
+		xmlns:xs="http://www.w3.org/2001/XMLSchema"
+		xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+	<dataSource>
+		<name>ИсточникДанных1</name>
+		<dataSourceType>Local</dataSourceType>
+	</dataSource>
+	<dataSet xsi:type="DataSetQuery">
+		<name>НаборДанных1</name>
+		<field xsi:type="DataSetFieldField">
+			<dataPath>Amount</dataPath>
+			<field>Amount</field>
+		</field>
+		<dataSource>ИсточникДанных1</dataSource>
+		<query>ВЫБРАТЬ Amount КАК Amount</query>
+	</dataSet>
+	<settingsVariant>
+		<dcsset:name>Основной</dcsset:name>
+		<dcsset:settings>
+			<dcsset:selection>
+			</dcsset:selection>
+			<dcsset:filter>
+			</dcsset:filter>
+			<dcsset:order>
+			</dcsset:order>
+			<dcsset:item xsi:type="dcsset:StructureItemGroup">
+				<dcsset:selection>
+					<dcsset:item xsi:type="dcsset:SelectedItemAuto"/>
+				</dcsset:selection>
+			</dcsset:item>
+		</dcsset:settings>
+	</settingsVariant>
+</DataCompositionSchema>
+"#,
+        )
+        .unwrap();
+        (workspace, format!("main:{kind}.Sales.Template.Dcs"), body)
+    }
+
+    fn call_dcs_check(workspace: &std::path::Path, tool: ToolIdentity, at: &str) -> DomainResult {
+        direct_v5(
+            &bootstrap_runtime(),
+            InvocationRequest::new(
+                tool,
+                serde_json::json!({"at": at}),
+                std::fs::canonicalize(workspace).unwrap().to_string_lossy(),
+                7_000,
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn canonical_dcs_check_accepts_external_report_processor_and_configuration() {
+        for kind in ["ExternalReport", "ExternalDataProcessor", "Report"] {
+            let (workspace, at, _) = dcs_check_workspace(kind);
+            let before = crate::test_support::tree_snapshot(&workspace.path().join("src"));
+            let viewed = call_dcs_check(workspace.path(), ToolIdentity::View, &at);
+            assert!(viewed.ok, "{kind}: {viewed:?}");
+            let checked = call_dcs_check(workspace.path(), ToolIdentity::Check, &at);
+            assert!(checked.ok, "{kind}: {checked:?}");
+            let data = checked.data.as_ref().unwrap();
+            assert_eq!(data["status"], "passed", "{kind}: {checked:?}");
+            assert_eq!(data["validators"], serde_json::json!(["dcs"]));
+            assert_eq!(data["diagnosticCount"], 0);
+            assert_eq!(
+                before,
+                crate::test_support::tree_snapshot(&workspace.path().join("src"))
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_dcs_check_external_semantics_and_owner_isolation() {
+        for kind in ["ExternalReport", "ExternalDataProcessor"] {
+            let (workspace, at, body) = dcs_check_workspace(kind);
+            let valid = std::fs::read_to_string(&body).unwrap();
+            let invalid = valid.replace("<dcsset:order>",
+                "<dcsset:dataParameters><dcscor:item xsi:type=\"dcsset:SettingsParameterValue\"><dcscor:parameter/></dcscor:item></dcsset:dataParameters><dcsset:order>");
+            assert_ne!(valid, invalid);
+            std::fs::write(&body, invalid).unwrap();
+            // A second owner has the same template name and valid content.
+            let source = workspace.path().join("src");
+            std::fs::create_dir_all(source.join("Other/Templates/Dcs/Ext")).unwrap();
+            std::fs::write(
+                source.join("Other.xml"),
+                std::fs::read_to_string(source.join("Sales.xml"))
+                    .unwrap()
+                    .replace("Sales", "Other"),
+            )
+            .unwrap();
+            std::fs::copy(
+                source.join("Sales/Templates/Dcs.xml"),
+                source.join("Other/Templates/Dcs.xml"),
+            )
+            .unwrap();
+            std::fs::write(source.join("Other/Templates/Dcs/Ext/Template.xml"), valid).unwrap();
+            let before = crate::test_support::tree_snapshot(&source);
+            assert!(call_dcs_check(workspace.path(), ToolIdentity::View, &at).ok);
+            let checked = call_dcs_check(workspace.path(), ToolIdentity::Check, &at);
+            assert!(checked.ok, "{checked:?}");
+            let data = checked.data.as_ref().unwrap();
+            assert_eq!(data["status"], "failed", "{checked:?}");
+            assert!(
+                data["diagnostics"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|item| item["validator"] == "dcs"
+                        && item["message"]
+                            .as_str()
+                            .is_some_and(|text| text
+                                .contains("SettingsParameterValue has empty parameter name"))),
+                "{checked:?}"
+            );
+            let sibling = call_dcs_check(
+                workspace.path(),
+                ToolIdentity::Check,
+                &at.replace(".Sales.", ".Other."),
+            );
+            assert_eq!(
+                sibling.data.as_ref().unwrap()["status"],
+                "passed",
+                "{sibling:?}"
+            );
+            assert_eq!(before, crate::test_support::tree_snapshot(&source));
+        }
+    }
+
+    #[test]
+    fn canonical_dcs_check_refuses_unregistered_or_mismatched_external_template() {
+        for case in ["unregistered", "wrong-name", "wrong-kind", "missing"] {
+            let (workspace, at, body) = dcs_check_workspace("ExternalReport");
+            let source = workspace.path().join("src");
+            let descriptor = source.join("Sales/Templates/Dcs.xml");
+            match case {
+                "unregistered" => {
+                    let owner = source.join("Sales.xml");
+                    std::fs::write(
+                        &owner,
+                        std::fs::read_to_string(&owner)
+                            .unwrap()
+                            .replace("<Template>Dcs</Template>", ""),
+                    )
+                    .unwrap();
+                }
+                "wrong-name" => std::fs::write(
+                    &descriptor,
+                    std::fs::read_to_string(&descriptor)
+                        .unwrap()
+                        .replace("<Name>Dcs</Name>", "<Name>Other</Name>"),
+                )
+                .unwrap(),
+                "wrong-kind" => std::fs::write(
+                    &descriptor,
+                    std::fs::read_to_string(&descriptor)
+                        .unwrap()
+                        .replace("<Template ", "<Form ")
+                        .replace("</Template>", "</Form>"),
+                )
+                .unwrap(),
+                "missing" => std::fs::remove_file(body).unwrap(),
+                _ => unreachable!(),
+            }
+            let before = crate::test_support::tree_snapshot(&source);
+            let checked = call_dcs_check(workspace.path(), ToolIdentity::Check, &at);
+            assert!(!checked.ok, "{case}: {checked:?}");
+            assert_eq!(
+                checked.diagnostics[0]["code"],
+                if case == "unregistered" {
+                    "not_found"
+                } else {
+                    "provider_unavailable"
+                },
+                "{case}: {checked:?}"
+            );
+            assert_eq!(before, crate::test_support::tree_snapshot(&source));
+        }
+    }
+
+    #[test]
+    fn canonical_dcs_check_refuses_linked_external_payload() {
+        use crate::infrastructure::platform::testing::{
+            create_file_link_fixture_for_test, FileLinkFixtureOutcome,
+        };
+
+        let (workspace, at, body) = dcs_check_workspace("ExternalReport");
+        let outside = tempfile::tempdir().unwrap();
+        let external_body = outside.path().join("Template.xml");
+        std::fs::rename(&body, &external_body).unwrap();
+        let outcome = create_file_link_fixture_for_test(&external_body, &body)
+            .expect("unexpected file-link creation error must fail the fixture test");
+        if outcome != FileLinkFixtureOutcome::Created {
+            eprintln!("[SKIPPED FIXTURE] file-link fixture unavailable: {outcome:?}");
+            return;
+        }
+        let before = std::fs::read(&external_body).unwrap();
+        let checked = call_dcs_check(workspace.path(), ToolIdentity::Check, &at);
+        assert!(!checked.ok, "{checked:?}");
+        assert_eq!(
+            checked.diagnostics[0]["code"], "provider_unavailable",
+            "{checked:?}"
+        );
+        assert_eq!(before, std::fs::read(&external_body).unwrap());
+        assert!(std::fs::symlink_metadata(body)
+            .unwrap()
+            .file_type()
+            .is_symlink());
     }
 
     fn bootstrap_runtime() -> V5CanonicalInvocationRuntime {
@@ -1875,7 +2154,7 @@ pub(crate) mod actor_capacity_tests {
                 "tools": [
                     {
                         "name": "v8-runner",
-                        "version": "0.11.2",
+                        "version": RUNNER_VERSION,
                         "binaryPath": format!("bin/{target}/v8-runner{exe}"),
                         "sha256": "0".repeat(64),
                     },
@@ -2075,7 +2354,7 @@ fn main() {
                         "v8-runner",
                         &mut runner_targets,
                         "https://github.com/IngvarConsulting/v8-runner-rust/releases/download",
-                        "0.11.2",
+                        RUNNER_VERSION,
                     ),
                     (
                         "bsl-analyzer",
@@ -2099,7 +2378,7 @@ fn main() {
                 "release": {"repository": "https://github.com/IngvarConsulting/unica", "tag": format!("v{}", env!("CARGO_PKG_VERSION"))},
                 "artifacts": {
                     "unica": {"version": env!("CARGO_PKG_VERSION"), "role": "core", "targets": core_targets},
-                    "v8-runner": {"version": "0.11.2", "role": "engine", "targets": runner_targets},
+                    "v8-runner": {"version": RUNNER_VERSION, "role": "engine", "targets": runner_targets},
                     "bsl-analyzer": {"version": "0.2.67", "role": "engine", "targets": analyzer_targets},
                     "rlm-tools-bsl": {"version": "1.33.0", "role": "engine", "targets": rlm_targets},
                 }
@@ -2118,7 +2397,7 @@ fn main() {
                     "rlm-tools-bsl": {"sha256": rlm_digest},
                 },
                 "tools": [
-                    {"name": "v8-runner", "version": "0.11.2", "binaryPath": format!("bin/{target}/v8-runner{suffix}"), "deliveredPath": format!("bin/{target}/v8-runner{suffix}"), "sha256": digest},
+                    {"name": "v8-runner", "version": RUNNER_VERSION, "binaryPath": format!("bin/{target}/v8-runner{suffix}"), "deliveredPath": format!("bin/{target}/v8-runner{suffix}"), "sha256": digest},
                     {"name": "bsl-analyzer", "version": "0.2.67", "binaryPath": format!("bin/{target}/bsl-analyzer{suffix}"), "deliveredPath": format!("bin/{target}/bsl-analyzer{suffix}"), "sha256": digest},
                     {"name": "rlm-bsl-mcp", "artifact": "rlm-tools-bsl", "version": "1.33.0", "binaryPath": format!("bin/{target}/rlm-bsl-mcp{suffix}"), "deliveredPath": format!("rlm-bsl-mcp{suffix}"), "sha256": digest},
                     {"name": "rlm-bsl-index", "artifact": "rlm-tools-bsl", "version": "1.33.0", "binaryPath": format!("bin/{target}/rlm-bsl-index{suffix}"), "deliveredPath": format!("rlm-bsl-index{suffix}"), "sha256": digest},
@@ -2266,7 +2545,7 @@ fn main() {
                 semantic.data.as_ref().unwrap()["matches"][0]["provider"],
                 "rlm"
             );
-            for (name, version) in [("v8-runner", "0.11.2"), ("bsl-analyzer", "0.2.67")] {
+            for (name, version) in [("v8-runner", RUNNER_VERSION), ("bsl-analyzer", "0.2.67")] {
                 assert!(cache
                     .join(name)
                     .join(format!("{version}--{digest}"))
@@ -3151,14 +3430,14 @@ fn main() {
             let read = local_initializer(&method.block.stmts[2], "read")?;
             let read_args = call_arguments(
                 read,
-                "crate::infrastructure::v13_read_port::ProviderReadAuthority::new_with_revision_lease",
+                "crate::infrastructure::v13_read_port::ProviderReadAuthority::new_local_snapshot",
             )?;
             let expected_read_args = [
                 "self.binding.source_set_name()",
                 "self.identity.clone()",
                 "self.binding.source_kind()",
                 "self.binding.retained_root()",
-                "self.fence.revision()",
+                "self.read_identity.clone()",
             ];
             if read_args.len() != expected_read_args.len()
                 || read_args
@@ -3855,10 +4134,10 @@ fn main() {
         let expected_construction_fields = std::collections::BTreeMap::from([
             ("binding", "source.binding.clone()"),
             ("deadline", "lease.deadline"),
-            ("fence", "source.fence.clone()"),
+            ("read_identity", "source.read_identity.clone()"),
             (
                 "registration_cache",
-                "self.invocation.actor.configuration_registration_cache(&source.binding)?",
+                "Arc::clone(&source.registration_cache)",
             ),
             (
                 "identity",
@@ -3908,7 +4187,7 @@ fn main() {
         let expected_fields = std::collections::BTreeMap::from([
             ("binding".to_string(), "ProviderRootBinding".to_string()),
             ("deadline".to_string(), "ProviderDeadline".to_string()),
-            ("fence".to_string(), "WorkspaceLogicalReadFence".to_string()),
+            ("read_identity".to_string(), "String".to_string()),
             ("identity".to_string(), "String".to_string()),
             (
                 "registration_cache".to_string(),
@@ -4003,7 +4282,7 @@ fn main() {
                 (
                     true,
                     "fn revision_identity(&self) -> String",
-                    "self.fence.revision().revision_identity()",
+                    "self.read_identity.clone()",
                 ),
             ),
             (
@@ -5028,12 +5307,16 @@ struct ActorLogicalReadLease {"#,
                 "identity: String::from(\"caller-supplied\"),",
             ),
             (
-                "fence: source.fence.clone(),",
-                "fence: lease.sources[0].fence.clone(),",
+                "read_identity: source.read_identity.clone(),",
+                "read_identity: lease.sources[0].read_identity.clone(),",
             ),
             (
                 "deadline: lease.deadline,",
                 "deadline: ProviderDeadline::from_budget(LOGICAL_READ_OPERATION_BUDGET),",
+            ),
+            (
+                "registration_cache: Arc::clone(&source.registration_cache),",
+                "registration_cache: Arc::new(RegistrationCache::default()),",
             ),
         ];
         let mut accepted = Vec::new();
@@ -5105,9 +5388,13 @@ struct ActorLogicalReadLease {"#,
     fn actor_read_source_capability_ast_audit_rejects_hardcoded_source_kind() {
         let source = include_str!("invocation_service.rs");
         let hardcoded_kind = source.replacen(
-            "self.binding.source_kind(),\n                self.binding.retained_root(),",
-            "SourceSetKind::Configuration,\n                self.binding.retained_root(),",
+            "self.binding.source_kind(),\n            self.binding.retained_root(),",
+            "SourceSetKind::Configuration,\n            self.binding.retained_root(),",
             1,
+        );
+        assert_ne!(
+            hardcoded_kind, source,
+            "the hostile fixture must alter the local snapshot constructor"
         );
         assert!(
             audit_actor_read_source_capability_api(&hardcoded_kind).is_err(),
@@ -5456,7 +5743,6 @@ struct ActorLogicalReadLease {"#,
                 serde_json::json!({
                     "at": "main:Catalog.Items",
                     "ops": [{"op": "props.set", "args": {"values": {"Comment": "Preview"}}}],
-                    "dryRun": true
                 }),
                 "validated",
             ),
@@ -5577,24 +5863,12 @@ struct ActorLogicalReadLease {"#,
                     "op": "props.set",
                     "args": {"values": {"Comment": "Published through v0.13"}}
                 }],
-                "dryRun": true
             }),
         );
         assert!(previewed_apply.ok, "{previewed_apply:?}");
         let published_apply = call(
             ToolIdentity::Apply,
-            serde_json::json!({
-                "at": "main:Catalog.Items",
-                "ops": [{
-                    "op": "props.set",
-                    "args": {"values": {"Comment": "Published through v0.13"}}
-                }],
-                "dryRun": false,
-                "ifRev": previewed_apply
-                    .rev
-                    .as_deref()
-                    .expect("preview carries the fence")
-            }),
+            serde_json::json!({"executionToken": previewed_apply.data.as_ref().unwrap()["executionToken"]}),
         );
         assert!(
             published_apply.ok,
@@ -5622,7 +5896,6 @@ struct ActorLogicalReadLease {"#,
                     },
                     {"op": "object.create", "args": {"values": {"kind": "Catalog", "name": "Ghost"}}}
                 ],
-                "dryRun": false
             }),
         );
         // `object.create` addresses the configuration root, so naming it on
@@ -5740,7 +6013,7 @@ struct ActorLogicalReadLease {"#,
 
     /// INV.WIRE.V13-REFUSAL-CHANNEL: every canonical refusal answers through
     /// `diagnostics[0]` with a code from the closed set and a message; a stale
-    /// `ifRev` has its own conflict code instead of `provider_unavailable`;
+    /// saved apply plan has its own conflict code instead of `provider_unavailable`;
     /// and an admitted logical scope without a source subtree is an empty
     /// result rather than a refusal or a raw OS error.
     #[test]
@@ -5814,19 +6087,15 @@ struct ActorLogicalReadLease {"#,
                 serde_json::json!({
                     "at": "main:Catalog.Bare",
                     "ops": [{"op": "frobnicate"}],
-                    "dryRun": true
                 }),
                 "unsupported_operation",
             ),
             (
                 ToolIdentity::Apply,
                 serde_json::json!({
-                    "at": "main:Catalog.Bare",
-                    "ops": [{"op": "props.set", "args": {"values": {"Comment": "x"}}}],
-                    "dryRun": true,
-                    "ifRev": "unica-source-sha256-v1:0:stale"
+                    "executionToken": "unknown-plan"
                 }),
-                "stale_revision",
+                "bad_value",
             ),
             (
                 ToolIdentity::Run,
@@ -5855,7 +6124,6 @@ struct ActorLogicalReadLease {"#,
                 serde_json::json!({
                     "at": "main:Catalog.Bare",
                     "ops": [{"op": "props.set", "args": {"props": {"Comment": "x"}}}],
-                    "dryRun": true
                 }),
                 "bad_value",
             ),
@@ -5905,22 +6173,35 @@ struct ActorLogicalReadLease {"#,
             serde_json::json!({"at": "main:Catalog.Bare"}),
         );
         assert!(current.ok, "{current:?}");
-        let admitted_revision = current.rev.expect("view carries the admitted revision");
-        let expected_revision = "unica-source-sha256-v1:0:stale";
-        let stale = call(
+        assert!(current.rev.is_none(), "reads do not carry an apply fence");
+        let planned = call(
             ToolIdentity::Apply,
             serde_json::json!({
                 "at": "main:Catalog.Bare",
-                "ops": [{"op": "props.set", "args": {"values": {"Comment": "x"}}}],
-                "dryRun": true,
-                "ifRev": expected_revision
+                "ops": [{"op": "props.set", "args": {"values": {"Comment": "x"}}}]
             }),
         );
-        let stale_message = stale.diagnostics[0]["message"].as_str().unwrap();
-        assert!(
-            stale_message.contains(expected_revision) && stale_message.contains(&admitted_revision),
-            "the conflict names both revisions for recovery: {stale_message}"
+        assert!(planned.ok, "{planned:?}");
+        let bare_path = source.join("Catalogs/Bare.xml");
+        let previous = std::fs::read_to_string(&bare_path).unwrap();
+        std::fs::write(
+            &bare_path,
+            previous.replace("<Comment/>", "<Comment>external change</Comment>"),
+        )
+        .unwrap();
+        let updated = call(
+            ToolIdentity::View,
+            serde_json::json!({"at": "main:Catalog.Bare"}),
         );
+        let stale = call(
+            ToolIdentity::Apply,
+            serde_json::json!({"executionToken": planned.data.as_ref().unwrap()["executionToken"]}),
+        );
+        assert!(!stale.ok, "{stale:?}");
+        assert_eq!(stale.diagnostics[0]["code"], "stale_revision");
+        let stale_message = stale.diagnostics[0]["message"].as_str().unwrap();
+        assert!(!stale_message.is_empty());
+        assert!(updated.ok && updated.rev.is_none(), "{updated:?}");
 
         let bare_scope = call(
             ToolIdentity::Search,
@@ -5996,7 +6277,6 @@ struct ActorLogicalReadLease {"#,
             serde_json::json!({
                 "at": "main:Catalog.Bare",
                 "ops": [{"op": "props.set", "args": {"props": {"Comment": "x"}}}],
-                "dryRun": true
             }),
         );
         assert!(
@@ -6025,7 +6305,6 @@ struct ActorLogicalReadLease {"#,
             serde_json::json!({
                 "at": "main:Catalog.Bare",
                 "ops": [{"op": "object.levitate", "args": {"values": {}}}],
-                "dryRun": true
             }),
         );
         assert_eq!(
@@ -6049,7 +6328,6 @@ struct ActorLogicalReadLease {"#,
             serde_json::json!({
                 "at": "main:Catalog.Bare",
                 "ops": [{"op": "enumValue.add", "args": {"items": []}}],
-                "dryRun": true
             }),
         );
         assert!(
@@ -6342,9 +6620,8 @@ struct ActorLogicalReadLease {"#,
         );
         assert!(preview.ok, "{preview:?}");
         assert!(!workspace.path().join("ext/Catalogs/Items.xml").exists());
-        let mut apply_args = preview_args.clone();
-        apply_args["dryRun"] = serde_json::json!(false);
-        apply_args["ifRev"] = serde_json::json!(preview.rev);
+        let mut apply_args =
+            serde_json::json!({"executionToken": preview.data.as_ref().unwrap()["executionToken"]});
         let parent = workspace.path().join("src/Catalogs/Items.xml");
         let text = std::fs::read_to_string(&parent).unwrap();
         std::fs::write(
@@ -6377,7 +6654,7 @@ struct ActorLogicalReadLease {"#,
             preview_args.clone(),
         );
         assert!(preview.ok, "{preview:?}");
-        apply_args["ifRev"] = serde_json::json!(preview.rev);
+        apply_args["executionToken"] = preview.data.as_ref().unwrap()["executionToken"].clone();
         let applied = submit_canonical(&runtime, workspace.path(), ToolIdentity::Apply, apply_args);
         assert!(applied.ok, "{applied:?}");
         let read = submit_canonical(
@@ -6405,7 +6682,7 @@ struct ActorLogicalReadLease {"#,
     }
 
     #[test]
-    fn borrowing_view_rejects_parent_changes_before_final_publication() {
+    fn borrowing_view_publishes_saved_parent_facts_and_new_read_rechecks_parent() {
         let workspace = borrowing_view_fixture("normal");
         let runtime = v13_runtime_for_borrowing_test();
         let request = InvocationRequest::new(
@@ -6442,9 +6719,31 @@ struct ActorLogicalReadLease {"#,
             "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
         );
         std::fs::write(parent, text).unwrap();
+        let published = execution
+            .publish(Ok(result), &cancellation)
+            .unwrap()
+            .unwrap();
+        assert!(published.ok, "{published:?}");
+        assert_eq!(
+            published.data.as_ref().unwrap()["props"]["parentStatus"],
+            "resolved"
+        );
+        assert_eq!(
+            published.data.as_ref().unwrap()["props"]["extends"],
+            "parent:Catalog.Items"
+        );
+        let current = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::View,
+            serde_json::json!({"at":"ext:Catalog.Items"}),
+        );
+        assert!(current.ok, "{current:?}");
+        let props = &current.data.as_ref().unwrap()["props"];
+        assert_eq!(props["parentStatus"], "not_found", "{current:?}");
         assert!(
-            execution.publish(Ok(result), &cancellation).is_err(),
-            "a stale parent address must not escape"
+            props.get("extends").is_none(),
+            "a new read must not reuse the old parent proof"
         );
     }
 
@@ -6622,7 +6921,6 @@ struct ActorLogicalReadLease {"#,
             serde_json::json!({
                 "at": "main:Configuration",
                 "ops": [{"op": "object.create", "args": {}}],
-                "dryRun": false,
             }),
             std::fs::canonicalize(workspace.path())
                 .unwrap()
@@ -6780,18 +7078,13 @@ struct ActorLogicalReadLease {"#,
             Arc::new(TokioClock),
         );
         let workspace_hint = std::fs::canonicalize(workspace.path()).unwrap();
-        let call = |if_rev: Option<&str>| {
-            // Применение забором связано с предпросмотром, поэтому оба режима
-            // строятся из одного места: предпросмотр без забора, применение с
-            // тем, что предпросмотр вернул.
-            let mut arguments = serde_json::json!({
-                "at": "main:Document.Order",
-                "ops": [{"op": "object.remove", "args": {}}],
-                "dryRun": if_rev.is_none(),
-            });
-            if let Some(if_rev) = if_rev {
-                arguments["ifRev"] = serde_json::Value::String(if_rev.to_string());
-            }
+        let call = |token: Option<&str>| {
+            let arguments = match token {
+                None => {
+                    serde_json::json!({"at": "main:Document.Order", "ops": [{"op": "object.remove", "args": {}}]})
+                }
+                Some(token) => serde_json::json!({"executionToken": token}),
+            };
             let request = InvocationRequest::new(
                 ToolIdentity::Apply,
                 arguments,
@@ -6826,10 +7119,55 @@ struct ActorLogicalReadLease {"#,
         );
         assert_cache_impact(&preview, "preview");
         let published = call(Some(
-            preview.rev.as_deref().expect("preview carries the fence"),
+            preview.data.as_ref().unwrap()["executionToken"]
+                .as_str()
+                .unwrap(),
         ));
         assert!(!descriptor.exists(), "publication removes the descriptor");
         assert_cache_impact(&published, "published");
+    }
+
+    #[test]
+    fn saved_apply_more_than_256_plans_keep_earlier_tokens_without_writes() {
+        let workspace = subsystem_picture_workspace("", true);
+        let source = workspace.path().join("src");
+        let before = crate::test_support::tree_snapshot(&source);
+        let runtime = bootstrap_runtime();
+        let arguments = serde_json::json!({
+            "at": "main:Subsystem.Sales",
+            "ops": [{"op": "props.set", "args": {"values": {"Comment": "capacity probe"}}}]
+        });
+        let mut first_token = None;
+        for _ in 0..256 {
+            let plan = submit_canonical(
+                &runtime,
+                workspace.path(),
+                ToolIdentity::Apply,
+                arguments.clone(),
+            );
+            assert!(plan.ok, "{plan:?}");
+            first_token
+                .get_or_insert_with(|| plan.data.as_ref().unwrap()["executionToken"].clone());
+        }
+        let additional =
+            submit_canonical(&runtime, workspace.path(), ToolIdentity::Apply, arguments);
+        assert!(additional.ok, "{additional:?}");
+        assert!(additional
+            .data
+            .as_ref()
+            .and_then(|data| data.get("executionToken"))
+            .is_some());
+        assert_eq!(crate::test_support::tree_snapshot(&source), before);
+        let executed = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::Apply,
+            serde_json::json!({"executionToken": first_token.unwrap()}),
+        );
+        assert!(executed.ok, "{executed:?}");
+        assert!(std::fs::read_to_string(source.join("Subsystems/Sales.xml"))
+            .unwrap()
+            .contains("capacity probe"));
     }
 
     /// Два плана на одной ревизии: второй не должен уничтожить первый.
@@ -6839,7 +7177,7 @@ struct ActorLogicalReadLease {"#,
     /// диагностики — потерянное обновление в чистом виде. Пример на один план
     /// такого не показывает, поэтому сценарий строится на двух.
     #[test]
-    fn two_plans_on_one_revision_cannot_both_publish() {
+    fn conflicting_preview_plans_cannot_both_publish() {
         let workspace = tempfile::tempdir().unwrap();
         let source = workspace.path().join("src");
         std::fs::create_dir_all(source.join("Documents")).unwrap();
@@ -6883,28 +7221,36 @@ struct ActorLogicalReadLease {"#,
             })
         };
         let preview = |comment: &str| {
-            let mut arguments = plan(comment);
-            arguments["dryRun"] = serde_json::Value::Bool(true);
-            let result = call(arguments);
+            let result = call(plan(comment));
             assert!(result.ok, "{result:?}");
-            result.rev.expect("preview carries the revision fence")
+            (
+                result.rev.unwrap(),
+                result.data.as_ref().unwrap()["executionToken"]
+                    .as_str()
+                    .unwrap()
+                    .to_string(),
+            )
         };
-        let publish = |comment: &str, if_rev: &str| {
-            let mut arguments = plan(comment);
-            arguments["dryRun"] = serde_json::Value::Bool(false);
-            arguments["ifRev"] = serde_json::Value::String(if_rev.to_string());
-            call(arguments)
-        };
+        let publish = |token: &str| call(serde_json::json!({"executionToken": token}));
 
         // Оба агента планируют по одному и тому же состоянию исходников.
         let first_fence = preview("от первого");
         let second_fence = preview("от второго");
-        assert_eq!(
-            first_fence, second_fence,
-            "планы построены на одной ревизии"
+        assert_ne!(
+            first_fence.0, second_fence.0,
+            "distinct plans bind distinct postimages"
+        );
+        // Changes outside the plan inputs do not invalidate its preview.
+        std::fs::write(source.join("unrelated.bsl"), "unrelated change").unwrap();
+        let mixed = call(
+            serde_json::json!({"executionToken": first_fence.1, "at": "main:Document.Order", "ops": plan("подмена операции")["ops"]}),
+        );
+        assert!(
+            !mixed.ok && mixed.diagnostics[0]["code"] == "bad_value",
+            "{mixed:?}"
         );
 
-        let first = publish("от первого", &first_fence);
+        let first = publish(&first_fence.1);
         assert!(first.ok, "{first:?}");
         assert!(std::fs::read_to_string(&descriptor)
             .unwrap()
@@ -6912,7 +7258,7 @@ struct ActorLogicalReadLease {"#,
 
         // Второй план опоздал. До правки он публиковался и уничтожал первую
         // запись; теперь он назван устаревшим, и правка первого цела.
-        let second = publish("от второго", &second_fence);
+        let second = publish(&second_fence.1);
         assert!(!second.ok, "{second:?}");
         assert_eq!(second.diagnostics[0]["code"], "stale_revision");
         let published = std::fs::read_to_string(&descriptor).unwrap();
@@ -6926,18 +7272,69 @@ struct ActorLogicalReadLease {"#,
         let refused = call(unfenced);
         assert!(!refused.ok, "{refused:?}");
         assert_eq!(refused.diagnostics[0]["code"], "bad_value");
-        assert_eq!(refused.at.as_deref(), Some("ifRev"));
+        assert!(refused.diagnostics[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("dryRun"));
         assert_eq!(std::fs::read_to_string(&descriptor).unwrap(), published);
 
         // Второй агент перечитывает ревизию и повторяет план — это и есть
         // названный путь восстановления.
         let retry_fence = preview("от второго");
         assert_ne!(retry_fence, second_fence);
-        let retry = publish("от второго", &retry_fence);
+        let retry = publish(&retry_fence.1);
         assert!(retry.ok, "{retry:?}");
         assert!(std::fs::read_to_string(&descriptor)
             .unwrap()
             .contains("от второго"));
+
+        let committed = crate::test_support::tree_snapshot(&source);
+        let replay = publish(&retry_fence.1);
+        assert_eq!(
+            serde_json::to_value(&retry).unwrap(),
+            serde_json::to_value(&replay).unwrap()
+        );
+        assert_eq!(crate::test_support::tree_snapshot(&source), committed);
+
+        let pending = preview("после перезапуска");
+        let restarted = V5CanonicalInvocationRuntime::new(
+            Arc::new(
+                crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
+            ),
+            Arc::new(TokioClock),
+        );
+        let unavailable = submit_canonical(
+            &restarted,
+            workspace.path(),
+            ToolIdentity::Apply,
+            serde_json::json!({"executionToken": pending.1}),
+        );
+        assert!(
+            !unavailable.ok,
+            "another actor must not reconstruct a lost plan"
+        );
+        assert_eq!(crate::test_support::tree_snapshot(&source), committed);
+        let fresh = submit_canonical(
+            &restarted,
+            workspace.path(),
+            ToolIdentity::Apply,
+            plan("после перезапуска"),
+        );
+        assert!(fresh.ok, "{fresh:?}");
+        assert_ne!(
+            fresh.data.as_ref().unwrap()["executionToken"],
+            serde_json::json!(pending.1)
+        );
+        let executed = submit_canonical(
+            &restarted,
+            workspace.path(),
+            ToolIdentity::Apply,
+            serde_json::json!({"executionToken": fresh.data.as_ref().unwrap()["executionToken"]}),
+        );
+        assert!(executed.ok, "{executed:?}");
+        assert!(std::fs::read_to_string(&descriptor)
+            .unwrap()
+            .contains("после перезапуска"));
     }
 
     #[test]
@@ -6992,7 +7389,6 @@ struct ActorLogicalReadLease {"#,
             serde_json::json!({
                 "at": at,
                 "ops": [{"op": "props.set", "args": {"values": {"ClientOrdinaryApplication": value}}}],
-                "dryRun": true,
             })
         };
         assert_eq!(
@@ -7007,10 +7403,9 @@ struct ActorLogicalReadLease {"#,
             assert!(preview.ok, "props.set preview failed: {preview:?}");
             assert_eq!(std::fs::read(&descriptor).unwrap(), before);
             let after_preview = view(at);
-            assert_eq!(after_preview.rev, observed.rev);
+            assert!(after_preview.rev.is_none());
             assert_eq!(after_preview.data, observed.data);
-            args["dryRun"] = serde_json::json!(false);
-            args["ifRev"] = serde_json::json!(preview.rev.expect("preview carries the fence"));
+            args = serde_json::json!({"executionToken": preview.data.as_ref().unwrap()["executionToken"]});
             let applied = call(ToolIdentity::Apply, args);
             assert!(applied.ok, "props.set apply failed: {applied:?}");
             assert_eq!(
@@ -7045,10 +7440,8 @@ struct ActorLogicalReadLease {"#,
             let before_module = std::fs::read(&descriptor).unwrap();
             let before_document = std::fs::read(&document).unwrap();
             let before_view = view(target);
-            for dry_run in [true, false] {
-                let mut args = plan(target, value.clone());
-                args["dryRun"] = serde_json::json!(dry_run);
-                args["ifRev"] = serde_json::json!(before_view.rev);
+            {
+                let args = plan(target, value.clone());
                 let refused = call(ToolIdentity::Apply, args);
                 assert!(!refused.ok, "{refused:?}");
                 assert_eq!(refused.diagnostics[0]["code"], "bad_value", "{refused:?}");
@@ -7061,7 +7454,9 @@ struct ActorLogicalReadLease {"#,
                 );
                 assert_eq!(std::fs::read(&descriptor).unwrap(), before_module);
                 assert_eq!(std::fs::read(&document).unwrap(), before_document);
-                assert_eq!(view(target).rev, before_view.rev);
+                let unchanged = view(target);
+                assert!(unchanged.rev.is_none());
+                assert_eq!(unchanged.data, before_view.data);
             }
         }
     }
@@ -7093,35 +7488,36 @@ struct ActorLogicalReadLease {"#,
             direct_v5(&runtime, request).unwrap()
         };
         let publish = |ops: serde_json::Value| {
-            let before = crate::test_support::tree_snapshot(&source);
+            let before = crate::test_support::tree_snapshot(workspace.path());
             let creates_object = ops[0]["op"] == "object.create";
             let at = if creates_object {
                 "main:Configuration"
             } else {
                 ops[0]["args"]["at"].as_str().expect("edit target")
             };
-            let mut args = serde_json::json!({"at": at, "ops": ops, "dryRun": true});
-            let preview = call(ToolIdentity::Apply, args.clone());
+            let preview = call(
+                ToolIdentity::Apply,
+                serde_json::json!({"at": at, "ops": ops}),
+            );
             assert!(preview.ok, "{preview:?}");
             assert_eq!(
-                crate::test_support::tree_snapshot(&source),
+                crate::test_support::tree_snapshot(workspace.path()),
                 before,
-                "preview writes nothing"
+                "planning writes nothing"
             );
-            args["dryRun"] = serde_json::json!(false);
-            args["ifRev"] = serde_json::json!(preview.rev.as_ref().expect("preview revision"));
-            let applied = call(ToolIdentity::Apply, args);
+            let token = &preview.data.as_ref().unwrap()["executionToken"];
+            assert!(token.as_str().is_some_and(|token| !token.is_empty()));
+            let applied = call(
+                ToolIdentity::Apply,
+                serde_json::json!({"executionToken": token}),
+            );
             assert!(applied.ok, "{applied:?}");
             let preview_data = preview.data.as_ref().unwrap();
             let applied_data = applied.data.as_ref().unwrap();
             assert_eq!(preview_data["operations"], applied_data["operations"]);
             assert_eq!(preview_data["effects"], applied_data["effects"]);
             assert_eq!(preview.changed, applied.changed);
-            // Object templates already generate fresh UUIDs on each planning
-            // pass. Existing-object edits retain byte-identical plan hashes.
-            if !creates_object {
-                assert_eq!(preview_data["planHash"], applied_data["planHash"]);
-            }
+            assert_eq!(preview_data["planHash"], applied_data["planHash"]);
             applied
         };
         let view_type = || {
@@ -7187,67 +7583,67 @@ struct ActorLogicalReadLease {"#,
         assert_eq!(crate::test_support::tree_snapshot(&source), before_noop);
 
         for (name, invalid_arguments) in [("Enabled", false), ("NewInvalidConst", true)] {
-            let before = crate::test_support::tree_snapshot(&source);
-            let root = call(
-                ToolIdentity::View,
-                serde_json::json!({"at": "main:Configuration"}),
-            );
-            assert!(root.ok, "{root:?}");
-            for dry_run in [true, false] {
-                let mut create_args =
-                    serde_json::json!({"values": {"kind": "Constant", "name": name}});
-                if invalid_arguments {
-                    create_args["bogus"] = serde_json::json!(true);
-                }
-                let refused = call(
-                    ToolIdentity::Apply,
-                    serde_json::json!({
-                        "at": "main:Configuration", "dryRun": dry_run, "ifRev": root.rev,
-                        "ops": [
-                            {"op": "object.create", "args": create_args},
-                            {"op": "props.set", "args": {"at": format!("main:Constant.{name}"), "values": {"Comment": "must not publish"}}}
-                        ]
-                    }),
-                );
-                assert!(
-                    !refused.ok,
-                    "a failed creation cannot authorize configuration: {refused:?}"
-                );
-                assert_eq!(
-                    crate::test_support::tree_snapshot(&source),
-                    before,
-                    "{name}: failed create batch must not publish"
-                );
+            let before = crate::test_support::tree_snapshot(workspace.path());
+            let mut create_args = serde_json::json!({"values": {"kind": "Constant", "name": name}});
+            if invalid_arguments {
+                create_args["bogus"] = serde_json::json!(true);
             }
-        }
-
-        // A valid first operation must not leak when a later type is invalid.
-        let before = crate::test_support::tree_snapshot(&source);
-        let revision = call(
-            ToolIdentity::View,
-            serde_json::json!({"at": "main:Constant.Enabled"}),
-        )
-        .rev
-        .unwrap();
-        for dry_run in [true, false] {
             let refused = call(
                 ToolIdentity::Apply,
                 serde_json::json!({
-                "at": "main:Constant.Enabled", "dryRun": dry_run, "ifRev": revision,
+                    "at": "main:Configuration",
                     "ops": [
-                        {"op": "props.set", "args": {"at": "main:Constant.Enabled", "values": {"Comment": "must not publish"}}},
-                        {"op": "props.set", "args": {"at": "main:Constant.Enabled", "values": {"Type": {"variants": [{"kind": "boolean", "unknownQualifier": true}]}}}}
+                        {"op": "object.create", "args": create_args},
+                        {"op": "props.set", "args": {"at": format!("main:Constant.{name}"), "values": {"Comment": "must not publish"}}}
                     ]
                 }),
             );
-            assert!(!refused.ok, "{refused:?}");
-            assert_eq!(refused.diagnostics[0]["code"], "bad_value", "{refused:?}");
+            assert!(
+                !refused.ok,
+                "a failed creation cannot authorize configuration: {refused:?}"
+            );
+            assert!(
+                refused
+                    .data
+                    .as_ref()
+                    .and_then(|data| data.get("executionToken"))
+                    .is_none(),
+                "failed planning must not mint an executable token: {refused:?}"
+            );
             assert_eq!(
-                crate::test_support::tree_snapshot(&source),
+                crate::test_support::tree_snapshot(workspace.path()),
                 before,
-                "invalid batch must be atomic"
+                "{name}: failed create batch must not publish"
             );
         }
+
+        // A valid first operation must not leak when a later type is invalid.
+        let before = crate::test_support::tree_snapshot(workspace.path());
+        let refused = call(
+            ToolIdentity::Apply,
+            serde_json::json!({
+                "at": "main:Constant.Enabled",
+                "ops": [
+                    {"op": "props.set", "args": {"at": "main:Constant.Enabled", "values": {"Comment": "must not publish"}}},
+                    {"op": "props.set", "args": {"at": "main:Constant.Enabled", "values": {"Type": {"variants": [{"kind": "boolean", "unknownQualifier": true}]}}}}
+                ]
+            }),
+        );
+        assert!(!refused.ok, "{refused:?}");
+        assert_eq!(refused.diagnostics[0]["code"], "bad_value", "{refused:?}");
+        assert!(
+            refused
+                .data
+                .as_ref()
+                .and_then(|data| data.get("executionToken"))
+                .is_none(),
+            "invalid batch must not mint an executable token: {refused:?}"
+        );
+        assert_eq!(
+            crate::test_support::tree_snapshot(workspace.path()),
+            before,
+            "invalid batch must be atomic"
+        );
     }
 
     #[test]
@@ -7293,26 +7689,21 @@ struct ActorLogicalReadLease {"#,
             let dry = call(serde_json::json!({
                 "at": "main:Document.Order",
                 "ops": [operation.clone()],
-                "dryRun": true,
             }));
             assert!(dry.ok, "dry-run failed: {dry:?}");
             assert_eq!(std::fs::read(&descriptor).unwrap(), before);
             let repeated_dry = call(serde_json::json!({
                 "at": "main:Document.Order",
                 "ops": [operation.clone()],
-                "dryRun": true,
             }));
             assert_eq!(
                 dry.data.as_ref().unwrap()["planHash"],
                 repeated_dry.data.as_ref().unwrap()["planHash"],
                 "dry-run planning must be deterministic"
             );
-            let real = call(serde_json::json!({
-                "at": "main:Document.Order",
-                "ops": [operation],
-                "dryRun": false,
-                "ifRev": dry.rev.clone().expect("preview carries the revision fence"),
-            }));
+            let real = call(
+                serde_json::json!({"executionToken": dry.data.as_ref().unwrap()["executionToken"]}),
+            );
             assert!(real.ok, "real apply failed: {real:?}");
             assert_ne!(std::fs::read(&descriptor).unwrap(), before);
             assert_eq!(
@@ -7357,7 +7748,6 @@ struct ActorLogicalReadLease {"#,
                 {"op": "props.set", "args": {"values": {"Comment": "must not publish"}}},
                 {"op": "object.create", "args": {"values": {"kind": "Catalog", "name": "Ghost"}}}
             ],
-            "dryRun": false,
         }));
         assert!(!rejected.ok);
         assert_eq!(rejected.diagnostics[0]["code"], "bad_value");
@@ -7370,18 +7760,11 @@ struct ActorLogicalReadLease {"#,
                 {"op": "props.set", "args": {"values": {"Comment": "transient"}}},
                 {"op": "props.set", "args": {"values": {"Comment": "planned"}}}
             ],
-            "dryRun": true,
         }));
         assert!(net_zero_preview.ok, "{net_zero_preview:?}");
-        let reverted = call(serde_json::json!({
-            "at": "main:Document.Order",
-            "ops": [
-                {"op": "props.set", "args": {"values": {"Comment": "transient"}}},
-                {"op": "props.set", "args": {"values": {"Comment": "planned"}}}
-            ],
-            "dryRun": false,
-            "ifRev": net_zero_preview.rev.clone().expect("preview carries the fence"),
-        }));
+        let reverted = call(
+            serde_json::json!({"executionToken": net_zero_preview.data.as_ref().unwrap()["executionToken"]}),
+        );
         assert!(reverted.ok, "net-zero apply failed: {reverted:?}");
         assert!(reverted.changed.is_empty());
         assert_eq!(reverted.data.as_ref().unwrap()["effects"], 0);
@@ -7553,44 +7936,32 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn logical_read_admission_deadline_returns_canonical_rejection() {
-        assert_logical_read_deadline_returns_canonical_rejection(
-            LogicalReadDeadlineCase::Admission,
-        );
+        assert_logical_read_deadline_case(LogicalReadDeadlineCase::Admission);
     }
 
     #[test]
     fn logical_read_publication_deadline_discards_staged_source_data() {
-        assert_logical_read_deadline_returns_canonical_rejection(
-            LogicalReadDeadlineCase::Publication,
-        );
+        assert_logical_read_deadline_case(LogicalReadDeadlineCase::Publication);
     }
 
     #[test]
-    fn logical_read_admission_scan_deadline_returns_canonical_rejection() {
-        assert_logical_read_deadline_returns_canonical_rejection(
-            LogicalReadDeadlineCase::AdmissionScan,
-        );
+    fn logical_read_admission_does_not_scan_source_revisions() {
+        assert_logical_read_deadline_case(LogicalReadDeadlineCase::AdmissionNoScan);
     }
 
     #[test]
-    fn logical_read_publication_scan_deadline_discards_staged_source_data() {
-        assert_logical_read_deadline_returns_canonical_rejection(
-            LogicalReadDeadlineCase::PublicationScan,
-        );
+    fn logical_read_publication_does_not_scan_source_revisions() {
+        assert_logical_read_deadline_case(LogicalReadDeadlineCase::PublicationNoScan);
     }
 
     #[test]
     fn logical_read_expired_clock_does_not_reclassify_execution_failure() {
-        assert_logical_read_deadline_returns_canonical_rejection(
-            LogicalReadDeadlineCase::ExecutionFailure,
-        );
+        assert_logical_read_deadline_case(LogicalReadDeadlineCase::ExecutionFailure);
     }
 
     #[test]
-    fn logical_read_parent_admission_deadline_discards_staged_extension_data() {
-        assert_logical_read_deadline_returns_canonical_rejection(
-            LogicalReadDeadlineCase::ParentAdmissionScan,
-        );
+    fn logical_read_parent_publication_deadline_discards_staged_extension_data() {
+        assert_logical_read_deadline_case(LogicalReadDeadlineCase::ParentPublication);
     }
 
     #[test]
@@ -7608,20 +7979,20 @@ struct ActorLogicalReadLease {"#,
     #[derive(Clone, Copy)]
     enum LogicalReadDeadlineCase {
         Admission,
-        AdmissionScan,
+        AdmissionNoScan,
         Publication,
-        PublicationScan,
+        PublicationNoScan,
         ExecutionFailure,
-        ParentAdmissionScan,
+        ParentPublication,
     }
 
-    fn assert_logical_read_deadline_returns_canonical_rejection(case: LogicalReadDeadlineCase) {
+    fn assert_logical_read_deadline_case(case: LogicalReadDeadlineCase) {
         assert_logical_read_deadline_for_tool(case, ToolIdentity::View);
     }
 
     fn assert_logical_read_deadline_for_tool(case: LogicalReadDeadlineCase, tool: ToolIdentity) {
-        let parent_admission = matches!(case, LogicalReadDeadlineCase::ParentAdmissionScan);
-        let workspace = if parent_admission {
+        let parent_publication = matches!(case, LogicalReadDeadlineCase::ParentPublication);
+        let workspace = if parent_publication {
             borrowing_view_fixture("normal")
         } else {
             source_selection_read_fixture().0
@@ -7635,7 +8006,7 @@ struct ActorLogicalReadLease {"#,
                 serde_json::json!({"left": "main:Catalog.Items", "right": "main:Catalog.Items"})
             }
             _ => {
-                serde_json::json!({"at": if parent_admission { "ext:Catalog.Items" } else { "main:Catalog.Items" }})
+                serde_json::json!({"at": if parent_publication { "ext:Catalog.Items" } else { "main:Catalog.Items" }})
             }
         };
         let request = InvocationRequest::new(
@@ -7666,7 +8037,11 @@ struct ActorLogicalReadLease {"#,
         });
         let deadline = ProviderDeadline::with_clock(expires, logical_read_now);
         let cancellation = CancellationToken::new();
-        let _admission_scan = matches!(case, LogicalReadDeadlineCase::AdmissionScan).then(|| {
+        let _admission_scan = matches!(
+            case,
+            LogicalReadDeadlineCase::AdmissionNoScan | LogicalReadDeadlineCase::ParentPublication
+        )
+        .then(|| {
             crate::infrastructure::source_revision::set_retained_scan_test_mutation(
                 crate::infrastructure::source_revision::RetainedScanTestMutationPoint::ScanStart,
                 move || set_logical_read_now(expires),
@@ -7679,34 +8054,28 @@ struct ActorLogicalReadLease {"#,
             });
         let service =
             crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default();
-        let _parent_scan = parent_admission.then(|| {
-            crate::infrastructure::source_revision::set_retained_scan_test_mutation(
-                crate::infrastructure::source_revision::RetainedScanTestMutationPoint::ScanStart,
-                move || set_logical_read_now(expires),
-            )
-        });
         let staged = service.execute(&execution, cancellation.clone()).unwrap();
-        if parent_admission {
+        if parent_publication {
             assert_eq!(
                 logical_read_now(),
-                expires,
-                "parent scan must exhaust the deadline"
+                started,
+                "parent read must not run the old revision scan"
             );
             assert_eq!(
                 staged.data.as_ref().unwrap()["props"]["parentStatus"],
-                "unavailable"
+                "resolved"
             );
         }
         if !matches!(
             case,
-            LogicalReadDeadlineCase::Admission | LogicalReadDeadlineCase::AdmissionScan
+            LogicalReadDeadlineCase::Admission | LogicalReadDeadlineCase::AdmissionNoScan
         ) {
             assert!(staged.ok, "{staged:?}");
             assert!(
                 staged.data.is_some(),
                 "the reader must stage actual source data"
             );
-            if !matches!(case, LogicalReadDeadlineCase::PublicationScan) {
+            if !matches!(case, LogicalReadDeadlineCase::PublicationNoScan) {
                 set_logical_read_now(expires);
             }
         }
@@ -7719,8 +8088,7 @@ struct ActorLogicalReadLease {"#,
             return;
         }
         let _publication_scan =
-            matches!(case, LogicalReadDeadlineCase::PublicationScan).then(|| {
-                execution.mark_source_revision_dirty_for_test();
+            matches!(case, LogicalReadDeadlineCase::PublicationNoScan).then(|| {
                 crate::infrastructure::source_revision::set_retained_scan_test_mutation(
                 crate::infrastructure::source_revision::RetainedScanTestMutationPoint::ScanStart,
                 move || set_logical_read_now(expires),
@@ -7732,6 +8100,22 @@ struct ActorLogicalReadLease {"#,
                 panic!("deadline must remain a domain rejection at publication: {error}")
             })
             .expect("deadline must not become an invocation failure");
+        if matches!(
+            case,
+            LogicalReadDeadlineCase::AdmissionNoScan | LogicalReadDeadlineCase::PublicationNoScan
+        ) {
+            assert_eq!(
+                logical_read_now(),
+                started,
+                "logical read invoked a global source revision scan"
+            );
+            assert!(result.ok, "{result:?}");
+            assert!(
+                result.data.is_some(),
+                "successful read must keep source data"
+            );
+            return;
+        }
         assert!(!result.ok);
         assert_eq!(result.diagnostics[0]["code"], "deadline_exceeded");
         assert_eq!(result.diagnostics[0]["outcome"], "retry");
@@ -7762,7 +8146,7 @@ struct ActorLogicalReadLease {"#,
     }
 
     #[test]
-    pub(crate) fn hidden_v13_logical_lease_survives_the_handoff_window_and_confirms_once() {
+    pub(crate) fn logical_reads_preserve_deadline_without_source_scans_or_mutation_lane_wait() {
         let workspace = tempfile::tempdir().unwrap();
         let source = workspace.path().join("src");
         let sibling = workspace.path().join("dep");
@@ -7821,6 +8205,10 @@ struct ActorLogicalReadLease {"#,
             .actor_for_test()
             .source_revision_service(&sibling_binding)
             .unwrap();
+        let selected_revisions = invocation
+            .actor_for_test()
+            .source_revision_service(invocation.read_source_binding_for_test("main").unwrap())
+            .unwrap();
         let started = Instant::now();
         set_logical_read_now(started);
         let deadline =
@@ -7854,6 +8242,76 @@ struct ActorLogicalReadLease {"#,
             .execute(&execution, cancellation.clone())
             .expect("canonical v0.13 execution");
         assert!(result.ok, "canonical v0.13 execution must succeed");
+        assert!(result.rev.is_none());
+        assert_eq!(
+            selected_revisions.retained_scan_count(),
+            0,
+            "view admission and execution must not scan even the selected source tree"
+        );
+        for (tool, arguments) in [
+            (
+                ToolIdentity::Resolve,
+                serde_json::json!({"at":"main:Catalog.Items"}),
+            ),
+            (
+                ToolIdentity::Search,
+                serde_json::json!({"query":"Items","scope":"main:Configuration"}),
+            ),
+            (
+                ToolIdentity::Check,
+                serde_json::json!({"at":"main:Catalog.Items"}),
+            ),
+            (
+                ToolIdentity::Diff,
+                serde_json::json!({"left":"main:Catalog.Items","right":"main:Catalog.Items"}),
+            ),
+        ] {
+            let read_request = InvocationRequest::new(
+                tool,
+                arguments,
+                std::fs::canonicalize(workspace.path())
+                    .unwrap()
+                    .to_string_lossy(),
+                7_000,
+            )
+            .unwrap();
+            let read_invocation = bind_workspace_invocation(
+                &read_request,
+                &runtime.workspace_actors,
+                Arc::clone(&runtime.deliveries),
+                Arc::clone(&runtime.provider_hosts),
+                Arc::clone(&runtime.runtime_resources),
+                None,
+                runtime.capture_response_deadline_for_test(),
+            )
+            .unwrap();
+            let read_execution = read_invocation
+                .begin_execution_with_logical_deadline_for_test(&cancellation, deadline)
+                .unwrap();
+            let read_result = service
+                .execute(&read_execution, cancellation.clone())
+                .unwrap();
+            assert!(read_result.ok, "{tool:?}: {read_result:?}");
+            assert!(
+                read_result.rev.is_none(),
+                "{tool:?} must not expose a source revision"
+            );
+            let published = read_execution
+                .publish(Ok(read_result), &cancellation)
+                .unwrap()
+                .unwrap();
+            assert!(published.ok);
+            assert_eq!(
+                selected_revisions.retained_scan_count(),
+                0,
+                "{tool:?} must not scan the selected source tree"
+            );
+            assert_eq!(
+                sibling_revisions.retained_scan_count(),
+                0,
+                "{tool:?} must not scan the unrelated source tree"
+            );
+        }
         let actor = Arc::clone(execution.actor_for_test());
         let legacy_fence = actor
             .capture_revision(execution.provider_root_for_test(), deadline, &cancellation)
@@ -7861,6 +8319,7 @@ struct ActorLogicalReadLease {"#,
         let held_publication = actor
             .begin_publication(&legacy_fence, deadline, &cancellation)
             .expect("hold the actor mutation lane");
+        let scans_before_publish = selected_revisions.retained_scan_count();
         let (published_tx, published_rx) = mpsc::channel();
         let publish_cancellation = cancellation.clone();
         std::thread::spawn(move || {
@@ -7869,20 +8328,19 @@ struct ActorLogicalReadLease {"#,
                 .send(execution.publish(Ok(result), &publish_cancellation))
                 .unwrap();
         });
-        assert!(
-            matches!(
-                published_rx.recv_timeout(Duration::from_millis(100)),
-                Err(mpsc::RecvTimeoutError::Timeout)
-            ),
-            "logical read publication must wait on the actor mutation lane"
-        );
-        drop(held_publication);
         let published = published_rx
             .recv_timeout(Duration::from_secs(2))
-            .expect("logical publication resumes after mutation lane release")
+            .expect("logical publication must not wait on the mutation lane")
             .unwrap()
             .unwrap();
+        drop(held_publication);
         assert!(published.ok);
+        assert!(published.rev.is_none());
+        assert_eq!(
+            selected_revisions.retained_scan_count(),
+            scans_before_publish,
+            "read publication must not scan the selected source tree"
+        );
         assert_eq!(
             sibling_revisions.retained_scan_count(),
             0,
@@ -8002,8 +8460,8 @@ struct ActorLogicalReadLease {"#,
         )
         .unwrap();
         assert!(
-            execution.publish(Ok(result), &cancellation).is_err(),
-            "a selected-source mutation must fail final retained confirmation"
+            execution.publish(Ok(result), &cancellation).is_ok(),
+            "a completed read remains usable after source content changes"
         );
     }
 
@@ -8358,7 +8816,7 @@ struct ActorLogicalReadLease {"#,
         release: Arc<(Mutex<bool>, Condvar)>,
     }
 
-    struct RevisionChangingIndexService {
+    struct GenerationChangingIndexService {
         producers: Arc<AtomicUsize>,
         producer_entered: mpsc::Sender<()>,
         joined: mpsc::Sender<IndexWorkIdentity>,
@@ -8584,14 +9042,58 @@ struct ActorLogicalReadLease {"#,
             );
             assert_eq!(entry["implemented"], operation.implemented, "{name}");
             let preview_apply = operation.execution() == "previewApply";
-            assert_eq!(entry["previewRequired"], preview_apply, "{name}");
-            assert_eq!(entry["ifRevRequiredOnApply"], preview_apply, "{name}");
+            assert_eq!(entry["dryRunRequired"], preview_apply, "{name}");
+            assert_eq!(entry["previewRequired"], false, "{name}");
+            assert!(entry.get("ifRevRequiredOnApply").is_none(), "{name}");
         }
         assert_eq!(preparations.load(Ordering::SeqCst), 0);
     }
 
     #[test]
-    fn v5_infobase_exports_prepare_before_source_admission_and_keep_the_revision_gate() {
+    fn v5_run_rejects_if_rev_before_workspace_or_provider_admission() {
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::write(workspace.path().join("v8project.yaml"), "not: [valid yaml").unwrap();
+        let preparations = Arc::new(AtomicUsize::new(0));
+        let runtime = V5CanonicalInvocationRuntime::new(
+            Arc::new(CountingPrepareService {
+                preparations: Arc::clone(&preparations),
+            }),
+            Arc::new(TokioClock),
+        );
+        let catalog =
+            crate::application::v13::tool_catalog::catalog_for(SurfaceRelease::V13).unwrap();
+        let contract = catalog
+            .tools
+            .iter()
+            .find(|tool| tool.name == "run")
+            .unwrap();
+        assert!(contract.input_schema["properties"].get("ifRev").is_none());
+        assert_eq!(contract.input_schema["additionalProperties"], false);
+        for operation in &catalog.run_dictionary {
+            let request = InvocationRequest::new(
+                ToolIdentity::Run,
+                serde_json::json!({
+                    "op": operation.name(), "args": {}, "dryRun": false, "ifRev": "old-preview"
+                }),
+                workspace.path().display().to_string(),
+                7_000,
+            )
+            .unwrap();
+            let result = match runtime.bind(request) {
+                Err(V5CanonicalPrepareError::Rejected(result)) => result,
+                Ok(_) => panic!("{} accepted the removed ifRev argument", operation.name()),
+                Err(other) => panic!("request reached workspace admission: {other:?}"),
+            };
+            assert_eq!(result.diagnostics[0]["code"], "bad_value", "{result:?}");
+            assert!(result.rev.is_none());
+        }
+        assert_eq!(preparations.load(Ordering::SeqCst), 0);
+        assert_eq!(runtime.workspace_actors.entry_len_for_test().unwrap(), 0);
+        assert!(!workspace.path().join(".build").exists());
+    }
+
+    #[test]
+    fn v5_infobase_exports_prepare_before_source_admission_and_run_without_a_revision_gate() {
         let workspace = tempfile::tempdir().expect("temporary infobase workspace");
         std::fs::write(
             workspace.path().join("v8project.yaml"),
@@ -8611,15 +9113,12 @@ struct ActorLogicalReadLease {"#,
             }),
             Arc::new(TokioClock),
         );
-        let request = |op: &str, args: serde_json::Value, dry_run: bool, if_rev: Option<&str>| {
-            let mut arguments = serde_json::json!({
+        let request = |op: &str, args: serde_json::Value, dry_run: bool| {
+            let arguments = serde_json::json!({
                 "op": op,
                 "args": args,
                 "dryRun": dry_run,
             });
-            if let Some(if_rev) = if_rev {
-                arguments["ifRev"] = serde_json::json!(if_rev);
-            }
             InvocationRequest::new(
                 ToolIdentity::Run,
                 arguments,
@@ -8642,7 +9141,7 @@ struct ActorLogicalReadLease {"#,
             ),
         ] {
             let preview = runtime
-                .bind(request(op, args.clone(), true, None))
+                .bind(request(op, args.clone(), true))
                 .expect("preview binds without a PlatformXml source set")
                 .prepare()
                 .expect("preview preparation");
@@ -8652,13 +9151,8 @@ struct ActorLogicalReadLease {"#,
             );
 
             let apply = runtime
-                .bind(request(
-                    op,
-                    args,
-                    false,
-                    Some("unica-infobase-export-sha256-v1:test"),
-                ))
-                .expect("revision-bound apply binds without a PlatformXml source set")
+                .bind(request(op, args, false))
+                .expect("execution binds without a prior preview or revision")
                 .prepare()
                 .expect("apply preparation");
             assert_eq!(
@@ -8667,21 +9161,6 @@ struct ActorLogicalReadLease {"#,
             );
         }
 
-        let missing_revision = match runtime.bind(request(
-            "download",
-            serde_json::json!({"state": "working", "output": "dist/main.cf"}),
-            false,
-            None,
-        )) {
-            Err(V5CanonicalPrepareError::Rejected(result)) => result,
-            Ok(_) => panic!("apply without ifRev passed the revision gate"),
-            Err(other) => panic!("apply revision gate returned infrastructure failure: {other:?}"),
-        };
-        assert_eq!(missing_revision.diagnostics[0]["code"], "bad_value");
-        assert!(missing_revision.diagnostics[0]["message"]
-            .as_str()
-            .unwrap()
-            .contains("requires ifRev"));
         assert_eq!(
             preparations.load(Ordering::SeqCst),
             0,
@@ -8746,10 +9225,7 @@ struct ActorLogicalReadLease {"#,
             Err(other) => panic!("ifRev on launch returned infrastructure failure: {other:?}"),
         };
         assert_eq!(fenced.diagnostics[0]["code"], "bad_value");
-        assert!(fenced.diagnostics[0]["message"]
-            .as_str()
-            .unwrap()
-            .contains("takes no ifRev"));
+        assert!(runtime.workspace_actors.entry_len_for_test().unwrap() == 0);
         assert_eq!(
             preparations.load(Ordering::SeqCst),
             0,
@@ -8781,11 +9257,8 @@ struct ActorLogicalReadLease {"#,
             if op != selected {
                 continue;
             }
-            for dry_run in [true, false] {
-                let mut arguments = serde_json::json!({"op":op,"args":args,"dryRun":dry_run});
-                if !dry_run {
-                    arguments["ifRev"] = serde_json::json!("preview-revision");
-                }
+            for dry_run in [false, true] {
+                let arguments = serde_json::json!({"op":op,"args":args,"dryRun":dry_run});
                 let request = InvocationRequest::new(
                     ToolIdentity::Run,
                     arguments,
@@ -8802,54 +9275,38 @@ struct ActorLogicalReadLease {"#,
                     &ExecutionClass::KnownLong(KnownLongReason::ExternalProcess)
                 );
             }
-            let request = InvocationRequest::new(
-                ToolIdentity::Run,
-                serde_json::json!({"op":op,"args":args,"dryRun":false}),
-                workspace.path().display().to_string(),
-                7000,
-            )
-            .unwrap();
-            match runtime.bind(request) {
-                Err(V5CanonicalPrepareError::Rejected(result)) => {
-                    assert_eq!(result.diagnostics[0]["code"], "bad_value", "{op}")
-                }
-                _ => panic!("{op} accepted a mutation without its revision"),
-            }
         }
         assert_eq!(preparations.load(Ordering::SeqCst), 0);
     }
 
     #[test]
-    fn v5_cf_import_prepares_before_source_admission_and_keeps_the_revision_gate() {
+    fn v5_cf_import_prepares_before_source_admission_and_runs_without_a_revision_gate() {
         assert_development_cycle_admission("upload");
     }
 
     #[test]
-    fn v5_infobase_create_prepares_before_source_admission_and_keeps_the_revision_gate() {
+    fn v5_infobase_create_prepares_before_source_admission_and_runs_without_a_revision_gate() {
         assert_development_cycle_admission("infobase.create");
     }
 
     #[test]
-    fn v5_source_import_prepares_before_source_admission_and_keeps_the_revision_gate() {
+    fn v5_source_import_prepares_before_source_admission_and_runs_without_a_revision_gate() {
         assert_development_cycle_admission("push");
     }
 
     #[test]
-    fn v5_source_export_prepares_before_source_admission_and_keeps_the_revision_gate() {
+    fn v5_source_export_prepares_before_source_admission_and_runs_without_a_revision_gate() {
         assert_development_cycle_admission("pull");
     }
 
     #[test]
-    fn v5_development_cycle_prepares_before_source_admission_and_keeps_revision_gate() {
+    fn v5_development_cycle_prepares_before_source_admission_and_runs_without_a_revision_gate() {
         assert_development_cycle_admission("apply");
         assert_development_cycle_admission("reset");
     }
 
     #[test]
-    fn v5_artifact_build_prepares_before_source_admission_and_keeps_the_revision_gate() {
-        // A-7 зонтика #871: сборка CF/CFE из исходников — previewApply с
-        // забором, готовится до admission PlatformXml и известна длинной по
-        // внешнему процессу; применение без `ifRev` отказывает `bad_value`.
+    fn v5_artifact_build_prepares_before_source_admission_and_runs_without_a_revision_gate() {
         let workspace = tempfile::tempdir().expect("temporary make workspace");
         std::fs::write(
             workspace.path().join("v8project.yaml"),
@@ -8877,7 +9334,7 @@ struct ActorLogicalReadLease {"#,
 
         for arguments in [
             serde_json::json!({"op": "make", "args": {"output": "dist/main.cf"}, "dryRun": true}),
-            serde_json::json!({"op": "make", "args": {"output": "dist/main.cf", "sourceSet": "main"}, "dryRun": false, "ifRev": "unica-artifact-build-sha256-v1:test"}),
+            serde_json::json!({"op": "make", "args": {"output": "dist/main.cf", "sourceSet": "main"}, "dryRun": false}),
         ] {
             let bound = runtime
                 .bind(request(arguments))
@@ -8893,20 +9350,6 @@ struct ActorLogicalReadLease {"#,
             );
         }
 
-        let unfenced = match runtime.bind(request(serde_json::json!({
-            "op": "make",
-            "args": {"output": "dist/main.cf"},
-            "dryRun": false,
-        }))) {
-            Err(V5CanonicalPrepareError::Rejected(result)) => result,
-            Ok(_) => panic!("an apply without ifRev was accepted"),
-            Err(other) => panic!("apply without ifRev returned infrastructure failure: {other:?}"),
-        };
-        assert_eq!(unfenced.diagnostics[0]["code"], "bad_value");
-        assert!(unfenced.diagnostics[0]["message"]
-            .as_str()
-            .unwrap()
-            .contains("requires ifRev"));
         let external = match runtime.bind(request(serde_json::json!({
             "op": "make",
             "args": {"output": "dist/report.epf"},
@@ -9052,7 +9495,7 @@ struct ActorLogicalReadLease {"#,
             };
             let (key, lease) = match &self.kind {
                 LongCapabilityKind::Index => invocation
-                    .join_index_work("rlm", "bsl-1", make_work())
+                    .join_index_work("rlm", "bsl-1", "test-build-1", make_work())
                     .map(|(key, lease)| (JoinedCapabilityIdentity::Index(key), lease))
                     .map_err(|_| InvocationFailure::new("index_failed", "index unavailable"))?,
                 LongCapabilityKind::Provider(key) => (
@@ -9081,7 +9524,7 @@ struct ActorLogicalReadLease {"#,
         }
     }
 
-    impl CanonicalInvocationService for RevisionChangingIndexService {
+    impl CanonicalInvocationService for GenerationChangingIndexService {
         fn prepare(
             &self,
             _invocation: &ActorBoundInvocation,
@@ -9098,18 +9541,27 @@ struct ActorLogicalReadLease {"#,
             let producer_entered = self.producer_entered.clone();
             let release = Arc::clone(&self.release);
             let (key, lease) = invocation
-                .join_index_work("rlm", "bsl-1", move |_| {
-                    producers.fetch_add(1, Ordering::SeqCst);
-                    producer_entered
-                        .send(())
-                        .expect("index producer observation");
-                    let (released, wake) = &*release;
-                    let mut released = released.lock().expect("index release");
-                    while !*released {
-                        released = wake.wait(released).expect("index release wait");
-                    }
-                    Ok(())
-                })
+                .join_index_work(
+                    "rlm",
+                    "bsl-1",
+                    if self.first_execution.load(Ordering::SeqCst) {
+                        "test-build-2"
+                    } else {
+                        "test-build-1"
+                    },
+                    move |_| {
+                        producers.fetch_add(1, Ordering::SeqCst);
+                        producer_entered
+                            .send(())
+                            .expect("index producer observation");
+                        let (released, wake) = &*release;
+                        let mut released = released.lock().expect("index release");
+                        while !*released {
+                            released = wake.wait(released).expect("index release wait");
+                        }
+                        Ok(())
+                    },
+                )
                 .map_err(|_| InvocationFailure::new("index_failed", "index unavailable"))?;
             self.joined.send(key).expect("index join observation");
             if !self.first_execution.swap(true, Ordering::SeqCst) {
@@ -9246,7 +9698,7 @@ fn main() {
                 "sourceManifest": true,
                 "tools": [{
                     "name": "v8-runner",
-                    "version": "0.11.2",
+                    "version": RUNNER_VERSION,
                     "binaries": {target: {"binaryPath": relative, "sha256": digest}}
                 }]
             })
@@ -9269,24 +9721,62 @@ fn main() {
         let workspace = std::fs::canonicalize(workspace).unwrap();
         let daemon = LiveV5Daemon::start(canonical_v13_service());
         let owner = daemon.owner();
-        let request = |dry_run: bool, if_rev: Option<&str>| {
-            let mut args = serde_json::json!({"op":"infobase.create","args":{},"dryRun":dry_run});
-            if let Some(rev) = if_rev {
-                args["ifRev"] = serde_json::json!(rev);
+        // A separate workspace executes its first public call directly. The
+        // provider's internal preflight and factual receipt remain required.
+        let direct_workspace = root.path().join("direct-workspace");
+        std::fs::create_dir(&direct_workspace).unwrap();
+        std::fs::copy(
+            workspace.join("v8project.yaml"),
+            direct_workspace.join("v8project.yaml"),
+        )
+        .unwrap();
+        std::fs::write(
+            direct_workspace.join("release.marker"),
+            "allow direct execution",
+        )
+        .unwrap();
+        let direct_request = InvocationRequest::new(
+            ToolIdentity::Run,
+            serde_json::json!({"op":"infobase.create", "args":{}, "dryRun":false}),
+            std::fs::canonicalize(&direct_workspace)
+                .unwrap()
+                .to_string_lossy(),
+            7_000,
+        )
+        .unwrap();
+        let direct_task = daemon.task_id(&owner, &direct_request);
+        match daemon.wait_terminal(&owner, direct_task, Duration::from_secs(20)) {
+            V5DaemonTaskSnapshot::Completed { result, .. } => {
+                assert!(result.ok, "{result:?}");
+                assert!(result.rev.is_none());
+                assert_eq!(result.data.as_ref().unwrap()["state"], "created");
             }
+            other => panic!("execution without a prior preview did not complete: {other:?}"),
+        }
+        assert!(direct_workspace.join("created.marker").exists());
+        let request = |dry_run: bool| {
+            let args = serde_json::json!({"op":"infobase.create","args":{},"dryRun":dry_run});
             InvocationRequest::new(ToolIdentity::Run, args, workspace.to_string_lossy(), 7_000)
                 .unwrap()
         };
-        let preview = daemon.task_id(&owner, &request(true, None));
-        let revision = match daemon.wait_terminal(&owner, preview, Duration::from_secs(20)) {
+        let preview = daemon.task_id(&owner, &request(true));
+        match daemon.wait_terminal(&owner, preview, Duration::from_secs(20)) {
             V5DaemonTaskSnapshot::Completed { result, .. } => {
                 assert!(result.ok, "{result:?}");
-                result.rev.unwrap()
+                assert!(result.rev.is_none());
+                let next = result
+                    .next
+                    .iter()
+                    .find(|next| next["tool"] == "unica.run")
+                    .unwrap();
+                assert_eq!(next["args"]["dryRun"], false);
+                assert!(next["args"].get("ifRev").is_none());
             }
             other => panic!("preview did not complete: {other:?}"),
         };
 
-        let task_id = daemon.task_id(&owner, &request(false, Some(&revision)));
+        assert!(!workspace.join("entered.marker").exists());
+        let task_id = daemon.task_id(&owner, &request(false));
         let entered = workspace.join("entered.marker");
         let deadline = Instant::now() + Duration::from_secs(20);
         while !entered.exists() {
@@ -9583,7 +10073,7 @@ fn main() {
     }
 
     #[test]
-    fn daemon_index_work_separates_worktrees_and_rejects_stale_revision_publication() {
+    fn daemon_index_work_separates_worktrees_and_build_generations() {
         // Distinct actor identities intentionally cannot join one Index key.
         let workspace_parent = tempfile::tempdir().unwrap();
         let roots = (0..2)
@@ -9646,8 +10136,8 @@ fn main() {
         );
         daemon.finish(owner);
 
-        // A new trusted source revision starts a new producer, and the result
-        // staged under the prior revision cannot cross the actor publication fence.
+        // A new build generation starts a separate producer; source edits do not
+        // invalidate an already admitted build result.
         let workspace = tempfile::tempdir().unwrap();
         std::fs::write(workspace.path().join("marker.txt"), "old").unwrap();
         std::fs::write(
@@ -9663,7 +10153,7 @@ fn main() {
         let release = Arc::new((Mutex::new(false), Condvar::new()));
         let (mark_dirty, dirty_request) = mpsc::channel();
         let (dirty_done, dirty_wait) = mpsc::channel();
-        let service = Arc::new(RevisionChangingIndexService {
+        let service = Arc::new(GenerationChangingIndexService {
             producers: Arc::clone(&producers),
             producer_entered,
             joined,
@@ -9697,7 +10187,7 @@ fn main() {
                     Duration::from_millis(OWNERSHIP_CONTRACT_WAIT_MS)
                 )
                 .status(),
-            InvocationStatus::Failed
+            InvocationStatus::Completed
         );
         let second = daemon.wait_terminal(
             &owner,
@@ -9798,7 +10288,7 @@ fn main() {
             "infrastructure::daemon::server::actor_capacity_tests::daemon_long_work_capabilities_handoff_before_wait_and_preserve_exact_ownership",
         );
         run_long_work_contract_obligation(
-            "infrastructure::daemon::server::actor_capacity_tests::daemon_index_work_separates_worktrees_and_rejects_stale_revision_publication",
+            "infrastructure::daemon::server::actor_capacity_tests::daemon_index_work_separates_worktrees_and_build_generations",
         );
         run_long_work_contract_obligation(
             "infrastructure::daemon::server::actor_capacity_tests::daemon_long_work_rejects_replaced_actor_root_before_reuse_or_publication",

@@ -136,7 +136,6 @@ impl PreparedDocumentationSearch {
             mode: if is_locator { "docs-document" } else { "docs" }.to_string(),
             kind: None,
             source_sets: Vec::new(),
-            revisions: Vec::new(),
             result_fingerprint: None,
             page_limit: self.limit,
         };
@@ -619,7 +618,6 @@ mod tests {
             mode: "docs".into(),
             kind: None,
             source_sets: Vec::new(),
-            revisions: Vec::new(),
             result_fingerprint: None,
             page_limit: limit,
         }

@@ -83,16 +83,15 @@ pub struct ResultStore {
     entries: Mutex<HashMap<String, Entry>>,
 }
 
-/// Identity a v0.13 continuation is allowed to resume. The source revision is
-/// deliberately separate: replay against the same question after a change is
-/// `stale_cursor`, while replay against another question is `invalid_cursor`.
+/// A continuation binds the original question and an immutable issued result.
+/// Its snapshot ID is internal and does not track current source contents.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub(crate) struct ViewCursorBinding {
     pub(crate) canonical_at: String,
     pub(crate) projection: String,
     pub(crate) normalized_filter: String,
     pub(crate) source_set_identity: String,
-    pub(crate) source_revision: String,
+    pub(crate) snapshot_id: String,
     pub(crate) page_limit: usize,
 }
 
@@ -184,7 +183,6 @@ pub(crate) struct SearchCursorBinding {
     pub(crate) mode: String,
     pub(crate) kind: Option<String>,
     pub(crate) source_sets: Vec<String>,
-    pub(crate) revisions: Vec<String>,
     /// Names have no source revision lease. Their complete ranked answer and
     /// public coverage instead identify the replayed stream.
     pub(crate) result_fingerprint: Option<String>,
@@ -292,9 +290,7 @@ impl SearchCursorStore {
         {
             return Err(ViewCursorError::Invalid);
         }
-        if binding.revisions != expected.revisions
-            || binding.result_fingerprint != expected.result_fingerprint
-        {
+        if binding.result_fingerprint != expected.result_fingerprint {
             return Err(ViewCursorError::Stale);
         }
         entry.last_read = now;
@@ -361,32 +357,29 @@ impl SearchCursorStore {
 }
 
 fn search_snapshot_charge(binding: &SearchCursorBinding, json_bytes: usize) -> usize {
-    let strings = binding
-        .source_sets
-        .iter()
-        .chain(binding.revisions.iter())
-        .map(String::capacity)
-        .fold(
-            binding
-                .workspace_identity
-                .capacity()
-                .saturating_add(binding.query.capacity())
-                .saturating_add(binding.scope.as_ref().map_or(0, String::capacity))
-                .saturating_add(binding.mode.capacity())
-                .saturating_add(binding.kind.as_ref().map_or(0, String::capacity))
-                .saturating_add(
-                    binding
-                        .result_fingerprint
-                        .as_ref()
-                        .map_or(0, String::capacity),
-                ),
-            usize::saturating_add,
-        );
+    let strings = binding.source_sets.iter().map(String::capacity).fold(
+        binding
+            .workspace_identity
+            .capacity()
+            .saturating_add(binding.query.capacity())
+            .saturating_add(binding.scope.as_ref().map_or(0, String::capacity))
+            .saturating_add(binding.mode.capacity())
+            .saturating_add(binding.kind.as_ref().map_or(0, String::capacity))
+            .saturating_add(
+                binding
+                    .result_fingerprint
+                    .as_ref()
+                    .map_or(0, String::capacity),
+            ),
+        usize::saturating_add,
+    );
     json_bytes.max(
         std::mem::size_of::<SearchCursorSnapshot>()
             .saturating_add(strings)
             .saturating_add(
-                (binding.source_sets.capacity() + binding.revisions.capacity())
+                binding
+                    .source_sets
+                    .capacity()
                     .saturating_mul(std::mem::size_of::<String>()),
             ),
     )
@@ -479,7 +472,7 @@ impl ViewCursorStore {
         &self,
         token: &str,
         expected: &ViewCursorBinding,
-        current_revision: &str,
+        _current_revision: &str,
     ) -> Result<StoredDiskBodyCursor, ViewCursorError> {
         if !token.starts_with("vd1.") {
             return Err(ViewCursorError::Invalid);
@@ -505,9 +498,6 @@ impl ViewCursorStore {
             || binding.page_limit != expected.page_limit
         {
             return Err(ViewCursorError::Invalid);
-        }
-        if binding.source_revision != current_revision {
-            return Err(ViewCursorError::Stale);
         }
         entry.last_read = now;
         Ok(StoredDiskBodyCursor {
@@ -730,7 +720,7 @@ impl ViewCursorStore {
         &self,
         token: &str,
         expected: &ViewCursorBinding,
-        current_revision: &str,
+        _current_revision: &str,
     ) -> Result<StoredViewCursor, ViewCursorError> {
         if !valid_view_cursor_token(token) {
             return Err(ViewCursorError::Invalid);
@@ -755,9 +745,6 @@ impl ViewCursorStore {
             || binding.page_limit != expected.page_limit
         {
             return Err(ViewCursorError::Invalid);
-        }
-        if binding.source_revision != current_revision {
-            return Err(ViewCursorError::Stale);
         }
         entry.last_read = now;
         Ok(StoredViewCursor {
@@ -829,7 +816,7 @@ fn snapshot_charge(
         &binding.projection,
         &binding.normalized_filter,
         &binding.source_set_identity,
-        &binding.source_revision,
+        &binding.snapshot_id,
     ]
     .iter()
     .fold(0usize, |total, value| {
@@ -1146,12 +1133,12 @@ mod tests {
             projection: "Body".to_string(),
             normalized_filter: "{}".to_string(),
             source_set_identity: "main:sha256-source-id".to_string(),
-            source_revision: revision.to_string(),
+            snapshot_id: revision.to_string(),
             page_limit: 1,
         }
     }
 
-    fn search_binding(query: &str, revision: &str) -> SearchCursorBinding {
+    fn search_binding(query: &str, _snapshot_label: &str) -> SearchCursorBinding {
         SearchCursorBinding {
             workspace_identity: "workspace-a".to_owned(),
             query: query.to_owned(),
@@ -1159,14 +1146,13 @@ mod tests {
             mode: "literal".to_owned(),
             kind: None,
             source_sets: vec!["main".to_owned()],
-            revisions: vec![revision.to_owned()],
             result_fingerprint: None,
             page_limit: 20,
         }
     }
 
     #[test]
-    fn search_cursor_binds_the_question_and_revision_and_reissues_a_successor() {
+    fn live_search_cursor_binds_the_question_and_reissues_a_successor() {
         let store = SearchCursorStore::default();
         let binding = search_binding("needle", "rev-1");
         let first = store.insert_first(binding.clone(), 20).unwrap();
@@ -1187,12 +1173,8 @@ mod tests {
             store.read(&first, &other_workspace).err(),
             Some(ViewCursorError::Invalid)
         );
-        let mut stale = binding.clone();
-        stale.revisions[0] = "rev-2".to_owned();
-        assert_eq!(
-            store.read(&first, &stale).err(),
-            Some(ViewCursorError::Stale)
-        );
+        let stale = binding.clone();
+        assert_eq!(store.read(&first, &stale).unwrap().offset, 20);
         let page = store.read(&first, &binding).unwrap();
         assert_eq!(page.offset, 20);
         let second = store.insert_next(&page, 40, &first).unwrap();
@@ -1212,7 +1194,6 @@ mod tests {
         let mut binding = search_binding("Node", "unused");
         binding.mode = "names".to_owned();
         binding.kind = Some("Catalog".to_owned());
-        binding.revisions.clear();
         binding.result_fingerprint = Some("names-sha256-v1:one".to_owned());
         let token = store.insert_first(binding.clone(), 20).unwrap();
 
@@ -1502,7 +1483,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_revision_change_is_stale_but_tampering_and_expiry_are_invalid() {
+    fn source_change_preserves_the_snapshot_but_tampering_and_expiry_are_invalid() {
         let store = ViewCursorStore::default();
         let binding = view_binding("main:Document.Заказ.Module.Object.Body", "rev-1");
         let token = store
@@ -1514,8 +1495,12 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            store.read(&token, &binding, "rev-2").unwrap_err(),
-            ViewCursorError::Stale
+            store
+                .read(&token, &binding, "rev-2")
+                .unwrap()
+                .snapshot
+                .items,
+            vec![json!({"line": 2})]
         );
         assert_eq!(
             store

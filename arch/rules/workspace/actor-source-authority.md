@@ -10,8 +10,7 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/server.rs::provider_binding_and_actor_bound_invocation_cannot_substitute_kind_or_profile
   - crates/unica-coder/src/infrastructure/workspace_actor.rs::capabilities_do_not_cross_distinct_actor_instances_with_equal_identity
   - crates/unica-coder/src/infrastructure/workspace_actor.rs::workspace_actor_capabilities_enforce_identity_physical_and_bounded_publication
-  - crates/unica-coder/src/infrastructure/daemon/server.rs::hidden_v13_logical_lease_survives_the_handoff_window_and_confirms_once
-  - crates/unica-coder/src/infrastructure/workspace_actor.rs::logical_read_publication_lane_wait_honors_existing_cancellation_and_deadline
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::logical_reads_preserve_deadline_without_source_scans_or_mutation_lane_wait
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::actor_owned_reader_never_follows_a_source_set_remap_after_admission
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::actor_owned_configuration_support_and_home_page_sidecars_are_retained
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::actor_owned_typed_form_reader_never_follows_a_source_set_remap
@@ -36,8 +35,8 @@ check:
 каталога не следует вложенным ссылкам. Подмена именованного корня
 другим каталогом отклоняет результат.
 
-Перед выдачей подготовленного результата актор повторно проверяет экземпляр,
-физический корень и ревизию исходников. Проверка проходит в той же очереди,
-что и изменения исходников. Ожидание очереди и ревизии ограничено исходным
-сроком и отменой: после их наступления результат не выдаётся. Передача
-операции в фоновое задание не сбрасывает эти условия.
+Перед выдачей ответа чтения актор проверяет экземпляр и удержанный физический
+корень, сохраняя исходный срок и отмену. Общая ревизия исходников не
+собирается; выдача чтения не ждёт очередь изменения исходников. Подготовленный
+план записи проверяет конкретные входы и публикуется в очереди изменений.
+Передача операции в фоновое задание не сбрасывает срок и отмену.

@@ -474,8 +474,9 @@ fn canonical_stdio_bootstraps_an_empty_workspace_before_address_discovery() {
     assert!(source_attach["description"]
         .as_str()
         .is_some_and(|description| description.contains("v8project.yaml")));
-    assert_eq!(source_attach["previewRequired"], true);
-    assert_eq!(source_attach["ifRevRequiredOnApply"], true);
+    assert_eq!(source_attach["previewRequired"], false);
+    assert_eq!(source_attach["dryRunRequired"], true);
+    assert!(source_attach.get("ifRevRequiredOnApply").is_none());
     assert_eq!(
         source_attach["argsSchema"],
         json!({

@@ -10,6 +10,7 @@ pub struct SourceRevision {
     pub algorithm: String,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceRevisionTrustLoss {
     Startup,
@@ -20,6 +21,7 @@ pub enum SourceRevisionTrustLoss {
     ReconcileFailed,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SourceRevisionState {
     Reconciling {
@@ -32,6 +34,7 @@ pub enum SourceRevisionState {
     },
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceRevisionMachine {
     state: SourceRevisionState,
@@ -39,6 +42,7 @@ pub struct SourceRevisionMachine {
     trust_loss_epoch: u64,
 }
 
+#[cfg(test)]
 impl SourceRevisionMachine {
     pub fn new() -> Self {
         Self {
@@ -123,23 +127,6 @@ impl SourceRevisionMachine {
         self.trust_loss_epoch
     }
 
-    /// Installs a previously validated candidate only while the entire
-    /// admitted machine state (including the trust-loss epoch) is unchanged.
-    /// The candidate was already validated when it was prepared, so success is
-    /// infallible and may be the final observable step of a retained commit.
-    pub(crate) fn install_candidate_if_unchanged(
-        &mut self,
-        expected: &Self,
-        candidate: SourceRevision,
-    ) -> bool {
-        if self != expected {
-            return false;
-        }
-        self.last_trusted = Some(candidate.clone());
-        self.state = SourceRevisionState::Trusted(candidate);
-        true
-    }
-
     pub fn lose_trust(&mut self, reason: SourceRevisionTrustLoss) {
         self.trust_loss_epoch = self.trust_loss_epoch.wrapping_add(1);
         self.state = SourceRevisionState::Untrusted {
@@ -157,6 +144,7 @@ impl SourceRevisionMachine {
     }
 }
 
+#[cfg(test)]
 impl Default for SourceRevisionMachine {
     fn default() -> Self {
         Self::new()

@@ -110,7 +110,7 @@ impl ViewRequest {
         snapshot: &ViewSourceSnapshot,
     ) -> ViewCursorBinding {
         ViewCursorBinding {
-            canonical_at: canonical_at.to_string(),
+            canonical_at: self.at.to_string(),
             projection: canonical_at
                 .segments()
                 .last()
@@ -119,7 +119,7 @@ impl ViewRequest {
                 .to_string(),
             normalized_filter: self.filter.normalized(),
             source_set_identity: snapshot.source_set_identity.clone(),
-            source_revision: snapshot.revision.clone(),
+            snapshot_id: snapshot.revision.clone(),
             page_limit: self.limit,
         }
     }
@@ -290,16 +290,15 @@ impl<A: ViewReadAuthority> ViewService<A> {
     ) -> Result<DomainResult, ViewError> {
         let source_at = supplied.as_ref().map_or(&request.at, |(at, _, _)| *at);
         let snapshot = self.authority.snapshot(source_at)?;
-        if supplied
-            .as_ref()
-            .is_some_and(|(_, expected, _)| snapshot.revision != *expected)
-        {
+        if supplied.as_ref().is_some_and(|(_, expected, _)| {
+            request.cursor.is_none() && snapshot.revision != *expected
+        }) {
             return Err(ViewError::new(
                 RefusalCode::ConcurrentChange,
                 "source changed while the supplied collection was read; retry the question",
             ));
         }
-        let canonical_at = if supplied.is_some() {
+        let canonical_at = if supplied.is_some() || request.cursor.is_some() {
             request.at.clone()
         } else {
             self.authority.canonical_address(&request.at, &snapshot)?
@@ -319,12 +318,6 @@ impl<A: ViewReadAuthority> ViewService<A> {
                     &stored.snapshot.binding,
                     &mut || self.authority.read_checkpoint(),
                 )?;
-                if self.authority.snapshot(source_at)? != snapshot {
-                    return Err(ViewError::new(
-                        RefusalCode::StaleCursor,
-                        "source revision changed while the Body page was prepared",
-                    ));
-                }
                 let next_cursor = if stored.snapshot.body.has_more(next) {
                     Some(
                         self.cursors
@@ -608,7 +601,7 @@ fn collection_result(
     let mut result = DomainResult::success("logical collection page resolved");
     result.at = Some(binding.canonical_at.clone());
     result.data = Some(Value::Object(page));
-    result.rev = Some(binding.source_revision.clone());
+    result.rev = Some(binding.snapshot_id.clone());
     result.cursor = cursor;
     result.page = Some(serde_json::json!({"stoppedBy": stopped_by}));
     Ok(result)
@@ -1095,12 +1088,12 @@ mod tests {
             "rev-1",
             None,
         );
-        assert!(!stale.ok);
-        assert!(stale.summary.contains("source changed"));
+        assert!(stale.ok);
+        assert_eq!(stale, second);
     }
 
     #[test]
-    fn cursor_replay_is_bound_and_revision_change_is_stale() {
+    fn cursor_replay_keeps_the_issued_snapshot_after_source_change() {
         let authority = FixtureAuthority::new();
         let service = ViewService::new(authority, ViewCursorStore::default());
         let first = service.view(
@@ -1120,8 +1113,8 @@ mod tests {
                 .unwrap()
                 .with_cursor(cursor),
         );
-        assert!(!stale.ok);
-        assert_eq!(stale.diagnostics[0]["code"], "stale_cursor");
+        assert!(stale.ok, "{stale:?}");
+        assert_eq!(stale.data.as_ref().unwrap()["items"][0]["line"], 2);
 
         let invalid = service.view(
             ViewRequest::new("main:Document.Заказ.Module.Object.Body")
