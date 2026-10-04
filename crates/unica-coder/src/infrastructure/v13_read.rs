@@ -1769,7 +1769,11 @@ impl LogicalViewReadAuthority<'_> {
             // Text, HTML, binary, add-in and appearance templates have no
             // addressable interior: addressing stops at the template.
             Ok(MetadataChildProfile::Template(_)) => Vec::new(),
-            Ok(MetadataChildProfile::Form | MetadataChildProfile::Command) => {
+            Ok(
+                MetadataChildProfile::Form
+                | MetadataChildProfile::OrdinaryForm
+                | MetadataChildProfile::Command,
+            ) => {
                 return Err(ViewError::detailed(
                     RefusalDetail::SourceUnreadable,
                     "template registry points to a non-template descriptor",
