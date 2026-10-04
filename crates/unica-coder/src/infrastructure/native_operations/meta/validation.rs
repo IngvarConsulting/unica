@@ -19,7 +19,9 @@ use crate::domain::metadata::{
 };
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::bsl_outline::exact_bsl_method_facts;
+use crate::infrastructure::bsl_outline::{
+    exact_bsl_method_facts, exported_bsl_procedure_matches, BslProcedureRequirement,
+};
 use crate::infrastructure::platform_xml_owner::{
     root_version_literal, PlatformXmlRootExpectation, DCS_ROOT, MXL_ROOT,
 };
@@ -881,7 +883,9 @@ fn validate_child_resource(kind: MetadataChildResourceKind, bytes: &[u8]) -> Res
         // Retained payload is carried verbatim and never interpreted, so there
         // is no content contract to check — only the path shape, which
         // `validate_one_child_footprint` re-derives.
-        MetadataChildResourceKind::Retained => Ok(()),
+        MetadataChildResourceKind::Retained | MetadataChildResourceKind::OrdinaryFormContent => {
+            Ok(())
+        }
     }
 }
 
@@ -1061,8 +1065,10 @@ impl ClosedChildKind {
     fn matches(self, profile: MetadataChildProfile) -> bool {
         matches!(
             (self, profile),
-            (Self::Form, MetadataChildProfile::Form)
-                | (Self::Template, MetadataChildProfile::Template(_))
+            (
+                Self::Form,
+                MetadataChildProfile::Form | MetadataChildProfile::OrdinaryForm
+            ) | (Self::Template, MetadataChildProfile::Template(_))
                 | (Self::Command, MetadataChildProfile::Command)
         )
     }
@@ -1344,7 +1350,7 @@ fn parse_child_artifact(
     };
     let name = exact_child_name(*properties, kind)?;
     let profile = match kind {
-        "Form" => MetadataChildProfile::Form,
+        "Form" => form_profile(*properties)?,
         "Command" => MetadataChildProfile::Command,
         "Template" => {
             let template_types =
@@ -1367,6 +1373,24 @@ fn parse_child_artifact(
     )
     .map_err(|_| "child descriptor identity is not representable".to_string())?;
     Ok(ClosedChildDescriptor { child, profile })
+}
+
+fn form_profile(properties: roxmltree::Node<'_, '_>) -> Result<MetadataChildProfile, String> {
+    let types = exact_mdclasses_children(properties, "FormType", "Form descriptor")?;
+    let form_type = match types.as_slice() {
+        // Preserve abbreviated descriptors accepted by the existing reader.
+        [] => return Ok(MetadataChildProfile::Form),
+        [value] => *value,
+        _ => return Err("Form descriptor must contain at most one FormType".into()),
+    };
+    if form_type.children().any(|child| child.is_element()) {
+        return Err("FormType must be a scalar".into());
+    }
+    match meta_info_inner_text(form_type).trim() {
+        "Managed" => Ok(MetadataChildProfile::Form),
+        "Ordinary" => Ok(MetadataChildProfile::OrdinaryForm),
+        _ => Err("Form descriptor has unsupported FormType".into()),
+    }
 }
 
 fn exact_child_name(properties: roxmltree::Node<'_, '_>, kind: &str) -> Result<String, String> {
@@ -1407,9 +1431,10 @@ fn child_descriptor_role_matches(
     profile: MetadataChildProfile,
 ) -> bool {
     match (role, profile) {
-        (MetadataResourceRole::Form { owner, name }, MetadataChildProfile::Form) => {
-            child.as_str() == format!("{owner}.Form.{name}")
-        }
+        (
+            MetadataResourceRole::Form { owner, name },
+            MetadataChildProfile::Form | MetadataChildProfile::OrdinaryForm,
+        ) => child.as_str() == format!("{owner}.Form.{name}"),
         (MetadataResourceRole::Command { owner, name }, MetadataChildProfile::Command) => {
             child.as_str() == format!("{owner}.Command.{name}")
         }
@@ -1492,6 +1517,9 @@ fn validate_one_child_footprint(
     }
 
     let mut expected_kinds = match expected.profile {
+        MetadataChildProfile::OrdinaryForm => {
+            vec![(MetadataChildResourceKind::OrdinaryFormContent, 0)]
+        }
         MetadataChildProfile::Form => {
             let mut kinds = vec![(MetadataChildResourceKind::FormContent, 0)];
             if module_count == 1 {
@@ -3721,10 +3749,10 @@ pub(super) fn meta_validate_check_method_reference(
         };
         let content = std::str::from_utf8(&module.bytes)
             .expect("module encodings are validated before semantic reporting");
-        if !meta_validate_bsl_has_export(content, proc_name) {
-            report.error(format!(
-                "13. {md_type}.{property}: procedure '{proc_name}' not found as exported in CommonModule '{module_name}'"
-            ));
+        if let Err(reason) =
+            meta_validate_method_signature(content, md_type, property, module_name, proc_name)
+        {
+            report.error(reason);
             return;
         }
         report.ok(format!("13. Method reference: {property} = '{method_ref}'"));
@@ -3750,10 +3778,10 @@ pub(super) fn meta_validate_check_method_reference(
         .join("Module.bsl");
     if bsl_path.exists() {
         if let Ok(content) = read_utf8_sig(&bsl_path) {
-            if !meta_validate_bsl_has_export(&content, proc_name) {
-                report.warn(format!(
-                    "13. {md_type}.{property}: procedure '{proc_name}' not found as exported in CommonModule '{module_name}'"
-                ));
+            if let Err(reason) =
+                meta_validate_method_signature(&content, md_type, property, module_name, proc_name)
+            {
+                report.warn(reason);
                 return;
             }
         }
@@ -3805,6 +3833,39 @@ pub(super) fn meta_validate_check_document_journal_columns(
         ));
     } else if columns.is_empty() && empty_ref_count == 0 {
         report.ok("14. DocumentJournal Columns: none");
+    }
+}
+
+fn meta_validate_method_signature(
+    content: &str,
+    md_type: &str,
+    property: &str,
+    module_name: &str,
+    proc_name: &str,
+) -> Result<(), String> {
+    let scheduled = md_type == "ScheduledJob";
+    let found = if scheduled {
+        exported_bsl_procedure_matches(
+            content.trim_start_matches('\u{feff}'),
+            proc_name,
+            BslProcedureRequirement::CallableWithoutArguments,
+        ).map_err(|reason| format!(
+            "13. {md_type}.{property}: cannot verify procedure '{proc_name}' in CommonModule '{module_name}': {reason}"
+        ))?
+    } else {
+        meta_validate_bsl_has_export(content, proc_name)
+    };
+    if found {
+        Ok(())
+    } else {
+        let signature = if scheduled {
+            " and callable without arguments"
+        } else {
+            ""
+        };
+        Err(format!(
+            "13. {md_type}.{property}: procedure '{proc_name}' not found as exported{signature} in CommonModule '{module_name}'"
+        ))
     }
 }
 
@@ -4537,6 +4598,65 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_form_validator_rederives_profile_resource_kind_and_ordinal() {
+        let descriptor = typed_child_xml("Form", "Main", None).replace(
+            "</Properties>",
+            "<FormType>Ordinary</FormType></Properties>",
+        );
+        let mut subject = closed_child_subject(
+            "Form",
+            "Main",
+            None,
+            &descriptor,
+            vec![
+                MetadataChildDirectoryKind::Root,
+                MetadataChildDirectoryKind::Extension,
+            ],
+            vec![(MetadataChildResourceKind::OrdinaryFormContent, 0)],
+        );
+        subject.child_footprints[0].profile = MetadataChildProfile::OrdinaryForm;
+        subject.resources.last_mut().unwrap().bytes = vec![0xff, 0, 0x81];
+        assert!(closed_child_diagnostics(&subject).is_empty());
+
+        let mut forged = subject.clone();
+        forged.child_footprints[0].profile = MetadataChildProfile::Form;
+        assert!(!closed_child_diagnostics(&forged).is_empty());
+
+        let mut forged = subject.clone();
+        let MetadataResourceRole::ChildResource { ordinal, .. } =
+            &mut forged.resources.last_mut().unwrap().role
+        else {
+            panic!("fixture child resource")
+        };
+        *ordinal = 1;
+        assert!(!closed_child_diagnostics(&forged).is_empty());
+
+        let mut forged = subject.clone();
+        let MetadataResourceRole::ChildResource { kind, .. } =
+            &mut forged.resources.last_mut().unwrap().role
+        else {
+            panic!("fixture child resource")
+        };
+        *kind = MetadataChildResourceKind::FormContent;
+        forged.resources.last_mut().unwrap().bytes =
+            br#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"/>"#.to_vec();
+        assert!(!closed_child_diagnostics(&forged).is_empty());
+
+        let mut forged = subject.clone();
+        forged
+            .resources
+            .push(forged.resources.last().unwrap().clone());
+        assert!(!closed_child_diagnostics(&forged).is_empty());
+
+        let mut forged = subject;
+        forged.resources[1].bytes = typed_child_descriptor(&descriptor.replace(
+            "<FormType>Ordinary</FormType>",
+            "<FormType>Managed</FormType>",
+        ));
+        assert!(!closed_child_diagnostics(&forged).is_empty());
+    }
+
+    #[test]
     fn retained_form_content_rejects_wrong_namespace_and_export_version() {
         for (label, bytes) in [
             (
@@ -4798,6 +4918,7 @@ mod tests {
                     MetadataChildResourceKind::FormContent => br#"<?xml version="1.0" encoding="UTF-8"?><Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"/>"#.to_vec(),
                     MetadataChildResourceKind::TemplateContent { .. } => b"text".to_vec(),
                     MetadataChildResourceKind::Module
+                    | MetadataChildResourceKind::OrdinaryFormContent
                     | MetadataChildResourceKind::Retained => unreachable!(),
                 };
             }
@@ -6219,6 +6340,46 @@ mod tests {
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.message.contains("not found as exported")));
+    }
+
+    #[test]
+    fn scheduled_job_method_validation_uses_exact_exported_procedure_without_required_arguments() {
+        for (case, method, source, expected) in [
+            ("zero", "Run", "Procedure Run() Export\nEndProcedure\n", MetaValidationStatus::Passed),
+            ("optional-en", "Run", "Procedure Run(Profile = Undefined, Manual = False) Export\nEndProcedure\n", MetaValidationStatus::Passed),
+            ("optional-ru-multiline", "Запустить", "Процедура Запустить(\n    Профиль = Неопределено,\n    РучнойЗапуск = Ложь\n) Экспорт\nКонецПроцедуры\n", MetaValidationStatus::Passed),
+            ("optional-en-multiline", "Run", "Procedure Run(\n    Profile = Undefined,\n    Manual = False\n) Export\nEndProcedure\n", MetaValidationStatus::Passed),
+            ("case-insensitive", "run", "PROCEDURE RUN(Value = 0) EXPORT\nENDPROCEDURE\n", MetaValidationStatus::Passed),
+            ("unicode-case", "запустить", "Процедура ЗАПУСТИТЬ(Ручной = Ложь) Экспорт\nКонецПроцедуры\n", MetaValidationStatus::Passed),
+            ("required", "Run", "Procedure Run(Profile) Export\nEndProcedure\n", MetaValidationStatus::Failed),
+            ("mixed", "Run", "Procedure Run(Profile, Manual = False) Export\nEndProcedure\n", MetaValidationStatus::Failed),
+            ("private", "Run", "Procedure Run(Profile = Undefined)\nEndProcedure\n", MetaValidationStatus::Failed),
+            ("function", "Run", "Function Run(Profile = Undefined) Export\nReturn True;\nEndFunction\n", MetaValidationStatus::Failed),
+            ("prefix-lookalike", "Run", "Procedure RunAnother() Export\nEndProcedure\n", MetaValidationStatus::Failed),
+            ("comment-lookalike", "Run", "// Procedure Run() Export\nProcedure Other() Export\nEndProcedure\n", MetaValidationStatus::Failed),
+            ("malformed", "Run", "Procedure Run(Profile = ) Export\nEndProcedure\n", MetaValidationStatus::Failed),
+        ] {
+            let descriptor = scheduled_job("Nightly", &format!("CommonModule.Target.{method}"));
+            let registration = owner(&[("ScheduledJob", "Nightly"), ("CommonModule", "Target")]);
+            let target_module = common_module("Target");
+            let mut candidate = subject(
+                "ScheduledJob.Nightly",
+                Some(&descriptor),
+                &registration,
+                &[("CommonModule.Target", &target_module)],
+            );
+            candidate.resources.push(image(
+                MetadataResourceRole::Module { owner: address("CommonModule.Target") },
+                source.as_bytes().to_vec(),
+            ));
+            let before: Vec<_> = candidate.resources.iter().map(|resource| resource.bytes.clone()).collect();
+            let result = MetadataValidator.validate(&candidate, &context());
+            assert_eq!(result.status, expected, "{case}: {source}\n{:?}", result.diagnostics);
+            if expected == MetaValidationStatus::Failed {
+                assert!(result.diagnostics.iter().any(|diagnostic| diagnostic.severity == MetaDiagnosticSeverity::Error), "{case}: refusal needs an error diagnostic");
+            }
+            assert_eq!(candidate.resources.iter().map(|resource| resource.bytes.clone()).collect::<Vec<_>>(), before, "{case}: validation must not rewrite source evidence");
+        }
     }
 
     #[test]

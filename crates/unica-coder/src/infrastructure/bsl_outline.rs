@@ -262,20 +262,49 @@ pub(crate) fn exact_bsl_method_facts(
         }))
 }
 
-/// Select the first exported procedure with the requested positional arity
-/// from the same AST used by outline and exact handler validation.
+#[derive(Clone, Copy)]
+pub(crate) enum BslProcedureRequirement {
+    ExactArity(usize),
+    CallableWithoutArguments,
+}
+
+impl BslProcedureRequirement {
+    fn matches(self, method: &CodeOutlineMethod) -> bool {
+        method.kind == CodeOutlineMethodKind::Procedure
+            && method.is_export
+            && match self {
+                Self::ExactArity(count) => method.parameters.len() == count,
+                Self::CallableWithoutArguments => method
+                    .parameters
+                    .iter()
+                    .all(|parameter| parameter.default_value.is_some()),
+            }
+    }
+}
+
+pub(crate) fn exported_bsl_procedure_matches(
+    text: &str,
+    name: &str,
+    requirement: BslProcedureRequirement,
+) -> Result<bool, String> {
+    let (methods, _) = parse_module(text)?;
+    let folded = name.to_lowercase();
+    Ok(methods
+        .iter()
+        .any(|method| method.name.to_lowercase() == folded && requirement.matches(method)))
+}
+
+/// Select an exported procedure through the same AST used by outline and
+/// exact handler validation. Scheduled jobs may omit defaulted parameters;
+/// event subscriptions retain their exact positional signature.
 pub(crate) fn first_exported_bsl_procedure(
     text: &str,
-    parameter_count: usize,
+    requirement: BslProcedureRequirement,
 ) -> Result<Option<String>, String> {
     let (methods, _) = parse_module(text)?;
     Ok(methods
         .into_iter()
-        .find(|method| {
-            method.kind == CodeOutlineMethodKind::Procedure
-                && method.is_export
-                && method.parameters.len() == parameter_count
-        })
+        .find(|method| requirement.matches(method))
         .map(|method| method.name))
 }
 
@@ -613,6 +642,61 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn procedure_selection_distinguishes_optional_arguments_from_exact_arity() {
+        use super::{first_exported_bsl_procedure, BslProcedureRequirement};
+        let callable = BslProcedureRequirement::CallableWithoutArguments;
+        for source in [
+            "Procedure Run() Export\nEndProcedure",
+            "Procedure Run(Val Flag = False, Text = \"a,b=c\") Export\nEndProcedure",
+            "Процедура Run(\nЗнач Профиль = Неопределено,\nРучной = Ложь) Экспорт\nКонецПроцедуры",
+        ] {
+            assert_eq!(
+                first_exported_bsl_procedure(source, callable)
+                    .unwrap()
+                    .as_deref(),
+                Some("Run")
+            );
+        }
+        for source in [
+            "Procedure Run(Required) Export\nEndProcedure",
+            "Procedure Run(Required, Optional = False) Export\nEndProcedure",
+            "Procedure Run(Optional = False)\nEndProcedure",
+            "Function Run(Optional = False) Export\nReturn False;\nEndFunction",
+            "// Procedure Run(Optional = False) Export\n",
+        ] {
+            assert_eq!(
+                first_exported_bsl_procedure(source, callable).unwrap(),
+                None,
+                "{source}"
+            );
+        }
+        assert!(first_exported_bsl_procedure(
+            "Procedure Run(Value =) Export\nEndProcedure",
+            callable
+        )
+        .is_err());
+        let three_optional = "Procedure Run(One = 1, Two = 2, Three = 3) Export\nEndProcedure";
+        assert_eq!(
+            first_exported_bsl_procedure(three_optional, callable)
+                .unwrap()
+                .as_deref(),
+            Some("Run")
+        );
+        assert_eq!(
+            first_exported_bsl_procedure(three_optional, BslProcedureRequirement::ExactArity(2))
+                .unwrap(),
+            None
+        );
+        let two_optional = "Procedure Run(One = 1, Two = 2) Export\nEndProcedure";
+        assert_eq!(
+            first_exported_bsl_procedure(two_optional, BslProcedureRequirement::ExactArity(2))
+                .unwrap()
+                .as_deref(),
+            Some("Run")
+        );
+    }
 
     struct Workspace {
         root: PathBuf,

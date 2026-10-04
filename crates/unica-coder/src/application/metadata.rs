@@ -990,6 +990,9 @@ fn parse_property_changes(
             .find(|spec| spec.public_name == name)
             .ok_or_else(|| invalid(&field, unknown_metadata_property_message(kind, name)))?;
         let value = match spec.value_kind {
+            MetaPropertyValueKind::Type => {
+                MetaPropertyValue::Type(parse_metadata_type(value, &field)?)
+            }
             MetaPropertyValueKind::String => value
                 .as_str()
                 .map(|value| MetaPropertyValue::String(value.to_string()))
@@ -1924,6 +1927,7 @@ fn host_visible_operation_schema() -> Value {
         let entry = root_properties
             .entry(spec.public_name.to_string())
             .or_insert_with(|| match spec.value_kind {
+                MetaPropertyValueKind::Type => metadata_type_schema(),
                 MetaPropertyValueKind::String => json!({"type": "string"}),
                 MetaPropertyValueKind::Boolean => json!({"type": "boolean"}),
                 MetaPropertyValueKind::UnsignedInteger => {
@@ -2748,6 +2752,152 @@ mod tests {
     /// assertions target the union and kind assertions target the parser.
     fn published_operation_union(operation: MetadataOperation) -> Value {
         metadata_input_schema(operation)["properties"]["operations"]["items"].clone()
+    }
+
+    #[test]
+    fn constant_type_property_is_accepted_by_existing_add_and_edit_operations() {
+        for (operation, mut call) in [
+            (
+                MetadataOperation::Add,
+                json!({"sourceSet":"main", "kind":"Constant", "name":"Enabled"}),
+            ),
+            (
+                MetadataOperation::Edit,
+                json!({"sourceSet":"main", "metadataPath":"Constant.Enabled"}),
+            ),
+        ] {
+            call["operations"] = json!([{"op":"setProperties", "values":{"Type":{"variants":[{"kind":"boolean"}]}}}]);
+            let parsed = parse_metadata_request(operation, call.as_object().unwrap())
+                .unwrap_or_else(|error| {
+                    panic!("{operation:?}: structured Constant.Type rejected: {error:?}")
+                });
+            let operations = match parsed {
+                MetadataRequest::Add(request) => request.operations,
+                MetadataRequest::Edit(request) => request.operations,
+                MetadataRequest::Info(_) => panic!("mutation parsed as info"),
+            };
+            assert!(
+                matches!(&operations[..], [MetaEditOperation::SetProperties { values }] if values.entries().len() == 1)
+            );
+            let schema = metadata_input_schema(operation);
+            assert!(
+                jsonschema::validator_for(&schema).unwrap().is_valid(&call),
+                "{operation:?}: published schema rejected structured Constant.Type"
+            );
+        }
+    }
+
+    #[test]
+    fn constant_type_property_preserves_reference_type_through_add_and_edit_schema() {
+        for (operation, mut call) in [
+            (
+                MetadataOperation::Add,
+                json!({"sourceSet":"main", "kind":"Constant", "name":"DefaultItem"}),
+            ),
+            (
+                MetadataOperation::Edit,
+                json!({"sourceSet":"main", "metadataPath":"Constant.DefaultItem"}),
+            ),
+        ] {
+            call["operations"] = json!([{"op":"setProperties", "values":{"Type":{"variants":[{"kind":"reference", "metadataPath":"Catalog.Items"}]}}}]);
+            let schema = metadata_input_schema(operation);
+            assert!(
+                jsonschema::validator_for(&schema).unwrap().is_valid(&call),
+                "{operation:?}"
+            );
+            let parsed = parse_metadata_request(operation, call.as_object().unwrap()).unwrap();
+            let operations = match parsed {
+                MetadataRequest::Add(request) => request.operations,
+                MetadataRequest::Edit(request) => request.operations,
+                MetadataRequest::Info(_) => panic!("mutation parsed as info"),
+            };
+            let [MetaEditOperation::SetProperties { values }] = &operations[..] else {
+                panic!("Type must stay in existing SetProperties operation");
+            };
+            let expected = MetadataType::new(vec![MetadataTypeVariant::Reference {
+                metadata_path: MetadataAddress::parse(
+                    PLATFORM_XML_8_3_27_FORMAT_2_20,
+                    "Catalog.Items",
+                )
+                .unwrap(),
+            }])
+            .unwrap();
+            assert!(
+                matches!(values.entries(), [(_, MetaPropertyValue::Type(actual))] if actual == &expected)
+            );
+        }
+    }
+
+    #[test]
+    fn constant_type_property_schema_and_parser_reject_non_closed_type_values() {
+        let invalid_types = [
+            json!("xs:boolean"),
+            json!({"variants":[]}),
+            json!({"variants":[{"kind":"boolean"}], "unknown":true}),
+            json!({"variants":[{"kind":"boolean", "unknown":true}]}),
+            json!({"variants":[{"kind":"notAType"}]}),
+            json!({"variants":[{"kind":"reference", "metadataPath":"Catalog.Items.Form.Main"}]}),
+        ];
+        for (operation, base) in [
+            (
+                MetadataOperation::Add,
+                json!({"sourceSet":"main", "kind":"Constant", "name":"Enabled"}),
+            ),
+            (
+                MetadataOperation::Edit,
+                json!({"sourceSet":"main", "metadataPath":"Constant.Enabled"}),
+            ),
+        ] {
+            let schema = metadata_input_schema(operation);
+            let validator = jsonschema::validator_for(&schema).unwrap();
+            for value in &invalid_types {
+                let mut call = base.clone();
+                call["operations"] = json!([{"op":"setProperties", "values":{"Type":value}}]);
+                assert!(
+                    !validator.is_valid(&call),
+                    "{operation:?}: schema accepted {value}"
+                );
+                let error = parse_metadata_request(operation, call.as_object().unwrap())
+                    .expect_err("malformed Constant.Type must be refused");
+                assert!(
+                    error.diagnostics.iter().any(|item| item
+                        .field
+                        .as_deref()
+                        .is_some_and(|field| field.starts_with("values.Type"))),
+                    "{operation:?}/{value}: {:?}",
+                    error.diagnostics
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn constant_type_property_does_not_become_a_property_of_other_owners() {
+        for kind in ["Catalog", "Document", "CommonModule"] {
+            for (operation, mut call) in [
+                (
+                    MetadataOperation::Add,
+                    json!({"sourceSet":"main", "kind":kind, "name":"Sample"}),
+                ),
+                (
+                    MetadataOperation::Edit,
+                    json!({"sourceSet":"main", "metadataPath":format!("{kind}.Sample")}),
+                ),
+            ] {
+                call["operations"] = json!([{"op":"setProperties", "values":{"Type":{"variants":[{"kind":"boolean"}]}}}]);
+                // The published operation schema is intentionally owner-agnostic.
+                let error = parse_metadata_request(operation, call.as_object().unwrap())
+                    .expect_err("only Constant owns the root Type property");
+                assert!(
+                    error
+                        .diagnostics
+                        .iter()
+                        .any(|item| item.field.as_deref() == Some("values.Type")),
+                    "{operation:?}/{kind}: {:?}",
+                    error.diagnostics
+                );
+            }
+        }
     }
 
     /// The published `values` object of the `setProperties` union branch.

@@ -1,4 +1,4 @@
-use super::{MetaObservedPropertyValue, MetaPropertyKey, MetaPropertyValueKind, MetadataKind};
+use super::{MetaObservedPropertyValue, MetaPropertyKey, MetadataKind};
 use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -208,7 +208,7 @@ impl MetaInfoPropertyProfile {
                     value_kind: if mutation_key == MetaPropertyKey::Synonym {
                         MetaInfoPropertyValueKind::LegacyLocalizedString
                     } else {
-                        mutation_value_kind(mutation_key).into()
+                        mutation_value_kind(mutation_key)
                     },
                 });
             }
@@ -220,16 +220,6 @@ impl MetaInfoPropertyProfile {
             });
         }
         None
-    }
-}
-
-impl From<MetaPropertyValueKind> for MetaInfoPropertyValueKind {
-    fn from(value: MetaPropertyValueKind) -> Self {
-        match value {
-            MetaPropertyValueKind::String => Self::String,
-            MetaPropertyValueKind::Boolean => Self::Boolean,
-            MetaPropertyValueKind::UnsignedInteger => Self::UnsignedInteger,
-        }
     }
 }
 
@@ -305,7 +295,7 @@ fn mutation_compatible_read_key(xml_name: &str) -> Option<(&'static str, MetaPro
     })
 }
 
-fn mutation_value_kind(key: MetaPropertyKey) -> MetaPropertyValueKind {
+fn mutation_value_kind(key: MetaPropertyKey) -> MetaInfoPropertyValueKind {
     use MetaPropertyKey::*;
     if matches!(
         key,
@@ -335,7 +325,7 @@ fn mutation_value_kind(key: MetaPropertyKey) -> MetaPropertyValueKind {
             | Autonumbering
             | UseStandardCommands
     ) {
-        MetaPropertyValueKind::Boolean
+        MetaInfoPropertyValueKind::Boolean
     } else if matches!(
         key,
         LevelCount
@@ -349,9 +339,9 @@ fn mutation_value_kind(key: MetaPropertyKey) -> MetaPropertyValueKind {
             | CodeLength
             | DescriptionLength
     ) {
-        MetaPropertyValueKind::UnsignedInteger
+        MetaInfoPropertyValueKind::UnsignedInteger
     } else {
-        MetaPropertyValueKind::String
+        MetaInfoPropertyValueKind::String
     }
 }
 
@@ -360,7 +350,8 @@ fn mutation_property_is_observable(kind: MetadataKind, key: MetaPropertyKey) -> 
     use MetadataKind::*;
 
     match key {
-        ClientOrdinaryApplication => false,
+        // Constant Type is observed through MetaInfoDetails, not scalar properties.
+        Type | ClientOrdinaryApplication => false,
         Synonym | Comment => true,
         ActionPeriod | BasePeriod => kind == CalculationRegister,
         ActionPeriodUse | DependenceOnCalculationTypes => kind == ChartOfCalculationTypes,
@@ -793,11 +784,20 @@ fn additional_value_kind(kind: MetadataKind, name: &str) -> MetaInfoPropertyValu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::metadata::METADATA_PROPERTY_SPECS;
+    use crate::domain::metadata::{MetaPropertyValueKind, METADATA_PROPERTY_SPECS};
 
     #[test]
     fn read_profile_preserves_every_published_writer_property_without_using_it_at_runtime() {
         for writer in METADATA_PROPERTY_SPECS {
+            // Structured Constant Type is covered by the canonical create/edit/view
+            // round trip; exposing it here would duplicate the details projection.
+            if writer.key == MetaPropertyKey::Type {
+                assert_eq!(writer.allowed_kinds, &[MetadataKind::Constant]);
+                assert!(META_INFO_PROPERTY_PROFILE
+                    .resolve(MetadataKind::Constant, "Type")
+                    .is_none());
+                continue;
+            }
             for kind in MetadataKind::ALL {
                 if !writer.allowed_kinds.contains(kind) {
                     continue;
@@ -815,7 +815,16 @@ mod tests {
                 let expected_kind = if writer.key == MetaPropertyKey::Synonym {
                     MetaInfoPropertyValueKind::LegacyLocalizedString
                 } else {
-                    writer.value_kind.into()
+                    match writer.value_kind {
+                        MetaPropertyValueKind::String => MetaInfoPropertyValueKind::String,
+                        MetaPropertyValueKind::Boolean => MetaInfoPropertyValueKind::Boolean,
+                        MetaPropertyValueKind::UnsignedInteger => {
+                            MetaInfoPropertyValueKind::UnsignedInteger
+                        }
+                        MetaPropertyValueKind::Type => {
+                            unreachable!("structured Type checked above")
+                        }
+                    }
                 };
                 assert_eq!(
                     observed.value_kind,
