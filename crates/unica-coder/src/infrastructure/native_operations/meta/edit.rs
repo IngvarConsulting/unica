@@ -1654,9 +1654,12 @@ pub(super) fn observe_typed_child_resources(
             let footprint_profile = (|| {
                 let mut profile = typed_child_footprint_profile(collection, template_type, &child)?;
                 if collection == MetaCollection::Forms {
-                    let parsed =
-                        super::validation::parse_child_profile_from_bytes(&descriptor, owner)
-                            .map_err(|message| typed_child_resource_failure(&child, &message))?;
+                    let parsed = super::validation::parse_child_profile_from_bytes(
+                        &descriptor,
+                        owner,
+                        super::validation::MetadataAdmission::Read,
+                    )
+                    .map_err(|message| typed_child_resource_failure(&child, &message))?;
                     let Some((parsed_child, parsed_profile)) = parsed else {
                         return Err(typed_child_resource_failure(
                             &child,

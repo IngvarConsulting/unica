@@ -134,6 +134,14 @@ struct MetaValidationReferenceInputs<'a> {
     proof_subject: Option<&'a MetadataValidationSubject>,
 }
 
+/// Reading proves the known structure; compatibility is reported by check.
+/// Publication requires the active export profile as well as that structure.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MetadataAdmission {
+    Read,
+    Writable,
+}
+
 pub(crate) struct MetadataValidator;
 
 impl MetadataValidator {
@@ -142,15 +150,23 @@ impl MetadataValidator {
         subject: &MetadataValidationSubject,
         _context: &WorkspaceContext,
     ) -> MetadataValidationResult {
-        self.evaluate(subject, &MetaValidationOptions { max_errors: 30 })
+        self.evaluate(
+            subject,
+            &MetaValidationOptions { max_errors: 30 },
+            MetadataAdmission::Writable,
+        )
     }
 
     pub(crate) fn validate_complete_read(
         &self,
         subject: &MetadataValidationSubject,
-        context: &WorkspaceContext,
+        _context: &WorkspaceContext,
     ) -> MetadataValidationResult {
-        let mut result = self.validate(subject, context);
+        let mut result = self.evaluate(
+            subject,
+            &MetaValidationOptions { max_errors: 30 },
+            MetadataAdmission::Read,
+        );
         let mut completeness = complete_read_proof_diagnostics(subject);
         if let MetadataEvidenceAvailability::Unavailable(diagnostics) = &subject.registrar_evidence
         {
@@ -172,6 +188,7 @@ impl MetadataValidator {
         &self,
         subject: &MetadataValidationSubject,
         options: &MetaValidationOptions,
+        admission: MetadataAdmission,
     ) -> MetadataValidationResult {
         let mut diagnostics = Vec::new();
         let descriptor_indices = subject
@@ -282,7 +299,7 @@ impl MetadataValidator {
             &language_images,
             &mut diagnostics,
         );
-        validate_child_footprints(subject, &mut diagnostics);
+        validate_child_footprints(subject, &mut diagnostics, admission);
 
         if diagnostics
             .iter()
@@ -522,7 +539,7 @@ fn complete_read_proof_diagnostics(subject: &MetadataValidationSubject) -> Vec<M
             )]
         }
     };
-    let object = match exact_metadata_artifact(&document) {
+    let object = match exact_metadata_artifact(&document, MetadataAdmission::Read) {
         Ok(object) => object,
         Err(error) => {
             return vec![complete_read_missing(
@@ -892,9 +909,10 @@ fn validate_child_resource(kind: MetadataChildResourceKind, bytes: &[u8]) -> Res
 fn validate_child_footprints(
     subject: &MetadataValidationSubject,
     diagnostics: &mut Vec<MetaDiagnostic>,
+    admission: MetadataAdmission,
 ) {
-    let expected = final_owner_child_graph(subject, diagnostics);
-    let descriptors = actual_child_descriptor_graph(subject, diagnostics);
+    let expected = final_owner_child_graph(subject, diagnostics, admission);
+    let descriptors = actual_child_descriptor_graph(subject, diagnostics, admission);
 
     for child in &expected {
         let matching_descriptors = descriptors
@@ -1083,6 +1101,7 @@ struct ClosedOwnerChild {
 fn final_owner_child_graph(
     subject: &MetadataValidationSubject,
     diagnostics: &mut Vec<MetaDiagnostic>,
+    admission: MetadataAdmission,
 ) -> Vec<ClosedOwnerChild> {
     let owners = subject
         .resources
@@ -1114,7 +1133,7 @@ fn final_owner_child_graph(
     if subject.target.as_str() != format!("{}.{}", identity.object_type, identity.object_name) {
         return Vec::new();
     }
-    match parse_final_owner_children(&owner.bytes, &subject.target) {
+    match parse_final_owner_children(&owner.bytes, &subject.target, admission) {
         Ok(children) => {
             let mut seen = HashSet::new();
             for child in &children {
@@ -1137,6 +1156,7 @@ fn final_owner_child_graph(
 fn actual_child_descriptor_graph(
     subject: &MetadataValidationSubject,
     diagnostics: &mut Vec<MetaDiagnostic>,
+    admission: MetadataAdmission,
 ) -> Vec<(ClosedChildDescriptor, MetadataResourceRole)> {
     let mut descriptors = Vec::new();
     for resource in &subject.resources {
@@ -1149,7 +1169,7 @@ fn actual_child_descriptor_graph(
                 | MetadataResourceRole::Template { .. }
                 | MetadataResourceRole::Command { .. }
         );
-        match parse_child_descriptor(&resource.bytes, &subject.target) {
+        match parse_child_descriptor(&resource.bytes, &subject.target, admission) {
             Ok(Some(actual)) => descriptors.push((actual, resource.role.clone())),
             Ok(None) if declared_child => diagnostics.push(template_resource_set_diagnostic(
                 &subject.target,
@@ -1168,9 +1188,10 @@ fn actual_child_descriptor_graph(
 fn parse_final_owner_children(
     bytes: &[u8],
     owner: &MetadataAddress,
+    admission: MetadataAdmission,
 ) -> Result<Vec<ClosedOwnerChild>, String> {
     let (_, document) = parse_metadata_image(bytes)?;
-    let artifact = exact_metadata_artifact(&document)?;
+    let artifact = exact_metadata_artifact(&document, admission)?;
     validate_exact_owner_identity(artifact, owner)?;
     let child_objects = exact_mdclasses_children(artifact, "ChildObjects", "owner descriptor")?;
     let children = match child_objects.as_slice() {
@@ -1278,9 +1299,10 @@ fn parse_owner_child_artifact(
 fn parse_child_descriptor(
     bytes: &[u8],
     owner: &MetadataAddress,
+    admission: MetadataAdmission,
 ) -> Result<Option<ClosedChildDescriptor>, String> {
     let (_, document) = parse_metadata_image(bytes)?;
-    let artifact = exact_metadata_artifact(&document)?;
+    let artifact = exact_metadata_artifact(&document, admission)?;
     if !matches!(artifact.tag_name().name(), "Form" | "Template" | "Command") {
         return Ok(None);
     }
@@ -1288,22 +1310,25 @@ fn parse_child_descriptor(
 }
 
 /// Parse one already-retained physical child descriptor through the same
-/// closed validator used by V12 metadata mutation planning.
+/// structural validator, with an explicit read or publication admission policy.
 pub(crate) fn parse_child_profile_from_bytes(
     bytes: &[u8],
     owner: &MetadataAddress,
+    admission: MetadataAdmission,
 ) -> Result<Option<(MetadataAddress, MetadataChildProfile)>, String> {
-    parse_child_descriptor(bytes, owner)
+    parse_child_descriptor(bytes, owner, admission)
         .map(|descriptor| descriptor.map(|descriptor| (descriptor.child, descriptor.profile)))
 }
 
 fn exact_metadata_artifact<'a, 'input>(
     document: &'a Document<'input>,
+    admission: MetadataAdmission,
 ) -> Result<roxmltree::Node<'a, 'input>, String> {
     let root = document.root_element();
     if root.tag_name().namespace() != Some(MD_CLASSES_NS)
         || root.tag_name().name() != "MetaDataObject"
-        || root.attribute("version") != Some(ACTIVE_FORMAT_PROFILE.export_format)
+        || (admission == MetadataAdmission::Writable
+            && root.attribute("version") != Some(ACTIVE_FORMAT_PROFILE.export_format))
     {
         return Err("metadata descriptor root does not match the active MDClasses profile".into());
     }
@@ -4478,6 +4503,52 @@ mod tests {
     }
 
     #[test]
+    fn child_descriptor_read_admission_preserves_structure_and_strict_publication() {
+        let owner =
+            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Report.Sales").unwrap();
+        let body = "<Template><Properties><Name>Dcs</Name><TemplateType>DataCompositionSchema</TemplateType></Properties></Template>";
+        for version in [Some("2.20"), Some("2.19"), Some("2.21"), None] {
+            let version_attr = version
+                .map(|v| format!(" version=\"{v}\""))
+                .unwrap_or_default();
+            let xml = format!(
+                "<MetaDataObject xmlns=\"{MD_CLASSES_NS}\"{version_attr}>{body}</MetaDataObject>"
+            );
+            let read =
+                parse_child_profile_from_bytes(xml.as_bytes(), &owner, MetadataAdmission::Read)
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(read.0.as_str(), "Report.Sales.Template.Dcs");
+            assert_eq!(
+                read.1,
+                MetadataChildProfile::Template(MetadataTemplateType::DataCompositionSchema)
+            );
+            assert_eq!(
+                parse_child_profile_from_bytes(xml.as_bytes(), &owner, MetadataAdmission::Writable)
+                    .is_ok(),
+                version == Some("2.20")
+            );
+            for malformed in [
+                xml.replace(MD_CLASSES_NS, "urn:foreign"),
+                xml.replace(body, &format!("{body}{body}")),
+                xml.replace("<Name>Dcs</Name>", "<Name>Dcs</Name><Name>Other</Name>"),
+                xml.replace("<Template>", "<Template xmlns=\"urn:foreign\">"),
+                xml.replace("<Properties>", "<Properties xmlns=\"urn:foreign\">"),
+            ] {
+                assert!(
+                    parse_child_profile_from_bytes(
+                        malformed.as_bytes(),
+                        &owner,
+                        MetadataAdmission::Read
+                    )
+                    .is_err(),
+                    "{malformed}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn command_interface_rule_distinguishes_absence_presence_and_uncollected_evidence() {
         let missing = command_interface_subject(Some(MetadataSubsystemEvidence::Complete {
             functional_subsystems: Vec::new(),
@@ -4868,7 +4939,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let mut diagnostics = Vec::new();
-        validate_child_footprints(subject, &mut diagnostics);
+        validate_child_footprints(subject, &mut diagnostics, MetadataAdmission::Writable);
         messages.extend(diagnostics.into_iter().map(|diagnostic| diagnostic.message));
         messages
     }
@@ -5184,6 +5255,44 @@ mod tests {
     }
 
     #[test]
+    fn readable_child_graph_does_not_authorize_materializing_unsupported_descriptors() {
+        for kind in ["Template", "Form"] {
+            let template_type = (kind == "Template").then_some("TextDocument");
+            let child = typed_child_xml(kind, "Main", template_type);
+            for version in [Some("2.21"), Some("2.19"), None] {
+                // Either the existing owner or an adopted child's descriptor can
+                // carry the incompatible profile. Reading is not a write grant.
+                for resource_index in [0, 1] {
+                    let mut subject = closed_validator_subject(kind, template_type, &child, &child);
+                    let original =
+                        String::from_utf8(subject.resources[resource_index].bytes.clone()).unwrap();
+                    subject.resources[resource_index].bytes = original
+                        .replace(
+                            "version=\"2.20\"",
+                            &version
+                                .map(|v| format!("version=\"{v}\""))
+                                .unwrap_or_default(),
+                        )
+                        .into_bytes();
+                    let mut read = Vec::new();
+                    validate_child_footprints(&subject, &mut read, MetadataAdmission::Read);
+                    assert!(read.is_empty(), "{kind} {version:?}: {read:?}");
+                    let mut publication = Vec::new();
+                    validate_child_footprints(
+                        &subject,
+                        &mut publication,
+                        MetadataAdmission::Writable,
+                    );
+                    assert!(
+                        !publication.is_empty(),
+                        "{kind} {version:?}: read proof authorized publication"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn closed_child_graph_accepts_real_text_refs_and_typed_inline_owner_entries() {
         for (label, owner_entry) in [
             ("real-ref", "<Command>Main</Command>".to_string()),
@@ -5193,7 +5302,7 @@ mod tests {
             let subject = closed_validator_subject("Command", None, &owner_entry, &descriptor);
 
             let mut diagnostics = Vec::new();
-            validate_child_footprints(&subject, &mut diagnostics);
+            validate_child_footprints(&subject, &mut diagnostics, MetadataAdmission::Writable);
 
             assert!(diagnostics.is_empty(), "{label}: {diagnostics:?}");
         }
@@ -5251,7 +5360,7 @@ mod tests {
             subject.child_footprints.clear();
             let mut diagnostics = Vec::new();
 
-            validate_child_footprints(&subject, &mut diagnostics);
+            validate_child_footprints(&subject, &mut diagnostics, MetadataAdmission::Writable);
 
             assert!(
                 diagnostics
@@ -5352,7 +5461,7 @@ mod tests {
             );
             let mut diagnostics = Vec::new();
 
-            validate_child_footprints(&subject, &mut diagnostics);
+            validate_child_footprints(&subject, &mut diagnostics, MetadataAdmission::Writable);
 
             // A forged name or kind moves the descriptor to another child
             // identity, so the expected child is left with none at all.
@@ -5405,7 +5514,7 @@ mod tests {
             subject.resources[1].bytes = descriptor.into_bytes();
             let mut diagnostics = Vec::new();
 
-            validate_child_footprints(&subject, &mut diagnostics);
+            validate_child_footprints(&subject, &mut diagnostics, MetadataAdmission::Writable);
 
             assert!(
                 diagnostics.iter().any(|diagnostic| diagnostic
@@ -5465,7 +5574,7 @@ mod tests {
         ] {
             let mut diagnostics = Vec::new();
 
-            validate_child_footprints(&subject, &mut diagnostics);
+            validate_child_footprints(&subject, &mut diagnostics, MetadataAdmission::Writable);
 
             assert!(
                 diagnostics
@@ -5522,7 +5631,7 @@ mod tests {
         set_html_descriptor(&mut reordered);
         reordered.resources.reverse();
         let mut diagnostics = Vec::new();
-        validate_child_footprints(&reordered, &mut diagnostics);
+        validate_child_footprints(&reordered, &mut diagnostics, MetadataAdmission::Writable);
         assert!(diagnostics.is_empty(), "reordered: {diagnostics:?}");
 
         for (label, resources) in [
@@ -5544,7 +5653,7 @@ mod tests {
             );
             set_html_descriptor(&mut subject);
             let mut diagnostics = Vec::new();
-            validate_child_footprints(&subject, &mut diagnostics);
+            validate_child_footprints(&subject, &mut diagnostics, MetadataAdmission::Writable);
             assert!(
                 diagnostics.iter().any(|diagnostic| diagnostic
                     .message
@@ -5568,7 +5677,11 @@ mod tests {
         );
         duplicate_directory.child_footprints.reverse();
         let mut diagnostics = Vec::new();
-        validate_child_footprints(&duplicate_directory, &mut diagnostics);
+        validate_child_footprints(
+            &duplicate_directory,
+            &mut diagnostics,
+            MetadataAdmission::Writable,
+        );
         assert!(diagnostics
             .iter()
             .any(|diagnostic| diagnostic.message.contains("directory set")));
@@ -5589,7 +5702,7 @@ mod tests {
             ],
         );
         let mut diagnostics = Vec::new();
-        validate_child_footprints(&subject, &mut diagnostics);
+        validate_child_footprints(&subject, &mut diagnostics, MetadataAdmission::Writable);
         assert!(diagnostics.iter().any(|diagnostic| diagnostic
             .message
             .contains("canonical resource and ordinal set")));
@@ -5644,7 +5757,7 @@ mod tests {
         form.child_footprints.reverse();
 
         let mut exact = Vec::new();
-        validate_child_footprints(&form, &mut exact);
+        validate_child_footprints(&form, &mut exact, MetadataAdmission::Writable);
         assert!(exact.is_empty(), "exact permutation: {exact:?}");
 
         let mut duplicate_descriptor = form.clone();
@@ -5656,7 +5769,11 @@ mod tests {
             .clone();
         duplicate_descriptor.resources.push(descriptor);
         let mut diagnostics = Vec::new();
-        validate_child_footprints(&duplicate_descriptor, &mut diagnostics);
+        validate_child_footprints(
+            &duplicate_descriptor,
+            &mut diagnostics,
+            MetadataAdmission::Writable,
+        );
         assert!(diagnostics.iter().any(|diagnostic| diagnostic
             .message
             .contains("backed by more than one descriptor")));
@@ -5671,7 +5788,11 @@ mod tests {
             typed_child_descriptor(&orphan_xml),
         ));
         let mut diagnostics = Vec::new();
-        validate_child_footprints(&orphan_descriptor, &mut diagnostics);
+        validate_child_footprints(
+            &orphan_descriptor,
+            &mut diagnostics,
+            MetadataAdmission::Writable,
+        );
         assert!(diagnostics
             .iter()
             .any(|diagnostic| diagnostic.message.contains("descriptor is orphaned")));
@@ -5681,7 +5802,11 @@ mod tests {
             .child_footprints
             .push(duplicate_evidence.child_footprints[0].clone());
         let mut diagnostics = Vec::new();
-        validate_child_footprints(&duplicate_evidence, &mut diagnostics);
+        validate_child_footprints(
+            &duplicate_evidence,
+            &mut diagnostics,
+            MetadataAdmission::Writable,
+        );
         assert!(diagnostics.iter().any(|diagnostic| diagnostic
             .message
             .contains("exactly one matching footprint evidence")));
@@ -5696,7 +5821,11 @@ mod tests {
                 retained: Vec::new(),
             });
         let mut diagnostics = Vec::new();
-        validate_child_footprints(&orphan_evidence, &mut diagnostics);
+        validate_child_footprints(
+            &orphan_evidence,
+            &mut diagnostics,
+            MetadataAdmission::Writable,
+        );
         assert!(diagnostics
             .iter()
             .any(|diagnostic| diagnostic.message.contains("evidence is orphaned")));
@@ -5718,7 +5847,11 @@ mod tests {
             .clone();
         duplicate_resource.resources.push(resource);
         let mut diagnostics = Vec::new();
-        validate_child_footprints(&duplicate_resource, &mut diagnostics);
+        validate_child_footprints(
+            &duplicate_resource,
+            &mut diagnostics,
+            MetadataAdmission::Writable,
+        );
         assert!(diagnostics.iter().any(|diagnostic| diagnostic
             .message
             .contains("canonical resource and ordinal set")));
@@ -5742,7 +5875,11 @@ mod tests {
         };
         *child = address("Catalog.Editable.Form.Orphan");
         let mut diagnostics = Vec::new();
-        validate_child_footprints(&mislabeled_resource, &mut diagnostics);
+        validate_child_footprints(
+            &mislabeled_resource,
+            &mut diagnostics,
+            MetadataAdmission::Writable,
+        );
         assert!(diagnostics.iter().any(|diagnostic| {
             diagnostic
                 .message
@@ -5765,7 +5902,11 @@ mod tests {
             typed_child_xml("Command", "Run", None),
         ]);
         let mut diagnostics = Vec::new();
-        validate_child_footprints(&duplicate_owner_child, &mut diagnostics);
+        validate_child_footprints(
+            &duplicate_owner_child,
+            &mut diagnostics,
+            MetadataAdmission::Writable,
+        );
         assert!(diagnostics
             .iter()
             .any(|diagnostic| diagnostic.message.contains("duplicate child identity")));
@@ -6037,7 +6178,11 @@ mod tests {
             .retain(|directory| *directory != MetadataChildDirectoryKind::HtmlPages);
 
         let mut wrong_directories = Vec::new();
-        validate_child_footprints(&subject, &mut wrong_directories);
+        validate_child_footprints(
+            &subject,
+            &mut wrong_directories,
+            MetadataAdmission::Writable,
+        );
         assert!(wrong_directories
             .iter()
             .any(|diagnostic| diagnostic.message.contains("directory set")));
@@ -6047,7 +6192,7 @@ mod tests {
             .push(MetadataChildDirectoryKind::HtmlPages);
         subject.resources.pop();
         let mut missing_part = Vec::new();
-        validate_child_footprints(&subject, &mut missing_part);
+        validate_child_footprints(&subject, &mut missing_part, MetadataAdmission::Writable);
         assert!(missing_part
             .iter()
             .any(|diagnostic| diagnostic.message.contains("canonical resource")));
@@ -6071,7 +6216,7 @@ mod tests {
             .unwrap()
             .bytes = typed_child_descriptor(&forged);
         let mut forged_profile = Vec::new();
-        validate_child_footprints(&subject, &mut forged_profile);
+        validate_child_footprints(&subject, &mut forged_profile, MetadataAdmission::Writable);
         assert!(forged_profile
             .iter()
             .any(|diagnostic| diagnostic.message.contains("footprint evidence")));
@@ -6084,7 +6229,7 @@ mod tests {
             .unwrap()
             .bytes = typed_child_descriptor(&exact);
         let mut exact = Vec::new();
-        validate_child_footprints(&subject, &mut exact);
+        validate_child_footprints(&subject, &mut exact, MetadataAdmission::Writable);
         assert!(exact.is_empty(), "{exact:?}");
     }
 

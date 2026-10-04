@@ -1056,8 +1056,12 @@ impl ProviderReadAuthority {
         let owner = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &owner_text).map_err(
             |error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()),
         )?;
-        let Some((parsed_target, profile)) = parse_child_profile_from_bytes(&descriptor, &owner)
-            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?
+        let Some((parsed_target, profile)) = parse_child_profile_from_bytes(
+            &descriptor,
+            &owner,
+            crate::infrastructure::native_operations::meta::MetadataAdmission::Read,
+        )
+        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?
         else {
             return Err(ViewError::detailed(
                 RefusalDetail::SourceUnreadable,

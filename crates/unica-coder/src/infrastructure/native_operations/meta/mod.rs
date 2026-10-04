@@ -142,7 +142,7 @@ pub(crate) use remove::remove_metadata_child_text_with_flag;
 pub(crate) use template_catalog::emit_meta_internal_info;
 pub(crate) use template_catalog::metadata_generated_types_8_3_27;
 pub(crate) use usage_scan::{scan_local_enrichment, LocalEnrichment, LocalSection};
-pub(crate) use validation::parse_child_profile_from_bytes;
+pub(crate) use validation::{parse_child_profile_from_bytes, MetadataAdmission};
 pub(crate) use validation::{
     service_child_semantics, validate_metadata_owner_shape_8_3_27, MetadataValidator,
 };
