@@ -384,9 +384,21 @@ impl V5DaemonProcessOwner {
         record: V5EndpointRecord,
         deadline: Instant,
     ) -> Result<Self, ConnectionFailure> {
+        Self::connect_classified(record, Some(deadline))
+    }
+
+    fn connect_classified(
+        record: V5EndpointRecord,
+        deadline: Option<Instant>,
+    ) -> Result<Self, ConnectionFailure> {
         let address = record.loopback_addr()?;
-        let stream = TcpStream::connect_timeout(&address.into(), remaining(deadline, "connect")?)
-            .map_err(|error| ConnectionFailure::io("connect protocol-v5 daemon", error))?;
+        let stream = match deadline {
+            Some(deadline) => {
+                TcpStream::connect_timeout(&address.into(), remaining(deadline, "connect")?)
+            }
+            None => TcpStream::connect(address),
+        }
+        .map_err(|error| ConnectionFailure::io("connect protocol-v5 daemon", error))?;
         stream
             .set_nonblocking(false)
             .map_err(|error| format!("configure protocol-v5 client stream: {error}"))?;
@@ -406,15 +418,20 @@ impl V5DaemonProcessOwner {
             owner_lease: Uuid::new_v4().to_string(),
         };
         owner
-            .write_before(&hello, deadline, "handshake request")
+            .write_typed_with_deadline(&hello, deadline, "handshake request")
+            .map_err(|error| error.to_string())
             .map_err(ConnectionFailure::Unavailable)?;
         let frame = read_bounded_v5_probe_response_frame_before(&mut owner.reader, |reader| {
-            let budget = remaining(deadline, "handshake response")
+            let budget = deadline
+                .map(|deadline| remaining(deadline, "handshake response"))
+                .transpose()
                 .map_err(|error| io::Error::new(io::ErrorKind::TimedOut, error))?;
-            reader.get_ref().set_read_timeout(Some(budget))
+            reader.get_ref().set_read_timeout(budget)
         })
         .map_err(|error| ConnectionFailure::io("read protocol-v5 handshake", error))?;
-        remaining(deadline, "handshake response")?;
+        if let Some(deadline) = deadline {
+            remaining(deadline, "handshake response")?;
+        }
         let ready: V5HandshakeServerResponse = serde_json::from_slice(&frame)
             .map_err(|_| "protocol-v5 handshake response is not strict JSON".to_string())?;
         if !ready.matches_record(&owner.record) {
@@ -422,8 +439,29 @@ impl V5DaemonProcessOwner {
                 .to_string()
                 .into());
         }
-        remaining(deadline, "handshake decode")?;
+        if let Some(deadline) = deadline {
+            remaining(deadline, "handshake decode")?;
+        }
         Ok(owner)
+    }
+
+    pub(crate) fn control_endpoint(&self) -> V5EndpointRecord {
+        self.record.clone()
+    }
+
+    /// Manual control follows the original endpoint and exact key. It never
+    /// starts a replacement daemon or borrows an invocation's spent cutoff.
+    pub(crate) fn cancel_at_endpoint(
+        record: V5EndpointRecord,
+        receipt_key: ReceiptKey,
+    ) -> Result<V5ServerResponse, V5TransportError> {
+        let mut owner = Self::connect_classified(record, None)
+            .map_err(|error| V5TransportError::RequestNotSent(error.message()))?;
+        owner.exchange_typed_with_deadline(
+            V5ClientRequest::CancelInvocation { receipt_key },
+            "manual cancel invocation",
+            None,
+        )
     }
 
     #[cfg(feature = "receipt-ledger-test-support")]
@@ -588,6 +626,12 @@ impl V5DaemonProcessOwner {
         self.task_exchange_before(V5ClientRequest::GetTask { task_id }, "get task", deadline)
     }
 
+    /// An owned handle can interrupt this observation connection only; it
+    /// sends no cancellation of the task or the producer being observed.
+    pub(crate) fn observation_interrupt_handle(&self) -> std::io::Result<TcpStream> {
+        self.writer.try_clone()
+    }
+
     pub(crate) fn wait_task_before(
         &mut self,
         task_id: TaskId,
@@ -734,14 +778,23 @@ impl V5DaemonProcessOwner {
         stage: &'static str,
         deadline: Instant,
     ) -> Result<V5ServerResponse, V5TransportError> {
+        self.exchange_typed_with_deadline(request, stage, Some(deadline))
+    }
+
+    fn exchange_typed_with_deadline(
+        &mut self,
+        request: V5ClientRequest,
+        stage: &'static str,
+        deadline: Option<Instant>,
+    ) -> Result<V5ServerResponse, V5TransportError> {
         if self.poisoned {
             return Err(V5TransportError::SessionPoisoned);
         }
-        if let Err(error) = self.write_typed_before(&request, deadline, stage) {
+        if let Err(error) = self.write_typed_with_deadline(&request, deadline, stage) {
             self.poison();
             return Err(error);
         }
-        let frame = match self.read_before(deadline, stage) {
+        let frame = match self.read_with_deadline(deadline, stage) {
             Ok(frame) => frame,
             Err(error) => {
                 self.poison();
@@ -758,9 +811,11 @@ impl V5DaemonProcessOwner {
         // The checkpoint after parse wins over a payload that crossed the
         // cutoff while it was being read or decoded: it is not published and
         // the session does not survive it.
-        if let Err(error) = remaining(deadline, stage) {
-            self.poison();
-            return Err(V5TransportError::ResponseLost(error));
+        if let Some(deadline) = deadline {
+            if let Err(error) = remaining(deadline, stage) {
+                self.poison();
+                return Err(V5TransportError::ResponseLost(error));
+            }
         }
         Ok(response)
     }
@@ -820,16 +875,34 @@ impl V5DaemonProcessOwner {
         deadline: Instant,
         stage: &'static str,
     ) -> Result<(), V5TransportError> {
+        self.write_typed_with_deadline(value, Some(deadline), stage)
+    }
+
+    fn write_typed_with_deadline<T: serde::Serialize>(
+        &mut self,
+        value: &T,
+        deadline: Option<Instant>,
+        stage: &'static str,
+    ) -> Result<(), V5TransportError> {
         request_write::write_request(
             &mut self.writer,
             value,
             stage,
             |writer| {
                 writer
-                    .set_write_timeout(Some(remaining(deadline, stage)?))
+                    .set_write_timeout(
+                        deadline
+                            .map(|deadline| remaining(deadline, stage))
+                            .transpose()?,
+                    )
                     .map_err(|error| format!("configure protocol-v5 {stage} timeout: {error}"))
             },
-            || remaining(deadline, stage).map(|_| ()),
+            || {
+                deadline
+                    .map(|deadline| remaining(deadline, stage))
+                    .transpose()
+                    .map(|_| ())
+            },
         )
     }
 
@@ -856,13 +929,26 @@ impl V5DaemonProcessOwner {
     }
 
     fn read_before(&mut self, deadline: Instant, stage: &'static str) -> Result<Vec<u8>, String> {
+        self.read_with_deadline(Some(deadline), stage)
+    }
+
+    fn read_with_deadline(
+        &mut self,
+        deadline: Option<Instant>,
+        stage: &'static str,
+    ) -> Result<Vec<u8>, String> {
         let frame = read_bounded_v5_probe_response_frame_before(&mut self.reader, |reader| {
-            let budget = remaining(deadline, stage)
+            let budget = deadline
+                .map(|deadline| remaining(deadline, stage))
+                .transpose()
                 .map_err(|error| io::Error::new(io::ErrorKind::TimedOut, error))?;
-            reader.get_ref().set_read_timeout(Some(budget))
+            reader.get_ref().set_read_timeout(budget)
         })
         .map_err(|error| format!("read protocol-v5 {stage}: {error}"))?;
-        remaining(deadline, stage).map(|_| frame)
+        if let Some(deadline) = deadline {
+            remaining(deadline, stage)?;
+        }
+        Ok(frame)
     }
 
     fn poison(&mut self) {

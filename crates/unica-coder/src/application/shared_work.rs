@@ -622,6 +622,25 @@ where
         }
     }
 
+    /// Running producers and retained terminal leases keep their entry alive.
+    /// An unreadable registry cannot prove that its owner is safe to release.
+    pub(crate) fn has_live_entries(&self) -> bool {
+        self.registry
+            .entries
+            .lock()
+            .map(|entries| entries.values().any(|entry| entry.strong_count() > 0))
+            .unwrap_or(true)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn poison_registry_for_test(&self) {
+        let poisoned = catch_unwind(AssertUnwindSafe(|| {
+            let _entries = self.registry.entries.lock().unwrap();
+            panic!("poison shared-work registry for retention test");
+        }));
+        assert!(poisoned.is_err());
+    }
+
     pub(crate) fn join_or_start<W>(&self, key: SharedWorkKey, work: W) -> SharedWorkLease<R, E>
     where
         W: FnOnce(SharedWorkProducer) -> Result<R, E> + Send + 'static,

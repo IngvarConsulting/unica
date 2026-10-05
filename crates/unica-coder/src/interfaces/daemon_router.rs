@@ -5,6 +5,7 @@
 //! terminal is acknowledged only after its host-facing value exists; a lost
 //! submit response is recovered by the exact receipt key the frontend derives
 //! itself, never by a second submission.
+use super::canonical_cancellation::{CanonicalCancellation, ControlFailure};
 use super::task_projection::{self, DirectProjection};
 use crate::application::invocation::{
     handoff_budget, normalized_arguments_hash, INVOCATION_HANDOFF_WINDOW,
@@ -14,6 +15,7 @@ use crate::application::receipt_ledger::{
     request_scope_hash, ReceiptKey, RequestIdentity, V5ToolIdentity,
     MAX_ORIGINAL_RESPONSE_BUDGET_MS,
 };
+#[cfg(test)]
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::invocation::{InvocationId, TaskId};
 use crate::infrastructure::daemon::client_v5::{
@@ -114,7 +116,7 @@ pub(super) type CanonicalCallHandler = dyn Fn(
         &Map<String, Value>,
         &Map<String, Value>,
         FrontendInvocationDeadline,
-        CancellationToken,
+        CanonicalCancellation,
     ) -> Result<CanonicalCallOutcome, ErrorData>
     + Send
     + Sync;
@@ -123,7 +125,12 @@ pub(super) type CanonicalTaskHandler = dyn Fn(TaskId, FrontendInvocationDeadline
     + Send
     + Sync;
 
-pub(super) type CanonicalTaskWaitHandler = dyn Fn(TaskId, u64, FrontendInvocationDeadline) -> Result<V5DaemonTaskSnapshot, V5TaskExchangeError>
+pub(super) type CanonicalTaskWaitHandler = dyn Fn(
+        TaskId,
+        u64,
+        FrontendInvocationDeadline,
+        CanonicalCancellation,
+    ) -> Result<V5DaemonTaskSnapshot, V5TaskExchangeError>
     + Send
     + Sync;
 
@@ -146,7 +153,7 @@ pub(super) fn canonical_daemon_router(
 }
 
 #[cfg(test)]
-fn canonical_daemon_router_observed(
+pub(super) fn canonical_daemon_router_observed(
     owner: V5DaemonProcessOwner,
     workspace_hint: String,
     observer: ReceiptObserver,
@@ -165,7 +172,7 @@ fn build_router(
     let client = Arc::new(client);
     let call_client = Arc::clone(&client);
     let call: Arc<CanonicalCallHandler> =
-        Arc::new(move |tool, arguments, metadata, deadline, _cancellation| {
+        Arc::new(move |tool, arguments, metadata, deadline, cancellation| {
             // Resolve once per invocation. Never publish this choice back into
             // shared frontend state: another call may belong to another tree.
             let workspace_hint = match workspace.resolve(metadata) {
@@ -188,6 +195,7 @@ fn build_router(
                 arguments,
                 deadline,
                 observer.as_ref(),
+                cancellation,
             )
         });
     let get_client = Arc::clone(&client);
@@ -197,14 +205,27 @@ fn build_router(
         peer.get_task_before(task_id, cutoff)
     });
     let wait_client = Arc::clone(&client);
-    let wait: Arc<CanonicalTaskWaitHandler> = Arc::new(move |task_id, wait_ms, deadline| {
-        let cutoff = wait_transport_cutoff(wait_ms, deadline);
-        let mut peer = task_peer(&wait_client, cutoff)?;
-        // The daemon wait shrinks by what connect and handshake already spent
-        // and by the response margin; the cutoff itself never moves.
-        let bounded_wait_ms = bounded_wait_ms(wait_ms, cutoff, Instant::now());
-        peer.wait_task_before(task_id, bounded_wait_ms, cutoff)
-    });
+    let wait: Arc<CanonicalTaskWaitHandler> =
+        Arc::new(move |task_id, wait_ms, deadline, cancellation| {
+            let cutoff = wait_transport_cutoff(wait_ms, deadline);
+            let mut peer = task_peer(&wait_client, cutoff)?;
+            // The daemon wait shrinks by what connect and handshake already spent
+            // and by the response margin; the cutoff itself never moves.
+            let interrupt = peer
+                .observation_interrupt_handle()
+                .map_err(|_| V5TaskExchangeError::Transport)?;
+            cancellation
+                .bind_control(Arc::new(move || {
+                    match interrupt.shutdown(std::net::Shutdown::Both) {
+                        Ok(()) => Ok(()),
+                        Err(error) if error.kind() == std::io::ErrorKind::NotConnected => Ok(()),
+                        Err(error) => Err(ControlFailure::BeforeSend(error.to_string())),
+                    }
+                }))
+                .map_err(|_| V5TaskExchangeError::Transport)?;
+            let bounded_wait_ms = bounded_wait_ms(wait_ms, cutoff, Instant::now());
+            peer.wait_task_before(task_id, bounded_wait_ms, cutoff)
+        });
     let cancel: Arc<CanonicalTaskHandler> = Arc::new(move |task_id, deadline| {
         let cutoff = deadline.transport_cutoff();
         let mut peer = task_peer(&client, cutoff)?;
@@ -261,6 +282,7 @@ fn submit_and_settle(
     arguments: &Map<String, Value>,
     deadline: FrontendInvocationDeadline,
     observer: Option<&ReceiptObserver>,
+    cancellation: CanonicalCancellation,
 ) -> Result<CanonicalCallOutcome, ErrorData> {
     let cutoff = deadline.transport_cutoff();
     let mut peer = client
@@ -286,6 +308,19 @@ fn submit_and_settle(
     )
     .map_err(|message| ErrorData::invalid_params(message, None))?;
     let receipt_key = receipt_key_for(&invocation, client)?;
+    let endpoint = peer.control_endpoint();
+    let control_key = receipt_key.clone();
+    cancellation
+        .bind_control(Arc::new(move || {
+            cancel_exact_endpoint(endpoint.clone(), control_key.clone())
+        }))
+        .map_err(|error| {
+            ErrorData::new(
+                rmcp::model::ErrorCode(TOOL_EXECUTION_ERROR),
+                error.to_string(),
+                None,
+            )
+        })?;
     if let Some(observer) = observer {
         observer(&receipt_key);
     }
@@ -300,6 +335,65 @@ fn submit_and_settle(
         Err(error) => return Err(transport_refusal(error)),
     };
     settle(peer, response, &receipt_key)
+}
+
+fn cancel_exact_endpoint(
+    endpoint: crate::infrastructure::daemon::protocol_v5::V5EndpointRecord,
+    key: ReceiptKey,
+) -> Result<(), ControlFailure> {
+    let mut uncertain = false;
+    loop {
+        match V5DaemonProcessOwner::cancel_at_endpoint(endpoint.clone(), key.clone()) {
+            Ok(V5ServerResponse::Invocation { outcome }) => {
+                let confirmed = match outcome {
+                    V5InvocationResponse::ReceiptPending {
+                        receipt_key,
+                        cancel_requested,
+                        ..
+                    } => receipt_key == key && cancel_requested,
+                    V5InvocationResponse::Direct { receipt } => receipt.receipt_key() == &key,
+                    V5InvocationResponse::Acknowledged { acknowledgement } => {
+                        acknowledgement.receipt_key() == &key
+                    }
+                    V5InvocationResponse::Task { snapshot } => {
+                        snapshot.task_id() == key.reserved_task_id()
+                            && snapshot.invocation_id() == key.invocation_id()
+                            && snapshot.receipt_key_digest()
+                                == &crate::application::receipt_ledger::receipt_key_digest(&key)
+                            && (snapshot.cancel_requested()
+                                || matches!(
+                                    snapshot,
+                                    V5DaemonTaskSnapshot::Completed { .. }
+                                        | V5DaemonTaskSnapshot::Failed { .. }
+                                        | V5DaemonTaskSnapshot::Cancelled { .. }
+                                ))
+                    }
+                };
+                return if confirmed {
+                    Ok(())
+                } else {
+                    Err(ControlFailure::Uncertain(
+                        "daemon control response did not confirm the original exact key".to_owned(),
+                    ))
+                };
+            }
+            Err(V5TransportError::ResponseLost(_)) => {
+                // Cancel may already be committed. Its idempotent repeat keeps
+                // the same complete key and never replays Submit or effects.
+                uncertain = true;
+                std::thread::sleep(RECOVERY_POLL_INTERVAL);
+            }
+            Err(V5TransportError::RequestNotSent(message)) if !uncertain => {
+                return Err(ControlFailure::BeforeSend(message))
+            }
+            Err(error) => return Err(ControlFailure::Uncertain(error.to_string())),
+            Ok(response) => {
+                return Err(ControlFailure::Uncertain(format!(
+                    "daemon rejected exact cancellation: {response:?}"
+                )))
+            }
+        }
+    }
 }
 
 /// The exact key the daemon derives from the same submission
@@ -758,11 +852,19 @@ pub(in crate::interfaces) mod test_support {
         pub(in crate::interfaces) workspace_hint: String,
         pub(in crate::interfaces) state_root: std::path::PathBuf,
         thread: Option<thread::JoinHandle<Result<(), String>>>,
+        hooks: Option<Arc<dyn crate::infrastructure::daemon::runtime_v5::V5RuntimeHooks>>,
     }
 
     impl LiveDaemon {
         pub(in crate::interfaces) fn start(
             service: Arc<dyn crate::infrastructure::daemon::server::CanonicalInvocationService>,
+        ) -> Self {
+            Self::start_with_hooks(service, None)
+        }
+
+        pub(in crate::interfaces) fn start_with_hooks(
+            service: Arc<dyn crate::infrastructure::daemon::server::CanonicalInvocationService>,
+            hooks: Option<Arc<dyn crate::infrastructure::daemon::runtime_v5::V5RuntimeHooks>>,
         ) -> Self {
             let state = tempfile::tempdir().unwrap();
             let workspace = tempfile::tempdir().unwrap();
@@ -778,6 +880,7 @@ pub(in crate::interfaces) mod test_support {
                 workspace_hint,
                 state_root,
                 thread: None,
+                hooks,
             };
             daemon.restart(service, Duration::from_millis(400));
             daemon
@@ -800,6 +903,10 @@ pub(in crate::interfaces) mod test_support {
                 idle_grace,
             )
             .with_invocation_service(service);
+            let config = match &self.hooks {
+                Some(hooks) => config.with_runtime_hooks_for_test(hooks.clone()),
+                None => config,
+            };
             self.thread = Some(thread::spawn(move || {
                 crate::infrastructure::daemon::runtime_v5::run_daemon(config)
             }));
@@ -868,7 +975,7 @@ mod tests {
             &arguments(),
             &Map::new(),
             deadline(host_remaining),
-            CancellationToken::new(),
+            CancellationToken::new().into(),
         )
     }
 
@@ -1383,7 +1490,7 @@ mod tests {
             &Map::new(),
             &Map::new(),
             deadline(None),
-            CancellationToken::new(),
+            CancellationToken::new().into(),
         )
         .expect_err("a foreign receipt is refused");
 
@@ -1429,7 +1536,12 @@ mod tests {
         let router = canonical_daemon_router(fake.owner(), fake.workspace_hint());
 
         let expired = (router.get)(task_id, deadline(None));
-        let unexpected = (router.wait)(task_id, 7_000, deadline(Some(Duration::from_millis(400))));
+        let unexpected = (router.wait)(
+            task_id,
+            7_000,
+            deadline(Some(Duration::from_millis(400))),
+            CanonicalCancellation::default(),
+        );
         let closed = (router.cancel)(task_id, deadline(None));
         let past = (router.get)(
             task_id,
@@ -1484,8 +1596,13 @@ mod tests {
         let task_id = snapshot.task_id();
         let settle_by = Instant::now() + Duration::from_secs(20);
         let terminal = loop {
-            let observed =
-                (router.wait)(task_id, 2_000, deadline(None)).expect("wait on the handed-off Task");
+            let observed = (router.wait)(
+                task_id,
+                2_000,
+                deadline(None),
+                CanonicalCancellation::default(),
+            )
+            .expect("wait on the handed-off Task");
             if observed.completed_result().is_some() {
                 break observed;
             }
@@ -1554,8 +1671,13 @@ mod tests {
         let task_id = snapshot.task_id();
         let settle_by = Instant::now() + Duration::from_secs(20);
         let terminal = loop {
-            let observed =
-                (router.wait)(task_id, 2_000, deadline(None)).expect("wait on the handed-off Task");
+            let observed = (router.wait)(
+                task_id,
+                2_000,
+                deadline(None),
+                CanonicalCancellation::default(),
+            )
+            .expect("wait on the handed-off Task");
             if !matches!(
                 observed.status(),
                 crate::domain::invocation::InvocationStatus::Working
@@ -1689,8 +1811,13 @@ mod tests {
         };
         let task_id = handoff.task_id();
         let observed = (router.get)(task_id, deadline(None)).expect("get the handed-off task");
-        let terminal =
-            (router.wait)(task_id, 5_000, deadline(None)).expect("wait for the terminal");
+        let terminal = (router.wait)(
+            task_id,
+            5_000,
+            deadline(None),
+            CanonicalCancellation::default(),
+        )
+        .expect("wait for the terminal");
         let cancelled = (router.cancel)(task_id, deadline(None)).expect("cancel after terminal");
 
         assert!(!matches!(

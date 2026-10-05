@@ -1,7 +1,7 @@
 //! Instrumentation points of the protocol-v5 runtime.
 //!
 //! The runtime reports what it does and asks before a few decisions through
-//! one object. Production installs [`NoHooks`], whose every method is a no-op;
+//! one object. Production installs [`NoHooks`], which uses the normal defaults;
 //! the ReceiptLedger contract harness installs its own implementation under
 //! the `receipt-ledger-test-support` feature. The runtime itself never
 //! branches on that feature: every event, pause point and injected decision
@@ -121,7 +121,7 @@ pub(crate) enum V5StoreFaultPoint {
     AfterTaskCreateRenameBeforeDirectorySync,
 }
 
-/// Everything the runtime reports or asks. Every method has a no-op default:
+/// Everything the runtime reports or asks. Every method has a production default:
 /// an implementation overrides only what it observes or decides.
 #[allow(unused_variables)]
 pub(crate) trait V5RuntimeHooks: Send + Sync {
@@ -129,9 +129,31 @@ pub(crate) trait V5RuntimeHooks: Send + Sync {
     #[allow(dead_code)]
     fn as_any(&self) -> &dyn Any;
 
+    /// Starts the actual connection handler; a failed spawn drops its owned
+    /// transport and admission slot without running the handler.
+    fn spawn_connection_handler(
+        &self,
+        handler: Box<dyn FnOnce() + Send + 'static>,
+    ) -> std::io::Result<std::thread::JoinHandle<()>> {
+        std::thread::Builder::new()
+            .name("unica-daemon-connection".into())
+            .spawn(handler)
+    }
+
     // --- observation ---
 
+    /// Observes a real authenticated Task wait before its result is awaited.
+    fn wait_task_received(&self, task_id: crate::domain::invocation::TaskId) {}
+
     fn event(&self, event: V5ReceiptRuntimeEventKind, epoch_ms: u64) {}
+
+    /// Observes a real accepted transport before owner admission.
+    fn before_owner_handshake(&self, peer_port: u16) {}
+
+    /// Observes the owner-registry read in listener idle maintenance.
+    fn after_idle_owner_leases_read(&self, empty: bool) {}
+
+    fn listener_ownership_observed(&self, no_active_work: bool) {}
 
     fn stage_entered(&self, stage: V5Stage) {}
 
@@ -311,6 +333,12 @@ pub(crate) trait V5RuntimeHooks: Send + Sync {
     }
 
     fn ack_response_disconnect(&self) -> bool {
+        false
+    }
+
+    /// Invoked only after the durable exact Cancel has succeeded and before
+    /// writing its answer. Tests may delay or lose that committed answer.
+    fn cancel_response_disconnect(&self) -> bool {
         false
     }
 

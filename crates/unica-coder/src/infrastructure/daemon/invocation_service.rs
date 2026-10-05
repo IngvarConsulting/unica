@@ -1469,7 +1469,6 @@ fn bind_workspace_invocation_controlled(
             "canonical-v0.13",
         )
         .map_err(|error| match error {
-            WorkspaceActorRegistryError::Capacity { .. } => WorkspaceAdmissionError::Capacity,
             WorkspaceActorRegistryError::InvalidIdentity(_) => {
                 unadmitted(UnadmittedCause::ActorBindingFailed {
                     stage: "the actor registry rejected the workspace identity",
@@ -1553,8 +1552,6 @@ fn closed_daemon_source_relative_path(path: &str) -> Result<std::path::PathBuf, 
 /// называется причина, а не ответ.
 #[derive(Debug)]
 pub(super) enum WorkspaceAdmissionError {
-    /// Мест под рабочие пространства больше нет.
-    Capacity,
     /// Реестр акторов отравлен и до перезапуска не допустит ничего.
     RegistryFailed,
     /// Корень рабочего пространства не определён — искать наборы негде.

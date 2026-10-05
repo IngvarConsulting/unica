@@ -29,9 +29,6 @@ use crate::infrastructure::workspace_actor::WorkspaceActorRegistry;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-pub(crate) const MAX_HANDSHAKES: usize = 8;
-pub(crate) const MAX_OWNER_SESSIONS: usize = 64;
-
 /// Безымянный неуспех — только для стенда.
 ///
 /// На проводе такого ответа нет: у отказа канонической поверхности есть код из
@@ -54,12 +51,9 @@ fn reject_workspace_admission(
     request: &InvocationRequest,
     error: WorkspaceAdmissionError,
 ) -> V5CanonicalPrepareError {
-    // Ёмкость и отравленный реестр — состояния демона, а не рабочего
-    // пространства: у них свой маршрут, и объяснений про наборы они не ждут.
-    let daemon_state = matches!(
-        error,
-        WorkspaceAdmissionError::Capacity | WorkspaceAdmissionError::RegistryFailed
-    );
+    // Отравленный реестр — состояние демона, а не рабочего пространства:
+    // у него свой маршрут, и объяснений про наборы он не ждёт.
+    let daemon_state = matches!(error, WorkspaceAdmissionError::RegistryFailed);
     if !daemon_state {
         // Недоступная операция `run` объясняется своим словарём: спрашивали не
         // о наборах, и рассказ о них увёл бы в сторону.
@@ -70,7 +64,6 @@ fn reject_workspace_admission(
         }
     }
     let (workspace_root, cause) = match error {
-        WorkspaceAdmissionError::Capacity => return V5CanonicalPrepareError::WorkspaceCapacity,
         WorkspaceAdmissionError::RegistryFailed => {
             return V5CanonicalPrepareError::WorkspaceRegistryFailed
         }
@@ -383,7 +376,6 @@ pub(super) struct V5CanonicalInvocationRuntime {
 pub(super) enum V5CanonicalPrepareError {
     Direct(Box<DomainResult>),
     Rejected(Box<DomainResult>),
-    WorkspaceCapacity,
     WorkspaceRegistryFailed,
 }
 
@@ -560,6 +552,10 @@ pub(super) enum V5PreparedCanonicalInvocation {
 impl V5CanonicalInvocationRuntime {
     pub(super) fn new(service: Arc<dyn CanonicalInvocationService>, clock: Arc<dyn Clock>) -> Self {
         Self::with_workspace_actors(service, clock, WorkspaceActorRegistry::default())
+    }
+
+    pub(super) fn has_retained_workspace_work(&self) -> bool {
+        self.workspace_actors.has_retained_work()
     }
 
     fn with_workspace_actors(
@@ -1241,7 +1237,7 @@ pub(crate) mod actor_capacity_tests {
         Arc::new(crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default())
     }
 
-    fn subsystem_picture_workspace(picture: &str, has_ext: bool) -> tempfile::TempDir {
+    pub(crate) fn subsystem_picture_workspace(picture: &str, has_ext: bool) -> tempfile::TempDir {
         let workspace = tempfile::tempdir().unwrap();
         let source = workspace.path().join("src");
         std::fs::create_dir_all(source.join("Subsystems")).unwrap();
@@ -1954,6 +1950,17 @@ pub(crate) mod actor_capacity_tests {
                 Arc::clone(&service),
                 Arc::new(TokioClock),
             ));
+            Self::over(canonical, service)
+        }
+
+        pub(crate) fn start_with_delivery_downloader(
+            service: Arc<dyn CanonicalInvocationService>,
+            downloader: Arc<dyn unica_bootstrap::Downloader>,
+        ) -> Self {
+            let canonical = Arc::new(
+                V5CanonicalInvocationRuntime::new(Arc::clone(&service), Arc::new(TokioClock))
+                    .with_delivery_downloader_for_test(downloader),
+            );
             Self::over(canonical, service)
         }
 
@@ -7230,6 +7237,443 @@ struct ActorLogicalReadLease {"#,
     }
 
     #[test]
+    fn saved_apply_token_survives_eight_other_workspace_profiles_and_replays_exactly() {
+        let workspace = subsystem_picture_workspace("", true);
+        let source = workspace.path().join("src");
+        let before = crate::test_support::tree_snapshot(&source);
+        let runtime = bootstrap_runtime();
+        let arguments = serde_json::json!({
+            "at": "main:Subsystem.Sales",
+            "ops": [{"op": "props.set", "args": {"values": {"Comment": "retained exact plan"}}}]
+        });
+        let preview = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::Apply,
+            arguments.clone(),
+        );
+        assert!(preview.ok, "{preview:?}");
+        let token = preview.data.as_ref().unwrap()["executionToken"].clone();
+        let others = (0..8)
+            .map(|_| subsystem_picture_workspace("", true))
+            .collect::<Vec<_>>();
+        let admit_others = || {
+            for other in &others {
+                let plan = submit_canonical(
+                    &runtime,
+                    other.path(),
+                    ToolIdentity::Apply,
+                    arguments.clone(),
+                );
+                assert!(plan.ok, "{plan:?}");
+            }
+        };
+        // These are complete public plan calls, not held actor leases. Their
+        // eight distinct profiles cross the production warm cache's LRU edge.
+        admit_others();
+        assert_eq!(crate::test_support::tree_snapshot(&source), before);
+        let executed = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::Apply,
+            serde_json::json!({"executionToken": token}),
+        );
+        assert!(
+            executed.ok,
+            "an issued plan was lost after unrelated profiles: {executed:?}"
+        );
+        let published = crate::test_support::tree_snapshot(&source);
+        assert!(std::fs::read_to_string(source.join("Subsystems/Sales.xml"))
+            .unwrap()
+            .contains("retained exact plan"));
+
+        admit_others();
+        let replayed = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::Apply,
+            serde_json::json!({"executionToken": token}),
+        );
+        assert_eq!(
+            serde_json::to_value(&replayed).unwrap(),
+            serde_json::to_value(&executed).unwrap()
+        );
+        assert_eq!(
+            crate::test_support::tree_snapshot(&source),
+            published,
+            "replay changed the published source"
+        );
+    }
+
+    fn saved_apply_survives_retention_age(age: Duration) {
+        use crate::infrastructure::workspace_actor::with_actor_retention_time_for_test;
+
+        let workspace = subsystem_picture_workspace("", true);
+        let source = workspace.path().join("src");
+        let before = crate::test_support::tree_snapshot(&source);
+        let runtime = bootstrap_runtime();
+        let started = Instant::now();
+        let preview = with_actor_retention_time_for_test(started, || {
+            submit_canonical(
+                &runtime,
+                workspace.path(),
+                ToolIdentity::Apply,
+                serde_json::json!({"at": "main:Subsystem.Sales", "ops": [{"op": "props.set", "args": {"values": {"Comment": "retained after former time limits"}}}]}),
+            )
+        });
+        assert!(preview.ok, "{preview:?}");
+        let token = preview.data.as_ref().unwrap()["executionToken"].clone();
+        assert_eq!(crate::test_support::tree_snapshot(&source), before);
+        let executed = with_actor_retention_time_for_test(started + age, || {
+            submit_canonical(
+                &runtime,
+                workspace.path(),
+                ToolIdentity::Apply,
+                serde_json::json!({"executionToken": token}),
+            )
+        });
+        assert!(
+            executed.ok,
+            "accepted plan was lost after {age:?}: {executed:?}"
+        );
+        let published = crate::test_support::tree_snapshot(&source);
+        assert!(std::fs::read_to_string(source.join("Subsystems/Sales.xml"))
+            .unwrap()
+            .contains("retained after former time limits"));
+        let replayed =
+            with_actor_retention_time_for_test(started + age + Duration::from_secs(601), || {
+                submit_canonical(
+                    &runtime,
+                    workspace.path(),
+                    ToolIdentity::Apply,
+                    serde_json::json!({"executionToken": token}),
+                )
+            });
+        assert_eq!(
+            serde_json::to_value(&replayed).unwrap(),
+            serde_json::to_value(&executed).unwrap()
+        );
+        assert_eq!(crate::test_support::tree_snapshot(&source), published);
+    }
+
+    #[test]
+    fn saved_apply_plan_survives_former_three_hundred_second_expiry() {
+        saved_apply_survives_retention_age(Duration::from_secs(301));
+    }
+
+    #[test]
+    fn saved_apply_plan_survives_former_six_hundred_second_actor_idle_window() {
+        saved_apply_survives_retention_age(Duration::from_secs(601));
+    }
+
+    #[test]
+    fn saved_apply_refusal_replays_after_former_actor_idle_window_without_replanning() {
+        use crate::infrastructure::workspace_actor::with_actor_retention_time_for_test;
+        let workspace = subsystem_picture_workspace("", true);
+        let source = workspace.path().join("src");
+        let runtime = bootstrap_runtime();
+        let started = Instant::now();
+        let preview = with_actor_retention_time_for_test(started, || {
+            submit_canonical(
+                &runtime,
+                workspace.path(),
+                ToolIdentity::Apply,
+                serde_json::json!({"at": "main:Subsystem.Sales", "ops": [{"op": "props.set", "args": {"values": {"Comment": "saved refusal"}}}]}),
+            )
+        });
+        assert!(preview.ok, "{preview:?}");
+        let token = preview.data.as_ref().unwrap()["executionToken"].clone();
+        let descriptor = source.join("Subsystems/Sales.xml");
+        let mut changed = std::fs::read(&descriptor).unwrap();
+        changed.extend_from_slice(b"\n");
+        std::fs::write(&descriptor, changed).unwrap();
+        let before = crate::test_support::tree_snapshot(&source);
+        let refusal = with_actor_retention_time_for_test(started + Duration::from_secs(1), || {
+            submit_canonical(
+                &runtime,
+                workspace.path(),
+                ToolIdentity::Apply,
+                serde_json::json!({"executionToken": token}),
+            )
+        });
+        assert!(
+            !refusal.ok,
+            "changed inputs unexpectedly published: {refusal:?}"
+        );
+        assert_eq!(refusal.diagnostics[0]["code"], "stale_revision");
+        let replay = with_actor_retention_time_for_test(started + Duration::from_secs(602), || {
+            submit_canonical(
+                &runtime,
+                workspace.path(),
+                ToolIdentity::Apply,
+                serde_json::json!({"executionToken": token}),
+            )
+        });
+        assert_eq!(
+            serde_json::to_value(&replay).unwrap(),
+            serde_json::to_value(&refusal).unwrap()
+        );
+        assert_eq!(crate::test_support::tree_snapshot(&source), before);
+    }
+
+    #[derive(Clone, Copy)]
+    enum CleanupBeforePromise {
+        Idle,
+        Release,
+    }
+
+    fn cleanup_before_live_invocation_creates_promise(
+        runtime: &V5CanonicalInvocationRuntime,
+        started: Instant,
+        cleanup: CleanupBeforePromise,
+    ) {
+        use crate::infrastructure::workspace_actor::with_actor_retention_time_for_test;
+        match cleanup {
+            CleanupBeforePromise::Idle => {
+                with_actor_retention_time_for_test(started + Duration::from_secs(601), || {
+                    runtime.workspace_actors.evict_idle_warm_actors().unwrap();
+                });
+            }
+            CleanupBeforePromise::Release => {
+                runtime.workspace_actors.release_warm_actors().unwrap()
+            }
+        }
+    }
+
+    fn saved_apply_token_survives_cleanup_before_live_invocation_creates_plan(
+        cleanup: CleanupBeforePromise,
+    ) {
+        use crate::infrastructure::workspace_actor::with_actor_retention_time_for_test;
+        let workspace = subsystem_picture_workspace("", true);
+        let source = workspace.path().join("src");
+        let before = crate::test_support::tree_snapshot(&source);
+        let runtime = bootstrap_runtime();
+        let started = Instant::now();
+        let request = InvocationRequest::new(
+            ToolIdentity::Apply,
+            serde_json::json!({"at": "main:Subsystem.Sales", "ops": [{"op": "props.set", "args": {"values": {"Comment": "plan created after cleanup"}}}]}),
+            workspace.path().to_string_lossy(),
+            7_000,
+        ).unwrap();
+        // Admission holds the actual actor while its promise tables are still
+        // empty. Cleanup occurs before the real canonical handler saves a plan.
+        let bound = with_actor_retention_time_for_test(started, || runtime.bind(request)).unwrap();
+        let observed = match &bound {
+            V5ActorBoundCanonicalInvocation::Workspace { invocation, .. } => {
+                Arc::downgrade(invocation.actor_for_test())
+            }
+            _ => panic!("apply must bind its workspace actor"),
+        };
+        cleanup_before_live_invocation_creates_promise(&runtime, started, cleanup);
+        let preview = bound
+            .prepare()
+            .unwrap()
+            .execute(CancellationToken::new())
+            .unwrap();
+        assert!(preview.ok, "{preview:?}");
+        assert_eq!(
+            crate::test_support::tree_snapshot(&source),
+            before,
+            "preview must not write"
+        );
+        let token = preview.data.as_ref().unwrap()["executionToken"].clone();
+        // execute consumes and drops the admitted invocation above. No test
+        // Arc keeps that actor alive when the public token request rebinds it.
+        let executed = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::Apply,
+            serde_json::json!({"executionToken": token}),
+        );
+        assert!(
+            executed.ok,
+            "cleanup lost a plan created by a live invocation: {executed:?}"
+        );
+        assert!(
+            observed.upgrade().is_some(),
+            "the promised plan retains its original actor"
+        );
+        let published = crate::test_support::tree_snapshot(&source);
+        assert!(std::fs::read_to_string(source.join("Subsystems/Sales.xml"))
+            .unwrap()
+            .contains("plan created after cleanup"));
+        let replay = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::Apply,
+            serde_json::json!({"executionToken": token}),
+        );
+        assert_eq!(
+            serde_json::to_value(&replay).unwrap(),
+            serde_json::to_value(&executed).unwrap()
+        );
+        assert_eq!(
+            crate::test_support::tree_snapshot(&source),
+            published,
+            "exact replay must not write again"
+        );
+    }
+
+    #[test]
+    fn saved_apply_token_survives_idle_cleanup_before_live_invocation_creates_plan() {
+        saved_apply_token_survives_cleanup_before_live_invocation_creates_plan(
+            CleanupBeforePromise::Idle,
+        );
+    }
+
+    #[test]
+    fn saved_apply_token_survives_warm_release_before_live_invocation_creates_plan() {
+        saved_apply_token_survives_cleanup_before_live_invocation_creates_plan(
+            CleanupBeforePromise::Release,
+        );
+    }
+
+    fn index_work_survives_last_call_and_actor_idle_window(
+        completed_leased: bool,
+        cleanup_before_creation: Option<CleanupBeforePromise>,
+    ) {
+        use crate::infrastructure::workspace_actor::with_actor_retention_time_for_test;
+
+        struct ReleaseProducer(mpsc::Sender<()>);
+        impl Drop for ReleaseProducer {
+            fn drop(&mut self) {
+                let _ = self.0.send(());
+            }
+        }
+        let workspace = subsystem_picture_workspace("", true);
+        let runtime = bootstrap_runtime();
+        let started = Instant::now();
+        let request = || {
+            InvocationRequest::new(
+                ToolIdentity::View,
+                serde_json::json!({"at": "main:Subsystem.Sales"}),
+                workspace.path().to_string_lossy(),
+                7_000,
+            )
+            .unwrap()
+        };
+        let bound =
+            with_actor_retention_time_for_test(started, || runtime.bind(request())).unwrap();
+        let V5ActorBoundCanonicalInvocation::Workspace { invocation, .. } = &bound else {
+            panic!("initial call did not bind its actor");
+        };
+        let actor = invocation.actor_for_test();
+        let observed = Arc::downgrade(actor);
+        if let Some(cleanup) = cleanup_before_creation {
+            cleanup_before_live_invocation_creates_promise(&runtime, started, cleanup);
+        }
+        let binding = actor
+            .bind_provider_root("main", &workspace.path().join("src"))
+            .unwrap();
+        let producers = Arc::new(AtomicUsize::new(0));
+        let first_count = Arc::clone(&producers);
+        let (entered, entered_wait) = mpsc::channel();
+        let (exited, exited_wait) = mpsc::channel();
+        let (release, release_wait) = mpsc::channel();
+        let release = ReleaseProducer(release);
+        let (first_key, first_lease) = actor
+            .join_index_work(
+                &binding,
+                "retention-generation",
+                "rlm",
+                "bsl-1",
+                move |_| {
+                    first_count.fetch_add(1, Ordering::SeqCst);
+                    entered.send(()).unwrap();
+                    release_wait.recv().unwrap();
+                    exited.send(()).unwrap();
+                    Ok(())
+                },
+            )
+            .unwrap();
+        entered_wait.recv_timeout(Duration::from_secs(2)).unwrap();
+        let retained_lease = if completed_leased {
+            release.0.send(()).unwrap();
+            assert!(matches!(
+                first_lease.wait_timeout(Duration::from_secs(2)),
+                crate::application::shared_work::SharedWorkSnapshot::Ready(_)
+            ));
+            Some(first_lease)
+        } else {
+            drop(first_lease);
+            None
+        };
+        drop(bound);
+        let second = with_actor_retention_time_for_test(started + Duration::from_secs(601), || {
+            runtime.bind(request())
+        })
+        .unwrap();
+        let V5ActorBoundCanonicalInvocation::Workspace { invocation, .. } = &second else {
+            panic!("later call did not bind its actor");
+        };
+        let second_actor = invocation.actor_for_test();
+        let same_actor = observed
+            .upgrade()
+            .is_some_and(|first| Arc::ptr_eq(&first, second_actor));
+        let binding = second_actor
+            .bind_provider_root("main", &workspace.path().join("src"))
+            .unwrap();
+        let second_count = Arc::clone(&producers);
+        let (second_key, second_lease) = second_actor
+            .join_index_work(
+                &binding,
+                "retention-generation",
+                "rlm",
+                "bsl-1",
+                move |_| {
+                    second_count.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        let started_duplicate = second_lease.started_here();
+        drop(release);
+        exited_wait.recv_timeout(Duration::from_secs(2)).unwrap();
+        let outcome = second_lease.wait_timeout(Duration::from_secs(2));
+        assert!(matches!(
+            outcome,
+            crate::application::shared_work::SharedWorkSnapshot::Ready(_)
+        ));
+        assert_eq!(
+            first_key, second_key,
+            "the same exact generation changed key"
+        );
+        assert!(
+            !started_duplicate,
+            "idle cleanup lost a live shared-work registry and started another producer"
+        );
+        assert!(same_actor, "shared-work ownership did not retain its actor");
+        assert_eq!(producers.load(Ordering::SeqCst), 1);
+        drop(retained_lease);
+    }
+
+    #[test]
+    fn running_unowned_index_work_survives_last_call_and_actor_idle_window() {
+        index_work_survives_last_call_and_actor_idle_window(false, None);
+    }
+
+    #[test]
+    fn completed_leased_index_work_survives_last_call_and_actor_idle_window() {
+        index_work_survives_last_call_and_actor_idle_window(true, None);
+    }
+
+    #[test]
+    fn running_index_work_survives_idle_cleanup_before_live_invocation_creates_work() {
+        index_work_survives_last_call_and_actor_idle_window(
+            false,
+            Some(CleanupBeforePromise::Idle),
+        );
+    }
+
+    #[test]
+    fn running_index_work_survives_warm_release_before_live_invocation_creates_work() {
+        index_work_survives_last_call_and_actor_idle_window(
+            false,
+            Some(CleanupBeforePromise::Release),
+        );
+    }
+
+    #[test]
     fn saved_apply_more_than_256_plans_keep_earlier_tokens_without_writes() {
         let workspace = subsystem_picture_workspace("", true);
         let source = workspace.path().join("src");
@@ -10208,12 +10652,15 @@ struct ActorLogicalReadLease {"#,
         std::fs::write(
             &source,
             r##"
-use std::{env, fs, thread, time::{Duration, Instant}};
+use std::{env, fs, io::Write, thread, time::{Duration, Instant}};
 fn main() {
     let cwd = env::current_dir().unwrap();
     let dry_run = env::args().any(|arg| arg == "--dry-run");
     let created = cwd.join("created.marker");
     if !dry_run {
+        let mut dispatches = fs::OpenOptions::new().create(true).append(true).open(cwd.join("apply-dispatch.log")).unwrap();
+        writeln!(dispatches, "apply").unwrap();
+        dispatches.sync_all().unwrap();
         fs::write(cwd.join("entered.marker"), "runner entered mutation").unwrap();
         let deadline = Instant::now() + Duration::from_secs(60);
         while !cwd.join("release.marker").exists() {
@@ -10848,7 +11295,80 @@ fn main() {
         );
     }
 
-    fn live_actor_capacity_reuses_alias_and_rejects_only_a_distinct_third_root() {
+    #[test]
+    fn default_actor_registry_admits_sixty_five_profiles_and_retains_exact_live_owners() {
+        let workspace_parent = tempfile::tempdir().unwrap();
+        let roots = (0..65)
+            .map(|index| {
+                let root = workspace_parent.path().join(format!("workspace-{index}"));
+                std::fs::create_dir(&root).unwrap();
+                let root = std::fs::canonicalize(root).unwrap();
+                ensure_platform_xml_workspace(&root.to_string_lossy());
+                root
+            })
+            .collect::<Vec<_>>();
+        let (entered, _entered_wait) = mpsc::channel();
+        let runtime = V5CanonicalInvocationRuntime::new(
+            Arc::new(BlockingService { entered }),
+            Arc::new(TokioClock),
+        );
+        let request = |root: &std::path::Path| {
+            InvocationRequest::new(
+                ToolIdentity::Run,
+                serde_json::json!({"op": "test.long-work", "args": {}}),
+                root.to_string_lossy(),
+                7_000,
+            )
+            .unwrap()
+        };
+        let mut bound = Vec::new();
+        let mut observed = Vec::new();
+        for (index, root) in roots.iter().enumerate() {
+            let admitted = runtime.bind(request(root)).unwrap_or_else(|error| {
+                panic!(
+                    "profile {} was rejected by the default registry: {error:?}",
+                    index + 1
+                )
+            });
+            let V5ActorBoundCanonicalInvocation::Workspace { invocation, .. } = &admitted else {
+                panic!("the supported profile did not bind its workspace actor");
+            };
+            observed.push(Arc::downgrade(invocation.actor_for_test()));
+            bound.push(admitted);
+        }
+        assert_eq!(runtime.workspace_actors.live_len_for_test().unwrap(), 65);
+        runtime.workspace_actors.release_warm_actors().unwrap();
+        assert!(
+            observed.iter().all(|actor| actor.upgrade().is_some()),
+            "warm cleanup released an actor owned by an admitted invocation"
+        );
+        let alias = runtime.bind(request(&roots[0].join("."))).unwrap();
+        let V5ActorBoundCanonicalInvocation::Workspace { invocation, .. } = &alias else {
+            panic!("the alias did not bind its workspace actor");
+        };
+        assert!(Arc::ptr_eq(
+            &observed[0].upgrade().unwrap(),
+            invocation.actor_for_test()
+        ));
+        assert_eq!(runtime.workspace_actors.live_len_for_test().unwrap(), 65);
+
+        runtime.workspace_actors.release_warm_actors().unwrap();
+        drop(alias);
+        drop(bound);
+        runtime.workspace_actors.release_warm_actors().unwrap();
+        assert!(
+            observed.iter().all(|actor| actor.upgrade().is_none()),
+            "completed admissions retained hidden actor ownership"
+        );
+        let _fresh = runtime.bind(request(&roots[0])).unwrap();
+        assert_eq!(
+            runtime.workspace_actors.entry_len_for_test().unwrap(),
+            1,
+            "new admission did not prune dead identities"
+        );
+    }
+
+    fn live_actor_admission_reuses_alias_and_accepts_distinct_roots() {
         let workspace_parent = tempfile::tempdir().unwrap();
         let roots = (0..3)
             .map(|index| {
@@ -10860,10 +11380,9 @@ fn main() {
             })
             .collect::<Vec<_>>();
         let (entered, _entered_wait) = mpsc::channel();
-        let runtime = V5CanonicalInvocationRuntime::with_workspace_actors_for_test(
+        let runtime = V5CanonicalInvocationRuntime::new(
             Arc::new(BlockingService { entered }),
             Arc::new(TokioClock),
-            WorkspaceActorRegistry::with_capacity_for_test(2),
         );
         let request = |root: &std::path::Path| {
             InvocationRequest::new(
@@ -10876,7 +11395,7 @@ fn main() {
         };
 
         // A bound invocation is the durable admission point: its actor lease is
-        // retained before any worker is scheduled, so capacity evidence must not
+        // retained before any worker is scheduled, so ownership evidence must not
         // depend on runner scheduling.
         let first = runtime
             .bind(request(&roots[0]))
@@ -10887,17 +11406,30 @@ fn main() {
         let alias = runtime
             .bind(request(&roots[0].join(".")))
             .expect("an alias of a live root reuses its actor");
-        let rejected = runtime
+        let third = runtime
             .bind(request(&roots[2]))
-            .err()
-            .expect("a distinct third root is refused");
-        assert!(matches!(
-            rejected,
-            V5CanonicalPrepareError::WorkspaceCapacity
+            .expect("a distinct third root is admitted");
+        let V5ActorBoundCanonicalInvocation::Workspace {
+            invocation: first_invocation,
+            ..
+        } = &first
+        else {
+            panic!("first root did not bind a workspace actor");
+        };
+        let V5ActorBoundCanonicalInvocation::Workspace {
+            invocation: alias_invocation,
+            ..
+        } = &alias
+        else {
+            panic!("alias did not bind a workspace actor");
+        };
+        assert!(Arc::ptr_eq(
+            first_invocation.actor_for_test(),
+            alias_invocation.actor_for_test()
         ));
-        assert_eq!(runtime.workspace_actors.entry_len_for_test().unwrap(), 2);
+        assert_eq!(runtime.workspace_actors.entry_len_for_test().unwrap(), 3);
 
-        drop((first, second, alias));
+        drop((first, second, alias, third));
     }
 
     fn concurrent_same_identity_admission_creates_one_actor() {
@@ -10987,8 +11519,8 @@ fn main() {
             .unwrap()
         };
 
-        // Sequential completed workspaces stay bounded by the warm set: the
-        // most recent few actors survive for the next call, nothing beyond.
+        // Within the idle interval, later profiles do not evict earlier actors.
+        // None of these rejected calls issued a saved plan.
         for index in 0..80 {
             let workspace = workspaces.path().join(format!("workspace-{index}"));
             std::fs::create_dir(&workspace).unwrap();
@@ -10997,25 +11529,19 @@ fn main() {
                 !result.ok && result.summary == "test rejection after actor admission",
                 "unexpected outcome: {result:?}"
             );
-            assert!(
-                runtime.workspace_actors.entry_len_for_test().unwrap()
-                    <= crate::infrastructure::workspace_actor::WARM_WORKSPACE_ACTORS
+            assert_eq!(
+                runtime.workspace_actors.entry_len_for_test().unwrap(),
+                index + 1
             );
         }
-        assert_eq!(
-            runtime.workspace_actors.entry_len_for_test().unwrap(),
-            crate::infrastructure::workspace_actor::WARM_WORKSPACE_ACTORS
-        );
+        assert_eq!(runtime.workspace_actors.entry_len_for_test().unwrap(), 80);
 
         // With the warm TTL elapsed every completed workspace releases its
         // actor capability and the registry prunes the dead entry.
         let runtime = V5CanonicalInvocationRuntime::with_workspace_actors_for_test(
             Arc::new(RejectingAfterActorAdmissionService),
             Arc::new(TokioClock),
-            WorkspaceActorRegistry::with_warm_policy_for_test(
-                crate::infrastructure::workspace_actor::WARM_WORKSPACE_ACTORS,
-                Duration::ZERO,
-            ),
+            WorkspaceActorRegistry::with_idle_policy_for_test(Duration::ZERO),
         );
         for index in 0..20 {
             let workspace = workspaces.path().join(format!("expired-{index}"));
@@ -11043,10 +11569,7 @@ fn main() {
         let canonical = V5CanonicalInvocationRuntime::with_workspace_actors_for_test(
             Arc::clone(&service),
             Arc::new(TokioClock),
-            WorkspaceActorRegistry::with_warm_policy_for_test(
-                crate::infrastructure::workspace_actor::WARM_WORKSPACE_ACTORS,
-                Duration::ZERO,
-            ),
+            WorkspaceActorRegistry::with_idle_policy_for_test(Duration::ZERO),
         );
         let daemon = LiveV5Daemon::over(Arc::new(canonical), service);
         let owner = daemon.owner();
@@ -11130,14 +11653,15 @@ fn main() {
     }
 
     #[test]
-    fn daemon_workspace_actor_admission_is_concurrent_bounded_and_fail_closed() {
-        live_actor_capacity_reuses_alias_and_rejects_only_a_distinct_third_root();
+    fn daemon_workspace_actor_admission_is_concurrent_and_fail_closed() {
+        live_actor_admission_reuses_alias_and_accepts_distinct_roots();
         concurrent_same_identity_admission_creates_one_actor();
         poisoned_registry_is_a_closed_internal_error_and_admits_nothing();
         sequential_direct_admissions_release_actor_capabilities_and_prune_dead_entries();
         crate::infrastructure::workspace_actor::tests::warm_registry_reuses_the_same_actor_across_sequential_admissions();
         crate::infrastructure::workspace_actor::tests::warm_actor_expires_after_the_idle_ttl_and_is_rebuilt();
         crate::infrastructure::workspace_actor::tests::warm_actor_whose_named_root_was_replaced_is_rebuilt();
-        crate::infrastructure::workspace_actor::tests::warm_actors_yield_capacity_to_a_distinct_identity();
+        crate::infrastructure::workspace_actor::tests::warm_actors_do_not_block_a_distinct_identity(
+        );
     }
 }

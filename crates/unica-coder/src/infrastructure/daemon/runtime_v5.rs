@@ -8,7 +8,7 @@ use super::protocol_v5::{
 };
 use super::server::{
     CanonicalInvocationService, DaemonServerConfig, V5ActorBoundCanonicalInvocation,
-    V5CanonicalInvocationRuntime, V5CanonicalPrepareError, MAX_HANDSHAKES, MAX_OWNER_SESSIONS,
+    V5CanonicalInvocationRuntime, V5CanonicalPrepareError,
 };
 use crate::application::invocation::{RESPONSE_SERIALIZATION_MARGIN, TASK_RECONCILIATION_BUDGET};
 use crate::application::invocation_store::SystemEpochMillisClock;
@@ -1933,6 +1933,10 @@ impl V5InvocationExecutor {
         Self { invocation_runtime }
     }
 
+    fn has_retained_workspace_work(&self) -> bool {
+        self.invocation_runtime.has_retained_workspace_work()
+    }
+
     fn capture_response_deadline(
         &self,
         response_budget_ms: u64,
@@ -2938,9 +2942,6 @@ impl V5ReceiptRuntime {
                     | V5CanonicalPrepareError::Rejected(result) => {
                         ReceiptTerminalOutcome::Completed { result }
                     }
-                    V5CanonicalPrepareError::WorkspaceCapacity => ReceiptTerminalOutcome::Failed {
-                        reason: V5SafeFailureReason::WorkspaceCapacity,
-                    },
                     V5CanonicalPrepareError::WorkspaceRegistryFailed => {
                         ReceiptTerminalOutcome::Failed {
                             reason: V5SafeFailureReason::WorkspaceRegistryFailed,
@@ -5502,14 +5503,25 @@ fn run_daemon_configured_until(
                     handshake_deadline: Instant::now() + HANDSHAKE_READ_TIMEOUT,
                 };
                 match V5ConnectionSlot::acquire(Arc::clone(&admitted_connections)) {
-                    Some(slot) => sessions.push(spawn_v5_connection_handler(
+                    Some(slot) => match spawn_v5_connection_handler(
                         connection,
                         record.clone(),
                         Arc::clone(&active_leases),
                         Arc::clone(&shutting_down),
                         Arc::clone(&runtime),
                         slot,
-                    )),
+                    ) {
+                        Ok(handler) => sessions.push(handler),
+                        Err(error) => {
+                            // No handler started: its closure released only this
+                            // transport and admission slot. Existing owners keep
+                            // the listener and their work alive.
+                            let _ = writeln!(
+                                io::stderr().lock(),
+                                "protocol-v5 connection handler could not start: {error}"
+                            );
+                        }
+                    },
                     None => reject_overloaded_v5_connection(connection),
                 }
             }
@@ -5524,10 +5536,18 @@ fn run_daemon_configured_until(
         }
 
         sessions = reap_finished_v5_handlers(sessions);
-        if active_leases.is_empty()?
-            && admitted_connections.load(Ordering::Acquire) == 0
+        // Only this listener adds handshake slots. A handler installs its
+        // owner lease before releasing that slot, so observing slots first
+        // cannot combine an old empty lease set with the post-handoff count.
+        let handshakes_empty = admitted_connections.load(Ordering::Acquire) == 0;
+        let owners_empty = active_leases.is_empty()?;
+        runtime.hooks.after_idle_owner_leases_read(owners_empty);
+        let no_active_work = owners_empty
+            && handshakes_empty
             && runtime.active_task_cancellations.is_empty()
-        {
+            && !runtime.invocation_executor.has_retained_workspace_work();
+        runtime.hooks.listener_ownership_observed(no_active_work);
+        if no_active_work {
             if idle_since.elapsed() >= config.idle_grace {
                 break;
             }
@@ -5581,8 +5601,9 @@ fn spawn_v5_connection_handler(
     shutting_down: Arc<AtomicBool>,
     runtime: Arc<V5ReceiptRuntime>,
     slot: V5ConnectionSlot,
-) -> thread::JoinHandle<()> {
-    thread::spawn(move || {
+) -> io::Result<thread::JoinHandle<()>> {
+    let hooks = Arc::clone(&runtime.hooks);
+    hooks.spawn_connection_handler(Box::new(move || {
         let _ = handle_probe_connection(
             connection.stream,
             connection.handshake_deadline,
@@ -5592,7 +5613,7 @@ fn spawn_v5_connection_handler(
             &runtime,
             slot,
         );
-    })
+    }))
 }
 
 fn reject_overloaded_v5_connection(connection: V5AcceptedConnection) {
@@ -5640,9 +5661,6 @@ impl V5LeaseRegistry {
         if leases.contains(&lease) {
             return Ok(V5LeaseAdmission::Duplicate);
         }
-        if leases.len() >= MAX_OWNER_SESSIONS {
-            return Ok(V5LeaseAdmission::Capacity);
-        }
         leases.insert(lease.clone());
         drop(leases);
         Ok(V5LeaseAdmission::Acquired(V5LeaseGuard {
@@ -5662,7 +5680,6 @@ impl V5LeaseRegistry {
 enum V5LeaseAdmission {
     Acquired(V5LeaseGuard),
     Duplicate,
-    Capacity,
 }
 
 struct V5LeaseGuard {
@@ -5686,7 +5703,7 @@ impl V5ConnectionSlot {
     fn acquire(admitted: Arc<AtomicUsize>) -> Option<Self> {
         admitted
             .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                (current < MAX_HANDSHAKES).then_some(current + 1)
+                current.checked_add(1)
             })
             .ok()
             .map(|_| Self { admitted })
@@ -5708,6 +5725,12 @@ fn handle_probe_connection(
     runtime: &Arc<V5ReceiptRuntime>,
     handshake_slot: V5ConnectionSlot,
 ) -> Result<(), String> {
+    runtime.hooks.before_owner_handshake(
+        stream
+            .peer_addr()
+            .map_err(|error| daemon_io_error("inspect accepted protocol-v5 peer", error))?
+            .port(),
+    );
     runtime.ensure_named_authority_before(handshake_deadline)?;
     stream
         .set_nonblocking(false)
@@ -5787,18 +5810,9 @@ fn handle_probe_connection(
             )?;
             return Ok(());
         }
-        V5LeaseAdmission::Capacity => {
-            write_runtime_probe_error_before(
-                &mut stream,
-                runtime,
-                V5DaemonErrorCode::OwnerCapacity,
-                handshake_deadline,
-            )?;
-            return Ok(());
-        }
     };
     // The owner lease fences listener shutdown before pre-authentication admission
-    // is released, so idle observation cannot see a gap between the two states.
+    // is released; the listener observes the admission count before owner leases.
     drop(handshake_slot);
     write_runtime_json_line_before(
         &mut stream,
@@ -5905,6 +5919,9 @@ fn handle_probe_connection(
                 let epoch_ms = runtime.epoch_ms();
                 match runtime.cancel_invocation(receipt_key, epoch_ms, deadlines.operation) {
                     Ok(reply) => {
+                        if runtime.hooks.cancel_response_disconnect() {
+                            return Ok(());
+                        }
                         write_runtime_reply_before(&mut stream, runtime, reply, deadlines.response)
                     }
                     Err(error) => write_runtime_ledger_error_before(
@@ -6001,6 +6018,7 @@ fn handle_probe_connection(
                 let V5ClientRequest::WaitTask { task_id, wait_ms } = decoded.into_request() else {
                     unreachable!("request kind and decoded wait Task variant diverged");
                 };
+                runtime.hooks.wait_task_received(task_id);
                 match runtime.wait_task(task_id, wait_ms, deadlines.operation) {
                     Ok(snapshot) => write_runtime_json_line_before(
                         &mut stream,

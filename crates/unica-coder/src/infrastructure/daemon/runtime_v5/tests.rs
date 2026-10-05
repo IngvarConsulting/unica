@@ -2711,6 +2711,161 @@ fn v5_owner_session_accepts_ping_then_release() {
         .expect("v5 session runtime");
 }
 
+struct HandlerSpawnFailureHooks {
+    fail_next: AtomicBool,
+    failed: mpsc::Sender<()>,
+}
+
+impl V5RuntimeHooks for HandlerSpawnFailureHooks {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn spawn_connection_handler(
+        &self,
+        handler: Box<dyn FnOnce() + Send + 'static>,
+    ) -> io::Result<thread::JoinHandle<()>> {
+        if self.fail_next.swap(false, Ordering::SeqCst) {
+            drop(handler);
+            self.failed
+                .send(())
+                .expect("report actual handler spawn failure");
+            return Err(io::Error::from(io::ErrorKind::WouldBlock));
+        }
+        thread::Builder::new()
+            .name("unica-daemon-connection".into())
+            .spawn(handler)
+    }
+}
+
+struct HandlerSpawnDaemon {
+    stop: Arc<AtomicBool>,
+    streams: Vec<TcpStream>,
+    server: Option<thread::JoinHandle<Result<(), String>>>,
+}
+
+impl Drop for HandlerSpawnDaemon {
+    fn drop(&mut self) {
+        for stream in &self.streams {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(server) = self.server.take() {
+            let _ = server.join();
+        }
+    }
+}
+
+#[test]
+fn handler_spawn_failure_preserves_live_owner_listener_and_next_connection() {
+    use std::io::Read;
+
+    let root = tempfile::tempdir().expect("temporary handler-spawn state root");
+    let state_root = std::fs::canonicalize(root.path()).unwrap();
+    let identity = CoreIdentity::production_v5();
+    let (failed, failed_wait) = mpsc::channel();
+    let hooks = Arc::new(HandlerSpawnFailureHooks {
+        fail_next: AtomicBool::new(false),
+        failed,
+    });
+    let config = DaemonServerConfig::new(
+        state_root.clone(),
+        identity.clone(),
+        Duration::from_millis(80),
+    )
+    .with_runtime_hooks_for_test(hooks.clone());
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = Arc::clone(&stop);
+    let server = thread::spawn(move || {
+        run_daemon_configured_until(
+            config,
+            |runtime| runtime,
+            || server_stop.load(Ordering::SeqCst),
+        )
+    });
+    let mut daemon = HandlerSpawnDaemon {
+        stop,
+        streams: Vec::new(),
+        server: Some(server),
+    };
+    let record = wait_for_v5_record(&state_root, &identity);
+    let (mut owner, mut owner_reader) =
+        connect_v5_owner(&record, &identity, &uuid::Uuid::new_v4().to_string());
+    daemon.streams.push(owner.try_clone().unwrap());
+
+    hooks.fail_next.store(true, Ordering::SeqCst);
+    let mut rejected = TcpStream::connect(record.loopback_addr().unwrap()).unwrap();
+    rejected
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    daemon.streams.push(rejected.try_clone().unwrap());
+    failed_wait
+        .recv_timeout(Duration::from_secs(2))
+        .expect("the accepted connection reached the failing spawn");
+    let closed = rejected.read(&mut [0_u8]);
+    assert!(
+        matches!(closed, Ok(0))
+            || matches!(closed, Err(ref error) if matches!(error.kind(), io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted)),
+        "failed spawn left its transport open: {closed:?}"
+    );
+
+    write_json_line(&mut owner, &json!({"kind": "ping"}));
+    let pong = read_bounded_v5_probe_response_frame(&mut owner_reader)
+        .expect("existing owner remains responsive");
+    assert_eq!(decode_v5_server_response(&pong), Ok(V5ServerResponse::Pong));
+    assert!(
+        !daemon.server.as_ref().unwrap().is_finished(),
+        "handler spawn failure terminated the listener"
+    );
+
+    let (mut successor, mut successor_reader) =
+        connect_v5_owner(&record, &identity, &uuid::Uuid::new_v4().to_string());
+    daemon.streams.push(successor.try_clone().unwrap());
+    write_json_line(&mut successor, &json!({"kind": "ping"}));
+    let pong = read_bounded_v5_probe_response_frame(&mut successor_reader)
+        .expect("next accepted owner remains responsive");
+    assert_eq!(decode_v5_server_response(&pong), Ok(V5ServerResponse::Pong));
+    let state = DaemonStateDirectory::open(&state_root, &identity).unwrap();
+    let current = state
+        .read_v5_endpoint_record()
+        .unwrap()
+        .expect("same listener remains published");
+    assert_eq!(current.instance_id(), record.instance_id());
+    assert_eq!(
+        current.loopback_addr().unwrap(),
+        record.loopback_addr().unwrap()
+    );
+
+    for (stream, reader) in [
+        (&mut successor, &mut successor_reader),
+        (&mut owner, &mut owner_reader),
+    ] {
+        write_json_line(stream, &json!({"kind": "release"}));
+        let released =
+            read_bounded_v5_probe_response_frame(reader).expect("release admitted owner");
+        assert_eq!(
+            decode_v5_server_response(&released),
+            Ok(V5ServerResponse::Released)
+        );
+    }
+    let stopped_before = Instant::now() + Duration::from_secs(5);
+    while !daemon.server.as_ref().unwrap().is_finished() {
+        assert!(
+            Instant::now() < stopped_before,
+            "failed spawn retained admission ownership after both owners released"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+    daemon
+        .server
+        .take()
+        .unwrap()
+        .join()
+        .expect("listener did not panic")
+        .expect("listener shut down after releasing both owners");
+    assert!(state.read_v5_endpoint_record().unwrap().is_none());
+}
+
 #[test]
 fn seven_second_wait_task_keeps_its_requested_operation_window() {
     let task_id = TaskId::new();
@@ -2789,44 +2944,219 @@ fn v5_duplicate_live_owner_lease_is_rejected() {
         .expect("duplicate-lease runtime");
 }
 
-#[test]
-fn v5_rejects_connections_above_handshake_limit() {
-    let root = tempfile::tempdir().expect("temporary handshake-limit state root");
-    let state_root =
-        std::fs::canonicalize(root.path()).expect("physical handshake-limit state root");
+struct HeldOwnerHandshakes {
+    started: mpsc::Sender<u16>,
+    entered: AtomicUsize,
+    released: Mutex<bool>,
+    changed: Condvar,
+    hold_count: usize,
+}
+
+impl HeldOwnerHandshakes {
+    fn release(&self) {
+        *self.released.lock().unwrap() = true;
+        self.changed.notify_all();
+    }
+}
+
+impl V5RuntimeHooks for HeldOwnerHandshakes {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn before_owner_handshake(&self, peer_port: u16) {
+        if self.entered.fetch_add(1, Ordering::SeqCst) >= self.hold_count {
+            return;
+        }
+        self.started.send(peer_port).unwrap();
+        let mut released = self.released.lock().unwrap();
+        while !*released {
+            released = self.changed.wait(released).unwrap();
+        }
+    }
+}
+
+struct AdmissionDaemon {
+    stop: Arc<AtomicBool>,
+    hooks: Arc<HeldOwnerHandshakes>,
+    sockets: Vec<TcpStream>,
+    server: Option<thread::JoinHandle<Result<(), String>>>,
+}
+
+impl Drop for AdmissionDaemon {
+    fn drop(&mut self) {
+        self.hooks.release();
+        for socket in &self.sockets {
+            let _ = socket.shutdown(std::net::Shutdown::Both);
+        }
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(server) = self.server.take() {
+            let _ = server.join();
+        }
+    }
+}
+
+fn admitted_owner_cancel_and_recover(
+    record: &V5EndpointRecord,
+    identity: &CoreIdentity,
+    daemon: &mut AdmissionDaemon,
+) -> Result<(V5ServerResponse, V5ServerResponse, ReceiptKey), String> {
+    let mut stream =
+        TcpStream::connect(record.loopback_addr().unwrap()).map_err(|error| error.to_string())?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .map_err(|error| error.to_string())?;
+    daemon
+        .sockets
+        .push(stream.try_clone().map_err(|error| error.to_string())?);
+    let mut reader = BufReader::new(stream.try_clone().map_err(|error| error.to_string())?);
+    write_json_line(
+        &mut stream,
+        &json!({
+            "kind": "hello", "protocolVersion": 5, "token": record.token(),
+            "coreIdentity": identity.as_str(), "ownerLease": Uuid::new_v4().to_string()
+        }),
+    );
+    let ready =
+        read_bounded_v5_probe_response_frame(&mut reader).map_err(|error| error.to_string())?;
+    let ready = decode_v5_server_response(&ready).map_err(|error| error.to_string())?;
+    if !matches!(ready, V5ServerResponse::Ready { .. }) {
+        return Err(format!(
+            "real cancellation owner handshake was refused: {ready:?}"
+        ));
+    }
+    let key = ReceiptKey::new(
+        InvocationId::new(),
+        TaskId::new(),
+        RequestIdentity::new(
+            identity.digest().clone(),
+            V5ToolIdentity::View,
+            normalized_arguments_hash(&serde_json::Map::new()),
+            request_scope_hash("workspace-a").unwrap(),
+        ),
+    );
+    write_json_line(
+        &mut stream,
+        &serde_json::to_value(V5ClientRequest::CancelInvocation {
+            receipt_key: key.clone(),
+        })
+        .unwrap(),
+    );
+    let cancel =
+        read_bounded_v5_probe_response_frame(&mut reader).map_err(|error| error.to_string())?;
+    let cancel = decode_v5_server_response(&cancel).map_err(|error| error.to_string())?;
+    write_json_line(
+        &mut stream,
+        &serde_json::to_value(V5ClientRequest::RecoverInvocationReceipt {
+            receipt_key: key.clone(),
+        })
+        .unwrap(),
+    );
+    let recovered =
+        read_bounded_v5_probe_response_frame(&mut reader).map_err(|error| error.to_string())?;
+    let recovered = decode_v5_server_response(&recovered).map_err(|error| error.to_string())?;
+    Ok((cancel, recovered, key))
+}
+
+fn cancellation_owner_crosses_admission_count(held_handshakes: usize, held_owners: usize) {
+    let root = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(root.path()).unwrap();
     let identity = CoreIdentity::production_v5();
+    let (started_tx, started_rx) = mpsc::channel();
+    let hooks = Arc::new(HeldOwnerHandshakes {
+        started: started_tx,
+        entered: AtomicUsize::new(0),
+        released: Mutex::new(false),
+        changed: Condvar::new(),
+        hold_count: held_handshakes,
+    });
     let config = DaemonServerConfig::new(
         state_root.clone(),
         identity.clone(),
-        Duration::from_millis(100),
-    );
-    let server = thread::spawn(move || run_daemon(config));
+        Duration::from_secs(30),
+    )
+    .with_runtime_hooks_for_test(hooks.clone());
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = stop.clone();
+    let server = thread::spawn(move || {
+        run_daemon_configured_until(
+            config,
+            |runtime| runtime,
+            || server_stop.load(Ordering::SeqCst),
+        )
+    });
+    let mut daemon = AdmissionDaemon {
+        stop,
+        hooks,
+        sockets: Vec::new(),
+        server: Some(server),
+    };
     let record = wait_for_v5_record(&state_root, &identity);
-    let address = record.loopback_addr().expect("v5 loopback address");
-    let blockers = (0..MAX_HANDSHAKES)
-        .map(|_| TcpStream::connect(address).expect("occupy v5 handshake slot"))
-        .collect::<Vec<_>>();
-    thread::sleep(Duration::from_millis(100));
-
-    let overflow = TcpStream::connect(address).expect("connect overflow v5 handshake");
-    overflow
-        .set_read_timeout(Some(Duration::from_secs(1)))
-        .expect("bound overflow response read");
-    let mut overflow_reader = BufReader::new(overflow);
-    let response = read_bounded_v5_probe_response_frame(&mut overflow_reader)
-        .expect("read overloaded v5 handshake response");
+    let address = record.loopback_addr().unwrap();
+    let mut expected_ports = HashSet::new();
+    for _ in 0..held_handshakes {
+        let stream = TcpStream::connect(address).unwrap();
+        expected_ports.insert(stream.local_addr().unwrap().port());
+        daemon.sockets.push(stream);
+    }
+    let mut observed_ports = HashSet::new();
+    for _ in 0..held_handshakes {
+        observed_ports.insert(
+            started_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("actual accepted handshake handler entered gate"),
+        );
+    }
     assert_eq!(
-        decode_v5_server_response(&response),
-        Ok(V5ServerResponse::Error {
-            code: V5DaemonErrorCode::Overloaded,
-        })
+        observed_ports, expected_ports,
+        "only the actual blocker sockets reached the held handshake gate"
     );
+    for _ in 0..held_owners {
+        let (stream, reader) = connect_v5_owner(&record, &identity, &Uuid::new_v4().to_string());
+        daemon.sockets.push(stream);
+        drop(reader);
+    }
+    let result = admitted_owner_cancel_and_recover(&record, &identity, &mut daemon);
+    drop(daemon);
+    let (cancel, recovered, key) =
+        result.expect("a new real owner must remain able to deliver explicit cancellation");
+    assert_eq!(
+        recovered, cancel,
+        "exact recovery must return the durably accepted cancellation"
+    );
+    assert!(matches!(cancel,
+        V5ServerResponse::Invocation { outcome: V5InvocationResponse::ReceiptPending {
+            receipt_key, phase: V5InvocationPhase::CancelReserved, cancel_requested: true, ..
+        }} if receipt_key == key
+    ));
+}
 
-    drop(blockers);
-    server
-        .join()
-        .expect("join handshake-limit runtime")
-        .expect("handshake-limit runtime");
+#[test]
+fn ninth_connection_delivers_cancel_while_eight_real_handshakes_are_held() {
+    cancellation_owner_crosses_admission_count(8, 0);
+}
+
+#[test]
+fn sixty_fifth_authenticated_owner_delivers_exact_cancellation() {
+    cancellation_owner_crosses_admission_count(0, 64);
+}
+
+#[test]
+fn connection_ownership_survives_former_limit_and_checked_overflow() {
+    let admitted = Arc::new(AtomicUsize::new(0));
+    let mut slots = (0..65)
+        .map(|_| V5ConnectionSlot::acquire(Arc::clone(&admitted)).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(admitted.load(Ordering::Acquire), 65);
+    let held = slots.pop().unwrap();
+    drop(slots);
+    assert_eq!(admitted.load(Ordering::Acquire), 1);
+    drop(held);
+    assert_eq!(admitted.load(Ordering::Acquire), 0);
+
+    let maximum = Arc::new(AtomicUsize::new(usize::MAX));
+    assert!(V5ConnectionSlot::acquire(Arc::clone(&maximum)).is_none());
+    assert_eq!(maximum.load(Ordering::Acquire), usize::MAX);
 }
 
 #[test]
@@ -2869,6 +3199,474 @@ fn live_v5_owner_prevents_idle_listener_shutdown() {
         .join()
         .expect("join owner-idle runtime")
         .expect("owner-idle runtime");
+}
+
+struct PromisedWorkIdleHooks {
+    observations: mpsc::Sender<(Instant, bool)>,
+}
+
+impl V5RuntimeHooks for PromisedWorkIdleHooks {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn after_idle_owner_leases_read(&self, empty: bool) {
+        let _ = self.observations.send((Instant::now(), empty));
+    }
+}
+
+struct PromisedWorkIdleDaemon {
+    // Stop and join before removing the state directory, including on panic.
+    guard: HandlerSpawnDaemon,
+    _state: tempfile::TempDir,
+    state_root: std::path::PathBuf,
+    record: V5EndpointRecord,
+    observations: mpsc::Receiver<(Instant, bool)>,
+}
+
+impl PromisedWorkIdleDaemon {
+    fn start(idle_grace: Duration) -> Self {
+        Self::with_service(
+            idle_grace,
+            super::super::server::actor_capacity_tests::canonical_v13_service(),
+        )
+    }
+
+    fn with_service(
+        idle_grace: Duration,
+        service: Arc<dyn super::super::server::CanonicalInvocationService>,
+    ) -> Self {
+        let state = tempfile::tempdir().unwrap();
+        let state_root = std::fs::canonicalize(state.path()).unwrap();
+        let identity = CoreIdentity::production_v5();
+        let (observations, observed) = mpsc::channel();
+        let config = DaemonServerConfig::new(state_root.clone(), identity.clone(), idle_grace)
+            .with_invocation_service(service)
+            .with_runtime_hooks_for_test(Arc::new(PromisedWorkIdleHooks { observations }));
+        let stop = Arc::new(AtomicBool::new(false));
+        let server_stop = Arc::clone(&stop);
+        let server = thread::spawn(move || {
+            run_daemon_configured_until(
+                config,
+                |runtime| runtime,
+                || server_stop.load(Ordering::SeqCst),
+            )
+        });
+        let guard = HandlerSpawnDaemon {
+            stop,
+            streams: Vec::new(),
+            server: Some(server),
+        };
+        let record = wait_for_v5_record(&state_root, &identity);
+        Self {
+            guard,
+            _state: state,
+            state_root,
+            record,
+            observations: observed,
+        }
+    }
+
+    fn owner(&mut self) -> (TcpStream, BufReader<TcpStream>) {
+        let owner = connect_v5_owner(
+            &self.record,
+            self.record.core_identity(),
+            &uuid::Uuid::new_v4().to_string(),
+        );
+        self.guard.streams.push(owner.0.try_clone().unwrap());
+        owner
+    }
+
+    fn endpoint(&self) -> Option<V5EndpointRecord> {
+        DaemonStateDirectory::open(&self.state_root, self.record.core_identity())
+            .unwrap()
+            .read_v5_endpoint_record()
+            .unwrap()
+    }
+
+    /// Observe the actual listener past the requested interval. Its exit drops
+    /// the sole sender, so an early idle exit is also observed without sleeping.
+    fn observe_until(&self, threshold: Instant) -> bool {
+        let watchdog = Instant::now() + Duration::from_secs(3);
+        loop {
+            match self
+                .observations
+                .recv_timeout(watchdog.saturating_duration_since(Instant::now()))
+            {
+                Ok((observed, _)) if observed >= threshold => return true,
+                Ok(_) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => return false,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    panic!("listener did not reach the idle observation or exit")
+                }
+            }
+        }
+    }
+
+    /// Begin the interval only at a fresh observation of the actual empty
+    /// owner registry after Release, excluding startup and buffered events.
+    fn observe_idle_interval(&self, interval: Duration) -> bool {
+        let released_at = Instant::now();
+        let watchdog = released_at + Duration::from_secs(3);
+        let mut empty_since = None;
+        loop {
+            match self
+                .observations
+                .recv_timeout(watchdog.saturating_duration_since(Instant::now()))
+            {
+                Ok((observed, empty)) if observed >= released_at => {
+                    if empty {
+                        let start = *empty_since.get_or_insert(observed);
+                        if observed.duration_since(start) >= interval {
+                            return true;
+                        }
+                    } else {
+                        empty_since = None;
+                    }
+                }
+                Ok(_) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => return false,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    panic!("listener neither crossed the owner-free idle interval nor exited")
+                }
+            }
+        }
+    }
+
+    fn join(&mut self) {
+        self.guard
+            .server
+            .take()
+            .unwrap()
+            .join()
+            .expect("join promised-work daemon")
+            .expect("promised-work daemon exits cleanly");
+    }
+}
+
+fn promised_work_apply_over_tcp(
+    owner: &mut (TcpStream, BufReader<TcpStream>),
+    workspace: &std::path::Path,
+    arguments: serde_json::Value,
+) -> crate::domain::invocation::DomainResult {
+    promised_work_call_over_tcp(owner, workspace, V5ToolIdentity::Apply, arguments)
+}
+
+fn promised_work_call_over_tcp(
+    owner: &mut (TcpStream, BufReader<TcpStream>),
+    workspace: &std::path::Path,
+    tool: V5ToolIdentity,
+    arguments: serde_json::Value,
+) -> crate::domain::invocation::DomainResult {
+    let invocation = V5InvocationRequest::new(
+        InvocationId::new(),
+        TaskId::new(),
+        tool,
+        arguments.as_object().unwrap().clone(),
+        std::fs::canonicalize(workspace)
+            .unwrap()
+            .display()
+            .to_string(),
+        7_000,
+    )
+    .unwrap();
+    write_json_line(
+        &mut owner.0,
+        &serde_json::to_value(V5ClientRequest::SubmitInvocation { invocation }).unwrap(),
+    );
+    let frame =
+        read_bounded_v5_probe_response_frame(&mut owner.1).expect("read canonical apply response");
+    match decode_v5_server_response(&frame).unwrap() {
+        V5ServerResponse::Invocation {
+            outcome: V5InvocationResponse::Direct { receipt },
+        } => match receipt.terminal() {
+            ReceiptTerminalOutcome::Completed { result } => *result.clone(),
+            other => panic!("apply did not complete: {other:?}"),
+        },
+        other => panic!("apply did not return a direct result: {other:?}"),
+    }
+}
+
+fn promised_work_preview_over_tcp(
+    owner: &mut (TcpStream, BufReader<TcpStream>),
+    workspace: &std::path::Path,
+) -> serde_json::Value {
+    let result = promised_work_apply_over_tcp(
+        owner,
+        workspace,
+        json!({
+            "at": "main:Subsystem.Sales",
+            "ops": [{"op": "props.set", "args": {"values": {"Comment": "kept across idle"}}}]
+        }),
+    );
+    assert!(result.ok, "{result:?}");
+    result.data.unwrap()["executionToken"].clone()
+}
+
+fn release_promised_work_owner(mut owner: (TcpStream, BufReader<TcpStream>)) {
+    write_json_line(&mut owner.0, &json!({"kind": "release"}));
+    let released =
+        read_bounded_v5_probe_response_frame(&mut owner.1).expect("release canonical apply owner");
+    assert_eq!(
+        decode_v5_server_response(&released),
+        Ok(V5ServerResponse::Released)
+    );
+    // Released precedes the server lease guard drop. The idle oracle below
+    // observes the actual empty registry; socket shutdown is best-effort cleanup.
+    let _ = owner.0.shutdown(std::net::Shutdown::Both);
+}
+
+#[test]
+fn daemon_idle_saved_apply_plan_preserves_instance_and_exact_replay_after_owner_release() {
+    let workspace =
+        super::super::server::actor_capacity_tests::subsystem_picture_workspace("", false);
+    let descriptor = workspace.path().join("src/Subsystems/Sales.xml");
+    let before = std::fs::read(&descriptor).unwrap();
+    let idle = Duration::from_millis(80);
+    let mut daemon = PromisedWorkIdleDaemon::start(idle);
+    let mut owner = daemon.owner();
+    let token = promised_work_preview_over_tcp(&mut owner, workspace.path());
+    assert_eq!(
+        before,
+        std::fs::read(&descriptor).unwrap(),
+        "preview must not write"
+    );
+    release_promised_work_owner(owner);
+
+    let observed = daemon.observe_idle_interval(idle * 3);
+    assert_eq!(
+        daemon.endpoint(),
+        Some(daemon.record.clone()),
+        "idle cleanup discarded an unexecuted apply plan and its daemon instance"
+    );
+    assert!(
+        observed,
+        "the original listener must remain alive past idle"
+    );
+    let mut successor = daemon.owner();
+    let arguments = json!({"executionToken": token});
+    let applied = promised_work_apply_over_tcp(&mut successor, workspace.path(), arguments.clone());
+    assert!(applied.ok, "{applied:?}");
+    let written = std::fs::read(&descriptor).unwrap();
+    assert_ne!(before, written);
+    release_promised_work_owner(successor);
+    let observed = daemon.observe_idle_interval(idle * 3);
+    assert_eq!(
+        daemon.endpoint(),
+        Some(daemon.record.clone()),
+        "idle cleanup discarded a completed plan's replay result"
+    );
+    assert!(
+        observed,
+        "completed plan remains promised after all owners release"
+    );
+    let mut replay_owner = daemon.owner();
+    assert_eq!(
+        promised_work_apply_over_tcp(&mut replay_owner, workspace.path(), arguments),
+        applied
+    );
+    assert_eq!(
+        written,
+        std::fs::read(&descriptor).unwrap(),
+        "replay must not mutate again"
+    );
+    release_promised_work_owner(replay_owner);
+}
+
+#[test]
+fn daemon_idle_empty_runtime_still_exits_after_owner_release() {
+    let idle = Duration::from_millis(80);
+    let mut daemon = PromisedWorkIdleDaemon::start(idle);
+    let owner = daemon.owner();
+    release_promised_work_owner(owner);
+    assert!(
+        !daemon.observe_idle_interval(idle * 3),
+        "an empty daemon must still idle out"
+    );
+    daemon.join();
+    assert!(daemon.endpoint().is_none());
+}
+
+#[test]
+fn daemon_idle_saved_apply_plan_does_not_prevent_explicit_stop() {
+    let workspace =
+        super::super::server::actor_capacity_tests::subsystem_picture_workspace("", false);
+    let mut daemon = PromisedWorkIdleDaemon::start(Duration::from_secs(30));
+    let mut owner = daemon.owner();
+    let token = promised_work_preview_over_tcp(&mut owner, workspace.path());
+    assert!(token.as_str().is_some_and(|value| !value.is_empty()));
+    release_promised_work_owner(owner);
+    daemon.guard.stop.store(true, Ordering::SeqCst);
+    assert!(
+        !daemon.observe_until(Instant::now() + Duration::from_secs(1)),
+        "explicit stop must exit despite a pending apply plan"
+    );
+    daemon.join();
+    assert!(daemon.endpoint().is_none());
+}
+
+type IdleIndexLease = crate::application::shared_work::SharedWorkLease<
+    (),
+    crate::application::shared_work::LongWorkFailure,
+>;
+type IdleIndexGate = Arc<(Mutex<bool>, Condvar)>;
+
+struct IdleIndexService {
+    calls: AtomicUsize,
+    producers: Arc<AtomicUsize>,
+    entered: mpsc::Sender<()>,
+    exited: mpsc::Sender<()>,
+    release: IdleIndexGate,
+    follower: mpsc::Sender<IdleIndexLease>,
+}
+
+impl super::super::server::CanonicalInvocationService for IdleIndexService {
+    fn prepare(
+        &self,
+        _invocation: &super::super::server::ActorBoundInvocation,
+    ) -> Result<
+        crate::application::operation_descriptors::ExecutionClass,
+        Box<crate::domain::invocation::DomainResult>,
+    > {
+        Ok(crate::application::operation_descriptors::ExecutionClass::InlineCandidate)
+    }
+
+    fn execute(
+        &self,
+        invocation: &super::super::server::ActorBoundExecution,
+        _cancellation: CancellationToken,
+    ) -> Result<crate::domain::invocation::DomainResult, crate::domain::invocation::InvocationFailure>
+    {
+        let producers = Arc::clone(&self.producers);
+        let entered = self.entered.clone();
+        let exited = self.exited.clone();
+        let release = Arc::clone(&self.release);
+        let (_, lease) = invocation
+            .join_index_work(
+                "rlm",
+                "idle-test-profile",
+                "idle-test-generation",
+                move |_| {
+                    producers.fetch_add(1, Ordering::SeqCst);
+                    entered.send(()).unwrap();
+                    let (released, changed) = &*release;
+                    let mut released = released.lock().unwrap();
+                    while !*released {
+                        released = changed.wait(released).unwrap();
+                    }
+                    exited.send(()).unwrap();
+                    Ok(())
+                },
+            )
+            .map_err(|error| {
+                crate::domain::invocation::InvocationFailure::new("index_failed", error)
+            })?;
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            assert!(lease.started_here());
+            drop(lease);
+        } else {
+            assert!(
+                !lease.started_here(),
+                "later RPC must attach to the original live producer"
+            );
+            self.follower.send(lease).unwrap();
+        }
+        Ok(crate::domain::invocation::DomainResult::success(
+            "index joined",
+        ))
+    }
+}
+
+struct IdleIndexProducerCleanup {
+    release: IdleIndexGate,
+    exited: mpsc::Receiver<()>,
+}
+
+impl IdleIndexProducerCleanup {
+    fn release(&self) {
+        let (released, changed) = &*self.release;
+        *released.lock().unwrap() = true;
+        changed.notify_all();
+    }
+}
+
+impl Drop for IdleIndexProducerCleanup {
+    fn drop(&mut self) {
+        self.release();
+        // Also settle the cooperative producer on a RED assertion before the
+        // follower is obtained; the normal path verifies actual Ready below.
+        let _ = self.exited.recv_timeout(Duration::from_secs(3));
+    }
+}
+
+#[test]
+fn daemon_idle_running_index_producer_without_rpc_or_lease_preserves_instance_then_retires() {
+    let workspace =
+        super::super::server::actor_capacity_tests::subsystem_picture_workspace("", false);
+    let producers = Arc::new(AtomicUsize::new(0));
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    let (entered, started) = mpsc::channel();
+    let (exited, finished) = mpsc::channel();
+    let (follower, joined) = mpsc::channel();
+    let service = Arc::new(IdleIndexService {
+        calls: AtomicUsize::new(0),
+        producers: Arc::clone(&producers),
+        entered,
+        exited,
+        release: Arc::clone(&release),
+        follower,
+    });
+    let idle = Duration::from_millis(80);
+    let mut daemon = PromisedWorkIdleDaemon::with_service(idle, service);
+    // Declared after the daemon so failure releases the producer before the
+    // daemon's stop/join guard runs. No SharedWork lease is retained here.
+    let cleanup = IdleIndexProducerCleanup {
+        release,
+        exited: finished,
+    };
+    let mut owner = daemon.owner();
+    let call = |owner: &mut (TcpStream, BufReader<TcpStream>)| {
+        promised_work_call_over_tcp(
+            owner,
+            workspace.path(),
+            V5ToolIdentity::View,
+            json!({"at": "main:Subsystem.Sales"}),
+        )
+    };
+    assert!(call(&mut owner).ok);
+    started
+        .recv_timeout(Duration::from_secs(2))
+        .expect("the real SharedWork producer starts");
+    release_promised_work_owner(owner);
+    let observed = daemon.observe_idle_interval(idle * 3);
+    assert_eq!(
+        daemon.endpoint(),
+        Some(daemon.record.clone()),
+        "idle shutdown lost a running index producer after the RPC and its lease ended"
+    );
+    assert!(observed);
+    let mut successor = daemon.owner();
+    assert!(call(&mut successor).ok);
+    let lease = joined
+        .recv_timeout(Duration::from_secs(2))
+        .expect("second real RPC attaches to the same exact index work");
+    assert_eq!(producers.load(Ordering::SeqCst), 1);
+    release_promised_work_owner(successor);
+    cleanup.release();
+    assert!(
+        matches!(
+            lease.wait_timeout(Duration::from_secs(2)),
+            crate::application::shared_work::SharedWorkSnapshot::Ready(_)
+        ),
+        "producer must actually settle before its last lease is released"
+    );
+    drop(lease);
+    assert!(
+        !daemon.observe_idle_interval(idle * 3),
+        "completed index work with no leases must allow empty daemon idle cleanup"
+    );
+    daemon.join();
+    assert!(daemon.endpoint().is_none());
 }
 
 #[test]
@@ -3307,5 +4105,163 @@ fn displaced_runtime_cannot_write_a_response_after_the_final_authority_check() {
     assert!(
         response.is_empty(),
         "displaced response escaped: {response:?}"
+    );
+}
+
+struct IdleHandoffHooks {
+    accepted: AtomicBool,
+    paused: AtomicBool,
+    reported: AtomicBool,
+    handler_gate: Arc<(Mutex<bool>, std::sync::Condvar)>,
+    listener_gate: Arc<(Mutex<bool>, std::sync::Condvar)>,
+    owner_read: mpsc::Sender<bool>,
+    decision: mpsc::Sender<bool>,
+}
+
+fn release_idle_handoff_gate(gate: &(Mutex<bool>, std::sync::Condvar)) {
+    *gate.0.lock().unwrap() = true;
+    gate.1.notify_all();
+}
+
+fn wait_idle_handoff_gate(gate: &(Mutex<bool>, std::sync::Condvar)) {
+    let mut open = gate.0.lock().unwrap();
+    while !*open {
+        open = gate.1.wait(open).unwrap();
+    }
+}
+
+impl V5RuntimeHooks for IdleHandoffHooks {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn before_owner_handshake(&self, _peer_port: u16) {
+        self.accepted.store(true, Ordering::Release);
+        wait_idle_handoff_gate(&self.handler_gate);
+    }
+
+    fn after_idle_owner_leases_read(&self, empty: bool) {
+        if self.accepted.load(Ordering::Acquire) && !self.paused.swap(true, Ordering::AcqRel) {
+            self.owner_read.send(empty).unwrap();
+            wait_idle_handoff_gate(&self.listener_gate);
+        }
+    }
+
+    fn listener_ownership_observed(&self, no_active_work: bool) {
+        if self.paused.load(Ordering::Acquire) && !self.reported.swap(true, Ordering::AcqRel) {
+            self.decision.send(no_active_work).unwrap();
+        }
+    }
+}
+
+struct IdleHandoffDaemon {
+    hooks: Arc<IdleHandoffHooks>,
+    stop: Arc<AtomicBool>,
+    transports: Vec<TcpStream>,
+    server: Option<thread::JoinHandle<Result<(), String>>>,
+}
+
+impl Drop for IdleHandoffDaemon {
+    fn drop(&mut self) {
+        release_idle_handoff_gate(&self.hooks.handler_gate);
+        release_idle_handoff_gate(&self.hooks.listener_gate);
+        for transport in &self.transports {
+            let _ = transport.shutdown(std::net::Shutdown::Both);
+        }
+        self.stop.store(true, Ordering::Release);
+        if let Some(server) = self.server.take() {
+            let _ = server.join();
+        }
+    }
+}
+
+#[test]
+fn owner_handoff_between_idle_reads_keeps_listener_and_exact_owner_alive() {
+    let root = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(root.path()).unwrap();
+    let identity = CoreIdentity::production_v5();
+    let (owner_read, owner_read_wait) = mpsc::channel();
+    let (decision, decision_wait) = mpsc::channel();
+    let hooks = Arc::new(IdleHandoffHooks {
+        accepted: AtomicBool::new(false),
+        paused: AtomicBool::new(false),
+        reported: AtomicBool::new(false),
+        handler_gate: Arc::new((Mutex::new(false), std::sync::Condvar::new())),
+        listener_gate: Arc::new((Mutex::new(false), std::sync::Condvar::new())),
+        owner_read,
+        decision,
+    });
+    let config = DaemonServerConfig::new(
+        state_root.clone(),
+        identity.clone(),
+        Duration::from_millis(500),
+    )
+    .with_runtime_hooks_for_test(hooks.clone());
+    let stop = Arc::new(AtomicBool::new(false));
+    let listener_stop = Arc::clone(&stop);
+    let server = thread::spawn(move || {
+        run_daemon_configured_until(
+            config,
+            |runtime| runtime,
+            || listener_stop.load(Ordering::Acquire),
+        )
+    });
+    let mut daemon = IdleHandoffDaemon {
+        hooks: Arc::clone(&hooks),
+        stop,
+        transports: Vec::new(),
+        server: Some(server),
+    };
+    let record = wait_for_v5_record(&state_root, &identity);
+    let mut owner = TcpStream::connect(record.loopback_addr().unwrap()).unwrap();
+    owner
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    daemon.transports.push(owner.try_clone().unwrap());
+    let mut owner_reader = BufReader::new(owner.try_clone().unwrap());
+    assert!(
+        owner_read_wait
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap(),
+        "listener did not read the genuinely empty owner registry before handoff"
+    );
+    // Keep the real listener between its two ownership reads beyond its idle
+    // grace. This sleep crosses the production Instant-based maintenance clock;
+    // gates, rather than timing, determine the handoff interleaving.
+    thread::sleep(Duration::from_millis(550));
+    write_json_line(
+        &mut owner,
+        &json!({
+            "kind": "hello", "protocolVersion": 5, "token": record.token(),
+            "coreIdentity": identity.as_str(), "ownerLease": uuid::Uuid::new_v4().to_string(),
+        }),
+    );
+    release_idle_handoff_gate(&hooks.handler_gate);
+    let ready = read_bounded_v5_probe_response_frame(&mut owner_reader).unwrap();
+    assert!(matches!(
+        decode_v5_server_response(&ready),
+        Ok(V5ServerResponse::Ready { .. })
+    ));
+    // Ready is written after lease acquisition and handshake-slot release.
+    release_idle_handoff_gate(&hooks.listener_gate);
+    assert!(
+        !decision_wait.recv_timeout(Duration::from_secs(2)).unwrap(),
+        "idle observation lost an authenticated owner during handshake handoff"
+    );
+    write_json_line(&mut owner, &json!({"kind": "ping"}));
+    let pong = read_bounded_v5_probe_response_frame(&mut owner_reader).unwrap();
+    assert_eq!(decode_v5_server_response(&pong), Ok(V5ServerResponse::Pong));
+    let (mut next, mut next_reader) =
+        connect_v5_owner(&record, &identity, &uuid::Uuid::new_v4().to_string());
+    daemon.transports.push(next.try_clone().unwrap());
+    write_json_line(&mut next, &json!({"kind": "ping"}));
+    let pong = read_bounded_v5_probe_response_frame(&mut next_reader).unwrap();
+    assert_eq!(decode_v5_server_response(&pong), Ok(V5ServerResponse::Pong));
+    let state = DaemonStateDirectory::open(&state_root, &identity).unwrap();
+    let current = state.read_v5_endpoint_record().unwrap().unwrap();
+    assert_eq!(current.instance_id(), record.instance_id());
+    assert_eq!(
+        current.loopback_addr().unwrap(),
+        record.loopback_addr().unwrap()
     );
 }
