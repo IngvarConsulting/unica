@@ -941,6 +941,124 @@ class ProductContractTests(unittest.TestCase):
             any("closed" in error for error in validator(pre_0_9_0, 4, "main"))
         )
 
+    def test_v8_runner_zero_source_preview_requires_an_undispatched_launch_receipt(self) -> None:
+        module = load_contract_module()
+        envelope = {
+            "ok": True,
+            "command": "launch",
+            "data": {
+                "ok": True,
+                "mode": "thin",
+                "provider_dispatched": False,
+                "pid": None,
+            },
+        }
+        self.assertEqual(module.validate_v8_runner_zero_source_preview(envelope, 0), [])
+        self.assertTrue(module.validate_v8_runner_zero_source_preview(envelope, 2))
+        for malformed in [None, [], {}, {"data": []}]:
+            with self.subTest(malformed=malformed):
+                self.assertTrue(module.validate_v8_runner_zero_source_preview(malformed, 0))
+        for scope, field, invalid in [
+            ((), "ok", [False, 1, "true", None]),
+            ((), "command", ["build", None]),
+            (("data",), "ok", [False, 1, "true", None]),
+            (("data",), "mode", ["thick", None]),
+            (("data",), "provider_dispatched", [True, 0, "false", None]),
+            (("data",), "pid", [1, 0, False, ""]),
+        ]:
+            for value in invalid:
+                with self.subTest(field=field, value=value):
+                    changed = copy.deepcopy(envelope)
+                    container = changed[scope[0]] if scope else changed
+                    container[field] = value
+                    self.assertTrue(module.validate_v8_runner_zero_source_preview(changed, 0))
+            with self.subTest(field=field, missing=True):
+                changed = copy.deepcopy(envelope)
+                container = changed[scope[0]] if scope else changed
+                del container[field]
+                self.assertTrue(module.validate_v8_runner_zero_source_preview(changed, 0))
+
+    def test_v8_runner_native_contract_checks_zero_source_preview_before_waited_control(self) -> None:
+        module = load_contract_module()
+        for failure in [
+            None, "preview_dispatch", "invalid_json", "invalid_receipt", "missing_dispatch",
+            "changed_config", "changed_infobase",
+        ]:
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
+                runner = Path(tmp) / "runner"
+                runner.write_bytes(b"runner")
+                calls = []
+
+                def compile_stub(source, binary, root, label):
+                    binary.write_bytes(b"platform")
+                    return []
+
+                def run(command, **kwargs):
+                    calls.append(command)
+                    root = kwargs["cwd"]
+                    marker = root / "platform" / "bin" / "client-dispatched"
+                    config = Path(command[command.index("--config") + 1]).read_text()
+                    if "--dry-run" in command:
+                        self.assertEqual(command[-3:], ["launch", "thin", "--dry-run"])
+                        self.assertIn("source-set: []\n", config)
+                        self.assertNotIn("CONFIGURATION", config)
+                        # Legacy preview logging is allowed; input mutation is not.
+                        (root / "work" / "preview.log").write_text("previewed")
+                        if failure == "changed_config":
+                            Path(command[command.index("--config") + 1]).write_text(
+                                config + "# rewritten by provider\n"
+                            )
+                        if failure == "changed_infobase":
+                            (root / "ib" / "1Cv8.1CD").write_bytes(b"unexpected database")
+                        if failure == "preview_dispatch":
+                            marker.write_bytes(b"dispatched")
+                        payload = {
+                            "ok": True, "command": "launch",
+                            "data": {"ok": True, "mode": "thin", "pid": None,
+                                     "provider_dispatched": False},
+                        }
+                        if failure == "invalid_receipt":
+                            payload["data"]["provider_dispatched"] = True
+                    else:
+                        self.assertEqual(len(calls), 2)
+                        self.assertIn("type: CONFIGURATION", config)
+                        self.assertIn("--wait-for-exit", command)
+                        if failure != "missing_dispatch":
+                            marker.write_bytes(b"dispatched")
+                        execute = command[command.index("--execute") + 1]
+                        output = command[command.index("--output") + 1]
+                        stderr = command[command.index("--stderr-output") + 1]
+                        Path(output).write_text(module.V8_RUNNER_BOUNDED_OUTPUT_MARKER)
+                        Path(stderr).write_text(module.V8_RUNNER_BOUNDED_STDERR_MARKER)
+                        payload = {"data": {"external_epf_wait": {
+                            "pid": 123, "execute_path": execute, "exit_code": 7,
+                            "timed_out": False, "output_path": output, "stderr_path": stderr,
+                        }}}
+                    stdout = "{" if failure == "invalid_json" else json.dumps(payload)
+                    return subprocess.CompletedProcess(command, 0, stdout, "")
+
+                with (
+                    patch.object(module, "compile_rust_platform_stub", side_effect=compile_stub),
+                    patch.object(module.subprocess, "run", side_effect=run),
+                ):
+                    errors = module.check_v8_runner_bounded_external_epf_contract(runner, "linux-x64")
+                if failure is None:
+                    self.assertEqual(errors, [])
+                else:
+                    expected = {
+                        "preview_dispatch": "preview dispatched",
+                        "invalid_json": "preview returned invalid JSON",
+                        "invalid_receipt": "provider_dispatched must be false",
+                        "missing_dispatch": "control did not dispatch",
+                        "changed_config": "preview changed its configuration",
+                        "changed_infobase": "preview changed the initially empty infobase",
+                    }[failure]
+                    self.assertTrue(any(expected in error for error in errors), errors)
+                self.assertEqual(
+                    len(calls),
+                    2 if failure in {None, "missing_dispatch"} else 1,
+                )
+
     def test_v8_runner_bounded_external_epf_result_accepts_exit_seven_artifacts(
         self,
     ) -> None:
