@@ -1047,6 +1047,7 @@ mod tests {
         let mut bytes = b"<A>".to_vec();
         bytes.resize(2 * 64 * 1024, b'x');
         bytes.extend_from_slice(b"</A>\n");
+        let working_bytes = bytes.len() as u64;
         std::fs::write(root.join("src/A.xml"), bytes).unwrap();
         let request = InvocationRequest::new(
             ToolIdentity::Check,
@@ -1055,6 +1056,7 @@ mod tests {
             7_000,
         )
         .unwrap();
+        let normalized_root = super::normalize_path_identity(&root).unwrap();
         let continuations = RootCheckContinuationStore::default();
         for step in 0..4 {
             if step < 3 {
@@ -1082,6 +1084,15 @@ mod tests {
             if step < 3 {
                 assert_eq!(data["readinessState"], "incomplete");
                 assert!(repeat);
+                let state = continuations.for_workspace(&normalized_root).unwrap();
+                assert_eq!(
+                    state
+                        .lock()
+                        .unwrap()
+                        .working_eol_offset_for_test("src/A.xml"),
+                    Some(((step + 1) * 64 * 1024).min(working_bytes)),
+                    "root check must retain and advance the working-file offset",
+                );
             } else {
                 assert_eq!(data["readinessState"], "complete");
                 assert!(!repeat);

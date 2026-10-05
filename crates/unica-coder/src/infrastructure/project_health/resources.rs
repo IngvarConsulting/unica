@@ -236,6 +236,14 @@ impl ResourceContinuation {
     const INDEX_CHARGE: usize = 2 * std::mem::size_of::<(EvidenceKey, IndexEol)>() + 64;
     const WORKING_CHARGE: usize = 2 * std::mem::size_of::<(EvidenceKey, WorkingEolEvidence)>() + 64;
 
+    #[cfg(test)]
+    pub(crate) fn working_eol_offset_for_test(&self, path: &str) -> Option<u64> {
+        match self.working_eol.get(&working_evidence_key(path))?.eol {
+            WorkingEolProgress::Partial(scanner) => Some(scanner.offset),
+            WorkingEolProgress::Complete(_) => None,
+        }
+    }
+
     fn index_eol_batch_files(&self) -> usize {
         self.index_eol_batch_files
             .unwrap_or(MAX_INDEX_EOL_BATCH_FILES)
