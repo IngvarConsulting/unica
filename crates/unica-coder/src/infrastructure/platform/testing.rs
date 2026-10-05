@@ -135,18 +135,38 @@ pub(crate) fn attempt_retained_regular_file_relocation_for_test(
 
 #[cfg(windows)]
 fn windows_retained_name_relocation_was_prevented(error: &io::Error) -> bool {
-    const ERROR_ACCESS_DENIED: i32 = 5;
-    const ERROR_SHARING_VIOLATION: i32 = 32;
-
-    matches!(
-        error.raw_os_error(),
-        Some(ERROR_ACCESS_DENIED) | Some(ERROR_SHARING_VIOLATION)
-    )
+    error.raw_os_error() == Some(windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED as i32)
+        || super::filesystem::is_file_sharing_violation(error)
 }
 
 #[cfg(not(windows))]
 fn windows_retained_name_relocation_was_prevented(_error: &io::Error) -> bool {
     false
+}
+
+#[cfg(windows)]
+pub(crate) fn sharing_violation_error_cases_for_test() -> [(io::Error, bool); 2] {
+    use windows_sys::Win32::Foundation::{ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION};
+
+    [
+        (
+            io::Error::from_raw_os_error(ERROR_SHARING_VIOLATION as i32),
+            true,
+        ),
+        (
+            io::Error::from_raw_os_error(ERROR_LOCK_VIOLATION as i32),
+            false,
+        ),
+    ]
+}
+
+#[cfg(not(windows))]
+pub(crate) fn sharing_violation_error_cases_for_test() -> [(io::Error, bool); 2] {
+    // The same numeric errno values must not acquire Windows semantics here.
+    [
+        (io::Error::from_raw_os_error(32), false),
+        (io::Error::from_raw_os_error(33), false),
+    ]
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
