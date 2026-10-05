@@ -11,6 +11,9 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/v13_workspace_bootstrap.rs::root_eol_timeout_keeps_earlier_attribute_failure
   - crates/unica-coder/src/infrastructure/project_health/resources.rs::continued_repository_eol_resumes_after_a_staged_timeout_and_rechecks_working_bytes
   - crates/unica-coder/src/infrastructure/project_health/resources.rs::continued_working_eol_rejects_a_new_file_and_late_cancellation
+  - crates/unica-coder/src/infrastructure/project_health/resources.rs::continued_working_eol_resumes_inside_one_file_across_deadlines
+  - crates/unica-coder/src/infrastructure/project_health/resources.rs::continued_working_eol_discards_partial_state_when_fingerprint_changes
+  - crates/unica-coder/src/infrastructure/daemon/v13_workspace_bootstrap.rs::root_check_resumes_inside_working_file_without_losing_attribute_failure
   - crates/unica-coder/src/infrastructure/project_health/resources.rs::continued_staged_eol_malformed_protocol_keeps_attribute_findings
   - crates/unica-coder/src/infrastructure/project_health/resources.rs::final_index_change_invalidates_earlier_attribute_findings
 gap: https://github.com/IngvarConsulting/unica/issues/970

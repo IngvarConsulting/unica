@@ -46,14 +46,16 @@ const MAX_CONTINUATION_EVIDENCE_BYTES: usize = 32 * 1024 * 1024;
 const CONTINUATION_TTL: Duration = Duration::from_secs(15 * 60);
 
 #[cfg(test)]
+type WorkingEolBlockHook = Box<dyn FnOnce() -> Result<(), WorkingEolInspectionError>>;
+
+#[cfg(test)]
 thread_local! {
     static BEFORE_WORKING_REVALIDATION: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         std::cell::RefCell::new(None);
     static STAGED_EOL_STOP_AFTER: std::cell::Cell<Option<usize>> =
         const { std::cell::Cell::new(None) };
-    static AFTER_WORKING_EOL_BLOCK: std::cell::RefCell<
-        Option<Box<dyn FnOnce() -> Result<(), WorkingEolInspectionError>>>
-    > = std::cell::RefCell::new(None);
+    static AFTER_WORKING_EOL_BLOCK: std::cell::RefCell<Option<WorkingEolBlockHook>> =
+        std::cell::RefCell::new(None);
 }
 
 #[cfg(test)]
@@ -4416,11 +4418,17 @@ mod tests {
         );
     }
 
-    static DEADLINE_CLOCK_TICKS: AtomicUsize = AtomicUsize::new(0);
+    thread_local! {
+        static DEADLINE_CLOCK_TICKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
     static DEADLINE_CLOCK_ORIGIN: OnceLock<Instant> = OnceLock::new();
 
     fn advancing_deadline_clock() -> Instant {
-        let tick = DEADLINE_CLOCK_TICKS.fetch_add(1, Ordering::SeqCst) as u64;
+        let tick = DEADLINE_CLOCK_TICKS.with(|ticks| {
+            let tick = ticks.get();
+            ticks.set(tick + 1);
+            tick as u64
+        });
         *DEADLINE_CLOCK_ORIGIN.get_or_init(Instant::now) + Duration::from_millis(tick)
     }
 
@@ -4430,7 +4438,7 @@ mod tests {
         let path = temp.path().join("large.xml");
         fs::write(&path, vec![b'x'; 128 * 1024]).unwrap();
         let physical_root = fs::canonicalize(temp.path()).unwrap();
-        DEADLINE_CLOCK_TICKS.store(0, Ordering::SeqCst);
+        DEADLINE_CLOCK_TICKS.with(|ticks| ticks.set(0));
         let deadline = ProviderDeadline::with_clock(
             advancing_deadline_clock() + Duration::from_millis(2),
             advancing_deadline_clock,
@@ -5583,7 +5591,7 @@ mod tests {
             let reads = bytes.len().div_ceil(64 * 1024);
             let mut completed = false;
             for step in 0..=reads {
-                DEADLINE_CLOCK_TICKS.store(0, Ordering::SeqCst);
+                DEADLINE_CLOCK_TICKS.with(|ticks| ticks.set(0));
                 let deadline = ProviderDeadline::with_clock(
                     advancing_deadline_clock()
                         + Duration::from_millis(if step == reads { 4 } else { 3 }),
@@ -5609,7 +5617,7 @@ mod tests {
                             ((step + 1) * 64 * 1024).min(bytes.len()) as u64
                         );
                         if step < reads {
-                            assert_eq!(DEADLINE_CLOCK_TICKS.load(Ordering::SeqCst), 4);
+                            assert_eq!(DEADLINE_CLOCK_TICKS.with(|ticks| ticks.get()), 4);
                         }
                     }
                     Ok((eol, fingerprint)) => {
@@ -5639,7 +5647,7 @@ mod tests {
         let mut reader = ShortReader(std::io::Cursor::new(bytes));
         let mut scanner = super::WorkingEolScanner::default();
         for step in 0..=bytes.len() {
-            DEADLINE_CLOCK_TICKS.store(0, Ordering::SeqCst);
+            DEADLINE_CLOCK_TICKS.with(|ticks| ticks.set(0));
             let deadline = ProviderDeadline::with_clock(
                 advancing_deadline_clock()
                     + Duration::from_millis(if step == bytes.len() { 4 } else { 3 }),
