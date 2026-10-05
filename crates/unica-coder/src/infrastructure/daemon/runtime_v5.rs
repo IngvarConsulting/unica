@@ -5502,14 +5502,25 @@ fn run_daemon_configured_until(
                     handshake_deadline: Instant::now() + HANDSHAKE_READ_TIMEOUT,
                 };
                 match V5ConnectionSlot::acquire(Arc::clone(&admitted_connections)) {
-                    Some(slot) => sessions.push(spawn_v5_connection_handler(
+                    Some(slot) => match spawn_v5_connection_handler(
                         connection,
                         record.clone(),
                         Arc::clone(&active_leases),
                         Arc::clone(&shutting_down),
                         Arc::clone(&runtime),
                         slot,
-                    )),
+                    ) {
+                        Ok(handler) => sessions.push(handler),
+                        Err(error) => {
+                            // No handler started: its closure released only this
+                            // transport and admission slot. Existing owners keep
+                            // the listener and their work alive.
+                            let _ = writeln!(
+                                io::stderr().lock(),
+                                "protocol-v5 connection handler could not start: {error}"
+                            );
+                        }
+                    },
                     None => reject_overloaded_v5_connection(connection),
                 }
             }
@@ -5581,8 +5592,9 @@ fn spawn_v5_connection_handler(
     shutting_down: Arc<AtomicBool>,
     runtime: Arc<V5ReceiptRuntime>,
     slot: V5ConnectionSlot,
-) -> thread::JoinHandle<()> {
-    thread::spawn(move || {
+) -> io::Result<thread::JoinHandle<()>> {
+    let hooks = Arc::clone(&runtime.hooks);
+    hooks.spawn_connection_handler(Box::new(move || {
         let _ = handle_probe_connection(
             connection.stream,
             connection.handshake_deadline,
@@ -5592,7 +5604,7 @@ fn spawn_v5_connection_handler(
             &runtime,
             slot,
         );
-    })
+    }))
 }
 
 fn reject_overloaded_v5_connection(connection: V5AcceptedConnection) {
