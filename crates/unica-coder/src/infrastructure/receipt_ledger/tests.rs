@@ -29,6 +29,9 @@ use std::io::{Read, Write};
 use std::str::FromStr;
 use std::time::{Duration, Instant};
 
+#[cfg(test)]
+mod crash_process_tests;
+
 const INVOCATION_A: &str = "11111111-1111-4111-8111-111111111111";
 const INVOCATION_B: &str = "22222222-2222-4222-8222-222222222222";
 const TASK_A: &str = "33333333-3333-4333-8333-333333333333";
@@ -2713,110 +2716,6 @@ fn compact_tombstone_fits_512_bytes_at_the_maximum_valid_epoch_and_longest_tool_
         decoded.state(),
         Ok(ReceiptState::AcknowledgedTombstone(_))
     ));
-}
-
-#[test]
-fn ack_crash_after_witness_row_before_generation_heals_and_compacts_on_reopen() {
-    let root = tempfile::tempdir().expect("temporary root");
-    let receipts = fs::canonicalize(root.path())
-        .expect("physical temporary root")
-        .join("receipts");
-    let (store, key, terminal_digest) = direct_terminal_fixture(&receipts);
-    set_after_receipt_row_rename_hook_for_test(|| panic!("simulated process crash"));
-
-    let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        store
-            .acknowledge_direct(&key, &terminal_digest, 2_100, reserve_deadline())
-            .expect("crash hook interrupts ACK")
-    }));
-    assert!(crashed.is_err());
-    drop(store);
-    assert_eq!(
-        fs::read(receipts.join(GENERATION_FILE_NAME)).expect("read stale generation"),
-        b"2\n"
-    );
-
-    let reopened = ReceiptLedgerStore::open(&receipts)
-        .expect("reopen heals the durable acknowledgement witness");
-    assert_eq!(reopened.generation().expect("healed generation"), 3);
-    assert!(matches!(
-        reopened.recover_exact(&key, reserve_deadline()),
-        Ok(ReceiptState::AcknowledgedTombstone(_))
-    ));
-}
-
-#[test]
-fn ack_generation_is_published_while_the_durable_witness_is_still_visible() {
-    let root = tempfile::tempdir().expect("temporary root");
-    let receipts = fs::canonicalize(root.path())
-        .expect("physical temporary root")
-        .join("receipts");
-    let (store, key, terminal_digest) = direct_terminal_fixture(&receipts);
-    let row_path = receipts
-        .join(ACTIVE_DIRECTORY_NAME)
-        .join(format!("{}.json", receipt_key_digest(&key).as_str()));
-    let observed = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-    let hook_observed = std::sync::Arc::clone(&observed);
-    set_after_generation_replace_hook_for_test(move || {
-        *hook_observed.lock().expect("record observed ACK row") =
-            fs::read_to_string(&row_path).expect("read ACK row at generation publication");
-        panic!("simulated process crash");
-    });
-
-    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        store
-            .acknowledge_direct(&key, &terminal_digest, 2_100, reserve_deadline())
-            .expect("generation crash hook interrupts ACK")
-    }))
-    .is_err());
-    assert!(
-        observed
-            .lock()
-            .expect("inspect observed ACK row")
-            .contains("\"state\":\"acknowledgement_commit\""),
-        "generation must not become authoritative while only a sequence-free tombstone is visible"
-    );
-    drop(store);
-
-    let reopened =
-        ReceiptLedgerStore::open(&receipts).expect("reopen finalizes the acknowledged witness");
-    assert_eq!(reopened.generation().expect("published generation"), 3);
-    assert!(matches!(
-        reopened.recover_exact(&key, reserve_deadline()),
-        Ok(ReceiptState::AcknowledgedTombstone(_))
-    ));
-}
-
-#[test]
-fn ack_crash_after_compact_row_rename_reopens_the_same_tombstone() {
-    let root = tempfile::tempdir().expect("temporary root");
-    let receipts = fs::canonicalize(root.path())
-        .expect("physical temporary root")
-        .join("receipts");
-    let (store, key, terminal_digest) = direct_terminal_fixture(&receipts);
-    set_after_generation_replace_hook_for_test(|| {
-        set_after_receipt_row_rename_hook_for_test(|| panic!("simulated process crash"));
-    });
-
-    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        store
-            .acknowledge_direct(&key, &terminal_digest, 2_100, reserve_deadline())
-            .expect("compact crash hook interrupts ACK")
-    }))
-    .is_err());
-    drop(store);
-
-    let reopened = ReceiptLedgerStore::open(&receipts)
-        .expect("reopen accepts the compact row after generation commit");
-    assert_eq!(reopened.generation().expect("published generation"), 3);
-    let recovered = reopened
-        .recover_exact(&key, reserve_deadline())
-        .expect("recover compact acknowledged tombstone");
-    let ReceiptState::AcknowledgedTombstone(tombstone) = recovered else {
-        panic!("ACK crash reopened as a non-tombstone lifecycle")
-    };
-    assert_eq!(tombstone.terminal_digest(), &terminal_digest);
-    assert_eq!(tombstone.acknowledged_at_epoch_ms(), 2_100);
 }
 
 #[test]

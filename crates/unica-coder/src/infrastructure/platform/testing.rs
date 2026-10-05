@@ -393,6 +393,213 @@ pub(crate) fn wait_for_process_exit(_pid: u32, _timeout: Duration) -> bool {
 }
 
 #[cfg(test)]
+pub(crate) fn run_exact_test_in_owned_process_for_test(
+    test_name: &str,
+    marker: &str,
+    extra_environment: &[(&str, &std::ffi::OsStr)],
+) -> io::Result<std::process::ExitStatus> {
+    use std::process::{Child, Command};
+    use std::time::Instant;
+
+    struct OwnedTestChild {
+        child: Child,
+        reaped: bool,
+    }
+    impl Drop for OwnedTestChild {
+        fn drop(&mut self) {
+            if !self.reaped {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+            }
+        }
+    }
+
+    let mut command = Command::new(std::env::current_exe()?);
+    command.args(["--exact", test_name, "--nocapture"]);
+    command.env(marker, "1");
+    for &(name, value) in extra_environment {
+        command.env(name, value);
+    }
+    let child = command.spawn()?;
+    let mut child = OwnedTestChild {
+        child,
+        reaped: false,
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(status) = child.child.try_wait()? {
+            child.reaped = true;
+            return Ok(status);
+        }
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "isolated test process did not exit before its deadline",
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[cfg(all(test, unix))]
+pub(crate) struct ForkedInheritedDescriptorForTest {
+    pid: libc::pid_t,
+    release_writer: Option<std::os::fd::OwnedFd>,
+}
+
+#[cfg(all(test, unix))]
+impl ForkedInheritedDescriptorForTest {
+    pub(crate) fn start() -> io::Result<Self> {
+        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+        use std::time::Instant;
+
+        fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
+            let mut descriptors = [-1; 2];
+            // SAFETY: `pipe` initializes both descriptors on success; each is
+            // immediately owned by an `OwnedFd` in the parent.
+            if unsafe { libc::pipe(descriptors.as_mut_ptr()) } == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: successful `pipe` returned distinct owned descriptors.
+            Ok(unsafe {
+                (
+                    OwnedFd::from_raw_fd(descriptors[0]),
+                    OwnedFd::from_raw_fd(descriptors[1]),
+                )
+            })
+        }
+
+        let (ready_reader, ready_writer) = pipe()?;
+        let (release_reader, release_writer) = pipe()?;
+        // SAFETY: the child executes only async-signal-safe syscalls and then
+        // `_exit`; it never touches Rust state after forking the test harness.
+        let pid = unsafe { libc::fork() };
+        if pid == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        if pid == 0 {
+            // SAFETY: each syscall below is async-signal-safe. The parent
+            // owns and reaps this child, including if readiness fails.
+            unsafe {
+                libc::close(ready_reader.as_raw_fd());
+                libc::close(release_writer.as_raw_fd());
+                let ready = [1_u8];
+                if libc::write(ready_writer.as_raw_fd(), ready.as_ptr().cast(), 1) != 1 {
+                    libc::_exit(101);
+                }
+                let mut release = [0_u8];
+                let received =
+                    libc::read(release_reader.as_raw_fd(), release.as_mut_ptr().cast(), 1);
+                libc::_exit(if received == 0 { 0 } else { 102 });
+            }
+        }
+
+        drop(ready_writer);
+        drop(release_reader);
+        let child = Self {
+            pid,
+            release_writer: Some(release_writer),
+        };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "forked lock holder did not report readiness",
+                ));
+            }
+            let mut poll = libc::pollfd {
+                fd: ready_reader.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let timeout = i32::try_from(remaining.as_millis()).unwrap_or(i32::MAX);
+            // SAFETY: `poll` receives a valid pointer to one initialized item.
+            let polled = unsafe { libc::poll(&mut poll, 1, timeout) };
+            if polled == -1 {
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(error);
+            }
+            if polled == 0 {
+                continue;
+            }
+            let mut ready = [0_u8];
+            // SAFETY: `poll` reported readiness on this owned descriptor.
+            let count =
+                unsafe { libc::read(ready_reader.as_raw_fd(), ready.as_mut_ptr().cast(), 1) };
+            if count == 1 && ready[0] == 1 {
+                return Ok(child);
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "forked lock holder did not send its ready byte",
+            ));
+        }
+    }
+
+    pub(crate) fn release_and_wait(mut self) -> io::Result<()> {
+        use std::time::Instant;
+
+        // Closing the sole writer releases the child by EOF. A byte write
+        // would risk SIGPIPE if it exited between READY and this call.
+        self.release_writer.take();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let mut status = 0;
+            // SAFETY: this fixture is the only owner that waits for this pid.
+            let observed = unsafe { libc::waitpid(self.pid, &mut status, libc::WNOHANG) };
+            if observed == self.pid {
+                self.pid = 0;
+                if libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0 {
+                    return Ok(());
+                }
+                return Err(io::Error::other("forked lock holder exited unsuccessfully"));
+            }
+            if observed == -1 {
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                if error.raw_os_error() == Some(libc::ECHILD) {
+                    self.pid = 0;
+                }
+                return Err(error);
+            }
+            if Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "forked lock holder did not exit after release",
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
+impl Drop for ForkedInheritedDescriptorForTest {
+    fn drop(&mut self) {
+        self.release_writer.take();
+        if self.pid > 0 {
+            // SAFETY: this fixture still owns an unreaped child pid. SIGKILL
+            // breaks a stuck pipe read; waitpid then prevents a zombie.
+            unsafe {
+                libc::kill(self.pid, libc::SIGKILL);
+                let mut status = 0;
+                while libc::waitpid(self.pid, &mut status, 0) == -1
+                    && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted
+                {
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::{
         classify_file_link_fixture_result, create_file_link_fixture_for_test,
@@ -403,6 +610,48 @@ mod tests {
     use std::io;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[cfg(unix)]
+    #[test]
+    fn forked_child_retains_receipt_lock_after_store_drop_until_child_exit() {
+        use crate::application::receipt_ledger::ReceiptLedgerError;
+        use crate::infrastructure::receipt_ledger::ReceiptLedgerStore;
+
+        const HELPER_MARKER: &str = "UNICA_RECEIPT_LEDGER_FORKED_LOCK_PROBE_HELPER";
+        if std::env::var_os(HELPER_MARKER).is_none() {
+            let status = crate::infrastructure::platform::testing::run_exact_test_in_owned_process_for_test(
+                "infrastructure::platform::testing::tests::forked_child_retains_receipt_lock_after_store_drop_until_child_exit",
+                HELPER_MARKER,
+                &[],
+            )
+            .expect("run isolated fork/lock proof process");
+            assert!(status.success(), "isolated fork/lock proof failed");
+            return;
+        }
+
+        let root = tempfile::tempdir().expect("temporary root");
+        let receipts = fs::canonicalize(root.path())
+            .expect("physical temporary root")
+            .join("receipts");
+        let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+        let child =
+            crate::infrastructure::platform::testing::ForkedInheritedDescriptorForTest::start()
+                .expect("fork a child retaining the receipt lock description");
+
+        drop(store);
+        assert_eq!(
+            ReceiptLedgerStore::open(&receipts).err(),
+            Some(ReceiptLedgerError::AlreadyOwned),
+            "dropping only the parent owner must not release the inherited lock"
+        );
+
+        child
+            .release_and_wait()
+            .expect("reap the inherited lock holder");
+        let reopened = ReceiptLedgerStore::open(&receipts)
+            .expect("the lock becomes available after the child really exits");
+        assert_eq!(reopened.generation().expect("recovered generation"), 0);
+    }
 
     static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
