@@ -2987,43 +2987,21 @@ fn sixty_fifth_authenticated_owner_delivers_exact_cancellation() {
 }
 
 #[test]
-fn v5_rejects_connections_above_handshake_limit() {
-    let root = tempfile::tempdir().expect("temporary handshake-limit state root");
-    let state_root =
-        std::fs::canonicalize(root.path()).expect("physical handshake-limit state root");
-    let identity = CoreIdentity::production_v5();
-    let config = DaemonServerConfig::new(
-        state_root.clone(),
-        identity.clone(),
-        Duration::from_millis(100),
-    );
-    let server = thread::spawn(move || run_daemon(config));
-    let record = wait_for_v5_record(&state_root, &identity);
-    let address = record.loopback_addr().expect("v5 loopback address");
-    let blockers = (0..MAX_HANDSHAKES)
-        .map(|_| TcpStream::connect(address).expect("occupy v5 handshake slot"))
+fn connection_ownership_survives_former_limit_and_checked_overflow() {
+    let admitted = Arc::new(AtomicUsize::new(0));
+    let mut slots = (0..65)
+        .map(|_| V5ConnectionSlot::acquire(Arc::clone(&admitted)).unwrap())
         .collect::<Vec<_>>();
-    thread::sleep(Duration::from_millis(100));
+    assert_eq!(admitted.load(Ordering::Acquire), 65);
+    let held = slots.pop().unwrap();
+    drop(slots);
+    assert_eq!(admitted.load(Ordering::Acquire), 1);
+    drop(held);
+    assert_eq!(admitted.load(Ordering::Acquire), 0);
 
-    let overflow = TcpStream::connect(address).expect("connect overflow v5 handshake");
-    overflow
-        .set_read_timeout(Some(Duration::from_secs(1)))
-        .expect("bound overflow response read");
-    let mut overflow_reader = BufReader::new(overflow);
-    let response = read_bounded_v5_probe_response_frame(&mut overflow_reader)
-        .expect("read overloaded v5 handshake response");
-    assert_eq!(
-        decode_v5_server_response(&response),
-        Ok(V5ServerResponse::Error {
-            code: V5DaemonErrorCode::Overloaded,
-        })
-    );
-
-    drop(blockers);
-    server
-        .join()
-        .expect("join handshake-limit runtime")
-        .expect("handshake-limit runtime");
+    let maximum = Arc::new(AtomicUsize::new(usize::MAX));
+    assert!(V5ConnectionSlot::acquire(Arc::clone(&maximum)).is_none());
+    assert_eq!(maximum.load(Ordering::Acquire), usize::MAX);
 }
 
 #[test]
