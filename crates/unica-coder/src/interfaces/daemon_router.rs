@@ -516,6 +516,7 @@ pub(in crate::interfaces) mod test_support {
     }
 
     pub(in crate::interfaces) struct FakeDaemon {
+        workspace: tempfile::TempDir,
         pub(in crate::interfaces) record: V5EndpointRecord,
         seen: Arc<Mutex<Vec<V5ClientRequest>>>,
         pub(in crate::interfaces) sessions: Arc<AtomicUsize>,
@@ -579,11 +580,19 @@ pub(in crate::interfaces) mod test_support {
                 }
             });
             Self {
+                workspace: tempfile::tempdir().expect("fake daemon workspace"),
                 record,
                 seen,
                 sessions,
                 thread: Some(thread),
             }
+        }
+
+        pub(in crate::interfaces) fn workspace_hint(&self) -> String {
+            crate::test_support::canonical_path(self.workspace.path())
+                .to_str()
+                .expect("fake daemon workspace path")
+                .to_owned()
         }
 
         pub(in crate::interfaces) fn owner(&self) -> V5DaemonProcessOwner {
@@ -886,7 +895,7 @@ mod tests {
             }
             other => panic!("unexpected frame {other:?}"),
         }));
-        let router = canonical_daemon_router(fake.owner(), "/workspace".to_string());
+        let router = canonical_daemon_router(fake.owner(), fake.workspace_hint());
 
         let result = direct_result(call(&router, None));
 
@@ -927,7 +936,7 @@ mod tests {
             "the daemon budget is the remaining handoff window: {}",
             invocation.response_budget_ms()
         );
-        assert_eq!(invocation.workspace_hint(), "/workspace");
+        assert_eq!(invocation.workspace_hint(), fake.workspace_hint());
     }
 
     #[test]
@@ -949,7 +958,7 @@ mod tests {
             V5ClientRequest::AcknowledgeInvocationReceipt { .. } => Step::Close,
             other => panic!("unexpected frame {other:?}"),
         }));
-        let router = canonical_daemon_router(fake.owner(), "/workspace".to_string());
+        let router = canonical_daemon_router(fake.owner(), fake.workspace_hint());
 
         let uncertain = call(&router, None).expect_err("failed terminal is an error");
         let cancelled = call(&router, None).expect_err("cancelled terminal is an error");
@@ -1003,7 +1012,7 @@ mod tests {
             V5ClientRequest::AcknowledgeInvocationReceipt { .. } => Step::Close,
             other => panic!("unexpected frame {other:?}"),
         }));
-        let router = canonical_daemon_router(fake.owner(), "/workspace".to_string());
+        let router = canonical_daemon_router(fake.owner(), fake.workspace_hint());
 
         let result = direct_result(call(&router, None));
 
@@ -1066,7 +1075,7 @@ mod tests {
             Duration::from_secs(1),
         )
         .unwrap();
-        let router = canonical_daemon_router(client, "/workspace".to_string());
+        let router = canonical_daemon_router(client, first.workspace_hint());
         let result = direct_result(call(&router, None));
         assert_eq!(
             result.structured_content.as_ref().unwrap()["summary"],
@@ -1098,7 +1107,7 @@ mod tests {
             V5ClientRequest::AcknowledgeInvocationReceipt { .. } => Step::Close,
             other => panic!("unexpected frame {raw:?} {other:?}"),
         }));
-        let router = canonical_daemon_router(fake.owner(), "/workspace".to_string());
+        let router = canonical_daemon_router(fake.owner(), fake.workspace_hint());
 
         let result = direct_result(call(&router, None));
 
@@ -1162,7 +1171,7 @@ mod tests {
             V5ClientRequest::AcknowledgeInvocationReceipt { .. } => Step::Close,
             other => panic!("unexpected frame {other:?}"),
         }));
-        let router = canonical_daemon_router(fake.owner(), "/workspace".to_string());
+        let router = canonical_daemon_router(fake.owner(), fake.workspace_hint());
 
         let started = Instant::now();
         let result = direct_result(call(&router, None));
@@ -1201,7 +1210,7 @@ mod tests {
             other => panic!("unexpected frame {other:?}"),
         }
         }));
-        let router = canonical_daemon_router(fake.owner(), "/workspace".to_string());
+        let router = canonical_daemon_router(fake.owner(), fake.workspace_hint());
 
         let refusal = call(&router, Some(Duration::from_millis(400)))
             .expect_err("a receipt pending past the cutoff is refused");
@@ -1228,7 +1237,7 @@ mod tests {
             }),
             handshake_delay,
         );
-        let router = canonical_daemon_router(fake.owner(), "/workspace".to_string());
+        let router = canonical_daemon_router(fake.owner(), fake.workspace_hint());
 
         let result = direct_result(call(&router, None));
 
@@ -1259,7 +1268,7 @@ mod tests {
             }
             other => panic!("unexpected frame {other:?}"),
         }));
-        let router = canonical_daemon_router(fake.owner(), "/workspace".to_string());
+        let router = canonical_daemon_router(fake.owner(), fake.workspace_hint());
 
         let refusal = call(&router, None).expect_err("lost submission is refused");
 
@@ -1300,7 +1309,7 @@ mod tests {
             }
             other => panic!("unexpected frame {other:?}"),
         }));
-        let router = canonical_daemon_router(fake.owner(), "/workspace".to_string());
+        let router = canonical_daemon_router(fake.owner(), fake.workspace_hint());
 
         let started = Instant::now();
         let outcome = call(&router, Some(Duration::from_millis(300)));
@@ -1332,7 +1341,7 @@ mod tests {
             }
             other => panic!("unexpected frame {other:?}"),
         }));
-        let router = canonical_daemon_router(fake.owner(), "/workspace".to_string());
+        let router = canonical_daemon_router(fake.owner(), fake.workspace_hint());
 
         let refusal = call(&router, Some(Duration::from_millis(300)))
             .expect_err("a recovery that does not settle is refused");
@@ -1366,7 +1375,7 @@ mod tests {
             }
             other => panic!("unexpected frame {other:?}"),
         }));
-        let router = canonical_daemon_router(fake.owner(), "/workspace".to_string());
+        let router = canonical_daemon_router(fake.owner(), fake.workspace_hint());
 
         let rejected = call(&router, None).expect_err("overloaded daemon refuses");
         let foreign = (router.call)(
@@ -1417,7 +1426,7 @@ mod tests {
             V5ClientRequest::CancelTask { .. } => Step::Close,
             other => panic!("unexpected frame {other:?}"),
         }));
-        let router = canonical_daemon_router(fake.owner(), "/workspace".to_string());
+        let router = canonical_daemon_router(fake.owner(), fake.workspace_hint());
 
         let expired = (router.get)(task_id, deadline(None));
         let unexpected = (router.wait)(task_id, 7_000, deadline(Some(Duration::from_millis(400))));

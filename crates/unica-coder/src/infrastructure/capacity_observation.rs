@@ -330,6 +330,22 @@ pub(crate) fn start_background_writer(
     observer: Arc<CapacityObserver>,
     authority_valid: Arc<dyn Fn() -> bool + Send + Sync>,
 ) -> io::Result<CapacityWriterGuard> {
+    start_background_writer_inner(
+        state,
+        observer,
+        authority_valid,
+        #[cfg(test)]
+        None,
+    )
+    .map(|(guard, _worker)| guard)
+}
+
+fn start_background_writer_inner(
+    state: &DaemonStateDirectory,
+    observer: Arc<CapacityObserver>,
+    authority_valid: Arc<dyn Fn() -> bool + Send + Sync>,
+    #[cfg(test)] after_ack: Option<Box<dyn FnOnce(CapacityFlushResult) + Send>>,
+) -> io::Result<(CapacityWriterGuard, thread::JoinHandle<()>)> {
     let retained = state
         .create_private_retained_subdirectory(DIRECTORY_NAME)
         .map_err(io::Error::other)?;
@@ -347,7 +363,7 @@ pub(crate) fn start_background_writer(
     remove_stale_stage(&directory)?;
     let (stop, receiver) = mpsc::channel();
     let (flushed, completed) = mpsc::channel();
-    thread::Builder::new()
+    let worker = thread::Builder::new()
         .name("unica-capacity-observation".to_string())
         .spawn(move || {
             background_flush_loop(
@@ -357,12 +373,17 @@ pub(crate) fn start_background_writer(
                 writer_lock,
                 receiver,
                 flushed,
+                #[cfg(test)]
+                after_ack,
             )
         })?;
-    Ok(CapacityWriterGuard {
-        stop,
-        flushed: completed,
-    })
+    Ok((
+        CapacityWriterGuard {
+            stop,
+            flushed: completed,
+        },
+        worker,
+    ))
 }
 
 fn background_flush_loop(
@@ -372,6 +393,7 @@ fn background_flush_loop(
     writer_lock: File,
     receiver: mpsc::Receiver<()>,
     flushed: mpsc::Sender<CapacityFlushResult>,
+    #[cfg(test)] after_ack: Option<Box<dyn FnOnce(CapacityFlushResult) + Send>>,
 ) {
     let mut write_failure_reported = false;
     loop {
@@ -396,8 +418,15 @@ fn background_flush_loop(
             write_failure_reported = result == CapacityFlushResult::WriteFailed;
         }
         if stopping {
+            // Unix directory clones share the lock's open file description.
+            // End every retained access before acknowledging ownership release.
+            drop(retained);
             drop(writer_lock);
             let _ = flushed.send(result);
+            #[cfg(test)]
+            if let Some(after_ack) = after_ack {
+                after_ack(result);
+            }
             return;
         }
     }
@@ -644,6 +673,7 @@ mod tests {
                 writer_lock,
                 receiver,
                 flushed,
+                None,
             )
         });
         stop.send(()).unwrap();
@@ -684,6 +714,61 @@ mod tests {
             Arc::new(|| true),
         )
         .is_ok());
+    }
+
+    #[test]
+    fn acknowledged_shutdown_releases_ownership_before_the_worker_returns() {
+        use crate::infrastructure::daemon::identity::CoreIdentity;
+
+        for expected in [
+            CapacityFlushResult::Saved,
+            CapacityFlushResult::Unauthorized,
+            CapacityFlushResult::WriteFailed,
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let root_path = root.path().canonicalize().unwrap();
+            let state =
+                DaemonStateDirectory::open(&root_path, &CoreIdentity::production_v5()).unwrap();
+            let (acknowledged, acknowledgement) = mpsc::channel();
+            let (resume, resumed) = mpsc::channel();
+            let (first, worker) = start_background_writer_inner(
+                &state,
+                Arc::new(CapacityObserver::default()),
+                Arc::new(move || expected != CapacityFlushResult::Unauthorized),
+                Some(Box::new(move |result| {
+                    acknowledged.send(result).unwrap();
+                    resumed.recv().unwrap();
+                })),
+            )
+            .unwrap();
+            assert!(start_background_writer(
+                &state,
+                Arc::new(CapacityObserver::default()),
+                Arc::new(|| true),
+            )
+            .is_err());
+            // A fixture-owned directory makes the final staging file creation fail.
+            let failed_stage = state.path().join(DIRECTORY_NAME).join(STAGING_NAME);
+            if expected == CapacityFlushResult::WriteFailed {
+                std::fs::create_dir(&failed_stage).unwrap();
+            }
+
+            drop(first);
+            let observed = acknowledgement.recv_timeout(SHUTDOWN_FLUSH_WAIT);
+            if expected == CapacityFlushResult::WriteFailed {
+                std::fs::remove_dir(&failed_stage).unwrap();
+            }
+            let replacement = start_background_writer(
+                &state,
+                Arc::new(CapacityObserver::default()),
+                Arc::new(|| true),
+            );
+            // Always release and join the parked worker before checking the result.
+            resume.send(()).unwrap();
+            worker.join().unwrap();
+            assert_eq!(observed.unwrap(), expected);
+            assert!(replacement.is_ok(), "{expected:?}: {:?}", replacement.err());
+        }
     }
 
     #[test]

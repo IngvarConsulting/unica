@@ -64,19 +64,31 @@ impl<'a> GitGrepProvider<'a> {
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> ProviderSearchSection {
-        if cancellation.is_cancelled() {
-            return failed_section(
-                ProviderId::GitGrep,
-                cancelled_error("git-grep search stopped before process start"),
-            );
+        let mut checkpoint = || {
+            if cancellation.is_cancelled() {
+                Err(cancelled_error(
+                    "git-grep search stopped before process start",
+                ))
+            } else if deadline.remaining().is_zero() {
+                Err("git-grep provider deadline exceeded".to_string())
+            } else {
+                Ok(())
+            }
+        };
+        if let Err(error) = checkpoint() {
+            return failed_section(ProviderId::GitGrep, error);
+        }
+        let all_absent = match git_grep_scope_is_absent(context, &mut checkpoint) {
+            Ok(absent) => absent,
+            Err(error) => return failed_section(ProviderId::GitGrep, error),
+        };
+        if let Err(error) = checkpoint() {
+            return failed_section(ProviderId::GitGrep, error);
+        }
+        if all_absent {
+            return empty_section(ProviderId::GitGrep, SearchRanking::None);
         }
         let timeout = deadline.remaining();
-        if timeout.is_zero() {
-            return failed_section(
-                ProviderId::GitGrep,
-                "git-grep provider deadline exceeded".to_string(),
-            );
-        }
         let mut args = vec![
             "-c".to_string(),
             "core.quotepath=false".to_string(),
@@ -163,6 +175,91 @@ impl<'a> GitGrepProvider<'a> {
         }
         git_grep_stream_section(output, hits, diagnostics, fatal)
     }
+}
+
+/// Git warns about an absent pathspec parent even when it finds no matches.
+/// Prove absence through retained directories instead of interpreting that warning.
+fn git_grep_scope_is_absent(
+    context: &CodeIntelligenceContext,
+    checkpoint: &mut impl FnMut() -> Result<(), String>,
+) -> Result<bool, String> {
+    use crate::domain::code_intelligence::RelativeSearchFilter;
+    use crate::infrastructure::platform::filesystem::{
+        file_identity, open_absolute_directory_path_nofollow, open_any_child_nofollow,
+        open_child_for_secure_tree_use, OpenedChildKind,
+    };
+    use std::path::Component;
+
+    let Some(scope) = context
+        .search_scope
+        .as_ref()
+        .filter(|scope| !scope.filters.is_empty())
+    else {
+        return Ok(false);
+    };
+    if scope.source_root != context.source_root.path {
+        return Err("git-grep scope root does not match the selected source root".to_string());
+    }
+    for filter in &scope.filters {
+        let (RelativeSearchFilter::Exact(path) | RelativeSearchFilter::Subtree(path)) = filter;
+        let git_path = path.to_string_lossy().replace('\\', "/");
+        if path.as_os_str().is_empty()
+            || Path::new(&git_path) != path
+            || crate::infrastructure::platform::filesystem::is_foreign_absolute_path(&git_path)
+            || path
+                .components()
+                .any(|part| !matches!(part, Component::Normal(_)))
+        {
+            return Err("git-grep scope filter is not a relative source path".to_string());
+        }
+    }
+    let io_error =
+        |error: std::io::Error| format!("git-grep scope could not be inspected safely: {error}");
+    let root =
+        open_absolute_directory_path_nofollow(&context.source_root.path).map_err(io_error)?;
+    let mut all_absent = true;
+    for filter in &scope.filters {
+        let (RelativeSearchFilter::Exact(path) | RelativeSearchFilter::Subtree(path)) = filter;
+        let mut parent = root.try_clone().map_err(io_error)?;
+        let mut parts = path.components().peekable();
+        while let Some(Component::Normal(name)) = parts.next() {
+            checkpoint()?;
+            let (child, kind) = match open_any_child_nofollow(&parent, name) {
+                Ok(child) => child,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+                Err(error) => return Err(io_error(error)),
+            };
+            if parts.peek().is_some() {
+                if kind != OpenedChildKind::Directory {
+                    return Err("git-grep scope parent is not a regular directory".to_string());
+                }
+                // Windows classification handles need directory rights; this shared
+                // primitive also verifies the reopened handle against its anchor.
+                parent =
+                    open_child_for_secure_tree_use(&parent, name, child, kind).map_err(io_error)?;
+            } else {
+                let expected = match filter {
+                    RelativeSearchFilter::Exact(_) => OpenedChildKind::RegularFile,
+                    RelativeSearchFilter::Subtree(_) => OpenedChildKind::Directory,
+                };
+                if kind != expected {
+                    return Err("git-grep scope target has an unexpected file type".to_string());
+                }
+                all_absent = false;
+            }
+        }
+    }
+    if all_absent {
+        checkpoint()?;
+        let current_root =
+            open_absolute_directory_path_nofollow(&context.source_root.path).map_err(io_error)?;
+        if file_identity(&root).map_err(io_error)?
+            != file_identity(&current_root).map_err(io_error)?
+        {
+            return Err("git-grep source root changed during scope inspection".to_string());
+        }
+    }
+    Ok(all_absent)
 }
 
 /// The generated cache lives inside the source root but is not source: the
@@ -2031,6 +2128,218 @@ mod tests {
             .expect_err("cancellation must win even over a cached location");
         assert!(error.starts_with(CANCELLED_PREFIX), "{error}");
         assert_eq!(RESOLUTIONS.load(Ordering::SeqCst), 2);
+    }
+
+    fn owned_git_scope(root: &Path, relative: &str) -> CodeIntelligenceContext {
+        let root = std::fs::canonicalize(root).unwrap();
+        let mut context = context();
+        context.workspace.workspace_root = root.clone();
+        context.workspace.cwd = root.clone();
+        context.source_root.path = root.clone();
+        context.with_search_scope(CodeSearchScope {
+            source_set: "main".to_string(),
+            source_root: root,
+            filters: vec![RelativeSearchFilter::Exact(PathBuf::from(relative))],
+            excluded_subtrees: Vec::new(),
+            legacy_selector: false,
+        })
+    }
+
+    #[test]
+    fn git_grep_absent_scoped_paths_are_complete_empty_without_dispatch() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("present-parent")).unwrap();
+        let runner = FakeRunner {
+            output: output(""),
+            commands: Mutex::new(Vec::new()),
+        };
+        for relative in ["present-parent/Module.bsl", "missing/Ext/Module.bsl"] {
+            let section = GitGrepProvider::with_runner(&runner).search(
+                &SearchRequest {
+                    query: "needle".into(),
+                    limit: 20,
+                },
+                &owned_git_scope(root.path(), relative),
+                ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
+                &CancellationToken::new(),
+            );
+            assert_eq!(section.status, ProviderSectionStatus::Empty, "{section:?}");
+            assert!(section.hits.is_empty());
+            assert!(section.diagnostics.is_empty());
+            assert!(
+                runner.commands.lock().unwrap().is_empty(),
+                "absent scope dispatched Git"
+            );
+        }
+    }
+
+    #[test]
+    fn git_grep_scoped_preflight_refuses_invalid_routes_without_dispatch() {
+        for case in [
+            "deleted-root",
+            "root-file",
+            "different-root",
+            "absolute",
+            "foreign-absolute",
+            "parent",
+            "empty",
+            "parent-file",
+            "dangling-link",
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("src");
+            std::fs::create_dir(&root).unwrap();
+            let mut context = owned_git_scope(&root, "missing/Module.bsl");
+            match case {
+                "deleted-root" => std::fs::remove_dir(&root).unwrap(),
+                "root-file" => {
+                    std::fs::remove_dir(&root).unwrap();
+                    std::fs::write(&root, "foreign").unwrap();
+                }
+                "different-root" => {
+                    context.search_scope.as_mut().unwrap().source_root = temp.path().to_path_buf()
+                }
+                "absolute" => {
+                    context.search_scope.as_mut().unwrap().filters =
+                        vec![RelativeSearchFilter::Exact(root.join("absent"))]
+                }
+                "foreign-absolute" => {
+                    context.search_scope.as_mut().unwrap().filters =
+                        vec![RelativeSearchFilter::Exact(PathBuf::from(
+                            "C:\\outside\\Module.bsl",
+                        ))];
+                }
+                "parent" => {
+                    context.search_scope.as_mut().unwrap().filters =
+                        vec![RelativeSearchFilter::Exact(PathBuf::from("../absent"))]
+                }
+                "empty" => {
+                    context.search_scope.as_mut().unwrap().filters =
+                        vec![RelativeSearchFilter::Exact(PathBuf::new())]
+                }
+                "parent-file" => std::fs::write(root.join("missing"), "foreign").unwrap(),
+                "dangling-link" => {
+                    match crate::infrastructure::platform::filesystem::create_test_directory_link(
+                        &temp.path().join("absent"),
+                        &root.join("missing"),
+                    ) {
+                        Ok(()) => {}
+                        Err(error)
+                            if matches!(
+                                error.kind(),
+                                std::io::ErrorKind::PermissionDenied
+                                    | std::io::ErrorKind::Unsupported
+                            ) =>
+                        {
+                            eprintln!("directory-link fixture unavailable: {error}");
+                            continue;
+                        }
+                        Err(error) => panic!("directory-link fixture failed: {error}"),
+                    }
+                }
+                _ => unreachable!(),
+            }
+            let runner = FakeRunner {
+                output: output(""),
+                commands: Mutex::new(Vec::new()),
+            };
+            let section = GitGrepProvider::with_runner(&runner).search(
+                &SearchRequest {
+                    query: "needle".into(),
+                    limit: 20,
+                },
+                &context,
+                ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
+                &CancellationToken::new(),
+            );
+            assert_eq!(
+                section.status,
+                ProviderSectionStatus::Failed,
+                "{case}: {section:?}"
+            );
+            assert!(
+                runner.commands.lock().unwrap().is_empty(),
+                "{case} dispatched Git"
+            );
+        }
+    }
+
+    #[test]
+    fn git_grep_scoped_preflight_checks_interruption_after_observing_absence() {
+        let root = tempfile::tempdir().unwrap();
+        let context = owned_git_scope(root.path(), "Module.bsl");
+        for cancelled in [true, false] {
+            let mut checks = 0;
+            let error = super::git_grep_scope_is_absent(&context, &mut || {
+                checks += 1;
+                if checks == 2 {
+                    Err(if cancelled {
+                        crate::domain::cancellation::cancelled_error(
+                            "cancelled after observing absence",
+                        )
+                    } else {
+                        "git-grep provider deadline exceeded".to_string()
+                    })
+                } else {
+                    Ok(())
+                }
+            })
+            .unwrap_err();
+            assert_eq!(checks, 2);
+            assert_eq!(error.starts_with(CANCELLED_PREFIX), cancelled);
+        }
+    }
+
+    #[test]
+    fn git_grep_scoped_preflight_preserves_interruptions_and_existing_dispatch() {
+        let root = tempfile::tempdir().unwrap();
+        let mut context = owned_git_scope(root.path(), "Module.bsl");
+        let runner = FakeRunner {
+            output: output(""),
+            commands: Mutex::new(Vec::new()),
+        };
+        for cancelled in [true, false] {
+            let cancellation = CancellationToken::new();
+            if cancelled {
+                cancellation.cancel();
+            }
+            let deadline = ProviderDeadline::new(
+                Instant::now()
+                    + if cancelled {
+                        Duration::from_secs(15)
+                    } else {
+                        Duration::ZERO
+                    },
+            );
+            let section = GitGrepProvider::with_runner(&runner).search(
+                &SearchRequest {
+                    query: "needle".into(),
+                    limit: 20,
+                },
+                &context,
+                deadline,
+                &cancellation,
+            );
+            assert_eq!(section.status, ProviderSectionStatus::Failed);
+            assert!(runner.commands.lock().unwrap().is_empty());
+        }
+        std::fs::write(root.path().join("Module.bsl"), "// needle").unwrap();
+        context
+            .search_scope
+            .as_mut()
+            .unwrap()
+            .filters
+            .push(RelativeSearchFilter::Subtree(PathBuf::from("missing")));
+        GitGrepProvider::with_runner(&runner).search(
+            &SearchRequest {
+                query: "needle".into(),
+                limit: 20,
+            },
+            &context,
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
+            &CancellationToken::new(),
+        );
+        assert_eq!(runner.commands.lock().unwrap().len(), 1);
     }
 
     #[test]

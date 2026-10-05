@@ -1023,7 +1023,8 @@ pub(crate) enum TargetKindPolicy {
     /// resolves. The platform omits that file when the module is empty, so its
     /// absence is a fact about the export, not about the address: whether the
     /// role is legitimate is already decided by the kind registry. Only a
-    /// writer that materialises the file may ask for this.
+    /// writer that materialises the file or a read-only search that treats its
+    /// absence as an empty scope may ask for this.
     ModuleOnlyAllowingAbsent,
     Any,
 }
