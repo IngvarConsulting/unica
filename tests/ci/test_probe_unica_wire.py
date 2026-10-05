@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import signal
@@ -12,6 +13,8 @@ import textwrap
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -47,7 +50,6 @@ class WireProbeTests(unittest.TestCase):
         *,
         pages: list[list[str]],
         capture_path: Path,
-        notifications_only_on_last_page: bool = False,
     ) -> Path:
         server = root / "wire-server.py"
         server.write_text(
@@ -55,7 +57,6 @@ class WireProbeTests(unittest.TestCase):
                 f"""
                 import json
                 import sys
-                import time
                 from pathlib import Path
 
                 pages = {pages!r}
@@ -81,15 +82,6 @@ class WireProbeTests(unittest.TestCase):
                     elif method == "tools/list":
                         cursor = message.get("params", {{}}).get("cursor")
                         page_index = 0 if cursor is None else int(cursor)
-                        if {notifications_only_on_last_page!r} and page_index == len(pages) - 1:
-                            for sequence in range(20):
-                                print(json.dumps({{
-                                    "jsonrpc": "2.0",
-                                    "method": "notifications/progress",
-                                    "params": {{"progress": sequence}},
-                                }}), flush=True)
-                                time.sleep(0.02)
-                            continue
                         result = {{"tools": [{{"name": name}} for name in pages[page_index]]}}
                         if page_index + 1 < len(pages):
                             result["nextCursor"] = str(page_index + 1)
@@ -362,25 +354,57 @@ class WireProbeTests(unittest.TestCase):
         )
 
     def test_notifications_do_not_restart_the_aggregate_deadline(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            server = self.write_server(
-                root,
-                pages=[["unica.alpha"], ["unica.beta"]],
-                capture_path=root / "requests.json",
-                notifications_only_on_last_page=True,
-            )
-            started = time.monotonic()
-            result = self.run_probe(
-                server,
-                root / "wire.json",
-                timeout_seconds=0.08,
-            )
-            elapsed = time.monotonic() - started
+        module = load_module()
 
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("aggregate deadline", result.stderr)
-        self.assertLess(elapsed, 0.35, "notifications restarted the aggregate deadline")
+        class TimedResponses:
+            def __init__(self, responses):
+                self.responses = responses
+                self.now = 0.0
+                self.timeouts = []
+
+            def get(self, *, timeout):
+                self.timeouts.append(timeout)
+                wake_at = self.now + timeout
+                if not self.responses or self.responses[0][0] > wake_at:
+                    self.now = wake_at
+                    raise module.queue.Empty
+                arrival, response = self.responses.pop(0)
+                self.now = max(self.now, arrival)
+                return json.dumps(response) + "\n"
+
+        first = {"jsonrpc": "2.0", "id": 1, "result": {"tools": [], "nextCursor": "next"}}
+        second = {"jsonrpc": "2.0", "id": 2, "result": {"tools": []}}
+        for second_arrival in (11.0, 9.5):
+            with self.subTest(second_arrival=second_arrival):
+                lines = TimedResponses([
+                    (2.0, first),
+                    *[(arrival, {"jsonrpc": "2.0", "method": "notifications/progress"})
+                      for arrival in (4.0, 7.0, 9.0)],
+                    (second_arrival, second),
+                ])
+                session = module.JsonRpcSession.__new__(module.JsonRpcSession)
+                session.process = SimpleNamespace(stdin=io.StringIO())
+                session.deadline = 10.0
+                session.timeout_seconds = None
+                session.lines = lines
+                session.diagnostics = []
+                session.response_kinds = []
+                with patch.object(module, "time", SimpleNamespace(monotonic=lambda: lines.now)):
+                    self.assertEqual(session.request({"id": 1, "method": "tools/list"}), first)
+                    self.assertEqual(lines.now, 2.0)
+                    request = {"id": 2, "method": "tools/list", "params": {"cursor": "next"}}
+                    if second_arrival > session.deadline:
+                        with self.assertRaisesRegex(SystemExit, "aggregate deadline"):
+                            session.request(request)
+                        self.assertEqual(lines.now, 10.0)
+                        self.assertEqual(lines.responses, [(11.0, second)])
+                        self.assertEqual(len(session.response_kinds), 1)
+                    else:
+                        self.assertEqual(session.request(request), second)
+                        self.assertEqual(lines.now, second_arrival)
+                        self.assertEqual(lines.responses, [])
+                        self.assertEqual(len(session.response_kinds), 2)
+                self.assertEqual(lines.timeouts, [10.0, 8.0, 6.0, 3.0, 1.0])
 
     def test_aggregate_timeout_reaps_the_detached_process_tree(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
