@@ -12,7 +12,6 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/server.rs::saved_apply_token_survives_warm_release_before_live_invocation_creates_plan
   - crates/unica-coder/src/infrastructure/daemon/server.rs::running_index_work_survives_idle_cleanup_before_live_invocation_creates_work
   - crates/unica-coder/src/infrastructure/daemon/server.rs::running_index_work_survives_warm_release_before_live_invocation_creates_work
-gap: https://github.com/IngvarConsulting/unica/issues/1119
 ---
 
 # Допуск акторов сохраняет точную идентичность и владение выполняющейся работы
@@ -39,7 +38,5 @@ gap: https://github.com/IngvarConsulting/unica/issues/1119
 разрешает исполнение старого плана в подменённом корне.
 
 Граница этой гарантии — текущий демон, а не сохранение токенов после его
-перезапуска. Idle listener пока не учитывает обещанное состояние акторов;
-устранение этой автоматической потери остаётся в `gap` и
-[#980](https://github.com/IngvarConsulting/unica/issues/980). Общее снятие
-необоснованных сроков исполнения остаётся отдельной работой #1119.
+явной остановки или перезапуска. [Idle listener](../runtime/daemon-active-owners.md)
+учитывает сохранённые планы, replay и общую index-работу перед завершением.

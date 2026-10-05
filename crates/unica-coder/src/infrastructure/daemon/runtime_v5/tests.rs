@@ -3201,6 +3201,474 @@ fn live_v5_owner_prevents_idle_listener_shutdown() {
         .expect("owner-idle runtime");
 }
 
+struct PromisedWorkIdleHooks {
+    observations: mpsc::Sender<(Instant, bool)>,
+}
+
+impl V5RuntimeHooks for PromisedWorkIdleHooks {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn after_idle_owner_leases_read(&self, empty: bool) {
+        let _ = self.observations.send((Instant::now(), empty));
+    }
+}
+
+struct PromisedWorkIdleDaemon {
+    // Stop and join before removing the state directory, including on panic.
+    guard: HandlerSpawnDaemon,
+    _state: tempfile::TempDir,
+    state_root: std::path::PathBuf,
+    record: V5EndpointRecord,
+    observations: mpsc::Receiver<(Instant, bool)>,
+}
+
+impl PromisedWorkIdleDaemon {
+    fn start(idle_grace: Duration) -> Self {
+        Self::with_service(
+            idle_grace,
+            super::super::server::actor_capacity_tests::canonical_v13_service(),
+        )
+    }
+
+    fn with_service(
+        idle_grace: Duration,
+        service: Arc<dyn super::super::server::CanonicalInvocationService>,
+    ) -> Self {
+        let state = tempfile::tempdir().unwrap();
+        let state_root = std::fs::canonicalize(state.path()).unwrap();
+        let identity = CoreIdentity::production_v5();
+        let (observations, observed) = mpsc::channel();
+        let config = DaemonServerConfig::new(state_root.clone(), identity.clone(), idle_grace)
+            .with_invocation_service(service)
+            .with_runtime_hooks_for_test(Arc::new(PromisedWorkIdleHooks { observations }));
+        let stop = Arc::new(AtomicBool::new(false));
+        let server_stop = Arc::clone(&stop);
+        let server = thread::spawn(move || {
+            run_daemon_configured_until(
+                config,
+                |runtime| runtime,
+                || server_stop.load(Ordering::SeqCst),
+            )
+        });
+        let guard = HandlerSpawnDaemon {
+            stop,
+            streams: Vec::new(),
+            server: Some(server),
+        };
+        let record = wait_for_v5_record(&state_root, &identity);
+        Self {
+            guard,
+            _state: state,
+            state_root,
+            record,
+            observations: observed,
+        }
+    }
+
+    fn owner(&mut self) -> (TcpStream, BufReader<TcpStream>) {
+        let owner = connect_v5_owner(
+            &self.record,
+            self.record.core_identity(),
+            &uuid::Uuid::new_v4().to_string(),
+        );
+        self.guard.streams.push(owner.0.try_clone().unwrap());
+        owner
+    }
+
+    fn endpoint(&self) -> Option<V5EndpointRecord> {
+        DaemonStateDirectory::open(&self.state_root, self.record.core_identity())
+            .unwrap()
+            .read_v5_endpoint_record()
+            .unwrap()
+    }
+
+    /// Observe the actual listener past the requested interval. Its exit drops
+    /// the sole sender, so an early idle exit is also observed without sleeping.
+    fn observe_until(&self, threshold: Instant) -> bool {
+        let watchdog = Instant::now() + Duration::from_secs(3);
+        loop {
+            match self
+                .observations
+                .recv_timeout(watchdog.saturating_duration_since(Instant::now()))
+            {
+                Ok((observed, _)) if observed >= threshold => return true,
+                Ok(_) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => return false,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    panic!("listener did not reach the idle observation or exit")
+                }
+            }
+        }
+    }
+
+    /// Begin the interval only at a fresh observation of the actual empty
+    /// owner registry after Release, excluding startup and buffered events.
+    fn observe_idle_interval(&self, interval: Duration) -> bool {
+        let released_at = Instant::now();
+        let watchdog = released_at + Duration::from_secs(3);
+        let mut empty_since = None;
+        loop {
+            match self
+                .observations
+                .recv_timeout(watchdog.saturating_duration_since(Instant::now()))
+            {
+                Ok((observed, empty)) if observed >= released_at => {
+                    if empty {
+                        let start = *empty_since.get_or_insert(observed);
+                        if observed.duration_since(start) >= interval {
+                            return true;
+                        }
+                    } else {
+                        empty_since = None;
+                    }
+                }
+                Ok(_) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => return false,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    panic!("listener neither crossed the owner-free idle interval nor exited")
+                }
+            }
+        }
+    }
+
+    fn join(&mut self) {
+        self.guard
+            .server
+            .take()
+            .unwrap()
+            .join()
+            .expect("join promised-work daemon")
+            .expect("promised-work daemon exits cleanly");
+    }
+}
+
+fn promised_work_apply_over_tcp(
+    owner: &mut (TcpStream, BufReader<TcpStream>),
+    workspace: &std::path::Path,
+    arguments: serde_json::Value,
+) -> crate::domain::invocation::DomainResult {
+    promised_work_call_over_tcp(owner, workspace, V5ToolIdentity::Apply, arguments)
+}
+
+fn promised_work_call_over_tcp(
+    owner: &mut (TcpStream, BufReader<TcpStream>),
+    workspace: &std::path::Path,
+    tool: V5ToolIdentity,
+    arguments: serde_json::Value,
+) -> crate::domain::invocation::DomainResult {
+    let invocation = V5InvocationRequest::new(
+        InvocationId::new(),
+        TaskId::new(),
+        tool,
+        arguments.as_object().unwrap().clone(),
+        std::fs::canonicalize(workspace)
+            .unwrap()
+            .display()
+            .to_string(),
+        7_000,
+    )
+    .unwrap();
+    write_json_line(
+        &mut owner.0,
+        &serde_json::to_value(V5ClientRequest::SubmitInvocation { invocation }).unwrap(),
+    );
+    let frame =
+        read_bounded_v5_probe_response_frame(&mut owner.1).expect("read canonical apply response");
+    match decode_v5_server_response(&frame).unwrap() {
+        V5ServerResponse::Invocation {
+            outcome: V5InvocationResponse::Direct { receipt },
+        } => match receipt.terminal() {
+            ReceiptTerminalOutcome::Completed { result } => *result.clone(),
+            other => panic!("apply did not complete: {other:?}"),
+        },
+        other => panic!("apply did not return a direct result: {other:?}"),
+    }
+}
+
+fn promised_work_preview_over_tcp(
+    owner: &mut (TcpStream, BufReader<TcpStream>),
+    workspace: &std::path::Path,
+) -> serde_json::Value {
+    let result = promised_work_apply_over_tcp(
+        owner,
+        workspace,
+        json!({
+            "at": "main:Subsystem.Sales",
+            "ops": [{"op": "props.set", "args": {"values": {"Comment": "kept across idle"}}}]
+        }),
+    );
+    assert!(result.ok, "{result:?}");
+    result.data.unwrap()["executionToken"].clone()
+}
+
+fn release_promised_work_owner(mut owner: (TcpStream, BufReader<TcpStream>)) {
+    write_json_line(&mut owner.0, &json!({"kind": "release"}));
+    let released =
+        read_bounded_v5_probe_response_frame(&mut owner.1).expect("release canonical apply owner");
+    assert_eq!(
+        decode_v5_server_response(&released),
+        Ok(V5ServerResponse::Released)
+    );
+    // Released precedes the server lease guard drop. The idle oracle below
+    // observes the actual empty registry; socket shutdown is best-effort cleanup.
+    let _ = owner.0.shutdown(std::net::Shutdown::Both);
+}
+
+#[test]
+fn daemon_idle_saved_apply_plan_preserves_instance_and_exact_replay_after_owner_release() {
+    let workspace =
+        super::super::server::actor_capacity_tests::subsystem_picture_workspace("", false);
+    let descriptor = workspace.path().join("src/Subsystems/Sales.xml");
+    let before = std::fs::read(&descriptor).unwrap();
+    let idle = Duration::from_millis(80);
+    let mut daemon = PromisedWorkIdleDaemon::start(idle);
+    let mut owner = daemon.owner();
+    let token = promised_work_preview_over_tcp(&mut owner, workspace.path());
+    assert_eq!(
+        before,
+        std::fs::read(&descriptor).unwrap(),
+        "preview must not write"
+    );
+    release_promised_work_owner(owner);
+
+    let observed = daemon.observe_idle_interval(idle * 3);
+    assert_eq!(
+        daemon.endpoint(),
+        Some(daemon.record.clone()),
+        "idle cleanup discarded an unexecuted apply plan and its daemon instance"
+    );
+    assert!(
+        observed,
+        "the original listener must remain alive past idle"
+    );
+    let mut successor = daemon.owner();
+    let arguments = json!({"executionToken": token});
+    let applied = promised_work_apply_over_tcp(&mut successor, workspace.path(), arguments.clone());
+    assert!(applied.ok, "{applied:?}");
+    let written = std::fs::read(&descriptor).unwrap();
+    assert_ne!(before, written);
+    release_promised_work_owner(successor);
+    let observed = daemon.observe_idle_interval(idle * 3);
+    assert_eq!(
+        daemon.endpoint(),
+        Some(daemon.record.clone()),
+        "idle cleanup discarded a completed plan's replay result"
+    );
+    assert!(
+        observed,
+        "completed plan remains promised after all owners release"
+    );
+    let mut replay_owner = daemon.owner();
+    assert_eq!(
+        promised_work_apply_over_tcp(&mut replay_owner, workspace.path(), arguments),
+        applied
+    );
+    assert_eq!(
+        written,
+        std::fs::read(&descriptor).unwrap(),
+        "replay must not mutate again"
+    );
+    release_promised_work_owner(replay_owner);
+}
+
+#[test]
+fn daemon_idle_empty_runtime_still_exits_after_owner_release() {
+    let idle = Duration::from_millis(80);
+    let mut daemon = PromisedWorkIdleDaemon::start(idle);
+    let owner = daemon.owner();
+    release_promised_work_owner(owner);
+    assert!(
+        !daemon.observe_idle_interval(idle * 3),
+        "an empty daemon must still idle out"
+    );
+    daemon.join();
+    assert!(daemon.endpoint().is_none());
+}
+
+#[test]
+fn daemon_idle_saved_apply_plan_does_not_prevent_explicit_stop() {
+    let workspace =
+        super::super::server::actor_capacity_tests::subsystem_picture_workspace("", false);
+    let mut daemon = PromisedWorkIdleDaemon::start(Duration::from_secs(30));
+    let mut owner = daemon.owner();
+    let token = promised_work_preview_over_tcp(&mut owner, workspace.path());
+    assert!(token.as_str().is_some_and(|value| !value.is_empty()));
+    release_promised_work_owner(owner);
+    daemon.guard.stop.store(true, Ordering::SeqCst);
+    assert!(
+        !daemon.observe_until(Instant::now() + Duration::from_secs(1)),
+        "explicit stop must exit despite a pending apply plan"
+    );
+    daemon.join();
+    assert!(daemon.endpoint().is_none());
+}
+
+type IdleIndexLease = crate::application::shared_work::SharedWorkLease<
+    (),
+    crate::application::shared_work::LongWorkFailure,
+>;
+type IdleIndexGate = Arc<(Mutex<bool>, Condvar)>;
+
+struct IdleIndexService {
+    calls: AtomicUsize,
+    producers: Arc<AtomicUsize>,
+    entered: mpsc::Sender<()>,
+    exited: mpsc::Sender<()>,
+    release: IdleIndexGate,
+    follower: mpsc::Sender<IdleIndexLease>,
+}
+
+impl super::super::server::CanonicalInvocationService for IdleIndexService {
+    fn prepare(
+        &self,
+        _invocation: &super::super::server::ActorBoundInvocation,
+    ) -> Result<
+        crate::application::operation_descriptors::ExecutionClass,
+        Box<crate::domain::invocation::DomainResult>,
+    > {
+        Ok(crate::application::operation_descriptors::ExecutionClass::InlineCandidate)
+    }
+
+    fn execute(
+        &self,
+        invocation: &super::super::server::ActorBoundExecution,
+        _cancellation: CancellationToken,
+    ) -> Result<crate::domain::invocation::DomainResult, crate::domain::invocation::InvocationFailure>
+    {
+        let producers = Arc::clone(&self.producers);
+        let entered = self.entered.clone();
+        let exited = self.exited.clone();
+        let release = Arc::clone(&self.release);
+        let (_, lease) = invocation
+            .join_index_work(
+                "rlm",
+                "idle-test-profile",
+                "idle-test-generation",
+                move |_| {
+                    producers.fetch_add(1, Ordering::SeqCst);
+                    entered.send(()).unwrap();
+                    let (released, changed) = &*release;
+                    let mut released = released.lock().unwrap();
+                    while !*released {
+                        released = changed.wait(released).unwrap();
+                    }
+                    exited.send(()).unwrap();
+                    Ok(())
+                },
+            )
+            .map_err(|error| {
+                crate::domain::invocation::InvocationFailure::new("index_failed", error)
+            })?;
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            assert!(lease.started_here());
+            drop(lease);
+        } else {
+            assert!(
+                !lease.started_here(),
+                "later RPC must attach to the original live producer"
+            );
+            self.follower.send(lease).unwrap();
+        }
+        Ok(crate::domain::invocation::DomainResult::success(
+            "index joined",
+        ))
+    }
+}
+
+struct IdleIndexProducerCleanup {
+    release: IdleIndexGate,
+    exited: mpsc::Receiver<()>,
+}
+
+impl IdleIndexProducerCleanup {
+    fn release(&self) {
+        let (released, changed) = &*self.release;
+        *released.lock().unwrap() = true;
+        changed.notify_all();
+    }
+}
+
+impl Drop for IdleIndexProducerCleanup {
+    fn drop(&mut self) {
+        self.release();
+        // Also settle the cooperative producer on a RED assertion before the
+        // follower is obtained; the normal path verifies actual Ready below.
+        let _ = self.exited.recv_timeout(Duration::from_secs(3));
+    }
+}
+
+#[test]
+fn daemon_idle_running_index_producer_without_rpc_or_lease_preserves_instance_then_retires() {
+    let workspace =
+        super::super::server::actor_capacity_tests::subsystem_picture_workspace("", false);
+    let producers = Arc::new(AtomicUsize::new(0));
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    let (entered, started) = mpsc::channel();
+    let (exited, finished) = mpsc::channel();
+    let (follower, joined) = mpsc::channel();
+    let service = Arc::new(IdleIndexService {
+        calls: AtomicUsize::new(0),
+        producers: Arc::clone(&producers),
+        entered,
+        exited,
+        release: Arc::clone(&release),
+        follower,
+    });
+    let idle = Duration::from_millis(80);
+    let mut daemon = PromisedWorkIdleDaemon::with_service(idle, service);
+    // Declared after the daemon so failure releases the producer before the
+    // daemon's stop/join guard runs. No SharedWork lease is retained here.
+    let cleanup = IdleIndexProducerCleanup {
+        release,
+        exited: finished,
+    };
+    let mut owner = daemon.owner();
+    let call = |owner: &mut (TcpStream, BufReader<TcpStream>)| {
+        promised_work_call_over_tcp(
+            owner,
+            workspace.path(),
+            V5ToolIdentity::View,
+            json!({"at": "main:Subsystem.Sales"}),
+        )
+    };
+    assert!(call(&mut owner).ok);
+    started
+        .recv_timeout(Duration::from_secs(2))
+        .expect("the real SharedWork producer starts");
+    release_promised_work_owner(owner);
+    let observed = daemon.observe_idle_interval(idle * 3);
+    assert_eq!(
+        daemon.endpoint(),
+        Some(daemon.record.clone()),
+        "idle shutdown lost a running index producer after the RPC and its lease ended"
+    );
+    assert!(observed);
+    let mut successor = daemon.owner();
+    assert!(call(&mut successor).ok);
+    let lease = joined
+        .recv_timeout(Duration::from_secs(2))
+        .expect("second real RPC attaches to the same exact index work");
+    assert_eq!(producers.load(Ordering::SeqCst), 1);
+    release_promised_work_owner(successor);
+    cleanup.release();
+    assert!(
+        matches!(
+            lease.wait_timeout(Duration::from_secs(2)),
+            crate::application::shared_work::SharedWorkSnapshot::Ready(_)
+        ),
+        "producer must actually settle before its last lease is released"
+    );
+    drop(lease);
+    assert!(
+        !daemon.observe_idle_interval(idle * 3),
+        "completed index work with no leases must allow empty daemon idle cleanup"
+    );
+    daemon.join();
+    assert!(daemon.endpoint().is_none());
+}
+
 #[test]
 fn exact_v5_runtime_opens_receipt_ledger_and_serves_real_handshake_and_ping() {
     let root = tempfile::tempdir().expect("temporary state root");
