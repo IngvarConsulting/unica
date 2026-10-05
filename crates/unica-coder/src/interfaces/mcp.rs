@@ -46,7 +46,6 @@ use crate::infrastructure::daemon::client_v5::V5DaemonProcessOwner;
 use crate::infrastructure::daemon::client_v5::{V5DaemonClient, V5TaskExchangeError};
 use crate::infrastructure::daemon::protocol_v5::{V5DaemonErrorCode, V5DaemonTaskSnapshot};
 
-pub const MCP_MAX_TOOL_WORKERS: usize = 32;
 const EOF_CANCELLATION_GRACE: Duration = Duration::from_secs(2);
 const RUNTIME_SHUTDOWN_GRACE: Duration = Duration::from_millis(250);
 
@@ -1212,8 +1211,8 @@ fn call_tool_text(
         .map_err(|error| (ErrorCode::INTERNAL_ERROR.0, error.to_string()))
 }
 
-/// Tracks running tool calls so shutdown can cancel them and wait, and so
-/// admission stays bounded without relying on SDK internals.
+/// Retains each running call until its owner finishes, so shutdown can cancel
+/// calls and wait without relying on SDK internals.
 #[derive(Debug, Default)]
 struct InFlightRegistry {
     state: Mutex<InFlightState>,
@@ -1232,13 +1231,11 @@ impl InFlightRegistry {
             .state
             .lock()
             .map_err(|_| "in-flight registry lock poisoned".to_string())?;
-        if state.running.len() >= MCP_MAX_TOOL_WORKERS {
-            return Err(format!(
-                "dispatcher overloaded: at most {MCP_MAX_TOOL_WORKERS} concurrent tools/call requests are allowed"
-            ));
-        }
-        state.next_id += 1;
-        let id = state.next_id;
+        let id = state
+            .next_id
+            .checked_add(1)
+            .ok_or_else(|| "in-flight call identifier overflow".to_string())?;
+        state.next_id = id;
         let token = CancellationToken::new();
         state.running.push((id, token.clone()));
         Ok(InFlightGuard {
@@ -5588,17 +5585,62 @@ mod tests {
     }
 
     #[test]
-    fn admission_is_bounded_and_reusable() {
+    fn admission_crosses_the_former_call_quota_and_retains_exact_ownership() {
         let registry = Arc::new(InFlightRegistry::default());
         let mut guards = Vec::new();
-        for _ in 0..MCP_MAX_TOOL_WORKERS {
-            guards.push(registry.admit().unwrap());
+        for _ in 0..33 {
+            guards.push(
+                registry
+                    .admit()
+                    .expect("call count must not refuse admission"),
+            );
         }
-        let overloaded = registry.admit().unwrap_err();
-        assert!(overloaded.contains("overloaded"));
-        guards.pop();
-        guards.push(registry.admit().unwrap());
+        assert_eq!(registry.running(), 33);
+        let identifiers: std::collections::BTreeSet<_> =
+            guards.iter().map(|guard| guard.id).collect();
+        assert_eq!(identifiers.len(), 33);
+        let released = guards.pop().unwrap();
+        let released_token = released.token();
+        drop(released);
+        assert_eq!(registry.running(), 32);
+        registry.cancel_all();
+        assert!(!released_token.is_cancelled());
+        assert!(guards.iter().all(|guard| guard.token().is_cancelled()));
+        assert_eq!(
+            registry.running(),
+            32,
+            "cancel must retain executing owners"
+        );
+        let next = registry.admit().unwrap();
+        assert!(!next.token().is_cancelled());
+        assert!(!identifiers.contains(&next.id));
+        drop(next);
         drop(guards);
+        assert!(registry.wait_idle(Duration::from_millis(100)));
+    }
+
+    #[test]
+    fn admission_identifier_overflow_preserves_existing_call_ownership() {
+        let registry = Arc::new(InFlightRegistry::default());
+        let existing = registry.admit().unwrap();
+        let existing_token = existing.token();
+        registry.state.lock().unwrap().next_id = u64::MAX;
+
+        assert_eq!(
+            registry.admit().unwrap_err(),
+            "in-flight call identifier overflow"
+        );
+        {
+            let state = registry.state.lock().unwrap();
+            assert_eq!(state.next_id, u64::MAX);
+            assert_eq!(state.running.len(), 1);
+            assert_eq!(state.running[0].0, existing.id);
+            assert!(!state.running[0].1.is_cancelled());
+        }
+        registry.cancel_all();
+        assert!(existing_token.is_cancelled());
+        assert_eq!(registry.running(), 1);
+        drop(existing);
         assert!(registry.wait_idle(Duration::from_millis(100)));
     }
 
@@ -5699,10 +5741,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn overloaded_dispatcher_returns_deterministic_json_rpc_error() {
+    async fn dispatcher_executes_all_calls_past_the_former_quota() {
         let release = Arc::new(AtomicBool::new(false));
         let gate = Arc::clone(&release);
+        let entered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let worker_entered = Arc::clone(&entered);
         let handler: Arc<ToolCallHandler> = Arc::new(move |_, _, _, _| {
+            worker_entered.fetch_add(1, Ordering::SeqCst);
             let give_up = Instant::now() + 4 * TEST_STEP;
             while !gate.load(Ordering::SeqCst) {
                 if Instant::now() > give_up {
@@ -5714,48 +5759,54 @@ mod tests {
         });
         let (mut client, in_flight) = spawn_server(handler);
         client.initialize().await;
-        for id in 0..MCP_MAX_TOOL_WORKERS {
+        let expected: std::collections::BTreeSet<_> =
+            (0..33).map(|id| format!("blocked-{id}")).collect();
+        for id in &expected {
             client
                 .send(json!({
-                    "jsonrpc": "2.0",
-                    "id": format!("blocked-{id}"),
-                    "method": "tools/call",
+                    "jsonrpc": "2.0", "id": id, "method": "tools/call",
                     "params": { "name": "unica.code.search", "arguments": {} }
                 }))
                 .await;
         }
         let admitted_deadline = Instant::now() + TEST_STEP;
-        while in_flight.running() < MCP_MAX_TOOL_WORKERS {
-            assert!(
-                Instant::now() < admitted_deadline,
-                "workers were not admitted"
-            );
+        while entered.load(Ordering::SeqCst) < 33 && Instant::now() < admitted_deadline {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
-        client
-            .send(json!({
-                "jsonrpc": "2.0",
-                "id": "overload",
-                "method": "tools/call",
-                "params": { "name": "unica.code.search", "arguments": {} }
-            }))
-            .await;
-        let response = client.receive().await;
-        assert_eq!(response["id"], "overload");
-        assert_eq!(response["error"]["code"], ErrorCode::INTERNAL_ERROR.0);
-        assert!(response["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("overloaded"));
+        let entered_before_release = entered.load(Ordering::SeqCst);
+        let tracked_before_release = in_flight.running();
+        // Always release and drain every owned worker before asserting the admission result.
         release.store(true, Ordering::SeqCst);
-        for _ in 0..MCP_MAX_TOOL_WORKERS {
-            let response = client.receive().await;
+        let mut responses = Vec::new();
+        for _ in 0..33 {
+            responses.push(client.receive().await);
+        }
+        client.shutdown().await;
+        let refused: Vec<_> = responses
+            .iter()
+            .filter_map(|response| response.get("error"))
+            .collect();
+        assert!(
+            refused.is_empty(),
+            "calls were refused by count: {refused:?}"
+        );
+        assert_eq!(
+            entered_before_release, 33,
+            "every accepted call must actually execute"
+        );
+        assert_eq!(tracked_before_release, 33);
+        let actual: std::collections::BTreeSet<_> = responses
+            .iter()
+            .map(|response| response["id"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(actual, expected);
+        for response in &responses {
             let payload: Value =
                 serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())
                     .unwrap();
             assert_eq!(payload["summary"], "released");
         }
-        client.shutdown().await;
+        assert_eq!(in_flight.running(), 0);
     }
 
     #[test]
