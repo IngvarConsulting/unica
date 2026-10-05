@@ -88,6 +88,11 @@ impl<'a> GitGrepProvider<'a> {
         if all_absent {
             return empty_section(ProviderId::GitGrep, SearchRanking::None);
         }
+        let scope = context.search_scope.as_ref();
+        let source_pathspecs = git_grep_bsl_pathspecs(scope);
+        if source_pathspecs.is_empty() {
+            return empty_section(ProviderId::GitGrep, SearchRanking::None);
+        }
         let timeout = deadline.remaining();
         let mut args = vec![
             "-c".to_string(),
@@ -95,6 +100,7 @@ impl<'a> GitGrepProvider<'a> {
             "grep".to_string(),
             "--no-color".to_string(),
             "--untracked".to_string(),
+            "--no-exclude-standard".to_string(),
             "--null".to_string(),
             "-n".to_string(),
             "-F".to_string(),
@@ -102,18 +108,7 @@ impl<'a> GitGrepProvider<'a> {
             request.query.clone(),
             "--".to_string(),
         ];
-        let scope = context.search_scope.as_ref();
-        if let Some(scope) = scope.filter(|scope| !scope.filters.is_empty()) {
-            for filter in &scope.filters {
-                let path = match filter {
-                    crate::domain::code_intelligence::RelativeSearchFilter::Exact(path)
-                    | crate::domain::code_intelligence::RelativeSearchFilter::Subtree(path) => path,
-                };
-                args.push(path.to_string_lossy().replace('\\', "/"));
-            }
-        } else {
-            args.push(".".to_string());
-        }
+        args.extend(source_pathspecs);
         args.push(generated_corpus_exclusion());
         if let Some(scope) = scope {
             for subtree in &scope.excluded_subtrees {
@@ -175,6 +170,42 @@ impl<'a> GitGrepProvider<'a> {
         }
         git_grep_stream_section(output, hits, diagnostics, fatal)
     }
+}
+
+/// Git tracking does not define the admitted BSL corpus. Restrict each
+/// positive pathspec itself: separate BSL and scope patterns would form a
+/// union and could expose ignored files outside the selected module.
+fn git_grep_bsl_pathspecs(
+    scope: Option<&crate::domain::code_intelligence::CodeSearchScope>,
+) -> Vec<String> {
+    use crate::domain::code_intelligence::RelativeSearchFilter;
+
+    const BSL_GLOB: &str = "**/*.[bB][sS][lL]";
+    let Some(scope) = scope.filter(|scope| !scope.filters.is_empty()) else {
+        return vec![format!(":(glob){BSL_GLOB}")];
+    };
+    scope
+        .filters
+        .iter()
+        .filter_map(|filter| match filter {
+            RelativeSearchFilter::Exact(path) => path
+                .extension()
+                .and_then(std::ffi::OsStr::to_str)
+                .filter(|extension| extension.eq_ignore_ascii_case("bsl"))
+                .map(|_| format!(":(literal){}", path.to_string_lossy().replace('\\', "/"))),
+            RelativeSearchFilter::Subtree(path) => {
+                let prefix = path.to_string_lossy().replace('\\', "/");
+                let mut escaped = String::new();
+                for character in prefix.chars() {
+                    if matches!(character, '*' | '?' | '[' | ']' | '\\') {
+                        escaped.push('\\');
+                    }
+                    escaped.push(character);
+                }
+                Some(format!(":(glob){escaped}/{BSL_GLOB}"))
+            }
+        })
+        .collect()
 }
 
 /// Git warns about an absent pathspec parent even when it finds no matches.
@@ -2377,13 +2408,14 @@ mod tests {
                 "grep",
                 "--no-color",
                 "--untracked",
+                "--no-exclude-standard",
                 "--null",
                 "-n",
                 "-F",
                 "-e",
                 "Post.*",
                 "--",
-                ".",
+                ":(glob)**/*.[bB][sS][lL]",
                 ":(exclude,glob)**/.build/**",
                 ":(exclude,literal)lib[ab]",
             ]
@@ -2542,6 +2574,138 @@ mod tests {
             ["liba/Module.bsl", "libb/Module.bsl"],
             "{section:#?}"
         );
+    }
+
+    #[test]
+    fn git_grep_reads_tracked_untracked_and_ignored_bsl_only_in_the_selected_source() {
+        let root = tempfile::tempdir().unwrap();
+        let source_root = root.path().join("src");
+        let tracked = "CommonModules/Tracked/Ext/Module.bsl";
+        let untracked = "CommonModules/Untracked/Ext/Module.bsl";
+        let ignored = "CommonModules/Ignored[1]/Ext/Module.bsl";
+        let uppercase = "CommonModules/Uppercase/Ext/Module.BSL";
+        for relative in [
+            tracked,
+            untracked,
+            ignored,
+            uppercase,
+            "CommonModules/Ignored[1].xml",
+            "CommonModules/Ignored[1]/credentials.txt",
+            "credentials.txt",
+            ".build/Module.bsl",
+            "CommonModules/.build/Module.bsl",
+            "vendor/Module.bsl",
+        ] {
+            let file = source_root.join(relative);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, "// Needle\n").unwrap();
+        }
+        std::fs::create_dir(root.path().join("private")).unwrap();
+        std::fs::write(root.path().join("private/Module.bsl"), "// Needle\n").unwrap();
+        std::fs::write(
+            root.path().join(".gitignore"),
+            "**/Ignored*/\n**/Uppercase/\n*.txt\n.build/\nvendor/\nprivate/\n",
+        )
+        .unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(root.path())
+            .status()
+            .unwrap()
+            .success());
+        assert!(std::process::Command::new("git")
+            .args(["add", "--force", &format!("src/{tracked}")])
+            .current_dir(root.path())
+            .status()
+            .unwrap()
+            .success());
+        assert!(std::process::Command::new("git")
+            .args(["check-ignore", "--quiet", &format!("src/{ignored}")])
+            .current_dir(root.path())
+            .status()
+            .unwrap()
+            .success());
+
+        let workspace_root = std::fs::canonicalize(root.path()).unwrap();
+        let source_root = std::fs::canonicalize(source_root).unwrap();
+
+        use crate::domain::code_intelligence::RelativeSearchFilter;
+        for (filters, expected) in [
+            (vec![], vec![ignored, tracked, untracked, uppercase]),
+            (
+                vec![RelativeSearchFilter::Subtree(PathBuf::from(
+                    "CommonModules",
+                ))],
+                vec![ignored, tracked, untracked, uppercase],
+            ),
+            (
+                vec![RelativeSearchFilter::Subtree(PathBuf::from(
+                    "CommonModules/Ignored[1]",
+                ))],
+                vec![ignored],
+            ),
+            (
+                vec![RelativeSearchFilter::Exact(PathBuf::from(ignored))],
+                vec![ignored],
+            ),
+            (
+                vec![RelativeSearchFilter::Exact(PathBuf::from(
+                    "CommonModules/Ignored[1].xml",
+                ))],
+                vec![],
+            ),
+            (
+                vec![
+                    RelativeSearchFilter::Exact(PathBuf::from("CommonModules/Ignored[1].xml")),
+                    RelativeSearchFilter::Subtree(PathBuf::from("CommonModules/Ignored[1]")),
+                ],
+                vec![ignored],
+            ),
+        ] {
+            let mut scope = CodeSearchScope::all("main".into(), source_root.clone(), false);
+            scope.filters = filters.clone();
+            scope.excluded_subtrees.push(PathBuf::from("vendor"));
+            let context = CodeIntelligenceContext::new(
+                WorkspaceContext {
+                    cwd: workspace_root.clone(),
+                    workspace_root: workspace_root.clone(),
+                    cache_root: source_root.join(".build"),
+                    workspace_epoch: 1,
+                },
+                ResolvedSourceRoot {
+                    source_set: Some("main".into()),
+                    path: source_root.clone(),
+                },
+            )
+            .with_search_scope(scope);
+            let section = GitGrepProvider::new().search(
+                &SearchRequest {
+                    query: "Needle".into(),
+                    limit: 20,
+                },
+                &context,
+                ProviderDeadline::new(Instant::now() + Duration::from_secs(30)),
+                &CancellationToken::new(),
+            );
+            let mut paths = section
+                .hits
+                .iter()
+                .map(|hit| location_path(&hit.location).to_string())
+                .collect::<Vec<_>>();
+            paths.sort();
+            assert_eq!(paths, expected, "filters={filters:?}: {section:#?}");
+            assert_eq!(
+                section.status,
+                if expected.is_empty() {
+                    ProviderSectionStatus::Empty
+                } else {
+                    ProviderSectionStatus::Ok
+                },
+                "{section:#?}"
+            );
+            assert!(section.search_complete, "{section:#?}");
+            assert!(section.diagnostics.is_empty(), "{section:#?}");
+        }
     }
 
     #[test]
