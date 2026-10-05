@@ -7010,10 +7010,12 @@ mod tests {
                 command.args([&pid_file_for_start, &completion_file_for_start]);
                 PersistentMcpSession::start_with_command(command, cancellation)
             });
+        // Each runtime request includes cold startup and initialize. The two-second
+        // checks below cover completion, reader EOF and old-process termination.
         let first = runtime.handle_bsl_mcp(
             "unica.code.search",
             json!({}),
-            2,
+            SERVICE_REQUEST_TIMEOUT.as_secs(),
             0,
             &CancellationToken::new(),
         );
@@ -7025,7 +7027,7 @@ mod tests {
         let second = runtime.handle_bsl_mcp(
             "unica.code.search",
             json!({}),
-            2,
+            SERVICE_REQUEST_TIMEOUT.as_secs(),
             0,
             &CancellationToken::new(),
         );
