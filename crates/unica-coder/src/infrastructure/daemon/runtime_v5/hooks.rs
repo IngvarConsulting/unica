@@ -133,6 +133,9 @@ pub(crate) trait V5RuntimeHooks: Send + Sync {
 
     fn event(&self, event: V5ReceiptRuntimeEventKind, epoch_ms: u64) {}
 
+    /// Observes an accepted connection before its owner handshake is read.
+    fn before_owner_handshake(&self, peer_port: u16) {}
+
     fn stage_entered(&self, stage: V5Stage) {}
 
     fn task_store_create_attempted(&self) {}

@@ -5745,6 +5745,12 @@ fn handle_probe_connection(
     runtime: &Arc<V5ReceiptRuntime>,
     handshake_slot: V5ConnectionSlot,
 ) -> Result<(), String> {
+    runtime.hooks.before_owner_handshake(
+        stream
+            .peer_addr()
+            .map_err(|error| daemon_io_error("observe accepted protocol-v5 peer", error))?
+            .port(),
+    );
     runtime.ensure_named_authority_before(handshake_deadline)?;
     stream
         .set_nonblocking(false)
