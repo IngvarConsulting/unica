@@ -1039,8 +1039,9 @@ mod tests {
         )
         .unwrap();
         let continuations = RootCheckContinuationStore::default();
+        let normalized_root = super::normalize_path_identity(&root).unwrap();
         continuations
-            .for_workspace(&root)
+            .for_workspace(&normalized_root)
             .unwrap()
             .lock()
             .unwrap()

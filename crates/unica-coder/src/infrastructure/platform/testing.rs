@@ -17,6 +17,32 @@ pub(crate) fn path_text_for_test(path: &Path) -> String {
     normalize_path_text_for_test(&path.display().to_string())
 }
 
+/// Hold a known regular fixture file open without delete sharing. A retained
+/// publisher can still read it, but Windows must reject its rename for recovery.
+#[cfg(windows)]
+pub(crate) fn hold_regular_file_without_delete_sharing_for_test(
+    path: &Path,
+) -> io::Result<Option<std::fs::File>> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+        .map(Some)
+}
+
+#[cfg(not(windows))]
+pub(crate) fn hold_regular_file_without_delete_sharing_for_test(
+    _path: &Path,
+) -> io::Result<Option<std::fs::File>> {
+    Ok(None)
+}
+
 #[cfg(windows)]
 pub(crate) fn case_distinct_provider_paths_for_test(_parent: &Path) -> Option<(PathBuf, PathBuf)> {
     None
