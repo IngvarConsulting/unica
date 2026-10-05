@@ -11016,6 +11016,9 @@ pub(crate) mod tests {
             .unwrap(),
         )
         .unwrap();
+        let cache_root = cache_state.parent().unwrap();
+        let foreign_cache = cache_root.join(".unica-apply-spoof");
+        std::fs::write(&foreign_cache, b"foreign cache bytes").unwrap();
         let binding = fixture.actor.bind_provider_root("main", source).unwrap();
         let prepare = |name: &str, before: &[u8], after: &[u8]| {
             let admission = fixture
@@ -11056,6 +11059,7 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(std::fs::read(&module_a).unwrap(), b"A before");
         assert_eq!(std::fs::read(&module_b).unwrap(), b"B before");
+        let mut expected_cache_after_a = snapshot_tree(cache_root);
 
         let first = fixture
             .actor
@@ -11069,7 +11073,25 @@ pub(crate) mod tests {
         assert!(first.ok, "{}", first.summary);
         assert_eq!(std::fs::read(&module_a).unwrap(), b"A after");
         assert_eq!(std::fs::read(&module_b).unwrap(), b"B before");
-        let cache_after_a = snapshot_tree(&fixture.root.join(".build/unica"));
+        let state_after_a = std::fs::read(&cache_state).unwrap();
+        let expected_state = &mut expected_cache_after_a
+            .iter_mut()
+            .find(|(relative, _)| relative == Path::new("state.json"))
+            .expect("the existing cache marker is part of the preimage")
+            .1;
+        assert_ne!(*expected_state, Some(state_after_a.clone()));
+        *expected_state = Some(state_after_a);
+        // B still owns A's former marker. Windows can expose its delete-pending
+        // recovery name until B releases the handle; it cannot be reopened.
+        // This effect writes only state.json, so check every existing entry now
+        // and compare the complete, unfiltered namespace after B is consumed.
+        for (relative, bytes) in &expected_cache_after_a {
+            let path = cache_root.join(relative);
+            match bytes {
+                Some(bytes) => assert_eq!(std::fs::read(&path).unwrap(), *bytes),
+                None => assert!(path.is_dir(), "{}", path.display()),
+            }
+        }
         let second_kind = std::cell::Cell::new(None);
         let second = fixture
             .actor
@@ -11093,10 +11115,7 @@ pub(crate) mod tests {
         );
         assert_eq!(std::fs::read(&module_a).unwrap(), b"A after");
         assert_eq!(std::fs::read(&module_b).unwrap(), b"B before");
-        assert_eq!(
-            snapshot_tree(&fixture.root.join(".build/unica")),
-            cache_after_a
-        );
+        assert_eq!(snapshot_tree(cache_root), expected_cache_after_a);
 
         let fresh_b = fixture
             .actor
