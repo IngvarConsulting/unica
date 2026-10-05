@@ -1,12 +1,11 @@
 use crate::application::receipt_ledger::{
-    receipt_key_digest, AcknowledgedTombstoneReceipt, CancelExpiryOutcome, CancelResolution,
-    CommittedDirectPublication, DirectTerminalUnackedReceipt, OriginalCutoffDescriptor,
-    ProvenTaskLinkCapacity, ReceiptKey, ReceiptKeyDigest, ReceiptLedgerError, ReceiptLedgerPort,
-    ReceiptState, ReceiptVersion, ReserveOutcome, ReservedReceipt,
-    StagedTerminalTransferCertificate, TaskBoundReceipt, TaskCancellationReceipt,
-    TaskHandoffActorBoundReceipt, TaskPromisedActorBoundReceipt, TaskPromisedUnboundReceipt,
-    TaskReceiptOwnedActorBoundReceipt, TaskTerminalBoundReceipt, TaskTerminalReceiptBackedReceipt,
-    TerminalDigest, V5CanonicalTerminal,
+    receipt_key_digest, AcknowledgedTombstoneReceipt, CancelResolution, CommittedDirectPublication,
+    DirectTerminalUnackedReceipt, OriginalCutoffDescriptor, ProvenTaskLinkCapacity, ReceiptKey,
+    ReceiptKeyDigest, ReceiptLedgerError, ReceiptLedgerPort, ReceiptState, ReceiptVersion,
+    ReserveOutcome, ReservedReceipt, StagedTerminalTransferCertificate, TaskBoundReceipt,
+    TaskCancellationReceipt, TaskHandoffActorBoundReceipt, TaskPromisedActorBoundReceipt,
+    TaskPromisedUnboundReceipt, TaskReceiptOwnedActorBoundReceipt, TaskTerminalBoundReceipt,
+    TaskTerminalReceiptBackedReceipt, TerminalDigest, V5CanonicalTerminal,
 };
 use crate::application::receipt_ledger::{
     ReceiptLedgerCatalogSnapshot, ReceiptLedgerCatalogSnapshotAuthority,
@@ -347,14 +346,6 @@ enum Command {
         deadline: Instant,
         ticket: Arc<Ticket<Vec<AcknowledgedTombstoneReceipt>>>,
     },
-    ExpireCancelReserved {
-        key: ReceiptKey,
-        expected_version: ReceiptVersion,
-        expected_mutation_sequence: u64,
-        observed_at_epoch_ms: u64,
-        deadline: Instant,
-        ticket: Arc<Ticket<CancelExpiryOutcome>>,
-    },
     PublishDirectTerminal {
         key: ReceiptKey,
         expected_version: ReceiptVersion,
@@ -564,7 +555,6 @@ enum TimeoutClass {
     MarkReservedBegunBatch(ReceiptKeyDigest),
     PublishDirectTerminalBatch(ReceiptKeyDigest),
     AcknowledgeDirectBatch(ReceiptKeyDigest),
-    ExpireCancelReserved(ReceiptKeyDigest),
     PublishDirectTerminal(ReceiptKeyDigest),
     AcknowledgeDirect(ReceiptKeyDigest),
     ReclaimExpiredTombstones,
@@ -597,7 +587,6 @@ impl TimeoutClass {
             | Self::MarkReservedBegunBatch(receipt_key_digest)
             | Self::PublishDirectTerminalBatch(receipt_key_digest)
             | Self::AcknowledgeDirectBatch(receipt_key_digest)
-            | Self::ExpireCancelReserved(receipt_key_digest)
             | Self::PublishDirectTerminal(receipt_key_digest)
             | Self::AcknowledgeDirect(receipt_key_digest) => {
                 ReceiptLedgerError::CommitUncertain { receipt_key_digest }
@@ -1261,42 +1250,6 @@ impl ReceiptLedgerActor {
         self.enqueue(
             Command::AcknowledgeDirectBatch {
                 requests,
-                deadline,
-                ticket: Arc::clone(&ticket),
-            },
-            deadline,
-        )?;
-        ticket.wait(&self.health)
-    }
-
-    pub(crate) fn expire_cancel_reserved(
-        &self,
-        key: ReceiptKey,
-        expected_version: ReceiptVersion,
-        expected_mutation_sequence: u64,
-        observed_at_epoch_ms: u64,
-        deadline: Instant,
-    ) -> Result<CancelExpiryOutcome, ReceiptLedgerError> {
-        if Instant::now() >= deadline {
-            return Err(ReceiptLedgerError::DeadlineExceeded);
-        }
-        if !self.health.is_ready() {
-            return Err(ReceiptLedgerError::StoreUnavailable);
-        }
-
-        let heavy_result_permit = self.health.acquire_heavy_result_permit(deadline)?;
-        let digest = receipt_key_digest(&key);
-        let ticket = Arc::new(Ticket::queued_with_heavy_result_permit(
-            deadline,
-            TimeoutClass::ExpireCancelReserved(digest),
-            heavy_result_permit,
-        ));
-        self.enqueue(
-            Command::ExpireCancelReserved {
-                key,
-                expected_version,
-                expected_mutation_sequence,
-                observed_at_epoch_ms,
                 deadline,
                 ticket: Arc::clone(&ticket),
             },
@@ -1981,32 +1934,6 @@ fn run_worker(
                 }));
                 ticket.finish(result, &health);
             }
-            Command::ExpireCancelReserved {
-                key,
-                expected_version,
-                expected_mutation_sequence,
-                observed_at_epoch_ms,
-                deadline,
-                ticket,
-            } => {
-                if !ticket.try_begin(&health) {
-                    continue;
-                }
-                let digest = receipt_key_digest(&key);
-                let result = catch_unwind(AssertUnwindSafe(|| {
-                    port.expire_cancel_reserved(
-                        key,
-                        expected_version,
-                        expected_mutation_sequence,
-                        observed_at_epoch_ms,
-                        deadline,
-                    )
-                }))
-                .unwrap_or(Err(ReceiptLedgerError::CommitUncertain {
-                    receipt_key_digest: digest,
-                }));
-                ticket.finish(result, &health);
-            }
             Command::PublishDirectTerminal {
                 key,
                 expected_version,
@@ -2114,11 +2041,11 @@ mod tests {
     use crate::application::invocation::normalized_arguments_hash;
     use crate::application::receipt_ledger::{
         canonical_v5_terminal, receipt_key_digest, request_scope_hash,
-        AcknowledgedTombstoneReceipt, AttemptPhase, CancelExpiryOutcome, CancelReservedReceipt,
-        CancelResolution, CommittedDirectPublication, CoreIdentityDigest,
-        LifecycleLinkRecordHeader, OriginalCutoffDescriptor, ReceiptKey, ReceiptLedgerError,
-        ReceiptRecordHeader, ReceiptState, ReceiptTaskProjection, ReceiptTerminalOutcome,
-        ReceiptVersion, RequestIdentity, ReserveOutcome, ReservedReceipt, TaskBoundReceipt,
+        AcknowledgedTombstoneReceipt, AttemptPhase, CancelReservedReceipt, CancelResolution,
+        CommittedDirectPublication, CoreIdentityDigest, LifecycleLinkRecordHeader,
+        OriginalCutoffDescriptor, ReceiptKey, ReceiptLedgerError, ReceiptRecordHeader,
+        ReceiptState, ReceiptTaskProjection, ReceiptTerminalOutcome, ReceiptVersion,
+        RequestIdentity, ReserveOutcome, ReservedReceipt, TaskBoundReceipt,
         TaskCancellationReceipt, TaskLinkReference, TaskPromisedUnboundReceipt, TerminalDigest,
         V5CanonicalTerminal, V5ToolIdentity,
     };
@@ -2188,17 +2115,6 @@ mod tests {
             _cancel_reserved_at_epoch_ms: u64,
             _deadline: Instant,
         ) -> Result<CancelResolution, ReceiptLedgerError> {
-            Err(ReceiptLedgerError::CapacityExceeded)
-        }
-
-        fn expire_cancel_reserved(
-            &mut self,
-            _key: ReceiptKey,
-            _expected_version: ReceiptVersion,
-            _expected_mutation_sequence: u64,
-            _observed_at_epoch_ms: u64,
-            _deadline: Instant,
-        ) -> Result<CancelExpiryOutcome, ReceiptLedgerError> {
             Err(ReceiptLedgerError::CapacityExceeded)
         }
 
@@ -2292,17 +2208,6 @@ mod tests {
             panic!("injected cancel reservation panic")
         }
 
-        fn expire_cancel_reserved(
-            &mut self,
-            _key: ReceiptKey,
-            _expected_version: ReceiptVersion,
-            _expected_mutation_sequence: u64,
-            _observed_at_epoch_ms: u64,
-            _deadline: Instant,
-        ) -> Result<CancelExpiryOutcome, ReceiptLedgerError> {
-            panic!("injected cancel expiry panic")
-        }
-
         fn recover(
             &mut self,
             _key: &ReceiptKey,
@@ -2346,18 +2251,6 @@ mod tests {
             _cancel_reserved_at_epoch_ms: u64,
             _deadline: Instant,
         ) -> Result<CancelResolution, ReceiptLedgerError> {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            Err(self.error.clone())
-        }
-
-        fn expire_cancel_reserved(
-            &mut self,
-            _key: ReceiptKey,
-            _expected_version: ReceiptVersion,
-            _expected_mutation_sequence: u64,
-            _observed_at_epoch_ms: u64,
-            _deadline: Instant,
-        ) -> Result<CancelExpiryOutcome, ReceiptLedgerError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Err(self.error.clone())
         }
@@ -2419,21 +2312,6 @@ mod tests {
             Err(ReceiptLedgerError::CapacityExceeded)
         }
 
-        fn expire_cancel_reserved(
-            &mut self,
-            _key: ReceiptKey,
-            _expected_version: ReceiptVersion,
-            _expected_mutation_sequence: u64,
-            _observed_at_epoch_ms: u64,
-            deadline: Instant,
-        ) -> Result<CancelExpiryOutcome, ReceiptLedgerError> {
-            self.calls.set(self.calls.get() + 1);
-            self.seen
-                .send((deadline, self.calls.get()))
-                .expect("record exact port deadline");
-            Err(ReceiptLedgerError::CapacityExceeded)
-        }
-
         fn recover(
             &mut self,
             _key: &ReceiptKey,
@@ -2481,17 +2359,6 @@ mod tests {
             _cancel_reserved_at_epoch_ms: u64,
             _deadline: Instant,
         ) -> Result<CancelResolution, ReceiptLedgerError> {
-            Err(ReceiptLedgerError::CapacityExceeded)
-        }
-
-        fn expire_cancel_reserved(
-            &mut self,
-            _key: ReceiptKey,
-            _expected_version: ReceiptVersion,
-            _expected_mutation_sequence: u64,
-            _observed_at_epoch_ms: u64,
-            _deadline: Instant,
-        ) -> Result<CancelExpiryOutcome, ReceiptLedgerError> {
             Err(ReceiptLedgerError::CapacityExceeded)
         }
 
@@ -2565,17 +2432,6 @@ mod tests {
             _cancel_reserved_at_epoch_ms: u64,
             _deadline: Instant,
         ) -> Result<CancelResolution, ReceiptLedgerError> {
-            Err(ReceiptLedgerError::StoreUnavailable)
-        }
-
-        fn expire_cancel_reserved(
-            &mut self,
-            _key: ReceiptKey,
-            _expected_version: ReceiptVersion,
-            _expected_mutation_sequence: u64,
-            _observed_at_epoch_ms: u64,
-            _deadline: Instant,
-        ) -> Result<CancelExpiryOutcome, ReceiptLedgerError> {
             Err(ReceiptLedgerError::StoreUnavailable)
         }
 
@@ -2689,17 +2545,6 @@ mod tests {
             _cancel_reserved_at_epoch_ms: u64,
             _deadline: Instant,
         ) -> Result<CancelResolution, ReceiptLedgerError> {
-            Err(ReceiptLedgerError::StoreUnavailable)
-        }
-
-        fn expire_cancel_reserved(
-            &mut self,
-            _key: ReceiptKey,
-            _expected_version: ReceiptVersion,
-            _expected_mutation_sequence: u64,
-            _observed_at_epoch_ms: u64,
-            _deadline: Instant,
-        ) -> Result<CancelExpiryOutcome, ReceiptLedgerError> {
             Err(ReceiptLedgerError::StoreUnavailable)
         }
 
@@ -2863,17 +2708,6 @@ mod tests {
             _cancel_reserved_at_epoch_ms: u64,
             _deadline: Instant,
         ) -> Result<CancelResolution, ReceiptLedgerError> {
-            Err(ReceiptLedgerError::StoreUnavailable)
-        }
-
-        fn expire_cancel_reserved(
-            &mut self,
-            _key: ReceiptKey,
-            _expected_version: ReceiptVersion,
-            _expected_mutation_sequence: u64,
-            _observed_at_epoch_ms: u64,
-            _deadline: Instant,
-        ) -> Result<CancelExpiryOutcome, ReceiptLedgerError> {
             Err(ReceiptLedgerError::StoreUnavailable)
         }
 
@@ -3286,10 +3120,12 @@ mod tests {
     }
 
     #[test]
-    fn cancel_expiry_cannot_bypass_the_actor_heavy_result_permit() {
+    fn existing_cancel_winner_cannot_bypass_the_actor_heavy_result_permit() {
         let calls = Arc::new(AtomicUsize::new(0));
-        let actor = ReceiptLedgerActor::spawn(ExpiryOutcomePort {
-            outcome: CancelExpiryOutcome::Missing,
+        let actor = ReceiptLedgerActor::spawn(CancelOutcomePort {
+            outcome: CancelResolution::ExistingWinner(Box::new(ReceiptState::TaskBound(
+                confirmed_task_bound_proof(),
+            ))),
             calls: Arc::clone(&calls),
         });
         let held = actor
@@ -3297,10 +3133,8 @@ mod tests {
             .acquire_heavy_result_permit(Instant::now() + Duration::from_secs(1))
             .expect("hold the only actor heavy-result permit");
 
-        let result = actor.expire_cancel_reserved(
+        let result = actor.request_cancel_or_reserve(
             receipt_key(),
-            ReceiptVersion::initial(),
-            1,
             8_125,
             Instant::now() + Duration::from_millis(200),
         );
@@ -3309,7 +3143,7 @@ mod tests {
         assert_eq!(
             calls.load(Ordering::SeqCst),
             0,
-            "expiry can return an existing Direct winner and must acquire the common permit"
+            "cancellation can return an existing Direct winner and must acquire the common permit"
         );
         drop(held);
     }
@@ -3465,17 +3299,6 @@ mod tests {
             Err(ReceiptLedgerError::CapacityExceeded)
         }
 
-        fn expire_cancel_reserved(
-            &mut self,
-            _key: ReceiptKey,
-            _expected_version: ReceiptVersion,
-            _expected_mutation_sequence: u64,
-            _observed_at_epoch_ms: u64,
-            _deadline: Instant,
-        ) -> Result<CancelExpiryOutcome, ReceiptLedgerError> {
-            Err(ReceiptLedgerError::CapacityExceeded)
-        }
-
         fn recover(
             &mut self,
             _key: &ReceiptKey,
@@ -3519,17 +3342,6 @@ mod tests {
             Err(ReceiptLedgerError::CapacityExceeded)
         }
 
-        fn expire_cancel_reserved(
-            &mut self,
-            _key: ReceiptKey,
-            _expected_version: ReceiptVersion,
-            _expected_mutation_sequence: u64,
-            _observed_at_epoch_ms: u64,
-            _deadline: Instant,
-        ) -> Result<CancelExpiryOutcome, ReceiptLedgerError> {
-            Err(ReceiptLedgerError::CapacityExceeded)
-        }
-
         fn publish_direct_terminal(
             &mut self,
             _key: &ReceiptKey,
@@ -3550,12 +3362,12 @@ mod tests {
         }
     }
 
-    struct ExpiryOutcomePort {
-        outcome: CancelExpiryOutcome,
+    struct CancelOutcomePort {
+        outcome: CancelResolution,
         calls: Arc<AtomicUsize>,
     }
 
-    impl ReceiptLedgerPort for ExpiryOutcomePort {
+    impl ReceiptLedgerPort for CancelOutcomePort {
         fn reserve(
             &mut self,
             _key: ReceiptKey,
@@ -3571,80 +3383,8 @@ mod tests {
             _cancel_reserved_at_epoch_ms: u64,
             _deadline: Instant,
         ) -> Result<CancelResolution, ReceiptLedgerError> {
-            Err(ReceiptLedgerError::CapacityExceeded)
-        }
-
-        fn expire_cancel_reserved(
-            &mut self,
-            _key: ReceiptKey,
-            _expected_version: ReceiptVersion,
-            _expected_mutation_sequence: u64,
-            _observed_at_epoch_ms: u64,
-            _deadline: Instant,
-        ) -> Result<CancelExpiryOutcome, ReceiptLedgerError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.outcome.clone())
-        }
-
-        fn publish_direct_terminal(
-            &mut self,
-            _key: &ReceiptKey,
-            _expected_version: ReceiptVersion,
-            _terminal_epoch_ms: u64,
-            _terminal: V5CanonicalTerminal,
-            _deadline: Instant,
-        ) -> Result<CommittedDirectPublication, ReceiptLedgerError> {
-            Err(ReceiptLedgerError::CapacityExceeded)
-        }
-
-        fn recover(
-            &mut self,
-            _key: &ReceiptKey,
-            _deadline: Instant,
-        ) -> Result<ReceiptState, ReceiptLedgerError> {
-            Err(ReceiptLedgerError::ReceiptNotFound)
-        }
-    }
-
-    struct BlockingCancelExpiryPort {
-        entered: Option<mpsc::Sender<Instant>>,
-        release: mpsc::Receiver<()>,
-        calls: Arc<AtomicUsize>,
-    }
-
-    impl ReceiptLedgerPort for BlockingCancelExpiryPort {
-        fn reserve(
-            &mut self,
-            _key: ReceiptKey,
-            _original_cutoff: OriginalCutoffDescriptor,
-            _deadline: Instant,
-        ) -> Result<ReserveOutcome, ReceiptLedgerError> {
-            Err(ReceiptLedgerError::CapacityExceeded)
-        }
-
-        fn request_cancel_or_reserve(
-            &mut self,
-            _key: ReceiptKey,
-            _cancel_reserved_at_epoch_ms: u64,
-            _deadline: Instant,
-        ) -> Result<CancelResolution, ReceiptLedgerError> {
-            Err(ReceiptLedgerError::CapacityExceeded)
-        }
-
-        fn expire_cancel_reserved(
-            &mut self,
-            _key: ReceiptKey,
-            _expected_version: ReceiptVersion,
-            _expected_mutation_sequence: u64,
-            _observed_at_epoch_ms: u64,
-            deadline: Instant,
-        ) -> Result<CancelExpiryOutcome, ReceiptLedgerError> {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            if let Some(entered) = self.entered.take() {
-                entered.send(deadline).expect("report cancel expiry entry");
-                self.release.recv().expect("release cancel expiry call");
-            }
-            Ok(CancelExpiryOutcome::Expired)
         }
 
         fn publish_direct_terminal(
@@ -3759,49 +3499,6 @@ mod tests {
             ReceiptLedgerError::StoreUnavailable
         );
         release.send(()).expect("release uncertain fixture call");
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-    }
-
-    #[test]
-    fn running_cancel_expiry_deadline_is_commit_uncertain_and_fail_stops_actor() {
-        let (entered, entered_wait) = mpsc::channel();
-        let (release, release_wait) = mpsc::channel();
-        let calls = Arc::new(AtomicUsize::new(0));
-        let actor = ReceiptLedgerActor::spawn(BlockingCancelExpiryPort {
-            entered: Some(entered),
-            release: release_wait,
-            calls: Arc::clone(&calls),
-        });
-        let key = receipt_key();
-        let expected_digest = receipt_key_digest(&key);
-        let deadline = Instant::now() + Duration::from_millis(80);
-        let first_actor = actor.clone();
-        let first = std::thread::spawn(move || {
-            first_actor.expire_cancel_reserved(key, ReceiptVersion::initial(), 1, 8_125, deadline)
-        });
-        assert_eq!(
-            entered_wait
-                .recv_timeout(Duration::from_secs(1))
-                .expect("cancel expiry entered the port"),
-            deadline
-        );
-
-        assert_eq!(
-            first
-                .join()
-                .expect("cancel expiry caller does not panic")
-                .expect_err("running expiry mutation cannot report a clean timeout"),
-            ReceiptLedgerError::CommitUncertain {
-                receipt_key_digest: expected_digest,
-            }
-        );
-        assert_eq!(
-            actor
-                .recover(receipt_key(), Instant::now() + Duration::from_secs(1))
-                .expect_err("uncertain actor requires recovery"),
-            ReceiptLedgerError::StoreUnavailable
-        );
-        release.send(()).expect("release uncertain expiry call");
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
@@ -4047,34 +3744,6 @@ mod tests {
     }
 
     #[test]
-    fn cancel_expiry_panic_is_commit_uncertain_and_fail_stops_actor() {
-        let actor = ReceiptLedgerActor::spawn(PanickingPort);
-        let key = receipt_key();
-        let expected_digest = receipt_key_digest(&key);
-
-        assert_eq!(
-            actor
-                .expire_cancel_reserved(
-                    key,
-                    ReceiptVersion::initial(),
-                    1,
-                    8_125,
-                    Instant::now() + Duration::from_secs(1),
-                )
-                .expect_err("cancel expiry panic cannot escape as a clean failure"),
-            ReceiptLedgerError::CommitUncertain {
-                receipt_key_digest: expected_digest,
-            }
-        );
-        assert_eq!(
-            actor
-                .recover(receipt_key(), Instant::now() + Duration::from_secs(1))
-                .expect_err("panicked actor requires recovery"),
-            ReceiptLedgerError::StoreUnavailable
-        );
-    }
-
-    #[test]
     fn clean_direct_terminal_mismatches_do_not_latch_actor() {
         let mismatches = [
             ReceiptLedgerError::ReceiptVersionMismatch {
@@ -4211,28 +3880,28 @@ mod tests {
     }
 
     #[test]
-    fn clean_cancel_expiry_outcomes_and_version_mismatch_do_not_latch_actor() {
+    fn existing_cancel_outcomes_and_version_mismatch_do_not_latch_actor() {
         let clean_outcomes = [
-            CancelExpiryOutcome::Missing,
-            CancelExpiryOutcome::NotDue(cancel_reserved_receipt()),
+            CancelResolution::ExistingExact(cancel_reserved_receipt()),
+            CancelResolution::ExistingWinner(Box::new(ReceiptState::TaskBound(
+                confirmed_task_bound_proof(),
+            ))),
         ];
         for outcome in clean_outcomes {
             let calls = Arc::new(AtomicUsize::new(0));
-            let actor = ReceiptLedgerActor::spawn(ExpiryOutcomePort {
+            let actor = ReceiptLedgerActor::spawn(CancelOutcomePort {
                 outcome: outcome.clone(),
                 calls: Arc::clone(&calls),
             });
             for _ in 0..2 {
                 assert_eq!(
                     actor
-                        .expire_cancel_reserved(
+                        .request_cancel_or_reserve(
                             receipt_key(),
-                            ReceiptVersion::initial(),
-                            1,
                             8_125,
                             Instant::now() + Duration::from_secs(1),
                         )
-                        .expect("clean expiry resolution"),
+                        .expect("clean cancellation resolution"),
                     outcome
                 );
             }
@@ -4251,10 +3920,8 @@ mod tests {
         for _ in 0..2 {
             assert_eq!(
                 actor
-                    .expire_cancel_reserved(
+                    .request_cancel_or_reserve(
                         receipt_key(),
-                        ReceiptVersion::initial(),
-                        1,
                         8_125,
                         Instant::now() + Duration::from_secs(1),
                     )
@@ -4263,42 +3930,6 @@ mod tests {
             );
         }
         assert_eq!(calls.load(Ordering::SeqCst), 2);
-    }
-
-    #[test]
-    fn cancel_expiry_requires_reopen_error_latches_actor() {
-        let calls = Arc::new(AtomicUsize::new(0));
-        let actor = ReceiptLedgerActor::spawn(ErrorPort {
-            error: ReceiptLedgerError::Storage {
-                operation: "injected cancel expiry write",
-                message: "failed".to_owned(),
-            },
-            calls: Arc::clone(&calls),
-        });
-
-        assert!(matches!(
-            actor.expire_cancel_reserved(
-                receipt_key(),
-                ReceiptVersion::initial(),
-                1,
-                8_125,
-                Instant::now() + Duration::from_secs(1),
-            ),
-            Err(ReceiptLedgerError::Storage { .. })
-        ));
-        assert_eq!(
-            actor
-                .expire_cancel_reserved(
-                    receipt_key(),
-                    ReceiptVersion::initial(),
-                    1,
-                    8_125,
-                    Instant::now() + Duration::from_secs(1),
-                )
-                .expect_err("storage failure latches actor"),
-            ReceiptLedgerError::StoreUnavailable
-        );
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -4319,14 +3950,8 @@ mod tests {
 
         assert_eq!(
             actor
-                .expire_cancel_reserved(
-                    receipt_key(),
-                    ReceiptVersion::initial(),
-                    1,
-                    8_125,
-                    Instant::now(),
-                )
-                .expect_err("expired cancel expiry is rejected before enqueue"),
+                .recover_at(receipt_key(), 8_125, Instant::now())
+                .expect_err("expired timestamped recovery is rejected before enqueue"),
             ReceiptLedgerError::DeadlineExceeded
         );
         assert_eq!(calls.load(Ordering::SeqCst), 0);
@@ -4441,24 +4066,18 @@ mod tests {
             (cancel_deadline, 2)
         );
 
-        let expiry_deadline = Instant::now() + Duration::from_secs(1);
+        let repeated_cancel_deadline = Instant::now() + Duration::from_secs(1);
         assert_eq!(
             actor
-                .expire_cancel_reserved(
-                    receipt_key(),
-                    ReceiptVersion::initial(),
-                    1,
-                    8_125,
-                    expiry_deadline,
-                )
-                .expect_err("fixture rejects cancel expiry"),
+                .request_cancel_or_reserve(receipt_key(), 8_125, repeated_cancel_deadline,)
+                .expect_err("fixture rejects repeated cancellation"),
             ReceiptLedgerError::CapacityExceeded
         );
         assert_eq!(
             seen_wait
                 .recv()
-                .expect("cancel expiry deadline observation"),
-            (expiry_deadline, 3)
+                .expect("repeated cancellation deadline observation"),
+            (repeated_cancel_deadline, 3)
         );
 
         let recover_deadline = Instant::now() + Duration::from_secs(1);

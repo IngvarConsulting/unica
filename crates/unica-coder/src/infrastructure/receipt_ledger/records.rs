@@ -114,56 +114,20 @@ pub(super) fn build_cancel_reserved_record(
     key: ReceiptKey,
     key_digest: ReceiptKeyDigest,
     cancel_reserved_at_epoch_ms: u64,
-    expires_at_epoch_ms: u64,
     mutation_sequence: u64,
 ) -> StoredActiveReceiptV1 {
     StoredActiveReceiptV1 {
-        schema_version: RECEIPT_RECORD_SCHEMA_VERSION,
+        schema_version: PERSISTENT_CANCEL_RECORD_SCHEMA_VERSION,
         mutation_sequence,
         record_version: ReceiptVersion::initial(),
         key,
         key_digest,
         lifecycle: StoredActiveLifecycleV1::CancelReserved {
             cancel_reserved_at_epoch_ms,
-            expires_at_epoch_ms,
+            expires_at_epoch_ms: None,
             cancel_requested: true,
         },
     }
-}
-
-pub(super) fn build_expired_deletion_record(
-    expected: &CatalogEntry,
-    observed_at_epoch_ms: u64,
-    mutation_sequence: u64,
-    record_version: ReceiptVersion,
-) -> Result<StoredActiveReceiptV1, ReceiptLedgerError> {
-    let (prior_cancel_reserved_at_epoch_ms, prior_expires_at_epoch_ms) =
-        match &expected.record.lifecycle {
-            StoredActiveLifecycleV1::CancelReserved {
-                cancel_reserved_at_epoch_ms,
-                expires_at_epoch_ms,
-                ..
-            } => (*cancel_reserved_at_epoch_ms, *expires_at_epoch_ms),
-            _ => {
-                return Err(ReceiptLedgerError::Corrupt(
-                    "expired deletion witness requires a CancelReserved predecessor",
-                ))
-            }
-        };
-    Ok(StoredActiveReceiptV1 {
-        schema_version: RECEIPT_RECORD_SCHEMA_VERSION,
-        mutation_sequence,
-        record_version,
-        key: expected.record.key.clone(),
-        key_digest: expected.record.key_digest.clone(),
-        lifecycle: StoredActiveLifecycleV1::ExpiredDeletion {
-            observed_at_epoch_ms,
-            prior_record_version: expected.record.record_version,
-            prior_mutation_sequence: expected.record.mutation_sequence,
-            prior_cancel_reserved_at_epoch_ms,
-            prior_expires_at_epoch_ms,
-        },
-    })
 }
 
 pub(super) fn build_expired_tombstone_deletion_record(

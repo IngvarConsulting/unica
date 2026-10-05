@@ -83,7 +83,7 @@ pub(super) fn validate_persisted_reserved_record_bytes(
         serialize_reserved_record(record.clone(), maximum_encoded_bytes)?;
     if &canonical_record != record || canonical_bytes != persisted_bytes {
         return Err(ReceiptLedgerError::Corrupt(
-            "receipt row is not canonical schema-v1 JSON",
+            "receipt row is not canonical JSON",
         ));
     }
     Ok(())

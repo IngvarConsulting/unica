@@ -1,19 +1,28 @@
 ---
 id: INV.APP.RECEIPT-CANCEL-RESERVATION
 check:
-  - crates/unica-coder/src/infrastructure/receipt_ledger/tests.rs::cancel_reserved_persists_exact_absolute_expiry_without_result_entitlement
+  - crates/unica-coder/src/infrastructure/receipt_ledger/tests.rs::cancel_reserved_persists_without_expiry_or_result_entitlement
   - crates/unica-coder/src/infrastructure/receipt_ledger/tests.rs::exact_submit_atomically_converts_cancel_reserved_to_full_cancelled_reservation
+  - crates/unica-coder/tests/daemon_receipt_ledger.rs::late_submit_preserves_early_cancellation_after_delay_and_restart
+  - crates/unica-coder/tests/daemon_receipt_ledger.rs::cancel_before_submit_preserves_full_key_after_arbitrary_delay
+  - crates/unica-coder/tests/daemon_receipt_ledger.rs::cancel_reserved_reopens_and_recovery_preserves_original_cancellation
 ---
 
 # Отмена, пришедшая раньше вызова, сохраняется для его точного ключа
 
-ReceiptLedger хранит такую отмену 7125 мс. Повтор отмены и повторное открытие
-хранилища не продлевают срок. Запись не резервирует место под результат.
+ReceiptLedger сохраняет раннюю отмену без срока действия. Повтор отмены,
+восстановление и повторное открытие хранилища сохраняют исходную запись.
+Она не резервирует место под результат.
 
-Если соответствующий вызов приходит до истечения срока, его запись получает
-сохранённый признак отмены и резерв результата одним переходом. Это не отмена
-другого вызова с похожим идентификатором.
+Когда соответствующий вызов приходит, его запись получает сохранённый признак
+отмены и резерв результата одним переходом. Предметный код не запускается.
+Отмена относится к полному точному ключу вызова; похожий идентификатор не даёт
+права удалить её или отменить другой вызов.
 
-Проверки подтверждают файловое хранение и преобразование записи. Маршрут
-публичной отмены до появления задания рассматривается отдельно в
+Старые записи отмены читаются с проверкой прежнего формата, но сохранённый
+в них срок больше не снимает отмену. Уже зафиксированные старой версией
+свидетельства удаления завершают восстановление без воскрешения удалённой записи.
+
+Проверки подтверждают файловое хранение, восстановление и преобразование записи.
+Маршрут публичной отмены до появления задания рассматривается отдельно в
 [issue929](https://github.com/IngvarConsulting/unica/issues/929).

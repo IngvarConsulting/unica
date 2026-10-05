@@ -24,7 +24,7 @@ use unica_coder::receipt_ledger_test_support::{
 };
 
 const CUTOFF_MS: u64 = 7_000;
-const CANCEL_RESERVATION_TTL_MS: u64 = 7_125;
+const FORMER_CANCEL_RESERVATION_TTL_MS: u64 = 7_125;
 const CLEANUP_GRACE_MS: u64 = 2_000;
 const DIRECT_TASK_TTL_MS: u64 = 3_600_000;
 const TOMBSTONE_TTL_MS: u64 = 900_000;
@@ -10446,7 +10446,43 @@ fn task_terminal_receipt_crash_reconciles_without_replay() {
 }
 
 #[test]
-fn cancel_before_submit_is_full_key_bounded_and_expires() {
+fn late_submit_preserves_early_cancellation_after_delay_and_restart() {
+    for (delay, restart) in [(7_125, false), (37_125, true), (3_600_000, true)] {
+        let mut actions = vec![
+            direct_provider(),
+            Action::Cancel {
+                key: KeyCase::Exact,
+                lazy_session: true,
+                label: "early-cancel".to_string(),
+            },
+            checkpoint_action("initial"),
+            Action::AdvanceEpoch { millis: delay },
+        ];
+        if restart {
+            actions.push(Action::Restart);
+        }
+        actions.extend([
+            checkpoint_action("before-submit"),
+            submit("late-submit"),
+            checkpoint_action("after-submit"),
+        ]);
+        let report = execute(Scenario::fake(actions));
+        let after = checkpoint(&report, "after-submit");
+        assert_cancelled_terminal(terminal_of_receipt(only_receipt(after)));
+        assert_eq!(after.callbacks.total_domain(), 0, "delay={delay}");
+        assert_eq!(
+            response_key(response(&report, "late-submit")),
+            &only_receipt(checkpoint(&report, "initial")).key
+        );
+        let initial = only_receipt(checkpoint(&report, "initial"));
+        let before = only_receipt(checkpoint(&report, "before-submit"));
+        assert_eq!(initial.accepted_epoch_ms, before.accepted_epoch_ms);
+        assert_eq!(initial.mutation_sequence, before.mutation_sequence);
+    }
+}
+
+#[test]
+fn cancel_before_submit_preserves_full_key_after_arbitrary_delay() {
     let report = execute(Scenario::fake(vec![
         Action::Cancel {
             key: KeyCase::Exact,
@@ -10466,10 +10502,8 @@ fn cancel_before_submit_is_full_key_bounded_and_expires() {
             label: "mismatch-cancel".to_string(),
         },
         checkpoint_action("after-duplicate"),
-        Action::AdvanceEpoch {
-            millis: CANCEL_RESERVATION_TTL_MS - 1_001,
-        },
-        checkpoint_action("one-ms-before-submit-expiry"),
+        Action::AdvanceEpoch { millis: 3_600_000 },
+        checkpoint_action("before-late-submit"),
         submit("exact-submit"),
         checkpoint_action("after-submit"),
     ]));
@@ -10478,18 +10512,9 @@ fn cancel_before_submit_is_full_key_bounded_and_expires() {
     let after_duplicate = only_receipt(checkpoint(&report, "after-duplicate"));
     assert_eq!(reserved.state, SeedReceiptState::CancelReserved);
     assert!(reserved.cancel_requested);
-    assert_eq!(
-        reserved.expires_epoch_ms,
-        Some(reserved.accepted_epoch_ms + CANCEL_RESERVATION_TTL_MS)
-    );
+    assert_eq!(reserved.expires_epoch_ms, None);
     assert_eq!(reserved.expires_epoch_ms, after_duplicate.expires_epoch_ms);
     assert_eq!(reserved.key, after_duplicate.key);
-    assert_eq!(
-        checkpoint(&report, "one-ms-before-submit-expiry").epoch_ms + 1,
-        reserved
-            .expires_epoch_ms
-            .expect("CancelReserved has absolute expiry")
-    );
     assert_eq!(checkpoint(&report, "after-duplicate").receipt_live_count, 1);
     assert_eq!(
         response(&report, "mismatch-cancel").kind,
@@ -10523,7 +10548,7 @@ fn cancel_before_submit_is_full_key_bounded_and_expires() {
 }
 
 #[test]
-fn cancel_reserved_reopens_with_original_7125ms_expiry() {
+fn cancel_reserved_reopens_and_recovery_preserves_original_cancellation() {
     let report = execute(Scenario::fake(vec![
         Action::Cancel {
             key: KeyCase::Exact,
@@ -10540,15 +10565,15 @@ fn cancel_reserved_reopens_with_original_7125ms_expiry() {
         },
         checkpoint_action("reopened"),
         Action::AdvanceEpoch {
-            millis: CANCEL_RESERVATION_TTL_MS - 3_001,
+            millis: FORMER_CANCEL_RESERVATION_TTL_MS + 3_600_000,
         },
-        checkpoint_action("one-ms-before-expiry"),
+        checkpoint_action("before-recovery"),
         Action::AdvanceEpoch { millis: 1 },
         Action::Recover {
             key: KeyCase::Exact,
-            label: "after-expiry".to_string(),
+            label: "late-recovery".to_string(),
         },
-        checkpoint_action("expired"),
+        checkpoint_action("after-recovery"),
     ]));
 
     let initial = only_receipt(checkpoint(&report, "initial"));
@@ -10556,17 +10581,15 @@ fn cancel_reserved_reopens_with_original_7125ms_expiry() {
     assert_eq!(initial.expires_epoch_ms, reopened.expires_epoch_ms);
     assert_eq!(initial.accepted_epoch_ms, reopened.accepted_epoch_ms);
     assert_eq!(initial.mutation_sequence, reopened.mutation_sequence);
+    assert_eq!(initial.expires_epoch_ms, None);
+    let recovered = checkpoint(&report, "after-recovery");
+    assert_eq!(recovered.receipt_live_count, 1);
+    assert_eq!(only_receipt(recovered), reopened);
     assert_eq!(
-        checkpoint(&report, "one-ms-before-expiry").receipt_live_count,
-        1
+        response(&report, "late-recovery").kind,
+        ResponseKind::Cancelled
     );
-    assert_eq!(checkpoint(&report, "expired").receipt_live_count, 0);
-    assert!(checkpoint(&report, "expired").receipts.is_empty());
-    assert!(matches!(
-        response(&report, "after-expiry").error,
-        Some(ErrorCode::ReceiptExpired | ErrorCode::ReceiptNotFound)
-    ));
-    assert_eq!(checkpoint(&report, "expired").callbacks.total_domain(), 0);
+    assert_eq!(recovered.callbacks.total_domain(), 0);
     assert_eq!(
         count_event(&report, EventKind::V5ReceiptRuntimeEntered),
         3,

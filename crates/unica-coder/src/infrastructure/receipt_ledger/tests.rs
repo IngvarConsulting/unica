@@ -182,6 +182,84 @@ fn write_reserved_row_fixture(
     key_digest
 }
 
+fn legacy_cancel_record(
+    key: ReceiptKey,
+    key_digest: ReceiptKeyDigest,
+    cancel_epoch: u64,
+    expiry_epoch: u64,
+    mutation_sequence: u64,
+) -> StoredActiveReceiptV1 {
+    StoredActiveReceiptV1 {
+        schema_version: 1,
+        mutation_sequence,
+        record_version: ReceiptVersion::initial(),
+        key,
+        key_digest,
+        lifecycle: StoredActiveLifecycleV1::CancelReserved {
+            cancel_reserved_at_epoch_ms: cancel_epoch,
+            expires_at_epoch_ms: Some(expiry_epoch),
+            cancel_requested: true,
+        },
+    }
+}
+
+fn legacy_expired_deletion_record(
+    predecessor: &CatalogEntry,
+    observed_at_epoch_ms: u64,
+    mutation_sequence: u64,
+    record_version: ReceiptVersion,
+) -> StoredActiveReceiptV1 {
+    let StoredActiveLifecycleV1::CancelReserved {
+        cancel_reserved_at_epoch_ms,
+        expires_at_epoch_ms: Some(expires_at_epoch_ms),
+        ..
+    } = predecessor.record.lifecycle
+    else {
+        panic!("historical witness requires a V1 cancellation predecessor");
+    };
+    StoredActiveReceiptV1 {
+        schema_version: 1,
+        mutation_sequence,
+        record_version,
+        key: predecessor.record.key.clone(),
+        key_digest: predecessor.record.key_digest.clone(),
+        lifecycle: StoredActiveLifecycleV1::ExpiredDeletion {
+            observed_at_epoch_ms,
+            prior_record_version: predecessor.record.record_version,
+            prior_mutation_sequence: predecessor.record.mutation_sequence,
+            prior_cancel_reserved_at_epoch_ms: cancel_reserved_at_epoch_ms,
+            prior_expires_at_epoch_ms: expires_at_epoch_ms,
+        },
+    }
+}
+
+fn write_historical_active_fixture(receipts: &Path, record: &StoredActiveReceiptV1) {
+    let directory = open_directory_nofollow(&receipts.join(ACTIVE_DIRECTORY_NAME))
+        .expect("open historical active fixture");
+    let name = format!("{}.json", record.key_digest.as_str());
+    let mut file = create_owner_only_file_child(&directory, OsStr::new(&name))
+        .expect("create historical active row");
+    file.write_all(&serde_json::to_vec(record).expect("serialize historical image"))
+        .and_then(|()| file.sync_all())
+        .expect("persist historical active row");
+    sync_directory(&directory).expect("sync historical active directory");
+}
+
+fn historical_expiry_image(
+    receipts: &Path,
+    key: ReceiptKey,
+    persisted_generation: u64,
+) -> ReceiptKeyDigest {
+    drop(ReceiptLedgerStore::open(receipts).expect("initialize receipt directory"));
+    let key_digest = write_expiry_witness_fixture(receipts, key, 1, 2);
+    fs::write(
+        receipts.join(GENERATION_FILE_NAME),
+        format!("{persisted_generation}\n"),
+    )
+    .expect("persist historical crash generation");
+    key_digest
+}
+
 fn write_expiry_witness_fixture(
     receipts: &Path,
     key: ReceiptKey,
@@ -190,7 +268,7 @@ fn write_expiry_witness_fixture(
 ) -> ReceiptKeyDigest {
     let key_digest = receipt_key_digest(&key);
     let predecessor = CatalogEntry {
-        record: build_cancel_reserved_record(
+        record: legacy_cancel_record(
             key,
             key_digest.clone(),
             1_000,
@@ -199,13 +277,12 @@ fn write_expiry_witness_fixture(
         ),
         encoded_bytes: 512,
     };
-    let record = build_expired_deletion_record(
+    let record = legacy_expired_deletion_record(
         &predecessor,
         8_125,
         mutation_sequence,
         ReceiptVersion::new(2).expect("next expiry witness version"),
-    )
-    .expect("build valid expiry witness fixture");
+    );
     let (_, encoded) = serialize_reserved_record(record, MAX_CANCEL_RESERVED_RECORD_BYTES)
         .expect("serialize expiry witness fixture");
     let receipts = open_directory_nofollow(receipts).expect("open receipts fixture");
@@ -313,7 +390,7 @@ fn first_generation_publication_survives_a_crash_after_staging_creation() {
 }
 
 #[test]
-fn cancel_reserved_persists_exact_absolute_expiry_without_result_entitlement() {
+fn cancel_reserved_persists_without_expiry_or_result_entitlement() {
     let root = tempfile::tempdir().expect("temporary root");
     let receipts = fs::canonicalize(root.path())
         .expect("physical temporary root")
@@ -332,7 +409,6 @@ fn cancel_reserved_persists_exact_absolute_expiry_without_result_entitlement() {
     assert_eq!(initial.record_version(), ReceiptVersion::initial());
     assert_eq!(initial.mutation_sequence(), 1);
     assert_eq!(initial.cancel_reserved_at_epoch_ms(), 1_000);
-    assert_eq!(initial.expires_at_epoch_ms(), 8_125);
     assert!(initial.cancel_requested());
     assert!(initial.encoded_bytes() <= 1_024);
     {
@@ -355,25 +431,27 @@ fn cancel_reserved_persists_exact_absolute_expiry_without_result_entitlement() {
     };
     assert_eq!(duplicate, initial);
     assert_eq!(store.generation().expect("stable generation"), 1);
-    let expired_duplicate_with_overflow = store
-        .request_cancel_or_reserve(
-            key.clone(),
-            u64::MAX - CANCEL_RESERVATION_TTL_MS + 1,
-            reserve_deadline(),
-        )
-        .expect_err("an expired duplicate must validate its new absolute expiry");
+    let late_duplicate = store
+        .request_cancel_or_reserve(key.clone(), u64::MAX, reserve_deadline())
+        .expect("arbitrarily delayed duplicate retains the cancellation");
     assert_eq!(
-        expired_duplicate_with_overflow,
-        ReceiptLedgerError::TimestampOverflow
+        late_duplicate,
+        CancelResolution::ExistingExact(initial.clone())
     );
     assert_eq!(
-        store.generation().expect("rejected duplicate generation"),
+        store
+            .generation()
+            .expect("stable late duplicate generation"),
         1
     );
+    let encoded: serde_json::Value =
+        serde_json::from_slice(&bytes_before_duplicate).expect("row JSON");
+    assert_eq!(encoded["schemaVersion"], 2);
+    assert!(encoded["lifecycle"].get("expiresAtEpochMs").is_none());
     assert_eq!(
         fs::read(&row).expect("reread exact CancelReserved row"),
         bytes_before_duplicate,
-        "exact duplicate cannot extend TTL or rewrite durable bytes"
+        "exact duplicate cannot refresh timestamps or rewrite durable bytes"
     );
     drop(store);
 
@@ -384,186 +462,275 @@ fn cancel_reserved_persists_exact_absolute_expiry_without_result_entitlement() {
     assert_eq!(
         state,
         ReceiptState::CancelReserved(initial),
-        "reopen preserves the original absolute expiry and record identity"
+        "reopen preserves the original timestamp and record identity"
     );
     let catalog = reopened.writer.lock().expect("inspect reopened catalog");
     assert_eq!(catalog.reserved_result_bytes, 0);
 }
 
 #[test]
-fn duplicate_cancel_at_expiry_reclaims_the_stale_row_before_new_admission() {
+fn legacy_cancel_duplicate_after_expiry_preserves_bytes_and_identity() {
     let root = tempfile::tempdir().expect("temporary root");
-    let receipts = fs::canonicalize(root.path())
-        .expect("physical temporary root")
-        .join("receipts");
-    let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+    let receipts = fs::canonicalize(root.path()).unwrap().join("receipts");
+    drop(ReceiptLedgerStore::open(&receipts).unwrap());
     let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
-    let stale = match store
-        .request_cancel_or_reserve(key.clone(), 1_000, reserve_deadline())
-        .expect("reserve cancellation before submit")
-    {
-        CancelResolution::NewlyReserved(receipt) => receipt,
-        _ => panic!("first cancel must create CancelReserved"),
-    };
-
-    let current = match store
-        .request_cancel_or_reserve(key.clone(), stale.expires_at_epoch_ms(), reserve_deadline())
-        .expect("the boundary call reclaims stale state before admitting a new cancel")
-    {
-        CancelResolution::NewlyReserved(receipt) => receipt,
-        _ => panic!("expired duplicate must become a new admission"),
-    };
-
-    assert_eq!(current.key(), &key);
-    assert_eq!(current.cancel_reserved_at_epoch_ms(), 8_125);
-    assert_eq!(current.expires_at_epoch_ms(), 15_250);
-    assert_eq!(current.record_version(), ReceiptVersion::initial());
-    assert_eq!(current.mutation_sequence(), 3);
+    let digest = receipt_key_digest(&key);
+    let legacy = legacy_cancel_record(key.clone(), digest.clone(), 1_000, 8_125, 1);
+    write_historical_active_fixture(&receipts, &legacy);
+    fs::write(receipts.join(GENERATION_FILE_NAME), b"1\n").unwrap();
+    let row = receipts
+        .join(ACTIVE_DIRECTORY_NAME)
+        .join(format!("{}.json", digest.as_str()));
+    let before = fs::read(&row).unwrap();
+    let store = ReceiptLedgerStore::open(&receipts).expect("read historical numeric expiry");
+    let original = store.recover_exact(&key, reserve_deadline()).unwrap();
+    for now in [8_125, u64::MAX] {
+        let CancelResolution::ExistingExact(receipt) = store
+            .request_cancel_or_reserve(key.clone(), now, reserve_deadline())
+            .unwrap()
+        else {
+            panic!("legacy cancellation must survive its former expiry");
+        };
+        assert_eq!(ReceiptState::CancelReserved(receipt), original);
+        assert_eq!(store.generation().unwrap(), 1);
+        assert_eq!(fs::read(&row).unwrap(), before);
+    }
+    drop(store);
+    let reopened = ReceiptLedgerStore::open(&receipts).unwrap();
     assert_eq!(
-        store
-            .generation()
-            .expect("expiry plus admission generation"),
-        3
+        reopened.recover_exact(&key, reserve_deadline()).unwrap(),
+        original
     );
-    assert_eq!(
-        store
-            .recover_exact(&key, reserve_deadline())
-            .expect("only the fresh reservation remains live"),
-        ReceiptState::CancelReserved(current)
-    );
+    assert_eq!(fs::read(row).unwrap(), before);
 }
 
 #[test]
-fn cancel_reserved_expires_at_the_absolute_boundary_and_releases_its_slot() {
+fn historical_cancel_deletion_releases_indexes_without_resurrection() {
     let root = tempfile::tempdir().expect("temporary root");
-    let receipts = fs::canonicalize(root.path())
-        .expect("physical temporary root")
-        .join("receipts");
-    let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+    let receipts = fs::canonicalize(root.path()).unwrap().join("receipts");
     let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
-    let reserved = match store
-        .request_cancel_or_reserve(key.clone(), 1_000, reserve_deadline())
-        .expect("reserve cancellation before submit")
+    let digest = historical_expiry_image(&receipts, key.clone(), 2);
+    let store = ReceiptLedgerStore::open(&receipts).expect("recover committed V1 deletion");
+    assert_eq!(
+        store.recover_exact(&key, reserve_deadline()),
+        Err(ReceiptLedgerError::ReceiptNotFound)
+    );
+    assert_eq!(store.generation().unwrap(), 2);
     {
-        crate::application::receipt_ledger::CancelResolution::NewlyReserved(receipt) => receipt,
-        _ => panic!("first cancel must create CancelReserved"),
-    };
-
-    assert_eq!(
-        store
-            .expire_cancel_reserved(
-                key.clone(),
-                reserved.record_version(),
-                reserved.mutation_sequence(),
-                8_124,
-                reserve_deadline(),
-            )
-            .expect("the half-open retention interval includes one millisecond before expiry"),
-        crate::application::receipt_ledger::CancelExpiryOutcome::NotDue(reserved.clone())
-    );
-    assert_eq!(store.generation().expect("read pre-expiry generation"), 1);
-    assert_eq!(
-        store
-            .expire_cancel_reserved(
-                key.clone(),
-                reserved.record_version(),
-                reserved.mutation_sequence(),
-                8_125,
-                reserve_deadline(),
-            )
-            .expect("the exact absolute boundary expires CancelReserved"),
-        crate::application::receipt_ledger::CancelExpiryOutcome::Expired
-    );
-    assert_eq!(
-        store
-            .recover_exact(&key, reserve_deadline())
-            .expect_err("expired receipt is no longer live"),
-        ReceiptLedgerError::ReceiptNotFound
-    );
-    assert_eq!(store.generation().expect("expiry advances generation"), 2);
-    {
-        let catalog = store.writer.lock().expect("inspect expired catalog");
+        let catalog = store.writer.lock().unwrap();
         assert!(catalog.records.is_empty());
         assert!(catalog.invocation_index.is_empty());
         assert!(catalog.reserved_task_index.is_empty());
         assert_eq!(catalog.actual_bytes, 0);
         assert_eq!(catalog.reserved_result_bytes, 0);
     }
-    let row = receipts
+    assert!(!receipts
         .join(ACTIVE_DIRECTORY_NAME)
-        .join(format!("{}.json", reserved.key_digest().as_str()));
-    assert!(!row.exists(), "expiry removes the durable payload row");
+        .join(format!("{}.json", digest.as_str()))
+        .exists());
     drop(store);
-
-    let reopened = ReceiptLedgerStore::open(&receipts).expect("reopen expired ledger");
-    assert_eq!(reopened.generation().expect("reopened generation"), 2);
+    let reopened = ReceiptLedgerStore::open(&receipts).unwrap();
+    assert_eq!(reopened.generation().unwrap(), 2);
     assert_eq!(
-        reopened
-            .recover_exact(&key, reserve_deadline())
-            .expect_err("expired exact key stays absent after reopen"),
-        ReceiptLedgerError::ReceiptNotFound
+        reopened.recover_exact(&key, reserve_deadline()),
+        Err(ReceiptLedgerError::ReceiptNotFound)
     );
 }
 
 #[test]
-fn stale_expiry_cas_cannot_delete_a_recreated_cancel_reservation_with_version_one() {
+fn historical_cancel_deletion_allows_new_incarnation_without_replaying_deletion() {
     let root = tempfile::tempdir().expect("temporary root");
-    let receipts = fs::canonicalize(root.path())
-        .expect("physical temporary root")
-        .join("receipts");
-    let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+    let receipts = fs::canonicalize(root.path()).unwrap().join("receipts");
     let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
-    let old = match store
-        .request_cancel_or_reserve(key.clone(), 1_000, reserve_deadline())
-        .expect("create old cancellation reservation")
-    {
-        CancelResolution::NewlyReserved(receipt) => receipt,
-        _ => panic!("old cancellation must be newly reserved"),
-    };
-    assert_eq!(
-        store
-            .expire_cancel_reserved(
-                key.clone(),
-                old.record_version(),
-                old.mutation_sequence(),
-                old.expires_at_epoch_ms(),
-                reserve_deadline(),
-            )
-            .expect("expire old cancellation reservation"),
-        CancelExpiryOutcome::Expired
-    );
-    let current = match store
+    historical_expiry_image(&receipts, key.clone(), 1);
+    let store = ReceiptLedgerStore::open(&receipts).expect("finish old committed deletion");
+    let CancelResolution::NewlyReserved(current) = store
         .request_cancel_or_reserve(key.clone(), 9_000, reserve_deadline())
-        .expect("recreate the exact cancellation reservation")
-    {
-        CancelResolution::NewlyReserved(receipt) => receipt,
-        _ => panic!("recreated cancellation must be newly reserved"),
+        .unwrap()
+    else {
+        panic!("deleted identity is available for a new incarnation");
     };
     assert_eq!(current.record_version(), ReceiptVersion::initial());
     assert_eq!(current.mutation_sequence(), 3);
-
+    drop(store);
+    let reopened = ReceiptLedgerStore::open(&receipts).unwrap();
+    assert_eq!(reopened.generation().unwrap(), 3);
     assert_eq!(
-        store
-            .expire_cancel_reserved(
-                key.clone(),
-                old.record_version(),
-                old.mutation_sequence(),
-                current.expires_at_epoch_ms(),
-                reserve_deadline(),
-            )
-            .expect_err("stale incarnation cannot delete the current version-one row"),
-        ReceiptLedgerError::ReceiptMutationSequenceMismatch {
-            expected: old.mutation_sequence(),
-            actual: current.mutation_sequence(),
-        }
-    );
-    assert_eq!(store.generation().expect("unchanged current generation"), 3);
-    assert_eq!(
-        store
-            .recover_exact(&key, reserve_deadline())
-            .expect("current cancellation survives stale expiry"),
+        reopened.recover_exact(&key, reserve_deadline()).unwrap(),
         ReceiptState::CancelReserved(current)
     );
+}
+
+#[test]
+fn mixed_legacy_and_persistent_cancel_rows_preserve_identity_across_reopen() {
+    let root = tempfile::tempdir().expect("temporary root");
+    let receipts = fs::canonicalize(root.path()).unwrap().join("receipts");
+    drop(ReceiptLedgerStore::open(&receipts).unwrap());
+    let legacy_key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
+    let legacy_digest = receipt_key_digest(&legacy_key);
+    write_historical_active_fixture(
+        &receipts,
+        &legacy_cancel_record(legacy_key.clone(), legacy_digest.clone(), 1_000, 8_125, 1),
+    );
+    fs::write(receipts.join(GENERATION_FILE_NAME), b"1\n").unwrap();
+    let store = ReceiptLedgerStore::open(&receipts).unwrap();
+    let legacy_before = store
+        .recover_exact(&legacy_key, reserve_deadline())
+        .unwrap();
+    let persistent_key = receipt_key(INVOCATION_B, TASK_B, "workspace-b");
+    let CancelResolution::NewlyReserved(persistent) = store
+        .request_cancel_or_reserve(persistent_key.clone(), u64::MAX, reserve_deadline())
+        .unwrap()
+    else {
+        panic!("new persistent cancel");
+    };
+    let names = directory_names(&receipts.join(ACTIVE_DIRECTORY_NAME));
+    let before: Vec<_> = names
+        .iter()
+        .map(|name| fs::read(receipts.join(ACTIVE_DIRECTORY_NAME).join(name)).unwrap())
+        .collect();
+    drop(store);
+    let store = ReceiptLedgerStore::open(&receipts)
+        .expect("one namespace accepts V1 and V2 cancellation rows");
+    assert_eq!(store.generation().unwrap(), 2);
+    for (key, expected) in [
+        (legacy_key, legacy_before),
+        (persistent_key, ReceiptState::CancelReserved(persistent)),
+    ] {
+        assert_eq!(
+            store.recover_exact(&key, reserve_deadline()).unwrap(),
+            expected
+        );
+        let CancelResolution::ExistingExact(duplicate) = store
+            .request_cancel_or_reserve(key, u64::MAX, reserve_deadline())
+            .unwrap()
+        else {
+            panic!("duplicate must not refresh either schema");
+        };
+        assert_eq!(ReceiptState::CancelReserved(duplicate), expected);
+    }
+    assert_eq!(store.generation().unwrap(), 2);
+    for (name, bytes) in names.iter().zip(before) {
+        assert_eq!(
+            fs::read(receipts.join(ACTIVE_DIRECTORY_NAME).join(name)).unwrap(),
+            bytes
+        );
+    }
+}
+
+#[test]
+fn cancellation_schema_rejects_malformed_legacy_expiry_and_incompatible_v2_rows() {
+    for case in [
+        "v1_missing",
+        "v1_null",
+        "v1_wrong",
+        "v1_string",
+        "v1_overflow",
+        "v2_numeric",
+        "v2_null",
+        "v2_reserved",
+        "v2_witness",
+    ] {
+        let root = tempfile::tempdir().expect("temporary root");
+        let receipts = fs::canonicalize(root.path()).unwrap().join("receipts");
+        drop(ReceiptLedgerStore::open(&receipts).unwrap());
+        let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
+        let digest = receipt_key_digest(&key);
+        let record = legacy_cancel_record(key.clone(), digest.clone(), 1_000, 8_125, 1);
+        let original_bytes = serde_json::to_string(&record).unwrap();
+        let mut value = serde_json::to_value(&record).unwrap();
+        match case {
+            "v1_missing" => {
+                value["lifecycle"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("expiresAtEpochMs");
+            }
+            "v1_null" => value["lifecycle"]["expiresAtEpochMs"] = serde_json::Value::Null,
+            "v1_wrong" => value["lifecycle"]["expiresAtEpochMs"] = serde_json::json!(8_126),
+            "v1_string" => value["lifecycle"]["expiresAtEpochMs"] = serde_json::json!("8125"),
+            "v1_overflow" => {
+                value["lifecycle"]["cancelReservedAtEpochMs"] = serde_json::json!(u64::MAX)
+            }
+            "v2_numeric" => value["schemaVersion"] = serde_json::json!(2),
+            "v2_null" => {
+                value["schemaVersion"] = serde_json::json!(2);
+                value["lifecycle"]["expiresAtEpochMs"] = serde_json::Value::Null;
+            }
+            "v2_reserved" => {
+                value = serde_json::to_value(build_reserved_record(
+                    key,
+                    digest.clone(),
+                    OriginalCutoffDescriptor::new(1_000, 7_000).unwrap(),
+                    1,
+                    ReceiptVersion::initial(),
+                    false,
+                ))
+                .unwrap();
+                value["schemaVersion"] = serde_json::json!(2);
+            }
+            "v2_witness" => {
+                let witness = legacy_expired_deletion_record(
+                    &CatalogEntry {
+                        record,
+                        encoded_bytes: 512,
+                    },
+                    8_125,
+                    2,
+                    ReceiptVersion::new(2).unwrap(),
+                );
+                value = serde_json::to_value(witness).unwrap();
+                value["schemaVersion"] = serde_json::json!(2);
+            }
+            _ => unreachable!(),
+        }
+        // Change only the rejected field, preserving canonical ordering of every
+        // other field so formatting cannot become an unrelated rejection cause.
+        let bytes = match case {
+            "v1_null" | "v2_null" => {
+                let encoded = original_bytes
+                    .replace("\"expiresAtEpochMs\":8125", "\"expiresAtEpochMs\":null");
+                if case == "v2_null" {
+                    encoded
+                        .replace("\"schemaVersion\":1", "\"schemaVersion\":2")
+                        .into_bytes()
+                } else {
+                    encoded.into_bytes()
+                }
+            }
+            "v1_string" => original_bytes
+                .replace("\"expiresAtEpochMs\":8125", "\"expiresAtEpochMs\":\"8125\"")
+                .into_bytes(),
+            _ => {
+                serde_json::to_vec(&serde_json::from_value::<StoredActiveReceiptV1>(value).unwrap())
+                    .unwrap()
+            }
+        };
+        let active = open_directory_nofollow(&receipts.join(ACTIVE_DIRECTORY_NAME)).unwrap();
+        let name = format!("{}.json", digest.as_str());
+        let mut file = create_owner_only_file_child(&active, OsStr::new(&name)).unwrap();
+        file.write_all(&bytes).unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        drop(active);
+        fs::write(receipts.join(GENERATION_FILE_NAME), b"1\n").unwrap();
+        assert!(
+            matches!(
+                ReceiptLedgerStore::open(&receipts),
+                Err(ReceiptLedgerError::Corrupt(_))
+            ),
+            "invalid schema fixture {case} must fail closed"
+        );
+        assert_eq!(
+            fs::read(receipts.join(ACTIVE_DIRECTORY_NAME).join(name)).unwrap(),
+            bytes,
+            "refusal must not rewrite {case}"
+        );
+        assert_eq!(
+            fs::read(receipts.join(GENERATION_FILE_NAME)).unwrap(),
+            b"1\n"
+        );
+    }
 }
 
 #[test]
@@ -571,16 +738,15 @@ fn expired_deletion_witness_rejects_an_impossible_cancel_predecessor_version() {
     let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
     let key_digest = receipt_key_digest(&key);
     let predecessor = CatalogEntry {
-        record: build_cancel_reserved_record(key, key_digest.clone(), 1_000, 8_125, 1),
+        record: legacy_cancel_record(key, key_digest.clone(), 1_000, 8_125, 1),
         encoded_bytes: 512,
     };
-    let mut witness = build_expired_deletion_record(
+    let mut witness = legacy_expired_deletion_record(
         &predecessor,
         8_125,
         2,
         ReceiptVersion::new(2).expect("next version"),
-    )
-    .expect("build valid expiry witness");
+    );
     witness.record_version = ReceiptVersion::new(3).expect("impossible next version");
     match &mut witness.lifecycle {
         StoredActiveLifecycleV1::ExpiredDeletion {
@@ -605,16 +771,15 @@ fn expired_deletion_witness_must_follow_its_predecessor_mutation() {
     let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
     let key_digest = receipt_key_digest(&key);
     let predecessor = CatalogEntry {
-        record: build_cancel_reserved_record(key, key_digest.clone(), 1_000, 8_125, 1),
+        record: legacy_cancel_record(key, key_digest.clone(), 1_000, 8_125, 1),
         encoded_bytes: 512,
     };
-    let witness = build_expired_deletion_record(
+    let witness = legacy_expired_deletion_record(
         &predecessor,
         8_125,
         1,
         ReceiptVersion::new(2).expect("next version"),
-    )
-    .expect("build sequence-one expiry witness fixture");
+    );
     let encoded = serde_json::to_vec(&witness).expect("encode canonical impossible witness");
 
     assert_eq!(
@@ -631,16 +796,15 @@ fn expired_deletion_witness_preserves_the_predecessor_fixed_absolute_ttl() {
     let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
     let key_digest = receipt_key_digest(&key);
     let predecessor = CatalogEntry {
-        record: build_cancel_reserved_record(key, key_digest.clone(), 1_000, 8_125, 1),
+        record: legacy_cancel_record(key, key_digest.clone(), 1_000, 8_125, 1),
         encoded_bytes: 512,
     };
-    let mut witness = build_expired_deletion_record(
+    let mut witness = legacy_expired_deletion_record(
         &predecessor,
         9_000,
         2,
         ReceiptVersion::new(2).expect("next version"),
-    )
-    .expect("build valid expiry witness");
+    );
     match &mut witness.lifecycle {
         StoredActiveLifecycleV1::ExpiredDeletion {
             prior_expires_at_epoch_ms,
@@ -727,30 +891,9 @@ fn reopen_rejects_a_mutation_sequence_shared_by_live_row_and_expiry_witness() {
     store
         .request_cancel_or_reserve(live_key.clone(), 1_000, reserve_deadline())
         .expect("create first cancellation reservation");
-    let expiring = match store
-        .request_cancel_or_reserve(expiring_key.clone(), 1_000, reserve_deadline())
-        .expect("create second cancellation reservation")
-    {
-        CancelResolution::NewlyReserved(receipt) => receipt,
-        _ => panic!("second cancellation must be newly reserved"),
-    };
-    set_after_receipt_row_rename_hook_for_test(|| {
-        panic!("simulate process loss after the expiry witness rename")
-    });
-    assert!(
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = store.expire_cancel_reserved(
-                expiring_key,
-                expiring.record_version(),
-                expiring.mutation_sequence(),
-                expiring.expires_at_epoch_ms(),
-                reserve_deadline(),
-            );
-        }))
-        .is_err(),
-        "expiry failpoint must leave its witness visible"
-    );
     drop(store);
+    write_expiry_witness_fixture(&receipts, expiring_key, 2, 3);
+    fs::write(receipts.join(GENERATION_FILE_NAME), b"2\n").unwrap();
 
     let live_digest = receipt_key_digest(&live_key);
     let live_row = receipts
@@ -778,54 +921,14 @@ fn reopen_rejects_an_expiry_witness_that_skips_the_persisted_generation() {
     let receipts = fs::canonicalize(root.path())
         .expect("physical temporary root")
         .join("receipts");
-    let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
-    let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
-    let reserved = match store
-        .request_cancel_or_reserve(key.clone(), 1_000, reserve_deadline())
-        .expect("create cancellation reservation")
-    {
-        CancelResolution::NewlyReserved(receipt) => receipt,
-        _ => panic!("cancellation must be newly reserved"),
-    };
-    set_after_receipt_row_rename_hook_for_test(|| {
-        panic!("simulate process loss before expiry generation publication")
-    });
-    assert!(
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = store.expire_cancel_reserved(
-                key.clone(),
-                reserved.record_version(),
-                reserved.mutation_sequence(),
-                reserved.expires_at_epoch_ms(),
-                reserve_deadline(),
-            );
-        }))
-        .is_err(),
-        "expiry failpoint must leave its witness visible"
+    drop(ReceiptLedgerStore::open(&receipts).unwrap());
+    write_expiry_witness_fixture(
+        &receipts,
+        receipt_key(INVOCATION_A, TASK_A, "workspace-a"),
+        2,
+        3,
     );
-    drop(store);
-
-    let row = receipts
-        .join(ACTIVE_DIRECTORY_NAME)
-        .join(format!("{}.json", reserved.key_digest().as_str()));
-    let mut witness: StoredActiveReceiptV1 =
-        serde_json::from_slice(&fs::read(&row).expect("read expiry witness"))
-            .expect("decode expiry witness");
-    assert!(matches!(
-        &witness.lifecycle,
-        StoredActiveLifecycleV1::ExpiredDeletion { .. }
-    ));
-    witness.mutation_sequence = 3;
-    match &mut witness.lifecycle {
-        StoredActiveLifecycleV1::ExpiredDeletion {
-            prior_mutation_sequence,
-            ..
-        } => *prior_mutation_sequence = 2,
-        _ => panic!("fixture must remain an expiry witness"),
-    }
-    let (_, encoded) = serialize_reserved_record(witness, MAX_CANCEL_RESERVED_RECORD_BYTES)
-        .expect("encode canonical skipped-generation witness");
-    fs::write(&row, encoded).expect("persist skipped-generation fixture");
+    fs::write(receipts.join(GENERATION_FILE_NAME), b"1\n").unwrap();
 
     assert_eq!(
         ReceiptLedgerStore::open(&receipts)
@@ -843,33 +946,18 @@ fn expiry_reopens_logically_absent_after_crash_between_witness_unlink_and_direct
     let receipts = fs::canonicalize(root.path())
         .expect("physical temporary root")
         .join("receipts");
-    let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
     let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
-    let reserved = match store
-        .request_cancel_or_reserve(key.clone(), 1_000, reserve_deadline())
-        .expect("create cancellation reservation")
-    {
-        CancelResolution::NewlyReserved(receipt) => receipt,
-        _ => panic!("cancellation must be newly reserved"),
-    };
-    set_after_expired_deletion_witness_remove_hook_for_test(|| {
-        panic!("simulate process loss before syncing the witness unlink")
+    let key_digest = historical_expiry_image(&receipts, key.clone(), 1);
+    set_after_active_entry_remove_hook_for_test(|| {
+        panic!("simulate loss during historical witness cleanup")
     });
-
     assert!(
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = store.expire_cancel_reserved(
-                key.clone(),
-                reserved.record_version(),
-                reserved.mutation_sequence(),
-                reserved.expires_at_epoch_ms(),
-                reserve_deadline(),
-            );
+            let _ = ReceiptLedgerStore::open(&receipts);
         }))
         .is_err(),
-        "post-unlink failpoint must interrupt expiry"
+        "recovery must reach the unlink boundary"
     );
-    drop(store);
 
     let reopened = ReceiptLedgerStore::open(&receipts)
         .expect("generation makes the receipt absent with or without durable unlink");
@@ -883,7 +971,7 @@ fn expiry_reopens_logically_absent_after_crash_between_witness_unlink_and_direct
     assert!(
         !receipts
             .join(ACTIVE_DIRECTORY_NAME)
-            .join(format!("{}.json", reserved.key_digest().as_str()))
+            .join(format!("{}.json", key_digest.as_str()))
             .exists(),
         "reopen finishes any witness cleanup"
     );
@@ -895,33 +983,8 @@ fn expiry_reopen_heals_generation_after_crash_at_visible_witness_rename() {
     let receipts = fs::canonicalize(root.path())
         .expect("physical temporary root")
         .join("receipts");
-    let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
     let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
-    let reserved = match store
-        .request_cancel_or_reserve(key.clone(), 1_000, reserve_deadline())
-        .expect("create cancellation reservation")
-    {
-        CancelResolution::NewlyReserved(receipt) => receipt,
-        _ => panic!("cancellation must be newly reserved"),
-    };
-    set_after_receipt_row_rename_hook_for_test(|| {
-        panic!("simulate process loss at visible witness rename")
-    });
-
-    assert!(
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = store.expire_cancel_reserved(
-                key.clone(),
-                reserved.record_version(),
-                reserved.mutation_sequence(),
-                reserved.expires_at_epoch_ms(),
-                reserve_deadline(),
-            );
-        }))
-        .is_err(),
-        "witness rename failpoint must interrupt expiry"
-    );
-    drop(store);
+    let key_digest = historical_expiry_image(&receipts, key.clone(), 1);
 
     let reopened = ReceiptLedgerStore::open(&receipts)
         .expect("reopen must heal generation from the durable witness");
@@ -941,7 +1004,7 @@ fn expiry_reopen_heals_generation_after_crash_at_visible_witness_rename() {
     assert!(
         !receipts
             .join(ACTIVE_DIRECTORY_NAME)
-            .join(format!("{}.json", reserved.key_digest().as_str()))
+            .join(format!("{}.json", key_digest.as_str()))
             .exists(),
         "reopen removes the healed witness"
     );
@@ -972,24 +1035,14 @@ fn expiry_reopen_accepts_other_receipt_mutations_between_predecessor_and_witness
     };
     assert_eq!(expiring.mutation_sequence(), 1);
     assert_eq!(surviving.mutation_sequence(), 2);
-    set_after_receipt_row_rename_hook_for_test(|| {
-        panic!("simulate process loss after interleaved expiry witness rename")
-    });
-
-    assert!(
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = store.expire_cancel_reserved(
-                expiring_key.clone(),
-                expiring.record_version(),
-                expiring.mutation_sequence(),
-                expiring.expires_at_epoch_ms(),
-                reserve_deadline(),
-            );
-        }))
-        .is_err(),
-        "witness rename failpoint must interrupt interleaved expiry"
-    );
     drop(store);
+    fs::remove_file(
+        receipts
+            .join(ACTIVE_DIRECTORY_NAME)
+            .join(format!("{}.json", expiring.key_digest().as_str())),
+    )
+    .unwrap();
+    write_expiry_witness_fixture(&receipts, expiring_key.clone(), 1, 3);
 
     let reopened = ReceiptLedgerStore::open(&receipts)
         .expect("global sequence gaps are valid predecessor history");
@@ -1014,33 +1067,8 @@ fn expiry_reopen_cleans_witness_after_crash_at_visible_generation_replace() {
     let receipts = fs::canonicalize(root.path())
         .expect("physical temporary root")
         .join("receipts");
-    let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
     let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
-    let reserved = match store
-        .request_cancel_or_reserve(key.clone(), 1_000, reserve_deadline())
-        .expect("create cancellation reservation")
-    {
-        CancelResolution::NewlyReserved(receipt) => receipt,
-        _ => panic!("cancellation must be newly reserved"),
-    };
-    set_after_generation_replace_hook_for_test(|| {
-        panic!("simulate process loss before witness unlink")
-    });
-
-    assert!(
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = store.expire_cancel_reserved(
-                key.clone(),
-                reserved.record_version(),
-                reserved.mutation_sequence(),
-                reserved.expires_at_epoch_ms(),
-                reserve_deadline(),
-            );
-        }))
-        .is_err(),
-        "generation replace failpoint must interrupt expiry"
-    );
-    drop(store);
+    let key_digest = historical_expiry_image(&receipts, key.clone(), 2);
 
     let reopened = ReceiptLedgerStore::open(&receipts)
         .expect("reopen must accept either durable side of generation replacement");
@@ -1054,7 +1082,7 @@ fn expiry_reopen_cleans_witness_after_crash_at_visible_generation_replace() {
     assert!(
         !receipts
             .join(ACTIVE_DIRECTORY_NAME)
-            .join(format!("{}.json", reserved.key_digest().as_str()))
+            .join(format!("{}.json", key_digest.as_str()))
             .exists(),
         "reopen removes the committed witness"
     );
@@ -1102,18 +1130,18 @@ fn cancel_reserved_shares_the_live_count_without_reserving_result_bytes() {
 }
 
 #[test]
-fn submit_admission_reclaims_one_slot_from_a_full_expired_cancel_pool() {
+fn submit_admission_preserves_unrelated_cancellations_after_legacy_expiry() {
     let root = tempfile::tempdir().expect("temporary root");
     let receipts = fs::canonicalize(root.path())
         .expect("physical temporary root")
         .join("receipts");
     let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
 
-    for index in 0..MAX_LIVE_RECEIPTS {
+    for index in 0..2 {
         let key = receipt_key_with_ids(
             InvocationId::new(),
             TaskId::new(),
-            &format!("expired-cancel-workspace-{index}"),
+            &format!("persistent-cancel-workspace-{index}"),
         );
         assert!(matches!(
             store.request_cancel_or_reserve(key, 1_000, Instant::now() + Duration::from_secs(7),),
@@ -1124,7 +1152,7 @@ fn submit_admission_reclaims_one_slot_from_a_full_expired_cancel_pool() {
     let admitted_key = receipt_key_with_ids(
         InvocationId::new(),
         TaskId::new(),
-        "admitted-after-expired-cancel-pool",
+        "admitted-alongside-persistent-cancels",
     );
     let cutoff =
         OriginalCutoffDescriptor::new(8_125, 7_000).expect("valid post-expiry submit cutoff");
@@ -1134,17 +1162,23 @@ fn submit_admission_reclaims_one_slot_from_a_full_expired_cancel_pool() {
             cutoff,
             Instant::now() + Duration::from_secs(7),
         )
-        .expect("expired cancel reservations cannot deny later admission")
+        .expect("independent admission must preserve existing cancellation reservations")
         .into_reservation()
         .expect("new submit remains reserved");
 
     assert_eq!(admitted.key(), &admitted_key);
-    assert_eq!(admitted.mutation_sequence(), 66);
-    assert_eq!(store.generation().expect("reclaim plus admission"), 66);
-    let catalog = store.writer.lock().expect("inspect reclaimed catalog");
-    assert_eq!(catalog.records.len(), MAX_LIVE_RECEIPTS);
-    assert_eq!(catalog.invocation_index.len(), MAX_LIVE_RECEIPTS);
-    assert_eq!(catalog.reserved_task_index.len(), MAX_LIVE_RECEIPTS);
+    assert_eq!(admitted.mutation_sequence(), 3);
+    assert_eq!(
+        store.generation().expect("admission without reclamation"),
+        3
+    );
+    let catalog = store
+        .writer
+        .lock()
+        .expect("inspect retained cancellation catalog");
+    assert_eq!(catalog.records.len(), 3);
+    assert_eq!(catalog.invocation_index.len(), 3);
+    assert_eq!(catalog.reserved_task_index.len(), 3);
     assert_eq!(
         catalog
             .records
@@ -1154,7 +1188,7 @@ fn submit_admission_reclaims_one_slot_from_a_full_expired_cancel_pool() {
                 StoredActiveLifecycleV1::CancelReserved { .. }
             ))
             .count(),
-        MAX_LIVE_RECEIPTS - 1
+        2
     );
     assert_eq!(
         catalog.reserved_result_bytes,
@@ -1163,7 +1197,7 @@ fn submit_admission_reclaims_one_slot_from_a_full_expired_cancel_pool() {
 }
 
 #[test]
-fn partial_identity_rejection_does_not_reclaim_an_unrelated_expired_cancel() {
+fn partial_identity_rejection_preserves_an_unrelated_delayed_cancel() {
     let root = tempfile::tempdir().expect("temporary root");
     let receipts = fs::canonicalize(root.path())
         .expect("physical temporary root")
@@ -1200,44 +1234,46 @@ fn partial_identity_rejection_does_not_reclaim_an_unrelated_expired_cancel() {
 }
 
 #[test]
-fn expired_partial_identity_is_reclaimed_before_new_admission() {
+fn cancellation_identity_cannot_be_reused_after_legacy_expiry() {
     let root = tempfile::tempdir().expect("temporary root");
-    let receipts = fs::canonicalize(root.path())
-        .expect("physical temporary root")
-        .join("receipts");
-    let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
-    let expired_key = receipt_key(INVOCATION_A, TASK_A, "expired-workspace");
-    store
-        .request_cancel_or_reserve(expired_key, 1_000, reserve_deadline())
-        .expect("seed expired cancellation reservation");
-    let admitted_key = receipt_key_with_ids(
-        InvocationId::from_str(INVOCATION_A).expect("canonical reused invocation"),
-        TaskId::new(),
-        "new-workspace",
-    );
-
-    let admitted = match store
-        .request_cancel_or_reserve(admitted_key.clone(), 8_125, reserve_deadline())
-        .expect("expired identity owner is reclaimable")
-    {
-        CancelResolution::NewlyReserved(receipt) => receipt,
-        _ => panic!("reclaimed identity must admit a new receipt"),
+    let receipts = fs::canonicalize(root.path()).unwrap().join("receipts");
+    let store = ReceiptLedgerStore::open(&receipts).unwrap();
+    let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
+    let CancelResolution::NewlyReserved(original) = store
+        .request_cancel_or_reserve(key.clone(), 1_000, reserve_deadline())
+        .unwrap()
+    else {
+        panic!("new cancel");
     };
-
-    assert_eq!(admitted.key(), &admitted_key);
-    assert_eq!(admitted.mutation_sequence(), 3);
-    assert_eq!(store.generation().expect("reclaim plus admission"), 3);
-    let catalog = store
-        .writer
-        .lock()
-        .expect("inspect reused identity catalog");
-    assert_eq!(catalog.records.len(), 1);
-    assert_eq!(catalog.invocation_index.len(), 1);
-    assert_eq!(catalog.reserved_task_index.len(), 1);
+    let row = receipts
+        .join(ACTIVE_DIRECTORY_NAME)
+        .join(format!("{}.json", original.key_digest().as_str()));
+    let before = fs::read(&row).unwrap();
+    for (collision, expected) in [
+        (
+            receipt_key(INVOCATION_A, TASK_B, "workspace-b"),
+            ReceiptLedgerError::InvocationIdentityMismatch,
+        ),
+        (
+            receipt_key(INVOCATION_B, TASK_A, "workspace-b"),
+            ReceiptLedgerError::ReservedTaskIdentityMismatch,
+        ),
+    ] {
+        assert_eq!(
+            store.request_cancel_or_reserve(collision, u64::MAX, reserve_deadline()),
+            Err(expected)
+        );
+        assert_eq!(store.generation().unwrap(), 1);
+        assert_eq!(fs::read(&row).unwrap(), before);
+        assert_eq!(
+            store.recover_exact(&key, reserve_deadline()).unwrap(),
+            ReceiptState::CancelReserved(original.clone())
+        );
+    }
 }
 
 #[test]
-fn exact_reserve_winner_does_not_reclaim_an_unrelated_expired_cancel() {
+fn exact_reserve_winner_preserves_an_unrelated_delayed_cancel() {
     let root = tempfile::tempdir().expect("temporary root");
     let receipts = fs::canonicalize(root.path())
         .expect("physical temporary root")
@@ -1283,7 +1319,7 @@ fn exact_submit_atomically_converts_cancel_reserved_to_full_cancelled_reservatio
         cancel,
         crate::application::receipt_ledger::CancelResolution::NewlyReserved(_)
     ));
-    let cutoff = OriginalCutoffDescriptor::new(2_000, 7_000).expect("valid submit cutoff");
+    let cutoff = OriginalCutoffDescriptor::new(1_000_000, 7_000).expect("valid submit cutoff");
 
     let converted = store
         .reserve(key.clone(), cutoff, reserve_deadline())
@@ -1322,22 +1358,21 @@ fn exact_submit_atomically_converts_cancel_reserved_to_full_cancelled_reservatio
 }
 
 #[test]
-fn exact_submit_at_cancel_expiry_atomically_creates_a_fresh_uncancelled_reservation() {
+fn delayed_exact_submit_preserves_legacy_cancellation_after_restart() {
     let root = tempfile::tempdir().expect("temporary root");
     let receipts = fs::canonicalize(root.path())
         .expect("physical temporary root")
         .join("receipts");
-    let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+    drop(ReceiptLedgerStore::open(&receipts).unwrap());
     let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
-    let cancel = match store
-        .request_cancel_or_reserve(key.clone(), 1_000, reserve_deadline())
-        .expect("reserve cancellation before submit")
-    {
-        CancelResolution::NewlyReserved(receipt) => receipt,
-        _ => panic!("first cancellation must reserve"),
-    };
-    let cutoff = OriginalCutoffDescriptor::new(cancel.expires_at_epoch_ms(), 7_000)
-        .expect("valid submit cutoff at the half-open expiry boundary");
+    write_historical_active_fixture(
+        &receipts,
+        &legacy_cancel_record(key.clone(), receipt_key_digest(&key), 1_000, 8_125, 1),
+    );
+    fs::write(receipts.join(GENERATION_FILE_NAME), b"1\n").unwrap();
+    let store =
+        ReceiptLedgerStore::open(&receipts).expect("reopen legacy cancel before delayed submit");
+    let cutoff = OriginalCutoffDescriptor::new(1_000_000, 7_000).expect("delayed submit cutoff");
 
     let converted = match store
         .reserve(key.clone(), cutoff, reserve_deadline())
@@ -1347,7 +1382,7 @@ fn exact_submit_at_cancel_expiry_atomically_creates_a_fresh_uncancelled_reservat
         _ => panic!("expired exact conversion is a mutation"),
     };
 
-    assert!(!converted.cancel_requested());
+    assert!(converted.cancel_requested());
     assert_eq!(converted.original_cutoff(), &cutoff);
     assert_eq!(converted.record_version().get(), 2);
     assert_eq!(converted.mutation_sequence(), 2);
@@ -1364,24 +1399,26 @@ fn exact_submit_at_cancel_expiry_atomically_creates_a_fresh_uncancelled_reservat
 }
 
 #[test]
-fn cancel_reserved_timestamp_overflow_and_partial_identity_collisions_do_not_mutate() {
+fn cancel_at_maximum_epoch_persists_and_partial_identity_collisions_do_not_mutate() {
     let root = tempfile::tempdir().expect("temporary root");
     let receipts = fs::canonicalize(root.path())
         .expect("physical temporary root")
         .join("receipts");
     let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
     let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
+    let CancelResolution::NewlyReserved(initial) = store
+        .request_cancel_or_reserve(key.clone(), u64::MAX, reserve_deadline())
+        .expect("maximum epoch needs no TTL arithmetic")
+    else {
+        panic!("new cancellation");
+    };
+    assert_eq!(initial.cancel_reserved_at_epoch_ms(), u64::MAX);
     assert_eq!(
         store
-            .request_cancel_or_reserve(key.clone(), u64::MAX - 7_124, reserve_deadline(),)
-            .expect_err("cancel expiry must not wrap"),
-        ReceiptLedgerError::TimestampOverflow
+            .request_cancel_or_reserve(key.clone(), u64::MAX, reserve_deadline())
+            .unwrap(),
+        CancelResolution::ExistingExact(initial.clone())
     );
-    assert_eq!(store.generation().expect("unchanged generation"), 0);
-
-    store
-        .request_cancel_or_reserve(key, 1_000, reserve_deadline())
-        .expect("create the anchor CancelReserved");
     let invocation_collision = receipt_key(INVOCATION_A, TASK_B, "workspace-b");
     assert_eq!(
         store
@@ -1406,10 +1443,18 @@ fn cancel_reserved_timestamp_overflow_and_partial_identity_collisions_do_not_mut
             .len(),
         1
     );
+    drop(store);
+    assert_eq!(
+        ReceiptLedgerStore::open(&receipts)
+            .unwrap()
+            .recover_exact(&key, reserve_deadline())
+            .unwrap(),
+        ReceiptState::CancelReserved(initial)
+    );
 }
 
 #[test]
-fn cancel_timestamp_overflow_cannot_bypass_an_already_fail_stopped_store() {
+fn cancel_at_maximum_epoch_cannot_bypass_an_already_fail_stopped_store() {
     let root = tempfile::tempdir().expect("temporary root");
     let receipts = fs::canonicalize(root.path())
         .expect("physical temporary root")
@@ -1436,10 +1481,10 @@ fn cancel_timestamp_overflow_cannot_bypass_an_already_fail_stopped_store() {
         store
             .request_cancel_or_reserve(
                 receipt_key(INVOCATION_A, TASK_A, "workspace-a"),
-                u64::MAX - CANCEL_RESERVATION_TTL_MS + 1,
+                u64::MAX,
                 reserve_deadline(),
             )
-            .expect_err("invalid input cannot bypass the latched store state"),
+            .expect_err("maximum epoch cannot bypass the latched store state"),
         ReceiptLedgerError::StoreUnavailable
     );
     assert_eq!(
@@ -3446,6 +3491,16 @@ fn cancelled_direct_batch_reopens_all_exact_winners_from_one_durable_envelope() 
         )
         .expect("publish one durable cancelled batch");
     assert_eq!(committed.len(), 32);
+    for (index, receipt) in committed.iter().enumerate() {
+        assert_eq!(receipt.key(), &requests[index].0);
+        assert_eq!(receipt.original_cutoff(), &requests[index].1);
+        assert_eq!(receipt.record_version().get(), 3);
+        assert_eq!(receipt.mutation_sequence(), 65 + index as u64);
+        assert!(matches!(
+            receipt.terminal().outcome(),
+            ReceiptTerminalOutcome::Cancelled
+        ));
+    }
     assert_eq!(store.generation().expect("batch generation"), 96);
     let active_names: Vec<_> = fs::read_dir(receipts.join(ACTIVE_DIRECTORY_NAME))
         .expect("enumerate active receipt directory")
@@ -5307,7 +5362,7 @@ fn reopen_rejects_semantically_equivalent_but_noncanonical_receipt_json() {
 
     assert_eq!(
         error,
-        ReceiptLedgerError::Corrupt("receipt row is not canonical schema-v1 JSON")
+        ReceiptLedgerError::Corrupt("receipt row is not canonical JSON")
     );
 }
 
