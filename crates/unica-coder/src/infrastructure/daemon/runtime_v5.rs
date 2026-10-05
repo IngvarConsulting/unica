@@ -8,7 +8,7 @@ use super::protocol_v5::{
 };
 use super::server::{
     CanonicalInvocationService, DaemonServerConfig, V5ActorBoundCanonicalInvocation,
-    V5CanonicalInvocationRuntime, V5CanonicalPrepareError, MAX_HANDSHAKES, MAX_OWNER_SESSIONS,
+    V5CanonicalInvocationRuntime, V5CanonicalPrepareError,
 };
 use crate::application::invocation::{RESPONSE_SERIALIZATION_MARGIN, TASK_RECONCILIATION_BUDGET};
 use crate::application::invocation_store::SystemEpochMillisClock;
@@ -5655,9 +5655,6 @@ impl V5LeaseRegistry {
         if leases.contains(&lease) {
             return Ok(V5LeaseAdmission::Duplicate);
         }
-        if leases.len() >= MAX_OWNER_SESSIONS {
-            return Ok(V5LeaseAdmission::Capacity);
-        }
         leases.insert(lease.clone());
         drop(leases);
         Ok(V5LeaseAdmission::Acquired(V5LeaseGuard {
@@ -5677,7 +5674,6 @@ impl V5LeaseRegistry {
 enum V5LeaseAdmission {
     Acquired(V5LeaseGuard),
     Duplicate,
-    Capacity,
 }
 
 struct V5LeaseGuard {
@@ -5701,7 +5697,7 @@ impl V5ConnectionSlot {
     fn acquire(admitted: Arc<AtomicUsize>) -> Option<Self> {
         admitted
             .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                (current < MAX_HANDSHAKES).then_some(current + 1)
+                current.checked_add(1)
             })
             .ok()
             .map(|_| Self { admitted })
@@ -5804,15 +5800,6 @@ fn handle_probe_connection(
                 &mut stream,
                 runtime,
                 V5DaemonErrorCode::DuplicateLease,
-                handshake_deadline,
-            )?;
-            return Ok(());
-        }
-        V5LeaseAdmission::Capacity => {
-            write_runtime_probe_error_before(
-                &mut stream,
-                runtime,
-                V5DaemonErrorCode::OwnerCapacity,
                 handshake_deadline,
             )?;
             return Ok(());
