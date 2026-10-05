@@ -1933,6 +1933,10 @@ impl V5InvocationExecutor {
         Self { invocation_runtime }
     }
 
+    fn has_retained_workspace_work(&self) -> bool {
+        self.invocation_runtime.has_retained_workspace_work()
+    }
+
     fn capture_response_deadline(
         &self,
         response_budget_ms: u64,
@@ -5538,8 +5542,10 @@ fn run_daemon_configured_until(
         let handshakes_empty = admitted_connections.load(Ordering::Acquire) == 0;
         let owners_empty = active_leases.is_empty()?;
         runtime.hooks.after_idle_owner_leases_read(owners_empty);
-        let no_active_work =
-            owners_empty && handshakes_empty && runtime.active_task_cancellations.is_empty();
+        let no_active_work = owners_empty
+            && handshakes_empty
+            && runtime.active_task_cancellations.is_empty()
+            && !runtime.invocation_executor.has_retained_workspace_work();
         runtime.hooks.listener_ownership_observed(no_active_work);
         if no_active_work {
             if idle_since.elapsed() >= config.idle_grace {
