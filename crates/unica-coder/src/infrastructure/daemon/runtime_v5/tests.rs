@@ -2848,6 +2848,14 @@ fn handler_spawn_failure_preserves_live_owner_listener_and_next_connection() {
             Ok(V5ServerResponse::Released)
         );
     }
+    let stopped_before = Instant::now() + Duration::from_secs(5);
+    while !daemon.server.as_ref().unwrap().is_finished() {
+        assert!(
+            Instant::now() < stopped_before,
+            "failed spawn retained admission ownership after both owners released"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
     daemon
         .server
         .take()
