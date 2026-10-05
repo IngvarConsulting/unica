@@ -33,7 +33,6 @@ use tempfile::TempDir;
 
 pub(crate) const LFS_SINGLE_FILE_THRESHOLD_BYTES: u64 = 10 * 1024 * 1024;
 pub(crate) const LFS_AGGREGATE_THRESHOLD_BYTES: u64 = 100 * 1024 * 1024;
-pub(crate) const MAX_WORKING_EOL_FILE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_STAGED_POLICY_FILES: usize = 1024;
 const MAX_STAGED_POLICY_TOTAL_BYTES: usize = 8 * 1024 * 1024;
 const MAX_INDEX_EOL_FILE_BYTES: usize = 32 * 1024 * 1024;
@@ -3100,15 +3099,6 @@ fn inspect_working_eol(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(WorkingEolInspectionError::Incomplete(error.to_string())),
     };
-    let metadata = file
-        .metadata()
-        .map_err(|error| WorkingEolInspectionError::Incomplete(error.to_string()))?;
-    if metadata.len() > MAX_WORKING_EOL_FILE_BYTES {
-        return Err(WorkingEolInspectionError::Incomplete(format!(
-            "working file exceeds {} bytes",
-            MAX_WORKING_EOL_FILE_BYTES
-        )));
-    }
     inspect_working_eol_reader(file, cancellation, deadline)
 }
 
@@ -3131,12 +3121,6 @@ fn inspect_working_eol_continued(
     };
     let before = working_file_fingerprint(&file)
         .map_err(|error| WorkingEolInspectionError::Incomplete(error.to_string()))?;
-    if before.size > MAX_WORKING_EOL_FILE_BYTES {
-        return Err(WorkingEolInspectionError::Incomplete(format!(
-            "working file exceeds {} bytes",
-            MAX_WORKING_EOL_FILE_BYTES
-        )));
-    }
     let mut scanner = match continuation.working_eol.get(&key) {
         Some(cached) if cached.fingerprint == before => match cached.eol {
             WorkingEolProgress::Complete(eol) => {
@@ -3266,12 +3250,6 @@ fn inspect_working_eol_reader_from_state(
         let next_offset = scanner.offset.checked_add(count as u64).ok_or_else(|| {
             WorkingEolInspectionError::Incomplete("working EOL offset overflow".into())
         })?;
-        if next_offset > MAX_WORKING_EOL_FILE_BYTES {
-            return Err(WorkingEolInspectionError::Incomplete(format!(
-                "working file exceeds {} bytes",
-                MAX_WORKING_EOL_FILE_BYTES
-            )));
-        }
         for byte in &buffer[..count] {
             if scanner.previous_cr {
                 if *byte == b'\n' {
@@ -4471,16 +4449,107 @@ mod tests {
     }
 
     #[test]
-    fn project_health_worktree_eol_enforces_file_bound_while_reading() {
-        let bytes = vec![b'x'; super::MAX_WORKING_EOL_FILE_BYTES as usize + 1];
-        let error = super::inspect_working_eol_reader(
-            std::io::Cursor::new(bytes),
-            &CancellationToken::new(),
-            ProviderDeadline::from_budget(Duration::from_secs(2)),
-        )
-        .unwrap_err();
+    fn project_health_worktree_eol_streams_past_the_former_file_limit_and_reads_the_tail() {
+        struct LargeTailReader {
+            remaining: u64,
+            tail: std::io::Cursor<&'static [u8]>,
+        }
 
-        assert!(error.to_string().contains("working file exceeds"));
+        impl std::io::Read for LargeTailReader {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                assert!(buffer.len() <= 64 * 1024, "whole-file buffer requested");
+                let prefix = self.remaining.min(buffer.len() as u64) as usize;
+                buffer[..prefix].fill(b'x');
+                self.remaining -= prefix as u64;
+                let suffix = std::io::Read::read(&mut self.tail, &mut buffer[prefix..])?;
+                Ok(prefix + suffix)
+            }
+        }
+
+        // The CR ends a 64 KiB block at the former 32 MiB ceiling; its LF
+        // and the other significant bytes must still be classified.
+        for (tail, expected) in [
+            (b"\r\n".as_slice(), super::WorkingEol::Supported),
+            (b"\r\nTAIL\n".as_slice(), super::WorkingEol::Mixed),
+            (b"\rTAIL".as_slice(), super::WorkingEol::BareCr),
+            (b"TAIL\r".as_slice(), super::WorkingEol::BareCr),
+        ] {
+            let reader = LargeTailReader {
+                remaining: 32 * 1024 * 1024 - 1,
+                tail: std::io::Cursor::new(tail),
+            };
+            let result = super::inspect_working_eol_reader(
+                reader,
+                &CancellationToken::new(),
+                ProviderDeadline::from_budget(Duration::from_secs(30)),
+            )
+            .unwrap();
+            assert_eq!(result, Some(expected));
+        }
+    }
+
+    fn large_working_eol_file() -> TempDir {
+        use std::io::{Read, Write};
+
+        let temp = TempDir::new().unwrap();
+        let mut file = fs::File::create(temp.path().join("large.xml")).unwrap();
+        file.write_all(b"<A>").unwrap();
+        std::io::copy(
+            &mut std::io::repeat(b'x').take(32 * 1024 * 1024 - 4),
+            &mut file,
+        )
+        .unwrap();
+        file.write_all(b"\r\nTAIL\n</A>").unwrap();
+        assert!(file.metadata().unwrap().len() > 32 * 1024 * 1024);
+        temp
+    }
+
+    #[test]
+    fn project_health_worktree_eol_opens_a_file_past_the_former_metadata_limit() {
+        let temp = large_working_eol_file();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let result = super::inspect_working_eol(
+            &root,
+            Path::new("large.xml"),
+            &CancellationToken::new(),
+            ProviderDeadline::from_budget(Duration::from_secs(30)),
+        )
+        .unwrap();
+        assert_eq!(result, Some(super::WorkingEol::Mixed));
+    }
+
+    #[test]
+    fn continued_working_eol_opens_and_caches_a_file_past_the_former_metadata_limit() {
+        let temp = large_working_eol_file();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let mut continuation = super::ResourceContinuation::default();
+        let cancellation = CancellationToken::new();
+        let deadline = ProviderDeadline::from_budget(Duration::from_secs(30));
+        let result = super::inspect_working_eol_continued(
+            &root,
+            Path::new("large.xml"),
+            &mut continuation,
+            &cancellation,
+            deadline,
+        )
+        .unwrap();
+        assert_eq!(result.0, Some(super::WorkingEol::Mixed));
+        assert!(result.1.is_some());
+        assert_eq!(continuation.working_eol.len(), 1);
+        let retained_before = continuation.progress.working_eol_retained;
+        let repeated = super::inspect_working_eol_continued(
+            &root,
+            Path::new("large.xml"),
+            &mut continuation,
+            &cancellation,
+            deadline,
+        )
+        .unwrap();
+        assert_eq!(repeated, result);
+        assert_eq!(
+            continuation.progress.working_eol_retained,
+            retained_before + 1
+        );
     }
 
     #[test]
