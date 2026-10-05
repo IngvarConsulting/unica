@@ -633,6 +633,11 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
     )
     .expect("extension module descriptor");
 
+    // Source admission, not Git tracking, owns the BSL corpus. Both source
+    // sets are ignored; unrelated ignored text and generated BSL remain out.
+    std::fs::write(workspace.join(".gitignore"), "*.bsl\n*.txt\n.build/\n")
+        .expect("ignore source exports and fixture private files");
+
     assert!(Command::new("git")
         .args(["init", "-q"])
         .current_dir(workspace)
@@ -645,6 +650,17 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
         .status()
         .expect("index search fixture sources")
         .success());
+    for source in [
+        "CommonModules/Main/Ext/Module.bsl",
+        "src/extension/CommonModules/Extension/Ext/Module.bsl",
+    ] {
+        assert!(Command::new("git")
+            .args(["check-ignore", "--quiet", source])
+            .current_dir(workspace)
+            .status()
+            .expect("verify ignored source fixture")
+            .success());
+    }
 
     let mut mcp = McpProcess::start(workspace);
     let initialized = mcp.exchange(json!({
@@ -735,6 +751,17 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
         "extension:Configuration"
     );
 
+    std::fs::write(workspace.join("credentials.txt"), "MainNeedle\n")
+        .expect("ignored non-BSL text");
+    std::fs::create_dir_all(workspace.join(".build")).expect("generated cache directory");
+    std::fs::write(workspace.join(".build/Module.bsl"), "// MainNeedle\n")
+        .expect("generated cache text");
+    std::fs::write(
+        workspace.join("src/extension/CommonModules/Extension/Ext/Module.bsl"),
+        "Procedure ExtensionNeedle() Export\nEndProcedure\n// MainNeedle\n",
+    )
+    .expect("nested source-set scope trap for the lexical provider");
+
     let lexical = mcp.completed_tool_call(call_tool(
         24,
         "unica.search",
@@ -787,6 +814,51 @@ fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
         lexical_lines,
         std::iter::once(1).chain(3..=23).collect::<Vec<_>>()
     );
+    let lexical_extension = mcp.completed_tool_call(call_tool(
+        37,
+        "unica.search",
+        json!({"query":"ExtensionNeedle","corpus":"text","role":"lexical","scope":"extension:CommonModule.Extension"}),
+    ));
+    assert_eq!(lexical_extension["ok"], true, "{lexical_extension:#}");
+    assert_eq!(
+        lexical_extension["data"]["matches"][0]["hits"]
+            .as_array()
+            .map(Vec::len),
+        Some(1),
+        "the ignored extension is searched: {lexical_extension:#}"
+    );
+    let lexical_main_root = mcp.completed_tool_call(call_tool(
+        38,
+        "unica.search",
+        json!({"query":"MainNeedle","corpus":"text","role":"lexical","scope":"main:Configuration","limit":50}),
+    ));
+    assert_eq!(lexical_main_root["ok"], true, "{lexical_main_root:#}");
+    assert_eq!(
+        lexical_main_root["data"]["matches"][0]["hits"]
+            .as_array()
+            .map(Vec::len),
+        Some(22),
+        "main excludes the nested extension, generated BSL and private text: {lexical_main_root:#}"
+    );
+    assert_eq!(
+        lexical_main_root["data"]["matches"][0]["searchComplete"],
+        true
+    );
+    let lexical_all_sources = mcp.completed_tool_call(call_tool(
+        39,
+        "unica.search",
+        json!({"query":"ExtensionNeedle","corpus":"text","role":"lexical","limit":50}),
+    ));
+    assert_eq!(lexical_all_sources["ok"], true, "{lexical_all_sources:#}");
+    let all_hits = lexical_all_sources["data"]["matches"][0]["hits"]
+        .as_array()
+        .expect("unscoped lexical source results");
+    assert_eq!(
+        all_hits.len(),
+        1,
+        "nested sources are searched once: {lexical_all_sources:#}"
+    );
+    assert_eq!(all_hits[0]["location"]["sourceSet"], "extension");
     let cross_mode = mcp.completed_tool_call(call_tool(
         35,
         "unica.search",

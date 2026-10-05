@@ -1453,7 +1453,7 @@ impl CanonicalV13ReadService {
             },
         }
 
-        let search_context = if unscoped_lexical {
+        let mut search_context = if unscoped_lexical {
             None
         } else {
             match self.ports.resolve_code_search_context(context, &selector) {
@@ -1558,7 +1558,7 @@ impl CanonicalV13ReadService {
                 .and_then(|context| context.source_root.source_set.clone())
                 .unwrap_or_default()]
         };
-        let retained_roots = if unscoped_lexical {
+        let retained_roots = if role == ProviderRole::Lexical {
             match invocation.read_sources() {
                 Ok(sources) => sources
                     .iter()
@@ -1574,6 +1574,13 @@ impl CanonicalV13ReadService {
         } else {
             Vec::new()
         };
+        if role == ProviderRole::Lexical {
+            if let Some(search_context) = search_context.as_mut() {
+                if let Err(error) = bind_lexical_source_scope(search_context, &retained_roots) {
+                    return error_result(None, RefusalCode::InvalidState, error);
+                }
+            }
+        }
         let execution = match if unscoped_lexical {
             search_unscoped_lexical(
                 self.ports.as_ref(),
@@ -2347,6 +2354,40 @@ struct UnscopedLexicalSources<'a> {
     retained_roots: &'a [(String, std::path::PathBuf)],
 }
 
+/// Bind every lexical route to the actor's source-root ownership. Nested
+/// source sets own their files even when Git ignores their source export.
+fn bind_lexical_source_scope(
+    context: &mut CodeIntelligenceContext,
+    retained_roots: &[(String, std::path::PathBuf)],
+) -> Result<(), String> {
+    let name = context
+        .source_root
+        .source_set
+        .as_deref()
+        .unwrap_or_default();
+    let root = &context.source_root.path;
+    if !retained_roots
+        .iter()
+        .any(|(retained_name, retained_root)| retained_name == name && retained_root == root)
+    {
+        return Err(format!(
+            "source set `{name}` no longer matches its actor-admitted root"
+        ));
+    }
+    let scope = context
+        .search_scope
+        .as_mut()
+        .ok_or_else(|| "resolved lexical source omitted its scope".to_string())?;
+    for (_, other_root) in retained_roots {
+        if let Ok(relative) = other_root.strip_prefix(root) {
+            if !relative.as_os_str().is_empty() {
+                scope.excluded_subtrees.push(relative.to_path_buf());
+            }
+        }
+    }
+    Ok(())
+}
+
 fn search_unscoped_lexical(
     ports: &crate::infrastructure::application_ports::InfrastructureApplicationPorts,
     workspace: &crate::domain::workspace::WorkspaceContext,
@@ -2378,35 +2419,8 @@ fn search_unscoped_lexical(
                 .map(|(context, _)| context)
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let roots = contexts
-        .iter()
-        .map(|context| context.source_root.path.clone())
-        .collect::<Vec<_>>();
-    for (name, root) in source_sets.iter().zip(&roots) {
-        if !sources
-            .retained_roots
-            .iter()
-            .any(|(retained_name, retained_root)| retained_name == name && retained_root == root)
-        {
-            return Err(format!(
-                "source set `{name}` no longer matches its actor-admitted root"
-            ));
-        }
-    }
-    for (index, context) in contexts.iter_mut().enumerate() {
-        let scope = context
-            .search_scope
-            .as_mut()
-            .expect("resolved search scope");
-        for (other_index, root) in roots.iter().enumerate() {
-            if index != other_index {
-                if let Ok(relative) = root.strip_prefix(&roots[index]) {
-                    if !relative.as_os_str().is_empty() {
-                        scope.excluded_subtrees.push(relative.to_path_buf());
-                    }
-                }
-            }
-        }
+    for context in contexts.iter_mut() {
+        bind_lexical_source_scope(context, sources.retained_roots)?;
     }
 
     let provider = registry
