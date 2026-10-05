@@ -554,6 +554,10 @@ impl V5CanonicalInvocationRuntime {
         Self::with_workspace_actors(service, clock, WorkspaceActorRegistry::default())
     }
 
+    pub(super) fn has_retained_workspace_work(&self) -> bool {
+        self.workspace_actors.has_retained_work()
+    }
+
     fn with_workspace_actors(
         service: Arc<dyn CanonicalInvocationService>,
         clock: Arc<dyn Clock>,
@@ -1233,7 +1237,7 @@ pub(crate) mod actor_capacity_tests {
         Arc::new(crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default())
     }
 
-    fn subsystem_picture_workspace(picture: &str, has_ext: bool) -> tempfile::TempDir {
+    pub(crate) fn subsystem_picture_workspace(picture: &str, has_ext: bool) -> tempfile::TempDir {
         let workspace = tempfile::tempdir().unwrap();
         let source = workspace.path().join("src");
         std::fs::create_dir_all(source.join("Subsystems")).unwrap();

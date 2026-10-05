@@ -2994,6 +2994,18 @@ impl WorkspaceActorRegistry {
         Ok(actor)
     }
 
+    /// An idle listener may stop only when no invocation or promise needs an
+    /// actor. Unknown ownership retains the listener instead of losing work.
+    pub(crate) fn has_retained_work(&self) -> bool {
+        let Ok(_actors) = self.actors.lock() else {
+            return true;
+        };
+        let Ok(warm) = self.warm.lock() else {
+            return true;
+        };
+        warm.iter().any(WarmWorkspaceActor::retains_owner)
+    }
+
     /// Releases actors only after live invocations and promised state are gone.
     /// A live invocation may still add a plan or shared index work.
     pub(crate) fn release_warm_actors(&self) -> Result<(), WorkspaceActorRegistryError> {
@@ -4748,11 +4760,20 @@ pub(crate) mod tests {
         let first = registry
             .get_or_create(&context, [source_input("main", root.join("src"))], "p")
             .unwrap();
+        assert!(
+            registry.has_retained_work(),
+            "a live call may still publish a promise"
+        );
         let first = {
             let weak = Arc::downgrade(&first);
             drop(first);
             weak
         };
+        assert_eq!(registry.warm_len_for_test().unwrap(), 1);
+        assert!(
+            !registry.has_retained_work(),
+            "an empty warm actor alone must not hold the listener"
+        );
         registry.evict_idle_warm_actors().unwrap();
         assert_eq!(registry.warm_len_for_test().unwrap(), 0);
         assert_eq!(registry.live_len_for_test().unwrap(), 0);
@@ -4765,6 +4786,28 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(registry.warm_len_for_test().unwrap(), 1);
         drop(second);
+    }
+
+    #[test]
+    fn idle_listener_retains_unknown_registry_ownership() {
+        for poison_warm in [false, true] {
+            let registry = WorkspaceActorRegistry::default();
+            assert!(!registry.has_retained_work());
+            let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if poison_warm {
+                    let _guard = registry.warm.lock().unwrap();
+                    panic!("poison warm ownership for idle listener test");
+                } else {
+                    let _guard = registry.actors.lock().unwrap();
+                    panic!("poison weak ownership for idle listener test");
+                }
+            }));
+            assert!(poisoned.is_err());
+            assert!(
+                registry.has_retained_work(),
+                "unknown ownership must not be treated as idle"
+            );
+        }
     }
 
     #[test]
@@ -4793,6 +4836,10 @@ pub(crate) mod tests {
                 actor.index_work.poison_registry_for_test();
             }
             drop(actor);
+            assert!(
+                registry.has_retained_work(),
+                "unknown actor state must hold the listener"
+            );
             super::with_actor_retention_time_for_test(started + Duration::from_secs(601), || {
                 registry.evict_idle_warm_actors().unwrap();
             });
