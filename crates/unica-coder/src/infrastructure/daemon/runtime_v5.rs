@@ -2938,9 +2938,6 @@ impl V5ReceiptRuntime {
                     | V5CanonicalPrepareError::Rejected(result) => {
                         ReceiptTerminalOutcome::Completed { result }
                     }
-                    V5CanonicalPrepareError::WorkspaceCapacity => ReceiptTerminalOutcome::Failed {
-                        reason: V5SafeFailureReason::WorkspaceCapacity,
-                    },
                     V5CanonicalPrepareError::WorkspaceRegistryFailed => {
                         ReceiptTerminalOutcome::Failed {
                             reason: V5SafeFailureReason::WorkspaceRegistryFailed,

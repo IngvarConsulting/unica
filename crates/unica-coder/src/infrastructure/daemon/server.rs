@@ -54,12 +54,9 @@ fn reject_workspace_admission(
     request: &InvocationRequest,
     error: WorkspaceAdmissionError,
 ) -> V5CanonicalPrepareError {
-    // Ёмкость и отравленный реестр — состояния демона, а не рабочего
-    // пространства: у них свой маршрут, и объяснений про наборы они не ждут.
-    let daemon_state = matches!(
-        error,
-        WorkspaceAdmissionError::Capacity | WorkspaceAdmissionError::RegistryFailed
-    );
+    // Отравленный реестр — состояние демона, а не рабочего пространства:
+    // у него свой маршрут, и объяснений про наборы он не ждёт.
+    let daemon_state = matches!(error, WorkspaceAdmissionError::RegistryFailed);
     if !daemon_state {
         // Недоступная операция `run` объясняется своим словарём: спрашивали не
         // о наборах, и рассказ о них увёл бы в сторону.
@@ -70,7 +67,6 @@ fn reject_workspace_admission(
         }
     }
     let (workspace_root, cause) = match error {
-        WorkspaceAdmissionError::Capacity => return V5CanonicalPrepareError::WorkspaceCapacity,
         WorkspaceAdmissionError::RegistryFailed => {
             return V5CanonicalPrepareError::WorkspaceRegistryFailed
         }
@@ -383,7 +379,6 @@ pub(super) struct V5CanonicalInvocationRuntime {
 pub(super) enum V5CanonicalPrepareError {
     Direct(Box<DomainResult>),
     Rejected(Box<DomainResult>),
-    WorkspaceCapacity,
     WorkspaceRegistryFailed,
 }
 
@@ -10848,7 +10843,79 @@ fn main() {
         );
     }
 
-    fn live_actor_capacity_reuses_alias_and_rejects_only_a_distinct_third_root() {
+    #[test]
+    fn default_actor_registry_admits_sixty_five_profiles_and_retains_exact_live_owners() {
+        let workspace_parent = tempfile::tempdir().unwrap();
+        let roots = (0..65)
+            .map(|index| {
+                let root = workspace_parent.path().join(format!("workspace-{index}"));
+                std::fs::create_dir(&root).unwrap();
+                let root = std::fs::canonicalize(root).unwrap();
+                ensure_platform_xml_workspace(&root.to_string_lossy());
+                root
+            })
+            .collect::<Vec<_>>();
+        let (entered, _entered_wait) = mpsc::channel();
+        let runtime = V5CanonicalInvocationRuntime::new(
+            Arc::new(BlockingService { entered }),
+            Arc::new(TokioClock),
+        );
+        let request = |root: &std::path::Path| {
+            InvocationRequest::new(
+                ToolIdentity::Run,
+                serde_json::json!({"op": "test.long-work", "args": {}}),
+                root.to_string_lossy(),
+                7_000,
+            )
+            .unwrap()
+        };
+        let mut bound = Vec::new();
+        let mut observed = Vec::new();
+        for (index, root) in roots.iter().enumerate() {
+            let admitted = runtime.bind(request(root)).unwrap_or_else(|error| {
+                panic!(
+                    "profile {} was rejected by the default registry: {error:?}",
+                    index + 1
+                )
+            });
+            let V5ActorBoundCanonicalInvocation::Workspace { invocation, .. } = &admitted else {
+                panic!("the supported profile did not bind its workspace actor");
+            };
+            observed.push(Arc::downgrade(invocation.actor_for_test()));
+            bound.push(admitted);
+        }
+        assert_eq!(runtime.workspace_actors.live_len_for_test().unwrap(), 65);
+        runtime.workspace_actors.release_warm_actors().unwrap();
+        assert!(
+            observed.iter().all(|actor| actor.upgrade().is_some()),
+            "warm cleanup released an actor owned by an admitted invocation"
+        );
+        let alias = runtime.bind(request(&roots[0].join("."))).unwrap();
+        let V5ActorBoundCanonicalInvocation::Workspace { invocation, .. } = &alias else {
+            panic!("the alias did not bind its workspace actor");
+        };
+        assert!(Arc::ptr_eq(
+            &observed[0].upgrade().unwrap(),
+            invocation.actor_for_test()
+        ));
+        assert_eq!(runtime.workspace_actors.live_len_for_test().unwrap(), 65);
+
+        runtime.workspace_actors.release_warm_actors().unwrap();
+        drop(alias);
+        drop(bound);
+        assert!(
+            observed.iter().all(|actor| actor.upgrade().is_none()),
+            "completed admissions retained hidden actor ownership"
+        );
+        let _fresh = runtime.bind(request(&roots[0])).unwrap();
+        assert_eq!(
+            runtime.workspace_actors.entry_len_for_test().unwrap(),
+            1,
+            "new admission did not prune dead identities"
+        );
+    }
+
+    fn live_actor_admission_reuses_alias_and_accepts_distinct_roots() {
         let workspace_parent = tempfile::tempdir().unwrap();
         let roots = (0..3)
             .map(|index| {
@@ -10860,10 +10927,9 @@ fn main() {
             })
             .collect::<Vec<_>>();
         let (entered, _entered_wait) = mpsc::channel();
-        let runtime = V5CanonicalInvocationRuntime::with_workspace_actors_for_test(
+        let runtime = V5CanonicalInvocationRuntime::new(
             Arc::new(BlockingService { entered }),
             Arc::new(TokioClock),
-            WorkspaceActorRegistry::with_capacity_for_test(2),
         );
         let request = |root: &std::path::Path| {
             InvocationRequest::new(
@@ -10876,7 +10942,7 @@ fn main() {
         };
 
         // A bound invocation is the durable admission point: its actor lease is
-        // retained before any worker is scheduled, so capacity evidence must not
+        // retained before any worker is scheduled, so ownership evidence must not
         // depend on runner scheduling.
         let first = runtime
             .bind(request(&roots[0]))
@@ -10887,17 +10953,30 @@ fn main() {
         let alias = runtime
             .bind(request(&roots[0].join(".")))
             .expect("an alias of a live root reuses its actor");
-        let rejected = runtime
+        let third = runtime
             .bind(request(&roots[2]))
-            .err()
-            .expect("a distinct third root is refused");
-        assert!(matches!(
-            rejected,
-            V5CanonicalPrepareError::WorkspaceCapacity
+            .expect("a distinct third root is admitted");
+        let V5ActorBoundCanonicalInvocation::Workspace {
+            invocation: first_invocation,
+            ..
+        } = &first
+        else {
+            panic!("first root did not bind a workspace actor");
+        };
+        let V5ActorBoundCanonicalInvocation::Workspace {
+            invocation: alias_invocation,
+            ..
+        } = &alias
+        else {
+            panic!("alias did not bind a workspace actor");
+        };
+        assert!(Arc::ptr_eq(
+            first_invocation.actor_for_test(),
+            alias_invocation.actor_for_test()
         ));
-        assert_eq!(runtime.workspace_actors.entry_len_for_test().unwrap(), 2);
+        assert_eq!(runtime.workspace_actors.entry_len_for_test().unwrap(), 3);
 
-        drop((first, second, alias));
+        drop((first, second, alias, third));
     }
 
     fn concurrent_same_identity_admission_creates_one_actor() {
@@ -11130,14 +11209,15 @@ fn main() {
     }
 
     #[test]
-    fn daemon_workspace_actor_admission_is_concurrent_bounded_and_fail_closed() {
-        live_actor_capacity_reuses_alias_and_rejects_only_a_distinct_third_root();
+    fn daemon_workspace_actor_admission_is_concurrent_and_fail_closed() {
+        live_actor_admission_reuses_alias_and_accepts_distinct_roots();
         concurrent_same_identity_admission_creates_one_actor();
         poisoned_registry_is_a_closed_internal_error_and_admits_nothing();
         sequential_direct_admissions_release_actor_capabilities_and_prune_dead_entries();
         crate::infrastructure::workspace_actor::tests::warm_registry_reuses_the_same_actor_across_sequential_admissions();
         crate::infrastructure::workspace_actor::tests::warm_actor_expires_after_the_idle_ttl_and_is_rebuilt();
         crate::infrastructure::workspace_actor::tests::warm_actor_whose_named_root_was_replaced_is_rebuilt();
-        crate::infrastructure::workspace_actor::tests::warm_actors_yield_capacity_to_a_distinct_identity();
+        crate::infrastructure::workspace_actor::tests::warm_actors_do_not_block_a_distinct_identity(
+        );
     }
 }
