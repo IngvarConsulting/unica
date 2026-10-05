@@ -662,15 +662,6 @@ pub(crate) trait ReceiptLedgerPort: Send + 'static {
         deadline: Instant,
     ) -> Result<CancelResolution, ReceiptLedgerError>;
 
-    fn expire_cancel_reserved(
-        &mut self,
-        key: ReceiptKey,
-        expected_version: ReceiptVersion,
-        expected_mutation_sequence: u64,
-        observed_at_epoch_ms: u64,
-        deadline: Instant,
-    ) -> Result<CancelExpiryOutcome, ReceiptLedgerError>;
-
     fn publish_direct_terminal(
         &mut self,
         key: &ReceiptKey,
@@ -875,7 +866,8 @@ pub(crate) const MAX_ORIGINAL_RESPONSE_BUDGET_MS: u64 = 7_000;
 pub(crate) const MAX_RECEIPT_ENTITLEMENT_BYTES: u64 =
     (MAX_CANONICAL_RESULT_BYTES + MAX_TASK_RECORD_ENVELOPE_BYTES) as u64;
 pub(crate) const DIRECT_TERMINAL_RETENTION_MS: u64 = 3_600_000;
-pub(crate) const CANCEL_RESERVATION_TTL_MS: u64 = 7_125;
+// Used only to validate historical V1 cancellation records and deletion witnesses.
+pub(crate) const LEGACY_CANCEL_RESERVATION_TTL_MS: u64 = 7_125;
 pub(crate) const ACKNOWLEDGED_TOMBSTONE_TTL_MS: u64 = 900_000;
 pub(crate) const MAX_ACKNOWLEDGED_TOMBSTONES: usize = 28_864;
 pub(crate) const MAX_ACKNOWLEDGED_TOMBSTONE_BYTES: u64 = 512;
@@ -1534,7 +1526,6 @@ impl RetainedDualIdAccounting {
 pub(crate) struct CancelReservedReceipt {
     record: ReceiptRecordHeader,
     cancel_reserved_at_epoch_ms: u64,
-    expires_at_epoch_ms: u64,
 }
 
 impl CancelReservedReceipt {
@@ -1545,9 +1536,6 @@ impl CancelReservedReceipt {
         encoded_bytes: u64,
         cancel_reserved_at_epoch_ms: u64,
     ) -> Result<Self, ReceiptLedgerError> {
-        let expires_at_epoch_ms = cancel_reserved_at_epoch_ms
-            .checked_add(CANCEL_RESERVATION_TTL_MS)
-            .ok_or(ReceiptLedgerError::TimestampOverflow)?;
         let key_digest = receipt_key_digest(&key);
 
         Ok(Self {
@@ -1559,7 +1547,6 @@ impl CancelReservedReceipt {
                 encoded_bytes,
             ),
             cancel_reserved_at_epoch_ms,
-            expires_at_epoch_ms,
         })
     }
 
@@ -1585,10 +1572,6 @@ impl CancelReservedReceipt {
 
     pub(crate) const fn cancel_reserved_at_epoch_ms(&self) -> u64 {
         self.cancel_reserved_at_epoch_ms
-    }
-
-    pub(crate) const fn expires_at_epoch_ms(&self) -> u64 {
-        self.expires_at_epoch_ms
     }
 
     pub(crate) const fn cancel_requested(&self) -> bool {
@@ -2706,18 +2689,6 @@ pub(crate) enum CancelResolution {
     ExistingWinner(Box<ReceiptState>),
 }
 
-/// Closed result of an explicit cancellation-reservation expiry mutation.
-///
-/// Expiry is never hidden in a read-only recovery path. A not-yet-due record
-/// and any competing durable winner retain their complete exact state.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) enum CancelExpiryOutcome {
-    Expired,
-    NotDue(CancelReservedReceipt),
-    ExistingWinner(Box<ReceiptState>),
-    Missing,
-}
-
 impl ReserveOutcome {
     pub(crate) fn reservation(&self) -> Option<&ReservedReceipt> {
         match self {
@@ -3512,48 +3483,45 @@ mod tests {
     }
 
     #[test]
-    fn cancel_reserved_receipt_derives_the_fixed_7125ms_expiry_and_exact_header() {
+    fn cancel_reserved_receipt_preserves_exact_header_without_expiry() {
         let key = frozen_receipt_key();
         let version = ReceiptVersion::new(7).expect("nonzero version");
         let receipt = CancelReservedReceipt::new(key.clone(), version, 41, 777, 1_000)
-            .expect("fixed cancellation reservation expiry fits");
+            .expect("cancellation reservation is valid");
 
-        assert_eq!(CANCEL_RESERVATION_TTL_MS, 7_125);
         assert_eq!(receipt.key(), &key);
         assert_eq!(receipt.key_digest(), &receipt_key_digest(&key));
         assert_eq!(receipt.record_version(), version);
         assert_eq!(receipt.mutation_sequence(), 41);
         assert_eq!(receipt.encoded_bytes(), 777);
         assert_eq!(receipt.cancel_reserved_at_epoch_ms(), 1_000);
-        assert_eq!(receipt.expires_at_epoch_ms(), 8_125);
         assert!(receipt.cancel_requested());
     }
 
     #[test]
-    fn cancel_reserved_receipt_rejects_fixed_expiry_overflow() {
-        assert_eq!(
-            CancelReservedReceipt::new(
-                frozen_receipt_key(),
-                ReceiptVersion::initial(),
-                1,
-                512,
-                u64::MAX - CANCEL_RESERVATION_TTL_MS + 1,
-            ),
-            Err(ReceiptLedgerError::TimestampOverflow)
-        );
+    fn cancel_reserved_receipt_accepts_the_full_epoch_range_without_ttl_arithmetic() {
+        let receipt = CancelReservedReceipt::new(
+            frozen_receipt_key(),
+            ReceiptVersion::initial(),
+            1,
+            512,
+            u64::MAX,
+        )
+        .expect("a cancellation timestamp needs no derived expiry");
+        assert_eq!(receipt.cancel_reserved_at_epoch_ms(), u64::MAX);
+        assert!(receipt.cancel_requested());
     }
 
     #[test]
-    fn cancel_expiry_outcome_preserves_not_due_and_existing_terminal_winners() {
+    fn cancel_resolution_preserves_exact_reservation_and_existing_terminal_winners() {
         let key = frozen_receipt_key();
         let not_due =
             CancelReservedReceipt::new(key.clone(), ReceiptVersion::initial(), 1, 512, 1_000)
-                .expect("fixed cancellation reservation expiry fits");
+                .expect("cancellation reservation is valid");
         assert_eq!(
-            CancelExpiryOutcome::NotDue(not_due.clone()),
-            CancelExpiryOutcome::NotDue(not_due)
+            CancelResolution::ExistingExact(not_due.clone()),
+            CancelResolution::ExistingExact(not_due)
         );
-        assert_ne!(CancelExpiryOutcome::Expired, CancelExpiryOutcome::Missing);
 
         let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
             .expect("canonical cancelled terminal");
@@ -3571,8 +3539,8 @@ mod tests {
             terminal,
             reserved_result_bytes: MAX_RECEIPT_ENTITLEMENT_BYTES - 700,
         });
-        match CancelExpiryOutcome::ExistingWinner(Box::new(winner.clone())) {
-            CancelExpiryOutcome::ExistingWinner(observed) => assert_eq!(*observed, winner),
+        match CancelResolution::ExistingWinner(Box::new(winner.clone())) {
+            CancelResolution::ExistingWinner(observed) => assert_eq!(*observed, winner),
             other => panic!("terminal winner must remain intact, got {other:?}"),
         }
     }
@@ -3718,7 +3686,6 @@ mod tests {
             ReceiptState::CancelReserved(CancelReservedReceipt {
                 record: record(),
                 cancel_reserved_at_epoch_ms: 1_000,
-                expires_at_epoch_ms: 8_125,
             }),
             reserved(ReservedPhase::Unbound),
             reserved(ReservedPhase::ActorBound {

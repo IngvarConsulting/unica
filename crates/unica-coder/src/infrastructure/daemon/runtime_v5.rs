@@ -19,9 +19,8 @@ use crate::application::invocation_store_v5::{
     V5StoredTask, V5TaskIdentity, V5TaskRetirement, V5TaskStoreError, V5TerminalPublication,
 };
 use crate::application::invocation_v5::{
-    classify_cancel_reserved_expiry_outcome, classify_recovered_receipt,
     decide_cancel_reserved_submit, decide_cancel_resolution, CancelInvocationDecision,
-    CancelReservedExpiryDecision, CancelReservedRecoveryDecision, CancelReservedSubmitDecision,
+    CancelReservedSubmitDecision,
 };
 use crate::application::ports::Clock;
 use crate::application::receipt_ledger::{
@@ -4719,53 +4718,17 @@ impl V5ReceiptRuntime {
             }
             Err(error) => return Err(error),
         };
-        match classify_recovered_receipt(state, epoch_ms) {
-            CancelReservedRecoveryDecision::Current(state) => {
-                let decision = decide_cancel_reserved_submit(ReserveOutcome::ExistingExact(*state))
-                    .map_err(|_| {
-                        ReceiptLedgerError::Corrupt(
-                            "canonical recovery terminal could not be constructed",
-                        )
-                    })?;
-                self.reply_for_cancel_submit_decision(
-                    decision,
-                    epoch_ms,
-                    deadline,
-                    "recovery",
-                    "recovered_direct",
-                )
-            }
-            CancelReservedRecoveryDecision::Expire(intent) => {
-                let outcome = self.receipt_ledger.expire_cancel_reserved(
-                    intent.key().clone(),
-                    intent.expected_version(),
-                    intent.expected_mutation_sequence(),
-                    intent.observed_at_epoch_ms(),
-                    deadline,
-                )?;
-                match classify_cancel_reserved_expiry_outcome(outcome) {
-                    CancelReservedExpiryDecision::Expired => {
-                        Err(ReceiptLedgerError::ReceiptNotFound)
-                    }
-                    CancelReservedExpiryDecision::Current(state) => {
-                        let decision =
-                            decide_cancel_reserved_submit(ReserveOutcome::ExistingExact(*state))
-                                .map_err(|_| {
-                                    ReceiptLedgerError::Corrupt(
-                                        "canonical expiry-winner terminal could not be constructed",
-                                    )
-                                })?;
-                        self.reply_for_cancel_submit_decision(
-                            decision,
-                            epoch_ms,
-                            deadline,
-                            "recovery",
-                            "recovered_direct",
-                        )
-                    }
-                }
-            }
-        }
+        let decision = decide_cancel_reserved_submit(ReserveOutcome::ExistingExact(state))
+            .map_err(|_| {
+                ReceiptLedgerError::Corrupt("canonical recovery terminal could not be constructed")
+            })?;
+        self.reply_for_cancel_submit_decision(
+            decision,
+            epoch_ms,
+            deadline,
+            "recovery",
+            "recovered_direct",
+        )
     }
 
     fn acknowledge_invocation(

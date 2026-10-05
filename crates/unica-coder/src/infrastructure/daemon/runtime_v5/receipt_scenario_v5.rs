@@ -6372,7 +6372,7 @@ fn receipt_observation(state: ReceiptState) -> Result<Value, String> {
             cancel_requested: true,
             accepted_epoch_ms: receipt.cancel_reserved_at_epoch_ms(),
             original_budget_ms: 0,
-            expires_epoch_ms: Some(receipt.expires_at_epoch_ms()),
+            expires_epoch_ms: None,
             bound_workspace_identity: None,
             staged_terminal: None,
             terminal: None,

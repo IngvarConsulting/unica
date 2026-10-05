@@ -192,24 +192,8 @@ pub(super) fn catalog_entry_is_expired_identity_reclaimable(
         .ok_or(ReceiptLedgerError::Corrupt(
             "receipt identity index points outside the catalog",
         ))?;
-    Ok(
-        entry_is_expired_cancel_reserved(entry, observed_at_epoch_ms)
-            || entry_is_expired_tombstone(entry, observed_at_epoch_ms)
-            || entry_is_expired_direct_terminal(entry, observed_at_epoch_ms),
-    )
-}
-
-pub(super) fn entry_is_expired_cancel_reserved(
-    entry: &CatalogEntry,
-    observed_at_epoch_ms: u64,
-) -> bool {
-    matches!(
-        &entry.record.lifecycle,
-        StoredActiveLifecycleV1::CancelReserved {
-            expires_at_epoch_ms,
-            ..
-        } if observed_at_epoch_ms >= *expires_at_epoch_ms
-    )
+    Ok(entry_is_expired_tombstone(entry, observed_at_epoch_ms)
+        || entry_is_expired_direct_terminal(entry, observed_at_epoch_ms))
 }
 
 pub(super) fn entry_is_expired_tombstone(entry: &CatalogEntry, observed_at_epoch_ms: u64) -> bool {
