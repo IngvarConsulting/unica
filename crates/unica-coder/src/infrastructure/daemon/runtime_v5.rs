@@ -1998,18 +1998,17 @@ impl V5ReceiptRuntime {
             .runtime_hooks_for_v5()
             .unwrap_or_else(|| Arc::new(NoHooks));
         let stable_authority = state.acquire_receipt_authority(AUTHORITY_ACQUIRE_TIMEOUT)?;
-        let startup_deadline = Instant::now() + STARTUP_RECONCILIATION_TIMEOUT;
         let receipts = state.create_private_retained_subdirectory("receipts")?;
-        let receipt_ledger =
-            ReceiptLedgerStore::open_retained_directory_before(receipts, startup_deadline)
-                .map_err(|error| format!("open protocol-v5 receipt ledger: {error}"))?;
+        let receipt_ledger = ReceiptLedgerStore::open_retained_directory(receipts)
+            .map_err(|error| format!("open protocol-v5 receipt ledger: {error}"))?;
         receipt_ledger
             .generation()
             .map_err(|error| format!("read protocol-v5 receipt generation: {error}"))?;
         let recovery_keys = receipt_ledger
-            .recovery_keys(startup_deadline)
+            .recovery_keys(None)
             .map_err(|error| format!("inspect protocol-v5 receipt recovery catalog: {error}"))?;
         let receipt_ledger = ReceiptLedgerActor::spawn(receipt_ledger);
+        let startup_deadline = Instant::now() + STARTUP_RECONCILIATION_TIMEOUT;
         let task_projection =
             V5TaskProjection::open(state, Arc::clone(&epoch_clock), startup_deadline)?;
         let _task_recovery_entries = task_projection.recovery.entries().len();
