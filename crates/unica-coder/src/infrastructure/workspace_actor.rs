@@ -7544,13 +7544,45 @@ pub(crate) mod tests {
             .replace("Module.bsl", b"before", b"after".to_vec())
             .unwrap();
         let prepared = admitted.prepare(state).unwrap();
-        std::fs::rename(&fixture.roots[0], fixture.root.join("source-displaced")).unwrap();
-        std::fs::create_dir_all(&fixture.roots[0]).unwrap();
-        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
-        assert_eq!(
-            error.kind(),
-            super::ApplyPublicationErrorKind::ContainmentIdentity
-        );
+        let displaced = fixture.root.join("source-displaced");
+        let retained_identity = path_identity_for_test(&fixture.roots[0])
+            .unwrap()
+            .expect("source root identity must be available on supported CI platforms");
+        match attempt_retained_directory_replacement_for_test(&fixture.roots[0], &displaced)
+            .unwrap()
+        {
+            RetainedDirectoryReplacementOutcome::Replaced => {
+                std::fs::create_dir_all(&fixture.roots[0]).unwrap();
+                std::fs::write(fixture.roots[0].join("Module.bsl"), b"foreign").unwrap();
+                let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+                assert_eq!(
+                    error.kind(),
+                    super::ApplyPublicationErrorKind::ContainmentIdentity
+                );
+                assert_eq!(
+                    std::fs::read(displaced.join("Module.bsl")).unwrap(),
+                    b"before"
+                );
+                assert_eq!(
+                    std::fs::read(fixture.roots[0].join("Module.bsl")).unwrap(),
+                    b"foreign"
+                );
+            }
+            RetainedDirectoryReplacementOutcome::PreventedByRetainedHandle => {
+                assert_eq!(
+                    path_identity_for_test(&fixture.roots[0])
+                        .unwrap()
+                        .as_deref(),
+                    Some(retained_identity.as_str())
+                );
+                assert!(!displaced.exists());
+                fixture.actor.publish_prepared_apply(prepared).unwrap();
+                assert_eq!(
+                    std::fs::read(fixture.roots[0].join("Module.bsl")).unwrap(),
+                    b"after"
+                );
+            }
+        }
         fixture.cleanup();
 
         let fixture = actor_fixture("typed-cause-publish-provider", &["src"]);
@@ -7574,23 +7606,43 @@ pub(crate) mod tests {
             .replace("Module.bsl", b"before", b"after".to_vec())
             .unwrap();
         let prepared = admitted.prepare(state).unwrap();
+        let source_before = snapshot_tree(&fixture.roots[0]);
+        let cache_root = fixture.root.join(".build/unica");
+        let cache_before = snapshot_tree(&cache_root);
         let source_root = fixture.roots[0].clone();
+        let module = source_root.join("Module.bsl");
+        let held_provider_io_blocker = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let hook_blocker = std::rc::Rc::clone(&held_provider_io_blocker);
         crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_provider_io_hook(
             move || {
-                crate::infrastructure::platform::testing::set_unix_mode_for_test(
+                let unix_mode_set = crate::infrastructure::platform::testing::set_unix_mode_for_test(
                     &source_root,
                     0o500,
                 )
                 .unwrap();
+                if !unix_mode_set {
+                    *hook_blocker.borrow_mut() = Some(
+                        crate::infrastructure::platform::testing::hold_regular_file_without_delete_sharing_for_test(&module)
+                            .unwrap()
+                            .expect("Windows must support a retained fixture without delete sharing"),
+                    );
+                }
             },
         );
         let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+        held_provider_io_blocker.borrow_mut().take();
         crate::infrastructure::platform::testing::set_unix_mode_for_test(&fixture.roots[0], 0o700)
             .unwrap();
         assert_eq!(
             error.kind(),
             super::ApplyPublicationErrorKind::ProviderPostvalidation
         );
+        assert_eq!(
+            std::fs::read(fixture.roots[0].join("Module.bsl")).unwrap(),
+            b"before"
+        );
+        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
+        assert_eq!(snapshot_tree(&cache_root), cache_before);
         fixture.cleanup();
     }
 
@@ -12946,7 +12998,10 @@ pub(crate) mod tests {
                 children.sort();
                 pending.extend(children.into_iter().rev());
             } else {
-                observed.push((relative, Some(std::fs::read(path).unwrap())));
+                let bytes = std::fs::read(&path).unwrap_or_else(|error| {
+                    panic!("snapshot_tree could not read {}: {error}", path.display())
+                });
+                observed.push((relative, Some(bytes)));
             }
         }
         observed
