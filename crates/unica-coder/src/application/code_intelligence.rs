@@ -9,13 +9,11 @@ use crate::domain::code_intelligence::{
 use crate::domain::operational_config::CodeIntelligenceDeadlines;
 use crate::domain::progress::ProgressSink;
 use std::any::Any;
-use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-const MAX_CONCURRENT_WORKERS_PER_PROVIDER: usize = 32;
 const SEARCH_PROGRESS_HEARTBEAT: Duration = Duration::from_secs(2);
 
 #[derive(Debug)]
@@ -29,7 +27,6 @@ pub(crate) struct CodeSearchExecution {
 pub(crate) struct CodeSearchCoordinator {
     registry: CodeIntelligenceRegistry,
     deadlines: CodeIntelligenceDeadlines,
-    worker_admission: Arc<ProviderWorkerAdmission>,
     worker_lifecycle: Arc<ProviderWorkerLifecycle>,
 }
 
@@ -75,7 +72,6 @@ impl CodeSearchCoordinator {
         Self {
             registry,
             deadlines,
-            worker_admission: global_provider_worker_admission(),
             worker_lifecycle: global_provider_worker_lifecycle(),
         }
     }
@@ -84,13 +80,11 @@ impl CodeSearchCoordinator {
     fn with_policy(
         registry: CodeIntelligenceRegistry,
         public_search_budget: Duration,
-        worker_admission: Arc<ProviderWorkerAdmission>,
         worker_lifecycle: Arc<ProviderWorkerLifecycle>,
     ) -> Self {
         Self {
             registry,
             deadlines: CodeIntelligenceDeadlines::for_test(public_search_budget),
-            worker_admission,
             worker_lifecycle,
         }
     }
@@ -180,15 +174,6 @@ impl CodeSearchCoordinator {
             .collect::<Vec<_>>();
         for (index, provider) in providers.into_iter().enumerate() {
             let provider_identity = provider.identity();
-            let Some(worker_permit) = self.worker_admission.try_acquire(provider_identity.clone())
-            else {
-                slots[index] = Some(provider_admission_exhausted_section(
-                    provider_identity,
-                    self.worker_admission.per_provider_limit,
-                ));
-                provider_progress[index].state = SearchProviderState::Unavailable;
-                continue;
-            };
             provider_progress[index].state = SearchProviderState::Running;
             provider_progress[index].phase = SearchProviderPhase::Searching;
             let tx = tx.clone();
@@ -210,7 +195,6 @@ impl CodeSearchCoordinator {
                     provider_identity.role.as_str()
                 ))
                 .spawn(move || {
-                    let _worker_permit = worker_permit;
                     let mut section = catch_unwind(AssertUnwindSafe(|| {
                         worker_provider.search(
                             &request,
@@ -491,11 +475,6 @@ fn duration_millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
-struct ProviderWorkerAdmission {
-    per_provider_limit: usize,
-    active: Mutex<HashMap<ProviderIdentity, usize>>,
-}
-
 struct ProviderWorkerLifecycle {
     handles: Mutex<Vec<thread::JoinHandle<()>>>,
 }
@@ -568,72 +547,6 @@ impl ProviderWorkerLifecycle {
     }
 }
 
-impl ProviderWorkerAdmission {
-    fn new(per_provider_limit: usize) -> Self {
-        Self {
-            per_provider_limit: per_provider_limit.max(1),
-            active: Mutex::new(HashMap::new()),
-        }
-    }
-
-    fn try_acquire(self: &Arc<Self>, provider: ProviderIdentity) -> Option<ProviderWorkerPermit> {
-        let mut active = self
-            .active
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let count = active.entry(provider.clone()).or_default();
-        if *count >= self.per_provider_limit {
-            return None;
-        }
-        *count += 1;
-        Some(ProviderWorkerPermit {
-            admission: Arc::clone(self),
-            provider,
-        })
-    }
-
-    #[cfg(test)]
-    fn active_count(&self, provider: &ProviderIdentity) -> usize {
-        self.active
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(provider)
-            .copied()
-            .unwrap_or_default()
-    }
-}
-
-struct ProviderWorkerPermit {
-    admission: Arc<ProviderWorkerAdmission>,
-    provider: ProviderIdentity,
-}
-
-impl Drop for ProviderWorkerPermit {
-    fn drop(&mut self) {
-        let mut active = self
-            .admission
-            .active
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(count) = active.get_mut(&self.provider) else {
-            return;
-        };
-        *count = count.saturating_sub(1);
-        if *count == 0 {
-            active.remove(&self.provider);
-        }
-    }
-}
-
-fn global_provider_worker_admission() -> Arc<ProviderWorkerAdmission> {
-    static ADMISSION: OnceLock<Arc<ProviderWorkerAdmission>> = OnceLock::new();
-    Arc::clone(ADMISSION.get_or_init(|| {
-        Arc::new(ProviderWorkerAdmission::new(
-            MAX_CONCURRENT_WORKERS_PER_PROVIDER,
-        ))
-    }))
-}
-
 fn global_provider_worker_lifecycle() -> Arc<ProviderWorkerLifecycle> {
     static LIFECYCLE: OnceLock<Arc<ProviderWorkerLifecycle>> = OnceLock::new();
     Arc::clone(LIFECYCLE.get_or_init(|| Arc::new(ProviderWorkerLifecycle::new())))
@@ -655,7 +568,6 @@ pub(crate) fn execute_provider_read(
         request,
         context,
         budget,
-        global_provider_worker_admission(),
         global_provider_worker_lifecycle(),
         cancellation,
     )
@@ -666,7 +578,6 @@ fn execute_provider_read_with_policy(
     request: CodeIntelligenceReadRequest,
     context: CodeIntelligenceContext,
     budget: Duration,
-    worker_admission: Arc<ProviderWorkerAdmission>,
     worker_lifecycle: Arc<ProviderWorkerLifecycle>,
     cancellation: &CancellationToken,
 ) -> Result<ProviderReadOutcome, String> {
@@ -676,14 +587,6 @@ fn execute_provider_read_with_policy(
         ));
     }
     let provider_identity = provider.identity();
-    let _permit = worker_admission
-        .try_acquire(provider_identity.clone())
-        .ok_or_else(|| {
-            format!(
-                "{} read provider worker capacity exhausted (limit {})",
-                provider_identity.provider, worker_admission.per_provider_limit
-            )
-        })?;
     let worker_cancellation = cancellation.linked_child();
     let worker_token = worker_cancellation.clone();
     let started_at = Instant::now();
@@ -695,7 +598,6 @@ fn execute_provider_read_with_policy(
             provider_identity.role.as_str()
         ))
         .spawn(move || {
-            let _permit = _permit;
             let result = catch_unwind(AssertUnwindSafe(|| {
                 provider.read(
                     &request,
@@ -796,16 +698,6 @@ fn provider_timeout_section(provider: ProviderIdentity, budget: Duration) -> Pro
     .expect("timeout section is valid")
 }
 
-fn provider_admission_exhausted_section(
-    provider: ProviderIdentity,
-    limit: usize,
-) -> ProviderSearchSection {
-    ProviderSearchSection::capacity_exhausted(
-        provider,
-        format!("provider worker capacity exhausted (limit {limit})"),
-    )
-}
-
 fn failed_after_panic(
     provider: ProviderIdentity,
     panic: Box<dyn Any + Send>,
@@ -831,7 +723,7 @@ fn section_problem(section: &ProviderSearchSection) -> String {
 mod tests {
     use super::{
         arbitrate_provider_read_result, execute_provider_read_with_policy, CodeSearchCoordinator,
-        ProviderWorkerAdmission, ProviderWorkerLifecycle,
+        ProviderWorkerLifecycle,
     };
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::SEARCH_PROGRESS_META_KEY;
@@ -848,7 +740,7 @@ mod tests {
     use crate::domain::workspace::WorkspaceContext;
     use serde_json::Map;
     use std::path::PathBuf;
-    use std::sync::{mpsc, Arc, Barrier, Mutex};
+    use std::sync::{mpsc, Arc, Barrier, Condvar, Mutex};
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -1456,108 +1348,219 @@ mod tests {
         assert!(execution.ok, "{execution:?}");
     }
 
-    struct DeadlineIgnoringProvider;
+    struct CountQuotaProvider {
+        id: ProviderId,
+        entered: mpsc::Sender<String>,
+        release: Arc<(Mutex<bool>, Condvar)>,
+    }
 
-    impl CodeIntelligenceProvider for DeadlineIgnoringProvider {
+    impl CountQuotaProvider {
+        fn wait_for_release(&self, request: &str) {
+            self.entered.send(request.to_string()).unwrap();
+            let (lock, changed) = &*self.release;
+            let mut released = lock.lock().unwrap();
+            while !*released {
+                released = changed.wait(released).unwrap();
+            }
+        }
+    }
+
+    impl CodeIntelligenceProvider for CountQuotaProvider {
         fn identity(&self) -> crate::domain::code_intelligence::ProviderIdentity {
-            ProviderId::BslAnalyzer.identity()
+            self.id.identity()
         }
 
         fn capabilities(&self) -> &[ProviderCapability] {
-            &[ProviderCapability::Search]
+            &[ProviderCapability::Search, ProviderCapability::Definition]
         }
 
         fn search(
             &self,
-            _request: &SearchRequest,
+            request: &SearchRequest,
             _context: &CodeIntelligenceContext,
             _deadline: ProviderDeadline,
             _cancellation: &CancellationToken,
         ) -> ProviderSearchSection {
-            thread::sleep(Duration::from_millis(500));
-            test_section(
-                ProviderId::BslAnalyzer,
-                ProviderSectionStatus::Empty,
-                Vec::new(),
-                "",
-            )
+            self.wait_for_release(&request.query);
+            test_section(self.id, ProviderSectionStatus::Empty, Vec::new(), "")
+        }
+
+        fn read(
+            &self,
+            request: &CodeIntelligenceReadRequest,
+            _context: &CodeIntelligenceContext,
+            _deadline: ProviderDeadline,
+            _cancellation: &CancellationToken,
+        ) -> Result<ProviderReadOutcome, String> {
+            let CodeIntelligenceReadRequest::Definition { name, .. } = request else {
+                panic!("definition fixture");
+            };
+            self.wait_for_release(name);
+            Ok(ProviderReadOutcome {
+                provider: self.id.identity(),
+                ok: true,
+                summary: name.clone(),
+                warnings: Vec::new(),
+                errors: Vec::new(),
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: None,
+                data: None,
+            })
+        }
+    }
+
+    fn exercise_calls_past_provider_quota(read: bool) {
+        for id in [
+            ProviderId::BslAnalyzer,
+            ProviderId::Rlm,
+            ProviderId::GitGrep,
+        ] {
+            let (entered_tx, entered_rx) = mpsc::channel();
+            let release = Arc::new((Mutex::new(false), Condvar::new()));
+            let provider: Arc<dyn CodeIntelligenceProvider> = Arc::new(CountQuotaProvider {
+                id,
+                entered: entered_tx,
+                release: Arc::clone(&release),
+            });
+            let mut calls = Vec::new();
+            for index in 0..33 {
+                let provider = Arc::clone(&provider);
+                calls.push(thread::spawn(move || {
+                    let name = format!("call-{index}");
+                    if read {
+                        super::execute_provider_read(
+                            provider,
+                            CodeIntelligenceReadRequest::Definition {
+                                name: name.clone(),
+                                module_hint: String::new(),
+                                limit: 50,
+                            },
+                            context(),
+                            Duration::from_secs(30),
+                            &CancellationToken::new(),
+                        )
+                        .map(|outcome| (outcome.ok, outcome.summary))
+                    } else {
+                        CodeSearchCoordinator::with_deadlines(
+                            CodeIntelligenceRegistry::new(vec![provider]).unwrap(),
+                            CodeIntelligenceDeadlines::for_test(Duration::from_secs(30)),
+                        )
+                        .search(
+                            &SearchRequest {
+                                query: name.clone(),
+                                limit: 20,
+                            },
+                            &context(),
+                            &CancellationToken::new(),
+                        )
+                        .map(|outcome| {
+                            (
+                                outcome.ok
+                                    && outcome.result.sections[0].status
+                                        == ProviderSectionStatus::Empty,
+                                name,
+                            )
+                        })
+                    }
+                }));
+            }
+            let cutoff = Instant::now() + Duration::from_secs(5);
+            let mut entered = std::collections::BTreeSet::new();
+            while entered.len() < 33 {
+                match entered_rx.recv_timeout(cutoff.saturating_duration_since(Instant::now())) {
+                    Ok(name) => {
+                        entered.insert(name);
+                    }
+                    Err(_) => break,
+                }
+            }
+            // Complete every caller and retained worker before asserting the old boundary.
+            *release.0.lock().unwrap() = true;
+            release.1.notify_all();
+            let results: Vec<_> = calls.into_iter().map(|call| call.join().unwrap()).collect();
+            assert!(super::drain_code_search_workers(Duration::from_secs(5)));
+            let expected = (0..33).map(|index| format!("call-{index}")).collect();
+            assert_eq!(entered, expected, "not every {id:?} worker entered");
+            let completed: std::collections::BTreeSet<_> = results
+                .into_iter()
+                .map(|result| {
+                    let (ok, name) = result.expect("worker count must not refuse execution");
+                    assert!(ok, "{id:?} rejected {name}");
+                    name
+                })
+                .collect();
+            assert_eq!(completed, entered);
         }
     }
 
     #[test]
+    fn search_executes_all_workers_past_the_former_provider_quota() {
+        exercise_calls_past_provider_quota(false);
+    }
+
+    #[test]
+    fn read_executes_all_workers_past_the_former_provider_quota() {
+        exercise_calls_past_provider_quota(true);
+    }
+
+    #[test]
     fn coordinator_enforces_budget_when_provider_ignores_deadline_and_cancellation() {
-        let admission = Arc::new(ProviderWorkerAdmission::new(1));
         let lifecycle = Arc::new(ProviderWorkerLifecycle::new());
-        let coordinator = CodeSearchCoordinator::with_policy(
-            CodeIntelligenceRegistry::new(vec![
-                Arc::new(DeadlineIgnoringProvider),
-                static_provider(ProviderId::GitGrep, ProviderSectionStatus::Empty, ""),
-            ])
-            .unwrap(),
-            Duration::from_millis(30),
-            Arc::clone(&admission),
-            Arc::clone(&lifecycle),
-        );
-        let started = Instant::now();
-
-        let execution = coordinator
-            .search(
-                &SearchRequest {
-                    query: "Post".to_string(),
-                    limit: 20,
-                },
-                &context(),
-                &CancellationToken::new(),
-            )
-            .unwrap();
-
-        assert!(
-            started.elapsed() < Duration::from_millis(250),
-            "public search waited for a non-cooperative provider"
-        );
-        assert!(execution.ok);
-        assert_eq!(
-            execution.result.sections[0].status,
-            ProviderSectionStatus::TimedOut
-        );
-        assert!(execution.result.sections[0].diagnostics[0].contains("30 ms search budget"));
-
-        assert_eq!(
-            admission.active_count(&ProviderId::BslAnalyzer.identity()),
-            1
-        );
-        assert_eq!(lifecycle.pending_count(), 1);
-        let second = CodeSearchCoordinator::with_policy(
-            CodeIntelligenceRegistry::new(vec![
-                Arc::new(DeadlineIgnoringProvider),
-                static_provider(ProviderId::GitGrep, ProviderSectionStatus::Empty, ""),
-            ])
-            .unwrap(),
-            Duration::from_millis(30),
-            Arc::clone(&admission),
-            Arc::clone(&lifecycle),
-        )
-        .search(
-            &SearchRequest {
-                query: "Post".to_string(),
-                limit: 20,
-            },
-            &context(),
-            &CancellationToken::new(),
-        )
-        .unwrap();
-        assert_eq!(
-            second.result.sections[0].status,
-            ProviderSectionStatus::Unavailable
-        );
-        assert!(second.result.sections[0].diagnostics[0].contains("capacity exhausted"));
-
-        assert!(lifecycle.drain(Duration::from_secs(2)));
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        let provider: Arc<dyn CodeIntelligenceProvider> = Arc::new(CountQuotaProvider {
+            id: ProviderId::BslAnalyzer,
+            entered: entered_tx,
+            release: Arc::clone(&release),
+        });
+        let mut executions = Vec::new();
+        for query in ["Post", "Again"] {
+            executions.push(
+                CodeSearchCoordinator::with_policy(
+                    CodeIntelligenceRegistry::new(vec![
+                        Arc::clone(&provider),
+                        static_provider(ProviderId::GitGrep, ProviderSectionStatus::Empty, ""),
+                    ])
+                    .unwrap(),
+                    Duration::from_millis(30),
+                    Arc::clone(&lifecycle),
+                )
+                .search(
+                    &SearchRequest {
+                        query: query.to_string(),
+                        limit: 20,
+                    },
+                    &context(),
+                    &CancellationToken::new(),
+                ),
+            );
+        }
+        let pending = lifecycle.pending_count();
+        let idle_while_workers_held = lifecycle.drain(Duration::ZERO);
+        let entered: Vec<_> = (0..2)
+            .map(|_| entered_rx.recv_timeout(Duration::from_secs(5)))
+            .collect();
+        *release.0.lock().unwrap() = true;
+        release.1.notify_all();
+        assert!(lifecycle.drain(Duration::from_secs(5)));
+        assert_eq!(pending, 2, "deadline must retain both worker owners");
+        assert!(!idle_while_workers_held, "waiting must not detach workers");
+        assert!(entered.iter().all(Result::is_ok));
+        for execution in executions {
+            let execution = execution.unwrap();
+            assert!(execution.ok);
+            assert_eq!(
+                execution.result.sections[0].status,
+                ProviderSectionStatus::TimedOut
+            );
+            assert!(execution.result.sections[0].diagnostics[0].contains("30 ms search budget"));
+            assert_eq!(
+                execution.result.sections[1].status,
+                ProviderSectionStatus::Empty
+            );
+        }
         assert_eq!(lifecycle.pending_count(), 0);
-        assert_eq!(
-            admission.active_count(&ProviderId::BslAnalyzer.identity()),
-            0
-        );
     }
 
     struct StaticReadProvider;
@@ -1602,80 +1605,51 @@ mod tests {
         }
     }
 
-    struct DeadlineIgnoringReadProvider;
-
-    impl CodeIntelligenceProvider for DeadlineIgnoringReadProvider {
-        fn identity(&self) -> crate::domain::code_intelligence::ProviderIdentity {
-            ProviderId::Rlm.identity()
-        }
-
-        fn capabilities(&self) -> &[ProviderCapability] {
-            &[ProviderCapability::Definition]
-        }
-
-        fn search(
-            &self,
-            _request: &SearchRequest,
-            _context: &CodeIntelligenceContext,
-            _deadline: ProviderDeadline,
-            _cancellation: &CancellationToken,
-        ) -> ProviderSearchSection {
-            unreachable!("read-only fixture")
-        }
-
-        fn read(
-            &self,
-            _request: &CodeIntelligenceReadRequest,
-            _context: &CodeIntelligenceContext,
-            _deadline: ProviderDeadline,
-            _cancellation: &CancellationToken,
-        ) -> Result<ProviderReadOutcome, String> {
-            thread::sleep(Duration::from_millis(500));
-            Ok(ProviderReadOutcome {
-                provider: ProviderId::Rlm.identity(),
-                ok: true,
-                summary: "late".to_string(),
-                warnings: Vec::new(),
-                errors: Vec::new(),
-                artifacts: Vec::new(),
-                stdout: None,
-                stderr: None,
-                data: None,
-            })
-        }
-    }
-
     #[test]
     fn read_coordinator_enforces_deadline_for_non_cooperative_provider() {
-        let admission = Arc::new(ProviderWorkerAdmission::new(1));
         let lifecycle = Arc::new(ProviderWorkerLifecycle::new());
-        let started = Instant::now();
-
-        let error = execute_provider_read_with_policy(
-            Arc::new(DeadlineIgnoringReadProvider),
-            CodeIntelligenceReadRequest::Definition {
-                name: "Post".to_string(),
-                module_hint: String::new(),
-                limit: 50,
-            },
-            context(),
-            Duration::from_millis(30),
-            Arc::clone(&admission),
-            Arc::clone(&lifecycle),
-            &CancellationToken::new(),
-        )
-        .unwrap_err();
-
-        assert!(error.contains("30 ms read budget"), "{error}");
-        assert!(started.elapsed() < Duration::from_millis(250));
-        assert_eq!(admission.active_count(&ProviderId::Rlm.identity()), 1);
-        assert!(lifecycle.drain(Duration::from_secs(2)));
-        assert_eq!(admission.active_count(&ProviderId::Rlm.identity()), 0);
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        let provider: Arc<dyn CodeIntelligenceProvider> = Arc::new(CountQuotaProvider {
+            id: ProviderId::Rlm,
+            entered: entered_tx,
+            release: Arc::clone(&release),
+        });
+        let mut results = Vec::new();
+        for name in ["Post", "Again"] {
+            results.push(execute_provider_read_with_policy(
+                Arc::clone(&provider),
+                CodeIntelligenceReadRequest::Definition {
+                    name: name.to_string(),
+                    module_hint: String::new(),
+                    limit: 50,
+                },
+                context(),
+                Duration::from_millis(30),
+                Arc::clone(&lifecycle),
+                &CancellationToken::new(),
+            ));
+        }
+        let pending = lifecycle.pending_count();
+        let idle_while_workers_held = lifecycle.drain(Duration::ZERO);
+        let entered: Vec<_> = (0..2)
+            .map(|_| entered_rx.recv_timeout(Duration::from_secs(5)))
+            .collect();
+        *release.0.lock().unwrap() = true;
+        release.1.notify_all();
+        assert!(lifecycle.drain(Duration::from_secs(5)));
+        assert_eq!(pending, 2, "deadline must retain both read worker owners");
+        assert!(!idle_while_workers_held);
+        assert!(entered.iter().all(Result::is_ok));
+        for result in results {
+            let error = result.unwrap_err();
+            assert!(error.contains("30 ms read budget"), "{error}");
+        }
+        assert_eq!(lifecycle.pending_count(), 0);
     }
 
     #[test]
     fn read_coordinator_accepts_full_positive_i64_config_budget_without_instant_overflow() {
-        let admission = Arc::new(ProviderWorkerAdmission::new(1));
         let lifecycle = Arc::new(ProviderWorkerLifecycle::new());
 
         let outcome = execute_provider_read_with_policy(
@@ -1687,7 +1661,6 @@ mod tests {
             },
             context(),
             Duration::from_secs(i64::MAX as u64),
-            admission,
             Arc::clone(&lifecycle),
             &CancellationToken::new(),
         )

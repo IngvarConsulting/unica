@@ -14,8 +14,6 @@ use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-const MAX_CONCURRENT_DIAGNOSTIC_WORKERS_PER_PROVIDER: usize = 32;
-
 pub(crate) fn invoke(
     ports: &dyn ApplicationPorts,
     args: &Map<String, Value>,
@@ -382,6 +380,24 @@ fn execute_selected_providers(
     deadline: ProviderDeadline,
     cancellation: &CancellationToken,
 ) -> Result<Vec<DiagnosticProviderOutcome>, DiagnosticRequestError> {
+    execute_selected_providers_with_lifecycle(
+        selected,
+        request,
+        context,
+        deadline,
+        cancellation,
+        &diagnostic_worker_lifecycle(),
+    )
+}
+
+fn execute_selected_providers_with_lifecycle(
+    selected: &[SelectedProvider],
+    request: &DiagnosticProviderRequest,
+    context: &DiagnosticContext,
+    deadline: ProviderDeadline,
+    cancellation: &CancellationToken,
+    lifecycle: &DiagnosticWorkerLifecycle,
+) -> Result<Vec<DiagnosticProviderOutcome>, DiagnosticRequestError> {
     let (sender, receiver) = mpsc::channel();
     let mut slots = (0..selected.len())
         .map(|_| None)
@@ -390,19 +406,9 @@ fn execute_selected_providers(
         .iter()
         .map(|_| cancellation.linked_child())
         .collect::<Vec<_>>();
-    let admission = diagnostic_worker_admission();
-    let lifecycle = diagnostic_worker_lifecycle();
 
     for (index, selected_provider) in selected.iter().enumerate() {
         let provider_id = selected_provider.descriptor.id;
-        let Some(permit) = admission.try_acquire(provider_id) else {
-            slots[index] = Some(provider_failure_outcome(
-                "provider_busy",
-                "diagnostic provider worker capacity is exhausted",
-                true,
-            ));
-            continue;
-        };
         let provider = Arc::clone(&selected_provider.provider);
         let sender = sender.clone();
         let request = request.clone();
@@ -411,7 +417,6 @@ fn execute_selected_providers(
         let spawn = thread::Builder::new()
             .name(format!("unica-diagnostics-{}", provider_id.as_str()))
             .spawn(move || {
-                let _permit = permit;
                 let outcome = catch_unwind(AssertUnwindSafe(|| {
                     provider.execute(&request, &context, deadline, &worker_cancellation)
                 }))
@@ -835,68 +840,18 @@ fn absolute_path_starts_at(text: &str, index: usize) -> bool {
     }
 }
 
-struct DiagnosticWorkerAdmission {
-    counts: Mutex<HashMap<DiagnosticProviderId, usize>>,
-    per_provider_limit: usize,
-}
-
-impl DiagnosticWorkerAdmission {
-    fn try_acquire(
-        self: &Arc<Self>,
-        provider_id: DiagnosticProviderId,
-    ) -> Option<DiagnosticWorkerPermit> {
-        let mut counts = self
-            .counts
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        let count = counts.entry(provider_id).or_default();
-        if *count >= self.per_provider_limit {
-            return None;
-        }
-        *count += 1;
-        Some(DiagnosticWorkerPermit {
-            admission: Arc::clone(self),
-            provider_id,
-        })
-    }
-}
-
-struct DiagnosticWorkerPermit {
-    admission: Arc<DiagnosticWorkerAdmission>,
-    provider_id: DiagnosticProviderId,
-}
-
-impl Drop for DiagnosticWorkerPermit {
-    fn drop(&mut self) {
-        let mut counts = self
-            .admission
-            .counts
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        if let Some(count) = counts.get_mut(&self.provider_id) {
-            *count = count.saturating_sub(1);
-            if *count == 0 {
-                counts.remove(&self.provider_id);
-            }
-        }
-    }
-}
-
-fn diagnostic_worker_admission() -> Arc<DiagnosticWorkerAdmission> {
-    static ADMISSION: OnceLock<Arc<DiagnosticWorkerAdmission>> = OnceLock::new();
-    Arc::clone(ADMISSION.get_or_init(|| {
-        Arc::new(DiagnosticWorkerAdmission {
-            counts: Mutex::new(HashMap::new()),
-            per_provider_limit: MAX_CONCURRENT_DIAGNOSTIC_WORKERS_PER_PROVIDER,
-        })
-    }))
-}
-
 struct DiagnosticWorkerLifecycle {
     handles: Mutex<Vec<thread::JoinHandle<()>>>,
 }
 
 impl DiagnosticWorkerLifecycle {
+    #[cfg(test)]
+    fn pending_count(&self) -> usize {
+        let mut handles = self.handles.lock().unwrap();
+        Self::reap_finished(&mut handles);
+        handles.len()
+    }
+
     fn track(&self, handle: thread::JoinHandle<()>) {
         let mut handles = self
             .handles
@@ -2457,6 +2412,126 @@ mod tests {
             result.providers[1].status,
             DiagnosticProviderStatus::Completed
         );
+    }
+
+    #[test]
+    fn diagnostics_executes_all_workers_past_the_former_provider_quota() {
+        for descriptor in [
+            &ANALYZER_DESCRIPTOR,
+            &LANGUAGE_SERVER_DESCRIPTOR,
+            &METADATA_DESCRIPTOR,
+        ] {
+            let (entered_tx, entered_rx) = mpsc::channel();
+            let release = Arc::new((Mutex::new(false), Condvar::new()));
+            let mut calls = Vec::new();
+            for _ in 0..33 {
+                let registry = behavior_registry(vec![(
+                    descriptor,
+                    ProviderBehavior::WaitForRelease {
+                        started: entered_tx.clone(),
+                        gate: Arc::clone(&release),
+                    },
+                )]);
+                calls.push(thread::spawn(move || {
+                    let mut request = findings_request();
+                    request.timeout = Some(Duration::from_secs(30));
+                    if descriptor.id == METADATA_VALIDATOR {
+                        request.metadata_path = Some(address("Catalog.Selected"));
+                    }
+                    run(registry, &request)
+                }));
+            }
+            drop(entered_tx);
+            let cutoff = Instant::now() + Duration::from_secs(5);
+            let mut entered = Vec::new();
+            while entered.len() < 33 {
+                match entered_rx.recv_timeout(cutoff.saturating_duration_since(Instant::now())) {
+                    Ok(id) => entered.push(id),
+                    Err(_) => break,
+                }
+            }
+            *release.0.lock().unwrap() = true;
+            release.1.notify_all();
+            let results: Vec<_> = calls.into_iter().map(|call| call.join().unwrap()).collect();
+            assert!(super::drain_diagnostic_workers(Duration::from_secs(5)));
+            assert_eq!(
+                entered.len(),
+                33,
+                "not every {} worker entered",
+                descriptor.id.as_str()
+            );
+            assert!(entered.iter().all(|id| *id == descriptor.id));
+            for result in results {
+                let result = result.expect("worker count must not refuse diagnostics");
+                assert_eq!(result.state, DiagnosticResultState::Completed);
+                assert!(result.complete);
+                assert_eq!(result.providers.len(), 1);
+                assert_eq!(result.providers[0].id, descriptor.id.as_str());
+            }
+        }
+    }
+
+    #[test]
+    fn diagnostics_retains_each_noncooperative_worker_after_its_caller_returns() {
+        let lifecycle = super::DiagnosticWorkerLifecycle {
+            handles: Mutex::new(Vec::new()),
+        };
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        let selected = vec![super::SelectedProvider {
+            descriptor: &ANALYZER_DESCRIPTOR,
+            provider: Arc::new(BehaviorProvider {
+                descriptor: &ANALYZER_DESCRIPTOR,
+                behavior: ProviderBehavior::WaitForRelease {
+                    started: entered_tx,
+                    gate: Arc::clone(&release),
+                },
+            }),
+        }];
+        let request = findings_request();
+        let context = FAKE_MAPPING
+            .resolve_context(&request, &workspace(), &CancellationToken::new())
+            .unwrap();
+        let request = DiagnosticProviderRequest {
+            action: request.action,
+            source_set: request.source_set,
+            metadata_path: request.metadata_path,
+            target_kind: context.target.target_kind,
+            filter: request.filter,
+            range: request.range,
+            module_scope: None,
+        };
+        let mut results = Vec::new();
+        for _ in 0..2 {
+            results.push(super::execute_selected_providers_with_lifecycle(
+                &selected,
+                &request,
+                &context,
+                ProviderDeadline::from_budget(Duration::from_millis(30)),
+                &CancellationToken::new(),
+                &lifecycle,
+            ));
+        }
+        let entered: Vec<_> = (0..2)
+            .map(|_| entered_rx.recv_timeout(Duration::from_secs(5)))
+            .collect();
+        let pending = lifecycle.pending_count();
+        let idle_before_release = lifecycle.drain(Duration::ZERO);
+        *release.0.lock().unwrap() = true;
+        release.1.notify_all();
+        assert!(lifecycle.drain(Duration::from_secs(5)));
+        assert_eq!(pending, 2);
+        assert!(
+            !idle_before_release,
+            "caller completion must not detach its worker"
+        );
+        assert!(entered.iter().all(Result::is_ok));
+        for result in results {
+            let outcomes = result.unwrap();
+            assert_eq!(outcomes.len(), 1);
+            assert_eq!(outcomes[0].error.as_ref().unwrap().code, "provider_timeout");
+        }
+        assert_eq!(lifecycle.pending_count(), 0);
     }
 
     #[test]
