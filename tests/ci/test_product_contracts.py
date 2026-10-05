@@ -246,7 +246,6 @@ def rmcp_owner_export_boundary_errors(source: bytes, owner: str) -> list[str]:
                 and node_text(visibility) == b"pub"
                 and (node.type, public_name)
                 in {
-                    ("const_item", b"MCP_MAX_TOOL_WORKERS"),
                     ("struct_item", b"UnicaServer"),
                     ("function_item", b"tool_definitions"),
                     ("function_item", b"run_stdio"),
@@ -740,7 +739,6 @@ class ProductContractTests(unittest.TestCase):
     def test_rmcp_module_preserves_legacy_public_exports_only(self) -> None:
         source = tracked_workspace_production_rust_sources(REPO_ROOT)[RMCP_OWNER]
         for declaration in (
-            b"pub const MCP_MAX_TOOL_WORKERS:",
             b"pub struct UnicaServer",
             b"pub fn tool_definitions(",
             b"pub fn run_stdio()",
