@@ -5524,10 +5524,16 @@ fn run_daemon_configured_until(
         }
 
         sessions = reap_finished_v5_handlers(sessions);
-        if active_leases.is_empty()?
-            && admitted_connections.load(Ordering::Acquire) == 0
-            && runtime.active_task_cancellations.is_empty()
-        {
+        // Only this listener adds handshake slots. A handler installs its
+        // owner lease before releasing that slot, so observing slots first
+        // cannot combine an old empty lease set with the post-handoff count.
+        let handshakes_empty = admitted_connections.load(Ordering::Acquire) == 0;
+        let owners_empty = active_leases.is_empty()?;
+        runtime.hooks.after_idle_owner_leases_read(owners_empty);
+        let no_active_work =
+            owners_empty && handshakes_empty && runtime.active_task_cancellations.is_empty();
+        runtime.hooks.listener_ownership_observed(no_active_work);
+        if no_active_work {
             if idle_since.elapsed() >= config.idle_grace {
                 break;
             }
@@ -5708,6 +5714,12 @@ fn handle_probe_connection(
     runtime: &Arc<V5ReceiptRuntime>,
     handshake_slot: V5ConnectionSlot,
 ) -> Result<(), String> {
+    runtime.hooks.before_owner_handshake(
+        stream
+            .peer_addr()
+            .map_err(|error| daemon_io_error("inspect accepted protocol-v5 peer", error))?
+            .port(),
+    );
     runtime.ensure_named_authority_before(handshake_deadline)?;
     stream
         .set_nonblocking(false)
@@ -5798,7 +5810,7 @@ fn handle_probe_connection(
         }
     };
     // The owner lease fences listener shutdown before pre-authentication admission
-    // is released, so idle observation cannot see a gap between the two states.
+    // is released; the listener observes the admission count before owner leases.
     drop(handshake_slot);
     write_runtime_json_line_before(
         &mut stream,
