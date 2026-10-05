@@ -29,9 +29,6 @@ use crate::infrastructure::workspace_actor::WorkspaceActorRegistry;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-pub(crate) const MAX_HANDSHAKES: usize = 8;
-pub(crate) const MAX_OWNER_SESSIONS: usize = 64;
-
 /// Безымянный неуспех — только для стенда.
 ///
 /// На проводе такого ответа нет: у отказа канонической поверхности есть код из

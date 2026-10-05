@@ -2944,44 +2944,219 @@ fn v5_duplicate_live_owner_lease_is_rejected() {
         .expect("duplicate-lease runtime");
 }
 
-#[test]
-fn v5_rejects_connections_above_handshake_limit() {
-    let root = tempfile::tempdir().expect("temporary handshake-limit state root");
-    let state_root =
-        std::fs::canonicalize(root.path()).expect("physical handshake-limit state root");
+struct HeldOwnerHandshakes {
+    started: mpsc::Sender<u16>,
+    entered: AtomicUsize,
+    released: Mutex<bool>,
+    changed: Condvar,
+    hold_count: usize,
+}
+
+impl HeldOwnerHandshakes {
+    fn release(&self) {
+        *self.released.lock().unwrap() = true;
+        self.changed.notify_all();
+    }
+}
+
+impl V5RuntimeHooks for HeldOwnerHandshakes {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn before_owner_handshake(&self, peer_port: u16) {
+        if self.entered.fetch_add(1, Ordering::SeqCst) >= self.hold_count {
+            return;
+        }
+        self.started.send(peer_port).unwrap();
+        let mut released = self.released.lock().unwrap();
+        while !*released {
+            released = self.changed.wait(released).unwrap();
+        }
+    }
+}
+
+struct AdmissionDaemon {
+    stop: Arc<AtomicBool>,
+    hooks: Arc<HeldOwnerHandshakes>,
+    sockets: Vec<TcpStream>,
+    server: Option<thread::JoinHandle<Result<(), String>>>,
+}
+
+impl Drop for AdmissionDaemon {
+    fn drop(&mut self) {
+        self.hooks.release();
+        for socket in &self.sockets {
+            let _ = socket.shutdown(std::net::Shutdown::Both);
+        }
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(server) = self.server.take() {
+            let _ = server.join();
+        }
+    }
+}
+
+fn admitted_owner_cancel_and_recover(
+    record: &V5EndpointRecord,
+    identity: &CoreIdentity,
+    daemon: &mut AdmissionDaemon,
+) -> Result<(V5ServerResponse, V5ServerResponse, ReceiptKey), String> {
+    let mut stream =
+        TcpStream::connect(record.loopback_addr().unwrap()).map_err(|error| error.to_string())?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .map_err(|error| error.to_string())?;
+    daemon
+        .sockets
+        .push(stream.try_clone().map_err(|error| error.to_string())?);
+    let mut reader = BufReader::new(stream.try_clone().map_err(|error| error.to_string())?);
+    write_json_line(
+        &mut stream,
+        &json!({
+            "kind": "hello", "protocolVersion": 5, "token": record.token(),
+            "coreIdentity": identity.as_str(), "ownerLease": Uuid::new_v4().to_string()
+        }),
+    );
+    let ready =
+        read_bounded_v5_probe_response_frame(&mut reader).map_err(|error| error.to_string())?;
+    let ready = decode_v5_server_response(&ready).map_err(|error| error.to_string())?;
+    if !matches!(ready, V5ServerResponse::Ready { .. }) {
+        return Err(format!(
+            "real cancellation owner handshake was refused: {ready:?}"
+        ));
+    }
+    let key = ReceiptKey::new(
+        InvocationId::new(),
+        TaskId::new(),
+        RequestIdentity::new(
+            identity.digest().clone(),
+            V5ToolIdentity::View,
+            normalized_arguments_hash(&serde_json::Map::new()),
+            request_scope_hash("workspace-a").unwrap(),
+        ),
+    );
+    write_json_line(
+        &mut stream,
+        &serde_json::to_value(V5ClientRequest::CancelInvocation {
+            receipt_key: key.clone(),
+        })
+        .unwrap(),
+    );
+    let cancel =
+        read_bounded_v5_probe_response_frame(&mut reader).map_err(|error| error.to_string())?;
+    let cancel = decode_v5_server_response(&cancel).map_err(|error| error.to_string())?;
+    write_json_line(
+        &mut stream,
+        &serde_json::to_value(V5ClientRequest::RecoverInvocationReceipt {
+            receipt_key: key.clone(),
+        })
+        .unwrap(),
+    );
+    let recovered =
+        read_bounded_v5_probe_response_frame(&mut reader).map_err(|error| error.to_string())?;
+    let recovered = decode_v5_server_response(&recovered).map_err(|error| error.to_string())?;
+    Ok((cancel, recovered, key))
+}
+
+fn cancellation_owner_crosses_admission_count(held_handshakes: usize, held_owners: usize) {
+    let root = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(root.path()).unwrap();
     let identity = CoreIdentity::production_v5();
+    let (started_tx, started_rx) = mpsc::channel();
+    let hooks = Arc::new(HeldOwnerHandshakes {
+        started: started_tx,
+        entered: AtomicUsize::new(0),
+        released: Mutex::new(false),
+        changed: Condvar::new(),
+        hold_count: held_handshakes,
+    });
     let config = DaemonServerConfig::new(
         state_root.clone(),
         identity.clone(),
-        Duration::from_millis(100),
-    );
-    let server = thread::spawn(move || run_daemon(config));
+        Duration::from_secs(30),
+    )
+    .with_runtime_hooks_for_test(hooks.clone());
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = stop.clone();
+    let server = thread::spawn(move || {
+        run_daemon_configured_until(
+            config,
+            |runtime| runtime,
+            || server_stop.load(Ordering::SeqCst),
+        )
+    });
+    let mut daemon = AdmissionDaemon {
+        stop,
+        hooks,
+        sockets: Vec::new(),
+        server: Some(server),
+    };
     let record = wait_for_v5_record(&state_root, &identity);
-    let address = record.loopback_addr().expect("v5 loopback address");
-    let blockers = (0..MAX_HANDSHAKES)
-        .map(|_| TcpStream::connect(address).expect("occupy v5 handshake slot"))
-        .collect::<Vec<_>>();
-    thread::sleep(Duration::from_millis(100));
-
-    let overflow = TcpStream::connect(address).expect("connect overflow v5 handshake");
-    overflow
-        .set_read_timeout(Some(Duration::from_secs(1)))
-        .expect("bound overflow response read");
-    let mut overflow_reader = BufReader::new(overflow);
-    let response = read_bounded_v5_probe_response_frame(&mut overflow_reader)
-        .expect("read overloaded v5 handshake response");
+    let address = record.loopback_addr().unwrap();
+    let mut expected_ports = HashSet::new();
+    for _ in 0..held_handshakes {
+        let stream = TcpStream::connect(address).unwrap();
+        expected_ports.insert(stream.local_addr().unwrap().port());
+        daemon.sockets.push(stream);
+    }
+    let mut observed_ports = HashSet::new();
+    for _ in 0..held_handshakes {
+        observed_ports.insert(
+            started_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("actual accepted handshake handler entered gate"),
+        );
+    }
     assert_eq!(
-        decode_v5_server_response(&response),
-        Ok(V5ServerResponse::Error {
-            code: V5DaemonErrorCode::Overloaded,
-        })
+        observed_ports, expected_ports,
+        "only the actual blocker sockets reached the held handshake gate"
     );
+    for _ in 0..held_owners {
+        let (stream, reader) = connect_v5_owner(&record, &identity, &Uuid::new_v4().to_string());
+        daemon.sockets.push(stream);
+        drop(reader);
+    }
+    let result = admitted_owner_cancel_and_recover(&record, &identity, &mut daemon);
+    drop(daemon);
+    let (cancel, recovered, key) =
+        result.expect("a new real owner must remain able to deliver explicit cancellation");
+    assert_eq!(
+        recovered, cancel,
+        "exact recovery must return the durably accepted cancellation"
+    );
+    assert!(matches!(cancel,
+        V5ServerResponse::Invocation { outcome: V5InvocationResponse::ReceiptPending {
+            receipt_key, phase: V5InvocationPhase::CancelReserved, cancel_requested: true, ..
+        }} if receipt_key == key
+    ));
+}
 
-    drop(blockers);
-    server
-        .join()
-        .expect("join handshake-limit runtime")
-        .expect("handshake-limit runtime");
+#[test]
+fn ninth_connection_delivers_cancel_while_eight_real_handshakes_are_held() {
+    cancellation_owner_crosses_admission_count(8, 0);
+}
+
+#[test]
+fn sixty_fifth_authenticated_owner_delivers_exact_cancellation() {
+    cancellation_owner_crosses_admission_count(0, 64);
+}
+
+#[test]
+fn connection_ownership_survives_former_limit_and_checked_overflow() {
+    let admitted = Arc::new(AtomicUsize::new(0));
+    let mut slots = (0..65)
+        .map(|_| V5ConnectionSlot::acquire(Arc::clone(&admitted)).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(admitted.load(Ordering::Acquire), 65);
+    let held = slots.pop().unwrap();
+    drop(slots);
+    assert_eq!(admitted.load(Ordering::Acquire), 1);
+    drop(held);
+    assert_eq!(admitted.load(Ordering::Acquire), 0);
+
+    let maximum = Arc::new(AtomicUsize::new(usize::MAX));
+    assert!(V5ConnectionSlot::acquire(Arc::clone(&maximum)).is_none());
+    assert_eq!(maximum.load(Ordering::Acquire), usize::MAX);
 }
 
 #[test]
