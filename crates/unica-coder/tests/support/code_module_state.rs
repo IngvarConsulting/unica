@@ -30,7 +30,7 @@ fn canonical_stdio_code_insert_publishes_borrowed_module_and_state() {
     let mut mcp = McpProcess::start(&workspace, &state);
     mcp.exchange(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"module-state-test","version":"1"}}}));
     mcp.notify(json!({"jsonrpc":"2.0","method":"notifications/initialized"}));
-    let args = json!({"at":"ext:CommonModule.Fix","ops":[{"op":"code.insert","args":{"at":"ext:CommonModule.Fix","text":"Procedure Added() Export\nEndProcedure"}}]});
+    let args = json!({"at":"ext:CommonModule.Fix","ops":[{"op":"code.insert","args":{"at":"ext:CommonModule.Fix.Body","text":"Procedure Added() Export\nEndProcedure"}}]});
     let preview = call(&mut mcp, 2, args.clone());
     assert!(preview["data"]["executionToken"]
         .as_str()
@@ -74,6 +74,34 @@ fn canonical_stdio_code_insert_publishes_borrowed_module_and_state() {
         no_op["data"]["planHash"]
     );
     assert!(no_op["changed"].as_array().is_none_or(Vec::is_empty));
+    assert_eq!(fs::read_to_string(&descriptor).unwrap(), after);
+    let replace = json!({"at":"ext:CommonModule.Fix","ops":[{"op":"code.replace","args":{"at":"ext:CommonModule.Fix.Method.Added.Body","text":"    Value = 2;"}}]});
+    let before_replace = fs::read(&module).unwrap();
+    let preview = call(&mut mcp, 7, replace.clone());
+    assert!(preview["data"]["executionToken"]
+        .as_str()
+        .is_some_and(|token| !token.is_empty()));
+    assert_eq!(fs::read(&module).unwrap(), before_replace);
+    assert_eq!(fs::read_to_string(&descriptor).unwrap(), after);
+    call(
+        &mut mcp,
+        8,
+        json!({"executionToken":preview["data"]["executionToken"]}),
+    );
+    let replaced = fs::read(&module).unwrap();
+    assert_eq!(
+        replaced,
+        b"Procedure Added() Export\n    Value = 2;\nEndProcedure\n"
+    );
+    assert_eq!(fs::read_to_string(&descriptor).unwrap(), after);
+    let repeat = call(&mut mcp, 9, replace);
+    assert!(repeat["changed"].as_array().is_none_or(Vec::is_empty));
+    call(
+        &mut mcp,
+        10,
+        json!({"executionToken":repeat["data"]["executionToken"]}),
+    );
+    assert_eq!(fs::read(&module).unwrap(), replaced);
     assert_eq!(fs::read_to_string(&descriptor).unwrap(), after);
     mcp.finish();
 }

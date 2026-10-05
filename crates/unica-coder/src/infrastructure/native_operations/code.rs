@@ -1,5 +1,6 @@
 use crate::application::AdapterOutcome;
 use crate::application::SupportGuardRequirement;
+use crate::domain::address::{NodeKind, QualifiedAddress};
 use crate::domain::events::{DomainEvent, DomainEventKind};
 use crate::domain::project_sources::SourceSetKind;
 use crate::domain::source_target::{ResolvedTarget, TargetKind};
@@ -283,7 +284,7 @@ pub(crate) struct CodeInsertArgs {
 pub(crate) struct CodeReplaceArgs {
     pub(crate) at: crate::domain::address::QualifiedAddress,
     pub(crate) text: String,
-    pub(crate) selector: CodeSelector,
+    pub(crate) selector: Option<CodeSelector>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -330,9 +331,25 @@ pub(crate) fn parse_code_plan_operation(
     }
     let text_path = format!("{base}.text");
     let text = non_empty_code_string(object.get("text"), &text_path, "text")?.to_string();
+    let addressed = code_projection(&at);
+    if addressed.is_some() && object.contains_key("selector") {
+        return Err(bad_code_arg(
+            format!("{base}.selector"),
+            "an addressed BSL node cannot also have a selector",
+        ));
+    }
 
     match operation {
         "code.insert" => {
+            if addressed
+                .as_ref()
+                .is_some_and(|(_, site)| !matches!(site, CodeProjection::ModuleBody))
+            {
+                return Err(bad_code_arg(
+                    &at_path,
+                    "code.insert requires a module or its Body",
+                ));
+            }
             let selector = object
                 .get("selector")
                 .map(|value| parse_code_selector(value, &format!("{base}.selector")))
@@ -365,8 +382,11 @@ pub(crate) fn parse_code_plan_operation(
             let selector_path = format!("{base}.selector");
             let selector = object
                 .get("selector")
-                .ok_or_else(|| bad_code_arg(&selector_path, "selector is required"))
-                .and_then(|value| parse_code_selector(value, &selector_path))?;
+                .map(|value| parse_code_selector(value, &selector_path))
+                .transpose()?;
+            if selector.is_none() && addressed.is_none() {
+                return Err(bad_code_arg(&selector_path, "selector is required for a module address; address its Body or a Method instead"));
+            }
             Ok(CodePlanOperation::Replace(CodeReplaceArgs {
                 at,
                 text,
@@ -375,6 +395,44 @@ pub(crate) fn parse_code_plan_operation(
         }
         _ => unreachable!("closed operation checked above"),
     }
+}
+
+#[derive(Debug)]
+enum CodeProjection {
+    ModuleBody,
+    Method(String),
+    MethodBody(String),
+}
+
+fn code_projection(at: &QualifiedAddress) -> Option<(QualifiedAddress, CodeProjection)> {
+    let segments = at.segments();
+    let last = segments.last()?;
+    let (length, site) = match last.kind() {
+        NodeKind::Body if last.name().is_none() => {
+            match segments.get(segments.len().checked_sub(2)?) {
+                Some(method) if method.kind() == NodeKind::Method => (
+                    segments.len().checked_sub(2)?,
+                    CodeProjection::MethodBody(method.name()?.to_owned()),
+                ),
+                _ => (segments.len().checked_sub(1)?, CodeProjection::ModuleBody),
+            }
+        }
+        NodeKind::Method => (
+            segments.len().checked_sub(1)?,
+            CodeProjection::Method(last.name()?.to_owned()),
+        ),
+        _ => return None,
+    };
+    let mut parts = Vec::new();
+    for segment in &segments[..length] {
+        parts.push(segment.kind().as_str());
+        if let Some(name) = segment.name() {
+            parts.push(name);
+        }
+    }
+    let module =
+        QualifiedAddress::parse(&format!("{}:{}", at.source_set(), parts.join("."))).ok()?;
+    Some((module, site))
 }
 
 fn non_empty_code_string<'a>(
@@ -468,6 +526,7 @@ fn plan_one_code_operation(
     op_index: usize,
 ) -> Result<(), ApplyPlanError> {
     let at = code_operation_at(operation);
+    let module_at = code_projection(at).map_or_else(|| at.clone(), |(module, _)| module);
     let at_path = format!("ops[{op_index}].args.at");
     if at.source_set() != authority.source_set_name() {
         return Err(bad_code_arg(
@@ -475,14 +534,17 @@ fn plan_one_code_operation(
             "at belongs to another actor-admitted source set",
         ));
     }
-    let capability = authority.profile().module_capability(at).ok_or_else(|| {
-        ApplyPlanError::new(
-            ApplyPlanErrorKind::InvalidSource,
-            "at does not identify one exact writable module terminal",
-        )
-        .at_path(&at_path)
-    })?;
-    let target = module_source_address(at, capability).map_err(|_| {
+    let capability = authority
+        .profile()
+        .module_capability(&module_at)
+        .ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidSource,
+                "at does not identify one exact writable module terminal",
+            )
+            .at_path(&at_path)
+        })?;
+    let target = module_source_address(&module_at, capability).map_err(|_| {
         ApplyPlanError::new(
             ApplyPlanErrorKind::ProviderUnavailable,
             "module layout is unavailable for the actor-issued profile",
@@ -555,7 +617,7 @@ fn plan_one_code_operation(
     }
     effects.push((
         relative,
-        DomainEvent::new(DomainEventKind::ModuleChanged, at.to_string()),
+        DomainEvent::new(DomainEventKind::ModuleChanged, module_at.to_string()),
     ));
     Ok(())
 }
@@ -805,17 +867,24 @@ fn plan_code_postimage(
             if args.text.is_empty() {
                 return Err(bad_code_arg(&text_path, "text must be a non-empty string"));
             }
-            let selector = legacy_selector(&args.selector);
-            let site = locate_replacement_typed(&snapshot, &selector, &indexed.methods)
-                .map_err(|error| code_selector_error(error, op_index, &selector))?;
-            let replacement = normalized_replacement(&args.text, site.eol, site.trailing_eol);
+            let selector = args.selector.as_ref().map(legacy_selector);
+            let site = match &selector {
+                Some(selector) => {
+                    locate_replacement_typed(&snapshot, selector, &indexed.methods)
+                        .map_err(|error| code_selector_error(error, op_index, selector))?
+                }
+                None => {
+                    locate_addressed_replacement(&snapshot, &args.at, &indexed.methods, &at_path)?
+                }
+            };
+            let replacement = site.replacement(&args.text);
             let no_op = snapshot.raw().get(site.start..site.end) == Some(replacement.as_slice());
             let mut after = snapshot.raw().to_vec();
             if !no_op {
                 after.splice(site.start..site.end, replacement.iter().copied());
             }
             (
-                Some(selector),
+                selector,
                 args.text.as_str(),
                 PatchSite::Replacement(site),
                 no_op,
@@ -844,15 +913,153 @@ fn plan_code_postimage(
         )
         .at_path(&text_path));
     }
-    prove_repeat_is_noop_parts(postimage, selector.as_ref(), content, site, &post.methods)
-        .map_err(|_| {
-            ApplyPlanError::new(
-                ApplyPlanErrorKind::Postcondition,
-                "patched BSL module does not prove repeat-noop behavior",
-            )
-            .at_path(&text_path)
-        })?;
+    let repeat = match operation {
+        CodePlanOperation::Replace(args) if args.selector.is_none() => {
+            let repeat_snapshot = SourceTextSnapshot::from_bytes(&after)
+                .map_err(|_| bad_code_arg(&text_path, "invalid patched snapshot"))?;
+            match locate_addressed_replacement(&repeat_snapshot, &args.at, &post.methods, &at_path)
+            {
+                Err(error) if error.kind() == ApplyPlanErrorKind::NotFound => Ok(()),
+                Err(_) => Err("patched BSL address became ambiguous or invalid".to_string()),
+                Ok(repeated) => {
+                    let bytes = repeated.replacement(content);
+                    if repeat_snapshot.raw().get(repeated.start..repeated.end)
+                        == Some(bytes.as_slice())
+                    {
+                        Ok(())
+                    } else {
+                        Err("addressed replacement would change bytes again".to_string())
+                    }
+                }
+            }
+        }
+        _ => prove_repeat_is_noop_parts(postimage, selector.as_ref(), content, site, &post.methods),
+    };
+    repeat.map_err(|_| {
+        ApplyPlanError::new(
+            ApplyPlanErrorKind::Postcondition,
+            "patched BSL module does not prove repeat-noop behavior",
+        )
+        .at_path(&text_path)
+    })?;
     Ok(StagedCodePostimage { after, no_op })
+}
+
+fn locate_addressed_replacement(
+    snapshot: &SourceTextSnapshot,
+    at: &QualifiedAddress,
+    methods: &[Method],
+    path: &str,
+) -> Result<ReplacementSite, ApplyPlanError> {
+    let (_, projection) = code_projection(at)
+        .ok_or_else(|| bad_code_arg(path, "at does not select a writable BSL node"))?;
+    reject_lone_cr_line_endings(snapshot).map_err(|_| {
+        ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidSource,
+            "unsupported BSL line endings",
+        )
+        .at_path(path)
+    })?;
+    let text = snapshot.decoded_text();
+    let (start, end, body, leading_eol) = match projection {
+        CodeProjection::ModuleBody => {
+            (text.len() - snapshot.text().len(), text.len(), false, false)
+        }
+        CodeProjection::Method(name) => {
+            let method = addressed_method(methods, &name, path)?;
+            let line_start = safe_line_start(text, method.start);
+            let line_end = line_end(text, method.end);
+            let start = if text[line_start..method.start].trim().is_empty() {
+                line_start
+            } else {
+                method.start
+            };
+            let end = if text[method.end..line_end].trim().is_empty() {
+                line_end
+            } else {
+                method.end
+            };
+            (start, end, false, false)
+        }
+        CodeProjection::MethodBody(name) => {
+            let method = addressed_method(methods, &name, path)?;
+            let (declaration, closing) = method.body_bounds.ok_or_else(|| {
+                ApplyPlanError::new(
+                    ApplyPlanErrorKind::InvalidSource,
+                    "method body has no parser-proven boundaries",
+                )
+                .at_path(path)
+            })?;
+            let header_end = line_end(text, declaration);
+            let closing_line = safe_line_start(text, closing);
+            let body_end = if text[closing_line..closing].trim().is_empty() {
+                closing_line
+            } else {
+                closing
+            };
+            let header_tail = text[declaration..header_end.min(closing)].trim();
+            if header_end <= closing_line
+                && (header_tail.is_empty() || header_tail.starts_with("//"))
+            {
+                (header_end, body_end, true, false)
+            } else {
+                (declaration, body_end, true, true)
+            }
+        }
+    };
+    let eol = resolve_observed_line_ending(
+        snapshot,
+        local_line_ending_at(text, start, Position::Before),
+    )
+    .map_err(|_| {
+        ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidSource,
+            "BSL line ending cannot be resolved",
+        )
+        .at_path(path)
+    })?;
+    let trailing_eol = body
+        || text
+            .get(start..end)
+            .is_some_and(|span| span.ends_with('\n'));
+    Ok(ReplacementSite {
+        start,
+        end,
+        eol,
+        trailing_eol,
+        leading_eol,
+    })
+}
+
+fn addressed_method<'a>(
+    methods: &'a [Method],
+    name: &str,
+    path: &str,
+) -> Result<&'a Method, ApplyPlanError> {
+    let folded_name = name.to_lowercase();
+    let selector = Selector::Method(name.to_owned());
+    let mut found = methods
+        .iter()
+        .filter(|method| method.name.to_lowercase() == folded_name);
+    let method = found.next().ok_or_else(|| {
+        addressed_selector_error(SelectorResolutionError::zero_matches(&selector), path)
+    })?;
+    if found.next().is_some() {
+        return Err(addressed_selector_error(
+            SelectorResolutionError::multiple_matches(&selector, 2),
+            path,
+        ));
+    }
+    Ok(method)
+}
+
+fn addressed_selector_error(error: SelectorResolutionError, path: &str) -> ApplyPlanError {
+    let kind = match error.cause() {
+        SelectorResolutionCause::ZeroMatches => ApplyPlanErrorKind::NotFound,
+        SelectorResolutionCause::MultipleMatches => ApplyPlanErrorKind::InvalidState,
+        SelectorResolutionCause::InvalidSource => ApplyPlanErrorKind::InvalidSource,
+    };
+    ApplyPlanError::new(kind, "BSL address cannot identify one stable writable node").at_path(path)
 }
 
 fn legacy_selector(selector: &CodeSelector) -> Selector {
@@ -905,6 +1112,17 @@ struct ReplacementSite {
     end: usize,
     eol: LineEnding,
     trailing_eol: bool,
+    leading_eol: bool,
+}
+
+impl ReplacementSite {
+    fn replacement(self, content: &str) -> Vec<u8> {
+        let mut bytes = normalized_replacement(content, self.eol, self.trailing_eol);
+        if self.leading_eol {
+            bytes.splice(0..0, self.eol.as_str().bytes());
+        }
+        bytes
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1010,7 +1228,7 @@ fn build_patch(
         PatchOperation::Replace => {
             let selector = Selector::parse(args)?;
             let site = locate_replacement(&snapshot, &selector, &indexed.methods)?;
-            let replacement = normalized_replacement(&content, site.eol, site.trailing_eol);
+            let replacement = site.replacement(&content);
             let no_op = snapshot.raw().get(site.start..site.end) == Some(replacement.as_slice());
             let mut after = snapshot.raw().to_vec();
             if !no_op {
@@ -1476,6 +1694,7 @@ fn locate_replacement_typed(
         end,
         eol,
         trailing_eol,
+        leading_eol: false,
     })
 }
 
@@ -1619,8 +1838,7 @@ fn prove_repeat_is_noop_parts(
             // double application the guard exists to prevent.
             Err(_) => true,
             Ok(repeat_site) => {
-                let repeat_replacement =
-                    normalized_replacement(content, repeat_site.eol, repeat_site.trailing_eol);
+                let repeat_replacement = repeat_site.replacement(content);
                 snapshot.raw().get(repeat_site.start..repeat_site.end)
                     == Some(repeat_replacement.as_slice())
             }
@@ -1653,6 +1871,7 @@ struct Method {
     name: String,
     start: usize,
     end: usize,
+    body_bounds: Option<(usize, usize)>,
 }
 
 struct ModuleAnalysis {
@@ -1678,14 +1897,14 @@ fn analyze_module(text: &str) -> Result<ModuleAnalysis, String> {
                 procedure
                     .name_or_keyword()
                     .map(|token| token.text().to_string()),
-                procedure.syntax().text_range(),
+                procedure.syntax(),
             )
         } else if let Some(function) = FunctionDef::cast(node) {
             method_from_ast(
                 function
                     .name_or_keyword()
                     .map(|token| token.text().to_string()),
-                function.syntax().text_range(),
+                function.syntax(),
             )
         } else {
             None
@@ -1701,11 +1920,36 @@ fn analyze_module(text: &str) -> Result<ModuleAnalysis, String> {
     })
 }
 
-fn method_from_ast(name: Option<String>, range: bsl_syntax::TextRange) -> Option<Method> {
+fn method_from_ast(name: Option<String>, node: &bsl_syntax::SyntaxNode) -> Option<Method> {
+    use bsl_syntax::SyntaxKind;
+    let range = node.text_range();
+    let declaration_end = node
+        .children_with_tokens()
+        .filter_map(|element| element.into_token())
+        .find(|token| token.kind() == SyntaxKind::KW_EXPORT)
+        .map(|token| token.text_range().end())
+        .or_else(|| {
+            node.children()
+                .find(|child| child.kind() == SyntaxKind::PARAM_LIST)
+                .map(|child| child.text_range().end())
+        });
+    let closing = node
+        .children_with_tokens()
+        .filter_map(|element| element.into_token())
+        .find(|token| {
+            matches!(
+                token.kind(),
+                SyntaxKind::KW_END_PROCEDURE | SyntaxKind::KW_END_FUNCTION
+            )
+        })
+        .map(|token| token.text_range().start());
     name.map(|name| Method {
         name,
         start: text_offset(range.start()),
         end: text_offset(range.end()),
+        body_bounds: declaration_end
+            .zip(closing)
+            .map(|(start, end)| (text_offset(start), text_offset(end))),
     })
 }
 
@@ -1886,9 +2130,9 @@ pub(super) mod tests {
     use super::{
         analyze_module, hash, insertion_is_present, line_column, local_line_ending_at,
         locate_insertion, module_identity, normalized_content, parse_code_plan_operation,
-        patch_inner, plan_code_batch, unified_diff, CodeInsertArgs, CodePlanOperation,
-        CodePosition, CodeReplaceArgs, CodeSelector, LeadingSeparator, PatchMode, Position,
-        ValidationStatus,
+        patch_inner, plan_code_batch, plan_code_postimage, unified_diff, CodeInsertArgs,
+        CodePlanOperation, CodePosition, CodeReplaceArgs, CodeSelector, LeadingSeparator,
+        PatchMode, Position, ValidationStatus,
     };
     use crate::application::SupportGuardRequirement;
     use crate::domain::workspace::WorkspaceContext;
@@ -3882,6 +4126,199 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn staged_addressed_method_body_preserves_signature_neighbors_and_repeat() {
+        let before = concat!(
+            "\u{feff}// module\r\nProcedure Base(\r\n    Value\r\n) Export // signature\r\n",
+            "    // old body\r\n    Value = 1;\r\n  EndProcedure\r\n",
+            "\r\nFunction Neighbor() Export\r\n    Return 7;\r\nEndFunction\r\n"
+        );
+        let fixture = staged_code_fixture("addressed-body", before.as_bytes());
+        let operation = parse_code_plan_operation(
+            "code.replace",
+            &json!({"at":"main:CommonModule.Sample.Method.Base.Body", "text":"    Value = 2;"}),
+            0,
+            &fixture.binding,
+        )
+        .expect("documented addressed replacement must parse without selector");
+        let admission = staged_code_admission(&fixture, false);
+        let (mut state, effects) = plan_admitted_code(
+            &admission,
+            &fixture.binding,
+            std::slice::from_ref(&operation),
+        )
+        .unwrap();
+        let expected = before.replace(
+            "    // old body\r\n    Value = 1;\r\n",
+            "    Value = 2;\r\n",
+        );
+        let relative = Path::new("CommonModules/Sample/Ext/Module.bsl");
+        assert_eq!(state.read(relative).unwrap().unwrap(), expected.as_bytes());
+        assert_eq!(
+            fs::read(fixture.source.join(relative)).unwrap(),
+            before.as_bytes()
+        );
+        assert_eq!(
+            effects.events(),
+            &[DomainEvent::new(
+                DomainEventKind::ModuleChanged,
+                "main:CommonModule.Sample"
+            )]
+        );
+        fixture
+            .actor
+            .publish_prepared_apply(admission.prepare_with_effects(state, effects).unwrap())
+            .unwrap();
+        let repeated = staged_code_admission(&fixture, true);
+        let (state, effects) =
+            plan_admitted_code(&repeated, &fixture.binding, &[operation]).unwrap();
+        assert!(state.planned_changes().is_empty());
+        assert!(effects.events().is_empty());
+        assert_eq!(
+            fs::read(fixture.source.join(relative)).unwrap(),
+            expected.as_bytes()
+        );
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn addressed_replacement_handles_empty_inline_and_whole_module_bodies() {
+        for (before, at, text, expected) in [
+            (
+                "Procedure Base()\nEndProcedure\n",
+                "main:CommonModule.Sample.Method.Base.Body",
+                "    Value = 2;",
+                "Procedure Base()\n    Value = 2;\nEndProcedure\n",
+            ),
+            (
+                "Procedure Base() Value = 1; EndProcedure",
+                "main:CommonModule.Sample.Method.Base.Body",
+                "// replacement\nValue = 2;",
+                "Procedure Base()\n// replacement\nValue = 2;\nEndProcedure",
+            ),
+            (
+                "Procedure Base() Value = 1;\n    Value = 3;\n  EndProcedure\n",
+                "main:CommonModule.Sample.Method.Base.Body",
+                "    Value = 2;",
+                "Procedure Base()\n    Value = 2;\n  EndProcedure\n",
+            ),
+            (
+                "Procedure Base() EndProcedure Procedure Neighbor() EndProcedure",
+                "main:CommonModule.Sample.Method.Base",
+                "Procedure Base() Value = 2; EndProcedure",
+                "Procedure Base() Value = 2; EndProcedure Procedure Neighbor() EndProcedure",
+            ),
+            (
+                "\u{feff}Procedure Base()\r\nEndProcedure\r\n",
+                "main:CommonModule.Sample.Body",
+                "Procedure Changed()\nEndProcedure",
+                "\u{feff}Procedure Changed()\r\nEndProcedure\r\n",
+            ),
+        ] {
+            let fixture = staged_code_fixture("addressed-shapes", before.as_bytes());
+            let operation = parse_code_plan_operation(
+                "code.replace",
+                &json!({"at":at, "text":text}),
+                0,
+                &fixture.binding,
+            )
+            .unwrap();
+            let admission = staged_code_admission(&fixture, false);
+            let (mut state, effects) = plan_admitted_code(
+                &admission,
+                &fixture.binding,
+                std::slice::from_ref(&operation),
+            )
+            .unwrap();
+            let relative = Path::new("CommonModules/Sample/Ext/Module.bsl");
+            assert_eq!(state.read(relative).unwrap().unwrap(), expected.as_bytes());
+            fixture
+                .actor
+                .publish_prepared_apply(admission.prepare_with_effects(state, effects).unwrap())
+                .unwrap();
+            let repeated = staged_code_admission(&fixture, true);
+            let (state, effects) =
+                plan_admitted_code(&repeated, &fixture.binding, &[operation]).unwrap();
+            assert!(state.planned_changes().is_empty());
+            assert!(effects.events().is_empty());
+            assert_eq!(
+                fs::read(fixture.source.join(relative)).unwrap(),
+                expected.as_bytes()
+            );
+            fixture.cleanup();
+        }
+    }
+
+    #[test]
+    fn addressed_replacement_refuses_missing_ambiguous_and_nonwritable_nodes() {
+        let fixture =
+            staged_code_fixture("addressed-refusals", b"Procedure Base()\nEndProcedure\n");
+        let admission = staged_code_admission(&fixture, false);
+        for at in [
+            "main:CommonModule.Sample.Method.Missing.Body",
+            "main:CommonModule.Sample.Compilation.Server.Body",
+            "main:CommonModule.Sample.Method.Base.Signature",
+        ] {
+            let parsed = parse_code_plan_operation(
+                "code.replace",
+                &json!({"at":at,"text":"Value = 2;"}),
+                0,
+                &fixture.binding,
+            );
+            let result = parsed.and_then(|operation| {
+                plan_admitted_code(&admission, &fixture.binding, &[operation])
+            });
+            assert!(result.is_err(), "{at}");
+        }
+        let error = parse_code_plan_operation("code.replace", &json!({"at":"main:CommonModule.Sample.Method.Base.Body","text":"Value = 2;","selector":{"method":"Base"}}), 0, &fixture.binding).unwrap_err();
+        assert_eq!(error.path(), Some("ops[0].args.selector"));
+        assert_eq!(
+            fs::read(fixture.source.join("CommonModules/Sample/Ext/Module.bsl")).unwrap(),
+            b"Procedure Base()\nEndProcedure\n"
+        );
+        fixture.cleanup();
+
+        let duplicate = staged_code_fixture(
+            "addressed-duplicate",
+            b"Procedure Base()\nEndProcedure\nProcedure Base()\nEndProcedure\n",
+        );
+        let operation = parse_code_plan_operation(
+            "code.replace",
+            &json!({"at":"main:CommonModule.Sample.Method.Base.Body","text":"Value = 2;"}),
+            0,
+            &duplicate.binding,
+        )
+        .unwrap();
+        let admission = staged_code_admission(&duplicate, false);
+        assert!(plan_admitted_code(&admission, &duplicate.binding, &[operation]).is_err());
+        duplicate.cleanup();
+    }
+
+    #[test]
+    fn addressed_method_body_replaces_statements_on_the_closing_line() {
+        for before in [
+            "Procedure Base()\n    Value = 1; EndProcedure\n",
+            "Procedure Base()\n    Value = 1;\n    Value = 3; EndProcedure\n",
+        ] {
+            let operation = CodePlanOperation::Replace(CodeReplaceArgs {
+                at: crate::domain::address::QualifiedAddress::parse(
+                    "main:CommonModule.Sample.Method.Base.Body",
+                )
+                .unwrap(),
+                text: "    Value = 2;".to_owned(),
+                selector: None,
+            });
+            let post = plan_code_postimage(before.as_bytes(), &operation, 0).unwrap();
+            assert_eq!(
+                post.after,
+                b"Procedure Base()\n    Value = 2;\nEndProcedure\n"
+            );
+            let repeated = plan_code_postimage(&post.after, &operation, 0).unwrap();
+            assert!(repeated.no_op);
+            assert_eq!(repeated.after, post.after);
+        }
+    }
+
+    #[test]
     fn staged_code_args_report_exact_paths_and_reject_legacy_fields() {
         let fixture = staged_code_fixture("args", b"Procedure Base()\nEndProcedure\n");
         let valid = parse_code_plan_operation(
@@ -5372,7 +5809,7 @@ pub(super) mod tests {
         CodePlanOperation::Replace(CodeReplaceArgs {
             at: crate::domain::address::QualifiedAddress::parse(at).unwrap(),
             text: text.to_string(),
-            selector,
+            selector: Some(selector),
         })
     }
 
