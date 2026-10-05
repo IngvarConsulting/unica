@@ -49,6 +49,36 @@ use std::sync::MutexGuard;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
+#[cfg(not(test))]
+fn actor_retention_now() -> Instant {
+    Instant::now()
+}
+
+#[cfg(test)]
+thread_local! {
+    static ACTOR_RETENTION_TEST_NOW: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn actor_retention_now() -> Instant {
+    ACTOR_RETENTION_TEST_NOW.with(|clock| clock.get().unwrap_or_else(Instant::now))
+}
+
+#[cfg(test)]
+pub(crate) fn with_actor_retention_time_for_test<T>(
+    now: Instant,
+    operation: impl FnOnce() -> T,
+) -> T {
+    struct RestoreTime(Option<Instant>);
+    impl Drop for RestoreTime {
+        fn drop(&mut self) {
+            ACTOR_RETENTION_TEST_NOW.with(|clock| clock.set(self.0));
+        }
+    }
+    let _restore = RestoreTime(ACTOR_RETENTION_TEST_NOW.with(|clock| clock.replace(Some(now))));
+    operation()
+}
+
 #[cfg(test)]
 thread_local! {
     static LOGICAL_PUBLICATION_AFTER_CONFIRMATION_HOOK: std::cell::RefCell<
@@ -125,11 +155,8 @@ fn run_revision_service_after_binding_validation_hook() {
     });
 }
 
-/// Recently used actors the daemon keeps alive between invocations so their
-/// trusted source revision and platform fence survive to the next call.
-pub(crate) const WARM_WORKSPACE_ACTORS: usize = 8;
-/// Idle time after which a warm actor is released together with its retained
-/// root descriptors and fence.
+/// Idle interval after which an actor without promised state may release its
+/// retained root descriptors.
 pub(crate) const WARM_WORKSPACE_ACTOR_TTL: Duration = Duration::from_secs(600);
 static APPLY_WRITER_AUTHORITY_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
@@ -1554,14 +1581,11 @@ pub(crate) enum SavedApplyExecutionError {
     Publication(ApplyPublicationError),
 }
 
-const SAVED_APPLY_TTL: Duration = Duration::from_secs(300);
-
 #[derive(Default)]
 struct SavedApplyPlans {
     entries: HashMap<String, Arc<SavedApplyPlan>>,
 }
 struct SavedApplyPlan {
-    expires: Instant,
     execution_lane: DeadlineLock<FailClosed>,
     state: Mutex<SavedApplyState>,
 }
@@ -1703,6 +1727,15 @@ impl<R> WorkspaceActor<R> {
 
     pub(crate) fn identity(&self) -> &WorkspaceIdentity {
         &self.identity
+    }
+
+    fn retains_promised_state(&self) -> bool {
+        let saved = self
+            .saved_apply_plans
+            .lock()
+            .map(|plans| !plans.entries.is_empty())
+            .unwrap_or(true);
+        saved || self.index_work.has_live_entries()
     }
 
     /// Whether every retained source-set root is still the directory its
@@ -2084,19 +2117,14 @@ impl<R> WorkspaceActor<R> {
         if prepared.actor_identity != self.identity || prepared.actor_instance != self.instance_id {
             return Err(SavedApplyPlanError::ActorMismatch);
         }
-        let now = Instant::now();
         let mut plans = self
             .saved_apply_plans
             .lock()
             .map_err(|_| SavedApplyPlanError::RegistryUnavailable)?;
-        plans
-            .entries
-            .retain(|_, entry| entry.expires > now || Arc::strong_count(entry) > 1);
         let token = uuid::Uuid::new_v4().to_string();
         plans.entries.insert(
             token.clone(),
             Arc::new(SavedApplyPlan {
-                expires: now + SAVED_APPLY_TTL,
                 execution_lane: DeadlineLock::fail_closed("saved apply execution lane is poisoned"),
                 state: Mutex::new(SavedApplyState::Pending {
                     batch: Box::new(prepared),
@@ -2132,11 +2160,6 @@ impl<R> WorkspaceActor<R> {
         let mut state = entry.state.lock().map_err(|_| {
             SavedApplyExecutionError::StateUnavailable("saved apply execution state is unavailable")
         })?;
-        if entry.expires <= Instant::now() {
-            return Err(SavedApplyExecutionError::Unavailable(
-                "executionToken expired; request a fresh plan with apply(at, ops)".into(),
-            ));
-        }
         if let SavedApplyState::Completed(result) = &*state {
             return Ok(result.clone());
         }
@@ -2153,11 +2176,6 @@ impl<R> WorkspaceActor<R> {
             })?;
         apply_publication_checkpoint(deadline, cancellation, "saved apply execution start")
             .map_err(SavedApplyExecutionError::Publication)?;
-        if entry.expires <= Instant::now() {
-            return Err(SavedApplyExecutionError::Unavailable(
-                "executionToken expired; request a fresh plan with apply(at, ops)".into(),
-            ));
-        }
         let SavedApplyState::Pending { mut batch, preview } =
             std::mem::replace(&mut *state, SavedApplyState::Running)
         else {
@@ -2901,11 +2919,10 @@ impl std::error::Error for WorkspaceActorRegistryError {}
 #[derive(Debug)]
 pub(crate) struct WorkspaceActorRegistry {
     actors: Mutex<HashMap<WorkspaceIdentity, Weak<WorkspaceActor>>>,
-    /// Bounded most-recently-used actors retained between invocations. The
-    /// weak map above stays the admission authority; this set only keeps a
-    /// few recent actors alive so the next call finds a trusted revision.
+    /// Strong ownership between invocations. Promised plans, terminal replay
+    /// and shared index work keep their actor alive for the daemon lifetime.
+    /// Only actors without such state may be released after the idle interval.
     warm: Mutex<VecDeque<WarmWorkspaceActor>>,
-    warm_capacity: usize,
     warm_ttl: Duration,
 }
 
@@ -2920,7 +2937,6 @@ impl Default for WorkspaceActorRegistry {
         Self {
             actors: Mutex::new(HashMap::new()),
             warm: Mutex::new(VecDeque::new()),
-            warm_capacity: WARM_WORKSPACE_ACTORS,
             warm_ttl: WARM_WORKSPACE_ACTOR_TTL,
         }
     }
@@ -2938,7 +2954,7 @@ impl WorkspaceActorRegistry {
     {
         let identity = WorkspaceIdentity::new(context, source_sets, provider_profile)
             .map_err(WorkspaceActorRegistryError::InvalidIdentity)?;
-        let now = Instant::now();
+        let now = actor_retention_now();
         let mut actors = self
             .actors
             .lock()
@@ -2967,14 +2983,11 @@ impl WorkspaceActorRegistry {
         );
         actors.insert(identity, Arc::downgrade(&actor));
         self.touch_warm(&actor, now)?;
-        // Warming the new actor may have released the oldest warm one; do not
-        // leave its dead entry behind until the next admission.
-        actors.retain(|_, actor| actor.strong_count() > 0);
         Ok(actor)
     }
 
-    /// Releases every warm actor. A daemon that has requested its own restart
-    /// keeps nothing alive beyond the invocations still executing.
+    /// Releases actors without promised state. Live invocations retain their
+    /// own leases; plans and index work retain the registry's strong owner.
     pub(crate) fn release_warm_actors(&self) -> Result<(), WorkspaceActorRegistryError> {
         let _actors = self
             .actors
@@ -2983,15 +2996,13 @@ impl WorkspaceActorRegistry {
         self.clear_warm()
     }
 
-    /// Releases warm actors that idled past the TTL. The daemon calls this
-    /// from its accept loop so retained descriptors do not outlive the idle
-    /// window without a new admission.
+    /// Releases idle actors only when no promised state needs their owner.
     pub(crate) fn evict_idle_warm_actors(&self) -> Result<(), WorkspaceActorRegistryError> {
         let _actors = self
             .actors
             .lock()
             .map_err(|_| WorkspaceActorRegistryError::Poisoned)?;
-        self.evict_expired_warm(Instant::now())
+        self.evict_expired_warm(actor_retention_now())
     }
 
     fn warm_lock(
@@ -3008,24 +3019,21 @@ impl WorkspaceActorRegistry {
         actor: &Arc<WorkspaceActor>,
         now: Instant,
     ) -> Result<(), WorkspaceActorRegistryError> {
-        if self.warm_capacity == 0 {
-            return Ok(());
-        }
         let mut warm = self.warm_lock()?;
         warm.retain(|entry| !Arc::ptr_eq(&entry.actor, actor));
         warm.push_back(WarmWorkspaceActor {
             actor: Arc::clone(actor),
             last_used: now,
         });
-        while warm.len() > self.warm_capacity {
-            warm.pop_front();
-        }
         Ok(())
     }
 
     fn evict_expired_warm(&self, now: Instant) -> Result<(), WorkspaceActorRegistryError> {
         let mut warm = self.warm_lock()?;
-        warm.retain(|entry| now.saturating_duration_since(entry.last_used) < self.warm_ttl);
+        warm.retain(|entry| {
+            now.saturating_duration_since(entry.last_used) < self.warm_ttl
+                || entry.actor.retains_promised_state()
+        });
         Ok(())
     }
 
@@ -3036,7 +3044,8 @@ impl WorkspaceActorRegistry {
     }
 
     fn clear_warm(&self) -> Result<(), WorkspaceActorRegistryError> {
-        self.warm_lock()?.clear();
+        self.warm_lock()?
+            .retain(|entry| entry.actor.retains_promised_state());
         Ok(())
     }
 
@@ -3054,9 +3063,8 @@ impl WorkspaceActorRegistry {
     }
 
     #[cfg(test)]
-    pub(crate) fn with_warm_policy_for_test(warm_capacity: usize, warm_ttl: Duration) -> Self {
+    pub(crate) fn with_idle_policy_for_test(warm_ttl: Duration) -> Self {
         Self {
-            warm_capacity,
             warm_ttl,
             ..Self::default()
         }
@@ -4669,7 +4677,6 @@ pub(crate) mod tests {
         let root = temp_root("warm-reuse");
         std::fs::create_dir_all(root.join("src")).unwrap();
         let registry = WorkspaceActorRegistry::default();
-        assert_eq!(registry.warm_capacity, 8);
         assert_eq!(registry.warm_ttl, Duration::from_secs(600));
         let context = context(&root);
         let first = registry
@@ -4701,7 +4708,7 @@ pub(crate) mod tests {
                 .unwrap();
             others.push(Arc::downgrade(&actor));
         }
-        // Refresh the oldest actor, then exceed the production warm capacity.
+        // Another profile must not evict an otherwise usable actor.
         let reused = registry
             .get_or_create(&context, [source_input("main", root.join("src"))], "p")
             .unwrap();
@@ -4719,21 +4726,18 @@ pub(crate) mod tests {
             "recently used actor must stay warm"
         );
         assert!(
-            others[0].upgrade().is_none(),
-            "least recently used actor must be released"
+            others[0].upgrade().is_some(),
+            "another profile must not evict a retained actor"
         );
         assert!(others[1..].iter().all(|actor| actor.upgrade().is_some()));
-        assert_eq!(registry.warm_len_for_test().unwrap(), 8);
+        assert_eq!(registry.warm_len_for_test().unwrap(), 9);
     }
 
     #[test]
     pub(crate) fn warm_actor_expires_after_the_idle_ttl_and_is_rebuilt() {
         let root = temp_root("warm-ttl");
         std::fs::create_dir_all(root.join("src")).unwrap();
-        let registry = WorkspaceActorRegistry::with_warm_policy_for_test(
-            super::WARM_WORKSPACE_ACTORS,
-            Duration::ZERO,
-        );
+        let registry = WorkspaceActorRegistry::with_idle_policy_for_test(Duration::ZERO);
         let context = context(&root);
         let first = registry
             .get_or_create(&context, [source_input("main", root.join("src"))], "p")
@@ -4755,6 +4759,57 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(registry.warm_len_for_test().unwrap(), 1);
         drop(second);
+    }
+
+    #[test]
+    fn idle_cleanup_retains_unknown_actor_state_without_rejecting_other_profiles() {
+        for poison_plans in [true, false] {
+            let root = temp_root("retention-poison");
+            std::fs::create_dir_all(root.join("src")).unwrap();
+            let registry = WorkspaceActorRegistry::default();
+            let started = Instant::now();
+            let actor = super::with_actor_retention_time_for_test(started, || {
+                registry.get_or_create(
+                    &context(&root),
+                    [source_input("main", root.join("src"))],
+                    "p",
+                )
+            })
+            .unwrap();
+            let observed = Arc::downgrade(&actor);
+            if poison_plans {
+                let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _plans = actor.saved_apply_plans.lock().unwrap();
+                    panic!("poison saved plans for retention test");
+                }));
+                assert!(poisoned.is_err());
+            } else {
+                actor.index_work.poison_registry_for_test();
+            }
+            drop(actor);
+            super::with_actor_retention_time_for_test(started + Duration::from_secs(601), || {
+                registry.evict_idle_warm_actors().unwrap();
+            });
+            registry.release_warm_actors().unwrap();
+            assert!(
+                observed.upgrade().is_some(),
+                "unknown promised state was treated as empty"
+            );
+            let other = root.join("other");
+            std::fs::create_dir_all(other.join("src")).unwrap();
+            let admitted = registry
+                .get_or_create(
+                    &context(&other),
+                    [source_input("main", other.join("src"))],
+                    "p",
+                )
+                .expect("an unrelated profile must not be refused by a poisoned cleanup query");
+            assert_ne!(
+                admitted.identity().workspace_root(),
+                observed.upgrade().unwrap().identity().workspace_root()
+            );
+            let _ = std::fs::remove_dir_all(root);
+        }
     }
 
     #[test]
@@ -4942,9 +4997,9 @@ pub(crate) mod tests {
     #[test]
     fn daemon_actor_registry_prunes_dead_entries_and_bounds_sequential_roots() {
         let parent = temp_root("bounded-sequential");
-        // The weak map is the admission authority; with the warm set disabled
-        // every released actor must die and its entry must be pruned.
-        let registry = WorkspaceActorRegistry::with_warm_policy_for_test(0, Duration::ZERO);
+        // The weak map is the admission authority. Idle cleanup releases
+        // empty actors, and the next admission prunes their dead entries.
+        let registry = WorkspaceActorRegistry::with_idle_policy_for_test(Duration::ZERO);
 
         for index in 0..12 {
             let root = parent.join(format!("workspace-{index}"));
@@ -4959,6 +5014,7 @@ pub(crate) mod tests {
                 .unwrap();
             assert_eq!(registry.live_len_for_test().unwrap(), 1);
             drop(actor);
+            registry.evict_idle_warm_actors().unwrap();
         }
 
         registry.prune_dead_for_test().unwrap();
@@ -5005,10 +5061,7 @@ pub(crate) mod tests {
         let source = root.join("src");
         std::fs::create_dir_all(&source).unwrap();
         std::fs::create_dir_all(root.join("nested")).unwrap();
-        let registry = WorkspaceActorRegistry::with_warm_policy_for_test(
-            super::WARM_WORKSPACE_ACTORS,
-            Duration::ZERO,
-        );
+        let registry = WorkspaceActorRegistry::with_idle_policy_for_test(Duration::ZERO);
         let first = registry
             .get_or_create(
                 &context(&root),
@@ -11351,8 +11404,8 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn saved_apply_expired_inflight_entry_survives_until_executor_releases_it() {
-        let fixture = actor_fixture("saved-plan-inflight-expiry", &["main"]);
+    fn saved_apply_entries_survive_later_plans_after_executor_releases_entry() {
+        let fixture = actor_fixture("saved-plan-retained-entries", &["main"]);
         write_actor_event_fixture(&fixture.roots[0]);
         let binding = fixture
             .actor
@@ -11365,24 +11418,13 @@ pub(crate) mod tests {
             .actor
             .save_prepared_apply(prepare(), preview.clone())
             .unwrap();
-        let retained = {
-            let mut plans = fixture.actor.saved_apply_plans.lock().unwrap();
-            std::sync::Arc::get_mut(plans.entries.get_mut(&token).unwrap())
-                .unwrap()
-                .expires = Instant::now();
-            plans.entries[&token].clone()
-        };
+        let retained = fixture.actor.saved_apply_plans.lock().unwrap().entries[&token].clone();
         let source_before = snapshot_tree(&fixture.roots[0]);
         let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
         let next = fixture
             .actor
             .save_prepared_apply(prepare(), preview.clone())
             .unwrap();
-        {
-            let plans = fixture.actor.saved_apply_plans.lock().unwrap();
-            assert!(plans.entries.contains_key(&token));
-            assert!(plans.entries.contains_key(&next));
-        }
         drop(retained);
         let newest = fixture
             .actor
@@ -11390,20 +11432,30 @@ pub(crate) mod tests {
             .unwrap();
         {
             let plans = fixture.actor.saved_apply_plans.lock().unwrap();
-            assert!(!plans.entries.contains_key(&token));
-            assert!(plans.entries.contains_key(&next));
-            assert!(plans.entries.contains_key(&newest));
+            for issued in [&token, &next, &newest] {
+                assert!(plans.entries.contains_key(issued));
+            }
         }
         assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
         assert_eq!(
             snapshot_tree(&fixture.root.join(".build/unica")),
             cache_before
         );
+        let result = fixture
+            .actor
+            .execute_saved_apply(
+                &token,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+                finish_saved_apply_test,
+            )
+            .unwrap();
+        assert!(result.ok, "the original issued plan was lost: {result:?}");
         fixture.cleanup();
     }
 
     #[test]
-    fn saved_apply_token_is_actor_bound_and_expired_plan_has_no_effect() {
+    fn saved_apply_token_is_actor_bound_and_foreign_execution_has_no_effect() {
         let fixture = actor_fixture("saved-plan-bound-token", &["main"]);
         let other = actor_fixture("saved-plan-other-workspace", &["main"]);
         write_actor_event_fixture(&fixture.roots[0]);
@@ -11421,6 +11473,7 @@ pub(crate) mod tests {
                 crate::domain::invocation::DomainResult::success("preview"),
             )
             .unwrap();
+        let before = snapshot_tree(&fixture.roots[0]);
         assert!(other
             .actor
             .execute_saved_apply(
@@ -11430,22 +11483,20 @@ pub(crate) mod tests {
                 |_, _| panic!("foreign token cannot execute")
             )
             .is_err());
-        {
-            let mut plans = fixture.actor.saved_apply_plans.lock().unwrap();
-            let plan = std::sync::Arc::get_mut(plans.entries.get_mut(&token).unwrap()).unwrap();
-            plan.expires = Instant::now();
-        }
-        let before = snapshot_tree(&fixture.roots[0]);
-        assert!(fixture
+        assert_eq!(snapshot_tree(&fixture.roots[0]), before);
+        let result = fixture
             .actor
             .execute_saved_apply(
                 &token,
                 ProviderDeadline::from_budget(Duration::from_secs(5)),
                 &CancellationToken::new(),
-                |_, _| panic!("expired token cannot execute")
+                finish_saved_apply_test,
             )
-            .is_err());
-        assert_eq!(snapshot_tree(&fixture.roots[0]), before);
+            .unwrap();
+        assert!(
+            result.ok,
+            "the owner's plan became unusable after foreign refusal: {result:?}"
+        );
         fixture.cleanup();
         other.cleanup();
     }

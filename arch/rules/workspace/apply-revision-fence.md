@@ -9,6 +9,10 @@ check:
   - crates/unica-coder/src/infrastructure/workspace_actor.rs::saved_apply_rebinds_nested_namespace_guards_to_the_execution_budget
   - crates/unica-coder/src/infrastructure/workspace_actor.rs::saved_apply_large_retained_inputs_can_be_saved_and_executed
   - crates/unica-coder/src/infrastructure/daemon/server.rs::saved_apply_more_than_256_plans_keep_earlier_tokens_without_writes
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::saved_apply_token_survives_eight_other_workspace_profiles_and_replays_exactly
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::saved_apply_plan_survives_former_three_hundred_second_expiry
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::saved_apply_plan_survives_former_six_hundred_second_actor_idle_window
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::saved_apply_refusal_replays_after_former_actor_idle_window_without_replanning
 ---
 
 # Применение исполняет сохранённый план с проверкой его входов
@@ -24,15 +28,18 @@ check:
 конфигурации. Для другого адреса или операций нужен новый план.
 
 Сохранение плана не отказывает по общей квоте байтов или числу сохранённых
-планов. Такие ограничения допускаются после замеров рабочих нагрузок и
-согласования их значений. Истечение срока токена ограничивает его пригодность;
-истёкшие записи освобождаются при следующем сохранении, когда их уже не
-удерживает выполняющий или ожидающий вызов.
+планов. Допустимость нового ограничения задаёт
+[правило обоснования ресурсов](../runtime/resource-limit-evidence.md).
+Возраст токена и обращения к другим профилям не удаляют план в текущем демоне.
+Сохранение следующего плана не освобождает предыдущие. Исполненный план
+сохраняет точный результат, включая отказ, для повторного исполнения токена
+без повторной публикации. Это не обещает сохранение токена после перезапуска
+демона и не разрешает применение в подменённом корне.
 
 Перед публикацией и на её границах проверяются удержанные корни и точечные
 исходные байты. Изменение прочитанных байтов даёт `stale_revision` и требует
-нового плана. Отмена, срок, проверки карты исходников и поддержки, а также
-откат сохраняют свои гарантии.
+нового плана. Отмена, сроки исполнения, проверки карты исходников и поддержки,
+а также откат сохраняют свои гарантии.
 
 Изменение файла вне входов плана не инвалидирует план. Независимые планы могут
 выполняться последовательно. Независимость означает отсутствие пересечений
