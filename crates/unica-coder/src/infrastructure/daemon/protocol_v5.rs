@@ -692,6 +692,25 @@ pub(crate) enum V5DaemonTaskSnapshot {
 }
 
 impl V5DaemonTaskSnapshot {
+    pub(crate) fn receipt_key_digest(&self) -> &ReceiptKeyDigest {
+        match self {
+            Self::Queued {
+                receipt_key_digest, ..
+            }
+            | Self::Working {
+                receipt_key_digest, ..
+            }
+            | Self::Completed {
+                receipt_key_digest, ..
+            }
+            | Self::Failed {
+                receipt_key_digest, ..
+            }
+            | Self::Cancelled {
+                receipt_key_digest, ..
+            } => receipt_key_digest,
+        }
+    }
     pub(crate) fn task_id(&self) -> TaskId {
         match self {
             Self::Queued { task_id, .. }

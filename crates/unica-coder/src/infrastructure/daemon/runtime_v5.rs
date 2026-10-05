@@ -5919,6 +5919,9 @@ fn handle_probe_connection(
                 let epoch_ms = runtime.epoch_ms();
                 match runtime.cancel_invocation(receipt_key, epoch_ms, deadlines.operation) {
                     Ok(reply) => {
+                        if runtime.hooks.cancel_response_disconnect() {
+                            return Ok(());
+                        }
                         write_runtime_reply_before(&mut stream, runtime, reply, deadlines.response)
                     }
                     Err(error) => write_runtime_ledger_error_before(
@@ -6015,6 +6018,7 @@ fn handle_probe_connection(
                 let V5ClientRequest::WaitTask { task_id, wait_ms } = decoded.into_request() else {
                     unreachable!("request kind and decoded wait Task variant diverged");
                 };
+                runtime.hooks.wait_task_received(task_id);
                 match runtime.wait_task(task_id, wait_ms, deadlines.operation) {
                     Ok(snapshot) => write_runtime_json_line_before(
                         &mut stream,
