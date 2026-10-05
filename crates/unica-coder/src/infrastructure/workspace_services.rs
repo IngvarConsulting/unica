@@ -40,8 +40,10 @@ use std::io::{self, BufRead, BufReader, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{ChildStdin, Command, Stdio};
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
 use std::sync::{
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    atomic::{AtomicBool, Ordering},
     mpsc, Arc, Condvar, Mutex,
 };
 use std::thread;
@@ -72,11 +74,6 @@ const RLM_LOGICAL_SESSION_RETRY_LIMIT: usize = 2;
 const SERVICE_SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 const SERVICE_RESPONSE_LINE_LIMIT: usize = 8 * 1024 * 1024;
 const SERVICE_REQUEST_LINE_LIMIT: usize = 8 * 1024 * 1024;
-const SERVICE_MAX_CONNECTION_HANDLERS: usize = 64;
-const SERVICE_MAX_CONTROL_HANDLERS: usize = 8;
-const SERVICE_MAX_PENDING_CONTROL: usize = 64;
-const SERVICE_CONTROL_CLASSIFICATION_LIMIT: usize = 64 * 1024;
-const SERVICE_MAX_WORKERS: usize = 8;
 const SERVICE_REQUEST_HEADER_TIMEOUT: Duration = Duration::from_secs(5);
 const SESSION_TEARDOWN_GRACE: Duration = Duration::from_secs(3);
 const SERVICE_SPAWN_CLEANUP_WAIT: Duration = Duration::from_secs(2);
@@ -89,46 +86,6 @@ const LEGACY_WORKSPACE_SERVICE_SOURCE_SET: &str = "compat";
 
 static SYSTEM_SERVICE_CONNECTOR: SystemServiceConnector = SystemServiceConnector;
 static SYSTEM_SERVICE_SPAWNER: SystemServiceSpawner = SystemServiceSpawner;
-
-struct AdmissionGate {
-    active: AtomicUsize,
-    limit: usize,
-}
-
-impl AdmissionGate {
-    fn new(limit: usize) -> Arc<Self> {
-        Arc::new(Self {
-            active: AtomicUsize::new(0),
-            limit,
-        })
-    }
-
-    fn try_acquire(self: &Arc<Self>) -> Option<AdmissionPermit> {
-        let mut active = self.active.load(Ordering::Acquire);
-        loop {
-            if active >= self.limit {
-                return None;
-            }
-            match self.active.compare_exchange_weak(
-                active,
-                active + 1,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => return Some(AdmissionPermit(Arc::clone(self))),
-                Err(next) => active = next,
-            }
-        }
-    }
-}
-
-struct AdmissionPermit(Arc<AdmissionGate>);
-
-impl Drop for AdmissionPermit {
-    fn drop(&mut self) {
-        self.0.active.fetch_sub(1, Ordering::AcqRel);
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceServiceIdentity {
@@ -1515,16 +1472,18 @@ struct WorkspaceServiceRuntimeState {
     rlm_invalidated: AtomicBool,
     operations: Mutex<HashMap<String, CancellationToken>>,
     shutting_down: AtomicBool,
-    work_admission: Arc<AdmissionGate>,
-    general_admission: Arc<AdmissionGate>,
-    control_admission: Arc<AdmissionGate>,
     #[cfg(test)]
     handler_started_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
+    authenticated_request_hook: Mutex<Option<Arc<AuthenticatedWorkspaceRequestHook>>>,
     #[cfg(test)]
     provider_sessions_drained_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 pub(super) struct WorkspaceServiceRuntimeProjection<'a>(&'a WorkspaceServiceRuntimeState);
+
+#[cfg(test)]
+type AuthenticatedWorkspaceRequestHook = dyn Fn(u16, &ServiceRequestKind) + Send + Sync;
 
 #[cfg(test)]
 pub(super) struct WorkspaceServiceRuntimeProjectionMut<'a>(&'a mut WorkspaceServiceRuntimeState);
@@ -1669,11 +1628,10 @@ impl WorkspaceServiceRuntime {
             rlm_invalidated: AtomicBool::new(false),
             operations: Mutex::new(HashMap::new()),
             shutting_down: AtomicBool::new(false),
-            work_admission: AdmissionGate::new(SERVICE_MAX_WORKERS),
-            general_admission: AdmissionGate::new(SERVICE_MAX_CONNECTION_HANDLERS),
-            control_admission: AdmissionGate::new(SERVICE_MAX_CONTROL_HANDLERS),
             #[cfg(test)]
             handler_started_hook: Mutex::new(None),
+            #[cfg(test)]
+            authenticated_request_hook: Mutex::new(None),
             #[cfg(test)]
             provider_sessions_drained_hook: Mutex::new(None),
         };
@@ -1776,18 +1734,6 @@ impl WorkspaceServiceRuntime {
         &self.actor.runtime_projection().0.shutting_down
     }
 
-    fn work_admission(&self) -> &Arc<AdmissionGate> {
-        &self.actor.runtime_projection().0.work_admission
-    }
-
-    fn general_admission(&self) -> &Arc<AdmissionGate> {
-        &self.actor.runtime_projection().0.general_admission
-    }
-
-    fn control_admission(&self) -> &Arc<AdmissionGate> {
-        &self.actor.runtime_projection().0.control_admission
-    }
-
     #[cfg(test)]
     fn runtime_mut_for_test(&mut self) -> &mut WorkspaceServiceRuntimeState {
         self.actor.runtime_projection_mut_for_test().0
@@ -1854,6 +1800,21 @@ impl WorkspaceServiceRuntime {
         let hook = self.handler_started_hook().lock().unwrap().clone();
         if let Some(hook) = hook {
             hook();
+        }
+    }
+
+    #[cfg(test)]
+    fn notify_authenticated_request(&self, stream: &TcpStream, kind: &ServiceRequestKind) {
+        let hook = self
+            .actor
+            .runtime_projection()
+            .0
+            .authenticated_request_hook
+            .lock()
+            .unwrap()
+            .clone();
+        if let (Some(hook), Ok(peer)) = (hook, stream.peer_addr()) {
+            hook(peer.port(), kind);
         }
     }
 
@@ -3785,51 +3746,6 @@ fn run_workspace_service(
     )
 }
 
-struct PendingControlConnection {
-    stream: TcpStream,
-    accepted_at: Instant,
-    bytes: Vec<u8>,
-}
-
-enum PendingControlPoll {
-    Pending,
-    Request(ServiceRequest),
-    Invalid(String),
-    Closed,
-}
-
-impl PendingControlConnection {
-    fn poll(&mut self) -> PendingControlPoll {
-        if self.accepted_at.elapsed() >= SERVICE_CONTROL_CONNECT_TIMEOUT {
-            return PendingControlPoll::Closed;
-        }
-        let mut chunk = [0_u8; 8192];
-        match self.stream.read(&mut chunk) {
-            Ok(0) => PendingControlPoll::Closed,
-            Ok(count) => {
-                self.bytes.extend_from_slice(&chunk[..count]);
-                if self.bytes.len() > SERVICE_CONTROL_CLASSIFICATION_LIMIT {
-                    return PendingControlPoll::Invalid(
-                        "workspace service overloaded: control classification line is too large"
-                            .into(),
-                    );
-                }
-                let Some(newline) = self.bytes.iter().position(|byte| *byte == b'\n') else {
-                    return PendingControlPoll::Pending;
-                };
-                match serde_json::from_slice::<ServiceRequest>(&self.bytes[..newline]) {
-                    Ok(request) => PendingControlPoll::Request(request),
-                    Err(error) => PendingControlPoll::Invalid(format!(
-                        "invalid workspace service request: {error}"
-                    )),
-                }
-            }
-            Err(error) if error.kind() == ErrorKind::WouldBlock => PendingControlPoll::Pending,
-            Err(_) => PendingControlPoll::Closed,
-        }
-    }
-}
-
 fn serve_workspace_service(
     listener: TcpListener,
     runtime: Arc<WorkspaceServiceRuntime>,
@@ -3842,7 +3758,6 @@ fn serve_workspace_service(
     let started = Instant::now();
     let mut last_access = Instant::now();
     let mut handlers: Vec<thread::JoinHandle<Result<(), String>>> = Vec::new();
-    let mut pending_control = Vec::<PendingControlConnection>::new();
     let mut result = Ok(());
     loop {
         let mut index = 0;
@@ -3853,58 +3768,6 @@ fn serve_workspace_service(
             } else {
                 index += 1;
             }
-        }
-        let mut index = 0;
-        while index < pending_control.len() {
-            match pending_control[index].poll() {
-                PendingControlPoll::Pending => index += 1,
-                outcome => {
-                    let pending = pending_control.swap_remove(index);
-                    match outcome {
-                        PendingControlPoll::Request(request) if request.kind.is_control() => {
-                            if let Some(permit) = runtime.control_admission().try_acquire() {
-                                let response_timeout = SERVICE_CONTROL_CONNECT_TIMEOUT
-                                    .saturating_sub(pending.accepted_at.elapsed());
-                                let handler_runtime = Arc::clone(&runtime);
-                                let handler_executor = Arc::clone(&executor);
-                                match thread::Builder::new().name("unica-workspace-control".into()).spawn(move || {
-                                    let _permit = permit;
-                                    pending.stream.set_nonblocking(false).map_err(|error| format!("failed to restore workspace control stream: {error}"))?;
-                                    pending.stream.set_write_timeout(Some(response_timeout)).map_err(|error| format!("failed to set workspace control response timeout: {error}"))?;
-                                    handle_workspace_service_request(pending.stream, handler_runtime, handler_executor, request)
-                                }) {
-                                    Ok(handler) => handlers.push(handler),
-                                    Err(error) => { result = Err(format!("workspace service control handler spawn failed: {error}")); break; }
-                                }
-                            } else {
-                                let _ = pending.stream.shutdown(std::net::Shutdown::Both);
-                            }
-                        }
-                        PendingControlPoll::Request(_) => {
-                            let _ = pending.stream.set_nonblocking(false);
-                            let _ = pending
-                                .stream
-                                .set_write_timeout(Some(Duration::from_millis(100)));
-                            let _ = write_service_response(pending.stream, &ServiceResponse::error("workspace service overloaded: general connection handlers are saturated"), true);
-                        }
-                        PendingControlPoll::Invalid(error) => {
-                            let _ = pending.stream.set_nonblocking(false);
-                            let _ = pending
-                                .stream
-                                .set_write_timeout(Some(Duration::from_millis(100)));
-                            let _ = write_service_response(
-                                pending.stream,
-                                &ServiceResponse::error(error),
-                                true,
-                            );
-                        }
-                        PendingControlPoll::Closed | PendingControlPoll::Pending => {}
-                    }
-                }
-            }
-        }
-        if result.is_err() {
-            break;
         }
         if runtime.shutting_down().load(Ordering::Acquire) {
             break;
@@ -3917,20 +3780,6 @@ fn serve_workspace_service(
             Ok((stream, _addr)) => {
                 last_access = Instant::now();
                 update_service_record_last_access(&runtime, now_secs());
-                let Some(handler_permit) = runtime.general_admission().try_acquire() else {
-                    if pending_control.len() >= SERVICE_MAX_PENDING_CONTROL {
-                        let evicted = pending_control.remove(0);
-                        let _ = evicted.stream.shutdown(std::net::Shutdown::Both);
-                    }
-                    if stream.set_nonblocking(true).is_ok() {
-                        pending_control.push(PendingControlConnection {
-                            stream,
-                            accepted_at: Instant::now(),
-                            bytes: Vec::new(),
-                        });
-                    }
-                    continue;
-                };
                 let header_clock = SystemClock::new();
                 let header_deadline = Deadline::new(&header_clock, request_header_timeout);
                 let handler_runtime = Arc::clone(&runtime);
@@ -3938,7 +3787,6 @@ fn serve_workspace_service(
                 match thread::Builder::new()
                     .name("unica-workspace-connection".into())
                     .spawn(move || {
-                        let _permit = handler_permit;
                         #[cfg(test)]
                         handler_runtime.notify_handler_started();
                         handle_workspace_service_stream(
@@ -3972,9 +3820,6 @@ fn serve_workspace_service(
             "workspace provider sessions or maintenance tasks did not stop within {} ms",
             SESSION_TEARDOWN_GRACE.as_millis()
         ));
-    }
-    for pending in pending_control.drain(..) {
-        let _ = pending.stream.shutdown(std::net::Shutdown::Both);
     }
     let drain_deadline = Instant::now() + shutdown_grace;
     while !handlers.is_empty() && Instant::now() < drain_deadline {
@@ -4075,6 +3920,9 @@ fn handle_workspace_service_request(
         return Ok(());
     }
 
+    #[cfg(test)]
+    runtime.notify_authenticated_request(&stream, &request.kind);
+
     match request.kind {
         ServiceRequestKind::Ping => {
             write_service_response(stream, &runtime.ping(), false)?;
@@ -4091,10 +3939,6 @@ fn handle_workspace_service_request(
         kind @ (ServiceRequestKind::BslMcp { .. }
         | ServiceRequestKind::RlmReady { .. }
         | ServiceRequestKind::RlmMcp { .. }) => {
-            let Some(worker_permit) = runtime.work_admission().try_acquire() else {
-                write_service_response(stream, &ServiceResponse::error(format!("workspace service overloaded: at most {SERVICE_MAX_WORKERS} concurrent work requests are allowed")), false)?;
-                return Ok(());
-            };
             let operation_id = kind
                 .operation_id()
                 .expect("work request must carry operation id")
@@ -4112,7 +3956,6 @@ fn handle_workspace_service_request(
             let _ = thread::Builder::new()
                 .name("unica-workspace-worker".into())
                 .spawn(move || {
-                    let _permit = worker_permit;
                     let response = executor.execute(&worker_runtime, kind, &worker_cancellation);
                     drop(guard);
                     let _ = result_tx.send(response);
@@ -5440,24 +5283,7 @@ mod tests {
     );
 
     fn workspace_control_test_server(name: &str) -> WorkspaceControlTestServer {
-        workspace_control_test_server_with_options(
-            name,
-            SERVICE_MAX_CONNECTION_HANDLERS,
-            SERVICE_REQUEST_HEADER_TIMEOUT,
-            None,
-        )
-    }
-
-    fn workspace_control_test_server_with_general_limit(
-        name: &str,
-        general_limit: usize,
-    ) -> WorkspaceControlTestServer {
-        workspace_control_test_server_with_options(
-            name,
-            general_limit,
-            SERVICE_REQUEST_HEADER_TIMEOUT,
-            None,
-        )
+        workspace_control_test_server_with_options(name, SERVICE_REQUEST_HEADER_TIMEOUT, None)
     }
 
     fn workspace_control_test_server_with_header_timeout(
@@ -5467,7 +5293,6 @@ mod tests {
     ) -> WorkspaceControlTestServer {
         workspace_control_test_server_with_options(
             name,
-            SERVICE_MAX_CONNECTION_HANDLERS,
             request_header_timeout,
             Some(handler_started_hook),
         )
@@ -5475,7 +5300,6 @@ mod tests {
 
     fn workspace_control_test_server_with_options(
         name: &str,
-        general_limit: usize,
         request_header_timeout: Duration,
         handler_started_hook: Option<Arc<dyn Fn() + Send + Sync>>,
     ) -> WorkspaceControlTestServer {
@@ -5487,8 +5311,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let record = test_record(&identity, port, env!("CARGO_PKG_VERSION"));
         write_record(&identity, record.clone());
-        let mut runtime = WorkspaceServiceRuntime::new(identity, &record);
-        runtime.runtime_mut_for_test().general_admission = AdmissionGate::new(general_limit);
+        let runtime = WorkspaceServiceRuntime::new(identity, &record);
         *runtime.handler_started_hook().lock().unwrap() = handler_started_hook;
         let runtime = Arc::new(runtime);
         let executor = Arc::new(BlockingWorkspaceExecutor::default());
@@ -5685,7 +5508,7 @@ mod tests {
                 let _ = sender.send(());
             }
         });
-        let (context, record, runtime, _executor, server) =
+        let (context, record, _runtime, _executor, server) =
             workspace_control_test_server_with_header_timeout(
                 "header-timeout-recovery",
                 Duration::from_millis(50),
@@ -5698,14 +5521,15 @@ mod tests {
         handler_started_rx
             .recv_timeout(Duration::from_secs(2))
             .expect("stalled connection handler did not start");
-        let timeout_deadline = Instant::now() + Duration::from_secs(2);
-        while runtime.general_admission().active.load(Ordering::Acquire) != 0 {
-            assert!(
-                Instant::now() < timeout_deadline,
-                "timed-out connection did not release its handler"
-            );
-            thread::yield_now();
-        }
+        stalled
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let closed = stalled.read(&mut [0_u8]);
+        assert!(
+            matches!(closed, Ok(0))
+                || matches!(closed, Err(ref error) if matches!(error.kind(), ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted)),
+            "timed-out connection stayed open: {closed:?}"
+        );
 
         assert!(send_test_request(&record, ServiceRequestKind::Ping).ok);
         assert!(send_test_request(&record, ServiceRequestKind::Shutdown).ok);
@@ -5735,77 +5559,338 @@ mod tests {
 
     #[test]
     fn slow_general_headers_cannot_exhaust_control_capacity() {
-        const GENERAL_LIMIT: usize = 4;
-        let (context, record, runtime, _executor, server) =
-            workspace_control_test_server_with_general_limit(
-                "header-control-reserve",
-                GENERAL_LIMIT,
-            );
-        let mut slow = Vec::new();
-        for _ in 0..GENERAL_LIMIT {
-            let mut stream = TcpStream::connect(("127.0.0.1", record.port)).unwrap();
-            stream.write_all(b"{").unwrap();
-            slow.push(stream);
-            let expected = slow.len();
-            let deadline = Instant::now() + Duration::from_secs(2);
-            while runtime.general_admission().active.load(Ordering::Acquire) < expected {
-                assert!(
-                    Instant::now() < deadline,
-                    "general header permit {expected} was not admitted"
-                );
-                thread::yield_now();
-            }
-        }
+        let mut server = WorkspaceAdmissionTestServer::start("header-control-reserve");
+        server.hold_headers(4);
         let started = Instant::now();
-        let overloaded = send_test_request(
-            &record,
-            ServiceRequestKind::RlmReady {
-                operation_id: "header-overload".into(),
-                args: json!({}),
-                timeout_seconds: 5,
-                timeout_nanos: 0,
-            },
-        );
-        assert!(!overloaded.ok);
-        assert_eq!(
-            overloaded.error.as_deref(),
-            Some("workspace service overloaded: general connection handlers are saturated")
-        );
-        assert!(send_test_request(&record, ServiceRequestKind::Ping).ok);
+        let mut work = server.work("success-with-slow-headers");
+        assert!(read_test_response(&mut work).ok);
+        assert!(send_test_request(&server.record, ServiceRequestKind::Ping).ok);
         assert!(
             send_test_request(
-                &record,
+                &server.record,
                 ServiceRequestKind::Cancel {
                     operation_id: "none".into()
                 }
             )
             .ok
         );
-        assert!(send_test_request(&record, ServiceRequestKind::Shutdown).ok);
+        assert!(send_test_request(&server.record, ServiceRequestKind::Shutdown).ok);
         assert!(started.elapsed() < SERVICE_CONTROL_CONNECT_TIMEOUT);
-        drop(slow);
-        server.join().unwrap().unwrap();
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while runtime.general_admission().active.load(Ordering::Acquire) != 0
-            || runtime.control_admission().active.load(Ordering::Acquire) != 0
-        {
-            assert!(
-                Instant::now() < deadline,
-                "connection permits were not returned"
-            );
-            thread::yield_now();
-        }
-        let identity =
-            WorkspaceServiceIdentity::new(&context, &context.workspace_root.join("src")).unwrap();
+        let identity = WorkspaceServiceIdentity::new(
+            &server.context,
+            &server.context.workspace_root.join("src"),
+        )
+        .unwrap();
+        drop(server);
         assert!(!identity.record_path().exists());
     }
 
+    #[derive(Default)]
+    struct AdmissionTestExecutor {
+        started: Mutex<Vec<String>>,
+        changed: std::sync::Condvar,
+    }
+
+    impl AdmissionTestExecutor {
+        fn wait_started(&self, expected: usize) {
+            let watchdog = Instant::now() + Duration::from_secs(3);
+            let mut started = self.started.lock().unwrap();
+            while started.len() < expected {
+                let remaining = watchdog.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    let observed = started.clone();
+                    drop(started);
+                    panic!("only {observed:?} reached the executor");
+                }
+                (started, _) = self.changed.wait_timeout(started, remaining).unwrap();
+            }
+        }
+    }
+
+    impl WorkspaceServiceOperationExecutor for AdmissionTestExecutor {
+        fn execute(
+            &self,
+            _runtime: &WorkspaceServiceRuntime,
+            kind: ServiceRequestKind,
+            cancellation: &CancellationToken,
+        ) -> ServiceResponse {
+            let id = kind.operation_id().unwrap().to_owned();
+            let mut started = self.started.lock().unwrap();
+            started.push(id.clone());
+            self.changed.notify_all();
+            if id.starts_with("success") {
+                return ServiceResponse {
+                    ok: true,
+                    status: Some(id),
+                    ..ServiceResponse::default()
+                };
+            }
+            while !cancellation.is_cancelled() {
+                (started, _) = self
+                    .changed
+                    .wait_timeout(started, Duration::from_millis(10))
+                    .unwrap();
+            }
+            ServiceResponse::error(cancelled_error(&id))
+        }
+    }
+
+    type AdmissionTestGate = Arc<(Mutex<bool>, std::sync::Condvar)>;
+
+    fn wait_admission_test_gate(gate: &AdmissionTestGate) {
+        let (released, changed) = &**gate;
+        let mut released = released.lock().unwrap();
+        while !*released {
+            released = changed.wait(released).unwrap();
+        }
+    }
+
+    struct WorkspaceAdmissionTestServer {
+        context: WorkspaceContext,
+        record: WorkspaceServiceRecord,
+        runtime: Arc<WorkspaceServiceRuntime>,
+        executor: Arc<AdmissionTestExecutor>,
+        server: Option<thread::JoinHandle<Result<(), String>>>,
+        streams: Vec<TcpStream>,
+        gates: Vec<AdmissionTestGate>,
+    }
+
+    impl WorkspaceAdmissionTestServer {
+        fn start(name: &str) -> Self {
+            let executor = Arc::new(AdmissionTestExecutor::default());
+            let (context, record, runtime, server) =
+                workspace_test_server_with_executor(name, executor.clone(), SERVICE_SHUTDOWN_GRACE);
+            Self {
+                context,
+                record,
+                runtime,
+                executor,
+                server: Some(server),
+                streams: Vec::new(),
+                gates: Vec::new(),
+            }
+        }
+
+        fn retain(&mut self, stream: &TcpStream) {
+            self.streams.push(stream.try_clone().unwrap());
+        }
+
+        fn work(&mut self, id: &str) -> BufReader<TcpStream> {
+            let reader = open_test_request(&self.record, admission_test_work(id));
+            self.retain(reader.get_ref());
+            reader
+        }
+
+        fn hold_headers(&mut self, count: usize) {
+            let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+            self.gates.push(gate.clone());
+            let seen = AtomicUsize::new(0);
+            let (entered, observed) = mpsc::channel();
+            *self.runtime.handler_started_hook().lock().unwrap() = Some(Arc::new(move || {
+                let index = seen.fetch_add(1, Ordering::AcqRel) + 1;
+                let _ = entered.send(index);
+                if index <= count {
+                    wait_admission_test_gate(&gate);
+                }
+            }));
+            for expected in 1..=count {
+                let mut stream = TcpStream::connect(("127.0.0.1", self.record.port)).unwrap();
+                self.retain(&stream);
+                stream.write_all(b"{").unwrap();
+                assert_eq!(
+                    observed
+                        .recv_timeout(Duration::from_secs(2))
+                        .expect("real partial-header handler starts"),
+                    expected
+                );
+            }
+        }
+
+        fn token(&self, id: &str) -> CancellationToken {
+            self.runtime
+                .operations()
+                .lock()
+                .unwrap()
+                .get(id)
+                .expect("operation remains registered")
+                .clone()
+        }
+    }
+
+    impl Drop for WorkspaceAdmissionTestServer {
+        fn drop(&mut self) {
+            for gate in &self.gates {
+                let (released, changed) = &**gate;
+                *released.lock().unwrap() = true;
+                changed.notify_all();
+            }
+            for stream in &self.streams {
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+            }
+            self.runtime.begin_shutdown();
+            if let Some(server) = self.server.take() {
+                let _ = server.join();
+            }
+            cleanup(&self.context);
+        }
+    }
+
+    fn admission_test_work(id: &str) -> ServiceRequestKind {
+        ServiceRequestKind::RlmReady {
+            operation_id: id.to_owned(),
+            args: json!({}),
+            timeout_seconds: 30,
+            timeout_nanos: 0,
+        }
+    }
+
     #[test]
-    fn workspace_service_work_saturation_preserves_control_path() {
+    fn workspace_service_admission_ninth_work_runs_with_exact_cancel_ping_and_shutdown() {
+        let mut server = WorkspaceAdmissionTestServer::start("admission-nine-workers");
+        let mut work = Vec::new();
+        for index in 0..8 {
+            work.push(server.work(&format!("held-{index}")));
+        }
+        server.executor.wait_started(8);
+        let mut ninth = server.work("held-ninth");
+        server.executor.wait_started(9);
+        let target = server.token("held-ninth");
+        let other = server.token("held-0");
+        assert!(send_test_request(&server.record, ServiceRequestKind::Ping).ok);
+        assert!(
+            send_test_request(
+                &server.record,
+                ServiceRequestKind::Cancel {
+                    operation_id: "held-ninth".into()
+                }
+            )
+            .ok
+        );
+        assert!(!read_test_response(&mut ninth).ok);
+        assert!(target.is_cancelled());
+        assert!(
+            !other.is_cancelled(),
+            "exact cancel must preserve the other work"
+        );
+        assert!(send_test_request(&server.record, ServiceRequestKind::Shutdown).ok);
+        for reader in &mut work {
+            assert!(!read_test_response(reader).ok);
+        }
+        assert!(other.is_cancelled());
+    }
+
+    #[test]
+    fn workspace_service_admission_sixty_fifth_partial_header_reaches_handler_and_executes_work() {
+        let mut server = WorkspaceAdmissionTestServer::start("admission-65-headers");
+        server.hold_headers(64);
+        let (entered, observed) = mpsc::channel();
+        // The first 64 real handlers already hold their previous hook's gate.
+        *server.runtime.handler_started_hook().lock().unwrap() = Some(Arc::new(move || {
+            let _ = entered.send(());
+        }));
+        let mut stream = TcpStream::connect(("127.0.0.1", server.record.port)).unwrap();
+        server.retain(&stream);
+        stream.write_all(b"{").unwrap();
+        observed
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the 65th actual handler must enter while the other headers are held");
+        let bytes = serde_json::to_vec(&ServiceRequest {
+            token: server.record.token.clone(),
+            kind: admission_test_work("success-after-64-headers"),
+        })
+        .unwrap();
+        stream.write_all(&bytes[1..]).unwrap();
+        stream.write_all(b"\n").unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let result = read_test_response(&mut BufReader::new(stream));
+        assert!(result.ok, "{}", result.error.unwrap_or_default());
+        assert_eq!(result.status.as_deref(), Some("success-after-64-headers"));
+        server.executor.wait_started(1);
+        assert!(send_test_request(&server.record, ServiceRequestKind::Shutdown).ok);
+    }
+
+    #[test]
+    fn workspace_service_admission_ninth_control_delivers_exact_cancel_with_all_old_slots_held() {
+        let mut server = WorkspaceAdmissionTestServer::start("admission-nine-controls");
+        let mut target_work = server.work("control-target");
+        let other_work = server.work("control-other");
+        server.executor.wait_started(2);
+        let target = server.token("control-target");
+        let other = server.token("control-other");
+        // These two real work handlers and 62 incomplete headers hold all 64
+        // original general slots; no fake counter or reduced fixture capacity.
+        server.hold_headers(62);
+        let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        server.gates.push(gate.clone());
+        let held_ports = Arc::new(Mutex::new(Vec::<u16>::new()));
+        let selected = held_ports.clone();
+        let (entered, observed) = mpsc::channel();
+        let (cancel_entered, cancel_observed) = mpsc::channel();
+        *server
+            .runtime
+            .actor
+            .runtime_projection()
+            .0
+            .authenticated_request_hook
+            .lock()
+            .unwrap() = Some(Arc::new(move |port, kind| {
+            if matches!(kind, ServiceRequestKind::Cancel { operation_id } if operation_id == "control-target")
+            {
+                let _ = cancel_entered.send(());
+            }
+            if matches!(kind, ServiceRequestKind::Ping) && selected.lock().unwrap().contains(&port)
+            {
+                let _ = entered.send(port);
+                wait_admission_test_gate(&gate);
+            }
+        }));
+        for _ in 0..8 {
+            let mut stream = TcpStream::connect(("127.0.0.1", server.record.port)).unwrap();
+            server.retain(&stream);
+            let port = stream.local_addr().unwrap().port();
+            held_ports.lock().unwrap().push(port);
+            let request = ServiceRequest {
+                token: server.record.token.clone(),
+                kind: ServiceRequestKind::Ping,
+            };
+            writeln!(stream, "{}", serde_json::to_string(&request).unwrap()).unwrap();
+            assert_eq!(
+                observed
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("authenticated control handler enters pre-dispatch gate"),
+                port
+            );
+        }
+        let mut cancel_response = open_test_request(
+            &server.record,
+            ServiceRequestKind::Cancel {
+                operation_id: "control-target".into(),
+            },
+        );
+        cancel_observed
+            .recv_timeout(Duration::from_secs(2))
+            .expect("ninth real control handler must authenticate before exact cancellation");
+        let cancel = read_test_response(&mut cancel_response);
+        assert!(cancel.ok, "{:?}", cancel.error);
+        assert!(!read_test_response(&mut target_work).ok);
+        assert!(target.is_cancelled());
+        assert!(
+            !other.is_cancelled(),
+            "ninth control must only cancel the addressed work"
+        );
+        assert!(send_test_request(&server.record, ServiceRequestKind::Ping).ok);
+        assert!(send_test_request(&server.record, ServiceRequestKind::Shutdown).ok);
+        drop(other_work);
+    }
+
+    #[test]
+    fn workspace_service_concurrent_work_preserves_control_path() {
         let (context, record, _runtime, executor, server) =
             workspace_control_test_server("work-saturation");
         let mut work = Vec::new();
-        for index in 0..SERVICE_MAX_WORKERS {
+        for index in 0..8 {
             work.push(open_test_request(
                 &record,
                 ServiceRequestKind::RlmReady {
@@ -5816,20 +5901,20 @@ mod tests {
                 },
             ));
         }
-        executor.wait_started(SERVICE_MAX_WORKERS);
-        let overloaded = send_test_request(
+        executor.wait_started(8);
+        let additional = send_test_request(
             &record,
             ServiceRequestKind::RlmReady {
-                operation_id: "overloaded".into(),
+                operation_id: "success-ninth".into(),
                 args: json!({}),
                 timeout_seconds: 5,
                 timeout_nanos: 0,
             },
         );
-        assert!(!overloaded.ok);
-        assert!(overloaded.error.unwrap().contains("overloaded"));
+        assert!(additional.ok, "{:?}", additional.error);
+        executor.wait_started(9);
         assert!(send_test_request(&record, ServiceRequestKind::Ping).ok);
-        for index in 0..SERVICE_MAX_WORKERS {
+        for index in 0..8 {
             assert!(
                 send_test_request(
                     &record,
