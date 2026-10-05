@@ -1020,6 +1020,76 @@ mod tests {
     }
 
     #[test]
+    fn root_check_resumes_inside_working_file_without_losing_attribute_failure() {
+        use super::{prepare, Preparation, RootCheckContinuationStore};
+        use crate::application::invocation::InvocationResponseDeadline;
+        use crate::application::invocation_store::ToolIdentity;
+        use crate::application::ports::TokioClock;
+        use crate::domain::cancellation::CancellationToken;
+        use crate::infrastructure::daemon::protocol::InvocationRequest;
+        use crate::infrastructure::project_health::resources::stop_working_eol_after_block_for_test;
+        use std::sync::Arc;
+
+        let (_workspace, root) = eol_check_fixture();
+        std::fs::write(
+            root.join(".gitattributes"),
+            "src/Configuration.xml text eol=lf\n",
+        )
+        .unwrap();
+        let output = std::process::Command::new("git")
+            .args(["add", ".gitattributes"])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        // The index keeps its small blob. Only the working file spans three
+        // read blocks, so this exercises working-file continuation alone.
+        let mut bytes = b"<A>".to_vec();
+        bytes.resize(2 * 64 * 1024, b'x');
+        bytes.extend_from_slice(b"</A>\n");
+        std::fs::write(root.join("src/A.xml"), bytes).unwrap();
+        let request = InvocationRequest::new(
+            ToolIdentity::Check,
+            serde_json::json!({}),
+            root.to_string_lossy(),
+            7_000,
+        )
+        .unwrap();
+        let continuations = RootCheckContinuationStore::default();
+        for step in 0..4 {
+            if step < 3 {
+                stop_working_eol_after_block_for_test();
+            }
+            let Preparation::Ready(inspection) = prepare(
+                &request,
+                InvocationResponseDeadline::capture(Arc::new(TokioClock)),
+                &continuations,
+            ) else {
+                panic!("root check must prepare");
+            };
+            let result = inspection.execute(CancellationToken::new()).unwrap();
+            let repeat = result
+                .next
+                .iter()
+                .any(|action| action["tool"] == "unica.check");
+            let data = result.data.unwrap();
+            assert!(data["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|diagnostic| { diagnostic["code"] == "git.text_policy_missing" }));
+            assert_eq!(data["repositoryReady"], false);
+            if step < 3 {
+                assert_eq!(data["readinessState"], "incomplete");
+                assert!(repeat);
+            } else {
+                assert_eq!(data["readinessState"], "complete");
+                assert!(!repeat);
+            }
+        }
+    }
+
+    #[test]
     fn root_check_does_not_recommend_repeat_for_fixed_failure_or_full_checkpoint() {
         use super::{prepare, Preparation, RootCheckContinuationStore};
         use crate::application::invocation::InvocationResponseDeadline;

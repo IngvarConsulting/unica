@@ -25,7 +25,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fs::{self, File};
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
@@ -52,6 +52,16 @@ thread_local! {
         std::cell::RefCell::new(None);
     static STAGED_EOL_STOP_AFTER: std::cell::Cell<Option<usize>> =
         const { std::cell::Cell::new(None) };
+    static AFTER_WORKING_EOL_BLOCK: std::cell::RefCell<
+        Option<Box<dyn FnOnce() -> Result<(), WorkingEolInspectionError>>>
+    > = std::cell::RefCell::new(None);
+}
+
+#[cfg(test)]
+pub(crate) fn stop_working_eol_after_block_for_test() {
+    AFTER_WORKING_EOL_BLOCK.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(|| Err(WorkingEolInspectionError::TimedOut)));
+    });
 }
 
 #[cfg(test)]
@@ -190,7 +200,24 @@ impl IndexEol {
 #[derive(Clone)]
 struct WorkingEolEvidence {
     fingerprint: WorkingFileFingerprint,
-    eol: WorkingEol,
+    eol: WorkingEolProgress,
+}
+
+#[derive(Clone)]
+enum WorkingEolProgress {
+    // Partial bytes are not evidence of readiness. Their original fingerprint
+    // must still match when reopening the file before the next read.
+    Partial(WorkingEolScanner),
+    Complete(WorkingEol),
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct WorkingEolScanner {
+    offset: u64,
+    previous_cr: bool,
+    lf: bool,
+    crlf: bool,
+    bare_cr: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3110,14 +3137,48 @@ fn inspect_working_eol_continued(
             MAX_WORKING_EOL_FILE_BYTES
         )));
     }
-    if let Some(cached) = continuation.working_eol.get(&key) {
-        if cached.fingerprint == before {
-            continuation.progress.working_eol_retained += 1;
-            return Ok((Some(cached.eol), Some(before)));
-        }
-    }
+    let mut scanner = match continuation.working_eol.get(&key) {
+        Some(cached) if cached.fingerprint == before => match cached.eol {
+            WorkingEolProgress::Complete(eol) => {
+                continuation.progress.working_eol_retained += 1;
+                return Ok((Some(eol), Some(before)));
+            }
+            WorkingEolProgress::Partial(scanner) => scanner,
+        },
+        _ => WorkingEolScanner::default(),
+    };
     continuation.forget_working(&key);
-    let eol = inspect_working_eol_reader(&mut file, cancellation, deadline)?;
+    if scanner.offset > before.size {
+        return Err(WorkingEolInspectionError::Incomplete(
+            "working EOL checkpoint exceeds file size".into(),
+        ));
+    }
+    if scanner.offset != 0 {
+        file.seek(SeekFrom::Start(scanner.offset))
+            .map_err(|error| WorkingEolInspectionError::Incomplete(error.to_string()))?;
+    }
+    let eol = match inspect_working_eol_reader_from_state(
+        &mut file,
+        &mut scanner,
+        cancellation,
+        deadline,
+    ) {
+        Ok(eol) => eol,
+        Err(WorkingEolInspectionError::TimedOut) => {
+            // Keep the original fingerprint, never a newer one attached to an
+            // old prefix. Reopening on the next request validates this state;
+            // saving it performs no filesystem work after the deadline.
+            continuation.remember_working(
+                key,
+                WorkingEolEvidence {
+                    fingerprint: before,
+                    eol: WorkingEolProgress::Partial(scanner),
+                },
+            );
+            return Err(WorkingEolInspectionError::TimedOut);
+        }
+        Err(error) => return Err(error),
+    };
     let after = working_file_fingerprint(&file)
         .map_err(|error| WorkingEolInspectionError::Incomplete(error.to_string()))?;
     if before != after {
@@ -3140,7 +3201,7 @@ fn inspect_working_eol_continued(
             key,
             WorkingEolEvidence {
                 fingerprint: before.clone(),
-                eol,
+                eol: WorkingEolProgress::Complete(eol),
             },
         );
         if continuation.working_eol.contains_key(&key) {
@@ -3161,57 +3222,80 @@ fn working_file_fingerprint(file: &File) -> std::io::Result<WorkingFileFingerpri
 }
 
 fn inspect_working_eol_reader(
+    file: impl Read,
+    cancellation: &CancellationToken,
+    deadline: ProviderDeadline,
+) -> Result<Option<WorkingEol>, WorkingEolInspectionError> {
+    inspect_working_eol_reader_from_state(
+        file,
+        &mut WorkingEolScanner::default(),
+        cancellation,
+        deadline,
+    )
+}
+
+fn working_eol_checkpoint(
+    cancellation: &CancellationToken,
+    deadline: ProviderDeadline,
+) -> Result<(), WorkingEolInspectionError> {
+    if cancellation.is_cancelled() {
+        return Err(WorkingEolInspectionError::Cancelled);
+    }
+    if deadline.remaining().is_zero() {
+        return Err(WorkingEolInspectionError::TimedOut);
+    }
+    Ok(())
+}
+
+fn inspect_working_eol_reader_from_state(
     mut file: impl Read,
+    scanner: &mut WorkingEolScanner,
     cancellation: &CancellationToken,
     deadline: ProviderDeadline,
 ) -> Result<Option<WorkingEol>, WorkingEolInspectionError> {
     let mut buffer = [0_u8; 64 * 1024];
-    let mut bytes_read = 0_u64;
-    let mut previous_cr = false;
-    let mut lf = false;
-    let mut crlf = false;
-    let mut bare_cr = false;
     loop {
-        if cancellation.is_cancelled() {
-            return Err(WorkingEolInspectionError::Cancelled);
-        }
-        if deadline.remaining().is_zero() {
-            return Err(WorkingEolInspectionError::TimedOut);
-        }
+        working_eol_checkpoint(cancellation, deadline)?;
         let count = file
             .read(&mut buffer)
             .map_err(|error| WorkingEolInspectionError::Incomplete(error.to_string()))?;
         if count == 0 {
+            working_eol_checkpoint(cancellation, deadline)?;
             break;
         }
-        bytes_read = bytes_read.saturating_add(count as u64);
-        if bytes_read > MAX_WORKING_EOL_FILE_BYTES {
+        let next_offset = scanner.offset.checked_add(count as u64).ok_or_else(|| {
+            WorkingEolInspectionError::Incomplete("working EOL offset overflow".into())
+        })?;
+        if next_offset > MAX_WORKING_EOL_FILE_BYTES {
             return Err(WorkingEolInspectionError::Incomplete(format!(
                 "working file exceeds {} bytes",
                 MAX_WORKING_EOL_FILE_BYTES
             )));
         }
         for byte in &buffer[..count] {
-            if previous_cr {
+            if scanner.previous_cr {
                 if *byte == b'\n' {
-                    crlf = true;
-                    previous_cr = false;
+                    scanner.crlf = true;
+                    scanner.previous_cr = false;
                     continue;
                 }
-                bare_cr = true;
-                previous_cr = false;
+                scanner.bare_cr = true;
+                scanner.previous_cr = false;
             }
             match *byte {
-                b'\r' => previous_cr = true,
-                b'\n' => lf = true,
+                b'\r' => scanner.previous_cr = true,
+                b'\n' => scanner.lf = true,
                 _ => {}
             }
         }
+        scanner.offset = next_offset;
+        #[cfg(test)]
+        if let Some(hook) = AFTER_WORKING_EOL_BLOCK.with(|slot| slot.borrow_mut().take()) {
+            hook()?;
+        }
     }
-    if previous_cr {
-        bare_cr = true;
-    }
-    let styles = usize::from(lf) + usize::from(crlf) + usize::from(bare_cr);
+    let bare_cr = scanner.bare_cr || scanner.previous_cr;
+    let styles = usize::from(scanner.lf) + usize::from(scanner.crlf) + usize::from(bare_cr);
     Ok(Some(if styles > 1 {
         WorkingEol::Mixed
     } else if bare_cr {
@@ -3359,7 +3443,7 @@ mod tests {
                 working_key,
                 super::WorkingEolEvidence {
                     fingerprint: fingerprint.clone(),
-                    eol: super::WorkingEol::Supported,
+                    eol: super::WorkingEolProgress::Complete(super::WorkingEol::Supported),
                 },
             );
         }
@@ -5446,6 +5530,15 @@ mod tests {
                 match result {
                     Err(super::WorkingEolInspectionError::TimedOut) => {
                         assert_eq!(continuation.progress.working_eol_retained, 0);
+                        let retained =
+                            &continuation.working_eol[&super::working_evidence_key("partial.xml")];
+                        let super::WorkingEolProgress::Partial(scanner) = retained.eol else {
+                            panic!("an unfinished file is not completed evidence");
+                        };
+                        assert_eq!(
+                            scanner.offset,
+                            ((step + 1) * 64 * 1024).min(bytes.len()) as u64
+                        );
                         if step < reads {
                             assert_eq!(DEADLINE_CLOCK_TICKS.load(Ordering::SeqCst), 4);
                         }
@@ -5463,6 +5556,333 @@ mod tests {
             }
             assert!(completed, "each request restarted the same file prefix");
         }
+    }
+
+    #[test]
+    fn working_eol_scanner_keeps_exact_offsets_for_short_reads() {
+        struct ShortReader(std::io::Cursor<&'static [u8]>);
+        impl std::io::Read for ShortReader {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                std::io::Read::read(&mut self.0, &mut buffer[..1])
+            }
+        }
+        let bytes = b"x\r\ny\n";
+        let mut reader = ShortReader(std::io::Cursor::new(bytes));
+        let mut scanner = super::WorkingEolScanner::default();
+        for step in 0..=bytes.len() {
+            DEADLINE_CLOCK_TICKS.store(0, Ordering::SeqCst);
+            let deadline = ProviderDeadline::with_clock(
+                advancing_deadline_clock()
+                    + Duration::from_millis(if step == bytes.len() { 4 } else { 3 }),
+                advancing_deadline_clock,
+            );
+            let result = super::inspect_working_eol_reader_from_state(
+                &mut reader,
+                &mut scanner,
+                &CancellationToken::new(),
+                deadline,
+            );
+            assert_eq!(scanner.offset, reader.0.position());
+            if step < bytes.len() {
+                assert_eq!(result, Err(super::WorkingEolInspectionError::TimedOut));
+                assert_eq!(scanner.offset, (step + 1) as u64);
+                if bytes[step] == b'\r' {
+                    assert!(scanner.previous_cr);
+                    assert!(!scanner.bare_cr);
+                }
+            } else {
+                assert_eq!(result, Ok(Some(super::WorkingEol::Mixed)));
+            }
+        }
+    }
+
+    #[test]
+    fn working_eol_reader_rejects_cancellation_and_expiry_during_eof() {
+        static NOW: AtomicUsize = AtomicUsize::new(0);
+        fn clock() -> Instant {
+            *DEADLINE_CLOCK_ORIGIN.get_or_init(Instant::now)
+                + Duration::from_millis(NOW.load(Ordering::SeqCst) as u64)
+        }
+        struct EofReader {
+            cancellation: CancellationToken,
+            cancel: bool,
+        }
+        impl std::io::Read for EofReader {
+            fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
+                if self.cancel {
+                    self.cancellation.cancel();
+                } else {
+                    NOW.store(4, Ordering::SeqCst);
+                }
+                Ok(0)
+            }
+        }
+        for cancel in [true, false] {
+            NOW.store(0, Ordering::SeqCst);
+            let cancellation = CancellationToken::new();
+            let deadline = ProviderDeadline::with_clock(clock() + Duration::from_millis(3), clock);
+            let mut scanner = super::WorkingEolScanner {
+                previous_cr: true,
+                ..Default::default()
+            };
+            let result = super::inspect_working_eol_reader_from_state(
+                EofReader {
+                    cancellation: cancellation.clone(),
+                    cancel,
+                },
+                &mut scanner,
+                &cancellation,
+                deadline,
+            );
+            assert_eq!(
+                result,
+                Err(if cancel {
+                    super::WorkingEolInspectionError::Cancelled
+                } else {
+                    super::WorkingEolInspectionError::TimedOut
+                })
+            );
+            assert!(scanner.previous_cr);
+            assert!(
+                !scanner.bare_cr,
+                "unverified EOF must not finish the pending CR"
+            );
+        }
+    }
+
+    #[test]
+    fn continued_working_eol_discards_partial_state_when_fingerprint_changes() {
+        for mutation in ["prefix", "size", "replacement", "during_read"] {
+            let temp = TempDir::new().unwrap();
+            let root = fs::canonicalize(temp.path()).unwrap();
+            let path = root.join("partial.xml");
+            let mut bytes = vec![b'x'; 64 * 1024 - 1];
+            bytes.extend_from_slice(b"\r\n");
+            fs::write(&path, &bytes).unwrap();
+            let before = super::working_file_fingerprint(&fs::File::open(&path).unwrap()).unwrap();
+            let changed_time = before.modified.checked_add(Duration::from_secs(1)).unwrap();
+            let mut continuation = super::ResourceContinuation::default();
+            let key = super::working_evidence_key("partial.xml");
+            if mutation == "during_read" {
+                let changed_path = path.clone();
+                let mut changed_bytes = bytes.clone();
+                changed_bytes[0] = b'\n';
+                super::AFTER_WORKING_EOL_BLOCK.with(|slot| {
+                    *slot.borrow_mut() = Some(Box::new(move || {
+                        fs::write(&changed_path, changed_bytes).unwrap();
+                        fs::OpenOptions::new()
+                            .write(true)
+                            .open(changed_path)
+                            .unwrap()
+                            .set_modified(changed_time)
+                            .unwrap();
+                        Err(super::WorkingEolInspectionError::TimedOut)
+                    }));
+                });
+            } else {
+                super::stop_working_eol_after_block_for_test();
+            }
+            assert_eq!(
+                super::inspect_working_eol_continued(
+                    &root,
+                    Path::new("partial.xml"),
+                    &mut continuation,
+                    &CancellationToken::new(),
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                ),
+                Err(super::WorkingEolInspectionError::TimedOut)
+            );
+            assert_eq!(
+                continuation.working_eol[&key].fingerprint, before,
+                "partial state stays anchored to the original preimage"
+            );
+            let expected = if mutation == "size" {
+                fs::write(&path, b"new\r\n").unwrap();
+                super::WorkingEol::Supported
+            } else {
+                if mutation != "during_read" {
+                    bytes[0] = b'\n';
+                    if mutation == "replacement" {
+                        let replacement = root.join("replacement.xml");
+                        fs::write(&replacement, &bytes).unwrap();
+                        fs::rename(replacement, &path).unwrap();
+                    } else {
+                        fs::write(&path, &bytes).unwrap();
+                        fs::OpenOptions::new()
+                            .write(true)
+                            .open(&path)
+                            .unwrap()
+                            .set_modified(changed_time)
+                            .unwrap();
+                    }
+                }
+                super::WorkingEol::Mixed
+            };
+            let current = super::working_file_fingerprint(&fs::File::open(&path).unwrap()).unwrap();
+            assert_ne!(current, before);
+            let result = super::inspect_working_eol_continued(
+                &root,
+                Path::new("partial.xml"),
+                &mut continuation,
+                &CancellationToken::new(),
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+            )
+            .unwrap();
+            assert_eq!(result, (Some(expected), Some(current)));
+        }
+    }
+
+    #[test]
+    fn continued_working_eol_updates_an_existing_partial_at_exact_capacity() {
+        let temp = TempDir::new().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        fs::write(root.join("partial.xml"), vec![b'x'; 128 * 1024]).unwrap();
+        let mut continuation = super::ResourceContinuation::default();
+        continuation.set_test_evidence_limit(super::ResourceContinuation::WORKING_CHARGE);
+        for _ in 0..2 {
+            super::stop_working_eol_after_block_for_test();
+            assert_eq!(
+                super::inspect_working_eol_continued(
+                    &root,
+                    Path::new("partial.xml"),
+                    &mut continuation,
+                    &CancellationToken::new(),
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                ),
+                Err(super::WorkingEolInspectionError::TimedOut)
+            );
+            assert_eq!(continuation.evidence_bytes, continuation.evidence_limit());
+            assert!(!continuation.progress.capacity_limited);
+            assert_eq!(continuation.progress.working_eol_retained, 0);
+        }
+        let result = super::inspect_working_eol_continued(
+            &root,
+            Path::new("partial.xml"),
+            &mut continuation,
+            &CancellationToken::new(),
+            ProviderDeadline::from_budget(Duration::from_secs(5)),
+        )
+        .unwrap();
+        assert_eq!(result.0, Some(super::WorkingEol::Supported));
+        assert_eq!(continuation.progress.working_eol_retained, 1);
+        assert!(!continuation.progress.capacity_limited);
+        fs::write(root.join("another.xml"), b"<A/>\n").unwrap();
+        let _ = super::inspect_working_eol_continued(
+            &root,
+            Path::new("another.xml"),
+            &mut continuation,
+            &CancellationToken::new(),
+            ProviderDeadline::from_budget(Duration::from_secs(5)),
+        )
+        .unwrap();
+        assert!(
+            continuation.progress.capacity_limited,
+            "an actual refused insertion stays visible"
+        );
+        assert_eq!(continuation.working_eol.len(), 1);
+    }
+
+    #[test]
+    fn continued_working_eol_never_completes_an_invalid_or_cancelled_partial() {
+        for case in ["offset", "cancelled", "removed", "before_read"] {
+            let temp = TempDir::new().unwrap();
+            let root = fs::canonicalize(temp.path()).unwrap();
+            let path = root.join("partial.xml");
+            fs::write(&path, vec![b'x'; 128 * 1024]).unwrap();
+            let key = super::working_evidence_key("partial.xml");
+            let mut continuation = super::ResourceContinuation::default();
+            let cancellation = CancellationToken::new();
+            let deadline = if case == "before_read" {
+                ProviderDeadline::from_budget(Duration::ZERO)
+            } else {
+                super::stop_working_eol_after_block_for_test();
+                ProviderDeadline::from_budget(Duration::from_secs(5))
+            };
+            assert_eq!(
+                super::inspect_working_eol_continued(
+                    &root,
+                    Path::new("partial.xml"),
+                    &mut continuation,
+                    &cancellation,
+                    deadline,
+                ),
+                Err(super::WorkingEolInspectionError::TimedOut)
+            );
+            assert_eq!(continuation.progress.working_eol_retained, 0);
+            if case == "offset" {
+                let evidence = continuation.working_eol.get_mut(&key).unwrap();
+                let super::WorkingEolProgress::Partial(scanner) = &mut evidence.eol else {
+                    panic!("expected an unfinished file");
+                };
+                scanner.offset = evidence.fingerprint.size + 1;
+            } else if case == "cancelled" {
+                cancellation.cancel();
+            } else if case == "removed" {
+                fs::remove_file(&path).unwrap();
+            } else {
+                let super::WorkingEolProgress::Partial(scanner) =
+                    continuation.working_eol[&key].eol
+                else {
+                    panic!("a pre-read timeout is not complete");
+                };
+                assert_eq!(scanner.offset, 0);
+            }
+            let result = super::inspect_working_eol_continued(
+                &root,
+                Path::new("partial.xml"),
+                &mut continuation,
+                &cancellation,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+            );
+            match case {
+                "offset" => assert!(matches!(
+                    result,
+                    Err(super::WorkingEolInspectionError::Incomplete(_))
+                )),
+                "cancelled" => assert_eq!(result, Err(super::WorkingEolInspectionError::Cancelled)),
+                "removed" => assert_eq!(result, Ok((None, None))),
+                _ => assert_eq!(result.unwrap().0, Some(super::WorkingEol::Supported)),
+            }
+            if case != "before_read" {
+                assert!(continuation.working_eol.is_empty());
+                assert_eq!(continuation.evidence_bytes, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn working_eol_scanner_keeps_its_offset_on_io_error_and_overflow() {
+        struct Unreadable;
+        impl std::io::Read for Unreadable {
+            fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("injected working read failure"))
+            }
+        }
+        let mut scanner = super::WorkingEolScanner::default();
+        let result = super::inspect_working_eol_reader_from_state(
+            Unreadable,
+            &mut scanner,
+            &CancellationToken::new(),
+            ProviderDeadline::from_budget(Duration::from_secs(5)),
+        );
+        assert!(matches!(
+            result,
+            Err(super::WorkingEolInspectionError::Incomplete(_))
+        ));
+        assert_eq!(scanner.offset, 0);
+        scanner.offset = u64::MAX;
+        let result = super::inspect_working_eol_reader_from_state(
+            std::io::Cursor::new(b"\n"),
+            &mut scanner,
+            &CancellationToken::new(),
+            ProviderDeadline::from_budget(Duration::from_secs(5)),
+        );
+        assert!(matches!(
+            result,
+            Err(super::WorkingEolInspectionError::Incomplete(_))
+        ));
+        assert_eq!(scanner.offset, u64::MAX);
+        assert!(!scanner.lf);
     }
 
     #[test]
