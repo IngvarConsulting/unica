@@ -5,6 +5,16 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+#[cfg(windows)]
+pub(crate) fn is_file_sharing_violation(error: &io::Error) -> bool {
+    error.raw_os_error() == Some(windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION as i32)
+}
+
+#[cfg(not(windows))]
+pub(crate) fn is_file_sharing_violation(_error: &io::Error) -> bool {
+    false
+}
+
 #[cfg(test)]
 thread_local! {
     static TEST_POST_RENAME_SYNC_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };

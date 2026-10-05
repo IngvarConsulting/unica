@@ -24,12 +24,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::infrastructure::platform::filesystem::{
-    create_new_directory_child, file_identity, hard_link_count, metadata_is_link_or_reparse_point,
-    open_directory_child_nofollow, open_directory_nofollow, open_regular_child_nofollow,
-    prepare_file_for_removal, remove_identity_bound_empty_directory_child,
-    remove_identity_bound_regular_child, rename_identity_bound_regular_child_no_replace,
-    rename_no_replace, retain_regular_child_for_cleanup, FileIdentity, PortablePermissions,
-    RetainedChildCapability, RetainedDirectoryCapability,
+    create_new_directory_child, file_identity, hard_link_count, is_file_sharing_violation,
+    metadata_is_link_or_reparse_point, open_directory_child_nofollow, open_directory_nofollow,
+    open_regular_child_nofollow, prepare_file_for_removal,
+    remove_identity_bound_empty_directory_child, remove_identity_bound_regular_child,
+    rename_identity_bound_regular_child_no_replace, rename_no_replace,
+    retain_regular_child_for_cleanup, FileIdentity, PortablePermissions, RetainedChildCapability,
+    RetainedDirectoryCapability,
 };
 use crate::infrastructure::source_roots::normalize_path_identity;
 use crate::infrastructure::workspace_actor::{
@@ -3021,6 +3022,21 @@ fn validate_retained_apply_postimage(
         .map_err(RetainedApplyPublishError::from)
 }
 
+fn retained_apply_displacement_error_kind(error: &std::io::Error) -> RetainedApplyPublishErrorKind {
+    if matches!(
+        error.kind(),
+        ErrorKind::PermissionDenied
+            | ErrorKind::ReadOnlyFilesystem
+            | ErrorKind::StorageFull
+            | ErrorKind::QuotaExceeded
+    ) || is_file_sharing_violation(error)
+    {
+        RetainedApplyPublishErrorKind::Provider
+    } else {
+        RetainedApplyPublishErrorKind::ContainmentIdentity
+    }
+}
+
 fn publish_retained_apply_change(
     entry: &PlannedRetainedApplyChange,
     journal: &mut Vec<PublishedRetainedApplyChange>,
@@ -3101,19 +3117,8 @@ fn publish_retained_apply_change(
             let displaced = parent
                 .displace_regular_child_no_replace(&name, expected, &recovery_name)
                 .map_err(|error| {
-                    let kind = if matches!(
-                        error.kind(),
-                        ErrorKind::PermissionDenied
-                            | ErrorKind::ReadOnlyFilesystem
-                            | ErrorKind::StorageFull
-                            | ErrorKind::QuotaExceeded
-                    ) {
-                        RetainedApplyPublishErrorKind::Provider
-                    } else {
-                        RetainedApplyPublishErrorKind::ContainmentIdentity
-                    };
                     RetainedApplyPublishError::new(
-                        kind,
+                        retained_apply_displacement_error_kind(&error),
                         format!("retained apply destination identity/preimage changed: {error}"),
                     )
                 })?;
@@ -6236,6 +6241,38 @@ pub(crate) mod tests {
     use std::sync::mpsc;
     use std::thread;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn retained_displacement_preserves_provider_and_identity_failure_kinds() {
+        for kind in [
+            ErrorKind::PermissionDenied,
+            ErrorKind::ReadOnlyFilesystem,
+            ErrorKind::StorageFull,
+            ErrorKind::QuotaExceeded,
+        ] {
+            assert_eq!(
+                retained_apply_displacement_error_kind(&std::io::Error::new(kind, "opaque")),
+                RetainedApplyPublishErrorKind::Provider,
+            );
+        }
+        for kind in [ErrorKind::NotFound, ErrorKind::InvalidData] {
+            assert_eq!(
+                retained_apply_displacement_error_kind(&std::io::Error::new(kind, "opaque")),
+                RetainedApplyPublishErrorKind::ContainmentIdentity,
+            );
+        }
+        for (error, sharing_violation) in testing::sharing_violation_error_cases_for_test() {
+            assert_eq!(
+                retained_apply_displacement_error_kind(&error),
+                if sharing_violation {
+                    RetainedApplyPublishErrorKind::Provider
+                } else {
+                    RetainedApplyPublishErrorKind::ContainmentIdentity
+                },
+                "{error:?}",
+            );
+        }
+    }
 
     #[test]
     fn commit_failure_kind_does_not_depend_on_message_wording() {
