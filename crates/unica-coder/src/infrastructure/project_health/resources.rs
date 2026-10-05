@@ -5415,6 +5415,57 @@ mod tests {
     }
 
     #[test]
+    fn continued_working_eol_resumes_inside_one_file_across_deadlines() {
+        for (tail, expected) in [
+            (b"\r\n".as_slice(), super::WorkingEol::Supported),
+            (b"\r\nTAIL\n".as_slice(), super::WorkingEol::Mixed),
+            (b"\r".as_slice(), super::WorkingEol::BareCr),
+        ] {
+            let temp = TempDir::new().unwrap();
+            let root = fs::canonicalize(temp.path()).unwrap();
+            let mut bytes = vec![b'x'; 64 * 1024 - 1];
+            bytes.extend_from_slice(tail);
+            fs::write(root.join("partial.xml"), &bytes).unwrap();
+            let mut continuation = super::ResourceContinuation::default();
+            let reads = bytes.len().div_ceil(64 * 1024);
+            let mut completed = false;
+            for step in 0..=reads {
+                DEADLINE_CLOCK_TICKS.store(0, Ordering::SeqCst);
+                let deadline = ProviderDeadline::with_clock(
+                    advancing_deadline_clock()
+                        + Duration::from_millis(if step == reads { 4 } else { 3 }),
+                    advancing_deadline_clock,
+                );
+                let result = super::inspect_working_eol_continued(
+                    &root,
+                    Path::new("partial.xml"),
+                    &mut continuation,
+                    &CancellationToken::new(),
+                    deadline,
+                );
+                match result {
+                    Err(super::WorkingEolInspectionError::TimedOut) => {
+                        assert_eq!(continuation.progress.working_eol_retained, 0);
+                        if step < reads {
+                            assert_eq!(DEADLINE_CLOCK_TICKS.load(Ordering::SeqCst), 4);
+                        }
+                    }
+                    Ok((eol, fingerprint)) => {
+                        assert_eq!(step, reads, "the entire file and EOF must be read");
+                        assert_eq!(eol, Some(expected));
+                        assert!(fingerprint.is_some());
+                        assert_eq!(continuation.progress.working_eol_retained, 1);
+                        completed = true;
+                        break;
+                    }
+                    other => panic!("unexpected continued inspection: {other:?}"),
+                }
+            }
+            assert!(completed, "each request restarted the same file prefix");
+        }
+    }
+
+    #[test]
     fn continued_working_eol_rejects_a_new_file_and_late_cancellation() {
         let fixture = policy_fixture();
         let file = fixture.root.join("src/A.xml");
