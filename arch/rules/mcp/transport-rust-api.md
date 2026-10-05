@@ -6,8 +6,8 @@ check:
 
 # Транспортный модуль сохраняет публичный Rust API
 
-Корневой публичный API `interfaces/mcp.rs` состоит из `MCP_MAX_TOOL_WORKERS`,
-`UnicaServer`, `tool_definitions()` и `run_stdio()`. Функция `run_stdio()`
+Корневой публичный API `interfaces/mcp.rs` состоит из `UnicaServer`,
+`tool_definitions()` и `run_stdio()`. Функция `run_stdio()`
 не имеет параметров или обобщений и возвращает `()`.
 
 Модуль не добавляет публичных сущностей и полей, элементов с ограниченной

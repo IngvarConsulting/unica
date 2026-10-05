@@ -1,22 +1,20 @@
 ---
 id: INV.WIRE.BOUNDED-ADMISSION
 check:
-  - crates/unica-coder/src/application/code_intelligence.rs::coordinator_enforces_budget_when_provider_ignores_deadline_and_cancellation
-  - crates/unica-coder/src/interfaces/mcp.rs::admission_is_bounded_and_reusable
-  - crates/unica-coder/src/interfaces/mcp.rs::overloaded_dispatcher_returns_deterministic_json_rpc_error
-gap: https://github.com/IngvarConsulting/unica/issues/983
+  - crates/unica-coder/src/interfaces/mcp.rs::admission_crosses_the_former_call_quota_and_retains_exact_ownership
+  - crates/unica-coder/src/interfaces/mcp.rs::admission_identifier_overflow_preserves_existing_call_ownership
+  - crates/unica-coder/src/interfaces/mcp.rs::dispatcher_executes_all_calls_past_the_former_quota
 ---
 
-# MCP ограничивает число одновременных вызовов
+# MCP принимает вызовы без квоты их количества
 
-Один MCP frontend принимает не больше 32 одновременно выполняющихся
-`tools/call`. Когда все места заняты, следующий вызов получает JSON-RPC-ошибку
-`-32603` с `overloaded`. Освободившееся место доступно следующему вызову.
+MCP frontend не отказывает в `tools/call` из-за количества выполняющихся
+вызовов. Каждый принятый вызов имеет отдельного владельца и остаётся в учёте
+до завершения исполнения. Отмена сама по себе не снимает вызов с учёта.
 
-Это предел выполняющихся запросов frontend, а не числа фоновых заданий демона.
+Ошибка блокировки реестра или переполнение идентификатора не допускают
+повторного использования чужого владельца и не изменяют уже принятые вызовы.
 
-Каждый поставщик анализа кода также удерживает не больше 32 исполнителей.
-Истечение срока не освобождает место, пока исполнитель фактически не завершён.
-Существующие проверки MCP защищают насыщение и повторное использование мест,
-но берут размер из реализации. Независимая проверка границы 32 для frontend
-и поставщиков остаётся в `gap`.
+Правило относится к приёму вызовов frontend. Удаление оставшихся квот
+поставщиков и автоматических сроков операций разбирается в
+[задаче #1119](https://github.com/IngvarConsulting/unica/issues/1119).
