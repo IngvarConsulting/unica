@@ -367,7 +367,7 @@ impl RuntimeProcessTreeTestScenario {
             match std::fs::read_to_string(&self.descendant_pid_path) {
                 Ok(value) => {
                     if let Ok(process_id) = value.trim().parse::<u32>() {
-                        let probe = RuntimeProcessTreeTestProbe { process_id };
+                        let probe = RuntimeProcessTreeTestProbe::capture(process_id)?;
                         if probe.is_alive()? {
                             return Ok(probe);
                         }
@@ -392,13 +392,44 @@ impl RuntimeProcessTreeTestScenario {
 
 #[cfg(test)]
 pub(crate) struct RuntimeProcessTreeTestProbe {
+    #[cfg(not(windows))]
     process_id: u32,
+    #[cfg(windows)]
+    process: ScopedWindowsHandle,
 }
 
 #[cfg(test)]
 impl RuntimeProcessTreeTestProbe {
+    fn capture(process_id: u32) -> io::Result<Self> {
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE};
+
+            // SAFETY: the live fixture publishes its PID before cancellation.
+            // A non-inheritable handle pins the observed process across later probes.
+            let process = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, process_id) };
+            if process.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(Self {
+                process: ScopedWindowsHandle(process),
+            })
+        }
+        #[cfg(not(windows))]
+        {
+            Ok(Self { process_id })
+        }
+    }
+
     pub(crate) fn is_alive(&self) -> io::Result<bool> {
-        runtime_process_pid_alive_for_test(self.process_id)
+        #[cfg(windows)]
+        {
+            runtime_process_handle_alive_for_test(&self.process)
+        }
+        #[cfg(not(windows))]
+        {
+            runtime_process_pid_alive_for_test(self.process_id)
+        }
     }
 }
 
@@ -478,23 +509,20 @@ fn runtime_process_pid_alive_for_test(process_id: u32) -> io::Result<bool> {
 }
 
 #[cfg(all(test, windows))]
-fn runtime_process_pid_alive_for_test(process_id: u32) -> io::Result<bool> {
-    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
-    use windows_sys::Win32::System::Threading::{
-        OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
-    };
+fn runtime_process_handle_alive_for_test(process: &ScopedWindowsHandle) -> io::Result<bool> {
+    use windows_sys::Win32::Foundation::{WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT};
+    use windows_sys::Win32::System::Threading::WaitForSingleObject;
 
-    // SAFETY: the handle is used only for a zero-time test probe and is closed
-    // before returning.
-    let process = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, process_id) };
-    if process.is_null() {
-        return Ok(false);
+    // SAFETY: the probe retains the exact handle captured before cancellation.
+    match unsafe { WaitForSingleObject(process.0, 0) } {
+        WAIT_TIMEOUT => Ok(true),
+        WAIT_OBJECT_0 => Ok(false),
+        WAIT_FAILED => Err(io::Error::last_os_error()),
+        state => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("unexpected runtime process wait state: {state}"),
+        )),
     }
-    let alive = unsafe { WaitForSingleObject(process, 0) } == WAIT_TIMEOUT;
-    unsafe {
-        CloseHandle(process);
-    }
-    Ok(alive)
 }
 
 #[cfg(all(test, not(any(unix, windows))))]
@@ -3538,6 +3566,75 @@ mod tests {
             output.stdout
         );
         assert!(output.stdout.contains("nul=2"), "{}", output.stdout);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_runtime_descendant_probe_retains_the_observed_process_after_child_drop() {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "infrastructure::platform::process::tests::managed_child_test_helper",
+                "--nocapture",
+            ])
+            .env(HELPER_ENV, "echo_stdin_len")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut child = ChildCleanupGuard(Some(command.spawn().unwrap()));
+        let completion = process_test_support::RetainedProcess::open(child.child_mut().id());
+        let probe = super::RuntimeProcessTreeTestProbe::capture(child.child_mut().id())
+            .expect("capture the live fixture process");
+        assert!(probe.is_alive().expect("probe before stdin EOF"));
+
+        drop(child.child_mut().stdin.take());
+        assert!(
+            completion.exited_within(5_000),
+            "fixture did not finish after stdin EOF"
+        );
+        assert!(child
+            .child_mut()
+            .try_wait()
+            .expect("reap the signaled fixture child")
+            .expect("the fixture completion handle was signaled")
+            .success());
+        child.wait();
+        drop(completion);
+
+        assert!(!probe
+            .is_alive()
+            .expect("probe after Child and its handle were dropped"));
+        assert!(!probe
+            .is_alive()
+            .expect("repeat the same retained process probe"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_runtime_descendant_probe_refuses_failed_handle_capture() {
+        assert!(super::RuntimeProcessTreeTestProbe::capture(0).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_runtime_descendant_probe_does_not_report_wait_errors_as_death() {
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+
+        // SAFETY: a real non-inheritable query-only handle belongs to this test.
+        // It deliberately lacks SYNCHRONIZE; it is neither invalid nor closed.
+        let process =
+            unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, std::process::id()) };
+        assert!(!process.is_null(), "{}", std::io::Error::last_os_error());
+        let probe = super::RuntimeProcessTreeTestProbe {
+            process: super::ScopedWindowsHandle(process),
+        };
+        assert!(
+            probe.is_alive().is_err(),
+            "a wait failure proves no process death"
+        );
     }
 
     #[test]
