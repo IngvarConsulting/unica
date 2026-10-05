@@ -144,6 +144,14 @@ pub(crate) trait V5RuntimeHooks: Send + Sync {
 
     fn event(&self, event: V5ReceiptRuntimeEventKind, epoch_ms: u64) {}
 
+    /// Observes a real accepted transport before owner admission.
+    fn before_owner_handshake(&self, peer_port: u16) {}
+
+    /// Observes the owner-registry read in listener idle maintenance.
+    fn after_idle_owner_leases_read(&self, empty: bool) {}
+
+    fn listener_ownership_observed(&self, no_active_work: bool) {}
+
     fn stage_entered(&self, stage: V5Stage) {}
 
     fn task_store_create_attempted(&self) {}

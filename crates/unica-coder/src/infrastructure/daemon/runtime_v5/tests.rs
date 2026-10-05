@@ -3464,3 +3464,161 @@ fn displaced_runtime_cannot_write_a_response_after_the_final_authority_check() {
         "displaced response escaped: {response:?}"
     );
 }
+
+struct IdleHandoffHooks {
+    accepted: AtomicBool,
+    paused: AtomicBool,
+    reported: AtomicBool,
+    handler_gate: Arc<(Mutex<bool>, std::sync::Condvar)>,
+    listener_gate: Arc<(Mutex<bool>, std::sync::Condvar)>,
+    owner_read: mpsc::Sender<bool>,
+    decision: mpsc::Sender<bool>,
+}
+
+fn release_idle_handoff_gate(gate: &(Mutex<bool>, std::sync::Condvar)) {
+    *gate.0.lock().unwrap() = true;
+    gate.1.notify_all();
+}
+
+fn wait_idle_handoff_gate(gate: &(Mutex<bool>, std::sync::Condvar)) {
+    let mut open = gate.0.lock().unwrap();
+    while !*open {
+        open = gate.1.wait(open).unwrap();
+    }
+}
+
+impl V5RuntimeHooks for IdleHandoffHooks {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn before_owner_handshake(&self, _peer_port: u16) {
+        self.accepted.store(true, Ordering::Release);
+        wait_idle_handoff_gate(&self.handler_gate);
+    }
+
+    fn after_idle_owner_leases_read(&self, empty: bool) {
+        if self.accepted.load(Ordering::Acquire) && !self.paused.swap(true, Ordering::AcqRel) {
+            self.owner_read.send(empty).unwrap();
+            wait_idle_handoff_gate(&self.listener_gate);
+        }
+    }
+
+    fn listener_ownership_observed(&self, no_active_work: bool) {
+        if self.paused.load(Ordering::Acquire) && !self.reported.swap(true, Ordering::AcqRel) {
+            self.decision.send(no_active_work).unwrap();
+        }
+    }
+}
+
+struct IdleHandoffDaemon {
+    hooks: Arc<IdleHandoffHooks>,
+    stop: Arc<AtomicBool>,
+    transports: Vec<TcpStream>,
+    server: Option<thread::JoinHandle<Result<(), String>>>,
+}
+
+impl Drop for IdleHandoffDaemon {
+    fn drop(&mut self) {
+        release_idle_handoff_gate(&self.hooks.handler_gate);
+        release_idle_handoff_gate(&self.hooks.listener_gate);
+        for transport in &self.transports {
+            let _ = transport.shutdown(std::net::Shutdown::Both);
+        }
+        self.stop.store(true, Ordering::Release);
+        if let Some(server) = self.server.take() {
+            let _ = server.join();
+        }
+    }
+}
+
+#[test]
+fn owner_handoff_between_idle_reads_keeps_listener_and_exact_owner_alive() {
+    let root = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(root.path()).unwrap();
+    let identity = CoreIdentity::production_v5();
+    let (owner_read, owner_read_wait) = mpsc::channel();
+    let (decision, decision_wait) = mpsc::channel();
+    let hooks = Arc::new(IdleHandoffHooks {
+        accepted: AtomicBool::new(false),
+        paused: AtomicBool::new(false),
+        reported: AtomicBool::new(false),
+        handler_gate: Arc::new((Mutex::new(false), std::sync::Condvar::new())),
+        listener_gate: Arc::new((Mutex::new(false), std::sync::Condvar::new())),
+        owner_read,
+        decision,
+    });
+    let config = DaemonServerConfig::new(
+        state_root.clone(),
+        identity.clone(),
+        Duration::from_millis(500),
+    )
+    .with_runtime_hooks_for_test(hooks.clone());
+    let stop = Arc::new(AtomicBool::new(false));
+    let listener_stop = Arc::clone(&stop);
+    let server = thread::spawn(move || {
+        run_daemon_configured_until(
+            config,
+            |runtime| runtime,
+            || listener_stop.load(Ordering::Acquire),
+        )
+    });
+    let mut daemon = IdleHandoffDaemon {
+        hooks: Arc::clone(&hooks),
+        stop,
+        transports: Vec::new(),
+        server: Some(server),
+    };
+    let record = wait_for_v5_record(&state_root, &identity);
+    let mut owner = TcpStream::connect(record.loopback_addr().unwrap()).unwrap();
+    owner
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    daemon.transports.push(owner.try_clone().unwrap());
+    let mut owner_reader = BufReader::new(owner.try_clone().unwrap());
+    assert!(
+        owner_read_wait
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap(),
+        "listener did not read the genuinely empty owner registry before handoff"
+    );
+    // Keep the real listener between its two ownership reads beyond its idle
+    // grace. This sleep crosses the production Instant-based maintenance clock;
+    // gates, rather than timing, determine the handoff interleaving.
+    thread::sleep(Duration::from_millis(550));
+    write_json_line(
+        &mut owner,
+        &json!({
+            "kind": "hello", "protocolVersion": 5, "token": record.token(),
+            "coreIdentity": identity.as_str(), "ownerLease": uuid::Uuid::new_v4().to_string(),
+        }),
+    );
+    release_idle_handoff_gate(&hooks.handler_gate);
+    let ready = read_bounded_v5_probe_response_frame(&mut owner_reader).unwrap();
+    assert!(matches!(
+        decode_v5_server_response(&ready),
+        Ok(V5ServerResponse::Ready { .. })
+    ));
+    // Ready is written after lease acquisition and handshake-slot release.
+    release_idle_handoff_gate(&hooks.listener_gate);
+    assert!(
+        !decision_wait.recv_timeout(Duration::from_secs(2)).unwrap(),
+        "idle observation lost an authenticated owner during handshake handoff"
+    );
+    write_json_line(&mut owner, &json!({"kind": "ping"}));
+    let pong = read_bounded_v5_probe_response_frame(&mut owner_reader).unwrap();
+    assert_eq!(decode_v5_server_response(&pong), Ok(V5ServerResponse::Pong));
+    let (mut next, mut next_reader) =
+        connect_v5_owner(&record, &identity, &uuid::Uuid::new_v4().to_string());
+    daemon.transports.push(next.try_clone().unwrap());
+    write_json_line(&mut next, &json!({"kind": "ping"}));
+    let pong = read_bounded_v5_probe_response_frame(&mut next_reader).unwrap();
+    assert_eq!(decode_v5_server_response(&pong), Ok(V5ServerResponse::Pong));
+    let state = DaemonStateDirectory::open(&state_root, &identity).unwrap();
+    let current = state.read_v5_endpoint_record().unwrap().unwrap();
+    assert_eq!(current.instance_id(), record.instance_id());
+    assert_eq!(
+        current.loopback_addr().unwrap(),
+        record.loopback_addr().unwrap()
+    );
+}

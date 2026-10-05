@@ -1,6 +1,7 @@
 ---
 id: INV.RUNTIME.DAEMON-ACTIVE-OWNERS
 check:
+  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::owner_handoff_between_idle_reads_keeps_listener_and_exact_owner_alive
   - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::live_v5_owner_prevents_idle_listener_shutdown
 gap: https://github.com/IngvarConsulting/unica/issues/980
 ---
@@ -15,3 +16,9 @@ gap: https://github.com/IngvarConsulting/unica/issues/980
 и завершает работу. Его точная длительность не является публичным контрактом.
 Проверка удерживает настоящий демон клиентской арендой; остальные виды
 владения и завершение после их освобождения ещё требуют проверки.
+
+Переход от принятого handshake к owner lease не даёт ложного простоя:
+listener сначала читает счётчик приёма, затем реестр владельцев. Lease
+устанавливается до освобождения handshake, поэтому два последовательных
+чтения не объединяют пустой старый реестр с нулём после перехода. Проверка
+реестра выполняется и при занятом счётчике, сохраняя отказ при его повреждении.
