@@ -357,7 +357,7 @@ impl ReceiptLedgerCatalogSnapshotAuthority {
         let observed_count = u64::try_from(keys.len()).map_err(|_| {
             ReceiptLedgerError::Corrupt("receipt catalog count does not fit telemetry")
         })?;
-        if live_count != observed_count || keys.len() > MAX_LIVE_RECEIPTS {
+        if live_count != observed_count {
             return Err(ReceiptLedgerError::Corrupt(
                 "receipt catalog telemetry count contradicts its keys",
             ));
@@ -421,12 +421,9 @@ impl ReceiptLedgerCatalogSnapshotAuthority {
                 "receipt catalog telemetry indexes contradict its keys",
             ));
         }
-        if actual_bytes
-            .checked_add(reserved_result_bytes)
-            .is_none_or(|bytes| bytes > MAX_LIVE_RECEIPT_BYTES)
-        {
+        if actual_bytes.checked_add(reserved_result_bytes).is_none() {
             return Err(ReceiptLedgerError::Corrupt(
-                "receipt catalog telemetry exceeds its byte entitlement",
+                "receipt catalog telemetry byte accounting overflowed",
             ));
         }
         Ok(ReceiptLedgerCatalogSnapshot {
@@ -875,11 +872,8 @@ impl ReceiptKey {
 }
 
 pub(crate) const MAX_ORIGINAL_RESPONSE_BUDGET_MS: u64 = 7_000;
-pub(crate) const MAX_LIVE_RECEIPTS: usize = 64;
 pub(crate) const MAX_RECEIPT_ENTITLEMENT_BYTES: u64 =
     (MAX_CANONICAL_RESULT_BYTES + MAX_TASK_RECORD_ENVELOPE_BYTES) as u64;
-pub(crate) const MAX_LIVE_RECEIPT_BYTES: u64 =
-    MAX_RECEIPT_ENTITLEMENT_BYTES * MAX_LIVE_RECEIPTS as u64;
 pub(crate) const DIRECT_TERMINAL_RETENTION_MS: u64 = 3_600_000;
 pub(crate) const CANCEL_RESERVATION_TTL_MS: u64 = 7_125;
 pub(crate) const ACKNOWLEDGED_TOMBSTONE_TTL_MS: u64 = 900_000;

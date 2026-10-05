@@ -1061,55 +1061,58 @@ fn expiry_reopen_cleans_witness_after_crash_at_visible_generation_replace() {
 }
 
 #[test]
-fn cancel_reserved_shares_the_live_count_without_reserving_result_bytes() {
+fn early_cancellations_cross_the_former_live_quota_without_reserving_results() {
     let root = tempfile::tempdir().expect("temporary root");
-    let receipts = fs::canonicalize(root.path())
-        .expect("physical temporary root")
-        .join("receipts");
-    let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
-
-    for index in 0..MAX_LIVE_RECEIPTS {
+    let receipts = fs::canonicalize(root.path()).unwrap().join("receipts");
+    let store = ReceiptLedgerStore::open(&receipts).unwrap();
+    let mut expected = Vec::new();
+    for index in 0..65 {
         let key = receipt_key_with_ids(
             InvocationId::new(),
             TaskId::new(),
             &format!("cancel-workspace-{index}"),
         );
-        assert!(matches!(
-            store.request_cancel_or_reserve(key, 1_000, reserve_deadline()),
-            Ok(crate::application::receipt_ledger::CancelResolution::NewlyReserved(_))
-        ));
+        let receipt = match store
+            .request_cancel_or_reserve(key.clone(), 1_000, reserve_deadline())
+            .expect("live count must not reject a cancellation")
+        {
+            CancelResolution::NewlyReserved(receipt) => receipt,
+            _ => panic!("new cancellation key"),
+        };
+        expected.push((key, receipt));
     }
-    let overflow = store
-        .request_cancel_or_reserve(
-            receipt_key_with_ids(
-                InvocationId::new(),
-                TaskId::new(),
-                "cancel-workspace-overflow",
-            ),
-            1_000,
-            reserve_deadline(),
-        )
-        .expect_err("the sixty-fifth live receipt must be rejected");
-    assert_eq!(overflow, ReceiptLedgerError::CapacityExceeded);
-    let catalog = store.writer.lock().expect("inspect full cancel catalog");
-    assert_eq!(catalog.records.len(), MAX_LIVE_RECEIPTS);
-    assert_eq!(catalog.reserved_result_bytes, 0);
-    assert!(catalog.actual_bytes <= (MAX_LIVE_RECEIPTS * 1_024) as u64);
-    assert!(catalog
-        .records
-        .values()
-        .all(|entry| entry.encoded_bytes <= 1_024 && entry.reserved_result_bytes() == 0));
+    {
+        let catalog = store.writer.lock().unwrap();
+        assert_eq!(catalog.live_count(), 65);
+        assert_eq!(catalog.reserved_result_bytes, 0);
+        assert_eq!(catalog.invocation_index.len(), 65);
+        assert_eq!(catalog.reserved_task_index.len(), 65);
+    }
+    assert_eq!(store.generation().unwrap(), 65);
+    drop(store);
+    let reopened =
+        ReceiptLedgerStore::open(&receipts).expect("reopen every accepted early cancellation");
+    assert_eq!(
+        reopened.recovery_keys(reserve_deadline()).unwrap().len(),
+        65
+    );
+    for (key, receipt) in expected {
+        assert_eq!(
+            reopened.recover_exact(&key, reserve_deadline()).unwrap(),
+            ReceiptState::CancelReserved(receipt)
+        );
+    }
 }
 
 #[test]
-fn submit_admission_reclaims_one_slot_from_a_full_expired_cancel_pool() {
+fn submit_admission_preserves_unrelated_cancellations_past_the_former_live_quota() {
     let root = tempfile::tempdir().expect("temporary root");
     let receipts = fs::canonicalize(root.path())
         .expect("physical temporary root")
         .join("receipts");
     let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
 
-    for index in 0..MAX_LIVE_RECEIPTS {
+    for index in 0..64 {
         let key = receipt_key_with_ids(
             InvocationId::new(),
             TaskId::new(),
@@ -1139,12 +1142,12 @@ fn submit_admission_reclaims_one_slot_from_a_full_expired_cancel_pool() {
         .expect("new submit remains reserved");
 
     assert_eq!(admitted.key(), &admitted_key);
-    assert_eq!(admitted.mutation_sequence(), 66);
-    assert_eq!(store.generation().expect("reclaim plus admission"), 66);
+    assert_eq!(admitted.mutation_sequence(), 65);
+    assert_eq!(store.generation().expect("admission without eviction"), 65);
     let catalog = store.writer.lock().expect("inspect reclaimed catalog");
-    assert_eq!(catalog.records.len(), MAX_LIVE_RECEIPTS);
-    assert_eq!(catalog.invocation_index.len(), MAX_LIVE_RECEIPTS);
-    assert_eq!(catalog.reserved_task_index.len(), MAX_LIVE_RECEIPTS);
+    assert_eq!(catalog.records.len(), 65);
+    assert_eq!(catalog.invocation_index.len(), 65);
+    assert_eq!(catalog.reserved_task_index.len(), 65);
     assert_eq!(
         catalog
             .records
@@ -1154,7 +1157,7 @@ fn submit_admission_reclaims_one_slot_from_a_full_expired_cancel_pool() {
                 StoredActiveLifecycleV1::CancelReserved { .. }
             ))
             .count(),
-        MAX_LIVE_RECEIPTS - 1
+        64
     );
     assert_eq!(
         catalog.reserved_result_bytes,
@@ -5535,18 +5538,15 @@ fn recovery_deadline_is_rechecked_after_generation_healing_publication() {
 }
 
 #[test]
-fn sixty_four_exact_entitlements_reopen_and_sixty_fifth_rejects_without_mutation() {
+fn live_receipts_cross_former_count_and_byte_quotas_without_losing_exact_reservations() {
     let root = tempfile::tempdir().expect("temporary root");
-    let receipts = fs::canonicalize(root.path())
-        .expect("physical temporary root")
-        .join("receipts");
-    let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
-    let cutoff =
-        OriginalCutoffDescriptor::new(1_000, 7_000).expect("valid original response cutoff");
+    let receipts = fs::canonicalize(root.path()).unwrap().join("receipts");
+    let store = ReceiptLedgerStore::open(&receipts).unwrap();
+    let cutoff = OriginalCutoffDescriptor::new(1_000, 7_000).unwrap();
     let mut expected = Vec::new();
     let mut actual_bytes = 0_u64;
     let mut reserved_bytes = 0_u64;
-    for index in 0..MAX_LIVE_RECEIPTS {
+    for index in 0..65 {
         let key = receipt_key_with_ids(
             InvocationId::new(),
             TaskId::new(),
@@ -5555,54 +5555,40 @@ fn sixty_four_exact_entitlements_reopen_and_sixty_fifth_rejects_without_mutation
         let digest = crate::application::receipt_ledger::receipt_key_digest(&key);
         let reservation = store
             .reserve(key.clone(), cutoff, reserve_deadline())
-            .expect("reserve one exact entitlement")
+            .expect("live count and aggregate entitlement must not reject a receipt")
             .into_reservation()
-            .expect("receipt remains reserved");
+            .unwrap();
         assert_eq!(
             reservation.encoded_bytes() + reservation.reserved_result_bytes(),
-            MAX_RECEIPT_ENTITLEMENT_BYTES
+            8_454_144
         );
         actual_bytes += reservation.encoded_bytes();
         reserved_bytes += reservation.reserved_result_bytes();
         expected.push((digest, key, reservation));
     }
-    assert_eq!(actual_bytes + reserved_bytes, MAX_LIVE_RECEIPT_BYTES);
-    assert_eq!(
-        store.generation().expect("generation at exact capacity"),
-        MAX_LIVE_RECEIPTS as u64
-    );
-    let names_before = directory_names(&receipts.join(ACTIVE_DIRECTORY_NAME));
-
-    let overflow = store
-        .reserve(
-            receipt_key_with_ids(InvocationId::new(), TaskId::new(), "workspace-overflow"),
-            cutoff,
-            reserve_deadline(),
-        )
-        .expect_err("the sixty-fifth live receipt must be rejected");
-
-    assert_eq!(overflow, ReceiptLedgerError::CapacityExceeded);
-    assert_eq!(
-        store.generation().expect("capacity rejection is immutable"),
-        MAX_LIVE_RECEIPTS as u64
-    );
-    assert_eq!(
-        directory_names(&receipts.join(ACTIVE_DIRECTORY_NAME)),
-        names_before
-    );
+    assert!(actual_bytes + reserved_bytes > 541_065_216);
+    assert_eq!(store.generation().unwrap(), 65);
+    {
+        let catalog = store.writer.lock().unwrap();
+        assert_eq!(catalog.live_count(), 65);
+        assert_eq!(catalog.actual_bytes, actual_bytes);
+        assert_eq!(catalog.reserved_result_bytes, reserved_bytes);
+        assert_eq!(catalog.invocation_index.len(), 65);
+        assert_eq!(catalog.reserved_task_index.len(), 65);
+    }
     drop(store);
-
     let reopened =
-        ReceiptLedgerStore::open(&receipts).expect("reopen exact full receipt entitlement pool");
+        ReceiptLedgerStore::open(&receipts).expect("reopen all accepted receipts past old quotas");
+    assert_eq!(reopened.generation().unwrap(), 65);
     assert_eq!(
-        reopened.generation().expect("reopened full generation"),
-        MAX_LIVE_RECEIPTS as u64
+        reopened.recovery_keys(reserve_deadline()).unwrap().len(),
+        65
     );
     for (digest, key, reservation) in expected {
         let recovered = reopened
             .read_reserved(&digest)
-            .expect("read one reopened reservation")
-            .expect("full pool retains every reservation");
+            .unwrap()
+            .expect("every reservation is retained");
         assert_eq!(recovered, reservation);
         assert_eq!(recovered.key(), &key);
     }
@@ -6229,4 +6215,143 @@ fn named_generation_replacement_invalidates_the_retained_owner() {
         }
         Err(error) => panic!("attempt named generation replacement: {error}"),
     }
+}
+
+#[cfg(feature = "receipt-ledger-test-support")]
+#[test]
+fn batched_live_receipts_and_actor_snapshot_cross_former_quotas_and_reopen() {
+    use crate::application::receipt_ledger_actor::ReceiptLedgerActor;
+    let root = tempfile::tempdir().unwrap();
+    let receipts = fs::canonicalize(root.path()).unwrap().join("receipts");
+    let store = ReceiptLedgerStore::open(&receipts).unwrap();
+    let cutoff = OriginalCutoffDescriptor::new(1_000, 7_000).unwrap();
+    let requests = (0..65)
+        .map(|index| {
+            (
+                receipt_key_with_ids(
+                    InvocationId::new(),
+                    TaskId::new(),
+                    &format!("batch-{index}"),
+                ),
+                cutoff,
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut bound = Vec::new();
+    let workspace_identity = SafeIdentityHash::from_sha256([0x77; 32]);
+    for chunk in requests.chunks(32) {
+        let reserved = store
+            .reserve_batch(chunk.to_vec(), reserve_deadline())
+            .unwrap()
+            .into_iter()
+            .map(|outcome| outcome.into_reservation().unwrap())
+            .collect::<Vec<_>>();
+        bound.extend(
+            store
+                .bind_reserved_actor_batch(
+                    reserved
+                        .iter()
+                        .map(|receipt| {
+                            (
+                                receipt.key().clone(),
+                                receipt.record_version(),
+                                workspace_identity.clone(),
+                            )
+                        })
+                        .collect(),
+                    reserve_deadline(),
+                )
+                .unwrap(),
+        );
+    }
+    let actual_bytes = bound
+        .iter()
+        .map(|receipt| receipt.encoded_bytes())
+        .sum::<u64>();
+    let reserved_bytes = bound
+        .iter()
+        .map(|receipt| receipt.reserved_result_bytes())
+        .sum::<u64>();
+    assert!(actual_bytes + reserved_bytes > 541_065_216);
+    let actor = ReceiptLedgerActor::spawn(store);
+    let snapshot = actor.snapshot_catalog(reserve_deadline()).unwrap();
+    assert_eq!(snapshot.live_count(), 65);
+    assert_eq!(snapshot.generation(), 130);
+    assert_eq!(snapshot.actual_bytes(), actual_bytes);
+    assert_eq!(snapshot.reserved_result_bytes(), reserved_bytes);
+    assert_eq!(snapshot.keys().len(), 65);
+    for (key, _) in &requests {
+        assert!(snapshot.keys().contains(key));
+        assert!(snapshot.invocation_index().contains(key));
+        assert!(snapshot.reserved_task_index().contains(key));
+    }
+    assert_eq!(snapshot.invocation_index().len(), 65);
+    assert_eq!(snapshot.reserved_task_index().len(), 65);
+    drop(actor);
+    let reopened = ReceiptLedgerStore::open(&receipts).unwrap();
+    assert_eq!(reopened.generation().unwrap(), 130);
+    for receipt in bound {
+        assert_eq!(
+            reopened.read_reserved(receipt.key_digest()).unwrap(),
+            Some(receipt)
+        );
+    }
+}
+
+#[test]
+fn live_catalog_arithmetic_overflow_rejects_single_and_batch_mutations_before_commit() {
+    let root = tempfile::tempdir().unwrap();
+    let receipts = fs::canonicalize(root.path()).unwrap().join("receipts");
+    let store = ReceiptLedgerStore::open(&receipts).unwrap();
+    let key = receipt_key(INVOCATION_A, TASK_A, "overflow-current");
+    let reserved = store
+        .reserve(
+            key,
+            OriginalCutoffDescriptor::new(1_000, 7_000).unwrap(),
+            reserve_deadline(),
+        )
+        .unwrap()
+        .into_reservation()
+        .unwrap();
+    let base = store.writer.lock().unwrap().clone();
+    let existing = base.records.get(reserved.key_digest()).unwrap().clone();
+    let mut fresh = existing.clone();
+    fresh.record.key = receipt_key(INVOCATION_B, TASK_B, "overflow-fresh");
+    fresh.record.key_digest = receipt_key_digest(&fresh.record.key);
+    fresh.record.mutation_sequence += 1;
+    let mut replacement = existing.clone();
+    replacement.record.mutation_sequence += 1;
+    replacement.record.record_version = replacement.record.record_version.checked_next().unwrap();
+    // An independent owner supplies impossible counters as the corruption fixture.
+    // Validation must reject before any record, index or accounting mutation.
+    for (live_count, actual_bytes, reserved_bytes) in [
+        (usize::MAX, base.actual_bytes, base.reserved_result_bytes),
+        (base.live_records, u64::MAX, base.reserved_result_bytes),
+        (base.live_records, base.actual_bytes, u64::MAX),
+    ] {
+        let mut catalog = base.clone();
+        catalog.live_records = live_count;
+        catalog.actual_bytes = actual_bytes;
+        catalog.reserved_result_bytes = reserved_bytes;
+        let records = catalog.records.clone();
+        let invocations = catalog.invocation_index.clone();
+        let tasks = catalog.reserved_task_index.clone();
+        assert!(insert_catalog_entry(&mut catalog, fresh.clone(), false).is_err());
+        assert!(validate_catalog_insert_batch(&catalog, std::slice::from_ref(&fresh)).is_err());
+        if live_count != usize::MAX {
+            assert!(validate_catalog_replace(&catalog, &existing, &replacement).is_err());
+            assert!(validate_catalog_replace_batch(
+                &catalog,
+                &[(existing.clone(), replacement.clone())]
+            )
+            .is_err());
+        }
+        assert_eq!(catalog.records, records);
+        assert_eq!(catalog.invocation_index, invocations);
+        assert_eq!(catalog.reserved_task_index, tasks);
+        assert_eq!(catalog.live_records, live_count);
+        assert_eq!(catalog.actual_bytes, actual_bytes);
+        assert_eq!(catalog.reserved_result_bytes, reserved_bytes);
+    }
+    assert_eq!(store.generation().unwrap(), 1);
 }

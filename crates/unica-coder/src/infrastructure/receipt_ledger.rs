@@ -15,8 +15,8 @@ use crate::application::receipt_ledger::{
     TaskTerminalReceiptBackedReceipt, TerminalDigest, V5CanonicalTerminal,
     ACKNOWLEDGED_TOMBSTONE_TTL_MS, CANCEL_RESERVATION_TTL_MS, DIRECT_TERMINAL_RETENTION_MS,
     MAX_ACKNOWLEDGED_TOMBSTONES, MAX_ACKNOWLEDGED_TOMBSTONE_BYTES,
-    MAX_ACKNOWLEDGED_TOMBSTONE_POOL_BYTES, MAX_LIVE_RECEIPTS, MAX_LIVE_RECEIPT_BYTES,
-    MAX_RECEIPT_ENTITLEMENT_BYTES, MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES,
+    MAX_ACKNOWLEDGED_TOMBSTONE_POOL_BYTES, MAX_RECEIPT_ENTITLEMENT_BYTES,
+    MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES,
 };
 use crate::application::receipt_ledger::{
     ReceiptLedgerCatalogSnapshot, ReceiptLedgerCatalogSnapshotAuthority,
@@ -30,7 +30,7 @@ use crate::infrastructure::daemon::terminal_codec_v5::{
 use crate::infrastructure::platform::filesystem::{
     create_owner_only_directory_child, create_owner_only_file_child, file_identity,
     open_absolute_directory_path_nofollow, open_directory_child_nofollow,
-    open_directory_ownership_lock, open_regular_child_nofollow, read_directory_names_bounded,
+    open_directory_ownership_lock, open_regular_child_nofollow,
     remove_identity_bound_regular_child, rename_identity_bound_regular_child_no_replace,
     replace_identity_bound_regular_child, sync_directory, verify_owner_only_acl, FileIdentity,
     RetainedDirectoryCapability, RetainedRegularFileCapability,
@@ -52,10 +52,6 @@ const LEDGER_LOCK_FILE_NAME: &str = ".receipt-ledger.lock";
 const MAX_GENERATION_FILE_BYTES: usize = 32;
 const RECEIPT_RECORD_SCHEMA_VERSION: u32 = 1;
 const MAX_CANCEL_RESERVED_RECORD_BYTES: u64 = 1_024;
-const MAX_RETAINED_RECEIPT_ROWS: usize = MAX_LIVE_RECEIPTS + MAX_ACKNOWLEDGED_TOMBSTONES;
-const MAX_ACTIVE_DIRECTORY_ENTRIES: usize = MAX_RETAINED_RECEIPT_ROWS * 2;
-const MAX_GENERATION_STAGING_ENTRIES: usize = MAX_RETAINED_RECEIPT_ROWS;
-const MAX_RECEIPT_ROOT_DIRECTORY_ENTRIES: usize = MAX_GENERATION_STAGING_ENTRIES + 3;
 const DEFAULT_RECEIPT_RECOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_COMPLETED_TASK_HANDOFF_WITNESS_BYTES: u64 = 2_048;
 const RECEIPT_BATCH_SCHEMA_VERSION: u32 = 1;
@@ -1460,7 +1456,7 @@ impl ReceiptLedgerStore {
         })
     }
 
-    /// Returns the bounded set of active receipt keys under the same stable
+    /// Returns the complete set of active receipt keys under the same stable
     /// writer/generation fence used by startup inspection. Tombstones are not
     /// recovery work and are intentionally excluded.
     pub(crate) fn recovery_keys(
@@ -1484,7 +1480,7 @@ impl ReceiptLedgerStore {
             .filter(|(_, entry)| !entry.is_tombstone())
             .map(|(digest, entry)| (digest.clone(), entry.record.key.clone()))
             .collect::<Vec<_>>();
-        if keys.len() != catalog.live_count() || keys.len() > MAX_LIVE_RECEIPTS {
+        if keys.len() != catalog.live_count() {
             return latch_catalog_error(
                 &mut catalog,
                 ReceiptLedgerError::Corrupt(
@@ -2651,44 +2647,6 @@ impl ReceiptLedgerStore {
         reclaim.sort_unstable_by(|left, right| left.as_str().cmp(right.as_str()));
         reclaim.dedup();
 
-        let reclaimed_live = reclaim
-            .iter()
-            .filter(|digest| {
-                catalog
-                    .records
-                    .get(*digest)
-                    .is_some_and(|entry| !entry.is_tombstone())
-            })
-            .count();
-        let projected_count =
-            catalog
-                .live_count()
-                .checked_sub(reclaimed_live)
-                .ok_or(ReceiptLedgerError::Corrupt(
-                    "receipt reclamation exceeds the live catalog",
-                ))?;
-        if projected_count >= MAX_LIVE_RECEIPTS {
-            let capacity_candidate = catalog
-                .records
-                .iter()
-                .filter(|(digest, _)| !reclaim.contains(digest))
-                .filter(|(_, entry)| {
-                    entry_is_expired_cancel_reserved(entry, observed_at_epoch_ms)
-                        || entry_is_expired_direct_terminal(entry, observed_at_epoch_ms)
-                })
-                .map(|(digest, _)| digest.clone())
-                .min_by(|left, right| left.as_str().cmp(right.as_str()));
-            let Some(capacity_candidate) = capacity_candidate else {
-                return self.reject_before_mutation(
-                    catalog,
-                    deadline,
-                    ReceiptLedgerError::CapacityExceeded,
-                );
-            };
-            reclaim.push(capacity_candidate);
-            reclaim.sort_unstable_by(|left, right| left.as_str().cmp(right.as_str()));
-        }
-
         for digest in reclaim {
             match catalog
                 .records
@@ -3016,11 +2974,7 @@ impl ReceiptLedgerStore {
                 )
             }
         };
-        if next_actual_bytes
-            .checked_add(next_reserved_bytes)
-            .filter(|total| *total <= MAX_LIVE_RECEIPT_BYTES)
-            .is_none()
-        {
+        if next_actual_bytes.checked_add(next_reserved_bytes).is_none() {
             return self.reject_before_mutation(
                 &mut catalog,
                 deadline,
@@ -6222,9 +6176,12 @@ impl ReceiptLedgerStore {
     ) -> Result<RecoveredCatalog, ReceiptLedgerError> {
         check_deadline(deadline)?;
         verify_recovery_authority(receipts, receipts_file, active, active_file)?;
-        let mut names =
-            read_directory_names_bounded(active_file, MAX_ACTIVE_DIRECTORY_ENTRIES, || {
-                recovery_checkpoint(deadline)
+        let mut names = Vec::new();
+        active
+            .visit_immediate_names(|name| {
+                recovery_checkpoint(deadline)?;
+                names.push(name);
+                Ok::<_, io::Error>(())
             })
             .map_err(|error| recovery_error("enumerate receipt active directory", error))?;
         names.sort_by(|left, right| {
@@ -6526,9 +6483,12 @@ impl ReceiptLedgerStore {
     ) -> Result<Vec<RecoveryStagingEntry>, ReceiptLedgerError> {
         check_deadline(deadline)?;
         verify_receipts_authority(receipts, receipts_file)?;
-        let names =
-            read_directory_names_bounded(receipts_file, MAX_RECEIPT_ROOT_DIRECTORY_ENTRIES, || {
-                recovery_checkpoint(deadline)
+        let mut names = Vec::new();
+        receipts
+            .visit_immediate_names(|name| {
+                recovery_checkpoint(deadline)?;
+                names.push(name);
+                Ok::<_, io::Error>(())
             })
             .map_err(|error| recovery_error("enumerate receipt root directory", error))?;
         let mut staging = Vec::new();
@@ -6550,11 +6510,6 @@ impl ReceiptLedgerStore {
             {
                 return Err(ReceiptLedgerError::Corrupt(
                     "receipt root entry has an unsupported name",
-                ));
-            }
-            if staging.len() >= MAX_GENERATION_STAGING_ENTRIES {
-                return Err(ReceiptLedgerError::Corrupt(
-                    "receipt root exceeds the generation staging limit",
                 ));
             }
             let file = open_regular_child_nofollow(receipts_file, &name)

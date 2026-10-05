@@ -29,8 +29,8 @@ const CLEANUP_GRACE_MS: u64 = 2_000;
 const DIRECT_TASK_TTL_MS: u64 = 3_600_000;
 const TOMBSTONE_TTL_MS: u64 = 900_000;
 const MAX_RESPONSE_LINE_BYTES: u64 = 8_454_144;
-const LIVE_RECEIPT_LIMIT: u64 = 64;
-const LIVE_RECEIPT_BYTES_LIMIT: u64 = 541_065_216;
+const FORMER_LIVE_RECEIPT_LIMIT: u64 = 64;
+const FORMER_LIVE_RECEIPT_BYTES_LIMIT: u64 = 541_065_216;
 const TASK_LINK_LIMIT: u64 = 4_096;
 const TASK_LINK_BYTES_LIMIT: u64 = 4_194_304;
 const TOMBSTONE_LIMIT: u64 = 28_864;
@@ -3711,7 +3711,6 @@ fn assert_snapshot_accounting(snapshot: &Snapshot) {
         .sum();
     assert_eq!(snapshot.receipt_actual_bytes, actual);
     assert_eq!(snapshot.receipt_reserved_bytes, reserved);
-    assert!(actual + reserved <= LIVE_RECEIPT_BYTES_LIMIT);
     for receipt in &snapshot.receipts {
         assert_receipt_key(&receipt.key);
         assert!(receipt.version > 0);
@@ -6413,7 +6412,7 @@ fn assert_load_raw_bounds(load: &LoadObservation) {
         assert!(sample.owner_slots <= 65);
         assert!(sample.handshakes <= 32);
         assert!(sample.accept_batch <= 32);
-        assert!(sample.live_receipts <= LIVE_RECEIPT_LIMIT);
+        assert!(sample.live_receipts <= FORMER_LIVE_RECEIPT_LIMIT);
     }
 }
 
@@ -10580,11 +10579,11 @@ fn cancel_reserved_reopens_with_original_7125ms_expiry() {
 }
 
 #[test]
-fn cancel_reserved_shares_live_64_count_without_result_reservation() {
+fn cancel_reserved_crosses_former_live_quotas_without_result_reservation() {
     let report = execute(Scenario::fake(vec![
         Action::FillReceiptPool {
             state: SeedReceiptState::CancelReserved,
-            count: LIVE_RECEIPT_LIMIT as u32,
+            count: FORMER_LIVE_RECEIPT_LIMIT as u32,
         },
         checkpoint_action("cancel-pool-full"),
         Action::Cancel {
@@ -10600,7 +10599,7 @@ fn cancel_reserved_shares_live_64_count_without_result_reservation() {
         },
         Action::FillReceiptPool {
             state: SeedReceiptState::ReservedUnbound,
-            count: 62,
+            count: 64,
         },
         checkpoint_action("before-conversion"),
         Action::InstallBarrier {
@@ -10621,19 +10620,23 @@ fn cancel_reserved_shares_live_64_count_without_result_reservation() {
     ]));
 
     let full = checkpoint(&report, "cancel-pool-full");
-    assert_eq!(full.receipt_live_count, LIVE_RECEIPT_LIMIT);
+    assert_eq!(full.receipt_live_count, FORMER_LIVE_RECEIPT_LIMIT);
     assert_eq!(full.receipt_reserved_bytes, 0);
-    assert!(full.receipt_actual_bytes <= LIVE_RECEIPT_LIMIT * 1_024);
+    assert!(full.receipt_actual_bytes <= FORMER_LIVE_RECEIPT_LIMIT * 1_024);
     assert_eq!(
         response(&report, "sixty-fifth-cancel").kind,
-        ResponseKind::Rejected
+        ResponseKind::Cancelled
     );
-    assert_eq!(
-        response(&report, "sixty-fifth-cancel").error,
-        Some(ErrorCode::ReceiptCapacity)
-    );
+    assert_eq!(response(&report, "sixty-fifth-cancel").error, None);
+    let admitted = checkpoint(&report, "after-overflow");
+    assert_eq!(admitted.receipt_live_count, 65);
+    assert_eq!(admitted.receipt_reserved_bytes, 0);
+    assert!(full
+        .receipts
+        .iter()
+        .all(|receipt| admitted.receipts.contains(receipt)));
     let before = checkpoint(&report, "before-conversion");
-    assert_eq!(before.receipt_live_count, LIVE_RECEIPT_LIMIT - 1);
+    assert_eq!(before.receipt_live_count, 65);
     let cancel_metadata: Vec<_> = before
         .receipts
         .iter()
@@ -10647,25 +10650,26 @@ fn cancel_reserved_shares_live_64_count_without_result_reservation() {
         .iter()
         .filter(|receipt| receipt.state == SeedReceiptState::ReservedUnbound)
         .collect();
-    assert_eq!(full_entitlements.len(), 62);
+    assert_eq!(full_entitlements.len(), 64);
     full_entitlements
         .iter()
         .for_each(|receipt| assert_max_result_entitlement(receipt));
     assert_eq!(
         receipt_quota_bytes(before),
-        cancel_metadata[0].encoded_bytes + 62 * MAX_RESPONSE_LINE_BYTES
+        cancel_metadata[0].encoded_bytes + 64 * MAX_RESPONSE_LINE_BYTES
     );
     assert!(
-        before.receipt_actual_bytes + before.receipt_reserved_bytes <= LIVE_RECEIPT_BYTES_LIMIT,
-        "CancelReserved metadata must fit in the one-record headroom"
+        before.receipt_actual_bytes + before.receipt_reserved_bytes
+            > FORMER_LIVE_RECEIPT_BYTES_LIMIT,
+        "cancellation metadata must not be constrained by the former aggregate ceiling"
     );
     let converting = checkpoint(&report, "conversion-full-reserve");
-    assert_eq!(converting.receipt_live_count, LIVE_RECEIPT_LIMIT - 1);
+    assert_eq!(converting.receipt_live_count, 65);
     assert_eq!(
         receipt_quota_bytes(converting),
-        (LIVE_RECEIPT_LIMIT - 1) * MAX_RESPONSE_LINE_BYTES
+        65 * MAX_RESPONSE_LINE_BYTES
     );
-    assert!(receipt_quota_bytes(converting) <= LIVE_RECEIPT_BYTES_LIMIT);
+    assert!(receipt_quota_bytes(converting) > FORMER_LIVE_RECEIPT_BYTES_LIMIT);
     let converted_in_flight: Vec<_> = converting
         .receipts
         .iter()
@@ -10682,8 +10686,10 @@ fn cancel_reserved_shares_live_64_count_without_result_reservation() {
     assert_eq!(converting.actor_leases, 1);
     assert_eq!(converting.callbacks.total_domain(), 0);
     let after = checkpoint(&report, "after-conversion");
-    assert_eq!(after.receipt_live_count, LIVE_RECEIPT_LIMIT - 1);
-    assert!(after.receipt_actual_bytes + after.receipt_reserved_bytes <= LIVE_RECEIPT_BYTES_LIMIT);
+    assert_eq!(after.receipt_live_count, 65);
+    assert!(
+        after.receipt_actual_bytes + after.receipt_reserved_bytes > FORMER_LIVE_RECEIPT_BYTES_LIMIT
+    );
     assert_eq!(after.callbacks.total_domain(), 0);
     assert_eq!(
         response(&report, "converted-submit").kind,
@@ -10706,7 +10712,7 @@ fn cancel_reserved_shares_live_64_count_without_result_reservation() {
     assert_eq!(after.actor_leases, 0);
     assert_eq!(
         count_event(&report, EventKind::V5ReceiptRuntimeEntered),
-        129,
+        131,
         "batched actions must report every authenticated action frame"
     );
     assert_event_order(
@@ -12558,7 +12564,7 @@ fn receipt_pools_and_task_store_limits_are_independent_after_restart() {
 
     for label in ["before-restart", "after-restart"] {
         let snapshot = checkpoint(&report, label);
-        assert_eq!(snapshot.receipt_live_count, LIVE_RECEIPT_LIMIT);
+        assert_eq!(snapshot.receipt_live_count, FORMER_LIVE_RECEIPT_LIMIT);
         let cancels: Vec<_> = snapshot
             .receipts
             .iter()
@@ -12583,7 +12589,6 @@ fn receipt_pools_and_task_store_limits_are_independent_after_restart() {
             receipt_quota_bytes(snapshot),
             62 * MAX_RESPONSE_LINE_BYTES + cancel_bytes
         );
-        assert!(receipt_quota_bytes(snapshot) <= LIVE_RECEIPT_BYTES_LIMIT);
         assert_exact_linked_task_pool(snapshot, TASK_LINK_LIMIT);
         assert!(snapshot.task_link_bytes <= TASK_LINK_BYTES_LIMIT);
         assert_eq!(snapshot.tombstone_count, TOMBSTONE_LIMIT);
@@ -12591,7 +12596,10 @@ fn receipt_pools_and_task_store_limits_are_independent_after_restart() {
     }
     let before_restart = checkpoint(&report, "before-restart");
     let after_restart = checkpoint(&report, "after-restart");
-    assert_eq!(before_restart.receipts.len() as u64, LIVE_RECEIPT_LIMIT);
+    assert_eq!(
+        before_restart.receipts.len() as u64,
+        FORMER_LIVE_RECEIPT_LIMIT
+    );
     assert_eq!(before_restart.tombstones.len() as u64, TOMBSTONE_LIMIT);
     assert_eq!(before_restart.receipts, after_restart.receipts);
     assert_eq!(before_restart.tombstones, after_restart.tombstones);
@@ -12638,8 +12646,7 @@ fn receipt_pools_and_task_store_limits_are_independent_after_restart() {
         after_restart.store_generation
     );
     let converted = checkpoint(&report, "after-conversion");
-    assert!(receipt_quota_bytes(converted) <= LIVE_RECEIPT_BYTES_LIMIT);
-    assert_eq!(converted.receipt_live_count, LIVE_RECEIPT_LIMIT);
+    assert_eq!(converted.receipt_live_count, FORMER_LIVE_RECEIPT_LIMIT);
     assert_eq!(converted.task_link_count, TASK_LINK_LIMIT);
     assert_eq!(converted.tombstone_count, TOMBSTONE_LIMIT);
     assert_eq!(converted.task_links, after_restart.task_links);
@@ -12701,6 +12708,7 @@ fn retained_receipt_backed_terminals_do_not_starve_target_direct_load() {
             count: 32,
         },
         checkpoint_action("exact-sixty-four"),
+        direct_provider(),
         Action::Submit {
             request: RequestCase::Canonical,
             response_budget_ms: CUTOFF_MS,
@@ -12714,7 +12722,9 @@ fn retained_receipt_backed_terminals_do_not_starve_target_direct_load() {
     assert_direct_load_lifecycles(load, 28_800);
     assert_eq!(load_window_ms(load), TOMBSTONE_TTL_MS);
     assert_eq!(completed_at_window_end(load), 28_800);
-    assert!(max_concurrency_sample(load, |sample| sample.live_receipts) <= LIVE_RECEIPT_LIMIT);
+    assert!(
+        max_concurrency_sample(load, |sample| sample.live_receipts) <= FORMER_LIVE_RECEIPT_LIMIT
+    );
     assert!(max_concurrency_sample(load, |sample| sample.owner_slots) <= 65);
     assert_eq!(load.task_store_create_attempts, 0);
     let retained = checkpoint(&report, "retained-after-load");
@@ -12722,19 +12732,13 @@ fn retained_receipt_backed_terminals_do_not_starve_target_direct_load() {
     assert_tombstones_match_active_ack_window(retained, load);
     assert_eq!(
         checkpoint(&report, "exact-sixty-four").receipt_live_count,
-        LIVE_RECEIPT_LIMIT
+        FORMER_LIVE_RECEIPT_LIMIT
     );
-    assert_eq!(
-        response(&report, "sixty-fifth").kind,
-        ResponseKind::Rejected
-    );
-    assert_eq!(
-        response(&report, "sixty-fifth").error,
-        Some(ErrorCode::ReceiptCapacity)
-    );
+    assert_eq!(response(&report, "sixty-fifth").kind, ResponseKind::Direct);
+    assert_eq!(response(&report, "sixty-fifth").error, None);
     assert_eq!(
         checkpoint(&report, "after-sixty-fifth").callbacks.execute,
-        28_800
+        28_801
     );
 }
 
@@ -12814,7 +12818,7 @@ fn deterministic_horizon_load_does_not_saturate() {
     assert_eq!(load_window_ms(model), TOMBSTONE_TTL_MS);
     assert_eq!(
         max_concurrency_sample(model, |sample| sample.live_receipts),
-        LIVE_RECEIPT_LIMIT
+        FORMER_LIVE_RECEIPT_LIMIT
     );
     assert_eq!(model.task_store_create_attempts, 0);
     assert_eq!(model.listener, ListenerState::Listening);
@@ -12857,19 +12861,16 @@ fn deterministic_horizon_load_does_not_saturate() {
     assert_eq!(reopened.store_generation, at_expiry.store_generation);
     assert_eq!(
         checkpoint(&report, "horizon-exact-sixty-four").receipt_live_count,
-        LIVE_RECEIPT_LIMIT
+        FORMER_LIVE_RECEIPT_LIMIT
     );
     assert_eq!(
         response(&report, "horizon-sixty-fifth").kind,
-        ResponseKind::Rejected
+        ResponseKind::Direct
     );
-    assert_eq!(
-        response(&report, "horizon-sixty-fifth").error,
-        Some(ErrorCode::ReceiptCapacity)
-    );
+    assert_eq!(response(&report, "horizon-sixty-fifth").error, None);
     assert_eq!(
         checkpoint(&report, "horizon-after-boundary").receipt_live_count,
-        LIVE_RECEIPT_LIMIT
+        65
     );
     let tombstone_full = checkpoint(&report, "tombstone-full");
     assert_eq!(tombstone_full.tombstone_count, TOMBSTONE_LIMIT);
@@ -12983,7 +12984,9 @@ fn wall_clock_writer_sustains_32_receipts_per_second_on_posix() {
         load_p99_ms(load)
     );
     assert!(load_writer_drain_ms(load) <= 2_000);
-    assert!(max_concurrency_sample(load, |sample| sample.live_receipts) <= LIVE_RECEIPT_LIMIT);
+    assert!(
+        max_concurrency_sample(load, |sample| sample.live_receipts) <= FORMER_LIVE_RECEIPT_LIMIT
+    );
     assert_eq!(load.task_store_create_attempts, 0);
     assert_eq!(load.listener, ListenerState::Listening);
 }
