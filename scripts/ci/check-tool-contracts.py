@@ -449,6 +449,13 @@ def validate_v8_runner_zero_source_preview(
         errors.append("preview data.ok must be true")
     if data.get("mode") != "thin":
         errors.append("preview data.mode must be thin")
+    plan = data.get("plan")
+    if (
+        not isinstance(plan, dict)
+        or not isinstance(plan.get("program"), str)
+        or not plan["program"]
+    ):
+        errors.append("preview data.plan.program must be a non-empty string")
     if data.get("provider_dispatched") is not False:
         errors.append("preview provider_dispatched must be false")
     if "pid" not in data or data["pid"] is not None:

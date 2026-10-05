@@ -949,6 +949,7 @@ class ProductContractTests(unittest.TestCase):
             "data": {
                 "ok": True,
                 "mode": "thin",
+                "plan": {"program": "/fixture/platform/bin/1cv8c"},
                 "provider_dispatched": False,
                 "pid": None,
             },
@@ -963,6 +964,7 @@ class ProductContractTests(unittest.TestCase):
             ((), "command", ["build", None]),
             (("data",), "ok", [False, 1, "true", None]),
             (("data",), "mode", ["thick", None]),
+            (("data",), "plan", [None, [], {}, {"program": ""}, {"program": 1}]),
             (("data",), "provider_dispatched", [True, 0, "false", None]),
             (("data",), "pid", [1, 0, False, ""]),
         ]:
@@ -1015,7 +1017,8 @@ class ProductContractTests(unittest.TestCase):
                         payload = {
                             "ok": True, "command": "launch",
                             "data": {"ok": True, "mode": "thin", "pid": None,
-                                     "provider_dispatched": False},
+                                     "provider_dispatched": False,
+                                     "plan": {"program": "/fixture/platform/bin/1cv8c"}},
                         }
                         if failure == "invalid_receipt":
                             payload["data"]["provider_dispatched"] = True
