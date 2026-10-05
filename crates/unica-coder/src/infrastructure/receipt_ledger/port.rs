@@ -279,24 +279,6 @@ impl ReceiptLedgerPort for ReceiptLedgerStore {
         )
     }
 
-    fn expire_cancel_reserved(
-        &mut self,
-        key: ReceiptKey,
-        expected_version: ReceiptVersion,
-        expected_mutation_sequence: u64,
-        observed_at_epoch_ms: u64,
-        deadline: Instant,
-    ) -> Result<CancelExpiryOutcome, ReceiptLedgerError> {
-        ReceiptLedgerStore::expire_cancel_reserved(
-            self,
-            key,
-            expected_version,
-            expected_mutation_sequence,
-            observed_at_epoch_ms,
-            deadline,
-        )
-    }
-
     fn publish_direct_terminal(
         &mut self,
         key: &ReceiptKey,

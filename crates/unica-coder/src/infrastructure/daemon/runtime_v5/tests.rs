@@ -453,11 +453,11 @@ fn inline_protected_mutation_cancel_does_not_arm_fail_stop_watchdog() {
 use crate::application::invocation::normalized_arguments_hash;
 use crate::application::operation_descriptors::{ExecutionClass, KnownLongReason};
 use crate::application::receipt_ledger::{
-    receipt_key_digest, request_scope_hash, CancelExpiryOutcome, CancelResolution,
-    CommittedDirectPublication, OriginalCutoffDescriptor, ReceiptKey, ReceiptLedgerPort,
-    ReceiptRecordHeader, ReceiptState, ReceiptTaskProjection, ReceiptTerminalOutcome,
-    ReceiptVersion, RequestIdentity, ReserveOutcome, ReservedPhase, ReservedReceipt,
-    V5CanonicalTerminal, V5ToolIdentity, CANCEL_RESERVATION_TTL_MS, MAX_RECEIPT_ENTITLEMENT_BYTES,
+    receipt_key_digest, request_scope_hash, CancelResolution, CommittedDirectPublication,
+    OriginalCutoffDescriptor, ReceiptKey, ReceiptLedgerPort, ReceiptRecordHeader, ReceiptState,
+    ReceiptTaskProjection, ReceiptTerminalOutcome, ReceiptVersion, RequestIdentity, ReserveOutcome,
+    ReservedPhase, ReservedReceipt, V5CanonicalTerminal, V5ToolIdentity,
+    MAX_RECEIPT_ENTITLEMENT_BYTES,
 };
 use crate::domain::invocation::{DomainResult, InvocationFailure};
 use crate::domain::invocation::{InvocationId, SafeIdentityHash, TaskId};
@@ -691,17 +691,6 @@ impl ReceiptLedgerPort for FailingCancelPort {
         }
     }
 
-    fn expire_cancel_reserved(
-        &mut self,
-        _key: ReceiptKey,
-        _expected_version: ReceiptVersion,
-        _expected_mutation_sequence: u64,
-        _observed_at_epoch_ms: u64,
-        _deadline: Instant,
-    ) -> Result<CancelExpiryOutcome, ReceiptLedgerError> {
-        Err(ReceiptLedgerError::StoreUnavailable)
-    }
-
     fn publish_direct_terminal(
         &mut self,
         _key: &ReceiptKey,
@@ -760,17 +749,6 @@ impl ReceiptLedgerPort for SlowReservePort {
         _cancel_reserved_at_epoch_ms: u64,
         _deadline: Instant,
     ) -> Result<CancelResolution, ReceiptLedgerError> {
-        Err(ReceiptLedgerError::StoreUnavailable)
-    }
-
-    fn expire_cancel_reserved(
-        &mut self,
-        _key: ReceiptKey,
-        _expected_version: ReceiptVersion,
-        _expected_mutation_sequence: u64,
-        _observed_at_epoch_ms: u64,
-        _deadline: Instant,
-    ) -> Result<CancelExpiryOutcome, ReceiptLedgerError> {
         Err(ReceiptLedgerError::StoreUnavailable)
     }
 
@@ -1235,13 +1213,15 @@ fn exchange_once_with_epoch(
     state_root: &std::path::Path,
     identity: &CoreIdentity,
     clock: Arc<ManualEpochClock>,
+    service: Arc<SourceAdmissionProbe>,
     exchange: impl FnOnce(&mut V5DaemonProcessOwner) -> Result<V5ServerResponse, String>,
 ) -> V5ServerResponse {
     let config = DaemonServerConfig::new(
         state_root.to_path_buf(),
         identity.clone(),
         Duration::from_millis(80),
-    );
+    )
+    .with_invocation_service(service);
     let server = thread::spawn(move || {
         run_daemon_configured(config, move |mut runtime| {
             runtime.epoch_clock = clock;
@@ -2458,56 +2438,103 @@ fn startup_rejects_task_terminal_bound_that_does_not_confirm_exact_terminal_task
 }
 
 #[test]
-fn cancel_reserved_reopens_with_the_original_absolute_7125ms_expiry() {
+fn cancel_reserved_survives_former_ttl_and_restart_before_late_submit_without_callback() {
     let root = tempfile::tempdir().expect("temporary restart-stable receipt root");
     let state_root = std::fs::canonicalize(root.path()).expect("physical state root");
     let identity = CoreIdentity::production_v5();
     let clock = Arc::new(ManualEpochClock::new(1_000));
+    let service = Arc::new(SourceAdmissionProbe::default());
     let arguments = serde_json::Map::new();
+    let invocation_id = InvocationId::new();
+    let reserved_task_id = TaskId::new();
     let request_identity = RequestIdentity::new(
         identity.digest().clone(),
         V5ToolIdentity::View,
         normalized_arguments_hash(&arguments),
         request_scope_hash("workspace-a").expect("request scope"),
     );
-    let key = ReceiptKey::new(InvocationId::new(), TaskId::new(), request_identity);
-
-    let initial = exchange_once_with_epoch(&state_root, &identity, Arc::clone(&clock), |owner| {
-        owner.cancel_invocation(key.clone())
-    });
+    let key = ReceiptKey::new(invocation_id, reserved_task_id, request_identity);
+    // Every exchange starts and fully stops a fresh daemon over the same durable ledger.
+    let initial = exchange_once_with_epoch(
+        &state_root,
+        &identity,
+        Arc::clone(&clock),
+        Arc::clone(&service),
+        |owner| owner.cancel_invocation(key.clone()),
+    );
     assert!(matches!(
         initial,
         V5ServerResponse::Invocation {
             outcome: V5InvocationResponse::ReceiptPending {
                 accepted_epoch_ms: 1_000,
                 phase: V5InvocationPhase::CancelReserved,
+                cancel_requested: true,
                 ..
             }
         }
     ));
+    let state = DaemonStateDirectory::open(&state_root, &identity).expect("open receipt state");
+    let generation_path = state.path().join("receipts").join("generation");
+    let original_generation = std::fs::read(&generation_path).expect("read initial generation");
 
-    clock.set(4_000);
-    let duplicate = exchange_once_with_epoch(&state_root, &identity, Arc::clone(&clock), |owner| {
-        owner.cancel_invocation(key.clone())
-    });
-    assert_eq!(duplicate, initial, "reopen extended the cancellation TTL");
-
-    clock.set(1_000 + CANCEL_RESERVATION_TTL_MS - 1);
-    let before_expiry =
-        exchange_once_with_epoch(&state_root, &identity, Arc::clone(&clock), |owner| {
-            owner.recover_invocation_receipt(key.clone())
-        });
-    assert_eq!(before_expiry, initial);
-
-    clock.set(1_000 + CANCEL_RESERVATION_TTL_MS);
-    let expired = exchange_once_with_epoch(&state_root, &identity, clock, |owner| {
-        owner.recover_invocation_receipt(key)
-    });
+    // Both observations are later than the former absolute expiry (1_000 + 7_125).
+    clock.set(100_000);
+    let duplicate = exchange_once_with_epoch(
+        &state_root,
+        &identity,
+        Arc::clone(&clock),
+        Arc::clone(&service),
+        |owner| owner.cancel_invocation(key.clone()),
+    );
     assert_eq!(
-        expired,
-        V5ServerResponse::Error {
-            code: V5DaemonErrorCode::ReceiptNotFound,
-        }
+        duplicate, initial,
+        "duplicate cancellation changed its original timestamp"
+    );
+    assert_eq!(
+        std::fs::read(&generation_path).unwrap(),
+        original_generation
+    );
+    clock.set(200_000);
+    let recovered = exchange_once_with_epoch(
+        &state_root,
+        &identity,
+        Arc::clone(&clock),
+        Arc::clone(&service),
+        |owner| owner.recover_invocation_receipt(key.clone()),
+    );
+    assert_eq!(recovered, initial, "restart forgot the early cancellation");
+    assert_eq!(
+        std::fs::read(&generation_path).unwrap(),
+        original_generation
+    );
+
+    let invocation = V5InvocationRequest::new(
+        invocation_id,
+        reserved_task_id,
+        V5ToolIdentity::View,
+        arguments,
+        "workspace-a".to_owned(),
+        7_000,
+    )
+    .expect("strict late invocation");
+    let submitted = exchange_once_with_epoch(
+        &state_root,
+        &identity,
+        clock,
+        Arc::clone(&service),
+        |owner| owner.submit_invocation(invocation),
+    );
+    assert!(matches!(
+        submitted,
+        V5ServerResponse::Invocation {
+            outcome: V5InvocationResponse::Direct { ref receipt }
+        } if matches!(receipt.terminal(), ReceiptTerminalOutcome::Cancelled)
+            && receipt.receipt_key() == &key
+    ));
+    assert_eq!(
+        service.prepares.load(Ordering::SeqCst),
+        0,
+        "late pre-cancelled submission must not invoke the provider callback"
     );
 }
 

@@ -8,7 +8,16 @@ pub(super) fn validate_active_record(
     encoded: &[u8],
     expected_digest: &ReceiptKeyDigest,
 ) -> Result<(), ReceiptLedgerError> {
-    if record.schema_version != RECEIPT_RECORD_SCHEMA_VERSION {
+    if record.schema_version != RECEIPT_RECORD_SCHEMA_VERSION
+        && !(record.schema_version == PERSISTENT_CANCEL_RECORD_SCHEMA_VERSION
+            && matches!(
+                record.lifecycle,
+                StoredActiveLifecycleV1::CancelReserved {
+                    expires_at_epoch_ms: None,
+                    ..
+                }
+            ))
+    {
         return Err(ReceiptLedgerError::Corrupt(
             "receipt row schema version is unsupported",
         ));
@@ -45,15 +54,17 @@ pub(super) fn validate_active_record(
                     "CancelReserved receipt must persist cancelRequested=true",
                 ));
             }
-            let expected_expiry = cancel_reserved_at_epoch_ms
-                .checked_add(CANCEL_RESERVATION_TTL_MS)
-                .ok_or(ReceiptLedgerError::Corrupt(
-                    "CancelReserved expiry exceeds u64",
-                ))?;
-            if *expires_at_epoch_ms != expected_expiry {
-                return Err(ReceiptLedgerError::Corrupt(
-                    "CancelReserved expiry is not the fixed absolute TTL",
-                ));
+            if record.schema_version == RECEIPT_RECORD_SCHEMA_VERSION {
+                let expected_expiry = cancel_reserved_at_epoch_ms
+                    .checked_add(LEGACY_CANCEL_RESERVATION_TTL_MS)
+                    .ok_or(ReceiptLedgerError::Corrupt(
+                        "legacy cancellation expiry exceeds u64",
+                    ))?;
+                if *expires_at_epoch_ms != Some(expected_expiry) {
+                    return Err(ReceiptLedgerError::Corrupt(
+                        "legacy cancellation expiry is invalid",
+                    ));
+                }
             }
             MAX_CANCEL_RESERVED_RECORD_BYTES
         }
@@ -80,7 +91,7 @@ pub(super) fn validate_active_record(
                     "expired deletion witness does not follow its predecessor mutation",
                 ));
             }
-            if prior_cancel_reserved_at_epoch_ms.checked_add(CANCEL_RESERVATION_TTL_MS)
+            if prior_cancel_reserved_at_epoch_ms.checked_add(LEGACY_CANCEL_RESERVATION_TTL_MS)
                 != Some(*prior_expires_at_epoch_ms)
             {
                 return Err(ReceiptLedgerError::Corrupt(
