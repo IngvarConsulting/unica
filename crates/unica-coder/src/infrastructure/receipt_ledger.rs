@@ -42,7 +42,7 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use uuid::Uuid;
 
 const ACTIVE_DIRECTORY_NAME: &str = "active";
@@ -52,7 +52,6 @@ const MAX_GENERATION_FILE_BYTES: usize = 32;
 const RECEIPT_RECORD_SCHEMA_VERSION: u32 = 1;
 const PERSISTENT_CANCEL_RECORD_SCHEMA_VERSION: u32 = 2;
 const MAX_CANCEL_RESERVED_RECORD_BYTES: u64 = 1_024;
-const DEFAULT_RECEIPT_RECOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_COMPLETED_TASK_HANDOFF_WITNESS_BYTES: u64 = 2_048;
 const RECEIPT_BATCH_SCHEMA_VERSION: u32 = 1;
 const MAX_RECEIPT_MUTATION_BATCH_ROWS: usize = 32;
@@ -1112,20 +1111,25 @@ pub(crate) struct ReceiptLedgerStore {
 
 impl ReceiptLedgerStore {
     pub(crate) fn open(receipts_path: impl AsRef<Path>) -> Result<Self, ReceiptLedgerError> {
-        Self::open_before(
-            receipts_path,
-            Instant::now() + DEFAULT_RECEIPT_RECOVERY_TIMEOUT,
-        )
+        Self::open_with_recovery_deadline(receipts_path, None)
     }
 
+    #[cfg(test)]
     pub(crate) fn open_before(
         receipts_path: impl AsRef<Path>,
         deadline: Instant,
     ) -> Result<Self, ReceiptLedgerError> {
-        check_deadline(deadline)?;
+        Self::open_with_recovery_deadline(receipts_path, Some(deadline))
+    }
+
+    fn open_with_recovery_deadline(
+        receipts_path: impl AsRef<Path>,
+        deadline: Option<Instant>,
+    ) -> Result<Self, ReceiptLedgerError> {
+        check_optional_deadline(deadline)?;
         let receipts_path = receipts_path.as_ref();
         let receipts_file = open_or_create_owner_only_directory(receipts_path)?;
-        check_deadline(deadline)?;
+        check_optional_deadline(deadline)?;
         let receipts = RetainedDirectoryCapability::open(receipts_path)
             .map_err(|error| storage_error("retain named receipts directory", error))?;
         if file_identity(&receipts_file)
@@ -1142,17 +1146,22 @@ impl ReceiptLedgerStore {
     pub(crate) fn open_retained_directory(
         receipts: RetainedDirectoryCapability,
     ) -> Result<Self, ReceiptLedgerError> {
-        Self::open_retained_directory_before(
-            receipts,
-            Instant::now() + DEFAULT_RECEIPT_RECOVERY_TIMEOUT,
-        )
+        Self::open_retained_directory_with_recovery_deadline(receipts, None)
     }
 
+    #[cfg(any(test, feature = "receipt-ledger-test-support"))]
     pub(crate) fn open_retained_directory_before(
         receipts: RetainedDirectoryCapability,
         deadline: Instant,
     ) -> Result<Self, ReceiptLedgerError> {
-        check_deadline(deadline)?;
+        Self::open_retained_directory_with_recovery_deadline(receipts, Some(deadline))
+    }
+
+    fn open_retained_directory_with_recovery_deadline(
+        receipts: RetainedDirectoryCapability,
+        deadline: Option<Instant>,
+    ) -> Result<Self, ReceiptLedgerError> {
+        check_optional_deadline(deadline)?;
         let receipts_file = receipts
             .try_clone_directory()
             .map_err(|error| storage_error("clone retained receipts directory", error))?;
@@ -1162,9 +1171,9 @@ impl ReceiptLedgerStore {
     fn open_retained_directory_with_file(
         receipts: RetainedDirectoryCapability,
         receipts_file: File,
-        deadline: Instant,
+        deadline: Option<Instant>,
     ) -> Result<Self, ReceiptLedgerError> {
-        check_deadline(deadline)?;
+        check_optional_deadline(deadline)?;
         receipts
             .validate_named_identity()
             .map_err(|error| storage_error("validate named receipts directory", error))?;
@@ -1242,7 +1251,7 @@ impl ReceiptLedgerStore {
                 acknowledgement_recovery: None,
             }
         };
-        check_deadline(deadline)?;
+        check_optional_deadline(deadline)?;
         let (generation_file, persisted_generation) = open_or_initialize_generation(
             &receipts_file,
             recovered.maximum_mutation_sequence,
@@ -1321,19 +1330,19 @@ impl ReceiptLedgerStore {
             _ownership_lock: ownership_lock,
         };
         store.verify_named_authority()?;
-        check_deadline(deadline)?;
+        check_optional_deadline(deadline)?;
         let confirmed_generation = store.generation()?;
         if confirmed_generation != persisted_generation {
             return Err(ReceiptLedgerError::Corrupt(
                 "receipt generation changed during recovery",
             ));
         }
-        check_deadline(deadline)?;
+        check_optional_deadline(deadline)?;
         store.remove_active_staging(recovered.staging, deadline)?;
         store.remove_generation_staging(generation_staging, deadline)?;
         if persisted_generation < recovered.maximum_mutation_sequence {
-            check_deadline(deadline)?;
-            store.publish_generation(recovered.maximum_mutation_sequence, None, Some(deadline))?;
+            check_optional_deadline(deadline)?;
+            store.publish_generation(recovered.maximum_mutation_sequence, None, deadline)?;
         }
         if let Some(recovery) = recovered.acknowledgement_recovery.take() {
             store.publish_replacement_record(
@@ -1356,13 +1365,13 @@ impl ReceiptLedgerStore {
         // witness is unlinked, otherwise a crash could resurrect the previous
         // generation without any evidence that the receipt was deleted.
         store.remove_active_staging(recovered.expired_deletions, deadline)?;
-        check_deadline(deadline)?;
+        check_optional_deadline(deadline)?;
         *store
             .writer
             .lock()
             .map_err(|_| ReceiptLedgerError::Corrupt("receipt catalog lock was poisoned"))? =
             recovered.catalog;
-        check_deadline(deadline)?;
+        check_optional_deadline(deadline)?;
         Ok(store)
     }
 
@@ -1461,9 +1470,9 @@ impl ReceiptLedgerStore {
     /// recovery work and are intentionally excluded.
     pub(crate) fn recovery_keys(
         &self,
-        deadline: Instant,
+        deadline: Option<Instant>,
     ) -> Result<Vec<ReceiptKey>, ReceiptLedgerError> {
-        check_deadline(deadline)?;
+        check_optional_deadline(deadline)?;
         let mut catalog = self
             .writer
             .lock()
@@ -1490,7 +1499,7 @@ impl ReceiptLedgerStore {
         }
         keys.sort_unstable_by(|(left, _), (right, _)| left.as_str().cmp(right.as_str()));
         let keys = keys.into_iter().map(|(_, key)| key).collect::<Vec<_>>();
-        check_deadline(deadline)?;
+        check_optional_deadline(deadline)?;
         let generation_after =
             latch_catalog_result(&mut catalog, self.generation_under_writer_lock())?;
         if generation_after != generation_before {
@@ -2428,9 +2437,11 @@ impl ReceiptLedgerStore {
                 .map_err(|_| ReceiptLedgerError::RecordTooLarge)?,
         };
         validate_catalog_replace(catalog, &persisted, &replacement)?;
-        if let Err(error) = self.publish_replacement_record(&record, &encoded, deadline, || {
-            commit_catalog_replace(catalog, replacement);
-        }) {
+        if let Err(error) =
+            self.publish_replacement_record(&record, &encoded, Some(deadline), || {
+                commit_catalog_replace(catalog, replacement);
+            })
+        {
             if !matches!(error, ReceiptLedgerError::DeadlineExceeded) {
                 catalog.unavailable = true;
             }
@@ -2884,9 +2895,11 @@ impl ReceiptLedgerStore {
                 .map_err(|_| ReceiptLedgerError::RecordTooLarge)?,
         };
         validate_catalog_replace(&catalog, &expected, &replacement)?;
-        if let Err(error) = self.publish_replacement_record(&record, &encoded, deadline, || {
-            commit_catalog_replace(&mut catalog, replacement);
-        }) {
+        if let Err(error) =
+            self.publish_replacement_record(&record, &encoded, Some(deadline), || {
+                commit_catalog_replace(&mut catalog, replacement);
+            })
+        {
             if !matches!(error, ReceiptLedgerError::DeadlineExceeded) {
                 catalog.unavailable = true;
             }
@@ -3021,9 +3034,11 @@ impl ReceiptLedgerStore {
                 .map_err(|_| ReceiptLedgerError::RecordTooLarge)?,
         };
         validate_catalog_replace(&catalog, &expected, &replacement)?;
-        if let Err(error) = self.publish_replacement_record(&record, &encoded, deadline, || {
-            commit_catalog_replace(&mut catalog, replacement);
-        }) {
+        if let Err(error) =
+            self.publish_replacement_record(&record, &encoded, Some(deadline), || {
+                commit_catalog_replace(&mut catalog, replacement);
+            })
+        {
             if !matches!(error, ReceiptLedgerError::DeadlineExceeded) {
                 catalog.unavailable = true;
             }
@@ -3197,9 +3212,11 @@ impl ReceiptLedgerStore {
                 .map_err(|_| ReceiptLedgerError::RecordTooLarge)?,
         };
         validate_catalog_replace(&catalog, &expected, &replacement)?;
-        if let Err(error) = self.publish_replacement_record(&record, &encoded, deadline, || {
-            commit_catalog_replace(&mut catalog, replacement);
-        }) {
+        if let Err(error) =
+            self.publish_replacement_record(&record, &encoded, Some(deadline), || {
+                commit_catalog_replace(&mut catalog, replacement);
+            })
+        {
             if !matches!(error, ReceiptLedgerError::DeadlineExceeded) {
                 catalog.unavailable = true;
             }
@@ -3374,9 +3391,11 @@ impl ReceiptLedgerStore {
         if let Err(error) = validate_catalog_remove(&catalog, &persisted) {
             return latch_catalog_error(&mut catalog, error);
         }
-        if let Err(error) = self.publish_replacement_record(&record, &encoded, deadline, || {
-            commit_catalog_remove(&mut catalog, &persisted);
-        }) {
+        if let Err(error) =
+            self.publish_replacement_record(&record, &encoded, Some(deadline), || {
+                commit_catalog_remove(&mut catalog, &persisted);
+            })
+        {
             if !matches!(error, ReceiptLedgerError::DeadlineExceeded) {
                 catalog.unavailable = true;
             }
@@ -3499,9 +3518,11 @@ impl ReceiptLedgerStore {
         if let Err(error) = validate_catalog_remove(&catalog, &persisted) {
             return latch_catalog_error(&mut catalog, error);
         }
-        if let Err(error) = self.publish_replacement_record(&record, &encoded, deadline, || {
-            commit_catalog_remove(&mut catalog, &persisted);
-        }) {
+        if let Err(error) =
+            self.publish_replacement_record(&record, &encoded, Some(deadline), || {
+                commit_catalog_remove(&mut catalog, &persisted);
+            })
+        {
             if !matches!(error, ReceiptLedgerError::DeadlineExceeded) {
                 catalog.unavailable = true;
             }
@@ -3636,9 +3657,11 @@ impl ReceiptLedgerStore {
                 .map_err(|_| ReceiptLedgerError::RecordTooLarge)?,
         };
         validate_catalog_replace(&catalog, &expected, &replacement)?;
-        if let Err(error) = self.publish_replacement_record(&record, &encoded, deadline, || {
-            commit_catalog_replace(&mut catalog, replacement);
-        }) {
+        if let Err(error) =
+            self.publish_replacement_record(&record, &encoded, Some(deadline), || {
+                commit_catalog_replace(&mut catalog, replacement);
+            })
+        {
             if !matches!(error, ReceiptLedgerError::DeadlineExceeded) {
                 catalog.unavailable = true;
             }
@@ -3792,9 +3815,11 @@ impl ReceiptLedgerStore {
                 .map_err(|_| ReceiptLedgerError::RecordTooLarge)?,
         };
         validate_catalog_replace(&catalog, &expected, &replacement)?;
-        if let Err(error) = self.publish_replacement_record(&record, &encoded, deadline, || {
-            commit_catalog_replace(&mut catalog, replacement);
-        }) {
+        if let Err(error) =
+            self.publish_replacement_record(&record, &encoded, Some(deadline), || {
+                commit_catalog_replace(&mut catalog, replacement);
+            })
+        {
             if !matches!(error, ReceiptLedgerError::DeadlineExceeded) {
                 catalog.unavailable = true;
             }
@@ -3937,9 +3962,11 @@ impl ReceiptLedgerStore {
                 .map_err(|_| ReceiptLedgerError::RecordTooLarge)?,
         };
         validate_catalog_replace(&catalog, &expected_entry, &replacement)?;
-        if let Err(error) = self.publish_replacement_record(&record, &encoded, deadline, || {
-            commit_catalog_replace(&mut catalog, replacement);
-        }) {
+        if let Err(error) =
+            self.publish_replacement_record(&record, &encoded, Some(deadline), || {
+                commit_catalog_replace(&mut catalog, replacement);
+            })
+        {
             if !matches!(error, ReceiptLedgerError::DeadlineExceeded) {
                 catalog.unavailable = true;
             }
@@ -4080,9 +4107,11 @@ impl ReceiptLedgerStore {
                 .map_err(|_| ReceiptLedgerError::RecordTooLarge)?,
         };
         validate_catalog_replace(&catalog, &expected, &replacement)?;
-        if let Err(error) = self.publish_replacement_record(&record, &encoded, deadline, || {
-            commit_catalog_replace(&mut catalog, replacement);
-        }) {
+        if let Err(error) =
+            self.publish_replacement_record(&record, &encoded, Some(deadline), || {
+                commit_catalog_replace(&mut catalog, replacement);
+            })
+        {
             if !matches!(error, ReceiptLedgerError::DeadlineExceeded) {
                 catalog.unavailable = true;
             }
@@ -4185,9 +4214,11 @@ impl ReceiptLedgerStore {
             }
             return self.reject_before_mutation(catalog, deadline, error);
         }
-        if let Err(error) = self.publish_replacement_record(&record, &encoded, deadline, || {
-            commit_catalog_replace(catalog, replacement);
-        }) {
+        if let Err(error) =
+            self.publish_replacement_record(&record, &encoded, Some(deadline), || {
+                commit_catalog_replace(catalog, replacement);
+            })
+        {
             if !matches!(error, ReceiptLedgerError::DeadlineExceeded) {
                 catalog.unavailable = true;
             }
@@ -4363,9 +4394,11 @@ impl ReceiptLedgerStore {
             }
             return Err(error);
         }
-        if let Err(error) = self.publish_replacement_record(&record, &encoded, deadline, || {
-            commit_catalog_replace(&mut catalog, replacement);
-        }) {
+        if let Err(error) =
+            self.publish_replacement_record(&record, &encoded, Some(deadline), || {
+                commit_catalog_replace(&mut catalog, replacement);
+            })
+        {
             if !matches!(error, ReceiptLedgerError::DeadlineExceeded) {
                 catalog.unavailable = true;
             }
@@ -4502,9 +4535,11 @@ impl ReceiptLedgerStore {
             }
             return Err(error);
         }
-        if let Err(error) = self.publish_replacement_record(&record, &encoded, deadline, || {
-            commit_catalog_replace(&mut catalog, replacement);
-        }) {
+        if let Err(error) =
+            self.publish_replacement_record(&record, &encoded, Some(deadline), || {
+                commit_catalog_replace(&mut catalog, replacement);
+            })
+        {
             if !matches!(error, ReceiptLedgerError::DeadlineExceeded) {
                 catalog.unavailable = true;
             }
@@ -4880,9 +4915,11 @@ impl ReceiptLedgerStore {
             }
             return Err(error);
         }
-        if let Err(error) = self.publish_replacement_record(&record, encoded, deadline, || {
-            commit_catalog_replace(&mut catalog, replacement);
-        }) {
+        if let Err(error) =
+            self.publish_replacement_record(&record, encoded, Some(deadline), || {
+                commit_catalog_replace(&mut catalog, replacement);
+            })
+        {
             if !matches!(error, ReceiptLedgerError::DeadlineExceeded) {
                 catalog.unavailable = true;
             }
@@ -5112,7 +5149,7 @@ impl ReceiptLedgerStore {
         let (witness, witness_encoded) =
             serialize_reserved_record(witness, MAX_CANCEL_RESERVED_RECORD_BYTES)?;
         if let Err(error) =
-            self.publish_replacement_record(&witness, &witness_encoded, deadline, || {})
+            self.publish_replacement_record(&witness, &witness_encoded, Some(deadline), || {})
         {
             if !matches!(error, ReceiptLedgerError::DeadlineExceeded) {
                 catalog.unavailable = true;
@@ -5125,9 +5162,11 @@ impl ReceiptLedgerStore {
             catalog.unavailable = true;
             return Err(error);
         }
-        if let Err(error) = self.publish_replacement_record(&record, &encoded, deadline, || {
-            commit_catalog_replace(&mut catalog, replacement);
-        }) {
+        if let Err(error) =
+            self.publish_replacement_record(&record, &encoded, Some(deadline), || {
+                commit_catalog_replace(&mut catalog, replacement);
+            })
+        {
             catalog.unavailable = true;
             return Err(after_row_error(Some(&key_digest), error));
         }
@@ -5408,9 +5447,11 @@ impl ReceiptLedgerStore {
         if let Err(error) = validate_catalog_remove(catalog, &persisted) {
             return latch_catalog_error(catalog, error);
         }
-        if let Err(error) = self.publish_replacement_record(&record, &encoded, deadline, || {
-            commit_catalog_remove(catalog, &persisted);
-        }) {
+        if let Err(error) =
+            self.publish_replacement_record(&record, &encoded, Some(deadline), || {
+                commit_catalog_remove(catalog, &persisted);
+            })
+        {
             if !matches!(error, ReceiptLedgerError::DeadlineExceeded) {
                 catalog.unavailable = true;
             }
@@ -5505,9 +5546,11 @@ impl ReceiptLedgerStore {
         if let Err(error) = validate_catalog_remove(catalog, &persisted) {
             return latch_catalog_error(catalog, error);
         }
-        if let Err(error) = self.publish_replacement_record(&record, &encoded, deadline, || {
-            commit_catalog_remove(catalog, &persisted);
-        }) {
+        if let Err(error) =
+            self.publish_replacement_record(&record, &encoded, Some(deadline), || {
+                commit_catalog_remove(catalog, &persisted);
+            })
+        {
             if !matches!(error, ReceiptLedgerError::DeadlineExceeded) {
                 catalog.unavailable = true;
             }
@@ -5596,9 +5639,11 @@ impl ReceiptLedgerStore {
         if let Err(error) = validate_catalog_remove(catalog, &persisted) {
             return latch_catalog_error(catalog, error);
         }
-        if let Err(error) = self.publish_replacement_record(&record, &encoded, deadline, || {
-            commit_catalog_remove(catalog, &persisted);
-        }) {
+        if let Err(error) =
+            self.publish_replacement_record(&record, &encoded, Some(deadline), || {
+                commit_catalog_remove(catalog, &persisted);
+            })
+        {
             if !matches!(error, ReceiptLedgerError::DeadlineExceeded) {
                 catalog.unavailable = true;
             }
@@ -5899,9 +5944,9 @@ impl ReceiptLedgerStore {
         receipts_file: &File,
         active: &RetainedDirectoryCapability,
         active_file: &File,
-        deadline: Instant,
+        deadline: Option<Instant>,
     ) -> Result<RecoveredCatalog, ReceiptLedgerError> {
-        check_deadline(deadline)?;
+        check_optional_deadline(deadline)?;
         verify_recovery_authority(receipts, receipts_file, active, active_file)?;
         let mut names = Vec::new();
         active
@@ -5930,7 +5975,7 @@ impl ReceiptLedgerStore {
         let mut expired_deletion_mutation_sequence = None;
         let mut acknowledgement_recovery = None;
         for name in names {
-            check_deadline(deadline)?;
+            check_optional_deadline(deadline)?;
             let Some(name_text) = name.to_str() else {
                 return Err(ReceiptLedgerError::Corrupt(
                     "receipt active entry name is not UTF-8",
@@ -6032,7 +6077,7 @@ impl ReceiptLedgerStore {
             let identity = file_identity(&retained)
                 .map_err(|error| storage_error("identify recovered receipt row", error))?;
             let entry = read_active_record_from_retained(&mut retained, &digest)?;
-            check_deadline(deadline)?;
+            check_optional_deadline(deadline)?;
             if let Some(previous) = catalog.records.get(&digest).cloned() {
                 if catalog.batch_backing.contains_key(&digest) && previous == entry {
                     catalog.batch_backing.remove(&digest);
@@ -6145,9 +6190,9 @@ impl ReceiptLedgerStore {
             }
             insert_catalog_entry(&mut catalog, entry, true)?;
         }
-        check_deadline(deadline)?;
+        check_optional_deadline(deadline)?;
         verify_recovery_authority(receipts, receipts_file, active, active_file)?;
-        check_deadline(deadline)?;
+        check_optional_deadline(deadline)?;
         Ok(RecoveredCatalog {
             catalog,
             maximum_mutation_sequence,
@@ -6161,12 +6206,12 @@ impl ReceiptLedgerStore {
     fn remove_active_staging(
         &self,
         temporary_entries: Vec<RecoveryStagingEntry>,
-        deadline: Instant,
+        deadline: Option<Instant>,
     ) -> Result<(), ReceiptLedgerError> {
-        check_deadline(deadline)?;
+        check_optional_deadline(deadline)?;
         let mut cleanup_started = false;
         for (name, identity, temporary) in temporary_entries {
-            if let Err(error) = check_deadline(deadline) {
+            if let Err(error) = check_optional_deadline(deadline) {
                 if cleanup_started {
                     sync_recovery_cleanup_directory(&self.active_file).map_err(|sync_error| {
                         storage_error("sync partial abandoned receipt cleanup", sync_error)
@@ -6189,7 +6234,7 @@ impl ReceiptLedgerStore {
             }
             #[cfg(test)]
             run_after_active_entry_remove_hook_for_test();
-            if let Err(error) = check_deadline(deadline) {
+            if let Err(error) = check_optional_deadline(deadline) {
                 sync_recovery_cleanup_directory(&self.active_file).map_err(|sync_error| {
                     storage_error("sync partial abandoned receipt cleanup", sync_error)
                 })?;
@@ -6199,18 +6244,18 @@ impl ReceiptLedgerStore {
         if cleanup_started {
             sync_recovery_cleanup_directory(&self.active_file)
                 .map_err(|error| storage_error("sync abandoned receipt cleanup", error))?;
-            check_deadline(deadline)?;
+            check_optional_deadline(deadline)?;
         }
         self.verify_named_authority()?;
-        check_deadline(deadline)
+        check_optional_deadline(deadline)
     }
 
     fn inspect_generation_staging_before_initialization(
         receipts: &RetainedDirectoryCapability,
         receipts_file: &File,
-        deadline: Instant,
+        deadline: Option<Instant>,
     ) -> Result<Vec<RecoveryStagingEntry>, ReceiptLedgerError> {
-        check_deadline(deadline)?;
+        check_optional_deadline(deadline)?;
         verify_receipts_authority(receipts, receipts_file)?;
         let mut names = Vec::new();
         receipts
@@ -6222,7 +6267,7 @@ impl ReceiptLedgerStore {
             .map_err(|error| recovery_error("enumerate receipt root directory", error))?;
         let mut staging = Vec::new();
         for name in names {
-            check_deadline(deadline)?;
+            check_optional_deadline(deadline)?;
             let Some(name_text) = name.to_str() else {
                 return Err(ReceiptLedgerError::Corrupt(
                     "receipt root entry name is not UTF-8",
@@ -6249,22 +6294,22 @@ impl ReceiptLedgerStore {
             let identity = file_identity(&file)
                 .map_err(|error| storage_error("identify abandoned generation staging", error))?;
             staging.push((name, identity, file));
-            check_deadline(deadline)?;
+            check_optional_deadline(deadline)?;
         }
         verify_receipts_authority(receipts, receipts_file)?;
-        check_deadline(deadline)?;
+        check_optional_deadline(deadline)?;
         Ok(staging)
     }
 
     fn remove_generation_staging(
         &self,
         staging: Vec<(OsString, FileIdentity, File)>,
-        deadline: Instant,
+        deadline: Option<Instant>,
     ) -> Result<(), ReceiptLedgerError> {
-        check_deadline(deadline)?;
+        check_optional_deadline(deadline)?;
         let mut cleanup_started = false;
         for (name, identity, file) in staging {
-            if let Err(error) = check_deadline(deadline) {
+            if let Err(error) = check_optional_deadline(deadline) {
                 if cleanup_started {
                     sync_recovery_cleanup_directory(&self.receipts_file).map_err(|sync_error| {
                         storage_error("sync partial generation staging cleanup", sync_error)
@@ -6282,7 +6327,7 @@ impl ReceiptLedgerStore {
                 })?;
                 return Err(storage_error("remove abandoned generation staging", error));
             }
-            if let Err(error) = check_deadline(deadline) {
+            if let Err(error) = check_optional_deadline(deadline) {
                 sync_recovery_cleanup_directory(&self.receipts_file).map_err(|sync_error| {
                     storage_error("sync partial generation staging cleanup", sync_error)
                 })?;
@@ -6292,10 +6337,10 @@ impl ReceiptLedgerStore {
         if cleanup_started {
             sync_recovery_cleanup_directory(&self.receipts_file)
                 .map_err(|error| storage_error("sync generation staging cleanup", error))?;
-            check_deadline(deadline)?;
+            check_optional_deadline(deadline)?;
         }
         self.verify_named_authority()?;
-        check_deadline(deadline)
+        check_optional_deadline(deadline)
     }
 
     fn read_active_record(
@@ -6677,10 +6722,10 @@ impl ReceiptLedgerStore {
         &self,
         record: &StoredActiveReceiptV1,
         encoded: &[u8],
-        deadline: Instant,
+        deadline: Option<Instant>,
         on_visible: impl FnOnce(),
     ) -> Result<(), ReceiptLedgerError> {
-        check_deadline(deadline)?;
+        check_optional_deadline(deadline)?;
         self.verify_named_authority()?;
         let temporary_name = format!(".receipt.{}.tmp", Uuid::new_v4());
         let temporary_name = OsStr::new(&temporary_name);
@@ -6699,7 +6744,7 @@ impl ReceiptLedgerStore {
                 error,
             ));
         }
-        if check_deadline(deadline).is_err() {
+        if check_optional_deadline(deadline).is_err() {
             if cleanup_staged_file(&self.active_file, temporary_name, temporary_identity, &file)
                 .is_err()
             {
@@ -6726,7 +6771,7 @@ impl ReceiptLedgerStore {
         #[cfg(test)]
         run_after_receipt_row_rename_hook_for_test();
         if sync_receipt_row_directory(&self.active_file).is_err()
-            || check_deadline(deadline).is_err()
+            || check_optional_deadline(deadline).is_err()
         {
             return Err(ReceiptLedgerError::CommitUncertain {
                 receipt_key_digest: record.key_digest.clone(),
@@ -7281,14 +7326,14 @@ fn open_or_create_owner_only_child(
 fn open_or_initialize_generation(
     receipts: &File,
     initial_generation: u64,
-    deadline: Instant,
+    deadline: Option<Instant>,
 ) -> Result<(File, u64), ReceiptLedgerError> {
-    check_deadline(deadline)?;
+    check_optional_deadline(deadline)?;
     let name = OsStr::new(GENERATION_FILE_NAME);
     let generation = match open_regular_child_nofollow(receipts, name) {
         Ok(generation) => generation,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            check_deadline(deadline)?;
+            check_optional_deadline(deadline)?;
             let temporary_name = format!(".generation.{}.tmp", Uuid::new_v4());
             let temporary_name = OsStr::new(&temporary_name);
             let mut generation = create_owner_only_file_child(receipts, temporary_name)
@@ -7305,7 +7350,7 @@ fn open_or_initialize_generation(
                 cleanup_staged_file(receipts, temporary_name, temporary_identity, &generation)?;
                 return Err(storage_error("persist initial generation staging", error));
             }
-            if check_deadline(deadline).is_err() {
+            if check_optional_deadline(deadline).is_err() {
                 cleanup_staged_file(receipts, temporary_name, temporary_identity, &generation)?;
                 return Err(ReceiptLedgerError::DeadlineExceeded);
             }
@@ -7325,7 +7370,7 @@ fn open_or_initialize_generation(
             }
             sync_directory(receipts)
                 .map_err(|error| storage_error("sync initial generation", error))?;
-            check_deadline(deadline)?;
+            check_optional_deadline(deadline)?;
             generation
         }
         Err(error) => return Err(storage_error("open generation record no-follow", error)),
@@ -7342,7 +7387,7 @@ fn open_or_initialize_generation(
         .read_to_end(&mut bytes)
         .map_err(|error| storage_error("read generation record during recovery", error))?;
     let persisted_generation = parse_generation(&bytes)?;
-    check_deadline(deadline)?;
+    check_optional_deadline(deadline)?;
     Ok((generation, persisted_generation))
 }
 
@@ -7382,8 +7427,8 @@ fn check_optional_deadline(deadline: Option<Instant>) -> Result<(), ReceiptLedge
     }
 }
 
-fn recovery_checkpoint(deadline: Instant) -> io::Result<()> {
-    if Instant::now() >= deadline {
+fn recovery_checkpoint(deadline: Option<Instant>) -> io::Result<()> {
+    if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
         Err(io::Error::new(
             io::ErrorKind::TimedOut,
             "receipt recovery deadline expired",

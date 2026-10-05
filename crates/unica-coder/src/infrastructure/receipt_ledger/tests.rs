@@ -1121,7 +1121,10 @@ fn early_cancellations_cross_the_former_live_quota_without_reserving_results() {
     let reopened =
         ReceiptLedgerStore::open(&receipts).expect("reopen every accepted early cancellation");
     assert_eq!(
-        reopened.recovery_keys(reserve_deadline()).unwrap().len(),
+        reopened
+            .recovery_keys(Some(reserve_deadline()))
+            .unwrap()
+            .len(),
         65
     );
     for (key, receipt) in expected {
@@ -5587,6 +5590,60 @@ fn recovery_deadline_is_rechecked_after_generation_healing_publication() {
 }
 
 #[test]
+fn default_recovery_completes_after_former_automatic_timeout() {
+    for retained_directory in [false, true] {
+        let root = tempfile::tempdir().expect("temporary root");
+        let receipts = fs::canonicalize(root.path()).unwrap().join("receipts");
+        {
+            let store = ReceiptLedgerStore::open(&receipts).unwrap();
+            assert_eq!(store.generation().unwrap(), 0);
+        }
+        let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
+        let cutoff = OriginalCutoffDescriptor::new(1_000, 7_000).unwrap();
+        write_reserved_row_fixture(&receipts, key.clone(), cutoff, 1);
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+        let worker_receipts = receipts.clone();
+        let worker = std::thread::spawn(move || {
+            set_after_generation_replace_hook_for_test(move || {
+                entered_tx.send(()).unwrap();
+                release_rx
+                    .recv()
+                    .expect("release held recovery publication");
+            });
+            let result = if retained_directory {
+                let directory = RetainedDirectoryCapability::open(&worker_receipts).unwrap();
+                ReceiptLedgerStore::open_retained_directory(directory)
+            } else {
+                ReceiptLedgerStore::open(&worker_receipts)
+            };
+            finished_tx.send(result).unwrap();
+        });
+        entered_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("recovery reached publication gate");
+        let held = finished_rx.recv_timeout(Duration::from_millis(5_050));
+        release_tx.send(()).unwrap();
+        let result = finished_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("recovery returns after release");
+        worker.join().unwrap();
+        assert!(
+            matches!(held, Err(std::sync::mpsc::RecvTimeoutError::Timeout)),
+            "recovery must retain ownership until publication returns"
+        );
+        let store =
+            result.expect("default recovery must not expire while validating the full catalog");
+        assert_eq!(store.generation().unwrap(), 1);
+        assert!(matches!(
+            store.recover_exact(&key, reserve_deadline()).unwrap(),
+            ReceiptState::Reserved(_)
+        ));
+    }
+}
+
+#[test]
 fn live_receipts_cross_former_count_and_byte_quotas_without_losing_exact_reservations() {
     let root = tempfile::tempdir().expect("temporary root");
     let receipts = fs::canonicalize(root.path()).unwrap().join("receipts");
@@ -5630,7 +5687,10 @@ fn live_receipts_cross_former_count_and_byte_quotas_without_losing_exact_reserva
         ReceiptLedgerStore::open(&receipts).expect("reopen all accepted receipts past old quotas");
     assert_eq!(reopened.generation().unwrap(), 65);
     assert_eq!(
-        reopened.recovery_keys(reserve_deadline()).unwrap().len(),
+        reopened
+            .recovery_keys(Some(reserve_deadline()))
+            .unwrap()
+            .len(),
         65
     );
     for (digest, key, reservation) in expected {
