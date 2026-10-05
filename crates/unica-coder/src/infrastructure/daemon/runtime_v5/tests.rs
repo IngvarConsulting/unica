@@ -2711,6 +2711,153 @@ fn v5_owner_session_accepts_ping_then_release() {
         .expect("v5 session runtime");
 }
 
+struct HandlerSpawnFailureHooks {
+    fail_next: AtomicBool,
+    failed: mpsc::Sender<()>,
+}
+
+impl V5RuntimeHooks for HandlerSpawnFailureHooks {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn spawn_connection_handler(
+        &self,
+        handler: Box<dyn FnOnce() + Send + 'static>,
+    ) -> io::Result<thread::JoinHandle<()>> {
+        if self.fail_next.swap(false, Ordering::SeqCst) {
+            drop(handler);
+            self.failed
+                .send(())
+                .expect("report actual handler spawn failure");
+            return Err(io::Error::from(io::ErrorKind::WouldBlock));
+        }
+        thread::Builder::new()
+            .name("unica-daemon-connection".into())
+            .spawn(handler)
+    }
+}
+
+struct HandlerSpawnDaemon {
+    stop: Arc<AtomicBool>,
+    streams: Vec<TcpStream>,
+    server: Option<thread::JoinHandle<Result<(), String>>>,
+}
+
+impl Drop for HandlerSpawnDaemon {
+    fn drop(&mut self) {
+        for stream in &self.streams {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(server) = self.server.take() {
+            let _ = server.join();
+        }
+    }
+}
+
+#[test]
+fn handler_spawn_failure_preserves_live_owner_listener_and_next_connection() {
+    use std::io::Read;
+
+    let root = tempfile::tempdir().expect("temporary handler-spawn state root");
+    let state_root = std::fs::canonicalize(root.path()).unwrap();
+    let identity = CoreIdentity::production_v5();
+    let (failed, failed_wait) = mpsc::channel();
+    let hooks = Arc::new(HandlerSpawnFailureHooks {
+        fail_next: AtomicBool::new(false),
+        failed,
+    });
+    let config = DaemonServerConfig::new(
+        state_root.clone(),
+        identity.clone(),
+        Duration::from_millis(80),
+    )
+    .with_runtime_hooks_for_test(hooks.clone());
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = Arc::clone(&stop);
+    let server = thread::spawn(move || {
+        run_daemon_configured_until(
+            config,
+            |runtime| runtime,
+            || server_stop.load(Ordering::SeqCst),
+        )
+    });
+    let mut daemon = HandlerSpawnDaemon {
+        stop,
+        streams: Vec::new(),
+        server: Some(server),
+    };
+    let record = wait_for_v5_record(&state_root, &identity);
+    let (mut owner, mut owner_reader) =
+        connect_v5_owner(&record, &identity, &uuid::Uuid::new_v4().to_string());
+    daemon.streams.push(owner.try_clone().unwrap());
+
+    hooks.fail_next.store(true, Ordering::SeqCst);
+    let mut rejected = TcpStream::connect(record.loopback_addr().unwrap()).unwrap();
+    rejected
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    daemon.streams.push(rejected.try_clone().unwrap());
+    failed_wait
+        .recv_timeout(Duration::from_secs(2))
+        .expect("the accepted connection reached the failing spawn");
+    let closed = rejected.read(&mut [0_u8]);
+    assert!(
+        matches!(closed, Ok(0))
+            || matches!(closed, Err(ref error) if matches!(error.kind(), io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted)),
+        "failed spawn left its transport open: {closed:?}"
+    );
+
+    write_json_line(&mut owner, &json!({"kind": "ping"}));
+    let pong = read_bounded_v5_probe_response_frame(&mut owner_reader)
+        .expect("existing owner remains responsive");
+    assert_eq!(decode_v5_server_response(&pong), Ok(V5ServerResponse::Pong));
+    assert!(
+        !daemon.server.as_ref().unwrap().is_finished(),
+        "handler spawn failure terminated the listener"
+    );
+
+    let (mut successor, mut successor_reader) =
+        connect_v5_owner(&record, &identity, &uuid::Uuid::new_v4().to_string());
+    daemon.streams.push(successor.try_clone().unwrap());
+    write_json_line(&mut successor, &json!({"kind": "ping"}));
+    let pong = read_bounded_v5_probe_response_frame(&mut successor_reader)
+        .expect("next accepted owner remains responsive");
+    assert_eq!(decode_v5_server_response(&pong), Ok(V5ServerResponse::Pong));
+    let state = DaemonStateDirectory::open(&state_root, &identity).unwrap();
+    let current = state
+        .read_v5_endpoint_record()
+        .unwrap()
+        .expect("same listener remains published");
+    assert_eq!(current.instance_id(), record.instance_id());
+    assert_eq!(
+        current.loopback_addr().unwrap(),
+        record.loopback_addr().unwrap()
+    );
+
+    for (stream, reader) in [
+        (&mut successor, &mut successor_reader),
+        (&mut owner, &mut owner_reader),
+    ] {
+        write_json_line(stream, &json!({"kind": "release"}));
+        let released =
+            read_bounded_v5_probe_response_frame(reader).expect("release admitted owner");
+        assert_eq!(
+            decode_v5_server_response(&released),
+            Ok(V5ServerResponse::Released)
+        );
+    }
+    daemon
+        .server
+        .take()
+        .unwrap()
+        .join()
+        .expect("listener did not panic")
+        .expect("listener shut down after releasing both owners");
+    assert!(state.read_v5_endpoint_record().unwrap().is_none());
+}
+
 #[test]
 fn seven_second_wait_task_keeps_its_requested_operation_window() {
     let task_id = TaskId::new();
