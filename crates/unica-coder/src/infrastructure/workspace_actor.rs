@@ -155,7 +155,7 @@ fn run_revision_service_after_binding_validation_hook() {
     });
 }
 
-/// Idle interval after which an actor without promised state may release its
+/// Idle interval after which an unowned actor without promised state releases its
 /// retained root descriptors.
 pub(crate) const WARM_WORKSPACE_ACTOR_TTL: Duration = Duration::from_secs(600);
 static APPLY_WRITER_AUTHORITY_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -2921,7 +2921,7 @@ pub(crate) struct WorkspaceActorRegistry {
     actors: Mutex<HashMap<WorkspaceIdentity, Weak<WorkspaceActor>>>,
     /// Strong ownership between invocations. Promised plans, terminal replay
     /// and shared index work keep their actor alive for the daemon lifetime.
-    /// Only actors without such state may be released after the idle interval.
+    /// Only unowned actors without such state may be released after idle.
     warm: Mutex<VecDeque<WarmWorkspaceActor>>,
     warm_ttl: Duration,
 }
@@ -2930,6 +2930,14 @@ pub(crate) struct WorkspaceActorRegistry {
 struct WarmWorkspaceActor {
     actor: Arc<WorkspaceActor>,
     last_used: Instant,
+}
+
+impl WarmWorkspaceActor {
+    fn retains_owner(&self) -> bool {
+        // Registry locks prevent new Weak upgrades. Check live owners before
+        // state: an admitted invocation may still publish a plan or index work.
+        Arc::strong_count(&self.actor) > 1 || self.actor.retains_promised_state()
+    }
 }
 
 impl Default for WorkspaceActorRegistry {
@@ -2986,8 +2994,8 @@ impl WorkspaceActorRegistry {
         Ok(actor)
     }
 
-    /// Releases actors without promised state. Live invocations retain their
-    /// own leases; plans and index work retain the registry's strong owner.
+    /// Releases actors only after live invocations and promised state are gone.
+    /// A live invocation may still add a plan or shared index work.
     pub(crate) fn release_warm_actors(&self) -> Result<(), WorkspaceActorRegistryError> {
         let _actors = self
             .actors
@@ -2996,7 +3004,7 @@ impl WorkspaceActorRegistry {
         self.clear_warm()
     }
 
-    /// Releases idle actors only when no promised state needs their owner.
+    /// Releases idle actors only after live invocations and promises are gone.
     pub(crate) fn evict_idle_warm_actors(&self) -> Result<(), WorkspaceActorRegistryError> {
         let _actors = self
             .actors
@@ -3031,8 +3039,7 @@ impl WorkspaceActorRegistry {
     fn evict_expired_warm(&self, now: Instant) -> Result<(), WorkspaceActorRegistryError> {
         let mut warm = self.warm_lock()?;
         warm.retain(|entry| {
-            now.saturating_duration_since(entry.last_used) < self.warm_ttl
-                || entry.actor.retains_promised_state()
+            now.saturating_duration_since(entry.last_used) < self.warm_ttl || entry.retains_owner()
         });
         Ok(())
     }
@@ -3044,8 +3051,7 @@ impl WorkspaceActorRegistry {
     }
 
     fn clear_warm(&self) -> Result<(), WorkspaceActorRegistryError> {
-        self.warm_lock()?
-            .retain(|entry| entry.actor.retains_promised_state());
+        self.warm_lock()?.retain(WarmWorkspaceActor::retains_owner);
         Ok(())
     }
 
@@ -5045,10 +5051,12 @@ pub(crate) mod tests {
         registry.release_warm_actors().unwrap();
         assert_eq!(registry.live_len_for_test().unwrap(), 3);
         drop(actors.pop());
+        registry.release_warm_actors().unwrap();
         assert!(observed[2].upgrade().is_none());
         assert!(observed[..2].iter().all(|actor| actor.upgrade().is_some()));
         assert_eq!(registry.live_len_for_test().unwrap(), 2);
         drop(actors);
+        registry.release_warm_actors().unwrap();
         registry.prune_dead_for_test().unwrap();
         assert!(observed.iter().all(|actor| actor.upgrade().is_none()));
         assert_eq!(registry.entry_len_for_test().unwrap(), 0);

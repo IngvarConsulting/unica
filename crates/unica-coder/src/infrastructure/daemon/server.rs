@@ -7404,7 +7404,122 @@ struct ActorLogicalReadLease {"#,
         assert_eq!(crate::test_support::tree_snapshot(&source), before);
     }
 
-    fn index_work_survives_last_call_and_actor_idle_window(completed_leased: bool) {
+    #[derive(Clone, Copy)]
+    enum CleanupBeforePromise {
+        Idle,
+        Release,
+    }
+
+    fn cleanup_before_live_invocation_creates_promise(
+        runtime: &V5CanonicalInvocationRuntime,
+        started: Instant,
+        cleanup: CleanupBeforePromise,
+    ) {
+        use crate::infrastructure::workspace_actor::with_actor_retention_time_for_test;
+        match cleanup {
+            CleanupBeforePromise::Idle => {
+                with_actor_retention_time_for_test(started + Duration::from_secs(601), || {
+                    runtime.workspace_actors.evict_idle_warm_actors().unwrap();
+                });
+            }
+            CleanupBeforePromise::Release => {
+                runtime.workspace_actors.release_warm_actors().unwrap()
+            }
+        }
+    }
+
+    fn saved_apply_token_survives_cleanup_before_live_invocation_creates_plan(
+        cleanup: CleanupBeforePromise,
+    ) {
+        use crate::infrastructure::workspace_actor::with_actor_retention_time_for_test;
+        let workspace = subsystem_picture_workspace("", true);
+        let source = workspace.path().join("src");
+        let before = crate::test_support::tree_snapshot(&source);
+        let runtime = bootstrap_runtime();
+        let started = Instant::now();
+        let request = InvocationRequest::new(
+            ToolIdentity::Apply,
+            serde_json::json!({"at": "main:Subsystem.Sales", "ops": [{"op": "props.set", "args": {"values": {"Comment": "plan created after cleanup"}}}]}),
+            workspace.path().to_string_lossy(),
+            7_000,
+        ).unwrap();
+        // Admission holds the actual actor while its promise tables are still
+        // empty. Cleanup occurs before the real canonical handler saves a plan.
+        let bound = with_actor_retention_time_for_test(started, || runtime.bind(request)).unwrap();
+        let observed = match &bound {
+            V5ActorBoundCanonicalInvocation::Workspace { invocation, .. } => {
+                Arc::downgrade(invocation.actor_for_test())
+            }
+            _ => panic!("apply must bind its workspace actor"),
+        };
+        cleanup_before_live_invocation_creates_promise(&runtime, started, cleanup);
+        let preview = bound
+            .prepare()
+            .unwrap()
+            .execute(CancellationToken::new())
+            .unwrap();
+        assert!(preview.ok, "{preview:?}");
+        assert_eq!(
+            crate::test_support::tree_snapshot(&source),
+            before,
+            "preview must not write"
+        );
+        let token = preview.data.as_ref().unwrap()["executionToken"].clone();
+        // execute consumes and drops the admitted invocation above. No test
+        // Arc keeps that actor alive when the public token request rebinds it.
+        let executed = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::Apply,
+            serde_json::json!({"executionToken": token}),
+        );
+        assert!(
+            executed.ok,
+            "cleanup lost a plan created by a live invocation: {executed:?}"
+        );
+        assert!(
+            observed.upgrade().is_some(),
+            "the promised plan retains its original actor"
+        );
+        let published = crate::test_support::tree_snapshot(&source);
+        assert!(std::fs::read_to_string(source.join("Subsystems/Sales.xml"))
+            .unwrap()
+            .contains("plan created after cleanup"));
+        let replay = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::Apply,
+            serde_json::json!({"executionToken": token}),
+        );
+        assert_eq!(
+            serde_json::to_value(&replay).unwrap(),
+            serde_json::to_value(&executed).unwrap()
+        );
+        assert_eq!(
+            crate::test_support::tree_snapshot(&source),
+            published,
+            "exact replay must not write again"
+        );
+    }
+
+    #[test]
+    fn saved_apply_token_survives_idle_cleanup_before_live_invocation_creates_plan() {
+        saved_apply_token_survives_cleanup_before_live_invocation_creates_plan(
+            CleanupBeforePromise::Idle,
+        );
+    }
+
+    #[test]
+    fn saved_apply_token_survives_warm_release_before_live_invocation_creates_plan() {
+        saved_apply_token_survives_cleanup_before_live_invocation_creates_plan(
+            CleanupBeforePromise::Release,
+        );
+    }
+
+    fn index_work_survives_last_call_and_actor_idle_window(
+        completed_leased: bool,
+        cleanup_before_creation: Option<CleanupBeforePromise>,
+    ) {
         use crate::infrastructure::workspace_actor::with_actor_retention_time_for_test;
 
         struct ReleaseProducer(mpsc::Sender<()>);
@@ -7432,6 +7547,9 @@ struct ActorLogicalReadLease {"#,
         };
         let actor = invocation.actor_for_test();
         let observed = Arc::downgrade(actor);
+        if let Some(cleanup) = cleanup_before_creation {
+            cleanup_before_live_invocation_creates_promise(&runtime, started, cleanup);
+        }
         let binding = actor
             .bind_provider_root("main", &workspace.path().join("src"))
             .unwrap();
@@ -7519,12 +7637,28 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn running_unowned_index_work_survives_last_call_and_actor_idle_window() {
-        index_work_survives_last_call_and_actor_idle_window(false);
+        index_work_survives_last_call_and_actor_idle_window(false, None);
     }
 
     #[test]
     fn completed_leased_index_work_survives_last_call_and_actor_idle_window() {
-        index_work_survives_last_call_and_actor_idle_window(true);
+        index_work_survives_last_call_and_actor_idle_window(true, None);
+    }
+
+    #[test]
+    fn running_index_work_survives_idle_cleanup_before_live_invocation_creates_work() {
+        index_work_survives_last_call_and_actor_idle_window(
+            false,
+            Some(CleanupBeforePromise::Idle),
+        );
+    }
+
+    #[test]
+    fn running_index_work_survives_warm_release_before_live_invocation_creates_work() {
+        index_work_survives_last_call_and_actor_idle_window(
+            false,
+            Some(CleanupBeforePromise::Release),
+        );
     }
 
     #[test]
@@ -11206,6 +11340,7 @@ fn main() {
         runtime.workspace_actors.release_warm_actors().unwrap();
         drop(alias);
         drop(bound);
+        runtime.workspace_actors.release_warm_actors().unwrap();
         assert!(
             observed.iter().all(|actor| actor.upgrade().is_none()),
             "completed admissions retained hidden actor ownership"
