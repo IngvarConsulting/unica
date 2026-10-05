@@ -430,6 +430,39 @@ fn main() {
         ]
 
 
+def validate_v8_runner_zero_source_preview(
+    envelope: object, returncode: int,
+) -> list[str]:
+    errors: list[str] = []
+    if returncode != 0:
+        errors.append(f"preview OS process exit must be 0, got {returncode}")
+    if not isinstance(envelope, dict):
+        return errors + ["preview envelope must be an object"]
+    if envelope.get("ok") is not True:
+        errors.append("preview envelope ok must be true")
+    if envelope.get("command") != "launch":
+        errors.append("preview command must be launch")
+    data = envelope.get("data")
+    if not isinstance(data, dict):
+        return errors + ["preview data must be an object"]
+    if data.get("ok") is not True:
+        errors.append("preview data.ok must be true")
+    if data.get("mode") != "thin":
+        errors.append("preview data.mode must be thin")
+    plan = data.get("plan")
+    if (
+        not isinstance(plan, dict)
+        or not isinstance(plan.get("program"), str)
+        or not plan["program"]
+    ):
+        errors.append("preview data.plan.program must be a non-empty string")
+    if data.get("provider_dispatched") is not False:
+        errors.append("preview provider_dispatched must be false")
+    if "pid" not in data or data["pid"] is not None:
+        errors.append("preview pid must be explicitly null")
+    return errors
+
+
 def validate_v8_runner_bounded_external_epf_result(
     envelope: object,
     execute: Path,
@@ -650,6 +683,7 @@ def check_v8_runner_bounded_external_epf_contract(
         execute = root / "processor.epf"
         output = root / "platform.log"
         stderr_output = root / "client.stderr.log"
+        dispatch_marker = platform_bin / "client-dispatched"
         project_root.mkdir()
         work_path.mkdir()
         infobase_path.mkdir()
@@ -667,6 +701,8 @@ fn main() {{
         .file_stem()
         .expect("platform stub name")
         .to_string_lossy();
+    fs::write(executable.parent().expect("platform stub directory").join("client-dispatched"), b"dispatched")
+        .expect("write client dispatch marker");
     if !name.eq_ignore_ascii_case("1cv8c") {{
         return;
     }}
@@ -701,6 +737,61 @@ fn main() {{
             return str(path).replace("'", "''")
 
         config = root / "v8project.yaml"
+        preview_config = root / "preview.yaml"
+        preview_config.write_text(
+            "\n".join(
+                [
+                    f"workPath: '{yaml_path(work_path)}'",
+                    "format: DESIGNER",
+                    "infobase:",
+                    f"  connection: 'File={yaml_path(infobase_path)}'",
+                    "source-set: []",
+                    "tools:",
+                    "  platform:",
+                    f"    path: '{yaml_path(platform_root)}'",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        preview_config_bytes = preview_config.read_bytes()
+        try:
+            preview = subprocess.run(
+                [
+                    str(runner), "--config", str(preview_config), "--json-message",
+                    "launch", "thin", "--dry-run",
+                ],
+                cwd=root,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=60,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return [f"{label}: zero-source preview did not exit within 60 seconds"]
+        try:
+            preview_envelope = json.loads(preview.stdout)
+        except json.JSONDecodeError as error:
+            return [f"{label}: zero-source preview returned invalid JSON: {error}"]
+        preview_errors = validate_v8_runner_zero_source_preview(
+            preview_envelope, preview.returncode,
+        )
+        if dispatch_marker.exists():
+            preview_errors.append("zero-source preview dispatched the platform client")
+        try:
+            if preview_config.read_bytes() != preview_config_bytes:
+                preview_errors.append("zero-source preview changed its configuration")
+        except OSError as error:
+            preview_errors.append(f"zero-source preview configuration became unreadable: {error}")
+        try:
+            if any(infobase_path.iterdir()):
+                preview_errors.append("zero-source preview changed the initially empty infobase")
+        except OSError as error:
+            preview_errors.append(f"zero-source preview infobase became unreadable: {error}")
+        if preview_errors:
+            return [f"{label}: {error}" for error in preview_errors]
+
         config.write_text(
             "\n".join(
                 [
@@ -760,7 +851,10 @@ fn main() {{
             envelope = json.loads(result.stdout)
         except json.JSONDecodeError as error:
             return [f"{label}: runner returned invalid JSON: {error}"]
-        return [
+        errors = []
+        if not dispatch_marker.is_file():
+            errors.append(f"{label}: waited EPF control did not dispatch the platform client")
+        return errors + [
             f"{label}: {error}"
             for error in validate_v8_runner_bounded_external_epf_result(
                 envelope,
