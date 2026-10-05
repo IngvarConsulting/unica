@@ -694,11 +694,11 @@ fn main() {{
         .file_stem()
         .expect("platform stub name")
         .to_string_lossy();
+    fs::write(executable.parent().expect("platform stub directory").join("client-dispatched"), b"dispatched")
+        .expect("write client dispatch marker");
     if !name.eq_ignore_ascii_case("1cv8c") {{
         return;
     }}
-    fs::write(executable.parent().expect("platform stub directory").join("client-dispatched"), b"dispatched")
-        .expect("write client dispatch marker");
 
     let arguments: Vec<_> = env::args_os().skip(1).collect();
     for pair in arguments.windows(2) {{
