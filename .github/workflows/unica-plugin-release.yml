@@ -167,7 +167,7 @@ jobs:
       # уходят в Code Scanning, где видны по правилу и строке, и разбираются
       # отдельно. Токен нужен сетевым проверкам: подменённые коммиты, известные
       # уязвимости действий.
-      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
         with:
           tool: zizmor@1.30.0
       - env:
@@ -315,7 +315,7 @@ jobs:
       # каждом раннере матрицы, своим шагом до тестов. Находки едут в Code
       # Scanning, а `-D warnings` по-прежнему красит джобу. Версии закреплены:
       # исполнители — часть контракта прогона.
-      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
         with:
           tool: cargo-nextest@0.9.143,clippy-sarif@0.8.0,sarif-fmt@0.8.0
       # Подпись и план выгружаются раньше линта и тестов: раннер, упавший на
