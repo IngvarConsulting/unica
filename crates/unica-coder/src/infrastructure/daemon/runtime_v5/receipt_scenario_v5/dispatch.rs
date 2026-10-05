@@ -617,7 +617,6 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                 label,
                 _lazy_session: lazy_session,
             } => {
-                let is_exact = matches!(&key, ScenarioKey::Exact);
                 let wire_key = match key {
                     ScenarioKey::Exact => exact_key.clone(),
                     ScenarioKey::Unknown => {
@@ -650,8 +649,8 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                         |owner| owner.cancel_invocation(wire_key.clone()),
                     )?
                 };
-                if !matches!(response, V5ServerResponse::Error { .. }) && is_exact {
-                    push_known_key(&mut known_keys, exact_key.clone());
+                if !matches!(response, V5ServerResponse::Error { .. }) {
+                    push_known_key(&mut known_keys, wire_key.clone());
                 }
                 let mut observation = if matches!(
                     &response,

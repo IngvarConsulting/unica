@@ -8,13 +8,12 @@ pub(super) fn validate_catalog_insert(
     entry: &CatalogEntry,
     recovering: bool,
 ) -> Result<(), ReceiptLedgerError> {
-    if !entry.is_tombstone() && catalog.live_count() >= MAX_LIVE_RECEIPTS {
-        return Err(if recovering {
-            ReceiptLedgerError::Corrupt("receipt catalog exceeds the live-record limit")
-        } else {
-            ReceiptLedgerError::CapacityExceeded
-        });
-    }
+    catalog
+        .live_count()
+        .checked_add(usize::from(!entry.is_tombstone()))
+        .ok_or(ReceiptLedgerError::Corrupt(
+            "receipt catalog live count overflowed",
+        ))?;
     if entry.is_tombstone() && catalog.tombstone_count() >= MAX_ACKNOWLEDGED_TOMBSTONES {
         return Err(if recovering {
             ReceiptLedgerError::Corrupt("receipt catalog exceeds the tombstone-record limit")
@@ -68,13 +67,9 @@ pub(super) fn validate_catalog_insert(
         .reserved_result_bytes
         .checked_add(entry.reserved_result_bytes())
         .ok_or(ReceiptLedgerError::CapacityExceeded)?;
-    if next_actual_bytes
-        .checked_add(next_reserved_bytes)
-        .filter(|total| *total <= MAX_LIVE_RECEIPT_BYTES)
-        .is_none()
-    {
+    if next_actual_bytes.checked_add(next_reserved_bytes).is_none() {
         return Err(if recovering {
-            ReceiptLedgerError::Corrupt("receipt catalog exceeds the byte entitlement limit")
+            ReceiptLedgerError::Corrupt("receipt catalog byte accounting overflowed")
         } else {
             ReceiptLedgerError::CapacityExceeded
         });
@@ -143,11 +138,7 @@ pub(super) fn validate_catalog_insert_batch(
             .checked_add(entry.tombstone_bytes())
             .ok_or(ReceiptLedgerError::TombstoneCapacityExceeded)?;
     }
-    if live_count > MAX_LIVE_RECEIPTS
-        || actual_bytes
-            .checked_add(reserved_result_bytes)
-            .is_none_or(|bytes| bytes > MAX_LIVE_RECEIPT_BYTES)
-    {
+    if actual_bytes.checked_add(reserved_result_bytes).is_none() {
         return Err(ReceiptLedgerError::CapacityExceeded);
     }
     if tombstone_count > MAX_ACKNOWLEDGED_TOMBSTONES
@@ -358,6 +349,13 @@ pub(super) fn validate_catalog_replace(
             "receipt replacement reuses a mutation sequence",
         ));
     }
+    catalog
+        .live_count()
+        .checked_sub(usize::from(!expected.is_tombstone()))
+        .and_then(|count| count.checked_add(usize::from(!replacement.is_tombstone())))
+        .ok_or(ReceiptLedgerError::Corrupt(
+            "receipt catalog live count overflowed or underflowed",
+        ))?;
     let next_actual_bytes = catalog
         .actual_bytes
         .checked_sub(expected.live_actual_bytes())
@@ -372,11 +370,7 @@ pub(super) fn validate_catalog_replace(
         .ok_or(ReceiptLedgerError::Corrupt(
             "receipt catalog reserved-byte accounting underflowed",
         ))?;
-    if next_actual_bytes
-        .checked_add(next_reserved_bytes)
-        .filter(|total| *total <= MAX_LIVE_RECEIPT_BYTES)
-        .is_none()
-    {
+    if next_actual_bytes.checked_add(next_reserved_bytes).is_none() {
         return Err(ReceiptLedgerError::CapacityExceeded);
     }
     let next_tombstone_count = catalog
@@ -463,11 +457,7 @@ pub(super) fn validate_catalog_replace_batch(
                 "receipt batch tombstone-byte accounting underflowed",
             ))?;
     }
-    if live_count > MAX_LIVE_RECEIPTS
-        || actual_bytes
-            .checked_add(reserved_result_bytes)
-            .is_none_or(|bytes| bytes > MAX_LIVE_RECEIPT_BYTES)
-    {
+    if actual_bytes.checked_add(reserved_result_bytes).is_none() {
         return Err(ReceiptLedgerError::CapacityExceeded);
     }
     if tombstone_count > MAX_ACKNOWLEDGED_TOMBSTONES
