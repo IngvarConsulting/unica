@@ -1,7 +1,7 @@
 //! Instrumentation points of the protocol-v5 runtime.
 //!
 //! The runtime reports what it does and asks before a few decisions through
-//! one object. Production installs [`NoHooks`], whose every method is a no-op;
+//! one object. Production installs [`NoHooks`], which uses the normal defaults;
 //! the ReceiptLedger contract harness installs its own implementation under
 //! the `receipt-ledger-test-support` feature. The runtime itself never
 //! branches on that feature: every event, pause point and injected decision
@@ -121,13 +121,24 @@ pub(crate) enum V5StoreFaultPoint {
     AfterTaskCreateRenameBeforeDirectorySync,
 }
 
-/// Everything the runtime reports or asks. Every method has a no-op default:
+/// Everything the runtime reports or asks. Every method has a production default:
 /// an implementation overrides only what it observes or decides.
 #[allow(unused_variables)]
 pub(crate) trait V5RuntimeHooks: Send + Sync {
     /// The concrete observer, for the harness that installed it.
     #[allow(dead_code)]
     fn as_any(&self) -> &dyn Any;
+
+    /// Starts the actual connection handler; a failed spawn drops its owned
+    /// transport and admission slot without running the handler.
+    fn spawn_connection_handler(
+        &self,
+        handler: Box<dyn FnOnce() + Send + 'static>,
+    ) -> std::io::Result<std::thread::JoinHandle<()>> {
+        std::thread::Builder::new()
+            .name("unica-daemon-connection".into())
+            .spawn(handler)
+    }
 
     // --- observation ---
 
