@@ -7,10 +7,13 @@
 //! (ADR-0002) and keeps the tool contract data-driven from operation
 //! descriptors (ADR-0001) instead of SDK macros.
 
+use super::canonical_cancellation::CanonicalCancellation;
 use super::daemon_router::{
     canonical_daemon_router, CanonicalCallOutcome, CanonicalDaemonRouter,
     FrontendInvocationDeadline, TOOL_EXECUTION_ERROR,
 };
+mod manual_calls;
+mod receive_pump;
 #[cfg(test)]
 use super::daemon_router::{CanonicalCallHandler, CanonicalTaskHandler, CanonicalTaskWaitHandler};
 use crate::application::receipt_ledger::V5ToolIdentity;
@@ -24,16 +27,18 @@ use crate::application::{
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::progress::{NoopProgressSink, ProgressEvent, ProgressSink};
 use crate::domain::refusal::RefusalDetail;
+use manual_calls::ManualCalls;
 use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, CancelTaskParams,
-    ClientJsonRpcMessage, ClientRequest, ContentBlock, DiscoverResult, ErrorCode, ErrorData,
-    GetMeta, GetTaskParams, GetTaskResult, Implementation, InitializeRequestParams,
-    InitializeResult, ListPromptsResult, ListResourceTemplatesResult, ListResourcesResult,
-    ListToolsResult, NotificationMetaObject, PaginatedRequestParams, ProgressNotificationParam,
-    ProgressToken, ProtocolVersion, RequestMetaObject, ServerCapabilities, ServerInfo,
-    ServerJsonRpcMessage, ServerResult, Tool, UpdateTaskParams, TASKS_EXTENSION_ID,
+    ClientJsonRpcMessage, ClientNotification, ClientRequest, ContentBlock, DiscoverResult,
+    ErrorCode, ErrorData, GetMeta, GetTaskParams, GetTaskResult, Implementation,
+    InitializeRequestParams, InitializeResult, ListPromptsResult, ListResourceTemplatesResult,
+    ListResourcesResult, ListToolsResult, NotificationMetaObject, PaginatedRequestParams,
+    ProgressNotificationParam, ProgressToken, ProtocolVersion, RequestMetaObject,
+    ServerCapabilities, ServerInfo, ServerJsonRpcMessage, ServerResult, Tool, UpdateTaskParams,
+    TASKS_EXTENSION_ID,
 };
-use rmcp::service::{RequestContext, ServerInitializeError};
+use rmcp::service::{NotificationContext, RequestContext, ServerInitializeError};
 use rmcp::transport::Transport;
 use rmcp::{RoleServer, ServerHandler, ServiceExt};
 use serde_json::{Map, Value};
@@ -99,6 +104,7 @@ pub fn run_stdio() {
     let notice = startup_notice_from(std::env::var(STARTUP_NOTICE_ENV).ok());
     let server = UnicaServer::canonical_v13_daemon(client, workspace, notice);
     let in_flight = server.in_flight();
+    let manual_calls = server.manual_calls.clone();
 
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -114,20 +120,20 @@ pub fn run_stdio() {
         let (stdin, stdout) = rmcp::transport::stdio();
         let transport = rmcp::transport::async_rw::AsyncRwTransport::new_server(stdin, stdout);
         let transport = DiscoveryProbeTransport::new(transport, &server);
-        match server.serve(transport).await {
+        match ObservedServer(server).serve(transport).await {
             Ok(running) => {
                 let _ = running.waiting().await;
             }
             // A host that closes stdin before the handshake is a clean shutdown,
             // matching the pre-SDK loop; anything else is worth a stderr line.
-            Err(ServerInitializeError::ConnectionClosed(_)) => {}
+            Err(error) if matches!(error.as_ref(), ServerInitializeError::ConnectionClosed(_)) => {}
             Err(error) => eprintln!("unica mcp initialization failed: {error}"),
         }
     });
     // The SDK drained finishing calls before `waiting()` returned. Whatever is
     // still running is cancelled and given a bounded grace so tool
     // implementations can terminate their child process trees.
-    if !drain_mcp_shutdown(&in_flight, EOF_CANCELLATION_GRACE) {
+    if !drain_stdio_frontend(&in_flight, &manual_calls) {
         eprintln!(
             "unica mcp shutdown grace expired while tool calls or provider workers were cleaning up"
         );
@@ -135,76 +141,125 @@ pub fn run_stdio() {
     runtime.shutdown_timeout(RUNTIME_SHUTDOWN_GRACE);
 }
 
+fn drain_stdio_frontend(in_flight: &InFlightRegistry, manual_calls: &ManualCalls) -> bool {
+    manual_calls.wait_manual_settled();
+    drain_mcp_shutdown(in_flight, EOF_CANCELLATION_GRACE)
+}
+
 /// `rmcp` treats its first `server/discover` as a permanent modern opener. A
 /// host may probe first and then choose `initialize`; answer only that initial
 /// probe before handing the actual opener to the SDK. Once an opener reaches
 /// the SDK, all requests and their protocol checks belong to it unchanged.
-struct DiscoveryProbeTransport<T> {
-    inner: T,
+struct DiscoveryProbeTransport<T: Transport<RoleServer>> {
+    inner: receive_pump::ReceivePump<T::Error>,
     discovery: DiscoverResult,
     awaiting_opener: bool,
+    manual_calls: Option<Arc<ManualCalls>>,
 }
 
-impl<T> DiscoveryProbeTransport<T> {
+impl<T: Transport<RoleServer> + 'static> DiscoveryProbeTransport<T> {
     fn new(inner: T, server: &UnicaServer) -> Self {
         Self {
-            inner,
+            inner: receive_pump::ReceivePump::new(
+                inner,
+                server.manual_calls.clone(),
+                matches!(server.router, SurfaceToolRouter::CanonicalV13(_)),
+            ),
             discovery: DiscoverResult::from_server_info(
                 server.supported_protocol_versions().into_owned(),
                 server.get_info(),
             ),
             awaiting_opener: true,
+            manual_calls: matches!(server.router, SurfaceToolRouter::CanonicalV13(_))
+                .then(|| server.manual_calls.clone()),
         }
     }
 }
 
-impl<T: Transport<RoleServer>> Transport<RoleServer> for DiscoveryProbeTransport<T> {
-    type Error = T::Error;
+impl<T: Transport<RoleServer> + 'static> Transport<RoleServer> for DiscoveryProbeTransport<T> {
+    type Error = receive_pump::PumpError<T::Error>;
 
     fn send(
         &mut self,
         item: ServerJsonRpcMessage,
     ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send + 'static {
-        self.inner.send(item)
+        let tracked = self.manual_calls.as_ref().and_then(|calls| {
+            let id = match &item {
+                ServerJsonRpcMessage::Response(response) => Some(&response.id),
+                ServerJsonRpcMessage::Error(error) => error.id.as_ref(),
+                _ => None,
+            }?;
+            calls.get(id).map(|call| (calls.clone(), id.clone(), call))
+        });
+        if let Some((calls, _, call)) = &tracked {
+            calls.response_seen(call);
+        }
+        // Once inner.send starts it may have written part of a JSON frame.
+        // A later Cancel controls the daemon independently; it never drops
+        // this send future or leaves a truncated frame on stdout.
+        let suppressed = tracked
+            .as_ref()
+            .is_some_and(|(_, _, call)| call.cancellation.requested());
+        let sending = (!suppressed).then(|| self.inner.send(item));
+        async move {
+            let result = match sending {
+                Some(sending) => sending.await,
+                None => Ok(()),
+            };
+            if result.is_ok() {
+                if let Some((calls, id, call)) = tracked {
+                    calls.delivery_done(&id, &call);
+                }
+            }
+            result
+        }
     }
 
     async fn receive(&mut self) -> Option<ClientJsonRpcMessage> {
-        while self.awaiting_opener {
+        loop {
             let message = self.inner.receive().await?;
-            if let ClientJsonRpcMessage::Request(request) = &message {
-                match &request.request {
-                    ClientRequest::DiscoverRequest(_)
-                        if request
-                            .request
-                            .get_meta()
-                            .missing_required_keys(&ProtocolVersion::V_2026_07_28)
-                            .is_empty()
-                            && request.request.get_meta().protocol_version().is_some_and(
-                                |version| self.discovery.supported_versions.contains(&version),
-                            ) =>
-                    {
-                        let response = ServerJsonRpcMessage::response(
-                            ServerResult::DiscoverResult(self.discovery.clone()),
-                            request.id.clone(),
-                        );
-                        if let Err(error) = self.inner.send(response).await {
-                            eprintln!("unica mcp discovery probe response failed: {error}");
-                            return None;
+            if self.awaiting_opener {
+                if let ClientJsonRpcMessage::Request(request) = &message {
+                    match &request.request {
+                        ClientRequest::DiscoverRequest(_)
+                            if request
+                                .request
+                                .get_meta()
+                                .missing_required_keys(&ProtocolVersion::V_2026_07_28)
+                                .is_empty()
+                                && request.request.get_meta().protocol_version().is_some_and(
+                                    |version| self.discovery.supported_versions.contains(&version),
+                                ) =>
+                        {
+                            let response = ServerJsonRpcMessage::response(
+                                ServerResult::DiscoverResult(self.discovery.clone()),
+                                request.id.clone(),
+                            );
+                            if let Err(error) = self.inner.send(response).await {
+                                eprintln!("unica mcp discovery probe response failed: {error}");
+                                return None;
+                            }
+                            continue;
                         }
-                        continue;
+                        ClientRequest::PingRequest(_) => return Some(message),
+                        _ => {}
                     }
-                    ClientRequest::PingRequest(_) => return Some(message),
-                    _ => {}
                 }
+                self.awaiting_opener = false;
             }
-            self.awaiting_opener = false;
             return Some(message);
         }
-        self.inner.receive().await
     }
 
     fn close(&mut self) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
-        self.inner.close()
+        let calls = self.manual_calls.clone();
+        async move {
+            let result = self.inner.close().await;
+            if let Some(calls) = calls {
+                calls.closed();
+            }
+            result
+        }
     }
 }
 
@@ -243,6 +298,7 @@ const CANONICAL_INSTRUCTIONS: &str = "Start with unica.view using an empty objec
 pub struct UnicaServer {
     router: SurfaceToolRouter,
     in_flight: Arc<InFlightRegistry>,
+    manual_calls: Arc<ManualCalls>,
     structured_tools: HashSet<&'static str>,
     /// О чём рассказать вызывающему при рукопожатии. Обычная сессия платит за
     /// это ноль байтов поверхности: рассказывать нечего.
@@ -277,6 +333,7 @@ impl UnicaServer {
         Self {
             router: SurfaceToolRouter::LegacyV12(handler),
             in_flight: Arc::new(InFlightRegistry::default()),
+            manual_calls: Arc::new(ManualCalls::default()),
             structured_tools: crate::application::tools()
                 .into_iter()
                 .filter_map(|spec| has_structured_output(&spec).then_some(spec.name))
@@ -300,7 +357,7 @@ impl UnicaServer {
     ) -> Self {
         let wait_get = Arc::clone(&get);
         let wait: Arc<CanonicalTaskWaitHandler> =
-            Arc::new(move |task_id, _, deadline| wait_get(task_id, deadline));
+            Arc::new(move |task_id, _, deadline, _| wait_get(task_id, deadline));
         Self::with_canonical_v13_task_handlers(call, get, wait, cancel)
     }
 
@@ -319,6 +376,7 @@ impl UnicaServer {
                 cancel,
             }),
             in_flight: Arc::new(InFlightRegistry::default()),
+            manual_calls: Arc::new(ManualCalls::default()),
             structured_tools: HashSet::new(),
             startup_notice: None,
         }
@@ -333,6 +391,7 @@ impl UnicaServer {
         Self {
             router: SurfaceToolRouter::CanonicalV13(router),
             in_flight: Arc::new(InFlightRegistry::default()),
+            manual_calls: Arc::new(ManualCalls::default()),
             structured_tools: HashSet::new(),
             startup_notice,
         }
@@ -357,21 +416,24 @@ struct SurfaceToolCall<'a> {
 fn execute_surface_tool(
     router: &SurfaceToolRouter,
     call: SurfaceToolCall<'_>,
-    cancellation: CancellationToken,
+    cancellation: impl Into<CanonicalCancellation>,
     progress: Arc<dyn ProgressSink>,
     deadline: FrontendInvocationDeadline,
     client_supports_tasks: bool,
 ) -> Result<SurfaceToolOutcome, ErrorData> {
+    let cancellation = cancellation.into();
     let SurfaceToolCall {
         name,
         arguments,
         metadata,
     } = call;
     match router {
-        SurfaceToolRouter::LegacyV12(handler) => handler(name, arguments, cancellation, progress)
-            .map(Box::new)
-            .map(SurfaceToolOutcome::Legacy)
-            .map_err(|(code, message)| ErrorData::new(ErrorCode(code), message, None)),
+        SurfaceToolRouter::LegacyV12(handler) => {
+            handler(name, arguments, cancellation.token(), progress)
+                .map(Box::new)
+                .map(SurfaceToolOutcome::Legacy)
+                .map_err(|(code, message)| ErrorData::new(ErrorCode(code), message, None))
+        }
         SurfaceToolRouter::CanonicalV13(router) => {
             if let Some(request) =
                 crate::application::v13::task_tools::parse_task_tool_call(name, arguments)
@@ -383,7 +445,7 @@ fn execute_surface_tool(
                     ));
                 }
                 return Ok(SurfaceToolOutcome::Canonical(
-                    execute_compatibility_task_tool(router, request, deadline),
+                    execute_compatibility_task_tool(router, request, deadline, cancellation),
                 ));
             }
             let tool = V5ToolIdentity::from_wire_name(name).ok_or_else(|| {
@@ -410,6 +472,7 @@ fn execute_compatibility_task_tool(
     router: &CanonicalDaemonRouter,
     request: Result<crate::application::v13::task_tools::TaskToolRequest, TaskToolError>,
     deadline: FrontendInvocationDeadline,
+    cancellation: CanonicalCancellation,
 ) -> crate::domain::invocation::DomainResult {
     let request = match request {
         Ok(request) => request,
@@ -419,7 +482,7 @@ fn execute_compatibility_task_tool(
         TaskToolAction::Get => (router.get)(request.task_id, deadline),
         TaskToolAction::Result { wait_ms } => {
             let bounded = bounded_compatibility_wait_ms(wait_ms, deadline, Instant::now());
-            (router.wait)(request.task_id, bounded, deadline)
+            (router.wait)(request.task_id, bounded, deadline, cancellation)
         }
         TaskToolAction::Cancel => (router.cancel)(request.task_id, deadline),
     };
@@ -622,6 +685,59 @@ const SUPPORTED_PROTOCOL_VERSIONS: &[ProtocolVersion] = &[
     ProtocolVersion::V_2026_07_28,
 ];
 
+/// Observe the SDK's actual dispatch completion, including validation refusal
+/// before `call_tool`, without duplicating the SDK's request dispatch rules.
+struct ObservedServer(UnicaServer);
+
+impl ObservedServer {
+    async fn serve<T: Transport<RoleServer> + 'static>(
+        self,
+        transport: T,
+    ) -> Result<rmcp::service::RunningService<RoleServer, Self>, Box<ServerInitializeError>> {
+        let calls = self.0.manual_calls.clone();
+        let result = ServiceExt::serve(self, transport).await;
+        if result.is_err() {
+            // No running SDK loop was created. Stop the input pump and await
+            // actual close before proving there is no future dispatch.
+            calls.initialization_failed().await;
+        }
+        result.map_err(Box::new)
+    }
+}
+
+impl rmcp::Service<RoleServer> for ObservedServer {
+    async fn handle_request(
+        &self,
+        request: ClientRequest,
+        context: RequestContext<RoleServer>,
+    ) -> Result<ServerResult, ErrorData> {
+        let is_call = matches!(&request, ClientRequest::CallToolRequest(_));
+        let _dispatch = is_call
+            .then(|| self.0.manual_calls.dispatch(context.id.clone()))
+            .flatten();
+        if is_call {
+            self.0.manual_calls.before_handler().await;
+        }
+        rmcp::Service::<RoleServer>::handle_request(&self.0, request, context).await
+    }
+
+    async fn handle_notification(
+        &self,
+        notification: ClientNotification,
+        context: NotificationContext<RoleServer>,
+    ) -> Result<(), ErrorData> {
+        rmcp::Service::<RoleServer>::handle_notification(&self.0, notification, context).await
+    }
+
+    fn get_info(&self) -> ServerInfo {
+        ServerHandler::get_info(&self.0)
+    }
+
+    fn supported_protocol_versions(&self) -> std::borrow::Cow<'static, [ProtocolVersion]> {
+        ServerHandler::supported_protocol_versions(&self.0)
+    }
+}
+
 impl ServerHandler for UnicaServer {
     fn supported_protocol_versions(&self) -> std::borrow::Cow<'static, [ProtocolVersion]> {
         std::borrow::Cow::Borrowed(SUPPORTED_PROTOCOL_VERSIONS)
@@ -787,15 +903,29 @@ impl ServerHandler for UnicaServer {
             .in_flight
             .admit()
             .map_err(|message| ErrorData::new(ErrorCode::INTERNAL_ERROR, message, None))?;
-        let cancellation = admission.token();
-
-        // `notifications/cancelled` cancels the SDK request token; bridge it to
-        // the domain token the blocking tool implementation polls.
-        let sdk_token = context.ct.clone();
-        let bridged = cancellation.clone();
-        let bridge = tokio::spawn(async move {
-            sdk_token.cancelled().await;
-            bridged.cancel();
+        let canonical = matches!(self.router, SurfaceToolRouter::CanonicalV13(_));
+        let (manual_owner, standalone_admission, cancellation) = if canonical {
+            match self.manual_calls.enter(context.id.clone(), admission) {
+                Ok(owner) => {
+                    let cancellation = owner.cancellation();
+                    (Some(owner), None, cancellation)
+                }
+                Err(admission) => (None, Some(admission), CanonicalCancellation::default()),
+            }
+        } else {
+            let cancellation = CanonicalCancellation::from(admission.token());
+            (None, Some(admission), cancellation)
+        };
+        // SDK normal completion and run_stdio's EOF drain are independent
+        // from canonical manual cancellation. Legacy calls retain their
+        // established SDK/admission cancellation behavior.
+        let bridge = (!canonical).then(|| {
+            let sdk_token = context.ct.clone();
+            let bridged = cancellation.token();
+            tokio::spawn(async move {
+                sdk_token.cancelled().await;
+                bridged.cancel();
+            })
         });
 
         let router = self.router.clone();
@@ -847,6 +977,10 @@ impl ServerHandler for UnicaServer {
             stop: progress_stop,
         } = progress_forwarding;
         let result = tokio::task::spawn_blocking(move || {
+            // The actual blocking operation owns completion even if the SDK
+            // drops its asynchronous handler while draining stdin EOF.
+            let _manual_owner = manual_owner;
+            let _standalone_admission = standalone_admission;
             let deadline = FrontendInvocationDeadline::new(received_at, None);
             execute_surface_tool(
                 &router,
@@ -868,8 +1002,9 @@ impl ServerHandler for UnicaServer {
         if let Some(forwarder) = progress_forwarder {
             let _ = forwarder.await;
         }
-        bridge.abort();
-        drop(admission);
+        if let Some(bridge) = bridge {
+            bridge.abort();
+        }
 
         let outcome = match result {
             Ok(Ok(SurfaceToolOutcome::Legacy(result))) => {
@@ -1746,11 +1881,12 @@ mod tests {
             let (read, write) = tokio::io::split(server_io);
             let transport = rmcp::transport::async_rw::AsyncRwTransport::new_server(read, write);
             let transport = DiscoveryProbeTransport::new(transport, &server);
-            match server.serve(transport).await {
+            match ObservedServer(server).serve(transport).await {
                 Ok(running) => {
                     let _ = running.waiting().await;
                 }
-                Err(ServerInitializeError::ConnectionClosed(_)) => {}
+                Err(error)
+                    if matches!(error.as_ref(), ServerInitializeError::ConnectionClosed(_)) => {}
                 Err(error) => panic!("test MCP server failed to initialize: {error}"),
             }
         });
@@ -2755,7 +2891,7 @@ mod tests {
             let waits = Arc::new(Mutex::new(Vec::<u64>::new()));
             let waits_observed = Arc::clone(&waits);
             let wait_subject = subject.clone();
-            let wait: Arc<CanonicalTaskWaitHandler> = Arc::new(move |_, wait_ms, _| {
+            let wait: Arc<CanonicalTaskWaitHandler> = Arc::new(move |_, wait_ms, _, _| {
                 waits_observed.lock().unwrap().push(wait_ms);
                 Ok(if wait_ms == 0 {
                     canonical_snapshot(task_id, InvocationStatus::Working, None)
@@ -2885,7 +3021,7 @@ mod tests {
         });
         let wait_calls = Arc::new(AtomicUsize::new(0));
         let wait_observed = Arc::clone(&wait_calls);
-        let wait: Arc<CanonicalTaskWaitHandler> = Arc::new(move |task_id, _, _| {
+        let wait: Arc<CanonicalTaskWaitHandler> = Arc::new(move |task_id, _, _, _| {
             wait_observed.fetch_add(1, Ordering::SeqCst);
             if task_id == expired {
                 Err(V5TaskExchangeError::Protocol(
@@ -3185,7 +3321,12 @@ mod tests {
         // absolute cutoff is already expired.
         let received = Instant::now() - Duration::from_secs(1);
 
-        let outcome = (router.wait)(task_id, 0, FrontendInvocationDeadline::new(received, None));
+        let outcome = (router.wait)(
+            task_id,
+            0,
+            FrontendInvocationDeadline::new(received, None),
+            CanonicalCancellation::default(),
+        );
 
         assert_eq!(
             outcome,
@@ -3385,6 +3526,7 @@ mod tests {
             task_id,
             requested_wait_ms,
             FrontendInvocationDeadline::new(received, host_remaining),
+            CanonicalCancellation::default(),
         );
 
         match outcome {
@@ -3469,7 +3611,7 @@ mod tests {
             let get: Arc<CanonicalTaskHandler> = Arc::new(move |_, _| Ok(get_snapshot.clone()));
             let wait_snapshot = snapshot.clone();
             let wait: Arc<CanonicalTaskWaitHandler> =
-                Arc::new(move |_, _, _| Ok(wait_snapshot.clone()));
+                Arc::new(move |_, _, _, _| Ok(wait_snapshot.clone()));
             let cancel = Arc::clone(&get);
             let call: Arc<CanonicalCallHandler> =
                 Arc::new(move |_, _, _, _, _| direct_outcome(DomainResult::success("unused")));
@@ -3560,8 +3702,55 @@ mod tests {
         compatibility_daemon_restart_case().await;
     }
 
-    #[tokio::test]
+    struct ManualCanonicalDaemonOwner(
+        Option<crate::infrastructure::daemon::server::actor_capacity_tests::LiveV5Daemon>,
+    );
+    impl std::ops::Deref for ManualCanonicalDaemonOwner {
+        type Target = crate::infrastructure::daemon::server::actor_capacity_tests::LiveV5Daemon;
+        fn deref(&self) -> &Self::Target {
+            self.0.as_ref().unwrap()
+        }
+    }
+    impl ManualCanonicalDaemonOwner {
+        fn finish(mut self, owner: V5DaemonProcessOwner) {
+            self.0.take().unwrap().finish(owner);
+        }
+    }
+    impl Drop for ManualCanonicalDaemonOwner {
+        fn drop(&mut self) {
+            if let Some(daemon) = self.0.take() {
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let owner = daemon.owner();
+                    daemon.finish(owner);
+                }));
+            }
+        }
+    }
+    struct ManualRunnerRelease(std::path::PathBuf);
+    impl Drop for ManualRunnerRelease {
+        fn drop(&mut self) {
+            let _ = std::fs::write(&self.0, "finish mutation");
+        }
+    }
+    struct ManualFlushRelease(Arc<ManualFlushGate>);
+    impl Drop for ManualFlushRelease {
+        fn drop(&mut self) {
+            self.0.release();
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn public_task_cancel_and_result_preserve_a_started_infobase_create_receipt() {
+        protected_create_cancel_case(false).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn canonical_manual_cancellation_protected_create_preserves_external_receipt_without_replay(
+    ) {
+        protected_create_cancel_case(true).await;
+    }
+
+    async fn protected_create_cancel_case(manual: bool) {
         use crate::infrastructure::daemon::server::actor_capacity_tests::{
             canonical_v13_service, install_cancellable_create_runner, LiveV5Daemon,
         };
@@ -3601,12 +3790,20 @@ mod tests {
         )
         .unwrap();
         let workspace = std::fs::canonicalize(workspace).unwrap();
-        let daemon = LiveV5Daemon::start(canonical_v13_service());
+        let daemon = ManualCanonicalDaemonOwner(Some(LiveV5Daemon::start(canonical_v13_service())));
+        let _runner_release = ManualRunnerRelease(workspace.join("release.marker"));
         let owner = daemon.owner();
-        let (mut client, _) = spawn_unica_server(UnicaServer::with_canonical_daemon(
+        let flush = Arc::new(ManualFlushGate::default());
+        let _flush_release = ManualFlushRelease(flush.clone());
+        let server = UnicaServer::with_canonical_daemon(
             daemon.owner(),
             workspace.to_string_lossy().into_owned(),
-        ));
+        );
+        let (mut client, _) = if manual {
+            spawn_manual_flush_server(server, flush.clone())
+        } else {
+            spawn_unica_server(server)
+        };
         client
             .send(json!({
                 "jsonrpc":"2.0", "id":1, "method":"tools/call",
@@ -3634,6 +3831,9 @@ mod tests {
             "{preview_result}"
         );
         assert!(!workspace.join("entered.marker").exists());
+        if manual {
+            flush.armed.store(true, Ordering::Release);
+        }
         client
             .send(json!({
                 "jsonrpc":"2.0", "id":3, "method":"tools/call",
@@ -3650,21 +3850,42 @@ mod tests {
             assert!(Instant::now() < deadline, "mutating runner did not start");
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
-        client
-            .send(json!({
-                "jsonrpc":"2.0", "id":4, "method":"tools/call",
-                "params":{"name":"unica.task.cancel", "arguments":{"taskId":task_id}, "_meta":modern_meta()}
-            }))
-            .await;
-        let cancelled = client.receive().await;
-        assert_eq!(
-            cancelled["result"]["structuredContent"]["data"]["task"]["status"], "working",
-            "{cancelled}"
-        );
-        assert_eq!(
-            cancelled["result"]["structuredContent"]["data"]["task"]["cancelRequested"], true,
-            "{cancelled}"
-        );
+        if manual {
+            assert!(
+                flush.wait().await,
+                "original apply response must still own the actual blocked flush"
+            );
+            cancel_manual_daemon_call(&mut client, 3).await;
+            let internal: crate::domain::invocation::TaskId = task_id.parse().unwrap();
+            let watchdog = Instant::now() + Duration::from_secs(3);
+            loop {
+                let snapshot = daemon.get(&owner, internal);
+                if snapshot.cancel_requested() {
+                    assert_eq!(
+                        snapshot.status(),
+                        crate::domain::invocation::InvocationStatus::Working
+                    );
+                    break;
+                }
+                assert!(
+                    Instant::now() < watchdog,
+                    "manual notification did not reach original protected create"
+                );
+                tokio::task::yield_now().await;
+            }
+            flush.release();
+        } else {
+            client.send(json!({"jsonrpc":"2.0", "id":4, "method":"tools/call", "params":{"name":"unica.task.cancel", "arguments":{"taskId":task_id}, "_meta":modern_meta()}})).await;
+            let cancelled = client.receive().await;
+            assert_eq!(
+                cancelled["result"]["structuredContent"]["data"]["task"]["status"], "working",
+                "{cancelled}"
+            );
+            assert_eq!(
+                cancelled["result"]["structuredContent"]["data"]["task"]["cancelRequested"], true,
+                "{cancelled}"
+            );
+        }
         assert!(!workspace.join("created.marker").exists());
         std::fs::write(workspace.join("release.marker"), "finish mutation").unwrap();
         let result = terminal_result(
@@ -3699,6 +3920,24 @@ mod tests {
                 ..
             }
         ));
+        let replay = terminal_result(
+            &mut client,
+            &task_id,
+            Instant::now() + Duration::from_secs(20),
+        )
+        .await;
+        assert_eq!(
+            replay["result"]["structuredContent"], result["result"]["structuredContent"],
+            "observation must preserve the factual receipt without replaying creation"
+        );
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("apply-dispatch.log"))
+                .unwrap()
+                .lines()
+                .count(),
+            1,
+            "repeated task observation must never dispatch a second mutating runner"
+        );
         client.shutdown().await;
         daemon.finish(owner);
     }
@@ -5469,6 +5708,1976 @@ mod tests {
                 .count(),
             13
         );
+    }
+
+    struct ManualDaemonOwner(Option<LiveDaemon>);
+
+    impl ManualDaemonOwner {
+        fn start(service: Arc<ManualDaemonService>) -> Self {
+            Self(Some(LiveDaemon::start(service)))
+        }
+
+        fn start_with_hooks(
+            service: Arc<ManualDaemonService>,
+            hooks: Arc<dyn crate::infrastructure::daemon::runtime_v5::V5RuntimeHooks>,
+        ) -> Self {
+            Self(Some(LiveDaemon::start_with_hooks(service, Some(hooks))))
+        }
+
+        fn finish(mut self) {
+            self.0.take().unwrap().finish();
+        }
+    }
+
+    impl std::ops::Deref for ManualDaemonOwner {
+        type Target = LiveDaemon;
+
+        fn deref(&self) -> &Self::Target {
+            self.0.as_ref().unwrap()
+        }
+    }
+
+    impl Drop for ManualDaemonOwner {
+        fn drop(&mut self) {
+            if let Some(daemon) = self.0.take() {
+                // These tests use a multithreaded Tokio runtime: its other
+                // worker can finish SDK EOF cleanup while this thread joins.
+                // Executor/gate guards are declared after this owner so their
+                // Drop has already released all blocking work.
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    daemon.finish();
+                }));
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct ManualDaemonState {
+        calls: std::collections::HashMap<String, (usize, CancellationToken)>,
+        completed: std::collections::HashMap<String, bool>,
+        released: HashSet<String>,
+        release_all: bool,
+    }
+
+    struct ManualDaemonService {
+        known_long: bool,
+        state: Mutex<ManualDaemonState>,
+        wake: Condvar,
+        observed: tokio::sync::Notify,
+    }
+
+    impl ManualDaemonService {
+        fn new(known_long: bool) -> Arc<Self> {
+            Arc::new(Self {
+                known_long,
+                state: Mutex::new(ManualDaemonState::default()),
+                wake: Condvar::new(),
+                observed: tokio::sync::Notify::new(),
+            })
+        }
+
+        async fn wait(&self, id: &str, completed: bool) -> bool {
+            timeout(Duration::from_secs(3), async {
+                loop {
+                    let observed = self.observed.notified();
+                    let ready = {
+                        let state = self.state.lock().unwrap();
+                        if completed {
+                            state.completed.contains_key(id)
+                        } else {
+                            state.calls.contains_key(id)
+                        }
+                    };
+                    if ready {
+                        break;
+                    }
+                    observed.await;
+                }
+            })
+            .await
+            .is_ok()
+        }
+
+        fn release(&self, id: &str) {
+            self.state.lock().unwrap().released.insert(id.to_owned());
+            self.wake.notify_all();
+        }
+
+        fn release_all(&self) {
+            self.state.lock().unwrap().release_all = true;
+            self.wake.notify_all();
+        }
+
+        fn cancelled(&self, id: &str) -> bool {
+            self.state
+                .lock()
+                .unwrap()
+                .calls
+                .get(id)
+                .is_some_and(|(_, token)| token.is_cancelled())
+        }
+
+        fn executions(&self, id: &str) -> usize {
+            self.state
+                .lock()
+                .unwrap()
+                .calls
+                .get(id)
+                .map_or(0, |(count, _)| *count)
+        }
+    }
+
+    impl crate::infrastructure::daemon::server::CanonicalInvocationService for ManualDaemonService {
+        fn prepare(
+            &self,
+            _invocation: &crate::infrastructure::daemon::server::ActorBoundInvocation,
+        ) -> Result<
+            crate::application::operation_descriptors::ExecutionClass,
+            Box<crate::domain::invocation::DomainResult>,
+        > {
+            use crate::application::operation_descriptors::{ExecutionClass, KnownLongReason};
+            Ok(if self.known_long {
+                ExecutionClass::KnownLong(KnownLongReason::ExternalProcess)
+            } else {
+                ExecutionClass::InlineCandidate
+            })
+        }
+
+        fn execute(
+            &self,
+            invocation: &crate::infrastructure::daemon::server::ActorBoundExecution,
+            cancellation: CancellationToken,
+        ) -> Result<
+            crate::domain::invocation::DomainResult,
+            crate::domain::invocation::InvocationFailure,
+        > {
+            let id = invocation.arguments()["args"]["label"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            let mut state = self.state.lock().unwrap();
+            let count = state.calls.get(&id).map_or(1, |(count, _)| count + 1);
+            state
+                .calls
+                .insert(id.clone(), (count, cancellation.clone()));
+            self.observed.notify_waiters();
+            while !state.release_all
+                && !state.released.contains(&id)
+                && !cancellation.is_cancelled()
+            {
+                (state, _) = self
+                    .wake
+                    .wait_timeout(state, Duration::from_millis(10))
+                    .unwrap();
+            }
+            let cancelled = cancellation.is_cancelled();
+            state.completed.insert(id.clone(), cancelled);
+            drop(state);
+            self.observed.notify_waiters();
+            if cancelled {
+                Err(crate::domain::invocation::InvocationFailure::new(
+                    "cancelled",
+                    "manual call stopped at its checkpoint",
+                ))
+            } else {
+                Ok(crate::domain::invocation::DomainResult::success(id))
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct ManualFlushGate {
+        armed: AtomicBool,
+        entered: AtomicBool,
+        released: AtomicBool,
+        observed: tokio::sync::Notify,
+        waiter: Mutex<Option<std::task::Waker>>,
+        partial_write: AtomicBool,
+        prefix_written: AtomicBool,
+        fail_after_prefix: AtomicBool,
+        panic_after_prefix: AtomicBool,
+        written: Mutex<Vec<u8>>,
+    }
+
+    impl ManualFlushGate {
+        async fn wait(&self) -> bool {
+            timeout(Duration::from_secs(3), async {
+                loop {
+                    let observed = self.observed.notified();
+                    if self.entered.load(Ordering::Acquire) {
+                        break;
+                    }
+                    observed.await;
+                }
+            })
+            .await
+            .is_ok()
+        }
+
+        fn release(&self) {
+            self.released.store(true, Ordering::Release);
+            if let Some(waiter) = self.waiter.lock().unwrap().take() {
+                waiter.wake();
+            }
+        }
+    }
+
+    struct ManualFlushWriter {
+        writer: tokio::io::WriteHalf<tokio::io::DuplexStream>,
+        gate: Arc<ManualFlushGate>,
+    }
+
+    impl tokio::io::AsyncWrite for ManualFlushWriter {
+        fn poll_write(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            bytes: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            let partial = self.gate.armed.load(Ordering::Acquire)
+                && self.gate.partial_write.load(Ordering::Acquire)
+                && !self.gate.released.load(Ordering::Acquire);
+            if partial && self.gate.prefix_written.load(Ordering::Acquire) {
+                if self.gate.panic_after_prefix.load(Ordering::Acquire) {
+                    panic!("injected failure after actual partial MCP output");
+                }
+                if self.gate.fail_after_prefix.load(Ordering::Acquire) {
+                    return std::task::Poll::Ready(Err(std::io::Error::new(
+                        std::io::ErrorKind::BrokenPipe,
+                        "injected failure after actual partial MCP output",
+                    )));
+                }
+                *self.gate.waiter.lock().unwrap() = Some(cx.waker().clone());
+                self.gate.entered.store(true, Ordering::Release);
+                self.gate.observed.notify_waiters();
+                if !self.gate.released.load(Ordering::Acquire) {
+                    return std::task::Poll::Pending;
+                }
+            }
+            let bytes = if partial && !self.gate.prefix_written.load(Ordering::Acquire) {
+                &bytes[..bytes.len().min(8)]
+            } else {
+                bytes
+            };
+            let result = std::pin::Pin::new(&mut self.writer).poll_write(cx, bytes);
+            if let std::task::Poll::Ready(Ok(count)) = &result {
+                self.gate
+                    .written
+                    .lock()
+                    .unwrap()
+                    .extend_from_slice(&bytes[..*count]);
+                if partial && *count > 0 {
+                    self.gate.prefix_written.store(true, Ordering::Release);
+                }
+            }
+            result
+        }
+
+        fn poll_flush(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            if self.gate.armed.load(Ordering::Acquire)
+                && !self.gate.released.load(Ordering::Acquire)
+            {
+                *self.gate.waiter.lock().unwrap() = Some(cx.waker().clone());
+                self.gate.entered.store(true, Ordering::Release);
+                self.gate.observed.notify_waiters();
+                if !self.gate.released.load(Ordering::Acquire) {
+                    return std::task::Poll::Pending;
+                }
+            }
+            std::pin::Pin::new(&mut self.writer).poll_flush(cx)
+        }
+
+        fn poll_shutdown(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::pin::Pin::new(&mut self.writer).poll_shutdown(cx)
+        }
+    }
+
+    struct ManualDaemonCleanup {
+        service: Arc<ManualDaemonService>,
+        flush: Option<Arc<ManualFlushGate>>,
+        before_submit: Option<Arc<ManualReceiptGate>>,
+    }
+
+    impl Drop for ManualDaemonCleanup {
+        fn drop(&mut self) {
+            self.service.release_all();
+            if let Some(flush) = &self.flush {
+                flush.release();
+            }
+            if let Some(before_submit) = &self.before_submit {
+                before_submit.release();
+            }
+        }
+    }
+
+    type ManualReceiptKeys = Arc<Mutex<Vec<crate::application::receipt_ledger::ReceiptKey>>>;
+
+    struct ManualHandlerRelease(Arc<manual_calls::HandlerGate>);
+
+    impl Drop for ManualHandlerRelease {
+        fn drop(&mut self) {
+            self.0.release();
+        }
+    }
+
+    #[derive(Default)]
+    struct ManualCancelReplyHooks {
+        replies: AtomicUsize,
+        observed: tokio::sync::Notify,
+        drop_first: bool,
+        gate: Option<Arc<ManualReceiptGate>>,
+    }
+
+    impl ManualCancelReplyHooks {
+        async fn wait(&self, count: usize) -> bool {
+            timeout(Duration::from_secs(3), async {
+                loop {
+                    let observed = self.observed.notified();
+                    if self.replies.load(Ordering::Acquire) >= count {
+                        break;
+                    }
+                    observed.await;
+                }
+            })
+            .await
+            .is_ok()
+        }
+    }
+
+    impl crate::infrastructure::daemon::runtime_v5::V5RuntimeHooks for ManualCancelReplyHooks {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn cancel_response_disconnect(&self) -> bool {
+            let previous = self.replies.fetch_add(1, Ordering::AcqRel);
+            self.observed.notify_waiters();
+            if previous == 0 {
+                if let Some(gate) = &self.gate {
+                    gate.hold();
+                }
+                self.drop_first
+            } else {
+                false
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct ManualReceiptGate {
+        key: Mutex<Option<crate::application::receipt_ledger::ReceiptKey>>,
+        released: Mutex<bool>,
+        changed: Condvar,
+        observed: tokio::sync::Notify,
+    }
+
+    impl ManualReceiptGate {
+        fn before_submit(&self, key: &crate::application::receipt_ledger::ReceiptKey) {
+            *self.key.lock().unwrap() = Some(key.clone());
+            self.observed.notify_waiters();
+            self.hold();
+        }
+
+        fn hold(&self) {
+            let mut released = self.released.lock().unwrap();
+            while !*released {
+                released = self.changed.wait(released).unwrap();
+            }
+        }
+
+        async fn wait(&self) -> Option<crate::application::receipt_ledger::ReceiptKey> {
+            timeout(Duration::from_secs(3), async {
+                loop {
+                    let observed = self.observed.notified();
+                    let key = self.key.lock().unwrap().clone();
+                    if let Some(key) = key {
+                        break key;
+                    }
+                    observed.await;
+                }
+            })
+            .await
+            .ok()
+        }
+
+        fn release(&self) {
+            *self.released.lock().unwrap() = true;
+            self.changed.notify_all();
+        }
+    }
+
+    fn manual_before_submit_server(
+        owner: V5DaemonProcessOwner,
+        workspace: String,
+        gate: Arc<ManualReceiptGate>,
+    ) -> UnicaServer {
+        let router = crate::interfaces::daemon_router::canonical_daemon_router_observed(
+            owner,
+            workspace,
+            Arc::new(move |key| gate.before_submit(key)),
+        );
+        UnicaServer {
+            router: SurfaceToolRouter::CanonicalV13(router),
+            in_flight: Arc::new(InFlightRegistry::default()),
+            manual_calls: Arc::new(ManualCalls::default()),
+            structured_tools: HashSet::new(),
+            startup_notice: None,
+        }
+    }
+
+    fn manual_daemon_server(
+        owner: V5DaemonProcessOwner,
+        workspace: String,
+    ) -> (UnicaServer, ManualReceiptKeys) {
+        let keys = Arc::new(Mutex::new(Vec::new()));
+        let observed = keys.clone();
+        let router = crate::interfaces::daemon_router::canonical_daemon_router_observed(
+            owner,
+            workspace,
+            Arc::new(move |key| observed.lock().unwrap().push(key.clone())),
+        );
+        (
+            UnicaServer {
+                router: SurfaceToolRouter::CanonicalV13(router),
+                in_flight: Arc::new(InFlightRegistry::default()),
+                manual_calls: Arc::new(ManualCalls::default()),
+                structured_tools: HashSet::new(),
+                startup_notice: None,
+            },
+            keys,
+        )
+    }
+
+    fn spawn_manual_flush_server(
+        server: UnicaServer,
+        gate: Arc<ManualFlushGate>,
+    ) -> (McpClient, Arc<InFlightRegistry>) {
+        let (client_io, server_io) = tokio::io::duplex(4 * 1024 * 1024);
+        let in_flight = server.in_flight();
+        let server = tokio::spawn(async move {
+            let (read, writer) = tokio::io::split(server_io);
+            let transport = rmcp::transport::async_rw::AsyncRwTransport::new_server(
+                read,
+                ManualFlushWriter { writer, gate },
+            );
+            let transport = DiscoveryProbeTransport::new(transport, &server);
+            match ObservedServer(server).serve(transport).await {
+                Ok(running) => {
+                    let _ = running.waiting().await;
+                }
+                Err(error)
+                    if matches!(error.as_ref(), ServerInitializeError::ConnectionClosed(_)) => {}
+                Err(error) => {
+                    panic!("manual cancellation MCP fixture initialization failed: {error}")
+                }
+            }
+        });
+        let (read, writer) = tokio::io::split(client_io);
+        (
+            McpClient {
+                writer,
+                reader: BufReader::new(read).lines(),
+                server,
+            },
+            in_flight,
+        )
+    }
+
+    async fn send_manual_daemon_call(client: &mut McpClient, request_id: u64, label: &str) {
+        client.send(json!({"jsonrpc": "2.0", "id": request_id, "method": "tools/call", "params": {"name": "unica.run", "arguments": {"op": "test.long-work", "args": {"label": label}}}})).await;
+    }
+
+    async fn cancel_manual_daemon_call(client: &mut McpClient, request_id: u64) {
+        client.send(json!({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": request_id, "reason": "explicit user cancel"}})).await;
+    }
+
+    #[derive(Default)]
+    struct ManualWaitHooks {
+        received: AtomicBool,
+        observed: tokio::sync::Notify,
+    }
+
+    impl crate::infrastructure::daemon::runtime_v5::V5RuntimeHooks for ManualWaitHooks {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn wait_task_received(&self, _: crate::domain::invocation::TaskId) {
+            self.received.store(true, Ordering::Release);
+            self.observed.notify_waiters();
+        }
+    }
+
+    impl ManualWaitHooks {
+        async fn wait(&self) -> bool {
+            timeout(Duration::from_secs(3), async {
+                loop {
+                    let notified = self.observed.notified();
+                    if self.received.load(Ordering::Acquire) {
+                        break;
+                    }
+                    notified.await;
+                }
+            })
+            .await
+            .is_ok()
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn canonical_manual_cancellation_sdk_refusal_after_eof_retires_registered_request() {
+        let service = ManualDaemonService::new(false);
+        let daemon = ManualDaemonOwner::start(service.clone());
+        let cleanup = ManualDaemonCleanup {
+            service: service.clone(),
+            flush: None,
+            before_submit: None,
+        };
+        let anchor = daemon.owner();
+        let (server, keys) = manual_daemon_server(daemon.owner(), daemon.workspace_hint.clone());
+        let calls = server.manual_calls.clone();
+        let gate = Arc::new(manual_calls::HandlerGate::default());
+        let release = ManualHandlerRelease(gate.clone());
+        calls.install_handler_gate(gate.clone());
+        let (mut client, in_flight) = spawn_unica_server(server);
+        client.initialize().await;
+        // Inline modern metadata selects SDK validation, but deliberately
+        // omits the required method capabilities and client identity.
+        client.send(json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"unica.run","arguments":{"op":"test.long-work","args":{"label":"sdk-refused"}},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}})).await;
+        let actual_dispatch = gate.wait().await;
+        cancel_manual_daemon_call(&mut client, 1).await;
+        client.shutdown().await;
+        drop(release);
+        let draining =
+            tokio::task::spawn_blocking(move || drain_stdio_frontend(&in_flight, &calls));
+        let drained = matches!(timeout(TEST_STEP, draining).await, Ok(Ok(true)));
+        drop(cleanup);
+        drop(anchor);
+        daemon.finish();
+        assert!(actual_dispatch && drained, "an actual SDK refusal after output close must settle registered manual ownership without a handler or receipt key");
+        assert!(keys.lock().unwrap().is_empty());
+        assert_eq!(service.executions("sdk-refused"), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn canonical_manual_cancellation_compatibility_wait_releases_only_observation() {
+        let service = ManualDaemonService::new(true);
+        let hooks = Arc::new(ManualWaitHooks::default());
+        let daemon = ManualDaemonOwner::start_with_hooks(service.clone(), hooks.clone());
+        let cleanup = ManualDaemonCleanup {
+            service: service.clone(),
+            flush: None,
+            before_submit: None,
+        };
+        let (server, _) = manual_daemon_server(daemon.owner(), daemon.workspace_hint.clone());
+        let (mut client, in_flight) = spawn_unica_server(server);
+        client.initialize().await;
+        send_manual_daemon_call(&mut client, 1, "wait-owned-producer").await;
+        let started = service.wait("wait-owned-producer", false).await;
+        let response = client.receive().await;
+        let task_id = response["result"]["structuredContent"]["data"]["task"]["taskId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        client.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"unica.task.result","arguments":{"taskId":task_id,"waitMs":7000}}})).await;
+        let wait_entered = hooks.wait().await;
+        cancel_manual_daemon_call(&mut client, 2).await;
+        let released_observation = timeout(Duration::from_secs(3), async {
+            while in_flight.running() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .is_ok();
+        let producer_cancelled = service.cancelled("wait-owned-producer");
+        service.release("wait-owned-producer");
+        let completed = service.wait("wait-owned-producer", true).await;
+        client.send(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"unica.task.result","arguments":{"taskId":task_id,"waitMs":1000}}})).await;
+        // A cancelled observation is suppressed; the next visible response
+        // must belong to the new result request for the same actual task.
+        let result = client.receive().await;
+        client.send(json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"unica.task.get","arguments":{"taskId":task_id}}})).await;
+        let terminal_state = client.receive().await;
+        client.send(json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"unica.task.result","arguments":{"taskId":task_id,"waitMs":0}}})).await;
+        let replay = client.receive().await;
+        drop(cleanup);
+        client.shutdown().await;
+        daemon.finish();
+        assert!(
+            started && wait_entered && released_observation && completed,
+            "manual WAIT cancellation must interrupt only its own observation connection"
+        );
+        assert!(!producer_cancelled && !service.cancelled("wait-owned-producer"));
+        assert_eq!(service.executions("wait-owned-producer"), 1);
+        assert_eq!(result["id"], 3, "{result}");
+        assert_eq!(
+            result["result"]["structuredContent"]["ok"], true,
+            "{result}"
+        );
+        assert_eq!(
+            result["result"]["structuredContent"]["summary"], "wait-owned-producer",
+            "{result}"
+        );
+        assert_eq!(terminal_state["id"], 4, "{terminal_state}");
+        assert_eq!(
+            terminal_state["result"]["structuredContent"]["data"]["task"]["status"], "completed",
+            "{terminal_state}"
+        );
+        assert_eq!(replay["id"], 5, "{replay}");
+        assert_eq!(replay["result"]["structuredContent"], result["result"]["structuredContent"], "completed result observation must preserve the factual receipt without another execution");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn canonical_manual_cancellation_mixed_duplicate_id_preserves_original_owner() {
+        let service = ManualDaemonService::new(false);
+        let daemon = ManualDaemonOwner::start(service.clone());
+        let cleanup = ManualDaemonCleanup {
+            service: service.clone(),
+            flush: None,
+            before_submit: None,
+        };
+        let (server, _) = manual_daemon_server(daemon.owner(), daemon.workspace_hint.clone());
+        let (mut client, in_flight) = spawn_unica_server(server);
+        client.initialize().await;
+        send_manual_daemon_call(&mut client, 1, "duplicate-original").await;
+        let started = service.wait("duplicate-original", false).await;
+        client
+            .send(json!({"jsonrpc":"2.0","id":1,"method":"ping"}))
+            .await;
+        let duplicate = client.receive().await;
+        cancel_manual_daemon_call(&mut client, 1).await;
+        let stopped = service.wait("duplicate-original", true).await;
+        let cancelled = service.cancelled("duplicate-original");
+        let settled = timeout(Duration::from_secs(3), async {
+            while in_flight.running() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .is_ok();
+        client
+            .send(json!({"jsonrpc":"2.0","id":99,"method":"ping"}))
+            .await;
+        let ping = client.receive().await;
+        service.release("duplicate-reused");
+        send_manual_daemon_call(&mut client, 1, "duplicate-reused").await;
+        let reused = client.receive().await;
+        drop(cleanup);
+        client.shutdown().await;
+        daemon.finish();
+        assert!(started && stopped && cancelled && settled);
+        assert_eq!(
+            duplicate["error"]["code"], -32600,
+            "a different method cannot reuse a currently owned CallTool ID"
+        );
+        assert_eq!(ping["id"], 99);
+        assert_eq!(reused["id"], 1);
+        assert_eq!(service.executions("duplicate-original"), 1);
+        assert_eq!(service.executions("duplicate-reused"), 1);
+        assert!(!service.cancelled("duplicate-reused"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn canonical_manual_cancellation_sdk_refusal_and_unknown_cancel_leave_id_reusable() {
+        let service = ManualDaemonService::new(false);
+        let daemon = ManualDaemonOwner::start(service.clone());
+        let cleanup = ManualDaemonCleanup {
+            service: service.clone(),
+            flush: None,
+            before_submit: None,
+        };
+        let (server, keys) = manual_daemon_server(daemon.owner(), daemon.workspace_hint.clone());
+        let (mut client, _) = spawn_unica_server(server);
+        client.initialize().await;
+        client.send(json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"unica.run","arguments":{"op":"test.long-work","args":{"label":"rejected"}},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}})).await;
+        let refused = client.receive().await;
+        cancel_manual_daemon_call(&mut client, 1).await;
+        cancel_manual_daemon_call(&mut client, 999).await;
+        service.release("after-refusal");
+        send_manual_daemon_call(&mut client, 1, "after-refusal").await;
+        let reused = client.receive().await;
+        drop(cleanup);
+        client.shutdown().await;
+        daemon.finish();
+        assert_eq!(refused["error"]["code"], -32602);
+        assert_eq!(reused["id"], 1);
+        assert_eq!(service.executions("rejected"), 0);
+        assert_eq!(service.executions("after-refusal"), 1);
+        assert!(!service.cancelled("after-refusal"));
+        assert_eq!(keys.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn canonical_manual_cancellation_direct_first_call_reaches_executor() {
+        let service = ManualDaemonService::new(false);
+        let daemon = ManualDaemonOwner::start(service.clone());
+        let cleanup = ManualDaemonCleanup {
+            service: service.clone(),
+            flush: None,
+            before_submit: None,
+        };
+        let (server, _) = manual_daemon_server(daemon.owner(), daemon.workspace_hint.clone());
+        let (mut client, _) = spawn_unica_server(server);
+        client.send(json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"unica.run","arguments":{"op":"test.long-work","args":{"label":"direct-first"}},"_meta":modern_meta()}})).await;
+        let started = service.wait("direct-first", false).await;
+        cancel_manual_daemon_call(&mut client, 1).await;
+        let stopped = service.wait("direct-first", true).await;
+        let cancelled = service.cancelled("direct-first");
+        drop(cleanup);
+        client.shutdown().await;
+        daemon.finish();
+        assert!(started && stopped && cancelled, "manual cancellation must also reach a canonical call that opens a modern session without initialize");
+        assert_eq!(service.executions("direct-first"), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn canonical_manual_cancellation_eof_before_handler_preserves_registered_intent() {
+        use crate::infrastructure::daemon::protocol_v5::{
+            V5InvocationPhase, V5InvocationResponse, V5ServerResponse,
+        };
+        let service = ManualDaemonService::new(false);
+        let daemon = ManualDaemonOwner::start(service.clone());
+        let receipt_gate = Arc::new(ManualReceiptGate::default());
+        let cleanup = ManualDaemonCleanup {
+            service: service.clone(),
+            flush: None,
+            before_submit: Some(receipt_gate.clone()),
+        };
+        let handler_gate = Arc::new(manual_calls::HandlerGate::default());
+        let handler_release = ManualHandlerRelease(handler_gate.clone());
+        let mut observer = daemon.owner();
+        let server = manual_before_submit_server(
+            daemon.owner(),
+            daemon.workspace_hint.clone(),
+            receipt_gate.clone(),
+        );
+        server
+            .manual_calls
+            .install_handler_gate(handler_gate.clone());
+        let (mut client, _) = spawn_unica_server(server);
+        client.initialize().await;
+        send_manual_daemon_call(&mut client, 1, "delayed-handler").await;
+        let registered_before_handler = handler_gate.wait().await;
+        cancel_manual_daemon_call(&mut client, 1).await;
+        client.shutdown().await;
+        drop(handler_release);
+        let key = receipt_gate.wait().await;
+        let cancel_reserved = key.as_ref().is_some_and(|key| {
+            matches!(
+                observer.recover_invocation_receipt_before(
+                    key.clone(),
+                    Instant::now() + Duration::from_secs(3)
+                ),
+                Ok(V5ServerResponse::Invocation {
+                    outcome: V5InvocationResponse::ReceiptPending {
+                        phase: V5InvocationPhase::CancelReserved,
+                        cancel_requested: true,
+                        ..
+                    }
+                })
+            )
+        });
+        drop(cleanup);
+        let mut cancelled_terminal = false;
+        if let Some(key) = key {
+            let cancelled_digest = crate::application::receipt_ledger::canonical_v5_terminal(
+                &crate::application::receipt_ledger::ReceiptTerminalOutcome::Cancelled,
+            )
+            .unwrap()
+            .digest()
+            .clone();
+            let watchdog = Instant::now() + Duration::from_secs(3);
+            while Instant::now() < watchdog {
+                if matches!(observer.recover_invocation_receipt_before(key.clone(), watchdog), Ok(V5ServerResponse::Invocation { outcome: V5InvocationResponse::Direct { ref receipt } }) if receipt.receipt_key() == &key && receipt.terminal() == &crate::application::receipt_ledger::ReceiptTerminalOutcome::Cancelled && receipt.terminal_digest() == &cancelled_digest)
+                {
+                    cancelled_terminal = true;
+                    break;
+                }
+                if matches!(observer.recover_invocation_receipt_before(key.clone(), watchdog), Ok(V5ServerResponse::Invocation { outcome: V5InvocationResponse::Acknowledged { ref acknowledgement } }) if acknowledgement.receipt_key() == &key && acknowledgement.terminal_digest() == &cancelled_digest)
+                {
+                    cancelled_terminal = true;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+        drop(observer);
+        daemon.finish();
+        assert!(registered_before_handler && cancel_reserved && cancelled_terminal, "output close cannot discard an accepted manual request before its real handler binds the original receipt key");
+        assert_eq!(service.executions("delayed-handler"), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn canonical_manual_cancellation_eof_waits_for_accepted_control_confirmation() {
+        let service = ManualDaemonService::new(false);
+        let gate = Arc::new(ManualReceiptGate::default());
+        let hooks = Arc::new(ManualCancelReplyHooks {
+            gate: Some(gate.clone()),
+            ..Default::default()
+        });
+        let daemon = ManualDaemonOwner::start_with_hooks(service.clone(), hooks.clone());
+        let cleanup = ManualDaemonCleanup {
+            service: service.clone(),
+            flush: None,
+            before_submit: Some(gate.clone()),
+        };
+        let anchor = daemon.owner();
+        let (server, _) = manual_daemon_server(daemon.owner(), daemon.workspace_hint.clone());
+        let manual_calls = server.manual_calls.clone();
+        let (mut client, in_flight) = spawn_unica_server(server);
+        client.initialize().await;
+        send_manual_daemon_call(&mut client, 1, "manual-then-eof").await;
+        let started = service.wait("manual-then-eof", false).await;
+        cancel_manual_daemon_call(&mut client, 1).await;
+        let control_committed = hooks.wait(1).await;
+        let stopped = service.wait("manual-then-eof", true).await;
+        client.shutdown().await;
+        let (shutdown_done, mut shutdown_result) = tokio::sync::oneshot::channel();
+        let draining = tokio::task::spawn_blocking(move || {
+            let drained = drain_stdio_frontend(&in_flight, &manual_calls);
+            let _ = shutdown_done.send(drained);
+        });
+        // The ordinary EOF grace can elapse, but it cannot finish the
+        // frontend while an already accepted exact control lacks its answer.
+        let premature_shutdown = timeout(
+            EOF_CANCELLATION_GRACE + Duration::from_millis(200),
+            &mut shutdown_result,
+        )
+        .await
+        .is_ok();
+        gate.release();
+        let settled_shutdown = if premature_shutdown {
+            true
+        } else {
+            matches!(timeout(TEST_STEP, shutdown_result).await, Ok(Ok(true)))
+        };
+        let joined = timeout(TEST_STEP, draining).await;
+        assert!(
+            matches!(joined, Ok(Ok(()))),
+            "frontend drain must actually return after control release"
+        );
+        drop(cleanup);
+        drop(anchor);
+        daemon.finish();
+        assert!(started && control_committed && stopped && service.cancelled("manual-then-eof"));
+        assert!(
+            settled_shutdown,
+            "accepted control must settle after its actual answer"
+        );
+        assert!(!premature_shutdown, "run_stdio must retain the already accepted manual control until its exact acknowledgement or genuine failure settles");
+        assert_eq!(service.executions("manual-then-eof"), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn canonical_manual_cancellation_normal_response_does_not_cancel_daemon_operation() {
+        let service = ManualDaemonService::new(false);
+        let daemon = ManualDaemonOwner::start(service.clone());
+        let cleanup = ManualDaemonCleanup {
+            service: service.clone(),
+            flush: None,
+            before_submit: None,
+        };
+        let (server, _) = manual_daemon_server(daemon.owner(), daemon.workspace_hint.clone());
+        let (mut client, _) = spawn_unica_server(server);
+        client.initialize().await;
+        send_manual_daemon_call(&mut client, 1, "normal").await;
+        let entered = service.wait("normal", false).await;
+        service.release("normal");
+        let response = client.receive().await;
+        client.shutdown().await;
+        drop(cleanup);
+        daemon.finish();
+        assert!(entered);
+        assert_eq!(response["id"], 1);
+        assert_eq!(response["result"]["structuredContent"]["summary"], "normal");
+        assert!(
+            !service.cancelled("normal"),
+            "SDK normal response cancellation must not become manual daemon cancellation"
+        );
+        assert_eq!(service.executions("normal"), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn canonical_manual_cancellation_before_task_id_stops_only_target_and_preserves_ping() {
+        let service = ManualDaemonService::new(false);
+        let daemon = ManualDaemonOwner::start(service.clone());
+        let cleanup = ManualDaemonCleanup {
+            service: service.clone(),
+            flush: None,
+            before_submit: None,
+        };
+        let (server, _) = manual_daemon_server(daemon.owner(), daemon.workspace_hint.clone());
+        let (mut client, _) = spawn_unica_server(server);
+        client.initialize().await;
+        send_manual_daemon_call(&mut client, 1, "target").await;
+        let target_started = service.wait("target", false).await;
+        send_manual_daemon_call(&mut client, 2, "neighbor").await;
+        let neighbor_started = service.wait("neighbor", false).await;
+        // Both calls are still held inline. The host has received no TaskID.
+        cancel_manual_daemon_call(&mut client, 1).await;
+        client
+            .send(json!({"jsonrpc": "2.0", "id": 99, "method": "ping"}))
+            .await;
+        let ping = client.receive().await;
+        let target_stopped = service.wait("target", true).await;
+        let target_cancelled = service.cancelled("target");
+        let neighbor_cancelled = service.cancelled("neighbor");
+        drop(cleanup);
+        client.shutdown().await;
+        daemon.finish();
+        assert!(target_started && neighbor_started);
+        assert_eq!(
+            ping["id"], 99,
+            "ping must remain responsive before target TaskID"
+        );
+        assert!(
+            target_stopped && target_cancelled,
+            "explicit MCP cancellation never reached the actual inline daemon executor"
+        );
+        assert!(!neighbor_cancelled);
+        assert_eq!(service.executions("target"), 1);
+        assert_eq!(service.executions("neighbor"), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn canonical_manual_cancellation_eof_preserves_accepted_work_and_exact_recovery_without_replay(
+    ) {
+        let service = ManualDaemonService::new(true);
+        let daemon = ManualDaemonOwner::start(service.clone());
+        let cleanup = ManualDaemonCleanup {
+            service: service.clone(),
+            flush: None,
+            before_submit: None,
+        };
+        let observer_owner = daemon.owner();
+        let (server, keys) = manual_daemon_server(daemon.owner(), daemon.workspace_hint.clone());
+        let (mut client, _) = spawn_unica_server(server);
+        client.initialize().await;
+        send_manual_daemon_call(&mut client, 1, "eof-work").await;
+        let started = service.wait("eof-work", false).await;
+        // Close stdin without any notifications/cancelled. A separate owner
+        // keeps daemon idle lifetime out of this cancellation test.
+        client.shutdown().await;
+        let cancelled_on_eof = service.cancelled("eof-work");
+        service.release("eof-work");
+        let completed = service.wait("eof-work", true).await;
+        let key = keys.lock().unwrap().first().cloned();
+        let mut recovered = None;
+        let watchdog = Instant::now() + Duration::from_secs(3);
+        let recovery_peer = observer_owner.connect_peer_before(watchdog);
+        if let (Some(key), Ok(mut recovery_peer)) = (key, recovery_peer) {
+            loop {
+                let Ok(response) =
+                    recovery_peer.recover_invocation_receipt_before(key.clone(), watchdog)
+                else {
+                    break;
+                };
+                if matches!(
+                    &response,
+                    crate::infrastructure::daemon::protocol_v5::V5ServerResponse::Invocation {
+                        outcome:
+                            crate::infrastructure::daemon::protocol_v5::V5InvocationResponse::Task {
+                                snapshot: V5DaemonTaskSnapshot::Completed { .. }
+                            }
+                    }
+                ) {
+                    recovered = Some(response);
+                    break;
+                }
+                if Instant::now() >= watchdog {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+        drop(cleanup);
+        drop(observer_owner);
+        daemon.finish();
+        assert!(started && completed);
+        assert!(!cancelled_on_eof && !service.cancelled("eof-work"));
+        assert!(
+            recovered.is_some(),
+            "a new daemon connection must recover the exact accepted result after MCP EOF"
+        );
+        assert_eq!(service.executions("eof-work"), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn canonical_manual_cancellation_before_submit_reserves_exact_cancel_before_admission() {
+        manual_before_submit_exact_cancel(false).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn canonical_manual_cancellation_lost_cancel_answer_reconciles_original_key_without_replay(
+    ) {
+        manual_before_submit_exact_cancel(true).await;
+    }
+
+    async fn manual_before_submit_exact_cancel(lost_reply: bool) {
+        use crate::application::receipt_ledger::{canonical_v5_terminal, ReceiptTerminalOutcome};
+        use crate::infrastructure::daemon::protocol_v5::{
+            V5InvocationPhase, V5InvocationResponse, V5ServerResponse,
+        };
+        let service = ManualDaemonService::new(false);
+        let hooks = Arc::new(ManualCancelReplyHooks {
+            drop_first: lost_reply,
+            ..Default::default()
+        });
+        let daemon = ManualDaemonOwner::start_with_hooks(service.clone(), hooks.clone());
+        let gate = Arc::new(ManualReceiptGate::default());
+        let cleanup = ManualDaemonCleanup {
+            service: service.clone(),
+            flush: None,
+            before_submit: Some(gate.clone()),
+        };
+        let mut observer_owner = daemon.owner();
+        let server = manual_before_submit_server(
+            daemon.owner(),
+            daemon.workspace_hint.clone(),
+            gate.clone(),
+        );
+        let output = Arc::new(ManualFlushGate::default());
+        let (mut client, in_flight) = spawn_manual_flush_server(server, output.clone());
+        client.initialize().await;
+        output.written.lock().unwrap().clear();
+        send_manual_daemon_call(&mut client, 1, "before-submit").await;
+        let key = gate.wait().await;
+        let key_created_before_submit = key.is_some();
+        let no_execution_before_submit = service.executions("before-submit") == 0;
+        cancel_manual_daemon_call(&mut client, 1).await;
+        let mut cancel_reserved = false;
+        if let Some(key) = &key {
+            let watchdog = Instant::now() + Duration::from_secs(3);
+            while Instant::now() < watchdog {
+                if matches!(
+                    observer_owner.recover_invocation_receipt_before(key.clone(), watchdog),
+                    Ok(V5ServerResponse::Invocation {
+                        outcome: V5InvocationResponse::ReceiptPending {
+                            phase: V5InvocationPhase::CancelReserved,
+                            cancel_requested: true,
+                            ..
+                        }
+                    })
+                ) {
+                    cancel_reserved = true;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+        let exact_control_confirmed = !lost_reply || hooks.wait(2).await;
+        gate.release();
+        let suppressed = timeout(Duration::from_secs(3), async {
+            while in_flight.running() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .is_ok();
+        let suppressed_bytes = output.written.lock().unwrap().len();
+        // The cancelled response has no bytes; a distinct Ping is the next
+        // complete frame, and the now released ID may serve fresh work.
+        client
+            .send(json!({"jsonrpc":"2.0","id":99,"method":"ping"}))
+            .await;
+        let ping = client.receive().await;
+        service.release("reused-id");
+        send_manual_daemon_call(&mut client, 1, "reused-id").await;
+        let reused = client.receive().await;
+        drop(cleanup);
+        client.shutdown().await;
+        let cancelled_digest = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
+            .unwrap()
+            .digest()
+            .clone();
+        let mut exact_cancelled_terminal = false;
+        if let Some(key) = &key {
+            let watchdog = Instant::now() + Duration::from_secs(3);
+            while Instant::now() < watchdog {
+                match observer_owner.recover_invocation_receipt_before(key.clone(), watchdog) {
+                    Ok(V5ServerResponse::Invocation {
+                        outcome: V5InvocationResponse::Direct { receipt },
+                    }) if receipt.receipt_key() == key
+                        && receipt.terminal() == &ReceiptTerminalOutcome::Cancelled
+                        && receipt.terminal_digest() == &cancelled_digest =>
+                    {
+                        exact_cancelled_terminal = true;
+                        break;
+                    }
+                    Ok(V5ServerResponse::Invocation {
+                        outcome: V5InvocationResponse::Acknowledged { acknowledgement },
+                    }) if acknowledgement.receipt_key() == key
+                        && acknowledgement.terminal_digest() == &cancelled_digest =>
+                    {
+                        exact_cancelled_terminal = true;
+                        break;
+                    }
+                    _ => {}
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+        drop(observer_owner);
+        daemon.finish();
+        assert!(key_created_before_submit && no_execution_before_submit);
+        assert!(cancel_reserved, "manual cancellation must reserve the exact key before the single Submit is allowed to leave the frontend");
+        assert!(exact_cancelled_terminal, "the original CancelReserved key must become a cancelled terminal after its corresponding Submit");
+        assert_eq!(service.executions("before-submit"), 0);
+        assert!(exact_control_confirmed && suppressed);
+        assert_eq!(
+            suppressed_bytes, 0,
+            "suppression before send must write zero bytes of the cancelled response"
+        );
+        assert_eq!(ping["id"], 99);
+        assert_eq!(reused["id"], 1);
+        assert_eq!(service.executions("reused-id"), 1);
+        assert!(!service.cancelled("reused-id"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn canonical_manual_cancellation_stdio_drain_does_not_cancel_held_daemon_admission() {
+        use crate::infrastructure::daemon::protocol_v5::{V5InvocationResponse, V5ServerResponse};
+        let service = ManualDaemonService::new(false);
+        let daemon = ManualDaemonOwner::start(service.clone());
+        let cleanup = ManualDaemonCleanup {
+            service: service.clone(),
+            flush: None,
+            before_submit: None,
+        };
+        let anchor = daemon.owner();
+        let (server, keys) = manual_daemon_server(daemon.owner(), daemon.workspace_hint.clone());
+        let (mut client, in_flight) = spawn_unica_server(server);
+        client.initialize().await;
+        send_manual_daemon_call(&mut client, 1, "stdio-drain").await;
+        let started = service.wait("stdio-drain", false).await;
+        let admission_token = in_flight
+            .state
+            .lock()
+            .unwrap()
+            .running
+            .first()
+            .map(|(_, token)| token.clone());
+        let McpClient {
+            mut writer,
+            reader,
+            server,
+        } = client;
+        writer.shutdown().await.unwrap();
+        drop(writer);
+        // This is the real SDK EOF boundary preceding run_stdio's drain. The
+        // guided inline executor keeps the canonical admission unfinished.
+        let sdk_stopped = matches!(timeout(TEST_STEP, server).await, Ok(Ok(())));
+        let held_at_drain = in_flight.running() == 1;
+        let draining = tokio::task::spawn_blocking(move || {
+            drain_mcp_shutdown(&in_flight, EOF_CANCELLATION_GRACE)
+        });
+        let admission_cancelled = timeout(Duration::from_secs(3), async {
+            loop {
+                if admission_token
+                    .as_ref()
+                    .is_some_and(CancellationToken::is_cancelled)
+                {
+                    break true;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap_or(false);
+        let daemon_cancelled_on_drain = service.cancelled("stdio-drain");
+        service.release("stdio-drain");
+        let completed = service.wait("stdio-drain", true).await;
+        let drained = draining.await.unwrap();
+        let key = keys.lock().unwrap().first().cloned();
+        let watchdog = Instant::now() + Duration::from_secs(3);
+        let mut terminal_recovered = false;
+        if let (Some(key), Ok(mut peer)) = (key, anchor.connect_peer_before(watchdog)) {
+            while Instant::now() < watchdog {
+                if matches!(
+                    peer.recover_invocation_receipt_before(key.clone(), watchdog),
+                    Ok(V5ServerResponse::Invocation {
+                        outcome: V5InvocationResponse::Direct { .. }
+                            | V5InvocationResponse::Acknowledged { .. }
+                            | V5InvocationResponse::Task {
+                                snapshot: V5DaemonTaskSnapshot::Completed { .. }
+                            }
+                    })
+                ) {
+                    terminal_recovered = true;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+        drop(reader);
+        drop(cleanup);
+        drop(anchor);
+        daemon.finish();
+        assert!(started && sdk_stopped && held_at_drain && admission_cancelled && drained);
+        assert!(completed && terminal_recovered);
+        assert!(
+            !daemon_cancelled_on_drain && !service.cancelled("stdio-drain"),
+            "run_stdio EOF drain must not become explicit cancellation of accepted daemon work"
+        );
+        assert_eq!(service.executions("stdio-drain"), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn canonical_manual_cancellation_partial_send_error_closes_output_without_replay() {
+        manual_partial_send_failure(false).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn canonical_manual_cancellation_partial_send_panic_closes_output_without_replay() {
+        manual_partial_send_failure(true).await;
+    }
+
+    async fn manual_partial_send_failure(panic: bool) {
+        let service = ManualDaemonService::new(true);
+        let daemon = ManualDaemonOwner::start(service.clone());
+        let output = Arc::new(ManualFlushGate::default());
+        let cleanup = ManualDaemonCleanup {
+            service: service.clone(),
+            flush: Some(output.clone()),
+            before_submit: None,
+        };
+        let anchor = daemon.owner();
+        let (server, _) = manual_daemon_server(daemon.owner(), daemon.workspace_hint.clone());
+        let (mut client, in_flight) = spawn_manual_flush_server(server, output.clone());
+        client.initialize().await;
+        output.written.lock().unwrap().clear();
+        output.partial_write.store(true, Ordering::Release);
+        output.fail_after_prefix.store(!panic, Ordering::Release);
+        output.panic_after_prefix.store(panic, Ordering::Release);
+        output.armed.store(true, Ordering::Release);
+        send_manual_daemon_call(&mut client, 1, "failed-output").await;
+        let started = service.wait("failed-output", false).await;
+        let fragment = timeout(TEST_STEP, client.reader.next_line()).await;
+        let ended = timeout(TEST_STEP, client.reader.next_line()).await;
+        let settled = timeout(Duration::from_secs(3), async {
+            while in_flight.running() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .is_ok();
+        let cancelled = service.cancelled("failed-output");
+        drop(cleanup);
+        let completed = service.wait("failed-output", true).await;
+        client.shutdown().await;
+        drop(anchor);
+        daemon.finish();
+        assert!(started && settled && completed);
+        assert!(
+            matches!(fragment, Ok(Ok(Some(ref text))) if text.len() == 8 && serde_json::from_str::<Value>(text).is_err()),
+            "fault must occur after an actual incomplete output prefix"
+        );
+        assert!(
+            matches!(ended, Ok(Ok(None))),
+            "a failed partial write must close output, never append a second JSON frame"
+        );
+        assert!(!cancelled && !service.cancelled("failed-output"));
+        assert_eq!(service.executions("failed-output"), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn canonical_manual_cancellation_after_handler_return_before_flush_reaches_exact_task() {
+        manual_cancellation_during_send(false).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn canonical_manual_cancellation_after_partial_json_finishes_the_same_frame() {
+        manual_cancellation_during_send(true).await;
+    }
+
+    async fn manual_cancellation_during_send(partial: bool) {
+        let service = ManualDaemonService::new(true);
+        let daemon = ManualDaemonOwner::start(service.clone());
+        let gate = Arc::new(ManualFlushGate::default());
+        let cleanup = ManualDaemonCleanup {
+            service: service.clone(),
+            flush: Some(gate.clone()),
+            before_submit: None,
+        };
+        let mut observer_owner = daemon.owner();
+        let (server, keys) = manual_daemon_server(daemon.owner(), daemon.workspace_hint.clone());
+        let (mut client, _) = spawn_manual_flush_server(server, gate.clone());
+        client.initialize().await;
+        send_manual_daemon_call(&mut client, 1, "flush-neighbor").await;
+        let neighbor_started = service.wait("flush-neighbor", false).await;
+        let neighbor_response = client.receive().await;
+        gate.written.lock().unwrap().clear();
+        gate.partial_write.store(partial, Ordering::Release);
+        gate.armed.store(true, Ordering::Release);
+        send_manual_daemon_call(&mut client, 2, "flush-target").await;
+        let target_started = service.wait("flush-target", false).await;
+        let send_started = gate.wait().await;
+        let held_prefix = gate.written.lock().unwrap().clone();
+        // Actual AsyncRwTransport::send reached poll_flush only after SDK
+        // awaited call_tool's return; this is not an arbitrary early cancel.
+        cancel_manual_daemon_call(&mut client, 2).await;
+        let target_stopped = service.wait("flush-target", true).await;
+        let target_cancelled = service.cancelled("flush-target");
+        let neighbor_cancelled = service.cancelled("flush-neighbor");
+        let target_key = keys.lock().unwrap().get(1).cloned();
+        let cancel_recorded = target_key.is_some_and(|key| {
+            matches!(observer_owner.recover_invocation_receipt_before(key, Instant::now() + Duration::from_secs(2)), Ok(crate::infrastructure::daemon::protocol_v5::V5ServerResponse::Invocation { outcome: crate::infrastructure::daemon::protocol_v5::V5InvocationResponse::Task { snapshot } }) if snapshot.cancel_requested())
+        });
+        gate.release();
+        let target_response = client.receive().await;
+        drop(cleanup);
+        client.shutdown().await;
+        drop(observer_owner);
+        daemon.finish();
+        assert!(neighbor_started && target_started && send_started);
+        if partial {
+            assert_eq!(
+                held_prefix.len(),
+                8,
+                "the cancellation race must start after an actual partial JSON write"
+            );
+        }
+        assert_eq!(
+            target_response["id"], 2,
+            "the already started response must remain a complete parseable frame"
+        );
+        assert_eq!(neighbor_response["id"], 1);
+        assert!(target_stopped && target_cancelled && cancel_recorded, "manual cancellation was lost after the handler returned but before the real transport flush");
+        assert!(!neighbor_cancelled);
+        assert_eq!(service.executions("flush-target"), 1);
+        assert_eq!(service.executions("flush-neighbor"), 1);
+    }
+
+    struct ManualSharedService {
+        activity: Arc<ManualDaemonService>,
+        producer_gate: Arc<ManualReceiptGate>,
+        producer_starts: Arc<AtomicUsize>,
+        producer_cancelled: Arc<AtomicBool>,
+        joined: Mutex<
+            std::collections::HashMap<
+                String,
+                crate::infrastructure::workspace_actor::IndexWorkIdentity,
+            >,
+        >,
+        observed: tokio::sync::Notify,
+    }
+
+    impl ManualSharedService {
+        async fn wait_joined(&self) -> bool {
+            timeout(TEST_STEP, async {
+                loop {
+                    let changed = self.observed.notified();
+                    if self.joined.lock().unwrap().len() == 2 {
+                        break;
+                    }
+                    changed.await;
+                }
+            })
+            .await
+            .is_ok()
+        }
+    }
+
+    impl crate::infrastructure::daemon::server::CanonicalInvocationService for ManualSharedService {
+        fn prepare(
+            &self,
+            _: &crate::infrastructure::daemon::server::ActorBoundInvocation,
+        ) -> Result<
+            crate::application::operation_descriptors::ExecutionClass,
+            Box<crate::domain::invocation::DomainResult>,
+        > {
+            Ok(crate::application::operation_descriptors::ExecutionClass::InlineCandidate)
+        }
+        fn execute(
+            &self,
+            invocation: &crate::infrastructure::daemon::server::ActorBoundExecution,
+            cancellation: CancellationToken,
+        ) -> Result<
+            crate::domain::invocation::DomainResult,
+            crate::domain::invocation::InvocationFailure,
+        > {
+            use crate::application::shared_work::SharedWorkSnapshot;
+            let label = invocation.arguments()["args"]["label"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            {
+                let mut state = self.activity.state.lock().unwrap();
+                let count = state.calls.get(&label).map_or(1, |(count, _)| count + 1);
+                state
+                    .calls
+                    .insert(label.clone(), (count, cancellation.clone()));
+            }
+            self.activity.observed.notify_waiters();
+            let gate = self.producer_gate.clone();
+            let starts = self.producer_starts.clone();
+            let producer_cancelled = self.producer_cancelled.clone();
+            let (identity, lease) = invocation
+                .join_index_work(
+                    "rlm",
+                    "bsl-1",
+                    "manual-shared-generation",
+                    move |producer| {
+                        starts.fetch_add(1, Ordering::AcqRel);
+                        gate.hold();
+                        producer_cancelled.store(producer.is_cancelled(), Ordering::Release);
+                        Ok(())
+                    },
+                )
+                .map_err(|error| {
+                    crate::domain::invocation::InvocationFailure::new("index", error)
+                })?;
+            self.joined.lock().unwrap().insert(label.clone(), identity);
+            self.observed.notify_waiters();
+            let result = loop {
+                // The adapter owns this consumer checkpoint. Dropping its
+                // real lease must not signal the other consumer's producer.
+                if cancellation.is_cancelled() {
+                    break Err(crate::domain::invocation::InvocationFailure::new(
+                        "cancelled",
+                        "own shared-work consumer stopped",
+                    ));
+                }
+                match lease.wait_timeout(Duration::from_millis(10)) {
+                    SharedWorkSnapshot::Running { .. } => {}
+                    SharedWorkSnapshot::Ready(_) => {
+                        break Ok(crate::domain::invocation::DomainResult::success(
+                            label.clone(),
+                        ))
+                    }
+                    SharedWorkSnapshot::Failed(_) => {
+                        break Err(crate::domain::invocation::InvocationFailure::new(
+                            "index",
+                            "shared producer failed",
+                        ))
+                    }
+                }
+            };
+            drop(lease);
+            self.activity
+                .state
+                .lock()
+                .unwrap()
+                .completed
+                .insert(label, cancellation.is_cancelled());
+            self.activity.observed.notify_waiters();
+            result
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn canonical_manual_cancellation_shared_index_stops_only_its_consumer() {
+        let activity = ManualDaemonService::new(false);
+        let producer_gate = Arc::new(ManualReceiptGate::default());
+        let service = Arc::new(ManualSharedService {
+            activity: activity.clone(),
+            producer_gate: producer_gate.clone(),
+            producer_starts: Arc::new(AtomicUsize::new(0)),
+            producer_cancelled: Arc::new(AtomicBool::new(false)),
+            joined: Mutex::new(std::collections::HashMap::new()),
+            observed: tokio::sync::Notify::new(),
+        });
+        let daemon = ManualDaemonOwner(Some(LiveDaemon::start(service.clone())));
+        let cleanup = ManualDaemonCleanup {
+            service: activity.clone(),
+            flush: None,
+            before_submit: Some(producer_gate.clone()),
+        };
+        let (server, keys) = manual_daemon_server(daemon.owner(), daemon.workspace_hint.clone());
+        let (mut client, _) = spawn_unica_server(server);
+        client.initialize().await;
+        send_manual_daemon_call(&mut client, 1, "shared-target").await;
+        assert!(activity.wait("shared-target", false).await);
+        send_manual_daemon_call(&mut client, 2, "shared-neighbor").await;
+        let joined = service.wait_joined().await;
+        let same_work = {
+            let identities = service.joined.lock().unwrap();
+            identities.contains_key("shared-target")
+                && identities.get("shared-target") == identities.get("shared-neighbor")
+        };
+        let distinct_receipts = {
+            let receipts = keys.lock().unwrap();
+            receipts.len() == 2 && receipts[0] != receipts[1]
+        };
+        cancel_manual_daemon_call(&mut client, 1).await;
+        let target_stopped = activity.wait("shared-target", true).await;
+        client
+            .send(json!({"jsonrpc":"2.0","id":99,"method":"ping"}))
+            .await;
+        let ping = client.receive().await;
+        let neighbor_cancelled = activity.cancelled("shared-neighbor");
+        let before_release = service.producer_starts.load(Ordering::Acquire);
+        let neighbor_still_waiting = !activity
+            .state
+            .lock()
+            .unwrap()
+            .completed
+            .contains_key("shared-neighbor");
+        producer_gate.release();
+        let neighbor_result = client.receive().await;
+        let neighbor_completed = activity.wait("shared-neighbor", true).await;
+        drop(cleanup);
+        client.shutdown().await;
+        daemon.finish();
+        assert!(joined && same_work && distinct_receipts, "two real actor-bound consumers must share one exact index identity and separate invocation receipts");
+        assert!(target_stopped && activity.cancelled("shared-target"));
+        assert_eq!(ping["id"], 99);
+        assert!(!neighbor_cancelled && neighbor_still_waiting && neighbor_completed);
+        assert_eq!(
+            neighbor_result["id"], 2,
+            "cancelled follower must not emit a competing result"
+        );
+        assert_eq!(
+            neighbor_result["result"]["structuredContent"]["summary"], "shared-neighbor",
+            "{neighbor_result}"
+        );
+        assert_eq!(before_release, 1);
+        assert_eq!(service.producer_starts.load(Ordering::Acquire), 1);
+        assert!(!service.producer_cancelled.load(Ordering::Acquire));
+        assert_eq!(activity.executions("shared-target"), 1);
+        assert_eq!(activity.executions("shared-neighbor"), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn canonical_manual_cancellation_after_completed_before_flush_preserves_exact_terminal() {
+        use crate::infrastructure::daemon::protocol_v5::{V5InvocationResponse, V5ServerResponse};
+        let service = ManualDaemonService::new(false);
+        let hooks = Arc::new(ManualCancelReplyHooks::default());
+        let daemon = ManualDaemonOwner::start_with_hooks(service.clone(), hooks.clone());
+        let gate = Arc::new(ManualFlushGate::default());
+        let cleanup = ManualDaemonCleanup {
+            service: service.clone(),
+            flush: Some(gate.clone()),
+            before_submit: None,
+        };
+        let mut observer = daemon.owner();
+        let (server, keys) = manual_daemon_server(daemon.owner(), daemon.workspace_hint.clone());
+        let (mut client, _) = spawn_manual_flush_server(server, gate.clone());
+        client.initialize().await;
+        gate.armed.store(true, Ordering::Release);
+        send_manual_daemon_call(&mut client, 1, "completed-winner").await;
+        assert!(service.wait("completed-winner", false).await);
+        service.release("completed-winner");
+        let completed = service.wait("completed-winner", true).await;
+        let send_started = gate.wait().await;
+        let original_response = client.receive().await;
+        let key = keys.lock().unwrap()[0].clone();
+        let original_terminal = observer
+            .recover_invocation_receipt_before(key.clone(), Instant::now() + TEST_STEP)
+            .unwrap();
+        let terminal_digest = match &original_terminal {
+            V5ServerResponse::Invocation {
+                outcome: V5InvocationResponse::Acknowledged { acknowledgement },
+            } if acknowledgement.receipt_key() == &key => acknowledgement.terminal_digest().clone(),
+            V5ServerResponse::Invocation {
+                outcome: V5InvocationResponse::Direct { receipt },
+            } if receipt.receipt_key() == &key => receipt.terminal_digest().clone(),
+            other => {
+                panic!("completed inline result must already have a durable terminal: {other:?}")
+            }
+        };
+        cancel_manual_daemon_call(&mut client, 1).await;
+        // This Ping cannot flush before the original frame; reading and exact
+        // control still proceed independently of the blocked output.
+        let manual_confirmed = hooks.wait(1).await;
+        let preserved = observer
+            .recover_invocation_receipt_before(key.clone(), Instant::now() + TEST_STEP)
+            .unwrap();
+        let unchanged = matches!(preserved, V5ServerResponse::Invocation { outcome: V5InvocationResponse::Acknowledged { ref acknowledgement } } if acknowledgement.receipt_key() == &key && acknowledgement.terminal_digest() == &terminal_digest)
+            || matches!(preserved, V5ServerResponse::Invocation { outcome: V5InvocationResponse::Direct { ref receipt } } if receipt.receipt_key() == &key && receipt.terminal_digest() == &terminal_digest);
+        gate.release();
+        client
+            .send(json!({"jsonrpc":"2.0","id":99,"method":"ping"}))
+            .await;
+        let ping = client.receive().await;
+        drop(cleanup);
+        client.shutdown().await;
+        drop(observer);
+        daemon.finish();
+        assert!(completed && send_started && manual_confirmed && unchanged);
+        assert_eq!(original_response["id"], 1);
+        assert_eq!(
+            original_response["result"]["structuredContent"]["summary"], "completed-winner",
+            "{original_response}"
+        );
+        assert_eq!(ping["id"], 99);
+        assert!(!service.cancelled("completed-winner"));
+        assert_eq!(service.executions("completed-winner"), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn canonical_manual_cancellation_reused_id_keeps_old_control_and_targets_new_receipt() {
+        let service = ManualDaemonService::new(false);
+        let old_control_gate = Arc::new(ManualReceiptGate::default());
+        let hooks = Arc::new(ManualCancelReplyHooks {
+            gate: Some(old_control_gate.clone()),
+            ..Default::default()
+        });
+        let daemon = ManualDaemonOwner::start_with_hooks(service.clone(), hooks.clone());
+        let flush = Arc::new(ManualFlushGate::default());
+        let cleanup = ManualDaemonCleanup {
+            service: service.clone(),
+            flush: Some(flush.clone()),
+            before_submit: Some(old_control_gate.clone()),
+        };
+        let anchor = daemon.owner();
+        let (server, keys) = manual_daemon_server(daemon.owner(), daemon.workspace_hint.clone());
+        let calls = server.manual_calls.clone();
+        let (mut client, in_flight) = spawn_manual_flush_server(server, flush.clone());
+        client.send(json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2026-07-28","capabilities":{},"clientInfo":{"name":"unica-tests","version":"1"}}})).await;
+        let initialized = client.receive().await;
+        assert_eq!(
+            initialized["result"]["protocolVersion"], "2026-07-28",
+            "{initialized}"
+        );
+        client
+            .send(json!({"jsonrpc":"2.0","method":"notifications/initialized"}))
+            .await;
+        flush.armed.store(true, Ordering::Release);
+        client.send(json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"unica.run","arguments":{"op":"test.long-work","args":{"label":"reuse-original"}},"_meta":modern_meta()}})).await;
+        assert!(service.wait("reuse-original", false).await);
+        service.release("reuse-original");
+        let actual_flush_held = flush.wait().await;
+        // The modern sender has received a complete original response. That
+        // permits reuse even while the underlying output flush is still held.
+        cancel_manual_daemon_call(&mut client, 7).await;
+        let old_cancel_committed = hooks.wait(1).await;
+        let original = client.receive().await;
+        client.send(json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"unica.run","arguments":{"op":"test.long-work","args":{"label":"reuse-new"}},"_meta":modern_meta()}})).await;
+        let new_entered = service.wait("reuse-new", false).await;
+        cancel_manual_daemon_call(&mut client, 7).await;
+        let new_stopped = if new_entered {
+            service.wait("reuse-new", true).await
+        } else {
+            false
+        };
+        let distinct_receipts = {
+            let keys = keys.lock().unwrap();
+            keys.len() == 2 && keys[0] != keys[1]
+        };
+        flush.release();
+        client
+            .send(json!({"jsonrpc":"2.0","id":99,"method":"ping","params":{"_meta":modern_meta()}}))
+            .await;
+        let mut ping = client.receive().await;
+        if ping["id"] != 99 {
+            ping = client.receive().await;
+        }
+        let new_retired = timeout(TEST_STEP, async {
+            while calls.get(&rmcp::model::RequestId::Number(7)).is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .is_ok();
+        client.shutdown().await;
+        let (started, entered) = tokio::sync::oneshot::channel();
+        let draining = tokio::task::spawn_blocking(move || {
+            let _ = started.send(());
+            drain_stdio_frontend(&in_flight, &calls)
+        });
+        assert!(matches!(timeout(TEST_STEP, entered).await, Ok(Ok(()))));
+        let mut draining = draining;
+        let premature_drain = timeout(Duration::from_millis(50), &mut draining)
+            .await
+            .is_ok();
+        old_control_gate.release();
+        let drain_settled =
+            premature_drain || matches!(timeout(TEST_STEP, draining).await, Ok(Ok(true)));
+        drop(cleanup);
+        drop(anchor);
+        daemon.finish();
+        assert_eq!(original["id"], 7);
+        assert_eq!(
+            original["result"]["structuredContent"]["summary"],
+            "reuse-original"
+        );
+        assert!(actual_flush_held && old_cancel_committed);
+        assert!(new_entered && new_stopped && distinct_receipts && new_retired, "receiving a complete modern response permits the same RequestId for a new invocation while the old flush/control is still retained");
+        assert!(service.cancelled("reuse-new"));
+        assert!(!service.cancelled("reuse-original"));
+        assert_eq!(service.executions("reuse-original"), 1);
+        assert_eq!(service.executions("reuse-new"), 1);
+        assert_eq!(ping["id"], 99);
+        assert!(!premature_drain && drain_settled, "an older accepted control must remain owned through its actual acknowledgement after RequestId reuse");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn canonical_manual_cancellation_sole_engine_waiter_preserves_delivery_and_pinned_artifact(
+    ) {
+        const CHILD: &str = "UNICA_MANUAL_ENGINE_WAITER_CHILD";
+        const ROOT: &str = "UNICA_MANUAL_ENGINE_WAITER_ROOT";
+        if std::env::var_os(CHILD).is_none() {
+            let root = tempfile::tempdir().unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "interfaces::mcp::tests::canonical_manual_cancellation_sole_engine_waiter_preserves_delivery_and_pinned_artifact", "--nocapture"])
+                .env(CHILD, "1").env(ROOT, root.path()).output().unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(stdout.contains("running 1 test"), "{stdout}\n{stderr}");
+            assert!(output.status.success(), "{stdout}\n{stderr}");
+            return;
+        }
+        use crate::infrastructure::daemon::server::actor_capacity_tests::{
+            canonical_v13_service, LiveV5Daemon,
+        };
+        use sha2::{Digest, Sha256};
+        use unica_bootstrap::{BootstrapError, DownloadObserver, Downloader, HostTarget};
+        struct ControlledDownload {
+            bytes: Vec<u8>,
+            gate: Arc<ManualReceiptGate>,
+            starts: AtomicUsize,
+            started: tokio::sync::Notify,
+            finished: AtomicBool,
+        }
+        impl Downloader for ControlledDownload {
+            fn download(
+                &self,
+                _: &str,
+                destination: &std::path::Path,
+                observer: &dyn DownloadObserver,
+            ) -> Result<(), BootstrapError> {
+                self.starts.fetch_add(1, Ordering::AcqRel);
+                self.started.notify_waiters();
+                self.gate.hold();
+                std::fs::write(destination, &self.bytes)?;
+                observer.transferred(self.bytes.len() as u64, Some(self.bytes.len() as u64));
+                self.finished.store(true, Ordering::Release);
+                Ok(())
+            }
+        }
+        let root = std::path::PathBuf::from(std::env::var_os(ROOT).unwrap());
+        let workspace = root.join("workspace");
+        let plugin = root.join("plugin");
+        let cache = root.join("cache");
+        std::fs::create_dir_all(workspace.join("src")).unwrap();
+        std::fs::create_dir_all(plugin.join("third-party")).unwrap();
+        std::fs::write(workspace.join("v8project.yaml"), "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\ninfobase:\n  connection: 'File=base'\n").unwrap();
+        std::fs::write(workspace.join("src/Configuration.xml"), r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Test</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#).unwrap();
+        let source = root.join("engine-probe.rs");
+        std::fs::write(&source, r###"
+fn main() {
+    let cwd = std::env::current_dir().unwrap();
+    use std::io::Write;
+    let mut runs = std::fs::OpenOptions::new().create(true).append(true).open(cwd.join("runner-dispatch.log")).unwrap();
+    writeln!(runs, "extensions").unwrap();
+    println!("{}", r#"{"ok":true,"command":"extensions","data":{"ok":true,"provider_dispatched":false,"provider":{"selected":"ibcmd","origin":{"kind":"default"}},"requested":{"kind":"all"},"extensions":[],"plan":"fixture"}}"#);
+}
+"###).unwrap();
+        let binary = root.join(format!("engine-probe{}", std::env::consts::EXE_SUFFIX));
+        let compiled =
+            std::process::Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
+                .arg("--edition=2021")
+                .arg(&source)
+                .arg("-o")
+                .arg(&binary)
+                .output()
+                .unwrap();
+        assert!(
+            compiled.status.success(),
+            "{}",
+            String::from_utf8_lossy(&compiled.stderr)
+        );
+        let bytes = std::fs::read(&binary).unwrap();
+        let digest = format!("{:x}", Sha256::digest(&bytes));
+        let mut core_targets = serde_json::Map::new();
+        let mut runner_targets = serde_json::Map::new();
+        let runner_version = "0.11.4"; // Fixture pin must match the production runner contract.
+        for host in HostTarget::ALL {
+            let target = host.as_str();
+            let suffix = if target == "win-x64" { ".exe" } else { "" };
+            let core_asset = format!("unica-runtime-{target}.tar.gz");
+            let core_path = format!("bin/{target}/unica{suffix}");
+            core_targets.insert(target.to_owned(), json!({
+                "asset":{"name":core_asset,"url":format!("https://github.com/IngvarConsulting/unica/releases/download/v{}/{core_asset}",env!("CARGO_PKG_VERSION")),"mediaType":"application/gzip","sha256":"0".repeat(64)},
+                "files":[{"path":core_path,"sha256":"0".repeat(64),"executable":true}],"entrypoint":core_path
+            }));
+            let asset = format!("v8-runner-{target}{suffix}");
+            runner_targets.insert(target.to_owned(), json!({
+                "asset":{"name":asset,"url":format!("https://github.com/IngvarConsulting/v8-runner-rust/releases/download/v8-runner-v{runner_version}-build.1/{asset}"),"mediaType":"application/octet-stream","sha256":digest},
+                "files":[{"path":format!("bin/{target}/v8-runner{suffix}"),"sha256":digest,"executable":true}]
+            }));
+        }
+        let release = json!({"schemaVersion":2,"pluginVersion":env!("CARGO_PKG_VERSION"),
+            "source":{"repository":"https://github.com/IngvarConsulting/unica","commit":"0".repeat(40)},
+            "release":{"repository":"https://github.com/IngvarConsulting/unica","tag":format!("v{}",env!("CARGO_PKG_VERSION"))},
+            "artifacts":{"unica":{"version":env!("CARGO_PKG_VERSION"),"role":"core","targets":core_targets},"v8-runner":{"version":runner_version,"role":"engine","targets":runner_targets}}
+        });
+        let release_path = plugin.join("runtime-manifest.json");
+        std::fs::write(&release_path, release.to_string()).unwrap();
+        let target = crate::infrastructure::platform::current_target_id().unwrap();
+        let relative = format!("bin/{target}/v8-runner{}", std::env::consts::EXE_SUFFIX);
+        std::fs::write(plugin.join("third-party/manifest.json"), json!({"schemaVersion":2,"artifactAssets":{"v8-runner":{"sha256":digest}},"tools":[{"name":"v8-runner","version":runner_version,"binaryPath":relative,"deliveredPath":relative,"sha256":digest}]}).to_string()).unwrap();
+        // Only this one-test child owns these global overrides.
+        std::env::set_var("UNICA_PLUGIN_ROOT", &plugin);
+        std::env::set_var("UNICA_ARTIFACT_CACHE", &cache);
+        std::env::set_var("UNICA_RUNTIME_MANIFEST", &release_path);
+        let download_gate = Arc::new(ManualReceiptGate::default());
+        let downloader = Arc::new(ControlledDownload {
+            bytes,
+            gate: download_gate.clone(),
+            starts: AtomicUsize::new(0),
+            started: tokio::sync::Notify::new(),
+            finished: AtomicBool::new(false),
+        });
+        let daemon =
+            ManualCanonicalDaemonOwner(Some(LiveV5Daemon::start_with_delivery_downloader(
+                canonical_v13_service(),
+                downloader.clone(),
+            )));
+        let _download_release = ManualProducerRelease(download_gate.clone());
+        let owner = daemon.owner();
+        let flush = Arc::new(ManualFlushGate::default());
+        let _flush_release = ManualFlushRelease(flush.clone());
+        let server = UnicaServer::with_canonical_daemon(
+            daemon.owner(),
+            workspace.to_string_lossy().into_owned(),
+        );
+        let (mut client, _) = spawn_manual_flush_server(server, flush.clone());
+        client.initialize().await;
+        flush.armed.store(true, Ordering::Release);
+        client.send(json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"unica.run","arguments":{"op":"extensions.list","args":{},"dryRun":true},"_meta":modern_meta()}})).await;
+        let response = client.receive().await;
+        let task_id = response["result"]["structuredContent"]["data"]["task"]["taskId"]
+            .as_str()
+            .unwrap_or_else(|| panic!("expected actual Task: {response}"))
+            .parse()
+            .unwrap();
+        assert!(flush.wait().await);
+        let started = timeout(TEST_STEP, async {
+            loop {
+                let changed = downloader.started.notified();
+                if downloader.starts.load(Ordering::Acquire) == 1 {
+                    break;
+                }
+                changed.await;
+            }
+        })
+        .await
+        .is_ok();
+        assert!(
+            started,
+            "the sole real run must reach its pinned engine downloader"
+        );
+        cancel_manual_daemon_call(&mut client, 1).await;
+        let terminal = daemon.wait_terminal(&owner, task_id, TEST_STEP);
+        assert_eq!(
+            terminal.status(),
+            crate::domain::invocation::InvocationStatus::Cancelled,
+            "{terminal:?}"
+        );
+        assert!(!downloader.finished.load(Ordering::Acquire));
+        assert!(!workspace.join("runner-dispatch.log").exists());
+        flush.release();
+        download_gate.release();
+        let installed = timeout(TEST_STEP, async {
+            loop {
+                if let Some(path) = crate::infrastructure::bundled_tools::installed_engine_path(
+                    &plugin,
+                    "v8-runner",
+                ) {
+                    break path;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("process-owned delivery must finish with no remaining waiter");
+        assert!(
+            installed.is_absolute() && installed.starts_with(&cache),
+            "{}",
+            installed.display()
+        );
+        assert_eq!(
+            format!("{:x}", Sha256::digest(std::fs::read(&installed).unwrap())),
+            digest
+        );
+        client.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"unica.run","arguments":{"op":"extensions.list","args":{},"dryRun":true},"_meta":modern_meta()}})).await;
+        let fresh = client.receive().await;
+        let fresh_task = fresh["result"]["structuredContent"]["data"]["task"]["taskId"]
+            .as_str()
+            .unwrap_or_else(|| panic!("expected fresh Task: {fresh}"))
+            .parse()
+            .unwrap();
+        let fresh_terminal = daemon.wait_terminal(&owner, fresh_task, TEST_STEP);
+        assert_eq!(
+            fresh_terminal.status(),
+            crate::domain::invocation::InvocationStatus::Completed,
+            "{fresh_terminal:?}"
+        );
+        assert_eq!(downloader.starts.load(Ordering::Acquire), 1);
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("runner-dispatch.log"))
+                .unwrap()
+                .lines()
+                .count(),
+            1
+        );
+        client.shutdown().await;
+        daemon.finish(owner);
+    }
+
+    struct ManualProducerRelease(Arc<ManualReceiptGate>);
+    impl Drop for ManualProducerRelease {
+        fn drop(&mut self) {
+            self.0.release();
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn canonical_manual_cancellation_native_reuse_does_not_inherit_old_suppression() {
+        let service = ManualDaemonService::new(false);
+        let control_gate = Arc::new(ManualReceiptGate::default());
+        let hooks = Arc::new(ManualCancelReplyHooks {
+            gate: Some(control_gate.clone()),
+            ..Default::default()
+        });
+        let daemon = ManualDaemonOwner::start_with_hooks(service.clone(), hooks.clone());
+        let flush = Arc::new(ManualFlushGate::default());
+        let cleanup = ManualDaemonCleanup {
+            service: service.clone(),
+            flush: Some(flush.clone()),
+            before_submit: Some(control_gate.clone()),
+        };
+        let (server, _) = manual_daemon_server(daemon.owner(), daemon.workspace_hint.clone());
+        let (mut client, _) = spawn_manual_flush_server(server, flush.clone());
+        client.send(json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2026-07-28","capabilities":{},"clientInfo":{"name":"unica-tests","version":"1"}}})).await;
+        let initialization = client.receive().await;
+        assert_eq!(initialization["result"]["protocolVersion"], "2026-07-28");
+        client
+            .send(json!({"jsonrpc":"2.0","method":"notifications/initialized"}))
+            .await;
+        flush.armed.store(true, Ordering::Release);
+        client.send(json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"unica.run","arguments":{"op":"test.long-work","args":{"label":"native-reuse-original"}},"_meta":modern_meta()}})).await;
+        assert!(service.wait("native-reuse-original", false).await);
+        service.release("native-reuse-original");
+        assert!(flush.wait().await);
+        cancel_manual_daemon_call(&mut client, 7).await;
+        let committed = hooks.wait(1).await;
+        let original = client.receive().await;
+        client
+            .send(json!({"jsonrpc":"2.0","id":7,"method":"ping","params":{"_meta":modern_meta()}}))
+            .await;
+        flush.release();
+        let reused_ping = client.receive().await;
+        control_gate.release();
+        drop(cleanup);
+        client.shutdown().await;
+        daemon.finish();
+        assert!(committed);
+        assert_eq!(
+            original["result"]["structuredContent"]["summary"],
+            "native-reuse-original"
+        );
+        assert_eq!(reused_ping["id"], 7);
+        assert_eq!(reused_ping["error"]["code"], -32601, "the SDK must receive the native request and return its actual modern-method refusal, without old CallTool suppression or duplicate-ID rejection: {reused_ping}");
+        assert_eq!(reused_ping["error"]["message"], "ping", "{reused_ping}");
+        assert!(!service.cancelled("native-reuse-original"));
+        assert_eq!(service.executions("native-reuse-original"), 1);
     }
 
     #[tokio::test]

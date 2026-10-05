@@ -142,6 +142,9 @@ pub(crate) trait V5RuntimeHooks: Send + Sync {
 
     // --- observation ---
 
+    /// Observes a real authenticated Task wait before its result is awaited.
+    fn wait_task_received(&self, task_id: crate::domain::invocation::TaskId) {}
+
     fn event(&self, event: V5ReceiptRuntimeEventKind, epoch_ms: u64) {}
 
     /// Observes a real accepted transport before owner admission.
@@ -330,6 +333,12 @@ pub(crate) trait V5RuntimeHooks: Send + Sync {
     }
 
     fn ack_response_disconnect(&self) -> bool {
+        false
+    }
+
+    /// Invoked only after the durable exact Cancel has succeeded and before
+    /// writing its answer. Tests may delay or lose that committed answer.
+    fn cancel_response_disconnect(&self) -> bool {
         false
     }
 

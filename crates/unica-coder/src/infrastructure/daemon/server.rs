@@ -1953,6 +1953,17 @@ pub(crate) mod actor_capacity_tests {
             Self::over(canonical, service)
         }
 
+        pub(crate) fn start_with_delivery_downloader(
+            service: Arc<dyn CanonicalInvocationService>,
+            downloader: Arc<dyn unica_bootstrap::Downloader>,
+        ) -> Self {
+            let canonical = Arc::new(
+                V5CanonicalInvocationRuntime::new(Arc::clone(&service), Arc::new(TokioClock))
+                    .with_delivery_downloader_for_test(downloader),
+            );
+            Self::over(canonical, service)
+        }
+
         fn over(
             canonical: Arc<V5CanonicalInvocationRuntime>,
             service: Arc<dyn CanonicalInvocationService>,
@@ -10641,12 +10652,15 @@ struct ActorLogicalReadLease {"#,
         std::fs::write(
             &source,
             r##"
-use std::{env, fs, thread, time::{Duration, Instant}};
+use std::{env, fs, io::Write, thread, time::{Duration, Instant}};
 fn main() {
     let cwd = env::current_dir().unwrap();
     let dry_run = env::args().any(|arg| arg == "--dry-run");
     let created = cwd.join("created.marker");
     if !dry_run {
+        let mut dispatches = fs::OpenOptions::new().create(true).append(true).open(cwd.join("apply-dispatch.log")).unwrap();
+        writeln!(dispatches, "apply").unwrap();
+        dispatches.sync_all().unwrap();
         fs::write(cwd.join("entered.marker"), "runner entered mutation").unwrap();
         let deadline = Instant::now() + Duration::from_secs(60);
         while !cwd.join("release.marker").exists() {
