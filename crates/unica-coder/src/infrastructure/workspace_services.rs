@@ -7,6 +7,7 @@ use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind}
 use crate::domain::source_revision::SourceRevision;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
+use crate::infrastructure::daemon::identity::CoreIdentity;
 use crate::infrastructure::platform::{
     short_private_runtime_dir, ManagedChild, ManagedStartupChild,
 };
@@ -64,7 +65,8 @@ macro_rules! assert_not_impl_production {
     };
 }
 
-const SERVICE_SCHEMA_VERSION: u32 = 4;
+/// v5: a record names the build that serves it, not the package version.
+const SERVICE_SCHEMA_VERSION: u32 = 5;
 const DEFAULT_IDLE_SECS: u64 = 7200;
 const DEFAULT_MAX_AGE_SECS: u64 = 28800;
 const SERVICE_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -122,6 +124,18 @@ pub struct WorkspaceServiceRecord {
     pub pid: u32,
     pub port: u16,
     pub token: String,
+    /// The core identity of the build serving this record. The protocol
+    /// between a daemon and its service is internal and keeps no backward
+    /// compatibility, so only the same build reuses a service. A record of
+    /// an older schema carries none; it still parses so that its service is
+    /// shut down instead of being left beside the replacement.
+    #[serde(default)]
+    pub build: String,
+    /// The package version. Matching ignores it; it is still written because
+    /// a schema-4 binary requires the field: without it that binary cannot read
+    /// this record, so it neither reuses nor shuts down this service and
+    /// leaves it running beside its own.
+    #[serde(default)]
     pub version: String,
     pub workspace_root: String,
     pub source_root: String,
@@ -130,9 +144,9 @@ pub struct WorkspaceServiceRecord {
 }
 
 impl WorkspaceServiceRecord {
-    pub fn matches(&self, identity: &WorkspaceServiceIdentity, version: &str) -> bool {
+    pub fn matches(&self, identity: &WorkspaceServiceIdentity, build: &str) -> bool {
         self.schema_version == SERVICE_SCHEMA_VERSION
-            && self.version == version
+            && self.build == build
             && self.workspace_root == identity.workspace_root
             && self.source_root == identity.source_root
             && !self.token.is_empty()
@@ -590,7 +604,7 @@ impl<'a> WorkspaceServiceManager<'a> {
         let Some(record) = read_record(identity) else {
             return Ok(None);
         };
-        if record.matches(identity, env!("CARGO_PKG_VERSION"))
+        if record.matches(identity, CoreIdentity::production().as_str())
             && self.service_is_alive(&record, cancellation, deadline)?
         {
             return Ok(Some(record));
@@ -1174,9 +1188,17 @@ impl ServiceSpawner for SystemServiceSpawner {
         let exe = env::var_os("UNICA_TEST_WORKSPACE_SERVICE_EXE")
             .map(PathBuf::from)
             .unwrap_or(exe);
+        // A service of another build would answer this daemon under its
+        // identity; the file it starts from must still be this build. The
+        // service records the identity it is given instead of recomputing it:
+        // a test service binary is not the test process's build.
+        let build = CoreIdentity::production();
+        crate::infrastructure::daemon::identity::verify_executable_build(&exe, &build)?;
         let mut command = Command::new(exe);
         command
             .arg("--workspace-service")
+            .arg("--core-identity")
+            .arg(build.as_str())
             .arg("--workspace-root")
             .arg(&identity.workspace_root)
             .arg("--source-root")
@@ -1915,11 +1937,11 @@ impl WorkspaceServiceRuntime {
             && record.pid == self.record_owner().pid
             && record.port == self.record_owner().port
             && record.token == self.record_owner().token
-            && record.version == self.record_owner().version
+            && record.build == self.record_owner().build
             && record.workspace_root == self.record_owner().workspace_root
             && record.source_root == self.record_owner().source_root
             && record.started_at == self.record_owner().started_at
-            && record.matches(self.identity(), &self.record_owner().version)
+            && record.matches(self.identity(), &self.record_owner().build)
     }
 
     fn register_operation(
@@ -3705,7 +3727,7 @@ fn wait_for_record_with_connector(
         if let Some(record) = read_record(identity) {
             if record.pid == expected_pid
                 && record.token == expected_token
-                && record.matches(identity, env!("CARGO_PKG_VERSION"))
+                && record.matches(identity, CoreIdentity::production().as_str())
                 && connector
                     .send(
                         &record,
@@ -3760,6 +3782,7 @@ pub fn run_workspace_service_from_args(args: &[String]) -> Result<(), String> {
     let source_root = required_arg(args, "--source-root")?;
     let service_dir = PathBuf::from(required_arg(args, "--service-dir")?);
     let token = required_arg(args, "--token")?;
+    let build = required_arg(args, "--core-identity")?;
     let idle_secs = optional_u64_arg(args, "--idle-secs", DEFAULT_IDLE_SECS);
     let max_age_secs = optional_u64_arg(args, "--max-age-secs", DEFAULT_MAX_AGE_SECS);
     let key = service_dir
@@ -3773,12 +3796,13 @@ pub fn run_workspace_service_from_args(args: &[String]) -> Result<(), String> {
         source_root,
         service_dir,
     };
-    run_workspace_service(identity, token, idle_secs, max_age_secs)
+    run_workspace_service(identity, token, build, idle_secs, max_age_secs)
 }
 
 fn run_workspace_service(
     identity: WorkspaceServiceIdentity,
     token: String,
+    build: String,
     idle_secs: u64,
     max_age_secs: u64,
 ) -> Result<(), String> {
@@ -3798,6 +3822,7 @@ fn run_workspace_service(
         pid: std::process::id(),
         port,
         token: token.clone(),
+        build,
         version: env!("CARGO_PKG_VERSION").to_string(),
         workspace_root: identity.workspace_root.clone(),
         source_root: identity.source_root.clone(),
@@ -4605,7 +4630,7 @@ mod tests {
         let context = test_context("legacy-runtime-actor-owner");
         let source_root = context.workspace_root.join("src");
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
-        let record = test_record(&identity, 1, env!("CARGO_PKG_VERSION"));
+        let record = test_record(&identity, 1, CoreIdentity::production().as_str());
         let runtime = WorkspaceServiceRuntime::new(identity, &record);
 
         actor_owned(&runtime.actor);
@@ -4806,7 +4831,7 @@ mod tests {
         let context = test_context("rlm-out-of-domain-wire-timeout");
         let source_root = context.workspace_root.join("src");
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
-        let record = test_record(&identity, 1, env!("CARGO_PKG_VERSION"));
+        let record = test_record(&identity, 1, CoreIdentity::production().as_str());
         let runtime = WorkspaceServiceRuntime::new(identity, &record);
 
         let response = runtime.handle_rlm_mcp(
@@ -4831,7 +4856,7 @@ mod tests {
         let context = test_context("rlm-readiness-out-of-domain-wire-timeout");
         let source_root = context.workspace_root.join("src");
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
-        let record = test_record(&identity, 1, env!("CARGO_PKG_VERSION"));
+        let record = test_record(&identity, 1, CoreIdentity::production().as_str());
         let runtime = WorkspaceServiceRuntime::new(identity, &record);
 
         let response = runtime.handle_rlm_ready(json!({}), u64::MAX, 1, &CancellationToken::new());
@@ -5209,7 +5234,7 @@ mod tests {
             .expect("the platform that created the first link must expose the second fixture")
             .unwrap();
         identity.service_dir = first.join("services").join(&identity.key);
-        let record = test_record(&identity, 1, env!("CARGO_PKG_VERSION"));
+        let record = test_record(&identity, 1, CoreIdentity::production().as_str());
         let runtime = WorkspaceServiceRuntime::new(identity, &record);
         *runtime.rlm_source_revisions_for_test().lock().unwrap() = Some(revisions);
 
@@ -5406,7 +5431,7 @@ mod tests {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         listener.set_nonblocking(true).unwrap();
         let port = listener.local_addr().unwrap().port();
-        let record = test_record(&identity, port, env!("CARGO_PKG_VERSION"));
+        let record = test_record(&identity, port, CoreIdentity::production().as_str());
         write_record(&identity, record.clone());
         let runtime = WorkspaceServiceRuntime::new(identity, &record);
         *runtime.handler_started_hook().lock().unwrap() = handler_started_hook;
@@ -5446,7 +5471,7 @@ mod tests {
         let record = test_record(
             &identity,
             listener.local_addr().unwrap().port(),
-            env!("CARGO_PKG_VERSION"),
+            CoreIdentity::production().as_str(),
         );
         write_record(&identity, record.clone());
         let runtime = Arc::new(WorkspaceServiceRuntime::new(identity, &record));
@@ -6629,7 +6654,7 @@ mod tests {
         let context = test_context("rlm-lane-serialization");
         let identity =
             WorkspaceServiceIdentity::new(&context, &context.workspace_root.join("src")).unwrap();
-        let record = test_record(&identity, 34567, env!("CARGO_PKG_VERSION"));
+        let record = test_record(&identity, 34567, CoreIdentity::production().as_str());
         let runtime = Arc::new(WorkspaceServiceRuntime::new(identity, &record));
         let first = runtime.acquire_rlm_lane(&CancellationToken::new()).unwrap();
         let second_runtime = Arc::clone(&runtime);
@@ -6654,7 +6679,7 @@ mod tests {
         let context = test_context("bsl-lane-deadline");
         let source_root = context.workspace_root.join("src");
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
-        let record = test_record(&identity, 34567, env!("CARGO_PKG_VERSION"));
+        let record = test_record(&identity, 34567, CoreIdentity::production().as_str());
         let runtime = Arc::new(WorkspaceServiceRuntime::new(identity, &record));
         let holder = runtime
             .analyzer_lane()
@@ -6704,7 +6729,7 @@ mod tests {
         let context = test_context("rlm-lane-deadline");
         let source_root = context.workspace_root.join("src");
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
-        let record = test_record(&identity, 34567, env!("CARGO_PKG_VERSION"));
+        let record = test_record(&identity, 34567, CoreIdentity::production().as_str());
         let runtime = Arc::new(WorkspaceServiceRuntime::new(identity, &record));
         let holder = runtime
             .rlm_lane()
@@ -6763,7 +6788,7 @@ mod tests {
         let context = test_context("tracked-session-teardown");
         let identity =
             WorkspaceServiceIdentity::new(&context, &context.workspace_root.join("src")).unwrap();
-        let record = test_record(&identity, 34567, env!("CARGO_PKG_VERSION"));
+        let record = test_record(&identity, 34567, CoreIdentity::production().as_str());
         let runtime = WorkspaceServiceRuntime::new(identity, &record);
         let (dropped_tx, dropped_rx) = mpsc::channel();
 
@@ -6779,7 +6804,7 @@ mod tests {
         let context = test_context("tracked-rlm-maintenance");
         let identity =
             WorkspaceServiceIdentity::new(&context, &context.workspace_root.join("src")).unwrap();
-        let record = test_record(&identity, 34567, env!("CARGO_PKG_VERSION"));
+        let record = test_record(&identity, 34567, CoreIdentity::production().as_str());
         let mut runtime = WorkspaceServiceRuntime::new(identity, &record);
         let (started_tx, started_rx) = mpsc::channel();
         let (cancelled_tx, cancelled_rx) = mpsc::channel();
@@ -6840,7 +6865,7 @@ mod tests {
         let context = test_context("late-rlm-maintenance-registration");
         let identity =
             WorkspaceServiceIdentity::new(&context, &context.workspace_root.join("src")).unwrap();
-        let record = test_record(&identity, 34567, env!("CARGO_PKG_VERSION"));
+        let record = test_record(&identity, 34567, CoreIdentity::production().as_str());
         let runtime = Arc::new(WorkspaceServiceRuntime::new(identity, &record));
         let (allow_registration_tx, allow_registration_rx) = mpsc::channel();
         let (task_release_tx, task_release_rx) = mpsc::channel();
@@ -6911,7 +6936,7 @@ mod tests {
         let context = test_context("cleanup-owner-race");
         let identity =
             WorkspaceServiceIdentity::new(&context, &context.workspace_root.join("src")).unwrap();
-        let original = test_record(&identity, 31001, env!("CARGO_PKG_VERSION"));
+        let original = test_record(&identity, 31001, CoreIdentity::production().as_str());
         write_record(&identity, original.clone());
         let runtime = WorkspaceServiceRuntime::new(identity.clone(), &original);
         let mut replacement = original;
@@ -6931,7 +6956,7 @@ mod tests {
         let context = test_context("cleanup-serialized-race");
         let identity =
             WorkspaceServiceIdentity::new(&context, &context.workspace_root.join("src")).unwrap();
-        let original = test_record(&identity, 31002, env!("CARGO_PKG_VERSION"));
+        let original = test_record(&identity, 31002, CoreIdentity::production().as_str());
         write_record(&identity, original.clone());
         let runtime = Arc::new(WorkspaceServiceRuntime::new(identity.clone(), &original));
         let mut replacement = original;
@@ -6985,7 +7010,7 @@ mod tests {
             panic!("intentional record lock holder panic");
         })
         .join();
-        let record = test_record(&identity, 31004, env!("CARGO_PKG_VERSION"));
+        let record = test_record(&identity, 31004, CoreIdentity::production().as_str());
 
         super::write_record(&identity, &record).unwrap();
 
@@ -7002,7 +7027,7 @@ mod tests {
         let context = test_context("last-access-serialized-race");
         let identity =
             WorkspaceServiceIdentity::new(&context, &context.workspace_root.join("src")).unwrap();
-        let original = test_record(&identity, 31003, env!("CARGO_PKG_VERSION"));
+        let original = test_record(&identity, 31003, CoreIdentity::production().as_str());
         write_record(&identity, original.clone());
         let runtime = Arc::new(WorkspaceServiceRuntime::new(identity.clone(), &original));
         let mut replacement = original;
@@ -7333,7 +7358,7 @@ mod tests {
         let source_root = context.workspace_root.join("src");
         fs::create_dir_all(&source_root).unwrap();
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
-        let record = test_record(&identity, 1, env!("CARGO_PKG_VERSION"));
+        let record = test_record(&identity, 1, CoreIdentity::production().as_str());
         let mut runtime = WorkspaceServiceRuntime::new(identity, &record);
         let fixture_for_start = fixture.clone();
         let pid_file_for_start = pid_file.clone();
@@ -7387,7 +7412,7 @@ mod tests {
         )
         .unwrap();
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
-        let record = test_record(&identity, 1, env!("CARGO_PKG_VERSION"));
+        let record = test_record(&identity, 1, CoreIdentity::production().as_str());
         let mut runtime = WorkspaceServiceRuntime::new(identity, &record);
         let displaced = context.workspace_root.join("src-displaced");
         let replacement = fs::canonicalize(&source_root).unwrap();
@@ -7428,7 +7453,7 @@ mod tests {
         )
         .unwrap();
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
-        let record = test_record(&identity, 1, env!("CARGO_PKG_VERSION"));
+        let record = test_record(&identity, 1, CoreIdentity::production().as_str());
         let mut runtime = WorkspaceServiceRuntime::new(identity, &record);
         let displaced = context.workspace_root.join("src-displaced");
         let replacement = fs::canonicalize(&source_root).unwrap();
@@ -7464,7 +7489,7 @@ mod tests {
         let source_root = context.workspace_root.join("src");
         fs::create_dir_all(&source_root).unwrap();
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
-        let record = test_record(&identity, 1, env!("CARGO_PKG_VERSION"));
+        let record = test_record(&identity, 1, CoreIdentity::production().as_str());
         let mut runtime = WorkspaceServiceRuntime::new(identity, &record);
         runtime.runtime_mut_for_test().analyzer_starter = Arc::new({
             let fixture = fixture.clone();
@@ -7777,7 +7802,7 @@ fn main() {
         let execute_started = context.cache_root.join("blocking-rlm-execute-started.txt");
         let execute_release = context.cache_root.join("blocking-rlm-execute-release.txt");
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
-        let record = test_record(&identity, 1, env!("CARGO_PKG_VERSION"));
+        let record = test_record(&identity, 1, CoreIdentity::production().as_str());
         let mut runtime = WorkspaceServiceRuntime::new(identity, &record);
         runtime.runtime_mut_for_test().rlm_starter = Arc::new({
             let fixture = fixture.clone();
@@ -8271,6 +8296,7 @@ fn main() {
             pid: std::process::id(),
             port: 1,
             token: "secret".to_string(),
+            build: CoreIdentity::production().as_str().to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             workspace_root: "workspace".to_string(),
             source_root: "source".to_string(),
@@ -8823,7 +8849,7 @@ fn main() {
         let context = test_context("cancel-disconnect");
         let identity =
             WorkspaceServiceIdentity::new(&context, &context.workspace_root.join("src")).unwrap();
-        let record = test_record(&identity, 34567, env!("CARGO_PKG_VERSION"));
+        let record = test_record(&identity, 34567, CoreIdentity::production().as_str());
         write_record(&identity, record.clone());
         let runtime = WorkspaceServiceRuntime::new(identity.clone(), &record);
         let response = runtime.cancel_operation("gone-caller");
@@ -8863,6 +8889,7 @@ fn main() {
             pid: std::process::id(),
             port,
             token: "secret".to_string(),
+            build: CoreIdentity::production().as_str().to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             workspace_root: "workspace".to_string(),
             source_root: "source".to_string(),
@@ -8986,7 +9013,7 @@ fn main() {
         let context = test_context("lazy-runtime-generation");
         let source_root = context.workspace_root.join("src");
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
-        let record = test_record(&identity, 1, env!("CARGO_PKG_VERSION"));
+        let record = test_record(&identity, 1, CoreIdentity::production().as_str());
 
         let runtime = WorkspaceServiceRuntime::new(identity, &record);
 
@@ -9005,7 +9032,7 @@ fn main() {
         )
         .unwrap();
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
-        let record = test_record(&identity, 1, env!("CARGO_PKG_VERSION"));
+        let record = test_record(&identity, 1, CoreIdentity::production().as_str());
         let mut runtime = WorkspaceServiceRuntime::new(identity, &record);
         let starts = Arc::new(AtomicUsize::new(0));
         runtime.runtime_mut_for_test().analyzer_starter = Arc::new({
@@ -9047,7 +9074,7 @@ fn main() {
         let (_, revision_service) =
             write_ready_rlm_status_for_current_source(&context, &source_root);
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
-        let record = test_record(&identity, 1, env!("CARGO_PKG_VERSION"));
+        let record = test_record(&identity, 1, CoreIdentity::production().as_str());
         let mut runtime = WorkspaceServiceRuntime::new(identity, &record);
         *runtime.rlm_source_revisions_for_test().lock().unwrap() = Some(revision_service);
         let starts = Arc::new(AtomicUsize::new(0));
@@ -9089,7 +9116,7 @@ fn main() {
         let (_, revision_service) =
             write_ready_rlm_status_for_current_source(&context, &source_root);
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
-        let record = test_record(&identity, 1, env!("CARGO_PKG_VERSION"));
+        let record = test_record(&identity, 1, CoreIdentity::production().as_str());
         let mut runtime = WorkspaceServiceRuntime::new(identity, &record);
         *runtime.rlm_source_revisions_for_test().lock().unwrap() = Some(revision_service);
         let starts = Arc::new(AtomicUsize::new(0));
@@ -9207,7 +9234,7 @@ fn main() {
         )
         .unwrap();
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
-        let record = test_record(&identity, 1, env!("CARGO_PKG_VERSION"));
+        let record = test_record(&identity, 1, CoreIdentity::production().as_str());
         let mut runtime = WorkspaceServiceRuntime::new(identity, &record);
         if expected_platform_fence_capability_for_test(&source_root) == FenceCapability::ProvenFast
         {
@@ -9286,7 +9313,7 @@ fn main() {
         .unwrap();
         write_ready_rlm_status_for_current_source(&context, &source_root);
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
-        let record = test_record(&identity, 1, env!("CARGO_PKG_VERSION"));
+        let record = test_record(&identity, 1, CoreIdentity::production().as_str());
         let mut runtime = WorkspaceServiceRuntime::new(identity, &record);
         let starts = Arc::new(AtomicUsize::new(0));
         runtime.runtime_mut_for_test().rlm_starter = Arc::new({
@@ -9504,7 +9531,7 @@ fn main() {
     }
 
     #[test]
-    fn service_record_is_reusable_only_for_matching_live_version_and_paths() {
+    fn service_record_is_reusable_only_for_matching_live_build_and_paths() {
         let context = test_context("record");
         let source_root = context.workspace_root.join("src");
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
@@ -9513,6 +9540,7 @@ fn main() {
             pid: std::process::id(),
             port: 34567,
             token: "token".to_string(),
+            build: CoreIdentity::production().as_str().to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             workspace_root: identity.workspace_root.clone(),
             source_root: identity.source_root.clone(),
@@ -9520,19 +9548,19 @@ fn main() {
             last_access_at: now_secs_for_test(),
         };
 
-        assert!(record.matches(&identity, env!("CARGO_PKG_VERSION")));
+        assert!(record.matches(&identity, CoreIdentity::production().as_str()));
 
         let mut mismatched_schema = record.clone();
         mismatched_schema.schema_version = SERVICE_SCHEMA_VERSION - 1;
-        assert!(!mismatched_schema.matches(&identity, env!("CARGO_PKG_VERSION")));
+        assert!(!mismatched_schema.matches(&identity, CoreIdentity::production().as_str()));
 
-        let mut mismatched_version = record.clone();
-        mismatched_version.version = "older".to_string();
-        assert!(!mismatched_version.matches(&identity, env!("CARGO_PKG_VERSION")));
+        let mut mismatched_build = record.clone();
+        mismatched_build.build = "another-build".to_string();
+        assert!(!mismatched_build.matches(&identity, CoreIdentity::production().as_str()));
 
         let mut mismatched_source = record;
         mismatched_source.source_root = context.workspace_root.join("other").display().to_string();
-        assert!(!mismatched_source.matches(&identity, env!("CARGO_PKG_VERSION")));
+        assert!(!mismatched_source.matches(&identity, CoreIdentity::production().as_str()));
 
         cleanup(&context);
     }
@@ -9542,11 +9570,11 @@ fn main() {
         let context = test_context("typed-invalidation-record-version");
         let source_root = context.workspace_root.join("src");
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
-        let mut record = test_record(&identity, 34567, env!("CARGO_PKG_VERSION"));
+        let mut record = test_record(&identity, 34567, CoreIdentity::production().as_str());
         record.schema_version = 2;
 
         assert!(
-            !record.matches(&identity, env!("CARGO_PKG_VERSION")),
+            !record.matches(&identity, CoreIdentity::production().as_str()),
             "the pre-typed-invalidation service protocol must not be reused"
         );
         cleanup(&context);
@@ -9557,11 +9585,11 @@ fn main() {
         let context = test_context("lossless-worker-timeout-record-version");
         let source_root = context.workspace_root.join("src");
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
-        let mut record = test_record(&identity, 34567, env!("CARGO_PKG_VERSION"));
+        let mut record = test_record(&identity, 34567, CoreIdentity::production().as_str());
         record.schema_version = 3;
 
         assert!(
-            !record.matches(&identity, env!("CARGO_PKG_VERSION")),
+            !record.matches(&identity, CoreIdentity::production().as_str()),
             "the millisecond-saturated worker timeout protocol must not be reused"
         );
         cleanup(&context);
@@ -9589,7 +9617,7 @@ fn main() {
         let context = test_context("shutting-down-record");
         let identity =
             WorkspaceServiceIdentity::new(&context, &context.workspace_root.join("src")).unwrap();
-        let record = test_record(&identity, 34567, env!("CARGO_PKG_VERSION"));
+        let record = test_record(&identity, 34567, CoreIdentity::production().as_str());
         write_record(&identity, record.clone());
         let spawner = RecordingSpawner::default();
         let manager = WorkspaceServiceManager::with_io(&ShuttingDownConnector, &spawner);
@@ -9622,7 +9650,7 @@ fn main() {
         let context = test_context("spawn-wait-shutting-down");
         let identity =
             WorkspaceServiceIdentity::new(&context, &context.workspace_root.join("src")).unwrap();
-        let record = test_record(&identity, 34567, env!("CARGO_PKG_VERSION"));
+        let record = test_record(&identity, 34567, CoreIdentity::production().as_str());
         write_record(&identity, record.clone());
 
         let result = wait_for_record_with_connector(
@@ -9681,7 +9709,7 @@ fn main() {
         let mut owned_child = ManagedStartupChild::spawn_configured(owned_command).unwrap();
         thread::sleep(Duration::from_millis(75));
         assert!(owned_child.is_running().unwrap());
-        let mut owned_record = test_record(&identity, 34567, env!("CARGO_PKG_VERSION"));
+        let mut owned_record = test_record(&identity, 34567, CoreIdentity::production().as_str());
         owned_record.pid = owned_child.id();
         owned_record.token = "owned-spawn-token".to_string();
         write_record(&identity, owned_record);
@@ -9709,7 +9737,7 @@ fn main() {
         let mut replaced_child = ManagedStartupChild::spawn_configured(replaced_command).unwrap();
         thread::sleep(Duration::from_millis(75));
         assert!(replaced_child.is_running().unwrap());
-        let replacement = test_record(&identity, 45678, env!("CARGO_PKG_VERSION"));
+        let replacement = test_record(&identity, 45678, CoreIdentity::production().as_str());
         write_record(&identity, replacement.clone());
 
         terminate_failed_workspace_service_spawn(
@@ -9865,7 +9893,7 @@ fn main() {
         let context = test_context("protocol");
         let identity =
             WorkspaceServiceIdentity::new(&context, &context.workspace_root.join("src")).unwrap();
-        let record = test_record(&identity, 34567, env!("CARGO_PKG_VERSION"));
+        let record = test_record(&identity, 34567, CoreIdentity::production().as_str());
         let runtime = WorkspaceServiceRuntime::new(identity, &record);
 
         let invalid = ServiceResponse::error(runtime.authenticate("wrong").unwrap_err());
@@ -9890,7 +9918,7 @@ fn main() {
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
         write_record(
             &identity,
-            test_record(&identity, 34567, env!("CARGO_PKG_VERSION")),
+            test_record(&identity, 34567, CoreIdentity::production().as_str()),
         );
         let connector = RecordingConnector {
             ping_ok: true,
@@ -9925,6 +9953,87 @@ fn main() {
         cleanup(&context);
     }
 
+    /// Одна служба на проект: служба другой сборки — и запись прежней схемы,
+    /// опознанная по версии пакета, — гасится и заменяется своей, а не
+    /// переиспользуется и не остаётся жить рядом с новой.
+    #[test]
+    fn manager_replaces_a_service_of_another_build_and_shuts_it_down() {
+        let context = test_context("another-build");
+        let source_root = context.workspace_root.join("src");
+        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
+        let package_version_record = serde_json::json!({
+            "schema_version": 4,
+            "pid": std::process::id(),
+            "port": 34567,
+            "token": "secret",
+            "version": env!("CARGO_PKG_VERSION"),
+            "workspace_root": identity.workspace_root,
+            "source_root": identity.source_root,
+            "started_at": now_secs_for_test(),
+            "last_access_at": now_secs_for_test(),
+        });
+        // Same package version, another build: the version used to match.
+        let same_version_record = test_record(&identity, 34567, "another-build");
+        assert_eq!(same_version_record.version, env!("CARGO_PKG_VERSION"));
+        for foreign in [
+            serde_json::to_value(same_version_record).unwrap(),
+            package_version_record,
+        ] {
+            fs::create_dir_all(&identity.service_dir).unwrap();
+            fs::write(identity.record_path(), foreign.to_string()).unwrap();
+            let connector = RecordingConnector {
+                ping_ok: true,
+                ..Default::default()
+            };
+            let spawner = RecordingSpawner::default();
+            let manager = WorkspaceServiceManager::with_io(&connector, &spawner);
+
+            let record = manager.ensure_service(&context, &source_root).unwrap();
+
+            assert_eq!(record.port, 45678, "{foreign}");
+            assert_eq!(*spawner.spawns.borrow(), 1, "{foreign}");
+            assert!(
+                connector
+                    .requests
+                    .borrow()
+                    .iter()
+                    .any(|kind| matches!(kind, ServiceRequestKind::Shutdown)),
+                "the foreign service must be told to stop: {foreign}"
+            );
+        }
+        cleanup(&context);
+    }
+
+    /// Запись новой схемы читается и бинарём схемы 4: иначе он не сможет ни
+    /// переиспользовать, ни погасить этот сервис и оставит его жить рядом.
+    #[test]
+    fn a_schema_four_binary_can_still_read_and_reject_the_record() {
+        #[derive(serde::Deserialize)]
+        #[allow(dead_code)]
+        struct SchemaFourRecord {
+            schema_version: u32,
+            pid: u32,
+            port: u16,
+            token: String,
+            version: String,
+            workspace_root: String,
+            source_root: String,
+            started_at: u64,
+            last_access_at: u64,
+        }
+        let context = test_context("schema-four-reader");
+        let source_root = context.workspace_root.join("src");
+        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
+        let record = test_record(&identity, 34567, CoreIdentity::production().as_str());
+
+        let parsed: SchemaFourRecord =
+            serde_json::from_value(serde_json::to_value(&record).unwrap()).unwrap();
+
+        assert_ne!(parsed.schema_version, 4, "a schema-4 reader must reject it");
+        assert!(!parsed.token.is_empty() && parsed.port > 0);
+        cleanup(&context);
+    }
+
     #[test]
     fn manager_waits_for_peer_spawn_lock_release_before_reusing_record() {
         let context = test_context("peer-lock");
@@ -9933,7 +10042,7 @@ fn main() {
         let spawn_lock = acquire_spawn_lock(&identity).unwrap().unwrap();
         write_record(
             &identity,
-            test_record(&identity, 34567, env!("CARGO_PKG_VERSION")),
+            test_record(&identity, 34567, CoreIdentity::production().as_str()),
         );
         let releaser = std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(150));
@@ -10033,7 +10142,7 @@ fn main() {
             WorkspaceServiceIdentity::new(&context, &context.workspace_root.join("src")).unwrap();
         write_record(
             &identity,
-            test_record(&identity, 34567, env!("CARGO_PKG_VERSION")),
+            test_record(&identity, 34567, CoreIdentity::production().as_str()),
         );
         let connector = RecordingConnector {
             ping_ok: true,
@@ -10061,7 +10170,7 @@ fn main() {
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
         write_record(
             &identity,
-            test_record(&identity, 34567, env!("CARGO_PKG_VERSION")),
+            test_record(&identity, 34567, CoreIdentity::production().as_str()),
         );
         let connector = RecordingConnector {
             ping_ok: true,
@@ -10121,7 +10230,7 @@ fn main() {
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
         write_record(
             &identity,
-            test_record(&identity, 34567, env!("CARGO_PKG_VERSION")),
+            test_record(&identity, 34567, CoreIdentity::production().as_str()),
         );
         let connector = RecordingConnector {
             ping_ok: true,
@@ -10162,7 +10271,7 @@ fn main() {
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
         write_record(
             &identity,
-            test_record(&identity, 34567, env!("CARGO_PKG_VERSION")),
+            test_record(&identity, 34567, CoreIdentity::production().as_str()),
         );
         let connector = RecordingConnector {
             ping_ok: true,
@@ -10202,7 +10311,7 @@ fn main() {
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
         write_record(
             &identity,
-            test_record(&identity, 34567, env!("CARGO_PKG_VERSION")),
+            test_record(&identity, 34567, CoreIdentity::production().as_str()),
         );
         let connector = RecordingConnector {
             ping_ok: true,
@@ -10243,7 +10352,7 @@ fn main() {
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
         write_record(
             &identity,
-            test_record(&identity, 34567, env!("CARGO_PKG_VERSION")),
+            test_record(&identity, 34567, CoreIdentity::production().as_str()),
         );
         let connector = RecordingConnector {
             ping_ok: true,
@@ -10281,7 +10390,7 @@ fn main() {
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
         write_record(
             &identity,
-            test_record(&identity, 34567, env!("CARGO_PKG_VERSION")),
+            test_record(&identity, 34567, CoreIdentity::production().as_str()),
         );
         let connector = ResetRlmConnector::default();
         let spawner = RecordingSpawner::default();
@@ -10354,7 +10463,7 @@ fn main() {
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
         write_record(
             &identity,
-            test_record(&identity, 34567, env!("CARGO_PKG_VERSION")),
+            test_record(&identity, 34567, CoreIdentity::production().as_str()),
         );
         let spawner = RecordingSpawner::default();
         let manager = WorkspaceServiceManager::with_io(&StaleRlmConnector, &spawner);
@@ -10387,7 +10496,7 @@ fn main() {
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
         write_record(
             &identity,
-            test_record(&identity, 34567, env!("CARGO_PKG_VERSION")),
+            test_record(&identity, 34567, CoreIdentity::production().as_str()),
         );
         let connector = CancelAfterRlmReadyConnector;
         let spawner = RecordingSpawner::default();
@@ -10415,7 +10524,7 @@ fn main() {
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
         write_record(
             &identity,
-            test_record(&identity, 34567, env!("CARGO_PKG_VERSION")),
+            test_record(&identity, 34567, CoreIdentity::production().as_str()),
         );
         let connector = ResetBslConnector {
             recover: true,
@@ -10451,7 +10560,7 @@ fn main() {
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
         write_record(
             &identity,
-            test_record(&identity, 34567, env!("CARGO_PKG_VERSION")),
+            test_record(&identity, 34567, CoreIdentity::production().as_str()),
         );
         let connector = ResetBslConnector {
             recover: true,
@@ -10500,7 +10609,7 @@ fn main() {
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
         write_record(
             &identity,
-            test_record(&identity, 34567, env!("CARGO_PKG_VERSION")),
+            test_record(&identity, 34567, CoreIdentity::production().as_str()),
         );
         let connector = ResetBslConnector {
             recover: true,
@@ -10547,7 +10656,7 @@ fn main() {
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
         write_record(
             &identity,
-            test_record(&identity, 34567, env!("CARGO_PKG_VERSION")),
+            test_record(&identity, 34567, CoreIdentity::production().as_str()),
         );
         let connector = ResetBslConnector {
             restart_after_reset: true,
@@ -10589,7 +10698,7 @@ fn main() {
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
         write_record(
             &identity,
-            test_record(&identity, 34567, env!("CARGO_PKG_VERSION")),
+            test_record(&identity, 34567, CoreIdentity::production().as_str()),
         );
         let connector = ResetBslConnector {
             restart_after_reset: true,
@@ -10686,7 +10795,7 @@ fn main() {
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
         write_record(
             &identity,
-            test_record(&identity, 34567, env!("CARGO_PKG_VERSION")),
+            test_record(&identity, 34567, CoreIdentity::production().as_str()),
         );
         let connector = ResetBslConnector::default();
         let spawner = RecordingSpawner::default();
@@ -10719,7 +10828,7 @@ fn main() {
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
         write_record(
             &identity,
-            test_record(&identity, 34567, env!("CARGO_PKG_VERSION")),
+            test_record(&identity, 34567, CoreIdentity::production().as_str()),
         );
         let connector = ResetBslConnector::default();
         let spawner = RecordingSpawner::default();
@@ -10749,7 +10858,7 @@ fn main() {
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
         write_record(
             &identity,
-            test_record(&identity, 34567, env!("CARGO_PKG_VERSION")),
+            test_record(&identity, 34567, CoreIdentity::production().as_str()),
         );
         let connector = TypedFailureBslConnector::default();
         let spawner = RecordingSpawner::default();
@@ -10843,14 +10952,15 @@ fn main() {
     fn test_record(
         identity: &WorkspaceServiceIdentity,
         port: u16,
-        version: &str,
+        build: &str,
     ) -> WorkspaceServiceRecord {
         WorkspaceServiceRecord {
             schema_version: SERVICE_SCHEMA_VERSION,
             pid: std::process::id(),
             port,
             token: "secret".to_string(),
-            version: version.to_string(),
+            build: build.to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
             workspace_root: identity.workspace_root.clone(),
             source_root: identity.source_root.clone(),
             started_at: now_secs_for_test(),
@@ -11130,7 +11240,7 @@ fn main() {
             if started.elapsed() >= budget {
                 return Err(workspace_service_request_timeout_error(budget));
             }
-            let mut record = test_record(identity, 45678, env!("CARGO_PKG_VERSION"));
+            let mut record = test_record(identity, 45678, CoreIdentity::production().as_str());
             record.token = token.to_string();
             Ok(record)
         }
