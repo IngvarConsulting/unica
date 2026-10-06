@@ -13,7 +13,8 @@ use self::invocation_service::{
     ActorReadSourceCapability,
 };
 use self::invocation_service::{
-    bind_workspace_invocation_cancellable, UnadmittedCause, WorkspaceAdmissionError,
+    bind_workspace_invocation_cancellable, ActorInvocationResources, UnadmittedCause,
+    WorkspaceAdmissionError,
 };
 pub(crate) use self::invocation_service::{
     ActorBoundExecution, ActorBoundInvocation, CanonicalInvocationService,
@@ -779,10 +780,12 @@ impl V5CanonicalInvocationRuntime {
         let invocation = bind_workspace_invocation_cancellable(
             &request,
             &self.workspace_actors,
-            Arc::clone(&self.deliveries),
-            Arc::clone(&self.provider_hosts),
-            Arc::clone(&self.runtime_resources),
-            runtime_service,
+            ActorInvocationResources::new(
+                Arc::clone(&self.deliveries),
+                Arc::clone(&self.provider_hosts),
+                Arc::clone(&self.runtime_resources),
+                runtime_service,
+            ),
             response_deadline,
             admission_cancellation,
         )

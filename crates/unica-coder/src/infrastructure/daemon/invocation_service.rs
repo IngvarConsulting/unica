@@ -1256,10 +1256,12 @@ pub(super) fn bind_workspace_invocation(
     bind_workspace_invocation_cancellable(
         request,
         actors,
-        deliveries,
-        provider_hosts,
-        runtime_resources,
-        runtime_service,
+        ActorInvocationResources::new(
+            deliveries,
+            provider_hosts,
+            runtime_resources,
+            runtime_service,
+        ),
         response_deadline,
         &CancellationToken::new(),
     )
@@ -1268,37 +1270,45 @@ pub(super) fn bind_workspace_invocation(
 /// Admission has no deadline: it may outlive the handoff moment and continue
 /// into the Task the daemon promised there. Only an explicit cancel of that
 /// Task stops it, at the next admission checkpoint (#1251).
-#[allow(clippy::too_many_arguments)]
 pub(super) fn bind_workspace_invocation_cancellable(
     request: &InvocationRequest,
     actors: &WorkspaceActorRegistry,
-    deliveries: Arc<crate::infrastructure::engine_delivery::DeliveryDesk>,
-    provider_hosts: Arc<ProviderHostOwner>,
-    runtime_resources: Arc<RuntimeResourceOwner>,
-    runtime_service: Option<Arc<RuntimeJobService>>,
+    resources: ActorInvocationResources,
     response_deadline: InvocationResponseDeadline,
     cancellation: &CancellationToken,
 ) -> Result<ActorBoundInvocation, WorkspaceAdmissionError> {
     bind_workspace_invocation_controlled(
         request,
         actors,
-        ActorInvocationResources {
-            deliveries,
-            provider_hosts,
-            runtime_resources,
-            runtime_service,
-        },
+        resources,
         response_deadline,
         cancellation,
         |_| {},
     )
 }
 
-struct ActorInvocationResources {
+/// The daemon-wide resources an admitted invocation may join.
+pub(super) struct ActorInvocationResources {
     deliveries: Arc<crate::infrastructure::engine_delivery::DeliveryDesk>,
     provider_hosts: Arc<ProviderHostOwner>,
     runtime_resources: Arc<RuntimeResourceOwner>,
     runtime_service: Option<Arc<RuntimeJobService>>,
+}
+
+impl ActorInvocationResources {
+    pub(super) fn new(
+        deliveries: Arc<crate::infrastructure::engine_delivery::DeliveryDesk>,
+        provider_hosts: Arc<ProviderHostOwner>,
+        runtime_resources: Arc<RuntimeResourceOwner>,
+        runtime_service: Option<Arc<RuntimeJobService>>,
+    ) -> Self {
+        Self {
+            deliveries,
+            provider_hosts,
+            runtime_resources,
+            runtime_service,
+        }
+    }
 }
 
 #[derive(Clone)]

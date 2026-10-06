@@ -927,7 +927,7 @@ mod tests {
             .find("pub(crate) trait CanonicalInvocationService")
             .expect("canonical service trait");
         let trait_end = source[trait_start..]
-            .find("\n}\npub(super) fn bind_workspace_invocation")
+            .find("\n}\n")
             .expect("canonical service trait end")
             + trait_start;
         let boundary = &source[trait_start..trait_end];

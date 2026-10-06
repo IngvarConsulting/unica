@@ -1001,7 +1001,10 @@ mod tests {
             panic!("first root check must prepare");
         };
         let first = first.execute(CancellationToken::new()).unwrap();
-        assert!(first
+        // A step stopped by the test hook leaves the inspection incomplete;
+        // without automatic deadlines the answer no longer invites a repeat
+        // with a fresh deadline (#1251), yet a repeat still resumes.
+        assert!(!first
             .next
             .iter()
             .any(|action| action["tool"] == "unica.check"));
@@ -1139,9 +1142,12 @@ mod tests {
                 .iter()
                 .any(|diagnostic| { diagnostic["code"] == "git.text_policy_missing" }));
             assert_eq!(data["repositoryReady"], false);
+            assert!(
+                !repeat,
+                "no repeat with a fresh deadline is offered after #1251"
+            );
             if step < 3 {
                 assert_eq!(data["readinessState"], "incomplete");
-                assert!(repeat);
                 let state = continuations.for_workspace(&normalized_root).unwrap();
                 assert_eq!(
                     state
@@ -1153,7 +1159,6 @@ mod tests {
                 );
             } else {
                 assert_eq!(data["readinessState"], "complete");
-                assert!(!repeat);
             }
         }
     }
@@ -1301,7 +1306,9 @@ mod tests {
                 }
                 let data = result.data.unwrap();
                 if tool == ToolIdentity::Check {
-                    assert_eq!(data["readinessState"], "incomplete");
+                    // Past the handoff moment the inspection still runs to
+                    // its end: no handoff-sized portion (#1251).
+                    assert_eq!(data["readinessState"], "complete", "{data}");
                 } else {
                     assert_eq!(data["sourceSets"][0]["name"], "main");
                     assert_eq!(
