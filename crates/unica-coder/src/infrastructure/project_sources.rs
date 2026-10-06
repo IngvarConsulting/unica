@@ -10,8 +10,8 @@ use crate::infrastructure::native_operations::compile_transaction::{
 use crate::infrastructure::platform::filesystem::{
     host_path_text, is_link_loop_error, open_absolute_directory_path_nofollow,
     open_any_child_nofollow, open_child_for_secure_tree_use, open_directory_child_nofollow,
-    open_regular_child_nofollow, read_directory_names_bounded, OpenedChildKind,
-    RetainedDirectoryCapability,
+    open_regular_child_nofollow, read_directory_names_bounded, read_directory_names_with_limit,
+    OpenedChildKind, RetainedDirectoryCapability,
 };
 use crate::infrastructure::source_roots::{
     inspect_declared_source_root_route, normalize_contained_source_root, normalize_path_identity,
@@ -22,7 +22,7 @@ use crate::infrastructure::source_selection_evidence::{
 use serde::de::{IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use serde_yaml::Value as YamlValue;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::CStr;
 use std::fmt;
 use std::io::Read;
@@ -35,14 +35,7 @@ use unsafe_libyaml::{
     YAML_SEQUENCE_START_EVENT, YAML_STREAM_END_EVENT,
 };
 
-const MAX_HEALTH_SOURCE_MAP_INPUT_BYTES: u64 = 8 * 1024 * 1024;
 const PROJECT_SOURCE_MAP_READ_CHUNK_BYTES: usize = 64 * 1024;
-const MAX_HEALTH_SOURCE_SETS: usize = 1024;
-const MAX_HEALTH_SOURCE_SET_VALUE_BYTES: usize = 2 * 1024 * 1024;
-const MAX_HEALTH_YAML_RETAINED_BYTES: usize = 2 * 1024 * 1024;
-const MAX_HEALTH_YAML_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
-const MAX_HEALTH_YAML_DOCUMENT_NODES: usize = 64 * 1024;
-const MAX_HEALTH_YAML_DOCUMENT_DEPTH: usize = 256;
 const MAX_HEALTH_FORMAT_EVIDENCE_ENTRIES: usize = 16 * 1024;
 const MAX_HEALTH_FORMAT_EVIDENCE_BYTES: usize = 4 * 1024 * 1024;
 /// The source-set name the base configuration owns. `INV-SOURCE-SINGLE-RESOLVED-ROOT`
@@ -130,35 +123,35 @@ struct ConfigSourceSet {
 }
 
 #[derive(Debug, Default)]
-struct BoundedHealthConfig {
+struct HealthConfig {
     format: Option<YamlValue>,
     base_path: Option<YamlValue>,
-    source_sets: BoundedHealthSourceSets,
+    source_sets: HealthSourceSets,
 }
 
 #[derive(Debug, Default)]
-enum BoundedHealthSourceSets {
+enum HealthSourceSets {
     #[default]
     Empty,
     Sequence(Vec<YamlValue>),
     Mapping(Vec<(YamlValue, YamlValue)>),
 }
 
-struct BoundedHealthSourceSetsVisitor;
+struct HealthSourceSetsVisitor;
 
-impl<'de> Visitor<'de> for BoundedHealthSourceSetsVisitor {
-    type Value = BoundedHealthSourceSets;
+impl<'de> Visitor<'de> for HealthSourceSetsVisitor {
+    type Value = HealthSourceSets;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("a source-set list, mapping, or null")
     }
 
     fn visit_none<E>(self) -> Result<Self::Value, E> {
-        Ok(BoundedHealthSourceSets::Empty)
+        Ok(HealthSourceSets::Empty)
     }
 
     fn visit_unit<E>(self) -> Result<Self::Value, E> {
-        Ok(BoundedHealthSourceSets::Empty)
+        Ok(HealthSourceSets::Empty)
     }
 
     fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
@@ -166,22 +159,10 @@ impl<'de> Visitor<'de> for BoundedHealthSourceSetsVisitor {
         A: SeqAccess<'de>,
     {
         let mut values = Vec::new();
-        let mut retained_bytes = 0_usize;
         while let Some(value) = sequence.next_element::<YamlValue>()? {
-            if values.len() == MAX_HEALTH_SOURCE_SETS {
-                return Err(serde::de::Error::custom(format!(
-                    "project source-map declares more than {MAX_HEALTH_SOURCE_SETS} source sets"
-                )));
-            }
-            retained_bytes = retained_bytes.saturating_add(yaml_value_retained_bytes(&value));
-            if retained_bytes > MAX_HEALTH_SOURCE_SET_VALUE_BYTES {
-                return Err(serde::de::Error::custom(format!(
-                    "expanded source-set values exceed {MAX_HEALTH_SOURCE_SET_VALUE_BYTES} retained bytes"
-                )));
-            }
             values.push(value);
         }
-        Ok(BoundedHealthSourceSets::Sequence(values))
+        Ok(HealthSourceSets::Sequence(values))
     }
 
     fn visit_map<A>(self, mut mapping: A) -> Result<Self::Value, A::Error>
@@ -189,56 +170,26 @@ impl<'de> Visitor<'de> for BoundedHealthSourceSetsVisitor {
         A: MapAccess<'de>,
     {
         let mut values = Vec::new();
-        let mut retained_bytes = 0_usize;
         while let Some((key, value)) = mapping.next_entry::<YamlValue, YamlValue>()? {
-            if values.len() == MAX_HEALTH_SOURCE_SETS {
-                return Err(serde::de::Error::custom(format!(
-                    "project source-map declares more than {MAX_HEALTH_SOURCE_SETS} source sets"
-                )));
-            }
-            retained_bytes = retained_bytes
-                .saturating_add(yaml_value_retained_bytes(&key))
-                .saturating_add(yaml_value_retained_bytes(&value));
-            if retained_bytes > MAX_HEALTH_SOURCE_SET_VALUE_BYTES {
-                return Err(serde::de::Error::custom(format!(
-                    "expanded source-set values exceed {MAX_HEALTH_SOURCE_SET_VALUE_BYTES} retained bytes"
-                )));
-            }
             values.push((key, value));
         }
-        Ok(BoundedHealthSourceSets::Mapping(values))
+        Ok(HealthSourceSets::Mapping(values))
     }
 }
 
-fn yaml_value_retained_bytes(value: &YamlValue) -> usize {
-    match value {
-        YamlValue::Null | YamlValue::Bool(_) | YamlValue::Number(_) => 16,
-        YamlValue::String(value) => value.len(),
-        YamlValue::Sequence(values) => values.iter().fold(0_usize, |total, value| {
-            total.saturating_add(yaml_value_retained_bytes(value))
-        }),
-        YamlValue::Mapping(values) => values.iter().fold(0_usize, |total, (key, value)| {
-            total
-                .saturating_add(yaml_value_retained_bytes(key))
-                .saturating_add(yaml_value_retained_bytes(value))
-        }),
-        YamlValue::Tagged(value) => yaml_value_retained_bytes(&value.value),
-    }
-}
-
-impl<'de> Deserialize<'de> for BoundedHealthSourceSets {
+impl<'de> Deserialize<'de> for HealthSourceSets {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        deserializer.deserialize_any(BoundedHealthSourceSetsVisitor)
+        deserializer.deserialize_any(HealthSourceSetsVisitor)
     }
 }
 
-struct BoundedHealthConfigVisitor;
+struct HealthConfigVisitor;
 
-impl<'de> Visitor<'de> for BoundedHealthConfigVisitor {
-    type Value = BoundedHealthConfig;
+impl<'de> Visitor<'de> for HealthConfigVisitor {
+    type Value = HealthConfig;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("a v8project.yaml mapping")
@@ -248,7 +199,7 @@ impl<'de> Visitor<'de> for BoundedHealthConfigVisitor {
     where
         A: MapAccess<'de>,
     {
-        let mut result = BoundedHealthConfig::default();
+        let mut result = HealthConfig::default();
         let mut seen = BTreeMap::<String, ()>::new();
         while let Some(key) = mapping.next_key::<String>()? {
             if matches!(key.as_str(), "format" | "basePath" | "source-set")
@@ -271,12 +222,12 @@ impl<'de> Visitor<'de> for BoundedHealthConfigVisitor {
     }
 }
 
-impl<'de> Deserialize<'de> for BoundedHealthConfig {
+impl<'de> Deserialize<'de> for HealthConfig {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        deserializer.deserialize_map(BoundedHealthConfigVisitor)
+        deserializer.deserialize_map(HealthConfigVisitor)
     }
 }
 
@@ -297,7 +248,14 @@ pub(crate) struct ProjectSourceMapProvenance {
     directories: BTreeMap<PathBuf, DirectoryMembershipSnapshot>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ProjectMapReadGrammar {
+    FullValue,
+    Health,
+}
+
 struct SourceMapDiscoveryState {
+    read_grammar: ProjectMapReadGrammar,
     provenance: Option<ProjectSourceMapProvenance>,
     max_source_sets: Option<usize>,
     max_input_bytes: Option<u64>,
@@ -313,6 +271,7 @@ impl SourceMapDiscoveryState {
     fn ordinary() -> Self {
         Self {
             provenance: None,
+            read_grammar: ProjectMapReadGrammar::FullValue,
             max_source_sets: None,
             max_input_bytes: None,
             format_evidence_entry_limit: None,
@@ -327,8 +286,9 @@ impl SourceMapDiscoveryState {
     fn health() -> Self {
         Self {
             provenance: None,
-            max_source_sets: Some(MAX_HEALTH_SOURCE_SETS),
-            max_input_bytes: Some(MAX_HEALTH_SOURCE_MAP_INPUT_BYTES),
+            read_grammar: ProjectMapReadGrammar::Health,
+            max_source_sets: None,
+            max_input_bytes: None,
             format_evidence_entry_limit: Some(MAX_HEALTH_FORMAT_EVIDENCE_ENTRIES),
             format_evidence_byte_limit: Some(MAX_HEALTH_FORMAT_EVIDENCE_BYTES),
             remaining_format_evidence_entries: Some(MAX_HEALTH_FORMAT_EVIDENCE_ENTRIES),
@@ -341,6 +301,7 @@ impl SourceMapDiscoveryState {
     fn transactional() -> Self {
         Self {
             provenance: Some(ProjectSourceMapProvenance::default()),
+            read_grammar: ProjectMapReadGrammar::FullValue,
             max_source_sets: None,
             max_input_bytes: None,
             format_evidence_entry_limit: None,
@@ -355,8 +316,9 @@ impl SourceMapDiscoveryState {
     fn actor(workspace: RetainedDirectoryCapability) -> Result<Self, String> {
         Ok(Self {
             provenance: None,
-            max_source_sets: Some(MAX_HEALTH_SOURCE_SETS),
-            max_input_bytes: Some(MAX_HEALTH_SOURCE_MAP_INPUT_BYTES),
+            read_grammar: ProjectMapReadGrammar::Health,
+            max_source_sets: None,
+            max_input_bytes: None,
             format_evidence_entry_limit: Some(MAX_HEALTH_FORMAT_EVIDENCE_ENTRIES),
             format_evidence_byte_limit: Some(MAX_HEALTH_FORMAT_EVIDENCE_BYTES),
             remaining_format_evidence_entries: Some(MAX_HEALTH_FORMAT_EVIDENCE_ENTRIES),
@@ -584,6 +546,7 @@ fn discover_project_source_map_internal(
             workspace_root,
             &project_config,
             raw,
+            state.read_grammar,
             state.max_source_sets,
             checkpoint,
         )?
@@ -662,14 +625,25 @@ fn read_config_source_sets(
     workspace_root: &Path,
     config_path: &Path,
     raw: &[u8],
+    read_grammar: ProjectMapReadGrammar,
     max_source_sets: Option<usize>,
     checkpoint: &mut dyn FnMut() -> Result<(), String>,
 ) -> Result<(Vec<ConfigSourceSet>, Option<String>), String> {
     checkpoint()?;
     let text = std::str::from_utf8(raw)
         .map_err(|err| format!("failed to read {} as UTF-8: {err}", config_path.display()))?;
-    if max_source_sets.is_some() {
-        return read_health_config_source_sets(workspace_root, config_path, text, checkpoint);
+    if read_grammar == ProjectMapReadGrammar::Health {
+        let (source_sets, configured_format_raw) =
+            read_health_config_source_sets(workspace_root, config_path, text, checkpoint)?;
+        if let Some(limit) = max_source_sets {
+            if source_sets.len() > limit {
+                return Err(format!(
+                    "project source-map declares {} source sets; health inspection supports at most {limit}",
+                    source_sets.len()
+                ));
+            }
+        }
+        return Ok((source_sets, configured_format_raw));
     }
     let yaml = serde_yaml::from_str::<YamlValue>(text)
         .map_err(|err| format!("failed to parse {}: {err}", config_path.display()))?;
@@ -696,10 +670,12 @@ fn read_config_source_sets(
         Some(YamlValue::Mapping(entries)) => entries.len(),
         _ => 0,
     };
-    if max_source_sets.is_some_and(|limit| declared_count > limit) {
-        return Err(format!(
-            "project source-map declares {declared_count} source sets; health inspection supports at most {MAX_HEALTH_SOURCE_SETS}"
-        ));
+    if let Some(limit) = max_source_sets {
+        if declared_count > limit {
+            return Err(format!(
+                "project source-map declares {declared_count} source sets; health inspection supports at most {limit}"
+            ));
+        }
     }
 
     match source_set_value {
@@ -743,8 +719,8 @@ fn read_health_config_source_sets(
     text: &str,
     checkpoint: &mut dyn FnMut() -> Result<(), String>,
 ) -> Result<(Vec<ConfigSourceSet>, Option<String>), String> {
-    bound_health_yaml_alias_expansion(text, checkpoint)?;
-    let config = serde_yaml::from_str::<BoundedHealthConfig>(text)
+    validate_health_yaml_anchor_availability(text, checkpoint)?;
+    let config = serde_yaml::from_str::<HealthConfig>(text)
         .map_err(|error| format!("failed to parse {}: {error}", config_path.display()))?;
     checkpoint()?;
     let configured_format_raw = match config.format {
@@ -767,14 +743,14 @@ fn read_health_config_source_sets(
     };
     let mut source_sets = Vec::new();
     match config.source_sets {
-        BoundedHealthSourceSets::Empty => {}
-        BoundedHealthSourceSets::Sequence(entries) => {
+        HealthSourceSets::Empty => {}
+        HealthSourceSets::Sequence(entries) => {
             for entry in &entries {
                 checkpoint()?;
                 source_sets.push(config_source_set_from_yaml(entry, default_format)?);
             }
         }
-        BoundedHealthSourceSets::Mapping(entries) => {
+        HealthSourceSets::Mapping(entries) => {
             for (key, entry) in &entries {
                 checkpoint()?;
                 let name = key.as_str().unwrap_or("main");
@@ -793,7 +769,7 @@ fn read_health_config_source_sets(
     Ok((source_sets, configured_format_raw))
 }
 
-fn bound_health_yaml_alias_expansion(
+fn validate_health_yaml_anchor_availability(
     text: &str,
     checkpoint: &mut dyn FnMut() -> Result<(), String>,
 ) -> Result<(), String> {
@@ -801,8 +777,7 @@ fn bound_health_yaml_alias_expansion(
 
     impl Drop for ParserGuard {
         fn drop(&mut self) {
-            // SAFETY: the guard is created only after yaml_parser_initialize succeeds
-            // and owns the single matching yaml_parser_delete call.
+            // SAFETY: the guard owns the initialized parser and its matching delete.
             unsafe { yaml_parser_delete(self.0) };
         }
     }
@@ -811,94 +786,19 @@ fn bound_health_yaml_alias_expansion(
 
     impl Drop for EventGuard {
         fn drop(&mut self) {
-            // SAFETY: the guard is created only after yaml_parser_parse succeeds
-            // and owns the single matching yaml_event_delete call.
+            // SAFETY: the guard owns the parsed event and its matching delete.
             unsafe { yaml_event_delete(self.0) };
         }
-    }
-
-    struct Frame {
-        expanded_bytes: usize,
-        expanded_nodes: usize,
-        expanded_depth: usize,
-        anchor: Option<Vec<u8>>,
-    }
-
-    #[derive(Clone)]
-    struct AnchorValue {
-        expanded_bytes: usize,
-        expanded_nodes: usize,
-        expanded_depth: usize,
-        scalar_value: Option<Vec<u8>>,
     }
 
     fn anchor_bytes(pointer: *const u8) -> Option<Vec<u8>> {
         (!pointer.is_null()).then(|| unsafe { CStr::from_ptr(pointer.cast()).to_bytes().to_vec() })
     }
 
-    fn add_node(
-        stack: &mut [Frame],
-        anchors: &mut BTreeMap<Vec<u8>, AnchorValue>,
-        anchor: Option<Vec<u8>>,
-        expanded_bytes: usize,
-        expanded_nodes: usize,
-        expanded_depth: usize,
-        scalar_value: Option<Vec<u8>>,
-    ) {
-        if let Some(anchor) = anchor {
-            anchors.insert(
-                anchor,
-                AnchorValue {
-                    expanded_bytes,
-                    expanded_nodes,
-                    expanded_depth,
-                    scalar_value,
-                },
-            );
-        }
-        if let Some(parent) = stack.last_mut() {
-            parent.expanded_bytes = parent.expanded_bytes.saturating_add(expanded_bytes);
-            parent.expanded_nodes = parent.expanded_nodes.saturating_add(expanded_nodes);
-            parent.expanded_depth = parent.expanded_depth.max(expanded_depth.saturating_add(1));
-        }
-    }
-
-    fn retain_health_value_bytes(total: &mut usize, bytes: usize) -> Result<(), String> {
-        *total = total.saturating_add(bytes);
-        if *total > MAX_HEALTH_YAML_RETAINED_BYTES {
-            Err(format!(
-                "expanded YAML values retained by health inspection exceed {MAX_HEALTH_YAML_RETAINED_BYTES} bytes"
-            ))
-        } else {
-            Ok(())
-        }
-    }
-
-    fn account_health_document_expansion(
-        nodes: &mut usize,
-        expanded_bytes: &mut usize,
-        added_nodes: usize,
-        bytes: usize,
-    ) -> Result<(), String> {
-        *nodes = nodes.saturating_add(added_nodes);
-        if *nodes > MAX_HEALTH_YAML_DOCUMENT_NODES {
-            return Err(format!(
-                "expanded YAML document for health inspection exceeds {MAX_HEALTH_YAML_DOCUMENT_NODES} nodes"
-            ));
-        }
-        *expanded_bytes = expanded_bytes.saturating_add(bytes);
-        if *expanded_bytes > MAX_HEALTH_YAML_DOCUMENT_BYTES {
-            return Err(format!(
-                "expanded YAML document for health inspection exceeds {MAX_HEALTH_YAML_DOCUMENT_BYTES} bytes"
-            ));
-        }
-        Ok(())
-    }
-
-    // serde_yaml resolves aliases while deserializing a `YamlValue`. Preflight the
-    // libyaml event stream first and account for the expanded size of each alias.
-    // This keeps small, ordinary anchors compatible with project.map while rejecting
-    // an alias bomb before any owned value tree is constructed.
+    // Preserve the health route's END-bound availability check. An unknown
+    // subtree is skipped by IgnoredAny, but an unresolved alias still refuses.
+    // Do not replace this with a graph-wide cycle gate: a container may shadow
+    // an earlier scalar anchor of the same name without expanding that subtree.
     unsafe {
         let mut parser = MaybeUninit::<yaml_parser_t>::uninit();
         let parser = parser.as_mut_ptr();
@@ -907,19 +807,10 @@ fn bound_health_yaml_alias_expansion(
         }
         let _parser_guard = ParserGuard(parser);
         yaml_parser_set_input_string(parser, text.as_ptr(), text.len() as u64);
-        let mut anchors = BTreeMap::<Vec<u8>, AnchorValue>::new();
-        let mut stack = Vec::<Frame>::new();
-        let mut root_mapping_depth = None;
-        let mut root_expects_key = true;
-        let mut next_root_value_is_retained = false;
-        let mut retained_container_depth = None;
-        let mut retained_bytes = 0_usize;
-        let mut document_nodes = 0_usize;
-        let mut document_expanded_bytes = 0_usize;
-        let result = loop {
-            if let Err(reason) = checkpoint() {
-                break Err(reason);
-            }
+        let mut anchors = BTreeSet::<Vec<u8>>::new();
+        let mut containers = Vec::<Option<Vec<u8>>>::new();
+        loop {
+            checkpoint()?;
             let mut event = MaybeUninit::<yaml_event_t>::uninit();
             let event = event.as_mut_ptr();
             if yaml_parser_parse(parser, event).fail {
@@ -929,213 +820,48 @@ fn bound_health_yaml_alias_expansion(
                 } else {
                     CStr::from_ptr(problem_ptr).to_string_lossy().into_owned()
                 };
-                break Err(format!(
+                return Err(format!(
                     "failed to parse YAML before health inspection: {problem}"
                 ));
             }
             let _event_guard = EventGuard(event);
-            let event_type = (*event).type_;
-            let event_result = match event_type {
+            match (*event).type_ {
                 YAML_DOCUMENT_START_EVENT => {
                     anchors.clear();
-                    stack.clear();
-                    root_mapping_depth = None;
-                    root_expects_key = true;
-                    next_root_value_is_retained = false;
-                    retained_container_depth = None;
-                    retained_bytes = 0;
-                    document_nodes = 0;
-                    document_expanded_bytes = 0;
-                    Ok(())
+                    containers.clear();
                 }
                 YAML_MAPPING_START_EVENT => {
-                    let new_depth = stack.len() + 1;
-                    if new_depth > MAX_HEALTH_YAML_DOCUMENT_DEPTH {
-                        return Err(format!(
-                            "expanded YAML document for health inspection exceeds depth {MAX_HEALTH_YAML_DOCUMENT_DEPTH}"
-                        ));
-                    }
-                    account_health_document_expansion(
-                        &mut document_nodes,
-                        &mut document_expanded_bytes,
-                        1,
-                        16,
-                    )?;
-                    if stack.is_empty() {
-                        root_mapping_depth = Some(new_depth);
-                    }
-                    if root_mapping_depth == Some(stack.len())
-                        && !root_expects_key
-                        && next_root_value_is_retained
-                    {
-                        retained_container_depth = Some(new_depth);
-                    }
-                    if retained_container_depth.is_some() {
-                        retain_health_value_bytes(&mut retained_bytes, 16)?;
-                    }
-                    stack.push(Frame {
-                        expanded_bytes: 16,
-                        expanded_nodes: 1,
-                        expanded_depth: 1,
-                        anchor: anchor_bytes((*event).data.mapping_start.anchor),
-                    });
-                    Ok(())
+                    containers.push(anchor_bytes((*event).data.mapping_start.anchor));
                 }
                 YAML_SEQUENCE_START_EVENT => {
-                    let new_depth = stack.len() + 1;
-                    if new_depth > MAX_HEALTH_YAML_DOCUMENT_DEPTH {
-                        return Err(format!(
-                            "expanded YAML document for health inspection exceeds depth {MAX_HEALTH_YAML_DOCUMENT_DEPTH}"
-                        ));
-                    }
-                    account_health_document_expansion(
-                        &mut document_nodes,
-                        &mut document_expanded_bytes,
-                        1,
-                        16,
-                    )?;
-                    if root_mapping_depth == Some(stack.len())
-                        && !root_expects_key
-                        && next_root_value_is_retained
-                    {
-                        retained_container_depth = Some(new_depth);
-                    }
-                    if retained_container_depth.is_some() {
-                        retain_health_value_bytes(&mut retained_bytes, 16)?;
-                    }
-                    stack.push(Frame {
-                        expanded_bytes: 16,
-                        expanded_nodes: 1,
-                        expanded_depth: 1,
-                        anchor: anchor_bytes((*event).data.sequence_start.anchor),
-                    });
-                    Ok(())
+                    containers.push(anchor_bytes((*event).data.sequence_start.anchor));
                 }
                 YAML_MAPPING_END_EVENT | YAML_SEQUENCE_END_EVENT => {
-                    let closing_depth = stack.len();
-                    let frame = stack.pop().ok_or_else(|| {
+                    let anchor = containers.pop().ok_or_else(|| {
                         "YAML container ended without a matching start event".to_string()
                     })?;
-                    add_node(
-                        &mut stack,
-                        &mut anchors,
-                        frame.anchor,
-                        frame.expanded_bytes,
-                        frame.expanded_nodes,
-                        frame.expanded_depth,
-                        None,
-                    );
-                    if retained_container_depth == Some(closing_depth) {
-                        retained_container_depth = None;
+                    if let Some(anchor) = anchor {
+                        anchors.insert(anchor);
                     }
-                    if root_mapping_depth == Some(stack.len()) {
-                        root_expects_key = !root_expects_key;
-                        if root_expects_key {
-                            next_root_value_is_retained = false;
-                        }
-                    }
-                    Ok(())
                 }
                 YAML_SCALAR_EVENT => {
-                    let scalar = (*event).data.scalar;
-                    let expanded_bytes = (scalar.length as usize).saturating_add(16);
-                    account_health_document_expansion(
-                        &mut document_nodes,
-                        &mut document_expanded_bytes,
-                        1,
-                        expanded_bytes,
-                    )?;
-                    let is_root_child = root_mapping_depth == Some(stack.len());
-                    if retained_container_depth.is_some()
-                        || (is_root_child && !root_expects_key && next_root_value_is_retained)
-                    {
-                        retain_health_value_bytes(&mut retained_bytes, expanded_bytes)?;
+                    if let Some(anchor) = anchor_bytes((*event).data.scalar.anchor) {
+                        anchors.insert(anchor);
                     }
-                    add_node(
-                        &mut stack,
-                        &mut anchors,
-                        anchor_bytes(scalar.anchor),
-                        expanded_bytes,
-                        1,
-                        1,
-                        (!scalar.anchor.is_null()).then(|| {
-                            std::slice::from_raw_parts(scalar.value, scalar.length as usize)
-                                .to_vec()
-                        }),
-                    );
-                    if is_root_child {
-                        if root_expects_key {
-                            let value =
-                                std::slice::from_raw_parts(scalar.value, scalar.length as usize);
-                            next_root_value_is_retained =
-                                matches!(value, b"format" | b"basePath" | b"source-set");
-                            root_expects_key = false;
-                        } else {
-                            root_expects_key = true;
-                            next_root_value_is_retained = false;
-                        }
-                    }
-                    Ok(())
                 }
                 YAML_ALIAS_EVENT => {
                     let alias = anchor_bytes((*event).data.alias.anchor)
                         .ok_or_else(|| "YAML alias event has no anchor name".to_string())?;
-                    let anchor = anchors.get(&alias).cloned().ok_or_else(|| {
-                        "YAML alias refers to an unresolved or recursive anchor".to_string()
-                    })?;
-                    let expanded_bytes = anchor.expanded_bytes;
-                    if stack.len().saturating_add(anchor.expanded_depth)
-                        > MAX_HEALTH_YAML_DOCUMENT_DEPTH
-                    {
-                        return Err(format!(
-                            "expanded YAML document for health inspection exceeds depth {MAX_HEALTH_YAML_DOCUMENT_DEPTH}"
-                        ));
+                    if !anchors.contains(&alias) {
+                        return Err(
+                            "YAML alias refers to an unresolved or recursive anchor".to_string()
+                        );
                     }
-                    account_health_document_expansion(
-                        &mut document_nodes,
-                        &mut document_expanded_bytes,
-                        anchor.expanded_nodes,
-                        expanded_bytes,
-                    )?;
-                    let is_root_child = root_mapping_depth == Some(stack.len());
-                    if retained_container_depth.is_some()
-                        || (is_root_child && !root_expects_key && next_root_value_is_retained)
-                    {
-                        retain_health_value_bytes(&mut retained_bytes, expanded_bytes)?;
-                    }
-                    add_node(
-                        &mut stack,
-                        &mut anchors,
-                        None,
-                        expanded_bytes,
-                        anchor.expanded_nodes,
-                        anchor.expanded_depth,
-                        None,
-                    );
-                    if is_root_child {
-                        if root_expects_key {
-                            next_root_value_is_retained =
-                                anchor.scalar_value.as_deref().is_some_and(|value| {
-                                    matches!(value, b"format" | b"basePath" | b"source-set")
-                                });
-                            root_expects_key = false;
-                        } else {
-                            root_expects_key = true;
-                            next_root_value_is_retained = false;
-                        }
-                    }
-                    Ok(())
                 }
-                _ => Ok(()),
-            };
-            if let Err(reason) = event_result {
-                break Err(reason);
+                YAML_STREAM_END_EVENT => return Ok(()),
+                _ => {}
             }
-            if event_type == YAML_STREAM_END_EVENT {
-                break Ok(());
-            }
-        };
-        result
+        }
     }
 }
 
@@ -1147,9 +873,6 @@ fn snapshot_project_map_input(
 ) -> Result<Option<Vec<u8>>, String> {
     checkpoint()?;
     if state.captures_actor_evidence() {
-        let limit = state
-            .max_input_bytes
-            .unwrap_or(MAX_HEALTH_SOURCE_MAP_INPUT_BYTES) as usize;
         let actor_pass = state
             .actor_pass
             .as_mut()
@@ -1163,7 +886,10 @@ fn snapshot_project_map_input(
                 )
             })?;
         let observed = if read_contents {
-            actor_pass.observe_regular(relative, limit, checkpoint)?
+            match state.max_input_bytes {
+                Some(limit) => actor_pass.observe_regular(relative, limit as usize, checkpoint)?,
+                None => actor_pass.observe_regular_unbounded(relative, checkpoint)?,
+            }
         } else {
             actor_pass.observe_regular_presence(relative, checkpoint)?
         };
@@ -1180,9 +906,12 @@ fn snapshot_project_map_input(
                 "project source-map input bytes were not retained: {}",
                 path.display()
             )),
-            RetainedRegularObservation::Oversized => {
-                Err(format!("project source-map input exceeds {limit} bytes"))
-            }
+            RetainedRegularObservation::Oversized => Err(match state.max_input_bytes {
+                Some(limit) => format!("project source-map input exceeds {limit} bytes"),
+                None => {
+                    "unbounded project source-map read unexpectedly reported oversized input".into()
+                }
+            }),
             RetainedRegularObservation::Absent => Ok(None),
             RetainedRegularObservation::WrongKind => Err(format!(
                 "project source-map input is not a retained regular file: {}",
@@ -1704,12 +1433,16 @@ fn enumerate_source_root_candidates(
             relative,
             directory,
         } => {
-            let limit = state.max_source_sets.unwrap_or(MAX_HEALTH_SOURCE_SETS);
             let entries = state
                 .actor_pass
                 .as_mut()
                 .expect("actor container has retained evidence state")
-                .observe_membership(relative, directory, limit, checkpoint)?;
+                .observe_membership_with_limit(
+                    relative,
+                    directory,
+                    state.max_source_sets,
+                    checkpoint,
+                )?;
             let mut candidates = Vec::new();
             for entry in entries {
                 let Some(directory) = entry.directory else {
@@ -1729,15 +1462,11 @@ fn enumerate_source_root_candidates(
             Ok(candidates)
         }
         ProbeDirectory::Retained(handle) => {
-            // `limit` bounds this enumeration's own I/O cost. The combined source-set
-            // total is enforced by `autodetect_source_sets` once the base scan and every
-            // layout are known.
-            let limit = state
-                .max_source_sets
-                .unwrap_or(MAX_HEALTH_SOURCE_SETS)
-                .saturating_add(1);
+            // An injected finite allowance preserves the combined-count refusal.
+            // Production visits every immediate sibling through the retained handle.
+            let limit = state.max_source_sets.map(|limit| limit.saturating_add(1));
             let mut checkpoint_failure = None;
-            let names = read_directory_names_bounded(handle, limit, || match checkpoint() {
+            let names = read_directory_names_with_limit(handle, limit, || match checkpoint() {
                 Ok(()) => Ok(()),
                 Err(reason) => {
                     checkpoint_failure = Some(reason);
@@ -2593,6 +2322,383 @@ fn yaml_mapping_get<'a>(value: &'a YamlValue, key: &str) -> Option<&'a YamlValue
 pub(crate) mod tests {
     use super::*;
 
+    const HEALTH_LEAF_MAIN_CONFIG: &str = concat!(
+        "format: DESIGNER\n",
+        "source-set:\n",
+        "  - name: main\n",
+        "    type: CONFIGURATION\n",
+        "    path: src\n",
+    );
+
+    fn health_leaf_fixture(config: &str) -> tempfile::TempDir {
+        let fixture = tempfile::tempdir().unwrap();
+        write(&fixture.path().join("v8project.yaml"), config);
+        write(
+            &fixture.path().join("src/Configuration.xml"),
+            "<MetaDataObject/>",
+        );
+        fixture
+    }
+
+    fn assert_health_leaf_main(map: &ProjectSourceMap) {
+        assert_eq!(map.source_sets.len(), 1);
+        assert_eq!(map.effective_source_set.as_deref(), Some("main"));
+        assert_eq!(map.source_sets[0].path, "src");
+        assert_eq!(map.source_sets[0].source_state, SourceSetState::Supported);
+        assert_eq!(map.source_sets[0].format_probe_error, None);
+        assert_source_set(
+            map,
+            "main",
+            SourceSetKind::Configuration,
+            SourceFormat::PlatformXml,
+            &["src/Configuration.xml"],
+        );
+    }
+
+    fn assert_health_leaf_both_routes(fixture: &tempfile::TempDir, reason: &str) {
+        let map = discover_project_source_map_controlled(fixture.path(), &mut || Ok(()))
+            .unwrap_or_else(|error| panic!("{reason}: controlled health refused: {error}"));
+        assert_health_leaf_main(&map);
+        let admission =
+            crate::infrastructure::source_selection_evidence::discover_project_source_admission(
+                fixture.path(),
+                &mut || Ok(()),
+            )
+            .unwrap_or_else(|error| panic!("{reason}: actor admission refused: {error}"));
+        assert_health_leaf_main(admission.map());
+    }
+
+    fn health_leaf_large_input_fixture() -> tempfile::TempDir {
+        let mut config = String::from(HEALTH_LEAF_MAIN_CONFIG);
+        config.push_str("ignored: '");
+        config.push_str(&"x".repeat(9 * 1024 * 1024));
+        config.push_str("'\n");
+        assert!(config.len() > 8 * 1024 * 1024);
+        health_leaf_fixture(&config)
+    }
+
+    #[test]
+    fn controlled_health_accepts_yaml_input_past_eight_mib() {
+        let fixture = health_leaf_large_input_fixture();
+        let map = discover_project_source_map_controlled(fixture.path(), &mut || Ok(()))
+            .expect("valid ignored YAML input past8MiB must retain its useful source");
+        assert_health_leaf_main(&map);
+    }
+
+    #[test]
+    fn actor_health_accepts_yaml_input_past_eight_mib_and_binds_late_bytes() {
+        let fixture = health_leaf_large_input_fixture();
+        let admission =
+            crate::infrastructure::source_selection_evidence::discover_project_source_admission(
+                fixture.path(),
+                &mut || Ok(()),
+            )
+            .expect("actor admission must retain valid YAML input past8MiB");
+        assert_health_leaf_main(admission.map());
+        let evidence = admission.into_evidence();
+        let deadline = crate::domain::code_intelligence::ProviderDeadline::from_budget(
+            std::time::Duration::from_secs(5),
+        );
+        let cancellation = crate::domain::cancellation::CancellationToken::new();
+        evidence.validate(deadline, &cancellation).unwrap();
+
+        use std::io::{Seek, SeekFrom, Write};
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .open(fixture.path().join("v8project.yaml"))
+            .unwrap();
+        file.seek(SeekFrom::Start(8 * 1024 * 1024 + 1)).unwrap();
+        file.write_all(b"y").unwrap();
+        drop(file);
+        let unchanged_map =
+            discover_project_source_map_controlled(fixture.path(), &mut || Ok(())).unwrap();
+        assert_health_leaf_main(&unchanged_map);
+        let error = evidence.validate(deadline, &cancellation).unwrap_err();
+        assert_eq!(
+            error.kind(),
+            crate::infrastructure::source_selection_evidence::SourceSelectionEvidenceErrorKind::Changed,
+        );
+    }
+
+    fn health_leaf_many_sources_fixture(declared: bool) -> tempfile::TempDir {
+        let fixture = tempfile::tempdir().unwrap();
+        let mut config = String::from("format: DESIGNER\nsource-set:\n");
+        for index in 0..1025 {
+            let name = format!("extension_{index:04}");
+            let path = format!("src/cfe/{name}");
+            write(
+                &fixture.path().join(&path).join("Configuration.xml"),
+                "<MetaDataObject/>",
+            );
+            if declared {
+                config.push_str(&format!(
+                    "  - name: {name}\n    type: EXTENSION\n    path: {path}\n"
+                ));
+            }
+        }
+        if declared {
+            write(&fixture.path().join("v8project.yaml"), &config);
+        }
+        fixture
+    }
+
+    fn assert_health_leaf_many_sources(map: &ProjectSourceMap) {
+        assert_eq!(map.source_sets.len(), 1025);
+        let actual: BTreeMap<_, _> = map
+            .source_sets
+            .iter()
+            .map(|source| {
+                assert_eq!(source.kind, SourceSetKind::Extension);
+                assert_eq!(source.source_state, SourceSetState::Supported);
+                assert_eq!(source.source_format, SourceFormat::PlatformXml);
+                assert_eq!(source.format_probe_error, None);
+                assert_eq!(
+                    source.format_evidence,
+                    vec![format!("{}/Configuration.xml", source.path)]
+                );
+                (source.name.clone(), source.path.clone())
+            })
+            .collect();
+        let expected: BTreeMap<_, _> = (0..1025)
+            .map(|index| {
+                let name = format!("extension_{index:04}");
+                (name.clone(), format!("src/cfe/{name}"))
+            })
+            .collect();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn controlled_health_accepts_1025_declared_source_sets() {
+        let fixture = health_leaf_many_sources_fixture(true);
+        let map = discover_project_source_map_controlled(fixture.path(), &mut || Ok(()))
+            .expect("health must discover all1025 useful declared source sets");
+        assert_health_leaf_many_sources(&map);
+    }
+
+    #[test]
+    fn actor_health_accepts_1025_declared_source_sets() {
+        let fixture = health_leaf_many_sources_fixture(true);
+        let admission =
+            crate::infrastructure::source_selection_evidence::discover_project_source_admission(
+                fixture.path(),
+                &mut || Ok(()),
+            )
+            .expect("actor must admit all1025 useful declared source sets");
+        assert_health_leaf_many_sources(admission.map());
+    }
+
+    #[test]
+    fn controlled_health_autodetects_1025_source_directories() {
+        let fixture = health_leaf_many_sources_fixture(false);
+        let map = discover_project_source_map_controlled(fixture.path(), &mut || Ok(()))
+            .expect("health enumeration must reach every useful source beyond1024");
+        assert_health_leaf_many_sources(&map);
+    }
+
+    #[test]
+    fn actor_health_autodetects_1025_source_directories() {
+        let fixture = health_leaf_many_sources_fixture(false);
+        let admission =
+            crate::infrastructure::source_selection_evidence::discover_project_source_admission(
+                fixture.path(),
+                &mut || Ok(()),
+            )
+            .expect("retained actor membership must reach every useful source beyond1024");
+        assert_health_leaf_many_sources(admission.map());
+    }
+
+    #[test]
+    fn health_yaml_selected_values_past_two_mib_keep_their_useful_source() {
+        let mut config = String::from(HEALTH_LEAF_MAIN_CONFIG);
+        config.push_str("    ignored: '");
+        config.push_str(&"x".repeat(2 * 1024 * 1024 + 1));
+        config.push_str("'\n");
+        let fixture = health_leaf_fixture(&config);
+        assert_health_leaf_both_routes(&fixture, "selected value past2MiB");
+    }
+
+    #[test]
+    fn health_yaml_visitor_retains_a_selected_value_past_two_mib() {
+        let padding = "x".repeat(2 * 1024 * 1024 + 1);
+        let config = format!("{HEALTH_LEAF_MAIN_CONFIG}    ignored: '{padding}'\n");
+        let parsed = serde_yaml::from_str::<HealthConfig>(&config)
+            .expect("the actual health visitor must retain the selected value past2MiB");
+        let HealthSourceSets::Sequence(entries) = parsed.source_sets else {
+            panic!("source-set sequence changed its grammar");
+        };
+        let [entry] = entries.as_slice() else {
+            panic!("expected exactly one useful selected source");
+        };
+        assert_eq!(yaml_string(entry, "name").as_deref(), Some("main"));
+        assert_eq!(yaml_string(entry, "path").as_deref(), Some("src"));
+        assert_eq!(yaml_string(entry, "ignored"), Some(padding));
+    }
+
+    #[test]
+    fn health_yaml_ignored_nodes_past_65536_keep_their_useful_source() {
+        let mut config = String::from(HEALTH_LEAF_MAIN_CONFIG);
+        config.push_str("ignored: [");
+        config.push_str(&"0,".repeat(65537));
+        config.push_str("]\n");
+        let fixture = health_leaf_fixture(&config);
+        assert_health_leaf_both_routes(&fixture, "ignored syntactic nodes past65536");
+    }
+
+    #[test]
+    fn health_yaml_ignored_alias_bytes_past_sixteen_mib_keep_their_useful_source() {
+        let mut config = String::from(HEALTH_LEAF_MAIN_CONFIG);
+        config.push_str("template: &large '");
+        config.push_str(&"x".repeat(32 * 1024));
+        config.push_str("'\nignored: [");
+        config.push_str(&"*large,".repeat(513));
+        config.push_str("]\n");
+        assert!(config.len() < 8 * 1024 * 1024);
+        let fixture = health_leaf_fixture(&config);
+        assert_health_leaf_both_routes(&fixture, "ignored expanded alias bytes past16MiB");
+    }
+
+    #[test]
+    fn health_yaml_ignored_depth_past_256_keeps_its_useful_source() {
+        let mut config = String::from(HEALTH_LEAF_MAIN_CONFIG);
+        config.push_str("ignored: ");
+        config.push_str(&"[".repeat(257));
+        config.push('0');
+        config.push_str(&"]".repeat(257));
+        config.push('\n');
+        let fixture = health_leaf_fixture(&config);
+        assert_health_leaf_both_routes(&fixture, "ignored nesting past256");
+    }
+
+    #[test]
+    fn health_yaml_ignored_alias_depth_past_256_keeps_its_useful_source() {
+        let mut config = String::from(HEALTH_LEAF_MAIN_CONFIG);
+        config.push_str("template: &deep ");
+        config.push_str(&"[".repeat(180));
+        config.push('0');
+        config.push_str(&"]".repeat(180));
+        config.push_str("\nignored: ");
+        config.push_str(&"[".repeat(100));
+        config.push_str("*deep");
+        config.push_str(&"]".repeat(100));
+        config.push('\n');
+        let fixture = health_leaf_fixture(&config);
+        assert_health_leaf_both_routes(&fixture, "ignored expanded alias depth past256");
+    }
+
+    #[test]
+    fn health_yaml_keeps_route_specific_duplicate_and_anchor_semantics() {
+        for tail in [
+            "ignored: {a: 1, a: 2}\n",
+            "ignored: 1\nignored: 2\n",
+            "old: &shadow first\nignored: &shadow {value: *shadow}\n",
+            "basePath: null\n",
+            "basePath: !!null null\n",
+            "basePath: !local null\n",
+            "true: ignored\n",
+        ] {
+            let fixture = health_leaf_fixture(&format!("{HEALTH_LEAF_MAIN_CONFIG}{tail}"));
+            assert_health_leaf_both_routes(&fixture, "legacy ignored YAML grammar");
+        }
+        for config in [
+            HEALTH_LEAF_MAIN_CONFIG.replace("format: DESIGNER", "format: !!str DESIGNER"),
+            HEALTH_LEAF_MAIN_CONFIG.replace("source-set:", "field: &field source-set\n*field :"),
+        ] {
+            let fixture = health_leaf_fixture(&config);
+            assert_health_leaf_both_routes(&fixture, "legacy typed scalar and alias-key grammar");
+        }
+        for (base_path, directory) in [("'null'", "null"), ("0", "0")] {
+            let config = format!("basePath: {base_path}\n{HEALTH_LEAF_MAIN_CONFIG}");
+            let fixture = health_leaf_fixture(&config);
+            let relative = format!("{directory}/src");
+            write(
+                &fixture.path().join(&relative).join("Configuration.xml"),
+                "<MetaDataObject/>",
+            );
+            let map = discover_project_source_map_controlled(fixture.path(), &mut || Ok(()))
+                .expect("quoted null and numeric basePath retain their literal path meaning");
+            let admission =
+                crate::infrastructure::source_selection_evidence::discover_project_source_admission(
+                    fixture.path(),
+                    &mut || Ok(()),
+                )
+                .expect("actor keeps quoted null and numeric basePath meaning");
+            for map in [&map, admission.map()] {
+                assert_eq!(map.source_sets.len(), 1);
+                assert_eq!(map.source_sets[0].path, relative);
+                assert_eq!(map.source_sets[0].source_state, SourceSetState::Supported);
+                assert_eq!(
+                    map.source_sets[0].format_evidence,
+                    vec![format!("{relative}/Configuration.xml")]
+                );
+            }
+        }
+        for format_value in ["7", "!local DESIGNER"] {
+            let config = HEALTH_LEAF_MAIN_CONFIG
+                .replace("format: DESIGNER", &format!("format: {format_value}"));
+            let fixture = health_leaf_fixture(&config);
+            let error = discover_project_source_map_controlled(fixture.path(), &mut || Ok(()))
+                .expect_err("format must keep its direct string type requirement");
+            let actor_error = match
+                crate::infrastructure::source_selection_evidence::discover_project_source_admission(
+                    fixture.path(),
+                    &mut || Ok(()),
+                ) {
+                Ok(_) => panic!("actor must preserve the direct format string requirement"),
+                Err(error) => error,
+            };
+            for error in [error, actor_error] {
+                assert!(error.contains("field `format` must be a string"), "{error}");
+            }
+        }
+        for tail in [
+            "format: DESIGNER\n",
+            "ignored: *missing\n",
+            "ignored: &self {value: *self}\n",
+        ] {
+            let fixture = health_leaf_fixture(&format!("{HEALTH_LEAF_MAIN_CONFIG}{tail}"));
+            let result = discover_project_source_map_controlled(fixture.path(), &mut || Ok(()));
+            let error = result.expect_err("known duplicate/unresolved anchor must still refuse");
+            let actor_error = match
+                crate::infrastructure::source_selection_evidence::discover_project_source_admission(
+                    fixture.path(),
+                    &mut || Ok(()),
+                ) {
+                Ok(_) => panic!("actor must refuse known duplicate/unresolved anchor"),
+                Err(error) => error,
+            };
+            for error in [error, actor_error] {
+                if tail.starts_with("format:") {
+                    assert!(error.contains("duplicate top-level field"), "{error}");
+                } else {
+                    assert!(error.contains("unresolved or recursive anchor"), "{error}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn health_yaml_rejects_malformed_tail_and_extra_document_after_useful_source() {
+        for tail in ["ignored: [\n", "---\nignored: valid\n"] {
+            let fixture = health_leaf_fixture(&format!("{HEALTH_LEAF_MAIN_CONFIG}{tail}"));
+            let error = discover_project_source_map_controlled(fixture.path(), &mut || Ok(()))
+                .expect_err("a useful source cannot hide invalid trailing YAML");
+            assert!(error.contains("YAML") || error.contains("parse"), "{error}");
+            let actor_error = match
+                crate::infrastructure::source_selection_evidence::discover_project_source_admission(
+                    fixture.path(),
+                    &mut || Ok(()),
+                ) {
+                Ok(_) => panic!("actor must refuse invalid trailing YAML"),
+                Err(error) => error,
+            };
+            assert!(
+                actor_error.contains("YAML") || actor_error.contains("parse"),
+                "{actor_error}"
+            );
+        }
+    }
+
     fn large_reserved_external_descriptor_fixture() -> tempfile::TempDir {
         let root = tempfile::tempdir().unwrap();
         write(
@@ -2972,7 +3078,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn health_source_map_bounds_unknown_yaml_subtrees_before_serde_materialization() {
+    fn health_source_map_skips_deep_unknown_yaml_without_serde_materialization() {
         let root = temp_workspace("unica-source-map-health-unknown-yaml-depth");
         let depth = 512;
         let mut config = String::from(
@@ -2985,15 +3091,14 @@ pub(crate) mod tests {
         write(&root.join("src/Configuration.xml"), "<MetaDataObject/>");
         let mut checkpoint = || Ok(());
 
-        let error = discover_project_source_map_controlled(&root, &mut checkpoint)
-            .expect_err("health YAML depth must be rejected before serde materialization");
-
-        assert!(error.contains("YAML") && error.contains("depth"), "{error}");
+        let map = discover_project_source_map_controlled(&root, &mut checkpoint)
+            .expect("unknown deep YAML must not hide the useful source");
+        assert_health_leaf_main(&map);
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn health_source_map_counts_nodes_expanded_through_unknown_aliases() {
+    fn health_source_map_skips_unknown_alias_expansion_without_materialization() {
         let root = temp_workspace("unica-source-map-health-unknown-alias-nodes");
         let anchored_nodes = 512;
         let alias_count = 128;
@@ -3007,15 +3112,14 @@ pub(crate) mod tests {
         write(&root.join("src/Configuration.xml"), "<MetaDataObject/>");
         let mut checkpoint = || Ok(());
 
-        let error = discover_project_source_map_controlled(&root, &mut checkpoint)
-            .expect_err("expanded alias nodes must be rejected before serde materialization");
-
-        assert!(error.contains("YAML") && error.contains("nodes"), "{error}");
+        let map = discover_project_source_map_controlled(&root, &mut checkpoint)
+            .expect("unknown aliases must not hide the useful source");
+        assert_health_leaf_main(&map);
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn health_source_map_bounds_depth_expanded_at_alias_site() {
+    fn health_source_map_skips_unknown_alias_depth_without_materialization() {
         let root = temp_workspace("unica-source-map-health-alias-expanded-depth");
         let anchor_depth = 180;
         let alias_site_depth = 100;
@@ -3033,10 +3137,9 @@ pub(crate) mod tests {
         write(&root.join("src/Configuration.xml"), "<MetaDataObject/>");
         let mut checkpoint = || Ok(());
 
-        let error = discover_project_source_map_controlled(&root, &mut checkpoint)
-            .expect_err("alias-site expanded depth must be bounded before serde");
-
-        assert!(error.contains("YAML") && error.contains("depth"), "{error}");
+        let map = discover_project_source_map_controlled(&root, &mut checkpoint)
+            .expect("unknown alias depth must not hide the useful source");
+        assert_health_leaf_main(&map);
         fs::remove_dir_all(root).unwrap();
     }
 
