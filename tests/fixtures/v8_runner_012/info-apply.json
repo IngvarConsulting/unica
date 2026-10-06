@@ -1,7 +1,7 @@
 {
   "ok": true,
   "command": "extensions",
-  "duration_ms": 6765,
+  "duration_ms": 18351,
   "data": {
     "provider": {
       "selected": "ibcmd",
@@ -19,16 +19,17 @@
     "extensions": [
       {
         "name": "UnicaRunnerProbe",
+        "name_prefix": "",
         "active": true,
         "purpose": "patch",
         "safe_mode": true,
         "unsafe_action_protection": true,
         "used_in_distributed_infobase": false,
         "scope": "infobase",
-        "hash_sum": "bhL3p2okJhUifODexTMj5L9elx8="
+        "hash_sum": "Ah+es+7Z6SL7YcwRSmrNHAvUml8="
       }
     ],
-    "duration_ms": 6765
+    "duration_ms": 18351
   },
   "warnings": [],
   "steps": []

@@ -371,6 +371,38 @@ class PackageUnicaRuntimeTests(unittest.TestCase):
                 with self.assertRaisesRegex(SystemExit, "mode|executable"):
                     module.package_runtime(bundle, root / "out")
 
+    def test_a_publisher_archive_keeps_its_binary_in_its_own_directory(self) -> None:
+        """Архив издателя кладёт бинарь в свой каталог внутри цели.
+
+        Так приезжает v8-runner с 0.12.0: `bin/<цель>/v8-runner-<платформа>/v8-runner`.
+        Вложенный путь внутри цели принимается, путь в чужой цели — нет.
+        """
+        module = load_module()
+        for label, nested in (
+            ("inside", "bin/linux-x64/bsl-analyzer-x86_64/bsl-analyzer"),
+            ("other-target", "bin/win-x64/bsl-analyzer-x86_64/bsl-analyzer"),
+        ):
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                bundle = make_bundle(root)
+                manifest_path = bundle / "tools.json"
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                destination = bundle / nested
+                destination.parent.mkdir(parents=True)
+                (bundle / "bin" / "linux-x64" / "bsl-analyzer").rename(destination)
+                for item in manifest["runtimeFiles"]:
+                    if item["path"] == "bin/linux-x64/bsl-analyzer":
+                        item["path"] = nested
+                analyzer = next(t for t in manifest["tools"] if t["name"] == "bsl-analyzer")
+                analyzer["binaryPath"] = nested
+                manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+                if label == "inside":
+                    module.package_runtime(bundle, root / "out")
+                else:
+                    with self.assertRaisesRegex(SystemExit, "outside"):
+                        module.package_runtime(bundle, root / "out")
+
     def test_runtime_packager_rejects_duplicate_and_out_of_closure_tool_paths(self) -> None:
         module = load_module()
         for label in ("duplicate", "duplicate-tool", "outside", "wrong-target"):

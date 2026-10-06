@@ -7,7 +7,9 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::archive::{extract_verified_tar_gz, sha256_file, verify_runtime_files};
+use crate::archive::{
+    extract_verified_tar_gz, extract_verified_zip, sha256_file, verify_runtime_files,
+};
 use crate::attempt::{AttemptLog, AttemptSubject, OpenAttempt, Stage};
 use crate::download::{DownloadObserver, Downloader, SilentDownload};
 use crate::error::{BootstrapError, Failure, Result};
@@ -349,6 +351,9 @@ fn publish_artifact(
     match DeliveryForm::of(&target.asset.media_type) {
         Some(DeliveryForm::Archive) | None => {
             extract_verified_tar_gz(archive_path, staged_root, &target.files)?
+        }
+        Some(DeliveryForm::ZipArchive) => {
+            extract_verified_zip(archive_path, staged_root, &target.files)?
         }
         Some(DeliveryForm::File) => place_single_file(archive_path, staged_root, target)?,
     }

@@ -439,11 +439,6 @@ pub(super) enum V5ActorBoundCanonicalInvocation {
         invocation: Box<ActorBoundInvocation>,
         service: Arc<dyn CanonicalInvocationService>,
     },
-    ConfigurationTransition {
-        transition: Arc<super::v13_configuration_transition::PreparedConfigurationTransition>,
-        workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
-        delivery: RunEngineDelivery,
-    },
     Extensions {
         extensions: Arc<super::v13_extensions::PreparedExtensions>,
         workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
@@ -458,14 +453,6 @@ pub(super) enum V5ActorBoundCanonicalInvocation {
     /// PlatformXml и известен длинным по внешнему процессу.
     ClientRun {
         launch: Arc<super::v13_client_run::PreparedClientRun>,
-        workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
-        delivery: RunEngineDelivery,
-    },
-    /// Загрузка CF/CFE в базу: previewApply с забором, как выгрузки,
-    /// готовится до admission PlatformXml и известна длинной по внешнему
-    /// процессу.
-    CfImport {
-        import: Arc<super::v13_cf_import::PreparedCfImport>,
         workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
         delivery: RunEngineDelivery,
     },
@@ -513,10 +500,6 @@ pub(super) enum V5PreparedCanonicalInvocation {
         class: ExecutionClass,
         service: Arc<dyn CanonicalInvocationService>,
     },
-    ConfigurationTransition {
-        transition: Arc<super::v13_configuration_transition::PreparedConfigurationTransition>,
-        delivery: RunEngineDelivery,
-    },
     Extensions {
         extensions: Arc<super::v13_extensions::PreparedExtensions>,
         delivery: RunEngineDelivery,
@@ -527,10 +510,6 @@ pub(super) enum V5PreparedCanonicalInvocation {
     },
     ClientRun {
         launch: Arc<super::v13_client_run::PreparedClientRun>,
-        delivery: RunEngineDelivery,
-    },
-    CfImport {
-        import: Arc<super::v13_cf_import::PreparedCfImport>,
         delivery: RunEngineDelivery,
     },
     InfobaseCreate {
@@ -683,20 +662,6 @@ impl V5CanonicalInvocationRuntime {
             workspace_hint: std::path::PathBuf::from(request.workspace_hint()),
             desk: Arc::clone(&self.deliveries),
         };
-        match super::v13_configuration_transition::prepare(&request) {
-            super::v13_configuration_transition::Preparation::NotApplicable => {}
-            super::v13_configuration_transition::Preparation::Rejected(result) => {
-                return Err(V5CanonicalPrepareError::Rejected(result))
-            }
-            super::v13_configuration_transition::Preparation::Ready(transition) => {
-                let workspace_identity_hash = transition.workspace_identity_hash();
-                return Ok(V5ActorBoundCanonicalInvocation::ConfigurationTransition {
-                    transition,
-                    workspace_identity_hash,
-                    delivery: run_delivery.clone(),
-                });
-            }
-        }
         match super::v13_extensions::prepare(&request) {
             super::v13_extensions::Preparation::NotApplicable => {}
             super::v13_extensions::Preparation::Rejected(result) => {
@@ -734,20 +699,6 @@ impl V5CanonicalInvocationRuntime {
                 let workspace_identity_hash = launch.workspace_identity_hash();
                 return Ok(V5ActorBoundCanonicalInvocation::ClientRun {
                     launch,
-                    workspace_identity_hash,
-                    delivery: run_delivery.clone(),
-                });
-            }
-        }
-        match super::v13_cf_import::prepare(&request) {
-            super::v13_cf_import::Preparation::NotApplicable => {}
-            super::v13_cf_import::Preparation::Rejected(result) => {
-                return Err(V5CanonicalPrepareError::Rejected(result))
-            }
-            super::v13_cf_import::Preparation::Ready(import) => {
-                let workspace_identity_hash = import.workspace_identity_hash();
-                return Ok(V5ActorBoundCanonicalInvocation::CfImport {
-                    import,
                     workspace_identity_hash,
                     delivery: run_delivery.clone(),
                 });
@@ -854,11 +805,9 @@ impl V5ActorBoundCanonicalInvocation {
                 Some(inspection.response_deadline().clone())
             }
             Self::Workspace { invocation, .. } => Some(invocation.response_deadline().clone()),
-            Self::ConfigurationTransition { .. }
-            | Self::Extensions { .. }
+            Self::Extensions { .. }
             | Self::InfobaseExport { .. }
             | Self::ClientRun { .. }
-            | Self::CfImport { .. }
             | Self::InfobaseCreate { .. }
             | Self::SourceImport { .. }
             | Self::SourceExport { .. }
@@ -876,11 +825,7 @@ impl V5ActorBoundCanonicalInvocation {
         match self {
             Self::Workspace { invocation, .. } => invocation.workspace_identity_hash(),
             Self::WorkspaceInspection { inspection } => inspection.workspace_identity_hash(),
-            Self::ConfigurationTransition {
-                workspace_identity_hash,
-                ..
-            }
-            | Self::Extensions {
+            Self::Extensions {
                 workspace_identity_hash,
                 ..
             }
@@ -889,10 +834,6 @@ impl V5ActorBoundCanonicalInvocation {
                 ..
             }
             | Self::ClientRun {
-                workspace_identity_hash,
-                ..
-            }
-            | Self::CfImport {
                 workspace_identity_hash,
                 ..
             }
@@ -935,14 +876,6 @@ impl V5ActorBoundCanonicalInvocation {
                     service,
                 })
             }
-            Self::ConfigurationTransition {
-                transition,
-                delivery,
-                ..
-            } => Ok(V5PreparedCanonicalInvocation::ConfigurationTransition {
-                transition,
-                delivery,
-            }),
             Self::Extensions {
                 extensions,
                 delivery,
@@ -957,9 +890,6 @@ impl V5ActorBoundCanonicalInvocation {
             Self::ClientRun {
                 launch, delivery, ..
             } => Ok(V5PreparedCanonicalInvocation::ClientRun { launch, delivery }),
-            Self::CfImport {
-                import, delivery, ..
-            } => Ok(V5PreparedCanonicalInvocation::CfImport { import, delivery }),
             Self::InfobaseCreate {
                 create, delivery, ..
             } => Ok(V5PreparedCanonicalInvocation::InfobaseCreate { create, delivery }),
@@ -985,11 +915,9 @@ impl V5PreparedCanonicalInvocation {
             ExecutionClass::KnownLong(KnownLongReason::ExternalProcess);
         match self {
             Self::Workspace { class, .. } => class,
-            Self::ConfigurationTransition { .. }
-            | Self::Extensions { .. }
+            Self::Extensions { .. }
             | Self::InfobaseExport { .. }
             | Self::ClientRun { .. }
-            | Self::CfImport { .. }
             | Self::InfobaseCreate { .. }
             | Self::SourceImport { .. }
             | Self::SourceExport { .. }
@@ -1025,12 +953,6 @@ impl V5PreparedCanonicalInvocation {
                     )
                 })?
             }
-            Self::ConfigurationTransition {
-                transition,
-                delivery,
-            } => Ok(delivery.execute(cancellation, |cancellation| {
-                transition.execute(cancellation)
-            })),
             Self::Extensions {
                 extensions,
                 delivery,
@@ -1042,9 +964,6 @@ impl V5PreparedCanonicalInvocation {
             }
             Self::ClientRun { launch, delivery } => {
                 Ok(delivery.execute(cancellation, |cancellation| launch.execute(cancellation)))
-            }
-            Self::CfImport { import, delivery } => {
-                Ok(delivery.execute(cancellation, |cancellation| import.execute(cancellation)))
             }
             Self::InfobaseCreate { create, delivery } => {
                 Ok(delivery.execute(cancellation, |cancellation| create.execute(cancellation)))
@@ -1200,7 +1119,7 @@ pub(crate) mod actor_capacity_tests {
     use super::super::protocol_v5::{
         V5DaemonTaskSnapshot, V5InvocationRequest, V5InvocationResponse, V5ServerResponse,
     };
-    use super::super::runner_011::VERSION as RUNNER_VERSION;
+    use super::super::runner_012::VERSION as RUNNER_VERSION;
     use super::*;
     use crate::application::invocation::INVOCATION_HANDOFF_WINDOW;
     use crate::application::invocation_store::ToolIdentity;
@@ -2413,20 +2332,17 @@ pub(crate) mod actor_capacity_tests {
             std::fs::create_dir_all(plugin.join("third-party")).unwrap();
             std::fs::write(workspace.join("v8project.yaml"), "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\ninfobase:\n  connection: 'File=base'\n").unwrap();
             std::fs::write(workspace.join("src/Configuration.xml"), r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Test</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#).unwrap();
-            std::fs::write(workspace.join("sample.cfe"), b"fixture-extension").unwrap();
             let fixture_source = root.join("fake-engine.rs");
             std::fs::write(&fixture_source, r###"
 use std::io::{self, BufRead, Write};
 fn main() {
     let marker = std::path::PathBuf::from(std::env::var("UNICA_TEST_PROVIDER_MARKER_DIR").unwrap());
     let args = std::env::args().collect::<Vec<_>>();
-    if args.iter().any(|argument| argument == "load") {
+    if args.iter().any(|argument| argument == "push") {
         assert!(args.iter().any(|argument| argument == "--dry-run"));
-        let input = args.windows(2).find(|pair| pair[0] == "--path").unwrap()[1].clone();
-        assert!(input.ends_with("sample.cfe"));
-        std::fs::write(marker.join("upload"), "v8-runner load preview invoked").unwrap();
-        let envelope = r#"{"ok":true,"command":"load","data":{"ok":true,"provider_dispatched":false,"mode":"load","artifact_path":$PATH$,"artifact_type":"extension_cfe","target_kind":"extension","extension":"Sample","execution":{"status":"succeeded","payload":{"applied":false}}}}"#.replace("$PATH$", &format!("{input:?}"));
-        println!("{envelope}");
+        assert!(args.iter().any(|argument| argument == "main"));
+        std::fs::write(marker.join("push"), "v8-runner push preview invoked").unwrap();
+        println!("{}", r#"{"ok":true,"command":"push","data":{"ok":true,"provider_dispatched":false,"steps":[{"source_set":"main","mode":"full","ok":true}]}}"#);
         return;
     }
     if args.iter().any(|argument| argument == "extensions") {
@@ -2617,24 +2533,24 @@ fn main() {
 
             let request = InvocationRequest::new(
                 ToolIdentity::Run,
-                serde_json::json!({"op":"upload","args":{"input":"sample.cfe","extension":"Sample"},"dryRun":true}),
+                serde_json::json!({"op":"push","args":{"sourceSet":"main","force":true},"dryRun":true}),
                 workspace.display().to_string(),
                 7_000,
             )
             .unwrap();
-            let upload = runtime
+            let push = runtime
                 .bind(request)
                 .unwrap()
                 .prepare()
                 .unwrap()
                 .execute(CancellationToken::new())
                 .unwrap();
-            assert!(upload.ok, "{upload:?}");
-            assert_eq!(upload.data.as_ref().unwrap()["op"], "upload");
-            assert_eq!(upload.data.as_ref().unwrap()["dryRun"], true);
+            assert!(push.ok, "{push:?}");
+            assert_eq!(push.data.as_ref().unwrap()["op"], "push");
+            assert_eq!(push.data.as_ref().unwrap()["dryRun"], true);
             assert_eq!(
-                std::fs::read_to_string(root.join("upload")).unwrap(),
-                "v8-runner load preview invoked"
+                std::fs::read_to_string(root.join("push")).unwrap(),
+                "v8-runner push preview invoked"
             );
 
             let request = InvocationRequest::new(
@@ -10355,12 +10271,9 @@ struct ActorLogicalReadLease {"#,
             Arc::new(TokioClock),
         );
         for (op, args) in [
-            ("upload", serde_json::json!({"input":"main.cf"})),
             ("infobase.create", serde_json::json!({})),
             ("push", serde_json::json!({"sourceSet":"main","force":true})),
             ("pull", serde_json::json!({"sourceSet":"main","force":true})),
-            ("apply", serde_json::json!({})),
-            ("reset", serde_json::json!({"force":true})),
         ] {
             if op != selected {
                 continue;
@@ -10387,9 +10300,52 @@ struct ActorLogicalReadLease {"#,
         assert_eq!(preparations.load(Ordering::SeqCst), 0);
     }
 
+    /// Раннер 0.12 не умеет загрузить CF/CFE без применения и не знает `apply` и
+    /// `reset` (#1246): операции остаются в словаре недоступными, и вызов получает
+    /// типизированный отказ при bind — до рабочего пространства, PlatformXml и
+    /// раннера.
     #[test]
-    fn v5_cf_import_prepares_before_source_admission_and_runs_without_a_revision_gate() {
-        assert_development_cycle_admission("upload");
+    fn v5_unavailable_runner_operations_are_refused_at_bind_without_a_runner() {
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::write(workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\ninfobase:\n  connection: 'File=base'\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n").unwrap();
+        std::fs::write(workspace.path().join("main.cf"), b"fixture").unwrap();
+        let preparations = Arc::new(AtomicUsize::new(0));
+        let runtime = V5CanonicalInvocationRuntime::new(
+            Arc::new(CountingPrepareService {
+                preparations: Arc::clone(&preparations),
+            }),
+            Arc::new(TokioClock),
+        );
+        for (op, args) in [
+            ("upload", serde_json::json!({"input":"main.cf"})),
+            ("apply", serde_json::json!({})),
+            ("reset", serde_json::json!({"force":true})),
+        ] {
+            for dry_run in [false, true] {
+                let request = InvocationRequest::new(
+                    ToolIdentity::Run,
+                    serde_json::json!({"op":op,"args":args,"dryRun":dry_run}),
+                    workspace.path().display().to_string(),
+                    7000,
+                )
+                .unwrap();
+                let refused = match runtime.bind(request) {
+                    Err(V5CanonicalPrepareError::Direct(result)) => result,
+                    Ok(_) => panic!("{op} reached a runner adapter"),
+                    Err(other) => panic!("{op}: {other:?}"),
+                };
+                assert!(!refused.ok);
+                assert_eq!(refused.diagnostics[0]["code"], "unsupported_operation");
+                assert!(
+                    refused.summary.contains("issues/1246"),
+                    "{op}: {}",
+                    refused.summary
+                );
+            }
+        }
+        assert_eq!(preparations.load(Ordering::SeqCst), 0);
+        assert!(runtime.workspace_actors.entry_len_for_test().unwrap() == 0);
     }
 
     #[test]
@@ -10405,12 +10361,6 @@ struct ActorLogicalReadLease {"#,
     #[test]
     fn v5_source_export_prepares_before_source_admission_and_runs_without_a_revision_gate() {
         assert_development_cycle_admission("pull");
-    }
-
-    #[test]
-    fn v5_development_cycle_prepares_before_source_admission_and_runs_without_a_revision_gate() {
-        assert_development_cycle_admission("apply");
-        assert_development_cycle_admission("reset");
     }
 
     #[test]
@@ -10784,7 +10734,7 @@ fn main() {
         fs::write(&created, "provider created infobase").unwrap();
     }
     let status = if !dry_run { "ok" } else if created.exists() { "skipped" } else { "planned" };
-    println!(r#"{{"ok":true,"command":"init","duration_ms":0,"data":{{"ok":true,"provider_dispatched":{},"steps":[{{"target":"infobase","action":"create","status":"{}","message":"probe","duration_ms":0}},{{"target":"edt_workspace","action":"import","status":"skipped","message":"probe","duration_ms":0}}],"duration_ms":0}},"warnings":[],"steps":[]}}"#, !dry_run, status);
+    println!(r#"{{"ok":true,"command":"infobase create","duration_ms":0,"data":{{"ok":true,"provider_dispatched":{},"steps":[{{"target":"infobase","action":"create","status":"{}","message":"probe","duration_ms":0}},{{"target":"edt_workspace","action":"import","status":"skipped","message":"probe","duration_ms":0}}],"duration_ms":0}},"warnings":[],"steps":[]}}"#, !dry_run, status);
 }
 "##,
         )

@@ -4,7 +4,8 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/server.rs::v5_run_rejects_if_rev_before_workspace_or_provider_admission
   - crates/unica-coder/src/infrastructure/daemon/v13_run_dictionary.rs::development_cycle_admits_the_explicit_compatibility_subset
   - crates/unica-coder/src/infrastructure/daemon/server.rs::v5_infobase_create_prepares_before_source_admission_and_runs_without_a_revision_gate
-  - crates/unica-coder/src/infrastructure/daemon/server.rs::v5_cf_import_prepares_before_source_admission_and_runs_without_a_revision_gate
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::v5_unavailable_runner_operations_are_refused_at_bind_without_a_runner
+  - crates/unica-coder/src/infrastructure/daemon/v13_run_dictionary.rs::runner_012_refuses_upload_apply_and_reset_naming_the_gap
   - crates/unica-coder/src/infrastructure/daemon/server.rs::v5_source_export_prepares_before_source_admission_and_runs_without_a_revision_gate
   - crates/unica-coder/src/infrastructure/daemon/server.rs::v5_source_import_prepares_before_source_admission_and_runs_without_a_revision_gate
   - crates/unica-coder/src/infrastructure/daemon/v13_run_dictionary.rs::runner_one_refuses_unsupported_semantics_and_old_names_before_admission
@@ -19,10 +20,12 @@ check:
 Неподдерживаемый запрос получает отказ до допуска исходников и запуска
 платформы, а не успешный preview.
 
-Адаптер 0.11.3 исполняет все 13 операций. Шесть операций разработки
-(`push`, `pull`, `upload`, `apply`, `reset`, `infobase.create`) имеют статус
-`limited` с точной схемой аргументов и описанием отсутствующих гарантий.
-Их границы описывает [совместимый цикл разработки](compatible-development-cycle.md).
+Адаптер раннера 0.12 исполняет десять из 13 операций. Операции разработки
+`push`, `pull` и `infobase.create` имеют статус `limited` с точной схемой
+аргументов и описанием отсутствующих гарантий. `upload`, `apply` и `reset`
+имеют статус `unavailable`: в раннере нет загрузки без применения к базе
+и отдельного применения. Причина отказа называет этот разрыв. Границы
+операций описывает [совместимый цикл разработки](compatible-development-cycle.md).
 Старые имена не становятся алиасами.
 Верхнеуровневый `infobase` поддерживает только `origin`; другая цель
 не заменяется им молча. `run` не принимает `ifRev` и не выдаёт `rev`.

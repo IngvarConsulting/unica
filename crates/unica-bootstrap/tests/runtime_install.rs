@@ -1710,3 +1710,231 @@ fn an_invalid_ready_marker_makes_prefetch_report_a_download() {
     assert_eq!(downloader.calls(), 2, "invalid readiness forces a fetch");
     fs::remove_dir_all(&cache).ok();
 }
+
+/// Архив `zip` так, как его собирает издатель: каталоги отдельными записями,
+/// разделитель путей — прямая косая черта.
+fn zip_bytes(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    for (path, contents) in entries {
+        if path.ends_with('/') {
+            writer.add_directory(*path, options).expect("zip directory");
+            continue;
+        }
+        writer.start_file(*path, options).expect("zip entry");
+        writer.write_all(contents).expect("zip contents");
+    }
+    writer.finish().expect("finish zip").into_inner()
+}
+
+/// Подменить имя записи в готовом архиве: писатель `zip` не даёт ни повторить
+/// имя, ни выйти за корень, а проверять нужно именно такие архивы.
+fn rename_zip_entry(mut archive: Vec<u8>, from: &str, to: &str) -> Vec<u8> {
+    assert_eq!(from.len(), to.len(), "имя подменяется на месте");
+    let (from, to) = (from.as_bytes(), to.as_bytes());
+    let mut index = 0;
+    while index + from.len() <= archive.len() {
+        if &archive[index..index + from.len()] == from {
+            archive[index..index + from.len()].copy_from_slice(to);
+            index += from.len();
+        } else {
+            index += 1;
+        }
+    }
+    archive
+}
+
+fn zip_with_symlink() -> Vec<u8> {
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default();
+    writer
+        .add_symlink("v8-runner-x/v8-runner", "../../escape", options)
+        .expect("zip symlink");
+    writer.finish().expect("finish zip").into_inner()
+}
+
+/// Повтор имени, спрятанный за поддельной записью конца каталога в
+/// комментарии: поддельная запись объявляет столько записей, сколько имён
+/// видит читатель, и повтор прошёл бы, поверь установщик ей.
+fn zip_with_fake_end_record() -> Vec<u8> {
+    let mut fake = vec![0x50, 0x4b, 0x05, 0x06, 0, 0, 0, 0];
+    fake.extend_from_slice(&3u16.to_le_bytes());
+    fake.extend_from_slice(&3u16.to_le_bytes());
+    fake.extend_from_slice(&[0; 8]);
+    fake.extend_from_slice(&0u16.to_le_bytes());
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default();
+    for (path, contents) in RUNNER_FILES
+        .iter()
+        .copied()
+        .chain([("v8-runner-x/READMF.md", b"readme".as_slice())])
+    {
+        writer.start_file(path, options).expect("zip entry");
+        writer.write_all(contents).expect("zip contents");
+    }
+    writer.set_raw_comment(fake.into());
+    let archive = writer.finish().expect("finish zip").into_inner();
+    rename_zip_entry(archive, "v8-runner-x/READMF.md", "v8-runner-x/README.md")
+}
+
+/// `v8-runner` с 0.12.0 издаётся архивом: каталог платформы, бинарь и
+/// сопутствующие файлы. Манифест перечисляет каждый файл архива.
+fn manifest_with_zip_artifact(
+    core_archive: &[u8],
+    core_file: &[u8],
+    archive: &[u8],
+    files: &[(&str, &[u8])],
+) -> RuntimeManifest {
+    let mut manifest = manifest(core_archive, core_file);
+    let archive_hash = sha256(archive);
+    let declared = files
+        .iter()
+        .map(|(path, contents)| {
+            serde_json::json!({
+                "path": path,
+                "sha256": sha256(contents),
+                "executable": path.ends_with("/v8-runner")
+            })
+        })
+        .collect::<Vec<_>>();
+    let target = serde_json::json!({
+        "asset": {
+            "name": "v8-runner-windows-x86_64.zip",
+            "url": "https://github.com/IngvarConsulting/v8-runner-rust/releases/download/v0.12.0/v8-runner-windows-x86_64.zip",
+            "mediaType": "application/zip",
+            "sha256": archive_hash
+        },
+        "files": declared
+    });
+    manifest.artifacts.insert(
+        "v8-runner".to_owned(),
+        serde_json::from_value(serde_json::json!({
+            "version": "0.12.0",
+            "role": "engine",
+            "targets": {
+                "darwin-arm64": target.clone(),
+                "linux-x64": target.clone(),
+                "win-x64": target
+            }
+        }))
+        .expect("zip artifact fixture"),
+    );
+    manifest
+}
+
+const RUNNER_FILES: [(&str, &[u8]); 3] = [
+    ("v8-runner-x/v8-runner", b"runner-binary"),
+    ("v8-runner-x/README.md", b"readme"),
+    ("v8-runner-x/examples/v8project.yaml", b"workPath: build\n"),
+];
+
+fn install_zip_artifact(
+    label: &str,
+    archive: Vec<u8>,
+) -> (PathBuf, unica_bootstrap::Result<PathBuf>) {
+    let core = b"unica-runtime";
+    let core_archive = tar_gz(&[("bin/linux-x64/unica", core)]);
+    let mut manifest = manifest_with_zip_artifact(&core_archive, core, &archive, &RUNNER_FILES);
+    // Сумма архива — из замка; здесь она совпадает с принесёнными байтами,
+    // чтобы до отказа дошло дело распаковки, а не проверки суммы.
+    for target in manifest
+        .artifacts
+        .get_mut("v8-runner")
+        .unwrap()
+        .targets
+        .values_mut()
+    {
+        target.asset.sha256 = sha256(&archive);
+    }
+    let cache = temp_dir(&format!("zip-{label}"));
+    let downloader = Arc::new(AssetDownloader::new(vec![
+        ("unica-runtime-linux-x64.tar.gz", core_archive),
+        ("v8-runner-windows-x86_64.zip", archive),
+    ]));
+    let result = RuntimeInstaller::new(cache.clone(), "0.7.0", downloader).ensure_artifact(
+        &manifest,
+        "v8-runner",
+        HostTarget::LinuxX64,
+        &SilentDownload,
+    );
+    (cache, result)
+}
+
+#[test]
+fn a_publisher_zip_installs_every_declared_file() {
+    let archive = zip_bytes(&[
+        ("v8-runner-x/", b""),
+        ("v8-runner-x/examples/", b""),
+        RUNNER_FILES[0],
+        RUNNER_FILES[1],
+        RUNNER_FILES[2],
+    ]);
+    let (cache, result) = install_zip_artifact("valid", archive);
+    let root = result.expect("a publisher zip installs");
+
+    for (path, contents) in RUNNER_FILES {
+        assert_eq!(fs::read(root.join(path)).expect("delivered file"), contents);
+    }
+    assert!(contains_ready(&cache), "a verified zip becomes ready");
+    fs::remove_dir_all(&cache).ok();
+}
+
+#[test]
+fn a_publisher_zip_is_refused_when_unsafe_or_drifted() {
+    let complete = |extra: &[(&str, &[u8])]| {
+        let mut entries = RUNNER_FILES.to_vec();
+        entries.extend_from_slice(extra);
+        zip_bytes(&entries)
+    };
+    let cases = [
+        (
+            "traversal",
+            rename_zip_entry(
+                complete(&[("v8-runner-x/escapee", b"x")]),
+                "v8-runner-x/escapee",
+                "../../../../escapee",
+            ),
+        ),
+        (
+            "backslash",
+            rename_zip_entry(
+                complete(&[]),
+                "v8-runner-x/README.md",
+                "v8-runner-x\\README.md",
+            ),
+        ),
+        (
+            "duplicate",
+            rename_zip_entry(
+                complete(&[("v8-runner-x/READMF.md", b"readme")]),
+                "v8-runner-x/READMF.md",
+                "v8-runner-x/README.md",
+            ),
+        ),
+        ("extra", complete(&[("v8-runner-x/extra", b"extra")])),
+        ("missing", zip_bytes(&RUNNER_FILES[..2])),
+        (
+            "drifted",
+            zip_bytes(&[
+                RUNNER_FILES[0],
+                ("v8-runner-x/README.md", b"another readme"),
+                RUNNER_FILES[2],
+            ]),
+        ),
+        ("symlink", zip_with_symlink()),
+        ("fake-end-record", zip_with_fake_end_record()),
+        ("not-a-zip", b"not a zip at all".to_vec()),
+    ];
+
+    for (label, archive) in cases {
+        let (cache, result) = install_zip_artifact(label, archive);
+        assert!(result.is_err(), "{label} must be refused");
+        assert!(!contains_ready(&cache), "{label} published a ready marker");
+        assert!(
+            !cache.parent().unwrap().join("escapee").exists(),
+            "{label} wrote outside the cache"
+        );
+        fs::remove_dir_all(&cache).ok();
+    }
+}

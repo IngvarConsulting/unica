@@ -1,6 +1,6 @@
 #![allow(clippy::result_large_err)]
 //! `pull` — выгрузка базы в набор исходников рабочего пространства
-//! силами `v8-runner dump` (A-6 зонтика #871). Пара к `push`: тот
+//! силами `v8-runner pull` (A-6 зонтика #871). Пара к `push`: тот
 //! вносит исходники в базу, этот выносит базу в исходники.
 //!
 //! Аргументы закрыты: `force:true` обязателен, выгрузка всегда полная; `sourceSet` — имя
@@ -9,7 +9,7 @@
 //! и сверяет с ним. Частичная выгрузка по объектам за словарём: у неё свой
 //! словарь селекторов, и он не описан.
 //!
-//! Превью зовёт `dump --dry-run`: раннер называет набор, режим и целевой
+//! Превью зовёт `pull --force --dry-run`: раннер называет набор, режим и целевой
 //! каталог, ничего не записывая. Цель обязана лежать внутри рабочего
 //! пространства и наружу уходит относительным путём. Применение повторяет
 //! превью, сверяет забор ревизии, выгружает и пересчитывает файлы в цели
@@ -17,11 +17,11 @@
 //! строка наружу не идут.
 
 use super::protocol::InvocationRequest;
-use super::runner_011::Runner011ProcessRunner;
+use super::runner_012::Runner012ProcessRunner;
 use super::v13_infobase_exports::{
     digest_optional_workspace_file, digest_required_workspace_file, missing_runner_rejection,
-    resolve_bundled_runner, runner_rejection, valid_1c_identifier, CONFIG_NAME, LOCAL_CONFIG_NAME,
-    RUNNER_OUTPUT_LIMIT,
+    resolve_bundled_runner, runner_rejection, runner_start_rejection, valid_1c_identifier,
+    CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
 };
 use super::v13_source_set_name::{source_set_name_guidance, valid_source_set_name};
 use crate::application::invocation_store::ToolIdentity;
@@ -40,9 +40,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub(super) const OPERATION: &str = "pull";
-/// Имя команды в конверте раннера: словарь читается как слой и направление,
-/// раннер называет свои команды по-своему.
-const RUNNER_COMMAND: &str = "dump";
+/// Имя команды раннера и в командной строке, и в конверте: с 0.12 раннер
+/// называет её словом словаря.
+const RUNNER_COMMAND: &str = "pull";
 /// Предел пересчёта файлов в цели: квитанция бережёт время.
 const FILE_COUNT_LIMIT: u64 = 1_000_000;
 
@@ -163,7 +163,7 @@ impl PreparedSourceExport {
     }
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        execute_with_runner(self, &Runner011ProcessRunner, cancellation)
+        execute_with_runner(self, &Runner012ProcessRunner, cancellation)
     }
 }
 
@@ -584,14 +584,17 @@ fn invoke_runner(
             .to_string(),
         "--json-message".to_string(),
         RUNNER_COMMAND.to_string(),
-        "--mode".to_string(),
-        prepared.arguments.mode.as_str().to_string(),
     ];
+    // Набор — позиционный аргумент; `--source-set` и `--mode` у раннера 0.12 скрытые
+    // синонимы прежнего словаря. Полная выгрузка — `--force`, инкрементная — без ключа.
     if let Some(source_set) = &prepared.arguments.source_set {
-        args.extend(["--source-set".to_string(), source_set.clone()]);
+        args.push(source_set.clone());
     }
     if let Some(extension) = &prepared.arguments.extension {
         args.extend(["--extension".to_string(), extension.clone()]);
+    }
+    if prepared.arguments.mode == ExportMode::Full {
+        args.push("--force".to_string());
     }
     if dry_run {
         args.push("--dry-run".to_string());
@@ -607,12 +610,7 @@ fn invoke_runner(
             timeout: None,
             cancellation: cancellation.clone(),
         })
-        .map_err(|error| {
-            reject_absent_runner(format!(
-                "failed to start bundled v8-runner: {}",
-                redactor(&error)
-            ))
-        })?;
+        .map_err(|error| runner_start_rejection(Some(OPERATION.to_string()), &error))?;
     parse_runner_output(output)
 }
 
@@ -645,8 +643,9 @@ fn parse_runner_output(output: ProcessOutput) -> Result<Value, DomainResult> {
         ));
     }
     if !output.status_success || envelope["ok"] != true {
-        // Снимок отказа у `dump` пишет `provider_dispatched: true` и до
-        // запуска платформы (v8-runner 0.9.0): отказ идёт по коду раннера.
+        // `provider_dispatched` отказа не читается: v8-runner 0.9.0 писал `true` и
+        // до запуска платформы, 0.12 пишет `false` у отказа до исполнителя. Отказ
+        // идёт по коду раннера.
         let code = envelope["error"]["code"]
             .as_str()
             .unwrap_or("provider_failed");
@@ -801,8 +800,8 @@ mod tests {
         }
     }
 
-    /// Конверт `dump` раннера 0.9.0, снятый с живой пробы: набор, режим
-    /// прописными и абсолютный целевой каталог.
+    /// Конверт `pull` раннера 0.12.0 (форма та же, что у `dump` 0.9.0 с живой пробы):
+    /// набор, режим прописными и абсолютный целевой каталог.
     fn envelope(
         root: &Path,
         set: &str,
@@ -828,7 +827,7 @@ mod tests {
         }
         json!({
             "ok": true,
-            "command": "dump",
+            "command": "pull",
             "duration_ms": 2,
             "data": data,
             "warnings": [],
@@ -965,7 +964,7 @@ mod tests {
         assert!(!encoded.contains("1cv8"), "platform path leaked: {encoded}");
         assert!(runner
             .joined_args(0)
-            .ends_with("--json-message dump --mode full --dry-run"));
+            .ends_with("--json-message pull --force --dry-run"));
     }
 
     #[test]
@@ -994,9 +993,9 @@ mod tests {
         );
         assert!(result.ok, "{result:?}");
         assert_eq!(result.data.as_ref().unwrap()["plan"]["extension"], "Sales");
-        assert!(runner.joined_args(0).ends_with(
-            "dump --mode incremental --source-set ext-sales --extension Sales --dry-run"
-        ));
+        assert!(runner
+            .joined_args(0)
+            .ends_with("--json-message pull ext-sales --extension Sales --dry-run"));
     }
 
     #[test]
@@ -1032,7 +1031,7 @@ mod tests {
         assert_eq!(result.data.as_ref().unwrap()["plan"]["target"], "Доработки");
         assert!(runner
             .joined_args(0)
-            .ends_with("--source-set Доработки --extension Доработки --dry-run"));
+            .ends_with("pull Доработки --extension Доработки --force --dry-run"));
         assert!(result.changed.is_empty());
         assert!(!root.path().join("Доработки").exists());
     }
@@ -1191,13 +1190,14 @@ mod tests {
 
     #[test]
     fn runner_refusals_keep_their_outcome() {
-        // Снимок отказа `dump` у раннера 0.9.0 пишет `provider_dispatched: true`
-        // до запуска платформы; отказ идёт по коду.
+        // Снимок отказа `dump` у раннера 0.9.0 писал `provider_dispatched: true`
+        // до запуска платформы (0.12 пишет `false`); отказ идёт по коду, а не по
+        // этому признаку.
         let root = workspace();
         let failure = |code: &str, message: &str| {
             json!({
                 "ok": false,
-                "command": "dump",
+                "command": "pull",
                 "duration_ms": 0,
                 "data": {"ok": false, "provider_dispatched": true, "source_set": "ext-sales", "mode": "FULL", "target_path": "", "message": message},
                 "warnings": [],

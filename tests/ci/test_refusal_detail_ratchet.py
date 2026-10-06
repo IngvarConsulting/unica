@@ -25,8 +25,10 @@ SOURCE_ROOT = REPO_ROOT / "crates" / "unica-coder" / "src"
 # версия не читается, процесс не стартовал — `provider_absent`), затем разбор
 # адреса и содержимого дескриптора у читателей (`source_unreadable`) и два
 # пробела профиля платформы (`provider_absent`). Проверка области поиска имён
-# также отвечает `not_found`, когда набор исходников не допущен.
-UNDETAILED_PROVIDER_UNAVAILABLE_CEILING = 105
+# также отвечает `not_found`, когда набор исходников не допущен. С раннером
+# 0.12 снят адаптер `upload` (#1246) вместе с его голым отказом обнаружения
+# рабочего пространства.
+UNDETAILED_PROVIDER_UNAVAILABLE_CEILING = 104
 
 TEST_TAIL = re.compile(r"#\[cfg\(test\)\]\s*(?:pub(?:\(crate\))?\s+)?mod\s+\w+")
 STRING_LITERAL = re.compile(r'"(?:\\.|[^"\\])*"')

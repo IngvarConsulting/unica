@@ -210,7 +210,8 @@ def load_bundle(bundle_root: Path) -> tuple[dict, list[tuple[PurePosixPath, Path
 
         relative = safe_relative_path(tool.get("binaryPath", ""))
         expected_prefix = PurePosixPath("bin") / target
-        if relative.parent != expected_prefix:
+        # Архив издателя приносит бинарь в своём каталоге внутри цели.
+        if expected_prefix not in relative.parents:
             raise SystemExit(f"runtime tool {name} is outside {expected_prefix}: {relative}")
         if relative.as_posix() in seen_paths:
             raise SystemExit(f"duplicate runtime binary path: {relative}")

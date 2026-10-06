@@ -3129,7 +3129,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "waitTimeoutMs",
-        "Integer 1..86400000 milliseconds bounding a waitForExit launch; it is not the runner's overall timeout, which is execution_timeout in v8project.yaml",
+        "Integer 1..86400000 milliseconds bounding a waitForExit launch; it bounds only that wait, and v8-runner has no overall command deadline",
     ),
     (
         "webClient",

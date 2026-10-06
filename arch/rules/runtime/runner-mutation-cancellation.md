@@ -1,7 +1,6 @@
 ---
 id: INV.RUNTIME.RUNNER-MUTATION-CANCELLATION
 check:
-  - crates/unica-coder/src/infrastructure/daemon/v13_cf_import.rs::upload_detaches_only_its_executing_runner_call
   - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::push_detaches_only_its_executing_runner_call
   - crates/unica-coder/src/infrastructure/daemon/v13_extensions.rs::only_mutating_extension_calls_detach_from_cancellation
   - crates/unica-coder/src/infrastructure/daemon/v13_infobase_create.rs::cancellation_after_create_keeps_the_confirmation_probe_and_receipt

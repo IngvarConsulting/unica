@@ -3,7 +3,7 @@
 // that value intact avoids a second error model at this adapter boundary.
 
 use super::protocol::InvocationRequest;
-use super::runner_011::Runner011ProcessRunner;
+use super::runner_012::Runner012ProcessRunner;
 use crate::application::invocation_store::ToolIdentity;
 use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
 use crate::domain::invocation::{DomainResult, SafeIdentityHash};
@@ -63,7 +63,7 @@ impl ExportOperation {
     /// было случайным и держать его незачем.
     const fn runner_command(self) -> &'static str {
         match self {
-            Self::Configuration => "infobase.configuration.export",
+            Self::Configuration => "download",
             Self::Infobase => "infobase.dump",
             Self::Restore => "infobase.restore",
         }
@@ -222,7 +222,7 @@ impl PreparedInfobaseExport {
     }
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        execute_with_runner(self, &Runner011ProcessRunner, cancellation)
+        execute_with_runner(self, &Runner012ProcessRunner, cancellation)
     }
 }
 
@@ -725,25 +725,25 @@ fn invoke_runner(
             .display()
             .to_string(),
         "--json-message".to_string(),
-        "infobase".to_string(),
     ];
     match prepared.operation {
         ExportOperation::Configuration => {
-            args.extend(["configuration".to_string(), "export".to_string()]);
-            args.extend([
-                "--state".to_string(),
-                prepared
-                    .arguments
-                    .state
-                    .clone()
-                    .expect("configuration state"),
-            ]);
+            args.push("download".to_string());
+            // Рабочее состояние раннер 0.12 берёт без ключа (`--state working` у него
+            // скрытый синоним), конфигурацию базы данных — по `--state db`.
+            match prepared.arguments.state.as_deref() {
+                Some("working") => {}
+                Some("database") => args.extend(["--state".to_string(), "db".to_string()]),
+                _ => unreachable!("download state is validated as working or database"),
+            }
             if let Some(extension) = &prepared.arguments.extension {
                 args.extend(["--extension".to_string(), extension.clone()]);
             }
         }
-        ExportOperation::Infobase => args.push("dump".to_string()),
-        ExportOperation::Restore => args.push("restore".to_string()),
+        ExportOperation::Infobase => args.extend(["infobase".to_string(), "dump".to_string()]),
+        ExportOperation::Restore => {
+            args.extend(["infobase".to_string(), "restore".to_string()]);
+        }
     }
     if prepared.operation.writes_named_file() {
         args.extend([
@@ -786,16 +786,9 @@ fn invoke_runner(
     let output = match output {
         Ok(output) => output,
         Err(error) => {
-            if error.starts_with(CANCELLED_PREFIX) {
-                return Err(reject(
-                    prepared.operation,
-                    RefusalCode::Cancelled,
-                    "cancelled before provider launch",
-                ));
-            }
-            return Err(missing_runner_rejection(
+            return Err(runner_start_rejection(
                 Some(prepared.operation.name().to_string()),
-                format!("failed to start bundled v8-runner: {}", redactor(&error)),
+                &error,
             ));
         }
     };
@@ -871,22 +864,34 @@ fn parse_runner_output(
 
 /// Полный словарь кодов, которые раннер кладёт в `error.code`.
 ///
-/// Он закрытый и короткий: девять значений из `cli_error_contract` раннера, одни и те
-/// же у CLI и у его MCP-поверхности. Набор существует только для стража ниже: в
+/// Он закрытый: пятнадцать значений `ErrorCode` конверта раннера 0.12, одни и те же
+/// у CLI и у его MCP-поверхности. Набор существует только для стража ниже: в
 /// продуктовом пути отображение обязано иметь запасную ветку на случай кода, которого
 /// мы ещё не знаем, поэтому сам список ему не нужен.
 #[cfg(test)]
-const RUNNER_WIRE_CODES: [&str; 9] = [
+const RUNNER_WIRE_CODES: [&str; 15] = [
     "capability_unavailable",
+    "subject",
+    "target",
+    "soon",
     "cancelled",
     "environment_unavailable",
     "invalid_argument",
+    "unsupported_value",
     "invalid_output",
     "platform_failure",
     "runtime_failure",
     "timed_out",
     "workspace_busy",
+    "non_fast_forward",
+    "no_memory",
 ];
+
+/// Коды раннера 0.12 без производителя: их род заведён под будущие сравнение
+/// поколений и память по базе. Смысла им Unica не приписывает — они идут запасной
+/// веткой как неклассифицированный сбой, пока раннер не начнёт их выдавать.
+#[cfg(test)]
+const RUNNER_CODES_WITHOUT_PRODUCER: [&str; 2] = ["non_fast_forward", "no_memory"];
 
 /// Отображает код раннера в наш отказ, а значит и в исход для агента.
 ///
@@ -923,7 +928,7 @@ pub(super) fn resolve_bundled_runner(cwd: &Path) -> Result<BundledRunner, String
         resolve_bundled_tool(&plugin_root, "v8-runner", true).map_err(|error| redactor(&error))?;
     let version =
         bundled_tool_version(&plugin_root, "v8-runner").map_err(|error| redactor(&error))?;
-    super::runner_011::check_version(&version)?;
+    super::runner_012::check_version(&version)?;
     Ok(BundledRunner { tool, version })
 }
 
@@ -935,6 +940,28 @@ pub(super) fn missing_runner_rejection(
     message: impl Into<String>,
 ) -> DomainResult {
     DomainResult::canonical_rejection_detailed(at, RefusalDetail::ProviderAbsent, message)
+}
+
+/// Отказ до запуска раннера: отмена, отказ проектного файла или раннер не стартовал.
+///
+/// Маршрут один на все операции `run`: проектный файл, который адаптер 0.12 не может
+/// передать раннеру, правится человеком или агентом в рабочем пространстве, и отказ
+/// говорит об этом, а не о пропавшем поставщике.
+pub(super) fn runner_start_rejection(at: Option<String>, error: &str) -> DomainResult {
+    if error.starts_with(CANCELLED_PREFIX) {
+        return DomainResult::canonical_rejection(
+            at,
+            RefusalCode::Cancelled,
+            "cancelled before provider launch",
+        );
+    }
+    if let Some(reason) = super::runner_012::config_refusal(error) {
+        return DomainResult::canonical_rejection(at, RefusalCode::InvalidSource, redactor(reason));
+    }
+    missing_runner_rejection(
+        at,
+        format!("failed to start bundled v8-runner: {}", redactor(error)),
+    )
 }
 
 /// Отказ по коду раннера: с уточнением, когда словарь его знает, иначе по коду.
@@ -957,6 +984,11 @@ pub(super) fn map_runner_code(code: &str) -> RefusalCode {
         "environment_unavailable" => RefusalCode::ProviderUnavailable,
         // У раннера нет адаптера под эту операцию: повторять и править вызов незачем.
         "capability_unavailable" => RefusalCode::UnsupportedOperation,
+        // Предмет не тот, цель не та, или раннер пока этого не умеет: правкой
+        // значения тот же вызов не пройдёт, нужна другая операция.
+        "subject" | "target" | "soon" => RefusalCode::UnsupportedOperation,
+        // Значение названо верно по форме, но раннер его не принимает.
+        "unsupported_value" => RefusalCode::BadValue,
         "workspace_busy" => RefusalCode::ConcurrentChange,
         "invalid_argument" => RefusalCode::BadValue,
         // Раннер отдал негодный результат: аргументы вызывающего тут не виноваты.
@@ -1071,16 +1103,36 @@ fn validate_preview(
 
 /// Validate the pinned runner's structured receipt. Prose and absolute override paths
 /// stay private; the public receipt exposes only the validated provider facts.
+///
+/// Runner 0.12 adds `endpoint` once an agent session was opened, so an apply may
+/// carry it and its preview may not. It is validated and left out of the returned
+/// receipt: the preview and apply receipts compare by the selected provider.
 pub(super) fn validate_provider_receipt(value: &Value) -> Result<Value, &'static str> {
     let object = value
         .as_object()
         .ok_or("v8-runner omitted its provider receipt")?;
     if object
         .keys()
-        .any(|key| !["selected", "origin", "skipped"].contains(&key.as_str()))
+        .any(|key| !["selected", "origin", "skipped", "endpoint"].contains(&key.as_str()))
         || !value["selected"].as_str().is_some_and(valid_provider_id)
     {
         return Err("v8-runner returned an invalid selected provider");
+    }
+    if let Some(endpoint) = object.get("endpoint") {
+        let valid = endpoint.as_object().is_some_and(|endpoint| {
+            endpoint.len() == 2
+                && matches!(
+                    endpoint.get("mode").and_then(Value::as_str),
+                    Some("managed" | "attached" | "gate")
+                )
+                && endpoint
+                    .get("address")
+                    .and_then(Value::as_str)
+                    .is_some_and(|address| !address.is_empty() && address.len() <= 512)
+        });
+        if !valid {
+            return Err("v8-runner returned an invalid provider endpoint");
+        }
     }
     let origin = value["origin"]
         .as_object()
@@ -1113,7 +1165,12 @@ pub(super) fn validate_provider_receipt(value: &Value) -> Result<Value, &'static
             return Err("v8-runner returned invalid skipped providers");
         }
     }
-    Ok(value.clone())
+    let mut receipt = value.clone();
+    receipt
+        .as_object_mut()
+        .expect("validated receipt object")
+        .remove("endpoint");
+    Ok(receipt)
 }
 
 fn valid_provider_id(value: &str) -> bool {
@@ -1298,6 +1355,11 @@ mod tests {
     fn every_runner_wire_code_maps_away_from_the_fallback() {
         for code in RUNNER_WIRE_CODES {
             let mapped = map_runner_code(code);
+            if RUNNER_CODES_WITHOUT_PRODUCER.contains(&code) {
+                // Смысл приписывать нечему: раннер этих кодов пока не выдаёт.
+                assert_eq!(mapped, RefusalCode::ProviderFailed, "{code}");
+                continue;
+            }
             if code == "runtime_failure" {
                 // Единственный код, для которого запасной отказ и есть верный ответ.
                 assert_eq!(mapped, RefusalCode::ProviderFailed, "{code}");
@@ -1521,7 +1583,7 @@ mod tests {
 
     fn preview_envelope(output: &Path) -> Value {
         json!({
-            "command": "infobase.configuration.export",
+            "command": "download",
             "data": {
                 "mode": "preview",
                 "provider_dispatched": false,
@@ -1539,7 +1601,7 @@ mod tests {
 
     fn apply_envelope(output: &Path) -> Value {
         json!({
-            "command": "infobase.configuration.export",
+            "command": "download",
             "data": {
                 "mode": "apply",
                 "state": "working",
@@ -1555,7 +1617,7 @@ mod tests {
     }
 
     #[test]
-    fn runner_011_provider_receipt_replaces_selection_for_all_three_operations() {
+    fn runner_012_provider_receipt_replaces_selection_for_all_three_operations() {
         let root = tempfile::tempdir().unwrap();
         for operation in [
             ExportOperation::Configuration,
@@ -1585,7 +1647,7 @@ mod tests {
             }
             assert!(
                 validate_preview(&prepared, &preview).is_ok(),
-                "{operation:?}: valid published 0.11 receipt rejected"
+                "{operation:?}: valid published 0.12 receipt rejected"
             );
         }
     }
@@ -1747,7 +1809,7 @@ mod tests {
             let envelope = if operation == ExportOperation::Restore {
                 restore_apply_envelope(&input, "replace", "restored")
             } else {
-                json!({"ok":true,"command":"infobase.configuration.export","data":{}})
+                json!({"ok":true,"command":"download","data":{}})
             };
             let runner = SequenceRunner::new(vec![process(envelope)]);
             let cancellation = CancellationToken::new();
@@ -2000,6 +2062,101 @@ mod tests {
         assert_eq!(result.data.as_ref().unwrap()["artifact"]["size"], 11);
     }
 
+    /// Раннер 0.12 называет в квитанции применения точку входа сессии агента, а в
+    /// квитанции превью её нет: сессия на превью не открывается. Это та же
+    /// квитанция, а неверная точка входа — негодный ответ.
+    #[test]
+    fn apply_receipt_with_a_session_endpoint_matches_its_preview() {
+        let root = tempfile::tempdir().unwrap();
+        let prepared = prepared(root.path(), false);
+        let output = normalize_path_identity(&prepared.arguments.named_file).unwrap();
+        let plan = validate_preview(&prepared, &preview_envelope(&output)).unwrap();
+        for mode in ["managed", "attached", "gate"] {
+            let mut applied = apply_envelope(&output);
+            applied["data"]["provider"]["endpoint"] =
+                json!({"mode": mode, "address": "127.0.0.1:1543"});
+            assert!(validate_apply(&prepared, &plan, &applied).is_ok(), "{mode}");
+        }
+        for endpoint in [
+            json!({"mode": "remote", "address": "127.0.0.1:1543"}),
+            json!({"mode": "managed", "address": ""}),
+            json!({"mode": "managed", "address": "h:1", "user": "admin"}),
+            json!("127.0.0.1:1543"),
+        ] {
+            let mut applied = apply_envelope(&output);
+            applied["data"]["provider"]["endpoint"] = endpoint.clone();
+            assert!(
+                validate_apply(&prepared, &plan, &applied).is_err(),
+                "{endpoint}"
+            );
+        }
+        let mut other = apply_envelope(&output);
+        other["data"]["provider"] = json!({"selected": "ibcmd", "origin": {"kind": "default"},
+            "endpoint": {"mode": "gate", "address": "127.0.0.1:1543"}});
+        assert!(validate_apply(&prepared, &plan, &other).is_err());
+    }
+
+    /// Рабочее состояние раннер 0.12 выгружает без ключа: `--state working` у него
+    /// скрытый синоним прежнего словаря, и адаптер его не произносит.
+    #[test]
+    fn working_state_download_uses_no_hidden_runner_synonym() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join(CONFIG_NAME), "format: DESIGNER\n").unwrap();
+        let prepared = prepared(root.path(), true);
+        let output = normalize_path_identity(&prepared.arguments.named_file).unwrap();
+        let tool = BundledTool {
+            program: root.path().join("v8-runner"),
+            warnings: Vec::new(),
+            missing: None,
+        };
+        let runner = SequenceRunner::new(vec![process(preview_envelope(&output))]);
+        invoke_runner(&prepared, &tool, &runner, &CancellationToken::new(), true).unwrap();
+        let args = runner.calls.lock().unwrap()[0].args.clone();
+        assert_eq!(
+            args[3..],
+            [
+                "download".to_string(),
+                "--output".to_string(),
+                prepared.arguments.named_file.display().to_string(),
+                "--dry-run".to_string(),
+            ]
+        );
+    }
+
+    /// Проектный файл, который адаптер не передаёт раннеру, — отказ источника с
+    /// причиной, а не «поставщика нет».
+    #[test]
+    fn a_refused_project_config_is_not_reported_as_an_absent_runner() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(
+            root.path().join(CONFIG_NAME),
+            "format: DESIGNER\nworkPath: build\nexecution_timeout: 300000\n",
+        )
+        .unwrap();
+        let prepared = prepared(root.path(), true);
+        let tool = BundledTool {
+            program: root.path().join("v8-runner-that-must-not-start"),
+            warnings: Vec::new(),
+            missing: None,
+        };
+        let error = invoke_runner(
+            &prepared,
+            &tool,
+            &Runner012ProcessRunner,
+            &CancellationToken::new(),
+            true,
+        )
+        .unwrap_err();
+        let diagnostic = &error.diagnostics[0];
+        assert_eq!(diagnostic["code"], "invalid_source", "{error:?}");
+        assert!(diagnostic.get("detailCode").is_none(), "{error:?}");
+        assert!(error.summary.contains("execution_timeout"), "{error:?}");
+        assert!(!error.summary.contains("failed to start"), "{error:?}");
+
+        let absent = runner_start_rejection(Some("download".into()), "No such file or directory");
+        assert_eq!(absent.diagnostics[0]["detailCode"], "provider_absent");
+    }
+
     #[test]
     fn apply_rejects_a_runner_receipt_for_a_different_output() {
         let root = tempfile::tempdir().unwrap();
@@ -2089,11 +2246,9 @@ mod tests {
                     .to_str()
                     .unwrap(),
                 "--json-message",
-                "infobase",
-                "configuration",
-                "export",
+                "download",
                 "--state",
-                "database",
+                "db",
                 "--extension",
                 "SalesAddon",
                 "--output",
@@ -2148,7 +2303,7 @@ mod tests {
         fs::write(root.path().join(CONFIG_NAME), "format: DESIGNER\n").unwrap();
         let prepared = prepared(root.path(), true);
         let runner = SequenceRunner::new(vec![failed_process(json!({
-            "command": "infobase.configuration.export",
+            "command": "download",
             "data": {
                 "mode": "preview",
                 "provider_dispatched": false,

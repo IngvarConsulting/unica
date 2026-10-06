@@ -452,6 +452,9 @@ impl EngineOrder {
             Some(DeliveryForm::Archive) => {
                 crate::application::shared_work::DeliveryFormIdentity::Archive
             }
+            Some(DeliveryForm::ZipArchive) => {
+                crate::application::shared_work::DeliveryFormIdentity::ZipArchive
+            }
             Some(DeliveryForm::File) => crate::application::shared_work::DeliveryFormIdentity::File,
             None => {
                 return Err(DeliveryFailure::new(

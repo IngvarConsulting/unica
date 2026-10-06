@@ -1,11 +1,11 @@
 #![allow(clippy::result_large_err)]
 //! `push` — импорт исходников рабочего пространства в базу силами
-//! `v8-runner build` (A-4 зонтика #871). Пара к `pull`: тот выносит
+//! `v8-runner push` (A-4 зонтика #871). Пара к `pull`: тот выносит
 //! базу в исходники, этот вносит исходники в базу.
 //!
 //! Аргументы закрыты: `sourceSet` — имя одного объявленного набора (без него
 //! импортируются все), `force:true` обязателен; `full` — сбросить кэш изменений раннера и
-//! загрузить всё целиком. Превью зовёт `build --dry-run`: раннер выбирает
+//! загрузить всё целиком. Превью зовёт `push --dry-run`: раннер выбирает
 //! для каждого набора режим (`full` или `partial` по своим правилам частичной
 //! загрузки), не запуская конфигуратор. Применение повторяет превью, сверяет
 //! забор ревизии и требует тот же состав наборов и те же режимы: иной режим
@@ -16,14 +16,15 @@
 //! идёт.
 
 use super::protocol::InvocationRequest;
-use super::runner_011::Runner011ProcessRunner;
+use super::runner_012::Runner012ProcessRunner;
 use super::v13_infobase_exports::{
     digest_optional_workspace_file, digest_required_workspace_file, missing_runner_rejection,
-    resolve_bundled_runner, runner_rejection, CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
+    resolve_bundled_runner, runner_rejection, runner_start_rejection, CONFIG_NAME,
+    LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
 };
 use super::v13_source_set_name::{source_set_name_guidance, valid_source_set_name};
 use crate::application::invocation_store::ToolIdentity;
-use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
+use crate::domain::cancellation::CancellationToken;
 use crate::domain::invocation::{DomainResult, SafeIdentityHash};
 use crate::domain::refusal::RefusalCode;
 use crate::domain::workspace::WorkspaceContext;
@@ -37,9 +38,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub(super) const OPERATION: &str = "push";
-/// Имя команды в конверте раннера: словарь читается как слой и направление,
-/// раннер называет свои команды по-своему.
-const RUNNER_COMMAND: &str = "build";
+/// Имя команды раннера и в командной строке, и в конверте: с 0.12 раннер
+/// называет её словом словаря.
+const RUNNER_COMMAND: &str = "push";
 const STEPS_MAX: usize = 64;
 
 #[derive(Debug, Clone)]
@@ -134,7 +135,7 @@ impl PreparedSourceImport {
     }
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        execute_with_runner(self, &Runner011ProcessRunner, cancellation)
+        execute_with_runner(self, &Runner012ProcessRunner, cancellation)
     }
 }
 
@@ -322,7 +323,7 @@ fn planned_steps(envelope: &Value) -> Result<Vec<PlannedStep>, DomainResult> {
         .ok_or_else(|| {
             reject(
                 RefusalCode::InvalidResult,
-                "v8-runner build answered with an empty or oversized step list",
+                "v8-runner push answered with an empty or oversized step list",
             )
         })?;
     let mut planned: Vec<PlannedStep> = Vec::with_capacity(steps.len());
@@ -333,20 +334,20 @@ fn planned_steps(envelope: &Value) -> Result<Vec<PlannedStep>, DomainResult> {
             .ok_or_else(|| {
                 reject(
                     RefusalCode::InvalidResult,
-                    "v8-runner build reported a step without a valid source set name",
+                    "v8-runner push reported a step without a valid source set name",
                 )
             })?
             .to_string();
         if planned.iter().any(|step| step.source_set == source_set) {
             return Err(reject(
                 RefusalCode::InvalidResult,
-                format!("v8-runner build reported source set `{source_set}` twice"),
+                format!("v8-runner push reported source set `{source_set}` twice"),
             ));
         }
         if step["ok"] != true {
             return Err(reject(
                 RefusalCode::InvalidResult,
-                format!("v8-runner build reported success with a failed step for `{source_set}`"),
+                format!("v8-runner push reported success with a failed step for `{source_set}`"),
             ));
         }
         let mode = StepMode::parse(&step["mode"]).ok_or_else(|| {
@@ -358,7 +359,7 @@ fn planned_steps(envelope: &Value) -> Result<Vec<PlannedStep>, DomainResult> {
             } else {
                 reject(
                     RefusalCode::InvalidResult,
-                    format!("v8-runner build reported an unknown mode for `{source_set}`"),
+                    format!("v8-runner push reported an unknown mode for `{source_set}`"),
                 )
             }
         })?;
@@ -543,11 +544,13 @@ fn invoke_runner(
         "--json-message".to_string(),
         RUNNER_COMMAND.to_string(),
     ];
+    // Набор — позиционный аргумент: `--source-set` и `--full-rebuild` у раннера 0.12
+    // скрытые синонимы прежнего словаря.
     if let Some(source_set) = &prepared.arguments.source_set {
-        args.extend(["--source-set".to_string(), source_set.clone()]);
+        args.push(source_set.clone());
     }
     if prepared.arguments.full_rebuild {
-        args.push("--full-rebuild".to_string());
+        args.push("--full".to_string());
     }
     if dry_run {
         args.push("--dry-run".to_string());
@@ -569,15 +572,7 @@ fn invoke_runner(
                 cancellation.protect_process_on_spawn()
             },
         })
-        .map_err(|error| {
-            if error.starts_with(CANCELLED_PREFIX) {
-                return reject(RefusalCode::Cancelled, "cancelled before provider launch");
-            }
-            reject_absent_runner(format!(
-                "failed to start bundled v8-runner: {}",
-                redactor(&error)
-            ))
-        })?;
+        .map_err(|error| runner_start_rejection(Some(OPERATION.to_string()), &error))?;
     parse_runner_output(output)
 }
 
@@ -763,12 +758,12 @@ mod tests {
         }
     }
 
-    /// Конверт `build` раннера 0.9.0, снятый с живой пробы: шаг на набор с
-    /// режимом, `partial` приходит объектом с числом файлов.
+    /// Конверт `push` раннера 0.12.0 (форма шагов та же, что у `build` 0.9.0 с живой
+    /// пробы): шаг на набор с режимом, `partial` приходит объектом с числом файлов.
     fn envelope(steps: &[(&str, Value)], dispatched: bool) -> Value {
         json!({
             "ok": true,
-            "command": "build",
+            "command": "push",
             "duration_ms": 4,
             "data": {
                 "ok": true,
@@ -910,7 +905,7 @@ mod tests {
         assert!(!encoded.contains("--config"));
         assert!(runner
             .joined_args(0)
-            .ends_with("--json-message build --dry-run"));
+            .ends_with("--json-message push --dry-run"));
     }
 
     #[test]
@@ -934,7 +929,7 @@ mod tests {
         assert!(result.summary.contains("source set `ext-sales`"));
         assert!(runner
             .joined_args(0)
-            .ends_with("build --source-set ext-sales --full-rebuild --dry-run"));
+            .ends_with("push ext-sales --full --dry-run"));
 
         // Частичный план вопреки полной пересборке — не наш план.
         let runner = SequenceRunner::new(vec![process(
@@ -979,7 +974,7 @@ mod tests {
             );
             assert!(runner
                 .joined_args(0)
-                .ends_with(&format!("build --source-set {name} --dry-run")));
+                .ends_with(&format!("push {name} --dry-run")));
             assert!(result.changed.is_empty());
         }
     }
@@ -1082,7 +1077,7 @@ mod tests {
         assert!(result.ok, "{result:?}");
         assert_eq!(runner.call_count(), 2);
         assert!(runner.joined_args(0).ends_with("--dry-run"));
-        assert!(runner.joined_args(1).ends_with("--json-message build"));
+        assert!(runner.joined_args(1).ends_with("--json-message push"));
         let data = result.data.as_ref().unwrap();
         assert_eq!(data["providerDispatched"], true);
         assert_eq!(data["steps"][1]["mode"], "partial");
@@ -1133,7 +1128,7 @@ mod tests {
         let failure = |code: &str| {
             json!({
                 "ok": false,
-                "command": "build",
+                "command": "push",
                 "duration_ms": 0,
                 "data": {"ok": false, "provider_dispatched": true, "steps": [
                     {"source_set": "main", "mode": "full", "ok": false, "message": "refused", "duration_ms": 0}

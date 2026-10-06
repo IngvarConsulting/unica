@@ -11,6 +11,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -237,6 +238,12 @@ class BuildUnicaToolsTests(unittest.TestCase):
                     self.assertEqual(tool["assetStrategy"], "archive-release-asset")
                     self.assertEqual(asset["assetName"], f"rlm-tools-bsl-{target}.tar.gz")
                     self.assertEqual(asset["archiveBinary"], tool["binaryName"] + exe)
+                elif tool["name"] == "v8-runner":
+                    # Архив издателя хранит бинарь в своём каталоге.
+                    self.assertEqual(tool["assetStrategy"], "upstream-archive-release-asset")
+                    self.assertTrue(
+                        asset["archiveBinary"].endswith(f"/{tool['binaryName']}{exe}")
+                    )
                 else:
                     self.assertEqual(tool["assetStrategy"], "direct-release-asset")
                     self.assertEqual(asset["assetName"], f"{tool['binaryName']}-{target}{exe}")
@@ -323,7 +330,8 @@ class BuildUnicaToolsTests(unittest.TestCase):
 
         self.assertEqual(runner["repository"], "https://github.com/IngvarConsulting/v8-runner-rust")
         self.assertEqual(runner["assetRepository"], runner["repository"])
-        self.assertEqual(runner["assetStrategy"], "direct-release-asset")
+        # Издатель выпускает раннер только архивами: бинарь выбирается внутри архива.
+        self.assertEqual(runner["assetStrategy"], "upstream-archive-release-asset")
         self.assertEqual(runner["license"], "AGPL-3.0-only")
 
         # Тег, версия и релиз не могут разойтись между собой.
@@ -331,12 +339,16 @@ class BuildUnicaToolsTests(unittest.TestCase):
         self.assertEqual(runner["assetTag"], runner["sourceTag"])
         self.assertRegex(runner["sourceCommit"], r"\A[0-9a-f]{40}\Z")
 
-        # Каждая объявленная цель несёт имя ассета и его хеш: без этого поставка
-        # перестаёт быть проверяемой, какой бы версия ни была.
+        # Каждая объявленная цель несёт имя архива, его хеш и размер и называет бинарь
+        # внутри архива: без этого поставка перестаёт быть проверяемой, какой бы
+        # версия ни была.
         self.assertEqual(set(runner["assets"]), set(lock["targets"]))
         for target, asset in runner["assets"].items():
-            self.assertTrue(asset["assetName"], target)
+            self.assertRegex(asset["assetName"], r"\.(tar\.gz|zip)\Z", target)
             self.assertRegex(asset["sha256"], r"\A[0-9a-f]{64}\Z", target)
+            self.assertIsInstance(asset["size"], int, target)
+            self.assertGreater(asset["size"], 0, target)
+            self.assertRegex(asset["archiveBinary"], r"\A[^/\\]+/v8-runner(\.exe)?\Z", target)
 
     def test_checked_in_rlm_tools_select_one_build_3_archive_per_target(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
@@ -546,6 +558,170 @@ class BuildUnicaToolsTests(unittest.TestCase):
                 "rlm-bsl-mcp": "payload/rlm-bsl-mcp",
             },
         )
+
+    def build_with_upstream_archive(
+        self, archive_path: Path, *, asset_name: str, binary: str, exe: str = ""
+    ) -> tuple[dict, Path]:
+        module = load_build_module()
+        root = archive_path.parent
+        asset = {
+            "assetName": asset_name,
+            "sha256": hashlib.sha256(archive_path.read_bytes()).hexdigest(),
+            "size": archive_path.stat().st_size,
+            "archiveBinary": binary,
+        }
+        lock = {
+            "schemaVersion": 1,
+            "targets": {
+                "linux-x64": {
+                    "hostSystem": "Linux",
+                    "hostMachines": ["x86_64"],
+                    "targetTriple": "x86_64-unknown-linux-gnu",
+                    "exe": exe,
+                }
+            },
+            "tools": [
+                {
+                    "name": "v8-runner",
+                    "version": "0.12.0",
+                    "repository": "https://github.com/IngvarConsulting/v8-runner-rust",
+                    "sourceTag": "v0.12.0",
+                    "sourceCommit": "167e6cbda52452f00d31539367958b359e0853d1",
+                    "license": "AGPL-3.0-only",
+                    "binaryName": "v8-runner",
+                    "assetStrategy": "upstream-archive-release-asset",
+                    "assetRepository": "https://github.com/IngvarConsulting/v8-runner-rust",
+                    "assetTag": "v0.12.0",
+                    "assets": {"linux-x64": asset},
+                }
+            ],
+        }
+        lock_path = root / "tools.lock.json"
+        lock_path.write_text(json.dumps(lock), encoding="utf-8")
+        out_dir = root / "bundle"
+        downloads: list[str] = []
+
+        def fake_download(url: str, destination: Path) -> None:
+            downloads.append(url)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(archive_path, destination)
+
+        argv = [
+            "build-unica-tools.py", "--target", "linux-x64", "--lock-file", str(lock_path),
+            "--repo-root", str(root), "--out-dir", str(out_dir), "--work-dir", str(root / "work"),
+        ]
+        with (
+            patch.object(module, "assert_host"),
+            patch.object(module, "download", side_effect=fake_download),
+            patch.object(module, "load_cargo_workspace_binary_owners", return_value={}),
+            patch.object(
+                module, "build_cargo_workspace_binaries", return_value=({}, root / "bootstrap", 0.0)
+            ),
+            patch.object(sys, "argv", argv),
+        ):
+            module.main()
+        self.assertEqual(
+            downloads,
+            [f"https://github.com/IngvarConsulting/v8-runner-rust/releases/download/v0.12.0/{asset_name}"],
+        )
+        return json.loads((out_dir / "tools.json").read_text(encoding="utf-8")), out_dir
+
+    def test_upstream_archive_is_delivered_as_published_and_described_completely(self) -> None:
+        """Архив издателя едет к пользователю как есть, и описан каждый его файл.
+
+        Bootstrap сверяет распакованный набор целиком: README и лицензия рядом с
+        бинарём не должны стать «лишними» файлами, а бинарь ищется по пути в архиве.
+        """
+        files = {
+            "v8-runner-x/v8-runner": (b"runner", 0o755),
+            "v8-runner-x/README.md": (b"readme", 0o644),
+            "v8-runner-x/examples/v8project.yaml": (b"workPath: build\n", 0o644),
+        }
+        for asset_name, media_type in (
+            ("v8-runner-linux-x86_64-musl.tar.gz", "application/gzip"),
+            ("v8-runner-windows-x86_64.zip", "application/zip"),
+        ):
+            with self.subTest(asset=asset_name):
+                root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+                archive_path = root / asset_name
+                if media_type == "application/gzip":
+                    write_raw_archive(
+                        archive_path,
+                        [("v8-runner-x", b"", 0o755, tarfile.DIRTYPE, "")]
+                        + [(name, data, mode, tarfile.REGTYPE, "") for name, (data, mode) in files.items()],
+                    )
+                else:
+                    with zipfile.ZipFile(archive_path, "w") as archive:
+                        archive.writestr("v8-runner-x/", b"")
+                        for name, (data, _) in files.items():
+                            # Windows-сборка не несёт режима Unix.
+                            info = zipfile.ZipInfo(name)
+                            info.create_system = 0
+                            archive.writestr(info, data)
+                tools, out_dir = self.build_with_upstream_archive(
+                    archive_path, asset_name=asset_name, binary="v8-runner-x/v8-runner"
+                )
+                self.assertEqual(
+                    tools["artifactAssets"]["v8-runner"],
+                    {
+                        "repository": "https://github.com/IngvarConsulting/v8-runner-rust",
+                        "tag": "v0.12.0",
+                        "name": asset_name,
+                        "mediaType": media_type,
+                        "sha256": hashlib.sha256(archive_path.read_bytes()).hexdigest(),
+                    },
+                )
+                declared = {item["deliveredPath"]: item for item in tools["runtimeFiles"]}
+                self.assertEqual(set(declared), set(files))
+                for name, (data, _) in files.items():
+                    self.assertEqual(declared[name]["sha256"], hashlib.sha256(data).hexdigest())
+                    self.assertEqual(declared[name]["executable"], name.endswith("/v8-runner"))
+                    self.assertEqual(declared[name]["artifact"], "v8-runner")
+                    self.assertEqual((out_dir / declared[name]["path"]).read_bytes(), data)
+                (runner,) = tools["tools"]
+                self.assertEqual(runner["deliveredPath"], "v8-runner-x/v8-runner")
+                self.assertEqual(runner["binaryPath"], "bin/linux-x64/v8-runner-x/v8-runner")
+
+    def test_upstream_archive_rejects_unsafe_members_before_materialization(self) -> None:
+        module = load_build_module()
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        cases = {
+            "traversal.tar.gz": [("../escape", b"x", 0o644, tarfile.REGTYPE, "")],
+            "link.tar.gz": [("v8-runner-x/v8-runner", b"", 0o777, tarfile.SYMTYPE, "/bin/sh")],
+            "absolute.tar.gz": [("/v8-runner", b"x", 0o755, tarfile.REGTYPE, "")],
+            "no-binary.tar.gz": [("v8-runner-x/README.md", b"x", 0o644, tarfile.REGTYPE, "")],
+            "duplicate.tar.gz": [
+                ("v8-runner-x/v8-runner", b"a", 0o755, tarfile.REGTYPE, ""),
+                ("v8-runner-x/v8-runner", b"b", 0o755, tarfile.REGTYPE, ""),
+            ],
+        }
+        for name, members in cases.items():
+            with self.subTest(case=name):
+                path = root / name
+                write_raw_archive(path, members)
+                with self.assertRaises(SystemExit):
+                    module.read_upstream_archive(path, asset_name=name, binary="v8-runner-x/v8-runner")
+        backslash = root / "backslash.zip"
+        with zipfile.ZipFile(backslash, "w") as archive:
+            archive.writestr("v8-runner-x\\v8-runner.exe", b"x")
+        with self.assertRaises(SystemExit):
+            module.read_upstream_archive(
+                backslash, asset_name="backslash.zip", binary="v8-runner-x/v8-runner.exe"
+            )
+        # Ссылка отклоняется, создан ли архив под Unix (3) или под macOS (19).
+        for host in (3, 19):
+            link = root / f"link-{host}.zip"
+            with zipfile.ZipFile(link, "w") as archive:
+                info = zipfile.ZipInfo("v8-runner-x/v8-runner")
+                info.create_system = host
+                info.external_attr = (0o120777) << 16
+                archive.writestr(info, b"/bin/sh")
+            with self.subTest(host=host), self.assertRaisesRegex(SystemExit, "non-regular"):
+                module.read_upstream_archive(
+                    link, asset_name=link.name, binary="v8-runner-x/v8-runner"
+                )
+        with self.assertRaisesRegex(SystemExit, "neither"):
+            module.upstream_archive_media_type("v8-runner.7z")
 
     def test_bundle_publication_leaves_no_partial_output_after_build_failure(self) -> None:
         module = load_build_module()

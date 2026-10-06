@@ -8,8 +8,7 @@ registers, constants, enums, common modules, subsystems, command interfaces,
 templates, external processors/reports as metadata objects, and related XML.
 
 Do not use this for database build/dump/load or artifact build/export. Those
-are `unica.run` operations: `push`, `pull`, `upload`,
-`download`, `make`.
+are `unica.run` operations: `push`, `pull`, `download`, `make`.
 
 Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,

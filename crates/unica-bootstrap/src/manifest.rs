@@ -70,8 +70,11 @@ pub const CORE_ARTIFACT: &str = "unica";
 /// типом содержимого, потому что его и объявляет издатель.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DeliveryForm {
-    /// Архив: распаковывается, и набор файлов сверяется целиком.
+    /// Архив `tar.gz`: распаковывается, и набор файлов сверяется целиком.
     Archive,
+    /// Архив `zip` издателя: распаковывается и сверяется так же, как `tar.gz`.
+    /// Ядро так не приезжает — его архив собирает выпуск Unica.
+    ZipArchive,
     /// Один файл: кладётся под своим именем, сверяется суммой.
     File,
 }
@@ -81,6 +84,7 @@ impl DeliveryForm {
     pub fn of(media_type: &str) -> Option<Self> {
         match media_type {
             "application/gzip" => Some(Self::Archive),
+            "application/zip" => Some(Self::ZipArchive),
             "application/octet-stream" => Some(Self::File),
             _ => None,
         }

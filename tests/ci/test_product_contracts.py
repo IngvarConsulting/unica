@@ -879,12 +879,12 @@ class ProductContractTests(unittest.TestCase):
         )
         envelope = {
             "ok": False,
-            "command": "build",
+            "command": "push",
             "duration_ms": 12,
             "data": {
                 "ok": False,
                 # v8-runner 0.9.0 (ADR-0028 форка): признак есть у каждого
-                # ответа `build`; `platform_failure` удостоверяет, что
+                # ответа `build` (с 0.12 — `push`); `platform_failure` удостоверяет, что
                 # провайдер был вызван, — значит здесь он обязан быть `true`.
                 "provider_dispatched": True,
                 "provider": {"selected": "designer", "origin": {"kind": "default"}},
@@ -937,6 +937,20 @@ class ProductContractTests(unittest.TestCase):
         del pre_0_9_0["data"]["provider_dispatched"]
         self.assertTrue(
             any("closed" in error for error in validator(pre_0_9_0, 4, "main"))
+        )
+        # С 0.12 отказ может назвать шаг выхода; прочие лишние ключи — нет.
+        with_next = copy.deepcopy(envelope)
+        with_next["error"]["next"] = {"command": "push main --full"}
+        self.assertEqual(validator(with_next, 4, "main"), [])
+        unknown_error_field = copy.deepcopy(envelope)
+        unknown_error_field["error"]["hint"] = "retry"
+        self.assertTrue(
+            any("closed" in error for error in validator(unknown_error_field, 4, "main"))
+        )
+        previous_command = copy.deepcopy(envelope)
+        previous_command["command"] = "build"
+        self.assertTrue(
+            any("command=push" in error for error in validator(previous_command, 4, "main"))
         )
 
     def test_v8_runner_zero_source_preview_requires_an_undispatched_launch_receipt(self) -> None:
@@ -1314,6 +1328,35 @@ class ProductContractTests(unittest.TestCase):
         behavioral_check.assert_called_once_with(runner.resolve(), "linux-x64")
         bounded_check.assert_called_once_with(runner.resolve(), "linux-x64")
 
+    def test_tool_contracts_find_the_runner_inside_its_publisher_archive_directory(
+        self,
+    ) -> None:
+        """Архив издателя кладёт бинарь в свой каталог, и проверка его находит."""
+        module = load_contract_module()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tools_dir = Path(tmp)
+            for target, folder, name in [
+                ("linux-x64", "v8-runner-linux-x86_64-musl", "v8-runner"),
+                ("win-x64", "v8-runner-windows-x86_64", "v8-runner.exe"),
+            ]:
+                with self.subTest(target=target):
+                    nested = tools_dir / target / folder / name
+                    nested.parent.mkdir(parents=True)
+                    nested.write_bytes(b"runner")
+                    self.assertEqual(
+                        module.tool_executable(tools_dir / target, "v8-runner", target),
+                        nested,
+                    )
+            ambiguous = tools_dir / "ambiguous"
+            for folder in ["one", "two"]:
+                (ambiguous / folder).mkdir(parents=True)
+                (ambiguous / folder / "v8-runner").write_bytes(b"runner")
+            self.assertEqual(
+                module.tool_executable(ambiguous, "v8-runner", "linux-x64"),
+                ambiguous / "v8-runner",
+            )
+
     def test_targeted_tool_contracts_run_windows_external_publication_smoke(
         self,
     ) -> None:
@@ -1682,7 +1725,7 @@ fn test_only() { std::process::Command::new("git"); }
                 ("index", "info", "--help"),
             ],
             "rlm-bsl-mcp": [("--help",)],
-            "v8-runner": [("--version",), ("build", "--help")],
+            "v8-runner": [("--version",), ("push", "--help")],
         }[name]
         routed_outputs = {
             tuple(route.split()): output
@@ -1849,7 +1892,7 @@ fn test_only() { std::process::Command::new("git"); }
             self.write_executable(
                 tools_dir,
                 "v8-runner",
-                "#!/usr/bin/env sh\nprintf '%s\\n' 'v8-runner 0.5.1 version build'\n",
+                "#!/usr/bin/env sh\nprintf '%s\\n' 'v8-runner 0.5.1 version Usage: v8-runner push'\n",
             )
 
             errors = module.check_tool_contracts(tools_dir)
@@ -1962,7 +2005,7 @@ fn test_only() { std::process::Command::new("git"); }
             self.write_executable(
                 tools_dir,
                 "v8-runner",
-                "#!/usr/bin/env sh\nprintf '%s\\n' 'v8-runner 0.5.1 version build'\n",
+                "#!/usr/bin/env sh\nprintf '%s\\n' 'v8-runner 0.5.1 version Usage: v8-runner push'\n",
             )
 
             errors = module.check_tool_contracts(tools_dir.relative_to(Path.cwd()))
@@ -1981,7 +2024,7 @@ fn test_only() { std::process::Command::new("git"); }
                 "rlm-bsl-mcp",
                 "#!/usr/bin/env sh\nprintf '%s\\n' '--transport stdio streamable-http service'\n",
             )
-            self.write_executable(tools_dir, "v8-runner", "#!/usr/bin/env sh\nprintf '%s\\n' 'v8-runner version build'\n")
+            self.write_executable(tools_dir, "v8-runner", "#!/usr/bin/env sh\nprintf '%s\\n' 'v8-runner version Usage: v8-runner push'\n")
 
             errors = module.check_tool_contracts(tools_dir)
 
@@ -2015,7 +2058,7 @@ fn test_only() { std::process::Command::new("git"); }
             self.write_executable(
                 tools_dir,
                 "v8-runner",
-                "#!/usr/bin/env sh\nprintf '%s\\n' 'v8-runner version build'\n",
+                "#!/usr/bin/env sh\nprintf '%s\\n' 'v8-runner version Usage: v8-runner push'\n",
             )
 
             errors = module.check_tool_contracts(tools_dir)
@@ -2038,7 +2081,7 @@ fn test_only() { std::process::Command::new("git"); }
             )
             self.write_executable(tools_dir, "rlm-bsl-index", "#!/usr/bin/env sh\nprintf '%s\\n' 'index build update info'\n")
             self.write_executable(tools_dir, "rlm-bsl-mcp", "#!/usr/bin/env sh\nprintf '%s\\n' 'service'\n")
-            self.write_executable(tools_dir, "v8-runner", "#!/usr/bin/env sh\nprintf '%s\\n' 'v8-runner version build'\n")
+            self.write_executable(tools_dir, "v8-runner", "#!/usr/bin/env sh\nprintf '%s\\n' 'v8-runner version Usage: v8-runner push'\n")
 
             errors = module.check_tool_contracts(tools_dir)
 

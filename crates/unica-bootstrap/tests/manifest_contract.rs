@@ -424,12 +424,18 @@ fn a_one_file_artifact_declares_exactly_the_file_it_delivers() {
 
 #[test]
 fn the_core_is_still_required_to_arrive_as_an_archive() {
-    // Ядро несёт бинарь и его окружение: одним файлом оно не бывает.
-    let mut value = fixture();
-    value["artifacts"]["unica"]["targets"]["linux-x64"]["asset"]["mediaType"] =
-        serde_json::json!("application/octet-stream");
+    // Ядро несёт бинарь и его окружение: одним файлом оно не бывает, а его
+    // архив собирает выпуск Unica — формы `zip` издателя у ядра нет.
+    for media_type in ["application/octet-stream", "application/zip"] {
+        let mut value = fixture();
+        value["artifacts"]["unica"]["targets"]["linux-x64"]["asset"]["mediaType"] =
+            serde_json::json!(media_type);
 
-    let error = parse(value).validate("0.7.0").unwrap_err();
+        let error = parse(value).validate("0.7.0").unwrap_err();
 
-    assert!(error.to_string().contains("mediaType"), "{error}");
+        assert!(
+            error.to_string().contains("mediaType"),
+            "{media_type}: {error}"
+        );
+    }
 }

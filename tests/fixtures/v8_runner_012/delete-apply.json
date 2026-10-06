@@ -1,7 +1,7 @@
 {
   "ok": true,
   "command": "extensions",
-  "duration_ms": 6893,
+  "duration_ms": 4607,
   "data": {
     "provider": {
       "selected": "ibcmd",
@@ -12,11 +12,16 @@
     },
     "ok": true,
     "provider_dispatched": true,
-    "requested": {
-      "kind": "all"
-    },
-    "extensions": [],
-    "duration_ms": 6893
+    "steps": [
+      {
+        "target": "UnicaRunnerProbe",
+        "action": "delete",
+        "ok": true,
+        "message": null,
+        "duration_ms": 4607
+      }
+    ],
+    "duration_ms": 4607
   },
   "warnings": [],
   "steps": []
