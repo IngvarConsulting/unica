@@ -7,6 +7,9 @@ check:
   - crates/unica-coder/src/infrastructure/receipt_ledger/tests.rs::no_deadline_actor_returns_late_real_store_commit_and_reopens
   - crates/unica-coder/src/infrastructure/receipt_ledger/tests.rs::no_deadline_row_commit_survives_delayed_sync_and_exact_reopen
   - crates/unica-coder/src/infrastructure/receipt_ledger/tests.rs::no_deadline_keeps_visible_io_failure_commit_uncertain
+  - crates/unica-coder/src/infrastructure/daemon/protocol_v5.rs::no_deadline_frame_keeps_its_consumed_prefix_across_socket_polling
+  - crates/unica-coder/src/infrastructure/daemon/protocol_v5.rs::finite_frame_expiry_checks_the_original_anchor_before_consuming_the_suffix
+  - crates/unica-coder/src/infrastructure/daemon/client_v5.rs::owned_v5_frames_preserve_real_tcp_prefixes_across_a_socket_poll
   - crates/unica-coder/src/domain/code_intelligence.rs::provider_absence_is_distinct_from_expired_and_contracts_with_finite_deadlines
   - crates/unica-coder/src/domain/code_intelligence.rs::provider_finite_extreme_budgets_preserve_remaining_without_instant_overflow
   - crates/unica-coder/src/domain/code_intelligence.rs::provider_relative_equality_compares_the_same_endpoint_with_different_starts

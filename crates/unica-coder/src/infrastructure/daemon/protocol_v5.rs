@@ -1046,7 +1046,8 @@ impl std::error::Error for V5RequestFrameError {
 pub(crate) fn read_and_decode_v5_request<R: BufRead>(
     reader: &mut R,
 ) -> Result<DecodedV5Request, V5RequestFrameError> {
-    read_and_decode_v5_request_before(reader, |_| Ok(()))
+    let raw_frame = read_bounded_v5_request_frame(reader).map_err(V5RequestFrameError::Read)?;
+    decode_v5_request_frame(raw_frame)
 }
 
 pub(crate) fn read_and_decode_v5_request_before<R, F>(
@@ -1106,12 +1107,35 @@ fn read_bounded_json_line_with_limit<R: BufRead>(
     reader: &mut R,
     max_bytes: usize,
 ) -> io::Result<Vec<u8>> {
-    read_bounded_json_line_with_limit_before(reader, max_bytes, |_| Ok(()))
+    read_json_line_with_polling(reader, max_bytes, FramePolling::ReturnError, |_| Ok(()))
 }
 
 fn read_bounded_json_line_with_limit_before<R, F>(
     reader: &mut R,
     max_bytes: usize,
+    before_fill: F,
+) -> io::Result<Vec<u8>>
+where
+    R: BufRead,
+    F: FnMut(&mut R) -> io::Result<()>,
+{
+    read_json_line_with_polling(
+        reader,
+        max_bytes,
+        FramePolling::CheckAndContinue,
+        before_fill,
+    )
+}
+
+enum FramePolling {
+    ReturnError,
+    CheckAndContinue,
+}
+
+fn read_json_line_with_polling<R, F>(
+    reader: &mut R,
+    max_bytes: usize,
+    polling: FramePolling,
     mut before_fill: F,
 ) -> io::Result<Vec<u8>>
 where
@@ -1124,6 +1148,18 @@ where
         let buffer = match reader.fill_buf() {
             Ok(buffer) => buffer,
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error)
+                if matches!(polling, FramePolling::CheckAndContinue)
+                    && matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) =>
+            {
+                // Keep the consumed prefix owned by this read. Its checkpoint
+                // decides whether the original deadline or an explicit stop
+                // ends the request before another socket poll.
+                continue;
+            }
             Err(error) => return Err(error),
         };
         if buffer.is_empty() {
@@ -1601,6 +1637,135 @@ mod tests {
             read_bounded_v5_request_frame(&mut reader).unwrap(),
             b"{\"kind\":\"ping\"}"
         );
+    }
+
+    struct PollingFrameReader {
+        steps: std::collections::VecDeque<Result<Vec<u8>, io::ErrorKind>>,
+        offset: usize,
+        fills: usize,
+    }
+
+    impl PollingFrameReader {
+        fn split_task_request() -> Self {
+            Self {
+                steps: std::collections::VecDeque::from([
+                    Ok(b"{\"kind\":\"get_task\",\"taskId\":\"".to_vec()),
+                    Err(io::ErrorKind::WouldBlock),
+                    Ok(TASK_ID.as_bytes().to_vec()),
+                    Err(io::ErrorKind::TimedOut),
+                    Ok(b"\"}\r\n".to_vec()),
+                ]),
+                offset: 0,
+                fills: 0,
+            }
+        }
+    }
+
+    impl Read for PollingFrameReader {
+        fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+            let input = self.fill_buf()?;
+            let copied = input.len().min(output.len());
+            output[..copied].copy_from_slice(&input[..copied]);
+            self.consume(copied);
+            Ok(copied)
+        }
+    }
+
+    impl BufRead for PollingFrameReader {
+        fn fill_buf(&mut self) -> io::Result<&[u8]> {
+            self.fills += 1;
+            if let Some(Err(kind)) = self.steps.front() {
+                let kind = *kind;
+                self.steps.pop_front();
+                return Err(io::Error::from(kind));
+            }
+            match self.steps.front() {
+                Some(Ok(bytes)) => Ok(&bytes[self.offset..]),
+                _ => Ok(&[]),
+            }
+        }
+
+        fn consume(&mut self, amount: usize) {
+            let Some(Ok(bytes)) = self.steps.front() else {
+                assert_eq!(amount, 0);
+                return;
+            };
+            self.offset += amount;
+            assert!(self.offset <= bytes.len());
+            if self.offset == bytes.len() {
+                self.steps.pop_front();
+                self.offset = 0;
+            }
+        }
+    }
+
+    #[test]
+    fn no_deadline_frame_keeps_its_consumed_prefix_across_socket_polling() {
+        use crate::domain::operation_deadline::OperationDeadline;
+        let deadline: OperationDeadline = OperationDeadline::NoDeadline;
+        let mut reader = PollingFrameReader::split_task_request();
+        let frame = read_bounded_v5_request_frame_before(&mut reader, |_| {
+            if deadline.is_elapsed_at(std::time::Instant::now()) {
+                Err(io::Error::from(io::ErrorKind::TimedOut))
+            } else {
+                Ok(())
+            }
+        })
+        .expect("socket polling must preserve the original owned frame");
+        assert_eq!(
+            frame,
+            format!("{{\"kind\":\"get_task\",\"taskId\":\"{TASK_ID}\"}}").as_bytes()
+        );
+        assert_eq!(
+            decode_v5_client_request(&frame).unwrap().kind(),
+            V5ClientRequestKind::GetTask
+        );
+        assert_eq!(reader.fills, 5);
+        assert!(reader.steps.is_empty());
+    }
+
+    #[test]
+    fn finite_frame_expiry_checks_the_original_anchor_before_consuming_the_suffix() {
+        use crate::domain::operation_deadline::OperationDeadline;
+        let started = std::time::Instant::now();
+        let boundary = started + std::time::Duration::from_millis(1);
+        let deadline = OperationDeadline::Finite(boundary);
+        let mut reader = PollingFrameReader::split_task_request();
+        let error = read_bounded_v5_request_frame_before(&mut reader, |reader| {
+            let now = if reader.fills == 0 { started } else { boundary };
+            if deadline.is_elapsed_at(now) {
+                Err(io::Error::from(io::ErrorKind::TimedOut))
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(reader.fills, 1);
+        assert_eq!(reader.steps.len(), 4);
+        assert_eq!(reader.offset, 0);
+    }
+
+    #[test]
+    fn plain_frame_and_decoder_return_poll_errors_without_consuming_the_suffix() {
+        for decode in [false, true] {
+            let mut reader = PollingFrameReader::split_task_request();
+            let kind = if decode {
+                match read_and_decode_v5_request(&mut reader) {
+                    Err(V5RequestFrameError::Read(error)) => error.kind(),
+                    Err(error) => panic!("plain decoder changed the transport error: {error:?}"),
+                    Ok(_) => panic!("plain decoder consumed a suffix after its transport error"),
+                }
+            } else {
+                read_bounded_v5_request_frame(&mut reader)
+                    .unwrap_err()
+                    .kind()
+            };
+            assert_eq!(kind, io::ErrorKind::WouldBlock);
+            assert_eq!(reader.fills, 2);
+            assert_eq!(reader.steps.front(), Some(&Ok(TASK_ID.as_bytes().to_vec())));
+            assert_eq!(reader.offset, 0);
+        }
     }
 
     #[test]
