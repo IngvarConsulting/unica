@@ -10,6 +10,7 @@ const WAIT_SLICE: Duration = Duration::from_millis(10);
 
 #[cfg(test)]
 thread_local! {
+    static TEST_BEFORE_WAIT_HOOK: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
     static TEST_AFTER_DEADLINE_ERROR_HOOK: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
 }
 
@@ -18,8 +19,20 @@ pub(super) fn set_after_deadline_error_hook_for_test(hook: impl FnOnce() + 'stat
     TEST_AFTER_DEADLINE_ERROR_HOOK.with(|slot| slot.replace(Some(Box::new(hook))));
 }
 
-/// One synchronous ownership lane whose contention is bounded by the caller's
-/// monotonic deadline and cancellation signal.
+#[cfg(test)]
+pub(super) fn set_before_wait_hook_for_test(hook: impl FnOnce() + 'static) {
+    TEST_BEFORE_WAIT_HOOK.with(|slot| slot.replace(Some(Box::new(hook))));
+}
+
+#[cfg(test)]
+fn run_before_wait_hook_for_test() {
+    if let Some(hook) = TEST_BEFORE_WAIT_HOOK.with(|slot| slot.borrow_mut().take()) {
+        hook();
+    }
+}
+
+/// One synchronous ownership lane that observes the caller's cancellation
+/// signal and an explicit monotonic deadline when one is present.
 pub(super) trait PoisonPolicy {
     fn resolve<'a>(
         &self,
@@ -136,11 +149,12 @@ impl<P: PoisonPolicy> DeadlineLock<P> {
                     return self.poison_policy.resolve(error);
                 }
                 Err(TryLockError::WouldBlock) => {
-                    let remaining = deadline.remaining();
-                    if remaining.is_zero() {
+                    if deadline.is_elapsed() {
                         return Err(deadline_error(operation));
                     }
-                    std::thread::sleep(remaining.min(WAIT_SLICE));
+                    #[cfg(test)]
+                    run_before_wait_hook_for_test();
+                    std::thread::sleep(deadline.wait_slice(WAIT_SLICE));
                 }
             }
         }
@@ -165,7 +179,7 @@ fn checkpoint(
             cancelled_error(format!("{operation} stopped")),
         ));
     }
-    if deadline.remaining().is_zero() {
+    if deadline.is_elapsed() {
         return Err(deadline_error(operation));
     }
     Ok(())
@@ -181,4 +195,77 @@ fn deadline_error(operation: &str) -> DeadlineLockError {
         hook();
     }
     error
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{mpsc, Arc};
+
+    #[test]
+    fn no_deadline_waits_on_occupied_lane_then_acquires_after_release() {
+        let lock = Arc::new(DeadlineLock::<Recover>::default());
+        std::thread::scope(|scope| {
+            let held = lock.hold_for_test();
+            let (entered_tx, entered_rx) = mpsc::channel();
+            let (release_tx, release_rx) = mpsc::channel();
+            let (result_tx, result_rx) = mpsc::channel();
+            let worker_lock = Arc::clone(&lock);
+            let worker = scope.spawn(move || {
+                set_before_wait_hook_for_test(move || {
+                    entered_tx.send(()).unwrap();
+                    release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                });
+                let acquired = worker_lock.acquire_before(
+                    ProviderDeadline::no_deadline(),
+                    &CancellationToken::new(),
+                    "no deadline lane",
+                );
+                result_tx.send(acquired.is_ok()).unwrap();
+            });
+            entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert!(matches!(
+                result_rx.try_recv(),
+                Err(mpsc::TryRecvError::Empty)
+            ));
+            drop(held);
+            release_tx.send(()).unwrap();
+            assert!(result_rx.recv_timeout(Duration::from_secs(5)).unwrap());
+            worker.join().unwrap();
+        });
+    }
+
+    #[test]
+    fn no_deadline_occupied_lane_still_observes_explicit_cancellation() {
+        let lock = Arc::new(DeadlineLock::<Recover>::default());
+        let cancellation = CancellationToken::new();
+        std::thread::scope(|scope| {
+            let _held = lock.hold_for_test();
+            let (entered_tx, entered_rx) = mpsc::channel();
+            let (release_tx, release_rx) = mpsc::channel();
+            let (result_tx, result_rx) = mpsc::channel();
+            let worker_lock = Arc::clone(&lock);
+            let worker_cancellation = cancellation.clone();
+            let worker = scope.spawn(move || {
+                set_before_wait_hook_for_test(move || {
+                    entered_tx.send(()).unwrap();
+                    release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                });
+                let result = worker_lock.acquire_before(
+                    ProviderDeadline::no_deadline(),
+                    &worker_cancellation,
+                    "cancel no deadline lane",
+                );
+                result_tx.send(result.err().unwrap().kind()).unwrap();
+            });
+            entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            cancellation.cancel();
+            release_tx.send(()).unwrap();
+            assert_eq!(
+                result_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+                DeadlineLockErrorKind::Cancelled
+            );
+            worker.join().unwrap();
+        });
+    }
 }

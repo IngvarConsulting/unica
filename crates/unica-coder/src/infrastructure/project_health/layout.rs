@@ -54,7 +54,7 @@ impl SourceLayoutInspector {
         let mut checkpoint = || {
             if cancellation.is_cancelled() {
                 Err(SOURCE_DISCOVERY_CANCELLED.to_string())
-            } else if deadline.remaining().is_zero() {
+            } else if deadline.is_elapsed() {
                 Err(SOURCE_DISCOVERY_DEADLINE.to_string())
             } else {
                 Ok(())
@@ -417,7 +417,7 @@ fn incomplete_if_inspection_inactive(
     if cancellation.is_cancelled() {
         return Err(ProjectHealthInspectionError::Cancelled);
     }
-    if deadline.remaining().is_zero() {
+    if deadline.is_elapsed() {
         return Ok(Some(incomplete_source_layout(format!(
             "project health deadline expired {phase}"
         ))));

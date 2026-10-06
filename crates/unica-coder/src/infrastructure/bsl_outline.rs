@@ -112,7 +112,7 @@ pub(crate) fn render_current_source_outline(
     if cancellation.is_cancelled() {
         return Err(cancelled_error("unica.code.outline stopped before reading"));
     }
-    if deadline.remaining().is_zero() {
+    if deadline.is_elapsed() {
         return Err("unica.code.outline provider deadline exceeded before reading".to_string());
     }
     let (module, text) = read_module(path, context)?;
@@ -123,7 +123,7 @@ pub(crate) fn render_current_source_outline(
     if cancellation.is_cancelled() {
         return Err(cancelled_error("unica.code.outline stopped after parsing"));
     }
-    if deadline.remaining().is_zero() {
+    if deadline.is_elapsed() {
         return Err("unica.code.outline provider deadline exceeded after parsing".to_string());
     }
     Ok((
@@ -1157,6 +1157,35 @@ mod tests {
             error.contains("outside the selected source root"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn no_deadline_outline_reads_source_but_preserves_scope_and_explicit_cancel() {
+        let workspace = workspace(
+            "no-deadline",
+            "CommonModules/X/Ext/Module.bsl",
+            "Procedure Post()\nEndProcedure\n",
+        );
+        let deadline = ProviderDeadline::no_deadline();
+        let read = |path: &str, cancellation: &CancellationToken| {
+            render_current_source_outline(path, true, &workspace.context, deadline, cancellation)
+        };
+        let (outline, _) =
+            read("CommonModules/X/Ext/Module.bsl", &CancellationToken::new()).unwrap();
+        assert_eq!(outline.totals.methods, 1);
+        fs::write(
+            workspace.root.join("outside.bsl"),
+            "Procedure Foreign()\nEndProcedure\n",
+        )
+        .unwrap();
+        assert!(read("../outside.bsl", &CancellationToken::new())
+            .unwrap_err()
+            .contains("outside the selected source root"));
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        assert!(read("CommonModules/X/Ext/Module.bsl", &cancellation)
+            .unwrap_err()
+            .starts_with("cancelled:"));
     }
 
     #[test]

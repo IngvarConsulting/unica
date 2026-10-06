@@ -211,7 +211,7 @@ impl<'a, M: DiagnosticMapping + ?Sized> DiagnosticCoordinator<'a, M> {
         let deadline = scope.as_ref().map_or(configured_deadline, |(_, deadline)| {
             deadline.earlier(configured_deadline)
         });
-        if deadline.remaining().is_zero() {
+        if deadline.is_elapsed() {
             return Err(request_error(
                 "provider_timeout",
                 None,
@@ -444,8 +444,7 @@ fn execute_selected_providers_with_lifecycle(
                 "diagnostics stopped while providers were running",
             ));
         }
-        let remaining = deadline.remaining();
-        if remaining.is_zero() {
+        if deadline.is_elapsed() {
             for (index, slot) in slots.iter_mut().enumerate() {
                 if slot.is_none() {
                     child_cancellations[index].cancel();
@@ -458,7 +457,7 @@ fn execute_selected_providers_with_lifecycle(
             }
             break;
         }
-        match receiver.recv_timeout(remaining.min(Duration::from_millis(20))) {
+        match receiver.recv_timeout(deadline.wait_slice(Duration::from_millis(20))) {
             Ok((index, outcome)) if slots[index].is_none() => {
                 slots[index] = Some(outcome);
             }

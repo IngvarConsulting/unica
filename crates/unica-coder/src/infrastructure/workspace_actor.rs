@@ -2764,7 +2764,7 @@ fn apply_checkpoint(
 ) -> Result<(), String> {
     if cancellation.is_cancelled() {
         Err(format!("{phase} cancelled"))
-    } else if deadline.remaining().is_zero() {
+    } else if deadline.is_elapsed() {
         Err(format!("{phase} deadline exceeded"))
     } else {
         Ok(())
@@ -2781,7 +2781,7 @@ fn apply_publication_checkpoint(
             ApplyPublicationErrorKind::Cancelled,
             format!("{phase} cancelled"),
         ))
-    } else if deadline.remaining().is_zero() {
+    } else if deadline.is_elapsed() {
         Err(ApplyPublicationError::new(
             ApplyPublicationErrorKind::Deadline,
             format!("{phase} deadline exceeded"),
@@ -2868,7 +2868,7 @@ fn apply_staging_checkpoint(
             ApplyStagingErrorKind::Cancelled,
             format!("{phase} cancelled"),
         ))
-    } else if deadline.remaining().is_zero() {
+    } else if deadline.is_elapsed() {
         Err(ApplyStagingError::new(
             ApplyStagingErrorKind::Deadline,
             format!("{phase} deadline exceeded"),

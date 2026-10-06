@@ -2472,7 +2472,7 @@ fn validate_retained_apply_read_guard(
                 "retained apply reference check cancelled",
             ));
         }
-        if guard.deadline.remaining().is_zero() {
+        if guard.deadline.is_elapsed() {
             return Err(RetainedApplyValidationError::new(
                 RetainedApplyValidationErrorKind::Deadline,
                 "retained apply reference check deadline elapsed",

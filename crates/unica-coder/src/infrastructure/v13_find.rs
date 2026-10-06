@@ -2055,7 +2055,7 @@ fn immediate_names(
         .map_err(|error| {
             if cancellation.is_cancelled() {
                 FindBuildError::new(RefusalCode::Cancelled, "find directory build was cancelled")
-            } else if deadline.remaining().is_zero() {
+            } else if deadline.is_elapsed() {
                 FindBuildError::new(
                     RefusalCode::DeadlineExceeded,
                     "find directory build deadline elapsed",
@@ -2134,7 +2134,7 @@ fn find_checkpoint(
             "find directory build was cancelled",
         ));
     }
-    if deadline.remaining().is_zero() {
+    if deadline.is_elapsed() {
         return Err(FindBuildError::new(
             RefusalCode::DeadlineExceeded,
             "find directory build deadline elapsed",

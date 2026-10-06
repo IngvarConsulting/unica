@@ -260,7 +260,7 @@ impl ProviderReadAuthority {
                         RefusalCode::Cancelled,
                         "logical read was cancelled",
                     ))
-                } else if deadline.remaining().is_zero() {
+                } else if deadline.is_elapsed() {
                     Err(ViewError::new(
                         RefusalCode::DeadlineExceeded,
                         "logical read operation deadline elapsed",
@@ -279,7 +279,7 @@ impl ProviderReadAuthority {
                         RefusalCode::Cancelled,
                         "logical read was cancelled",
                     ))
-                } else if deadline.remaining().is_zero() {
+                } else if deadline.is_elapsed() {
                     Err(ViewError::new(
                         RefusalCode::DeadlineExceeded,
                         "logical read operation deadline elapsed",

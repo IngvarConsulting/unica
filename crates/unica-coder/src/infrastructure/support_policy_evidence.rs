@@ -674,7 +674,7 @@ fn checkpoint(
             kind: SupportPolicyEvidenceErrorKind::Cancelled,
             message: format!("{phase} cancelled"),
         })
-    } else if deadline.remaining().is_zero() {
+    } else if deadline.is_elapsed() {
         Err(SupportPolicyEvidenceError {
             kind: SupportPolicyEvidenceErrorKind::Deadline,
             message: format!("{phase} deadline exceeded"),

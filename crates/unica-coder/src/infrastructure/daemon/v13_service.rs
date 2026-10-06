@@ -3006,7 +3006,7 @@ fn name_search_interruption(
             "name search was cancelled",
         ));
     }
-    if deadline.remaining().is_zero() {
+    if deadline.is_elapsed() {
         return Some(error_result(
             None,
             RefusalCode::DeadlineExceeded,
@@ -4554,7 +4554,7 @@ mod tests {
             assert_eq!(request.query, "Needle");
             assert_eq!(request.limit, 7);
             assert_eq!(context.search_scope.as_ref().unwrap().source_set, "main");
-            assert!(deadline.remaining() <= Duration::from_secs(1));
+            assert!(deadline.remaining().unwrap() <= Duration::from_secs(1));
             assert!(!cancellation.is_cancelled());
             if self.fails {
                 ProviderSearchSection::failed(self.identity.clone(), "selected failure".into())
@@ -4705,7 +4705,7 @@ mod tests {
         ) -> ProviderSearchSection {
             if context.source_root.source_set.as_deref() == Some("first") {
                 std::thread::sleep(Duration::from_secs(1));
-            } else if deadline.remaining() < Duration::from_millis(2500) {
+            } else if deadline.remaining().unwrap() < Duration::from_millis(2500) {
                 return ProviderSearchSection::timed_out(
                     self.identity(),
                     SearchRanking::None,
