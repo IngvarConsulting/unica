@@ -71,7 +71,8 @@ fn seeded_promised_and_handoff_states_cross_the_real_actor_store_path() {
 
         let state =
             DaemonStateDirectory::open(state_root.path(), &identity).expect("open daemon state");
-        let config = scenario_server_config_with_clock(state_root.path(), &identity, None, &clock);
+        let config = scenario_server_config_with_clock(state_root.path(), &identity, None, &clock)
+            .expect("build scenario runtime configuration");
         let runtime = V5ReceiptRuntime::open_with_epoch_clock(&state, &config, clock.clone())
             .expect("reopen runtime");
         if let Some(expected_reason) = expected_task_failure {
@@ -150,7 +151,8 @@ fn seeded_direct_and_bound_owners_cross_the_real_durable_stores() {
         .expect("seed direct owner"));
         let state =
             DaemonStateDirectory::open(state_root.path(), &identity).expect("open daemon state");
-        let config = scenario_server_config_with_clock(state_root.path(), &identity, None, &clock);
+        let config = scenario_server_config_with_clock(state_root.path(), &identity, None, &clock)
+            .expect("build scenario runtime configuration");
         let runtime = V5ReceiptRuntime::open_with_epoch_clock(&state, &config, clock.clone())
             .expect("reopen runtime");
         let recovered = runtime
@@ -185,7 +187,8 @@ fn seeded_direct_and_bound_owners_cross_the_real_durable_stores() {
         .expect("seed TaskBound owner"));
         let state =
             DaemonStateDirectory::open(state_root.path(), &identity).expect("open daemon state");
-        let config = scenario_server_config_with_clock(state_root.path(), &identity, None, &clock);
+        let config = scenario_server_config_with_clock(state_root.path(), &identity, None, &clock)
+            .expect("build scenario runtime configuration");
         let runtime = V5ReceiptRuntime::open_with_epoch_clock(&state, &config, clock.clone())
             .expect("reopen runtime");
         let snapshot = runtime
@@ -663,6 +666,328 @@ fn pending_submit_releases_actor_store_before_waiting_for_daemon_exit() {
 }
 
 #[test]
+fn invalid_restart_joins_its_held_operation_before_returning_without_a_successor() {
+    struct RedSafetyCleanup {
+        control: Arc<ReceiptScenarioControl>,
+        life: Arc<ScenarioProcessLife>,
+    }
+    impl Drop for RedSafetyCleanup {
+        fn drop(&mut self) {
+            self.life.close_permissions();
+            if self
+                .control
+                .operation_events()
+                .iter()
+                .any(|event| event["label"] == "held-mark" && event["state"] == "spawned")
+            {
+                let _ = self.control.wait_for_operation_event(
+                    "held-mark",
+                    "completed",
+                    Instant::now() + Duration::from_secs(5),
+                );
+            }
+        }
+    }
+    let control = Arc::new(ReceiptScenarioControl::new());
+    let original_life = control.process_life();
+    let cleanup = RedSafetyCleanup {
+        control: control.clone(),
+        life: original_life.clone(),
+    };
+    let request = json!({
+        "clock": "fake",
+        "actions": [
+            {"action": "seed_receipt", "state": "reserved_actor_bound",
+             "cancel_requested": false, "staged_terminal": null},
+            {"action": "install_barrier", "point": "before_mark_reserved_begun_gate_acquire"},
+            {"action": "spawn_mark_reserved_begun", "proof": "exact", "label": "held-mark"},
+            {"action": "wait_for_operation", "label": "held-mark", "state": "blocked"},
+            {"action": "restart"}
+        ]
+    });
+    let refused =
+        dispatch::run_receipt_scenario_with_control_for_test(&request.to_string(), control.clone());
+    // Capture the outcome before the test's own RED safety cleanup. A worker
+    // completing after this cleanup is not evidence that the runner joined it.
+    let events_before_cleanup = control.operation_events();
+    let joined_before_return = events_before_cleanup
+        .iter()
+        .any(|event| event["label"] == "held-mark" && event["state"] == "joined");
+    let owner_released_before_return = control.runtime().is_none();
+    let hooks = ScenarioHooks::install(
+        Arc::new(V5ReceiptRuntimeTelemetry::new()),
+        Some(control.clone()),
+    );
+    let permission_after_return = hooks.wait_for_gate_cancel(Instant::now());
+    let unchanged_life = Arc::ptr_eq(&original_life, &control.process_life());
+    let process_exited = control.process_exited();
+    let elapsed = control.process_exit_elapsed_ms();
+    drop(cleanup);
+    assert!(
+        refused.is_err(),
+        "Restart must still refuse an unjoined operation"
+    );
+    assert!(
+        joined_before_return,
+        "invalid Restart returned before actually joining its held operation"
+    );
+    assert!(owner_released_before_return);
+    assert_eq!(
+        permission_after_return,
+        Err(ReceiptLedgerError::StoreUnavailable)
+    );
+    assert!(unchanged_life);
+    assert!(!process_exited);
+    assert_eq!(elapsed, None);
+}
+
+#[test]
+fn no_elapsed_fail_stop_cannot_rotate_while_its_actual_runtime_is_retained() {
+    let state = ScenarioStateRoot::new().expect("retained fail-stop owner state");
+    let identity = CoreIdentity::production_v5();
+    let clock = Arc::new(ScenarioEpochClock::new(SCENARIO_INITIAL_EPOCH_MS, false));
+    let control = Arc::new(ReceiptScenarioControl::new());
+    let telemetry = Arc::new(V5ReceiptRuntimeTelemetry::new());
+    let (runtime, _, _) =
+        open_scenario_operation_runtime(state.path(), &identity, &clock, &control, &telemetry)
+            .expect("open actual retained runtime");
+    let original_life = control.process_life();
+    runtime.hooks.forced_process_exit(None);
+    assert!(!control.process_exited());
+    assert_eq!(control.process_exit_elapsed_ms(), None);
+    let refused = control.prepare_process_open();
+    let same_life = Arc::ptr_eq(&original_life, &control.process_life());
+    drop(runtime);
+    assert!(control.runtime().is_none());
+    assert!(
+        refused.is_err(),
+        "a fail-stop request must not authorize opening while its actual runtime remains owned"
+    );
+    assert!(same_life);
+    assert!(!control.process_exited());
+    assert_eq!(control.process_exit_elapsed_ms(), None);
+}
+
+#[test]
+fn genuine_no_elapsed_fail_stop_releases_its_owner_before_a_fresh_native_success() {
+    let state = ScenarioStateRoot::new().expect("native fail-stop state");
+    let workspace = ScenarioWorkspace::new().expect("native fail-stop workspace");
+    let identity = CoreIdentity::production_v5();
+    let clock = Arc::new(ScenarioEpochClock::new(SCENARIO_INITIAL_EPOCH_MS, false));
+    let control = Arc::new(ReceiptScenarioControl::new());
+    let telemetry = Arc::new(V5ReceiptRuntimeTelemetry::new());
+    control.set_provider(ScenarioProviderFixture {
+        execution_class: ScenarioExecutionClass::Direct,
+        terminal: ScenarioTerminalFixture::Success {
+            payload: "fresh native result".into(),
+        },
+        precomputed_terminal: None,
+        cooperative_cancel: true,
+        side_effect_marker: true,
+    });
+    control.configure_admission(Some(ScenarioWorkspaceAdmissionFailure::RegistryFailed));
+    let mut arguments = Map::new();
+    arguments.insert("at".into(), Value::String("main:Configuration".into()));
+    let old_key = fresh_key_for_workspace(&identity, &arguments, workspace.hint())
+        .expect("old native request identity");
+    let old_invocation = V5InvocationRequest::new(
+        old_key.invocation_id(),
+        old_key.reserved_task_id(),
+        V5ToolIdentity::View,
+        arguments.clone(),
+        workspace.hint().to_owned(),
+        7_000,
+    )
+    .expect("old native invocation");
+    let failed = exchange_once(
+        state.path(),
+        &identity,
+        clock.clone(),
+        telemetry.clone(),
+        Some(control.clone()),
+        |owner| owner.submit_invocation(old_invocation),
+    )
+    .expect("real registry failure returns before actual daemon join");
+    let V5ServerResponse::Invocation {
+        outcome: V5InvocationResponse::Direct { receipt },
+    } = &failed
+    else {
+        panic!("native admission failure did not preserve its direct receipt: {failed:?}");
+    };
+    assert_eq!(receipt.receipt_key(), &old_key);
+    assert_eq!(
+        receipt.terminal(),
+        &ReceiptTerminalOutcome::Failed {
+            reason: V5SafeFailureReason::WorkspaceRegistryFailed,
+        }
+    );
+    assert!(control.current_process_requires_stop());
+    assert!(!control.process_exited());
+    assert_eq!(control.process_exit_elapsed_ms(), None);
+    assert!(
+        control.runtime().is_none(),
+        "exchange_once must have joined and dropped the real owner"
+    );
+    // Reclaim only the endpoint of the genuinely joined old daemon. Otherwise
+    // the next native exchange could connect to its stale record instead of
+    // exercising the new process life.
+    quiesce_promoted_continuation(state.path(), &identity, &control, &telemetry)
+        .expect("reclaim the endpoint only after its actual failed owner was joined");
+    let old_life = control.process_life();
+    control.configure_admission(None);
+    let (fresh_runtime, _, _) =
+        open_scenario_operation_runtime(state.path(), &identity, &clock, &control, &telemetry)
+            .expect("open successor only after the failed native owner is gone");
+    let changed_life = !Arc::ptr_eq(&old_life, &control.process_life());
+    let inherited_stop = control.current_process_requires_stop();
+    drop(fresh_runtime);
+    assert!(control.runtime().is_none());
+    assert!(
+        changed_life,
+        "implicit runtime open reused the genuine failed process's life"
+    );
+    assert!(
+        !inherited_stop,
+        "new runtime inherited the old no-elapsed fail-stop request"
+    );
+    assert_eq!(control.process_exit_elapsed_ms(), None);
+    let fresh_key = fresh_key_for_workspace(&identity, &arguments, workspace.hint())
+        .expect("fresh native request identity");
+    let fresh_invocation = V5InvocationRequest::new(
+        fresh_key.invocation_id(),
+        fresh_key.reserved_task_id(),
+        V5ToolIdentity::View,
+        arguments,
+        workspace.hint().to_owned(),
+        7_000,
+    )
+    .expect("fresh native invocation");
+    let succeeded = exchange_once(
+        state.path(),
+        &identity,
+        clock.clone(),
+        telemetry.clone(),
+        Some(control.clone()),
+        |owner| owner.submit_invocation(fresh_invocation),
+    )
+    .expect("fresh native submit succeeds after no-elapsed fail-stop");
+    let V5ServerResponse::Invocation {
+        outcome: V5InvocationResponse::Direct { receipt },
+    } = succeeded
+    else {
+        panic!("fresh native submit did not return its exact direct receipt");
+    };
+    assert_eq!(receipt.receipt_key(), &fresh_key);
+    assert_eq!(
+        receipt.terminal(),
+        &ReceiptTerminalOutcome::Completed {
+            result: Box::new(DomainResult::success("fresh native result")),
+        }
+    );
+    let recovered = exchange_once(
+        state.path(),
+        &identity,
+        clock,
+        telemetry.clone(),
+        Some(control.clone()),
+        |owner| owner.recover_invocation_receipt(old_key.clone()),
+    )
+    .expect("recover original failed attempt without replay");
+    assert_eq!(recovered, failed);
+    assert_eq!(telemetry.snapshot().callbacks.execute, 1);
+    assert_eq!(control.side_effect_markers(), 1);
+}
+
+#[test]
+fn gated_runtime_registers_its_actual_owner_until_that_runtime_is_released() {
+    let state = ScenarioStateRoot::new().expect("gated owner state root");
+    let identity = CoreIdentity::production_v5();
+    let clock = Arc::new(ScenarioEpochClock::new(SCENARIO_INITIAL_EPOCH_MS, false));
+    let control = Arc::new(ReceiptScenarioControl::new());
+    let telemetry = Arc::new(V5ReceiptRuntimeTelemetry::new());
+    let (runtime, _, _) =
+        open_scenario_operation_runtime(state.path(), &identity, &clock, &control, &telemetry)
+            .expect("open actual gated runtime");
+    let observed = control
+        .runtime()
+        .expect("gated runtime must be an observed owner");
+    assert!(Arc::ptr_eq(&observed, &runtime));
+    drop(observed);
+    assert!(
+        control.begin_successor_process().is_err(),
+        "a retained gated runtime cannot authorize a successor"
+    );
+    drop(runtime);
+    assert!(control.runtime().is_none());
+    control
+        .begin_successor_process()
+        .expect("released gated runtime no longer owns the process");
+}
+
+#[test]
+fn gated_cancel_after_begun_crash_opens_a_fresh_process_without_explicit_restart() {
+    let request = json!({
+        "clock": "fake",
+        "actions": [
+            {"action": "configure_provider", "execution_class": "direct",
+             "terminal": {"terminal": "success", "payload": "must-not-execute"},
+             "cooperative_cancel": true, "side_effect_marker": true},
+            {"action": "install_barrier", "point": "before_prepare"},
+            {"action": "submit", "request": "canonical", "response_budget_ms": 6000,
+             "disconnect": "never", "label": "crashed-submit"},
+            {"action": "wait_for_event", "event": "receipt_begun_committed"},
+            {"action": "crash", "point": "reserved_begun"},
+            {"action": "spawn_cancel", "key": "exact", "lazy_session": false,
+             "label": "successor-cancel"},
+            {"action": "join_operation", "label": "successor-cancel"},
+            {"action": "checkpoint", "label": "cancelled-intent"}
+        ]
+    });
+    let encoded = run_supported_receipt_scenario_for_test(&request.to_string())
+        .expect("new gated runtime must not inherit the crashed process's closed permissions");
+    let report: Value = serde_json::from_str(&encoded).expect("decode gated successor report");
+    let snapshot = &report["payload"]["checkpoints"]["cancelled-intent"];
+    assert_eq!(snapshot["callbacks"]["prepare"], 0);
+    assert_eq!(snapshot["callbacks"]["execute"], 0);
+    assert_eq!(snapshot["sideEffectMarkers"], 0);
+    let receipts = snapshot["receipts"]
+        .as_array()
+        .expect("retained receipt rows");
+    assert_eq!(receipts.len(), 1);
+    assert_eq!(receipts[0]["state"], "reserved_begun");
+    assert_eq!(receipts[0]["cancelRequested"], true);
+    assert_eq!(snapshot["processExitElapsedMs"], 1);
+}
+
+#[test]
+fn restart_releases_a_joined_gated_operation_runtime_before_opening_its_successor() {
+    let request = json!({
+        "clock": "fake",
+        "actions": [
+            {"action": "seed_receipt", "state": "reserved_actor_bound",
+             "cancel_requested": false, "staged_terminal": null},
+            {"action": "spawn_mark_reserved_begun", "proof": "exact", "label": "mark"},
+            {"action": "join_operation", "label": "mark"},
+            {"action": "restart"},
+            {"action": "checkpoint", "label": "after-restart"},
+            {"action": "recover", "key": "exact", "label": "recovered"}
+        ]
+    });
+    let encoded = run_supported_receipt_scenario_for_test(&request.to_string())
+        .expect("joined gated operation must not retain the old runtime across Restart");
+    let report: Value = serde_json::from_str(&encoded).expect("decode joined runtime report");
+    let payload = &report["payload"];
+    assert_eq!(
+        payload["responses"]["recovered"]["error"],
+        "outcome_uncertain"
+    );
+    let snapshot = &payload["checkpoints"]["after-restart"];
+    assert_eq!(snapshot["callbacks"]["prepare"], 0);
+    assert_eq!(snapshot["callbacks"]["execute"], 0);
+    assert_eq!(snapshot["sideEffectMarkers"], 0);
+}
+
+#[test]
 fn restart_gives_a_fresh_submit_live_process_and_preserves_its_future_barrier() {
     let request = json!({
         "clock": "fake",
@@ -859,6 +1184,11 @@ fn successor_hooks_keep_old_process_dead_and_future_barriers_owned_by_the_new_li
     );
     // A delayed notification from the retained old hook cannot kill the new life.
     old.forced_process_exit(Some(Duration::from_millis(2)));
+    assert_eq!(
+        control.process_exit_elapsed_ms(),
+        Some(1),
+        "a retained old hook must not rewrite the successor's exit-time observation"
+    );
     assert!(old.process_exited());
     assert!(!new.process_exited());
     assert!(!control.process_exited());

@@ -295,8 +295,14 @@ impl ReceiptScenarioControl {
     pub(super) fn record_process_exit_for(&self, life: &ScenarioProcessLife, elapsed_ms: u64) {
         life.exited.store(true, Ordering::Release);
         life.close_permissions();
-        self.process_exit_elapsed_ms
-            .store(elapsed_ms, Ordering::Release);
+        let current = self
+            .process_life
+            .lock()
+            .expect("scenario process-life mutex poisoned");
+        if std::ptr::eq(Arc::as_ptr(&current), life) {
+            self.process_exit_elapsed_ms
+                .store(elapsed_ms, Ordering::Release);
+        }
     }
 
     pub(super) fn new() -> Self {
@@ -1563,6 +1569,17 @@ impl ReceiptScenarioControl {
         current.close_permissions();
         current.exited.store(true, Ordering::Release);
         *current = Arc::new(ScenarioProcessLife::new(future));
+        Ok(())
+    }
+
+    /// Opening a new Runtime after a crash needs fresh permissions, even when
+    /// the scenario did not issue a separate Restart action. Retained owners
+    /// still prevent rotation; installing hooks never revives an old life.
+    pub(super) fn prepare_process_open(&self) -> Result<(), String> {
+        let current = self.process_life();
+        if current.permission_closed.load(Ordering::Acquire) || current.requires_stop() {
+            self.begin_successor_process()?;
+        }
         Ok(())
     }
 

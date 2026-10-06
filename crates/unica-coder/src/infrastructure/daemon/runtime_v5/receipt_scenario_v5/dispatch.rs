@@ -10,6 +10,28 @@ pub(super) fn unsupported_shape(shape: &str) -> String {
     format!("protocol-v5 receipt scenario shape is not supported: {shape}")
 }
 
+/// Refusing Restart must still join the operations this runner already owns.
+/// Closing fixture permissions wakes them without granting a successor or
+/// manufacturing a cancellation/physical exit. Every handle is joined even
+/// when an earlier worker failed or panicked.
+fn join_operations_after_restart_refusal(
+    control: &ReceiptScenarioControl,
+    operations: &mut HashMap<String, ScenarioOperation>,
+) -> Vec<String> {
+    control.process_life().close_permissions();
+    let mut failures = Vec::new();
+    for (label, operation) in operations.drain() {
+        let joined = operation.handle.join();
+        control.record_operation_event(&label, "joined");
+        match joined {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => failures.push(format!("scenario operation {label} failed: {error}")),
+            Err(_) => failures.push(format!("scenario operation {label} panicked")),
+        }
+    }
+    failures
+}
+
 pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<String, String> {
     run_receipt_scenario_with_completion_observer(request, None)
 }
@@ -24,6 +46,22 @@ type ReceiptScenarioCompletionObserver<'a> = dyn FnMut(
 /// The callback receives its original record, never a refreshed/spawned endpoint.
 pub(super) fn run_receipt_scenario_with_completion_observer(
     request: &str,
+    completion_observer: Option<&mut ReceiptScenarioCompletionObserver<'_>>,
+) -> Result<String, String> {
+    run_receipt_scenario_with_control_observer(request, None, completion_observer)
+}
+
+#[cfg(test)]
+pub(super) fn run_receipt_scenario_with_control_for_test(
+    request: &str,
+    control: Arc<ReceiptScenarioControl>,
+) -> Result<String, String> {
+    run_receipt_scenario_with_control_observer(request, Some(control), None)
+}
+
+fn run_receipt_scenario_with_control_observer(
+    request: &str,
+    supplied_control: Option<Arc<ReceiptScenarioControl>>,
     completion_observer: Option<&mut ReceiptScenarioCompletionObserver<'_>>,
 ) -> Result<String, String> {
     let scenario = match serde_json::from_str::<ReceiptScenario>(request) {
@@ -84,7 +122,7 @@ pub(super) fn run_receipt_scenario_with_completion_observer(
     };
 
     let mut report = ScenarioReportBuilder::default();
-    let control = Arc::new(ReceiptScenarioControl::new());
+    let control = supplied_control.unwrap_or_else(|| Arc::new(ReceiptScenarioControl::new()));
     for action in &scenario.actions {
         if let ReceiptScenarioAction::InvalidateActorProof { point, .. } = action {
             control.install(*point);
@@ -241,7 +279,7 @@ pub(super) fn run_receipt_scenario_with_completion_observer(
                     &identity,
                     Some(&control),
                     &clock,
-                );
+                )?;
                 let runtime =
                     V5ReceiptRuntime::open_with_epoch_clock(&daemon_state, &config, clock.clone())?
                         .with_hooks_for_test(ScenarioHooks::install(
@@ -398,9 +436,10 @@ pub(super) fn run_receipt_scenario_with_completion_observer(
             }
             ReceiptScenarioAction::ReconcileStartup => {
                 startup_listener_override = true;
+                control.prepare_process_open()?;
                 let daemon_state = DaemonStateDirectory::open(state.path(), &identity)?;
                 let config =
-                    scenario_server_config_with_clock(state.path(), &identity, None, &clock);
+                    scenario_server_config_with_clock(state.path(), &identity, None, &clock)?;
                 match V5ReceiptRuntime::open_with_epoch_clock(
                     &daemon_state,
                     &config
@@ -617,7 +656,7 @@ pub(super) fn run_receipt_scenario_with_completion_observer(
                     &identity,
                     Some(&control),
                     &clock,
-                );
+                )?;
                 let runtime =
                     V5ReceiptRuntime::open_with_epoch_clock(&daemon_state, &config, clock.clone())?
                         .with_hooks_for_test(ScenarioHooks::install(
@@ -1775,6 +1814,30 @@ pub(super) fn run_receipt_scenario_with_completion_observer(
                 }
             }
             ReceiptScenarioAction::Restart => {
+                if !operations.is_empty() {
+                    let mut cleanup =
+                        join_operations_after_restart_refusal(&control, &mut operations);
+                    drop(operation_runtime.take());
+                    drop(live_actor.take());
+                    drop(live_task_projection.take());
+                    if let Some(daemon) = live_daemon.take() {
+                        if let Err(error) = daemon.stop_and_join(
+                            "protocol-v5 receipt scenario live daemon panicked after refused restart",
+                        ) {
+                            cleanup.push(error);
+                        }
+                    }
+                    let refusal =
+                        "protocol-v5 receipt scenario must join operations before restart";
+                    return Err(if cleanup.is_empty() {
+                        refusal.to_owned()
+                    } else {
+                        format!(
+                            "{refusal}; operation cleanup failed: {}",
+                            cleanup.join("; ")
+                        )
+                    });
+                }
                 startup_listener_override = true;
                 if pending_submit.is_some() && !control.process_exited() {
                     return Err(
@@ -1813,6 +1876,7 @@ pub(super) fn run_receipt_scenario_with_completion_observer(
                 }
                 live_actor = None;
                 live_task_projection = None;
+                operation_runtime = None;
                 if let Some(daemon) = live_daemon.take() {
                     daemon.stop_and_join(
                         "protocol-v5 receipt scenario live daemon panicked before restart",
@@ -1821,7 +1885,7 @@ pub(super) fn run_receipt_scenario_with_completion_observer(
                 control.begin_successor_process()?;
                 let daemon_state = DaemonStateDirectory::open(state.path(), &identity)?;
                 let config =
-                    scenario_server_config_with_clock(state.path(), &identity, None, &clock);
+                    scenario_server_config_with_clock(state.path(), &identity, None, &clock)?;
                 match V5ReceiptRuntime::open_with_epoch_clock(
                     &daemon_state,
                     &config
@@ -2189,7 +2253,7 @@ pub(super) fn run_receipt_scenario_with_completion_observer(
                 }
                 let daemon_state = DaemonStateDirectory::open(state.path(), &identity)?;
                 let config =
-                    scenario_server_config_with_clock(state.path(), &identity, None, &clock);
+                    scenario_server_config_with_clock(state.path(), &identity, None, &clock)?;
                 let runtime =
                     V5ReceiptRuntime::open_with_epoch_clock(&daemon_state, &config, clock.clone())?
                         .with_hooks_for_test(ScenarioHooks::install(Arc::clone(&telemetry), None));
@@ -2309,7 +2373,7 @@ pub(super) fn run_receipt_scenario_with_completion_observer(
                     &identity,
                     Some(&control),
                     &clock,
-                );
+                )?;
                 let runtime =
                     V5ReceiptRuntime::open_with_epoch_clock(&daemon_state, &config, clock.clone())?
                         .with_hooks_for_test(ScenarioHooks::install(
@@ -2332,7 +2396,7 @@ pub(super) fn run_receipt_scenario_with_completion_observer(
                     &identity,
                     Some(&control),
                     &clock,
-                );
+                )?;
                 let runtime =
                     V5ReceiptRuntime::open_with_epoch_clock(&daemon_state, &config, clock.clone())?
                         .with_hooks_for_test(ScenarioHooks::install(
@@ -2410,7 +2474,7 @@ pub(super) fn run_receipt_scenario_with_completion_observer(
                     &identity,
                     Some(&control),
                     &clock,
-                );
+                )?;
                 let runtime =
                     V5ReceiptRuntime::open_with_epoch_clock(&daemon_state, &config, clock.clone())?
                         .with_hooks_for_test(ScenarioHooks::install(
