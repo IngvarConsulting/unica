@@ -1478,12 +1478,31 @@ struct WorkspaceServiceRuntimeState {
     authenticated_request_hook: Mutex<Option<Arc<AuthenticatedWorkspaceRequestHook>>>,
     #[cfg(test)]
     provider_sessions_drained_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
+    caller_detached_hook: Mutex<Option<Arc<DetachedWorkspaceCallerHook>>>,
+    #[cfg(test)]
+    caller_monitor_fault: Mutex<Option<WorkspaceCallerMonitorPoint>>,
+    #[cfg(test)]
+    handler_finished_hook: Mutex<Option<Arc<WorkspaceHandlerFinishedHook>>>,
 }
 
 pub(super) struct WorkspaceServiceRuntimeProjection<'a>(&'a WorkspaceServiceRuntimeState);
 
 #[cfg(test)]
 type AuthenticatedWorkspaceRequestHook = dyn Fn(u16, &ServiceRequestKind) + Send + Sync;
+
+#[cfg(test)]
+type DetachedWorkspaceCallerHook = dyn Fn(&CancellationToken) + Send + Sync;
+
+#[cfg(test)]
+type WorkspaceHandlerFinishedHook = dyn Fn(&thread::Result<Result<(), String>>) + Send + Sync;
+
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WorkspaceCallerMonitorPoint {
+    Setup,
+    Peek,
+}
 
 #[cfg(test)]
 pub(super) struct WorkspaceServiceRuntimeProjectionMut<'a>(&'a mut WorkspaceServiceRuntimeState);
@@ -1634,6 +1653,12 @@ impl WorkspaceServiceRuntime {
             authenticated_request_hook: Mutex::new(None),
             #[cfg(test)]
             provider_sessions_drained_hook: Mutex::new(None),
+            #[cfg(test)]
+            caller_detached_hook: Mutex::new(None),
+            #[cfg(test)]
+            caller_monitor_fault: Mutex::new(None),
+            #[cfg(test)]
+            handler_finished_hook: Mutex::new(None),
         };
         Self {
             actor: WorkspaceActor::with_legacy_runtime(actor_identity, context, runtime)
@@ -1815,6 +1840,53 @@ impl WorkspaceServiceRuntime {
             .clone();
         if let (Some(hook), Ok(peer)) = (hook, stream.peer_addr()) {
             hook(peer.port(), kind);
+        }
+    }
+
+    #[cfg(test)]
+    fn notify_caller_detached(&self, cancellation: &CancellationToken) {
+        let hook = self
+            .actor
+            .runtime_projection()
+            .0
+            .caller_detached_hook
+            .lock()
+            .unwrap()
+            .clone();
+        if let Some(hook) = hook {
+            hook(cancellation);
+        }
+    }
+
+    #[cfg(test)]
+    fn take_caller_monitor_fault(&self, point: WorkspaceCallerMonitorPoint) -> bool {
+        let mut fault = self
+            .actor
+            .runtime_projection()
+            .0
+            .caller_monitor_fault
+            .lock()
+            .unwrap();
+        if *fault == Some(point) {
+            *fault = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    #[cfg(test)]
+    fn notify_handler_finished(&self, result: &thread::Result<Result<(), String>>) {
+        let hook = self
+            .actor
+            .runtime_projection()
+            .0
+            .handler_finished_hook
+            .lock()
+            .unwrap()
+            .clone();
+        if let Some(hook) = hook {
+            hook(result);
         }
     }
 
@@ -3764,7 +3836,10 @@ fn serve_workspace_service(
         while index < handlers.len() {
             if handlers[index].is_finished() {
                 let handler = handlers.swap_remove(index);
-                report_workspace_service_handler_result(handler.join());
+                let finished = handler.join();
+                #[cfg(test)]
+                runtime.notify_handler_finished(&finished);
+                report_workspace_service_handler_result(finished);
             } else {
                 index += 1;
             }
@@ -3827,7 +3902,10 @@ fn serve_workspace_service(
         while index < handlers.len() {
             if handlers[index].is_finished() {
                 let handler = handlers.swap_remove(index);
-                report_workspace_service_handler_result(handler.join());
+                let finished = handler.join();
+                #[cfg(test)]
+                runtime.notify_handler_finished(&finished);
+                report_workspace_service_handler_result(finished);
             } else {
                 index += 1;
             }
@@ -3960,77 +4038,96 @@ fn handle_workspace_service_request(
                     drop(guard);
                     let _ = result_tx.send(response);
                 });
-            if let Err(error) = stream.set_nonblocking(true) {
-                cancellation.cancel();
-                return Err(format!(
-                    "failed to monitor workspace service caller: {error}"
-                ));
+            let mut caller_error = configure_workspace_caller_monitor(&stream, &runtime)
+                .err()
+                .map(|error| format!("failed to monitor workspace service caller: {error}"));
+            let mut monitor_caller = caller_error.is_none();
+            #[cfg(test)]
+            if !monitor_caller {
+                runtime.notify_caller_detached(&cancellation);
             }
-            let mut caller_connected = true;
             loop {
                 match result_rx.recv_timeout(Duration::from_millis(50)) {
                     Ok(response) => {
-                        if caller_connected {
-                            stream.set_nonblocking(false).map_err(|err| {
-                                format!(
-                                    "failed to restore workspace service response stream: {err}"
-                                )
-                            })?;
-                            write_service_response(stream, &response, false)?;
-                        }
+                        // An inbound FIN can be a half-close: the peer may still
+                        // read the result. Delivery is attempted only after the
+                        // accepted worker has really completed, even if its
+                        // transport could no longer be monitored.
+                        stream.set_nonblocking(false).map_err(|err| {
+                            format!("failed to restore workspace service response stream: {err}")
+                        })?;
+                        write_service_response(stream, &response, false)?;
                         break;
                     }
                     Err(mpsc::RecvTimeoutError::Disconnected) => {
-                        cancellation.cancel();
-                        if caller_connected {
-                            stream.set_nonblocking(false).map_err(|err| {
-                                format!(
-                                    "failed to restore workspace service response stream: {err}"
-                                )
-                            })?;
-                            write_service_response(
-                                stream,
-                                &ServiceResponse::error("workspace service worker disconnected"),
-                                false,
-                            )?;
-                        }
-                        break;
+                        stream.set_nonblocking(false).map_err(|err| {
+                            format!("failed to restore workspace service response stream: {err}")
+                        })?;
+                        write_service_response(
+                            stream,
+                            &ServiceResponse::error("workspace service worker disconnected"),
+                            false,
+                        )?;
+                        return Err("workspace service worker disconnected".into());
                     }
                     Err(mpsc::RecvTimeoutError::Timeout) => {
-                        if !caller_connected {
+                        if !monitor_caller {
                             continue;
                         }
                         let mut byte = [0_u8; 1];
-                        match stream.peek(&mut byte) {
+                        match peek_workspace_caller(&stream, &mut byte, &runtime) {
                             Ok(0) => {
-                                cancellation.cancel();
-                                caller_connected = false;
+                                monitor_caller = false;
                             }
                             Ok(_) => {}
-                            Err(error) if error.kind() == ErrorKind::WouldBlock => {}
                             Err(error)
                                 if matches!(
                                     error.kind(),
-                                    ErrorKind::ConnectionAborted
-                                        | ErrorKind::ConnectionReset
-                                        | ErrorKind::BrokenPipe
-                                        | ErrorKind::NotConnected
-                                ) =>
-                            {
-                                cancellation.cancel();
-                                caller_connected = false;
+                                    ErrorKind::WouldBlock | ErrorKind::Interrupted
+                                ) => {}
+                            Err(error) => {
+                                caller_error = Some(format!(
+                                    "failed to monitor workspace service caller: {error}"
+                                ));
+                                monitor_caller = false;
                             }
-                            Err(_) => {
-                                cancellation.cancel();
-                                caller_connected = false;
-                            }
+                        }
+                        #[cfg(test)]
+                        if !monitor_caller {
+                            runtime.notify_caller_detached(&cancellation);
                         }
                     }
                 }
             }
+            if let Some(error) = caller_error {
+                return Err(error);
+            }
         }
     }
     Ok(())
+}
+
+fn configure_workspace_caller_monitor(
+    stream: &TcpStream,
+    _runtime: &WorkspaceServiceRuntime,
+) -> io::Result<()> {
+    #[cfg(test)]
+    if _runtime.take_caller_monitor_fault(WorkspaceCallerMonitorPoint::Setup) {
+        return Err(io::Error::other("injected caller monitor setup failure"));
+    }
+    stream.set_nonblocking(true)
+}
+
+fn peek_workspace_caller(
+    stream: &TcpStream,
+    byte: &mut [u8],
+    _runtime: &WorkspaceServiceRuntime,
+) -> io::Result<usize> {
+    #[cfg(test)]
+    if _runtime.take_caller_monitor_fault(WorkspaceCallerMonitorPoint::Peek) {
+        return Err(io::Error::other("injected caller monitor peek failure"));
+    }
+    stream.peek(byte)
 }
 
 #[derive(Debug)]
@@ -6179,46 +6276,190 @@ mod tests {
     }
 
     #[test]
-    fn workspace_service_control_path_disconnect_cancels_only_its_operation() {
-        let (context, record, _runtime, executor, server) =
-            workspace_control_test_server("control-disconnect");
-        let disconnected = open_test_request(
-            &record,
-            ServiceRequestKind::RlmReady {
-                operation_id: "blocked-disconnected".to_string(),
-                args: json!({}),
-                timeout_seconds: 5,
-                timeout_nanos: 0,
-            },
-        );
-        executor.wait_started(1);
+    fn workspace_service_detached_caller_keeps_work_and_exact_cancel_ownership() {
+        let mut server = WorkspaceAdmissionTestServer::start("detached-exact-control");
+        let disconnected = server.work("held-disconnected");
+        let mut other = server.work("held-other");
+        server.executor.wait_started(2);
+        let target_token = server.token("held-disconnected");
+        let other_token = server.token("held-other");
+        let (detached_tx, detached_rx) = mpsc::channel();
+        *server
+            .runtime
+            .actor
+            .runtime_projection()
+            .0
+            .caller_detached_hook
+            .lock()
+            .unwrap() = Some(Arc::new(move |token| {
+            let _ = detached_tx.send(token.is_cancelled());
+        }));
+        disconnected
+            .get_ref()
+            .shutdown(std::net::Shutdown::Both)
+            .unwrap();
         drop(disconnected);
-        executor.wait_cancelled(1);
-        assert_eq!(
-            executor.state.lock().unwrap().cancelled.as_slice(),
-            &["blocked-disconnected".to_string()]
+        assert!(
+            !detached_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            "the real EOF monitor must detach without cancelling accepted work"
         );
+        assert!(!target_token.is_cancelled());
+        assert!(!other_token.is_cancelled());
+        assert!(server
+            .runtime
+            .operations()
+            .lock()
+            .unwrap()
+            .contains_key("held-disconnected"));
+        assert!(send_test_request(&server.record, ServiceRequestKind::Ping).ok);
+        assert!(
+            send_test_request(
+                &server.record,
+                ServiceRequestKind::Cancel {
+                    operation_id: "held-disconnected".into()
+                }
+            )
+            .ok
+        );
+        assert!(target_token.is_cancelled());
+        assert!(!other_token.is_cancelled());
+        assert!(send_test_request(&server.record, ServiceRequestKind::Shutdown).ok);
+        assert!(!read_test_response(&mut other).ok);
+        assert!(other_token.is_cancelled());
+    }
 
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            let recovered = send_test_request(
-                &record,
-                ServiceRequestKind::RlmReady {
-                    operation_id: "success-after-disconnect".to_string(),
-                    args: json!({}),
-                    timeout_seconds: 5,
-                    timeout_nanos: 0,
-                },
-            );
-            if recovered.ok {
-                break;
-            }
-            assert!(Instant::now() < deadline);
+    #[test]
+    fn workspace_service_half_closed_caller_receives_late_success_without_cancel() {
+        assert_workspace_caller_completion(None);
+    }
+
+    #[test]
+    fn workspace_service_monitor_failures_preserve_worker_and_report_real_error_after_completion() {
+        for point in [
+            WorkspaceCallerMonitorPoint::Setup,
+            WorkspaceCallerMonitorPoint::Peek,
+        ] {
+            assert_workspace_caller_completion(Some(point));
         }
+    }
 
-        assert!(send_test_request(&record, ServiceRequestKind::Shutdown).ok);
-        server.join().unwrap().unwrap();
-        cleanup(&context);
+    fn assert_workspace_caller_completion(fault: Option<WorkspaceCallerMonitorPoint>) {
+        struct FinishingExecutor {
+            started: mpsc::Sender<()>,
+            release: Mutex<mpsc::Receiver<()>>,
+        }
+        impl WorkspaceServiceOperationExecutor for FinishingExecutor {
+            fn execute(
+                &self,
+                _runtime: &WorkspaceServiceRuntime,
+                _kind: ServiceRequestKind,
+                cancellation: &CancellationToken,
+            ) -> ServiceResponse {
+                self.started.send(()).unwrap();
+                self.release.lock().unwrap().recv().unwrap();
+                if cancellation.is_cancelled() {
+                    ServiceResponse::error(cancelled_error("half-closed work cancelled"))
+                } else {
+                    ServiceResponse {
+                        ok: true,
+                        status: Some("late-complete-result".into()),
+                        ..ServiceResponse::default()
+                    }
+                }
+            }
+        }
+        struct Cleanup {
+            context: WorkspaceContext,
+            runtime: Arc<WorkspaceServiceRuntime>,
+            server: Option<thread::JoinHandle<Result<(), String>>>,
+            release: mpsc::Sender<()>,
+        }
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = self.release.send(());
+                self.runtime.begin_shutdown();
+                if let Some(server) = self.server.take() {
+                    let _ = server.join();
+                }
+                cleanup(&self.context);
+            }
+        }
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let executor = Arc::new(FinishingExecutor {
+            started: started_tx,
+            release: Mutex::new(release_rx),
+        });
+        let (context, record, runtime, server) = workspace_test_server_with_executor(
+            "half-closed-late-result",
+            executor,
+            SERVICE_SHUTDOWN_GRACE,
+        );
+        let fixture = Cleanup {
+            context,
+            runtime,
+            server: Some(server),
+            release: release_tx.clone(),
+        };
+        *fixture
+            .runtime
+            .actor
+            .runtime_projection()
+            .0
+            .caller_monitor_fault
+            .lock()
+            .unwrap() = fault;
+        let (finished_tx, finished_rx) = mpsc::channel();
+        *fixture
+            .runtime
+            .actor
+            .runtime_projection()
+            .0
+            .handler_finished_hook
+            .lock()
+            .unwrap() = Some(Arc::new(move |result| {
+            let error = result
+                .as_ref()
+                .expect("actual handler must not panic")
+                .as_ref()
+                .err()
+                .cloned();
+            let _ = finished_tx.send(error);
+        }));
+        let (detached_tx, detached_rx) = mpsc::channel();
+        *fixture
+            .runtime
+            .actor
+            .runtime_projection()
+            .0
+            .caller_detached_hook
+            .lock()
+            .unwrap() = Some(Arc::new(move |token| {
+            let _ = detached_tx.send(token.is_cancelled());
+            let _ = release_tx.send(());
+        }));
+        let mut request = open_test_request(&record, admission_test_work("half-closed-work"));
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        request
+            .get_ref()
+            .shutdown(std::net::Shutdown::Write)
+            .unwrap();
+        let observed_cancel = detached_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(!observed_cancel, "inbound FIN must preserve accepted work");
+        let response = read_test_response(&mut request);
+        assert!(response.ok, "{response:?}");
+        assert_eq!(response.status.as_deref(), Some("late-complete-result"));
+        assert!(fixture.runtime.operations().lock().unwrap().is_empty());
+        let handler_error = finished_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        match fault {
+            None => assert!(handler_error.is_none(), "{handler_error:?}"),
+            Some(WorkspaceCallerMonitorPoint::Setup) => assert!(handler_error
+                .unwrap()
+                .contains("injected caller monitor setup failure")),
+            Some(WorkspaceCallerMonitorPoint::Peek) => assert!(handler_error
+                .unwrap()
+                .contains("injected caller monitor peek failure")),
+        }
     }
 
     #[test]
@@ -6295,8 +6536,8 @@ mod tests {
         );
         executor.wait_started(1);
         drop(disconnected);
-        executor.wait_cancelled(1);
         assert!(send_test_request(&record, ServiceRequestKind::Shutdown).ok);
+        executor.wait_cancelled(1);
 
         let (joined_tx, joined_rx) = mpsc::channel();
         let joiner = thread::spawn(move || {
@@ -6885,7 +7126,6 @@ mod tests {
         );
         executor.wait_started(1);
         drop(disconnected);
-        executor.wait_cancelled(1);
         let identity = runtime.identity().clone();
         let mut replacement = record.clone();
         replacement.token = "new-owner".to_string();
@@ -6893,12 +7133,21 @@ mod tests {
         replacement.started_at = replacement.started_at.saturating_add(1);
         write_record(&identity, replacement.clone());
         assert!(send_test_request(&record, ServiceRequestKind::Shutdown).ok);
+        executor.wait_cancelled(1);
 
         let started = Instant::now();
         server.join().unwrap().unwrap();
         assert!(started.elapsed() < Duration::from_millis(500));
         assert_eq!(read_record(&identity).unwrap().token, replacement.token);
         executor.release_cancelled();
+        let retired_by = Instant::now() + Duration::from_secs(2);
+        while !runtime.operations().lock().unwrap().is_empty() {
+            assert!(
+                Instant::now() < retired_by,
+                "cancelled worker did not retire its guard"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
         cleanup(&context);
     }
 

@@ -35,7 +35,6 @@ use unsafe_libyaml::{
     YAML_SEQUENCE_START_EVENT, YAML_STREAM_END_EVENT,
 };
 
-const MAX_RESERVED_EXTERNAL_DESCRIPTOR_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_HEALTH_SOURCE_MAP_INPUT_BYTES: u64 = 8 * 1024 * 1024;
 const PROJECT_SOURCE_MAP_READ_CHUNK_BYTES: usize = 64 * 1024;
 const MAX_HEALTH_SOURCE_SETS: usize = 1024;
@@ -1867,20 +1866,13 @@ fn detect_source_set_format(
     let source_root = workspace_root.join(&source_set.path);
     let mut format_probe_error = None;
     let (platform_evidence, edt_evidence) = if state.captures_actor_evidence() {
-        match actor_format_evidence(
+        actor_format_evidence(
             workspace_root,
             &source_root,
             source_set.kind,
             state,
             checkpoint,
-        ) {
-            Ok(evidence) => evidence,
-            Err(ActorFormatEvidenceFailure::RecoverableTerminal(reason)) => {
-                format_probe_error = Some(reason);
-                (Vec::new(), Vec::new())
-            }
-            Err(ActorFormatEvidenceFailure::Admission(reason)) => return Err(reason),
-        }
+        )?
     } else if state.require_nofollow_source_probe_route {
         match health_format_evidence(
             workspace_root,
@@ -1970,24 +1962,13 @@ fn classify_source_format(
     }
 }
 
-enum ActorFormatEvidenceFailure {
-    RecoverableTerminal(String),
-    Admission(String),
-}
-
-impl From<String> for ActorFormatEvidenceFailure {
-    fn from(reason: String) -> Self {
-        Self::Admission(reason)
-    }
-}
-
 fn actor_format_evidence(
     workspace_root: &Path,
     source_root: &Path,
     kind: SourceSetKind,
     state: &mut SourceMapDiscoveryState,
     checkpoint: &mut dyn FnMut() -> Result<(), String>,
-) -> Result<(Vec<String>, Vec<String>), ActorFormatEvidenceFailure> {
+) -> Result<(Vec<String>, Vec<String>), String> {
     checkpoint()?;
     let configured_path = PathBuf::from(path_relative_to(workspace_root, source_root));
     let source_directory = {
@@ -2073,11 +2054,7 @@ fn actor_format_evidence(
                     .actor_pass
                     .as_mut()
                     .expect("actor format discovery has retained evidence state")
-                    .observe_regular(
-                        &relative,
-                        MAX_RESERVED_EXTERNAL_DESCRIPTOR_BYTES as usize,
-                        checkpoint,
-                    )?
+                    .observe_regular_unbounded(&relative, checkpoint)?
             } else {
                 state
                     .actor_pass
@@ -2103,12 +2080,6 @@ fn actor_format_evidence(
                     }
                 }
                 RetainedRegularObservation::Present if !config_dump_info => {}
-                RetainedRegularObservation::Oversized if config_dump_info => {
-                    return Err(ActorFormatEvidenceFailure::RecoverableTerminal(format!(
-                        "project source-map input exceeds {} bytes",
-                        MAX_RESERVED_EXTERNAL_DESCRIPTOR_BYTES
-                    )));
-                }
                 RetainedRegularObservation::Absent | RetainedRegularObservation::WrongKind => {
                     continue;
                 }
@@ -2360,24 +2331,20 @@ fn secure_config_dump_info_is_source_descriptor(
     let metadata = file
         .metadata()
         .map_err(|error| format!("source descriptor metadata failed: {error}"))?;
-    if !metadata.is_file() || metadata.len() > MAX_RESERVED_EXTERNAL_DESCRIPTOR_BYTES {
+    if !metadata.is_file() {
         return Ok(false);
     }
-    let mut bytes = Vec::with_capacity(metadata.len() as usize);
-    let mut limited = file.take(MAX_RESERVED_EXTERNAL_DESCRIPTOR_BYTES + 1);
+    let mut bytes = Vec::new();
     let mut chunk = [0_u8; PROJECT_SOURCE_MAP_READ_CHUNK_BYTES];
     loop {
         checkpoint()?;
-        let read = limited
+        let read = file
             .read(&mut chunk)
             .map_err(|error| format!("source descriptor read failed: {error}"))?;
         if read == 0 {
             break;
         }
         bytes.extend_from_slice(&chunk[..read]);
-        if bytes.len() as u64 > MAX_RESERVED_EXTERNAL_DESCRIPTOR_BYTES {
-            return Ok(false);
-        }
     }
     Ok(matches!(
         (config_dump_info_xml_kind(&bytes), kind),
@@ -2507,15 +2474,14 @@ fn config_dump_info_xml_file_kind(
     let Ok(metadata) = file.metadata() else {
         return Ok(ConfigDumpInfoXmlKind::Other);
     };
-    if !metadata.file_type().is_file() || metadata.len() > MAX_RESERVED_EXTERNAL_DESCRIPTOR_BYTES {
+    if !metadata.file_type().is_file() {
         return Ok(ConfigDumpInfoXmlKind::Other);
     }
-    let mut bytes = Vec::with_capacity(metadata.len() as usize);
-    let mut limited = (&mut file).take(MAX_RESERVED_EXTERNAL_DESCRIPTOR_BYTES + 1);
+    let mut bytes = Vec::new();
     let mut chunk = [0_u8; PROJECT_SOURCE_MAP_READ_CHUNK_BYTES];
     loop {
         checkpoint()?;
-        let Ok(read) = limited.read(&mut chunk) else {
+        let Ok(read) = file.read(&mut chunk) else {
             return Ok(ConfigDumpInfoXmlKind::Other);
         };
         if read == 0 {
@@ -2523,9 +2489,6 @@ fn config_dump_info_xml_file_kind(
         }
         bytes.extend_from_slice(&chunk[..read]);
         checkpoint()?;
-    }
-    if bytes.len() as u64 > MAX_RESERVED_EXTERNAL_DESCRIPTOR_BYTES {
-        return Ok(ConfigDumpInfoXmlKind::Other);
     }
     Ok(config_dump_info_xml_kind(&bytes))
 }
@@ -2629,6 +2592,96 @@ fn yaml_mapping_get<'a>(value: &'a YamlValue, key: &str) -> Option<&'a YamlValue
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    fn large_reserved_external_descriptor_fixture() -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        write(
+            &root.path().join("v8project.yaml"),
+            concat!(
+                "format: DESIGNER\n",
+                "source-set:\n",
+                "  - name: main\n",
+                "    type: EXTERNAL_DATA_PROCESSORS\n",
+                "    path: epf\n",
+            ),
+        );
+        let mut bytes = b"<MetaDataObject><ExternalDataProcessor/><!--".to_vec();
+        bytes.extend(std::iter::repeat_n(b'x', 9 * 1024 * 1024));
+        bytes.extend_from_slice(b"--></MetaDataObject>");
+        assert!(bytes.len() > 8 * 1024 * 1024);
+        assert!(bytes.len() < 10 * 1024 * 1024);
+        let descriptor = root.path().join("epf/ConfigDumpInfo.xml");
+        fs::create_dir_all(descriptor.parent().unwrap()).unwrap();
+        fs::write(descriptor, bytes).unwrap();
+        root
+    }
+
+    fn assert_large_reserved_descriptor_is_observed(map: &ProjectSourceMap) {
+        let [source] = map.source_sets.as_slice() else {
+            panic!("expected one source set, got {:?}", map.source_sets);
+        };
+        assert_eq!(
+            source.source_state,
+            SourceSetState::Supported,
+            "large valid XML was not observed: {source:?}",
+        );
+        assert_eq!(source.format_probe_error, None);
+        assert_source_set(
+            map,
+            "main",
+            SourceSetKind::ExternalProcessor,
+            SourceFormat::PlatformXml,
+            &["epf/ConfigDumpInfo.xml"],
+        );
+    }
+
+    #[test]
+    fn ordinary_source_map_recognizes_large_reserved_external_descriptor() {
+        let fixture = large_reserved_external_descriptor_fixture();
+        let map = discover_project_source_map(fixture.path()).unwrap();
+        assert_large_reserved_descriptor_is_observed(&map);
+    }
+
+    #[test]
+    fn controlled_source_map_recognizes_large_reserved_external_descriptor() {
+        let fixture = large_reserved_external_descriptor_fixture();
+        let map = discover_project_source_map_controlled(fixture.path(), &mut || Ok(())).unwrap();
+        assert_large_reserved_descriptor_is_observed(&map);
+    }
+
+    #[test]
+    fn actor_admission_recognizes_large_reserved_descriptor_and_binds_exact_content() {
+        let fixture = large_reserved_external_descriptor_fixture();
+        let admission =
+            crate::infrastructure::source_selection_evidence::discover_project_source_admission(
+                fixture.path(),
+                &mut || Ok(()),
+            )
+            .unwrap();
+        assert_large_reserved_descriptor_is_observed(admission.map());
+        let evidence = admission.into_evidence();
+        let deadline = crate::domain::code_intelligence::ProviderDeadline::from_budget(
+            std::time::Duration::from_secs(5),
+        );
+        let cancellation = crate::domain::cancellation::CancellationToken::new();
+        evidence.validate(deadline, &cancellation).unwrap();
+
+        // Change a comment byte after the former boundary without changing the
+        // XML kind, file identity or length. Exact selection evidence must notice.
+        use std::io::{Seek, SeekFrom, Write};
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .open(fixture.path().join("epf/ConfigDumpInfo.xml"))
+            .unwrap();
+        file.seek(SeekFrom::Start(8 * 1024 * 1024 + 1)).unwrap();
+        file.write_all(b"y").unwrap();
+        drop(file);
+        let error = evidence.validate(deadline, &cancellation).unwrap_err();
+        assert_eq!(
+            error.kind(),
+            crate::infrastructure::source_selection_evidence::SourceSelectionEvidenceErrorKind::Changed,
+        );
+    }
 
     /// Объявленный, но пустой набор — законное состояние, а не ошибка: так
     /// рабочее пространство выглядит до знакомства с Unica. Прежде такому

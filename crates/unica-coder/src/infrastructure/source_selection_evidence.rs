@@ -692,7 +692,15 @@ impl RetainedSelectionPass {
         max_bytes: usize,
         checkpoint: &mut dyn FnMut() -> Result<(), String>,
     ) -> Result<RetainedRegularObservation, String> {
-        self.observe_regular_internal(relative, max_bytes, true, checkpoint)
+        self.observe_regular_internal(relative, Some(max_bytes), true, checkpoint)
+    }
+
+    pub(in crate::infrastructure) fn observe_regular_unbounded(
+        &mut self,
+        relative: &Path,
+        checkpoint: &mut dyn FnMut() -> Result<(), String>,
+    ) -> Result<RetainedRegularObservation, String> {
+        self.observe_regular_internal(relative, None, true, checkpoint)
     }
 
     pub(in crate::infrastructure) fn observe_regular_presence(
@@ -700,13 +708,13 @@ impl RetainedSelectionPass {
         relative: &Path,
         checkpoint: &mut dyn FnMut() -> Result<(), String>,
     ) -> Result<RetainedRegularObservation, String> {
-        self.observe_regular_internal(relative, 0, false, checkpoint)
+        self.observe_regular_internal(relative, None, false, checkpoint)
     }
 
     fn observe_regular_internal(
         &mut self,
         relative: &Path,
-        max_bytes: usize,
+        max_bytes: Option<usize>,
         capture_bytes: bool,
         checkpoint: &mut dyn FnMut() -> Result<(), String>,
     ) -> Result<RetainedRegularObservation, String> {
@@ -801,7 +809,7 @@ impl RetainedSelectionPass {
                     }) if *expected_parent == parent
                         && *expected_name == *name
                         && *expected_identity == identity
-                        && *maximum == max_bytes =>
+                        && Some(*maximum) == max_bytes =>
                     {
                         (None, true)
                     }
@@ -827,7 +835,7 @@ impl RetainedSelectionPass {
                         )
                     })?;
                     self.usage.charge_exact_work(file_bytes)?;
-                    if file_bytes > max_bytes {
+                    if let Some(maximum) = max_bytes.filter(|maximum| file_bytes > *maximum) {
                         file.validate_named_identity().map_err(|error| {
                             format!(
                                 "project source-map input {} identity changed after length probe: {error}",
@@ -840,7 +848,7 @@ impl RetainedSelectionPass {
                             parent,
                             name.clone(),
                             identity,
-                            max_bytes,
+                            maximum,
                         )?;
                         return Ok(RetainedRegularObservation::Oversized);
                     }
@@ -848,12 +856,7 @@ impl RetainedSelectionPass {
                         return Err(observation_changed(relative));
                     }
                     if let Some(Some(canonical)) = existing_bytes {
-                        if !stream_regular_exact_matches(
-                            &file,
-                            canonical.as_ref(),
-                            max_bytes,
-                            checkpoint,
-                        )? {
+                        if !stream_regular_exact_matches(&file, canonical.as_ref(), checkpoint)? {
                             return Err(observation_changed(relative));
                         }
                         Some(canonical)
@@ -2083,7 +2086,6 @@ fn open_error_is_wrong_kind(error: &std::io::Error) -> bool {
 fn stream_regular_exact_matches(
     file: &RetainedRegularFileCapability,
     expected: &[u8],
-    max_bytes: usize,
     checkpoint: &mut dyn FnMut() -> Result<(), String>,
 ) -> Result<bool, String> {
     let mut file = file
@@ -2104,7 +2106,7 @@ fn stream_regular_exact_matches(
         let Some(end) = offset.checked_add(read) else {
             return Ok(false);
         };
-        if end > max_bytes || end > expected.len() || chunk[..read] != expected[offset..end] {
+        if end > expected.len() || chunk[..read] != expected[offset..end] {
             return Ok(false);
         }
         offset = end;
@@ -2114,7 +2116,7 @@ fn stream_regular_exact_matches(
 
 fn read_regular_exact(
     file: &RetainedRegularFileCapability,
-    max_bytes: usize,
+    max_bytes: Option<usize>,
     checkpoint: &mut dyn FnMut() -> Result<(), String>,
 ) -> Result<Vec<u8>, String> {
     #[cfg(test)]
@@ -2142,11 +2144,9 @@ fn read_regular_exact(
         let next_len = bytes
             .len()
             .checked_add(read)
-            .ok_or_else(|| format!("project source-map input exceeds {max_bytes} bytes"))?;
-        if next_len > max_bytes {
-            return Err(format!(
-                "project source-map input exceeds {max_bytes} bytes"
-            ));
+            .ok_or_else(|| "project source-map input length overflow".to_string())?;
+        if let Some(maximum) = max_bytes.filter(|maximum| next_len > *maximum) {
+            return Err(format!("project source-map input exceeds {maximum} bytes"));
         }
         bytes.extend_from_slice(&chunk[..read]);
         #[cfg(test)]
