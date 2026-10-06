@@ -2594,12 +2594,14 @@ pub(crate) fn add_form_with_data(
         let form_dir = forms_dir.join(form_name);
         let form_ext_dir = form_dir.join("Ext");
         let form_module_dir = form_ext_dir.join("Form");
+        // The pre-v0.13 form command has no language profile; it keeps ru.
         let form_metadata = form_add_metadata_xml(
             form_name,
             synonym,
             &object_type,
             &format_version,
             &fresh_uuid(),
+            "ru",
         );
 
         let form_xml_path = form_ext_dir.join("Form.xml");
@@ -3887,12 +3889,14 @@ pub(crate) fn normalize_form_purpose(value: &str) -> String {
     )
 }
 
+/// `lang` is the `LanguageCode` the synonym is written in.
 pub(crate) fn form_add_metadata_xml(
     form_name: &str,
     synonym: &str,
     object_type: &str,
     format_version: &str,
     form_uuid: &str,
+    lang: &str,
 ) -> String {
     let extended_presentation = if form_add_processor_like(object_type) {
         "\t\t\t<ExtendedPresentation/>\n"
@@ -3925,7 +3929,7 @@ pub(crate) fn form_add_metadata_xml(
             "\t\t\t<Name>{form_name}</Name>\n",
             "\t\t\t<Synonym>\n",
             "\t\t\t\t<v8:item>\n",
-            "\t\t\t\t\t<v8:lang>ru</v8:lang>\n",
+            "\t\t\t\t\t<v8:lang>{lang}</v8:lang>\n",
             "\t\t\t\t\t<v8:content>{synonym}</v8:content>\n",
             "\t\t\t\t</v8:item>\n",
             "\t\t\t</Synonym>\n",
@@ -3946,6 +3950,7 @@ pub(crate) fn form_add_metadata_xml(
         form_name = escape_xml(form_name),
         synonym = escape_xml(synonym),
         extended_presentation = extended_presentation,
+        lang = escape_xml(lang),
     )
 }
 

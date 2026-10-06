@@ -521,7 +521,7 @@ pub(crate) fn prepare_meta_add(
             Err(error) => Err(format!("failed to read {}: {error}", path.display())),
         }
     })
-    .map_err(|diagnostic| MetaFailure::from(diagnostic.with_field("name")))?;
+    .map_err(MetaFailure::from)?;
     let mut post_image = PlatformMetadataTemplateCatalog.minimal_object(
         &source,
         request.kind,

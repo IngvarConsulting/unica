@@ -1452,8 +1452,16 @@ fn stage_form_add(
             authority.source_set_name(),
             owner.as_str()
         ));
-        let descriptor =
-            form_add_metadata_xml(form_name, form_name, &object_type, format_version, &uuid);
+        let lang =
+            super::metadata::staged_text_language(staged, authority.source_kind(), op_index)?;
+        let descriptor = form_add_metadata_xml(
+            form_name,
+            form_name,
+            &object_type,
+            format_version,
+            &uuid,
+            &lang,
+        );
         let content = form_add_content_xml(&object_type, &object_name, purpose, format_version)
             .map_err(|message| bad(op_index, &format!("items[{index}].type"), message))?;
         let descriptor_relative = forms_dir.join(format!("{form_name}.xml"));
@@ -1990,12 +1998,18 @@ pub(crate) fn plan_form_resource_batch(
             FormResourcePlanKind::CreateRole { name } => {
                 let name_path = format!("ops[{op_index}].args.values.name");
                 let uuid = seeded_uuid(&format!("{}\0Role.{name}", authority.source_set_name()));
+                let lang = super::metadata::staged_text_language(
+                    &mut staged,
+                    authority.source_kind(),
+                    op_index,
+                )?;
                 let descriptor = crate::infrastructure::native_operations::role::role_metadata_xml(
                     name,
                     name,
                     "",
                     authority.expected_format(),
                     &uuid,
+                    &lang,
                 );
                 let mut touched = Vec::new();
                 let descriptor_relative = PathBuf::from("Roles").join(format!("{name}.xml"));
@@ -2642,6 +2656,61 @@ mod tests {
                     .unwrap()
                     .contains(&format!("items[0].{key}[0].type")),
                 "{error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn role_create_and_form_add_write_the_configuration_default_language() {
+        let fixture = ApplySeamFixture::new();
+        // The same source set, its only language switched to English.
+        let configuration = fixture.source_dir().join("Configuration.xml");
+        let text = std::fs::read_to_string(&configuration)
+            .unwrap()
+            .replace("Language.Русский", "Language.English")
+            .replace(
+                "<Language>Русский</Language>",
+                "<Language>English</Language>",
+            );
+        std::fs::write(&configuration, text).unwrap();
+        std::fs::remove_file(fixture.source_dir().join("Languages/Русский.xml")).unwrap();
+        std::fs::write(
+            fixture.source_dir().join("Languages/English.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Language uuid="33333333-3333-4333-8333-333333333333"><Properties><Name>English</Name><Comment/><LanguageCode>en</LanguageCode></Properties></Language></MetaDataObject>"#,
+        )
+        .unwrap();
+        let admission = fixture.admission();
+        let staged = admission.staged_state().unwrap();
+        let authority = admission
+            .form_resource_planning_authority(&fixture.binding)
+            .unwrap();
+        let parse = |op: &str, args: serde_json::Value, index: usize| {
+            IndexedPlanOperation::new(
+                index,
+                parse_form_resource_plan_operation(op, &args, index, &fixture.binding)
+                    .unwrap_or_else(|error| panic!("{op}: {error:?}")),
+            )
+        };
+        let operations = [
+            parse(
+                "role.create",
+                json!({"at": "main:Configuration", "values": {"name": "Manager"}}),
+                0,
+            ),
+            parse(
+                "form.add",
+                json!({"at": "main:Document.First", "items": [{"name": "Main", "type": "ObjectForm"}]}),
+                1,
+            ),
+        ];
+        let (staged, _) = plan_form_resource_batch(staged, authority, &operations)
+            .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
+        for relative in ["Roles/Manager.xml", "Documents/First/Forms/Main.xml"] {
+            let text = staged_text(&staged, relative);
+            assert!(text.contains("<v8:lang>en</v8:lang>"), "{relative}\n{text}");
+            assert!(
+                !text.contains("<v8:lang>ru</v8:lang>"),
+                "{relative}\n{text}"
             );
         }
     }

@@ -1033,6 +1033,7 @@ pub(crate) fn emit_meta_mltext(
         lines.push(format!("{indent}<{tag}/>"));
         return;
     }
+    debug_assert!(!lang.is_empty(), "a multilingual value needs a language");
     lines.push(format!("{indent}<{tag}>"));
     lines.push(format!("{indent}\t<v8:item>"));
     lines.push(format!(
@@ -1120,17 +1121,24 @@ pub(crate) fn meta_mltext_property_replacement(
                 && child.tag_name().name() == "item"
         })
         .collect::<Vec<_>>();
+    debug_assert!(!lang.is_empty(), "a multilingual value needs a language");
     if items.is_empty() {
         if text.is_empty() {
             return format!("<{qname}/>");
         }
+        // New lines follow the line endings the descriptor already uses.
+        let eol = if source.contains("\r\n") {
+            "\r\n"
+        } else {
+            "\n"
+        };
         let (core, declaration) = match property.lookup_prefix(DATA_CORE_NS) {
             Some("") => (String::new(), String::new()),
             Some(prefix) => (format!("{prefix}:"), String::new()),
             None => ("v8:".to_string(), format!(" xmlns:v8=\"{DATA_CORE_NS}\"")),
         };
         return format!(
-            "<{qname}{declaration}>\n{indent}\t<{core}item>\n{indent}\t\t<{core}lang>{lang_text}</{core}lang>\n{indent}\t\t<{core}content>{escaped}</{core}content>\n{indent}\t</{core}item>\n{indent}</{qname}>"
+            "<{qname}{declaration}>{eol}{indent}\t<{core}item>{eol}{indent}\t\t<{core}lang>{lang_text}</{core}lang>{eol}{indent}\t\t<{core}content>{escaped}</{core}content>{eol}{indent}\t</{core}item>{eol}{indent}</{qname}>"
         );
     }
     let target = items.iter().copied().find(|item| {

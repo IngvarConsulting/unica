@@ -3342,6 +3342,27 @@ mod tests {
                 bilingual("Retail", "Розница", "Retail")
             ),
         );
+        let block = |tag: &str, ru: &str, en: &str| {
+            format!(
+                "<{tag}>\n{}{}\t\t\t</{tag}>",
+                item("ru", ru, "\t\t\t\t"),
+                item("en", en, "\t\t\t\t")
+            )
+        };
+        let sales = SALES_SUBSYSTEM_XML
+            .replace("<Synonym/>", &block("Synonym", "Продажи", "Sales"))
+            .replace(
+                "<Explanation/>",
+                &block("Explanation", "Раздел продаж", "Sales area"),
+            )
+            .replace(
+                "<Content/>",
+                "<Content>\n\t\t\t\t<xr:Item xsi:type=\"xr:MDObjectRef\">Document.Order</xr:Item>\n\t\t\t</Content>",
+            )
+            .replace(
+                "xmlns:xr=",
+                "xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xr=",
+            );
         let fixture = MetadataFixture::with_files(&[
             ("Configuration.xml", &read("Configuration.xml")),
             ("Languages/Русский.xml", &read("Languages/Русский.xml")),
@@ -3349,6 +3370,7 @@ mod tests {
             ("Enums/LanguageAware.xml", &language_aware),
             ("Enums/Kinds.xml", &kinds),
             ("Documents/Order.xml", &order),
+            ("Subsystems/Sales.xml", &sales),
         ]);
         let staged = plan_all(
             &fixture,
@@ -3368,6 +3390,14 @@ mod tests {
                 (
                     "enumValue.set",
                     json!({"at": "main:Enum.Kinds", "values": {"name": "Retail", "synonym": "Розничная"}}),
+                ),
+                (
+                    "props.set",
+                    json!({"at": "main:Subsystem.Sales", "values": {
+                        "synonym": "Продажи и маркетинг",
+                        "explanation": "Новый раздел",
+                        "comment": "Отдел"
+                    }}),
                 ),
             ],
         )
@@ -3391,6 +3421,18 @@ mod tests {
         assert_eq!(
             texts[Path::new("Enums/Kinds.xml")],
             kinds.replace("Розница", "Розничная")
+        );
+        // The subsystem is edited in place: English, Picture and Content
+        // keep their bytes.
+        assert_eq!(
+            texts[Path::new("Subsystems/Sales.xml")],
+            sales
+                .replace(
+                    "<v8:content>Продажи</v8:content>",
+                    "<v8:content>Продажи и маркетинг</v8:content>"
+                )
+                .replace("Раздел продаж", "Новый раздел")
+                .replace("<Comment/>", "<Comment>Отдел</Comment>")
         );
     }
 
